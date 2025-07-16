@@ -88,12 +88,8 @@ async def test_first_haunt_attempt():
         patch(
             "productivity_bot.database.PlanningSessionService.update_session"
         ) as mock_update_session,
-        patch(
-            "productivity_bot.scheduler.schedule_user_haunt"
-        ) as mock_schedule_job,
-        patch(
-            "productivity_bot.scheduler.cancel_user_haunt"
-        ) as mock_cancel_job,
+        patch("productivity_bot.scheduler.schedule_user_haunt") as mock_schedule_job,
+        patch("productivity_bot.scheduler.cancel_user_haunt") as mock_cancel_job,
         patch("productivity_bot.common.get_slack_app") as mock_get_app,
         patch("datetime.datetime") as mock_datetime,
     ):
@@ -106,9 +102,7 @@ async def test_first_haunt_attempt():
 
         mock_app = AsyncMock()
         mock_get_app.return_value = mock_app
-        mock_app.client.chat_postMessage = AsyncMock(
-            return_value={"ok": True}
-        )
+        mock_app.client.chat_postMessage = AsyncMock(return_value={"ok": True})
 
         # Execute the function
         await haunt_user(2)
@@ -157,12 +151,8 @@ async def test_subsequent_haunt_escalation():
         patch(
             "productivity_bot.database.PlanningSessionService.update_session"
         ) as mock_update_session,
-        patch(
-            "productivity_bot.scheduler.schedule_user_haunt"
-        ) as mock_schedule_job,
-        patch(
-            "productivity_bot.scheduler.cancel_user_haunt"
-        ) as mock_cancel_job,
+        patch("productivity_bot.scheduler.schedule_user_haunt") as mock_schedule_job,
+        patch("productivity_bot.scheduler.cancel_user_haunt") as mock_cancel_job,
         patch("productivity_bot.common.get_slack_app") as mock_get_app,
         patch("datetime.datetime") as mock_datetime,
     ):
@@ -186,12 +176,15 @@ async def test_subsequent_haunt_escalation():
         # Get the actual call to check the post_at timestamp
         call_args = mock_app.client.chat_scheduleMessage.call_args
         assert call_args is not None
-        assert call_args[1]['channel'] == "U54321"
-        assert call_args[1]['text'] == "⏰ Reminder 2: don't forget to plan tomorrow's schedule!"
-        
+        assert call_args[1]["channel"] == "U54321"
+        assert (
+            call_args[1]["text"]
+            == "⏰ Reminder 2: don't forget to plan tomorrow's schedule!"
+        )
+
         # Verify the post_at is approximately 10 seconds from mock_now
         expected_post_at = int((mock_now + timedelta(seconds=10)).timestamp())
-        actual_post_at = call_args[1]['post_at']
+        actual_post_at = call_args[1]["post_at"]
         assert abs(actual_post_at - expected_post_at) <= 1  # Allow 1 second tolerance
 
         # Verify updated session fields
