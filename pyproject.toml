@@ -1,0 +1,49 @@
+[project]
+name = "admonish"
+version = "0.1.0"
+description = "does the productivity for you"
+authors = [
+    {name = "hugocool",email = "hugo.evers@gmail.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "slack-bolt (>=1.23.0,<2.0.0)",
+    "slack-sdk (>=3.36.0,<4.0.0)",
+    "fastapi (>=0.116.1,<0.117.0)",
+    "autogen-agentchat (>=0.6.4,<0.7.0)",
+    "autogen-ext[openai] (>=0.6.4,<0.7.0)",
+    "autogenstudio (>=0.4.2.2,<0.5.0.0)",
+    "python-dotenv (>=1.1.1,<2.0.0)",
+    "apscheduler (>=3.11.0,<4.0.0)",
+    "uvicorn[standard] (>=0.32.1,<0.33.0)"
+]
+
+[project.scripts]
+plan = "productivity_bot.planner_bot:main"
+haunt = "productivity_bot.haunter_bot:main"
+watch = "productivity_bot.calendar_watch_server:main"
+
+[tool.poetry]
+name = "admonish"
+version = "0.1.0"
+description = "does the productivity for you"
+authors = ["hugocool <hugo.evers@gmail.com>"]
+packages = [{include = "productivity_bot", from = "src"}]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.1"
+pytest-mock = "^3.14.1"
+ngrok = "^1.5.0"
+mkdocs = "^1.6.1"
+
+[tool.poetry.scripts]
+plan = "productivity_bot.planner_bot:main"
+haunt = "productivity_bot.haunter_bot:main"
+watch = "productivity_bot.calendar_watch_server:main"
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

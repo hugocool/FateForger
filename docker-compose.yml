@@ -1,0 +1,27 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - poetry-cache:/root/.cache/pypoetry
+    environment:
+      - POETRY_CACHE_DIR=/root/.cache/pypoetry
+    command: poetry run python -m admonish
+    
+  dev:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - poetry-cache:/root/.cache/pypoetry
+    environment:
+      - POETRY_CACHE_DIR=/root/.cache/pypoetry
+    command: /bin/bash
+    stdin_open: true
+    tty: true
+
+volumes:
+  poetry-cache:
