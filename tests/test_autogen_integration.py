@@ -10,11 +10,14 @@ import asyncio
 import os
 import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
+import pytest
 
 # Add src to path for imports
-sys.path.append("../src")
+sys.path.append(str(Path(__file__).parent.parent / "src"))
 
 
+@pytest.mark.asyncio
 async def test_end_to_end_flow():
     """Test the complete AutoGen integration flow."""
     print("🚀 Testing End-to-End AutoGen Planning Flow")
@@ -152,6 +155,7 @@ async def test_end_to_end_flow():
         return False
 
 
+@pytest.mark.asyncio
 async def test_specific_features():
     """Test specific AutoGen features in detail."""
     print("\n🔬 Testing Specific AutoGen Features")

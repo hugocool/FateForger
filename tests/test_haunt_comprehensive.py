@@ -10,12 +10,14 @@ This test validates:
 import asyncio
 from datetime import date, datetime, timezone, timedelta
 from unittest.mock import AsyncMock, patch
+import pytest
 
 from productivity_bot.haunter_bot import haunt_user
 from productivity_bot.models import PlanningSession, PlanStatus
 from productivity_bot.common import backoff_minutes
 
 
+@pytest.mark.asyncio
 async def test_complete_session_cancellation():
     """Test 1: Session COMPLETE cancels jobs and scheduled messages."""
     print("🧪 Test 1: Session COMPLETE cancellation")
@@ -61,6 +63,7 @@ async def test_complete_session_cancellation():
         print("✅ Test 1 PASSED: APScheduler job and Slack message cancelled")
 
 
+@pytest.mark.asyncio
 async def test_first_haunt_attempt():
     """Test 2: First haunt schedules message and next job."""
     print("\n🧪 Test 2: First haunt attempt")
@@ -131,6 +134,7 @@ async def test_first_haunt_attempt():
         print("✅ Test 2 PASSED: First haunt scheduled message and next job")
 
 
+@pytest.mark.asyncio
 async def test_subsequent_haunt_escalation():
     """Test 3: Subsequent haunt with escalation and proper backoff."""
     print("\n🧪 Test 3: Subsequent haunt escalation")
@@ -212,7 +216,7 @@ async def test_subsequent_haunt_escalation():
         print("✅ Test 3 PASSED: Escalated message with proper 20-minute backoff")
 
 
-async def test_backoff_progression():
+def test_backoff_progression():
     """Test 4: Verify backoff progression matches spec."""
     print("\n🧪 Test 4: Backoff progression verification")
 
@@ -243,7 +247,7 @@ async def main():
     await test_complete_session_cancellation()
     await test_first_haunt_attempt()
     await test_subsequent_haunt_escalation()
-    await test_backoff_progression()
+    test_backoff_progression()
 
     print("\n🎉 ALL HAUNT_USER TESTS PASSED!")
     print("\nImplementation Summary:")

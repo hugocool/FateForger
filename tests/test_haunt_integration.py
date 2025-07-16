@@ -35,12 +35,12 @@ async def test_haunt_user_integration():
             "productivity_bot.database.PlanningSessionService.update_session"
         ) as mock_update_session,
         patch(
-            "productivity_bot.scheduler.schedule_planning_session_haunt"
+            "productivity_bot.scheduler.schedule_user_haunt"
         ) as mock_schedule_job,
         patch(
-            "productivity_bot.scheduler.cancel_planning_session_haunt"
+            "productivity_bot.scheduler.cancel_user_haunt"
         ) as mock_cancel_job,
-        patch("productivity_bot.common.get_slack_app") as mock_get_app,
+        patch("slack_bolt.async_app.AsyncApp") as mock_app_class,
         patch("datetime.datetime") as mock_datetime,
     ):
 
@@ -51,9 +51,9 @@ async def test_haunt_user_integration():
         mock_datetime.now.return_value = datetime.now(timezone.utc)
 
         mock_app = AsyncMock()
-        mock_get_app.return_value = mock_app
-        mock_app.client.chat_scheduleMessage = AsyncMock(
-            return_value={"scheduled_message_id": "SM123456"}
+        mock_app_class.return_value = mock_app
+        mock_app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True}
         )
 
         # Execute the function
@@ -61,7 +61,7 @@ async def test_haunt_user_integration():
 
         # Verify it completed without errors
         assert mock_get_session.called
-        assert mock_app.client.chat_scheduleMessage.called
+        assert mock_app.client.chat_postMessage.called
         assert mock_schedule_job.called
         assert mock_update_session.called
 
