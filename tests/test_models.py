@@ -33,7 +33,7 @@ class TestDatabaseSchema:
     @classmethod
     def setup_class(cls):
         """Set up test database."""
-        cls.engine = create_engine("sqlite:///test_models.db")
+        cls.engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(cls.engine)
         cls.Session = sessionmaker(bind=cls.engine)
 
@@ -134,7 +134,7 @@ class TestModelRelationships:
     @classmethod
     def setup_class(cls):
         """Set up test database."""
-        cls.engine = create_engine("sqlite:///test_models_relationships.db")
+        cls.engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(cls.engine)
         cls.Session = sessionmaker(bind=cls.engine)
 
@@ -375,45 +375,3 @@ class TestModelProperties:
         # Test mark cancelled
         event.mark_cancelled()
         assert event.status == EventStatus.CANCELLED
-
-
-if __name__ == "__main__":
-    print("🧪 Running Database Models Tests...")
-
-    # Run schema tests
-    print("✅ Testing database schema...")
-    schema_tests = TestDatabaseSchema()
-    schema_tests.setup_class()
-    schema_tests.test_calendar_events_table_exists()
-    schema_tests.test_calendar_reminder_jobs_table_exists()
-    schema_tests.test_foreign_key_constraint()
-    schema_tests.test_unique_constraints()
-    schema_tests.test_indexes()
-    print("✅ Schema tests passed!")
-
-    # Run relationship tests
-    print("✅ Testing model relationships...")
-    relationship_tests = TestModelRelationships()
-    relationship_tests.setup_class()
-    relationship_tests.test_calendar_event_creation()
-    relationship_tests.test_calendar_reminder_job_creation()
-    relationship_tests.test_relationship_loading()
-    relationship_tests.test_cascade_delete()
-    print("✅ Relationship tests passed!")
-
-    # Run property tests
-    print("✅ Testing model properties...")
-    property_tests = TestModelProperties()
-    property_tests.test_calendar_event_properties()
-    property_tests.test_calendar_event_status_methods()
-    print("✅ Property tests passed!")
-
-    print("\n🎉 All database model tests passed!")
-    print("\n📋 Test Summary:")
-    print("✅ calendar_events table with proper columns and indexes")
-    print("✅ calendar_reminder_jobs table with FK to calendar_events")
-    print("✅ Foreign key constraint with CASCADE delete")
-    print("✅ Unique constraint on job_id")
-    print("✅ SQLAlchemy relationships working correctly")
-    print("✅ Model properties and methods functioning")
-    print("\n🚀 Database schema is ready for production!")

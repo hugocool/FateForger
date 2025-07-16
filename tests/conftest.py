@@ -2,27 +2,33 @@
 Test configuration and fixtures for the productivity bot test suite.
 """
 
-import pytest
 import os
 from unittest.mock import Mock, patch
+
+import pytest
+
+# Set default environment variables before importing application modules
+TEST_ENV_VARS = {
+    "SLACK_BOT_TOKEN": "xoxb-test-token",
+    "SLACK_SIGNING_SECRET": "test-signing-secret",
+    "SLACK_APP_TOKEN": "xapp-test-app-token",
+    "OPENAI_API_KEY": "test-openai-key",
+    "CALENDAR_WEBHOOK_URL": "https://test.webhook.url",
+    "PORT": "8000",
+    "DEBUG": "true",
+    "CALENDAR_WEBHOOK_SECRET": "secret",
+    "DATABASE_URL": "sqlite+aiosqlite:///test.db",
+}
+
+os.environ.update(TEST_ENV_VARS)
+
 from productivity_bot.common import Config
 
 
 @pytest.fixture
 def mock_env_vars():
-    """Mock environment variables for testing."""
-    env_vars = {
-        "SLACK_BOT_TOKEN": "xoxb-test-token",
-        "SLACK_SIGNING_SECRET": "test-signing-secret",
-        "SLACK_APP_TOKEN": "xapp-test-app-token",
-        "OPENAI_API_KEY": "test-openai-key",
-        "CALENDAR_WEBHOOK_URL": "https://test.webhook.url",
-        "PORT": "8000",
-        "DEBUG": "true",
-    }
-
-    with patch.dict(os.environ, env_vars, clear=True):
-        yield env_vars
+    """Return the test environment variables."""
+    return TEST_ENV_VARS
 
 
 @pytest.fixture

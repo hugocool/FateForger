@@ -297,7 +297,3 @@ class TestBackoffMinutes:
         """Test that negative attempts default to initial delay."""
         assert backoff_minutes(-1) == 5
         assert backoff_minutes(-5) == 5
-
-
-if __name__ == "__main__":
-    pytest.main([__file__])
