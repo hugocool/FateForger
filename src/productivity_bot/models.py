@@ -4,10 +4,119 @@ Database models for the productivity bot.
 
 from datetime import datetime, date as DateType
 from enum import Enum as PyEnum
-from typing import Optional, List
-from sqlalchemy import String, Integer, DateTime, Date, Enum, Text, Boolean, ForeignKey
+from typing import Optional, List, Dict, Any
+from sqlalchemy import (
+    String,
+    Integer,
+    DateTime,
+    Date,
+    Enum,
+    Text,
+    Boolean,
+    ForeignKey,
+    JSON,
+)
 from sqlalchemy.orm import mapped_column, relationship, Mapped
 from .common import Base
+
+
+class EventStatus(PyEnum):
+    """Status of calendar events."""
+
+    UPCOMING = "UPCOMING"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+
+
+class BaseEvent(Base):
+    """
+    Base model for all calendar events - foundation for event-driven agents.
+    Captures common fields for any calendar event across different sources.
+    """
+
+    __tablename__ = "base_events"
+
+    event_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    calendar_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+
+    # Core event details
+    title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    location: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # Timing
+    start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    end_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    all_day: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Status and metadata
+    status: Mapped[EventStatus] = mapped_column(
+        Enum(EventStatus, name="event_status"),
+        default=EventStatus.UPCOMING,
+        nullable=False,
+    )
+
+    # Extended metadata as JSON for flexibility
+    event_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=True
+    )
+
+    # Source tracking
+    source: Mapped[str] = mapped_column(
+        String(50), default="google_calendar", nullable=False
+    )
+    external_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )  # Original source ID
+
+    # Sync tracking
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Bot metadata for agent routing
+    bot_managed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    agent_type: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True
+    )  # planner, haunter, etc.
+
+    # Relationships
+    planning_sessions: Mapped[List["PlanningSession"]] = relationship(
+        "PlanningSession", back_populates="base_event", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self):
+        return f"<BaseEvent(event_id='{self.event_id}', title='{self.title}', start_time={self.start_time}, status={self.status.value})>"
+
+    @property
+    def is_upcoming(self) -> bool:
+        """Check if the event is upcoming."""
+        return (
+            self.status == EventStatus.UPCOMING and self.start_time > datetime.utcnow()
+        )
+
+    @property
+    def is_past(self) -> bool:
+        """Check if the event is in the past."""
+        return self.end_time < datetime.utcnow()
+
+    @property
+    def duration_minutes(self) -> int:
+        """Get event duration in minutes."""
+        duration = self.end_time - self.start_time
+        return int(duration.total_seconds() / 60)
+
+    def mark_completed(self) -> None:
+        """Mark the event as completed."""
+        self.status = EventStatus.COMPLETED
+
+    def mark_cancelled(self) -> None:
+        """Mark the event as cancelled."""
+        self.status = EventStatus.CANCELLED
 
 
 class PlanStatus(PyEnum):
@@ -19,13 +128,22 @@ class PlanStatus(PyEnum):
 
 
 class PlanningSession(Base):
-    """Tracks the state of planning sessions for users."""
+    """
+    Tracks the state of planning sessions for users.
+    Wraps a daily planning event with session-specific metadata.
+    """
 
     __tablename__ = "planning_sessions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[str] = mapped_column(String(50), index=True, nullable=False)
     date: Mapped[DateType] = mapped_column(Date, index=True, nullable=False)
+
+    # Reference to the BaseEvent
+    event_id: Mapped[Optional[str]] = mapped_column(
+        String(255), ForeignKey("base_events.event_id"), nullable=True
+    )
+
     status: Mapped[PlanStatus] = mapped_column(
         Enum(PlanStatus, name="plan_status"),
         default=PlanStatus.NOT_STARTED,
@@ -33,6 +151,14 @@ class PlanningSession(Base):
     )
     scheduled_for: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Slack thread tracking
+    thread_ts: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    channel_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
+    # Nudge tracking for haunting
+    next_nudge_attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_nudge_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # Additional fields for better planning tracking
     created_at: Mapped[datetime] = mapped_column(
@@ -45,6 +171,9 @@ class PlanningSession(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Relationships
+    base_event: Mapped[Optional["BaseEvent"]] = relationship(
+        "BaseEvent", back_populates="planning_sessions"
+    )
     tasks: Mapped[List["Task"]] = relationship(
         "Task", back_populates="planning_session", cascade="all, delete-orphan"
     )
@@ -283,14 +412,6 @@ class UserPreferences(Base):
         return (
             f"<UserPreferences(user_id='{self.user_id}', timezone='{self.timezone}')>"
         )
-
-
-class EventStatus(PyEnum):
-    """Status of calendar events."""
-
-    UPCOMING = "UPCOMING"
-    COMPLETED = "COMPLETED"
-    CANCELLED = "CANCELLED"
 
 
 class CalendarEvent(Base):

@@ -1,15 +1,19 @@
 """
-APScheduler integration for event-driven reminders and haunting.
+Dedicated scheduler module with singleton APScheduler and SQLAlchemy job store.
+Handles all scheduling, cancellation, and exponential back-off logic.
 """
 
+import asyncio
 import logging
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.asyncio import AsyncIOExecutor
+from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 
 from .common import get_config, get_logger
+from .database import get_database_engine
 
 logger = get_logger("scheduler")
 
@@ -26,28 +30,36 @@ def get_scheduler() -> AsyncIOScheduler:
 
 
 def create_scheduler() -> AsyncIOScheduler:
-    """Create and configure the APScheduler instance."""
+    """Create and configure the APScheduler instance with SQLAlchemy job store."""
     config = get_config()
 
+    # Get the sync engine for SQLAlchemy job store
+    engine = get_database_engine()
+
     # Configure job store to persist jobs in database
-    jobstore = SQLAlchemyJobStore(url=config.database_url, tablename="scheduler_jobs")
+    # APScheduler will create the apscheduler_jobs table automatically
+    jobstore = SQLAlchemyJobStore(engine=engine.sync_engine)
 
     # Configure executor for async jobs
     executor = AsyncIOExecutor()
 
     # Job defaults
-    job_defaults = {
-        "coalesce": False,
-        "max_instances": 3,
-        "misfire_grace_time": 300,  # 5 minutes
-    }
+    job_defaults = {"coalesce": False, "max_instances": 3, "misfire_grace_time": 30}
 
+    # Create scheduler
     scheduler_instance = AsyncIOScheduler(
         jobstores={"default": jobstore},
         executors={"default": executor},
         job_defaults=job_defaults,
-        timezone="UTC",
+        timezone=config.scheduler_timezone,
     )
+
+    # Add event listeners
+    scheduler_instance.add_listener(job_executed_listener, EVENT_JOB_EXECUTED)
+    scheduler_instance.add_listener(job_error_listener, EVENT_JOB_ERROR)
+
+    logger.info("APScheduler configured with SQLAlchemy job store")
+    return scheduler_instance
 
     logger.info("APScheduler configured with SQLAlchemy job store")
     return scheduler_instance

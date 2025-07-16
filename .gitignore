@@ -229,3 +229,11 @@ poetry.lock
 
 # Keep template
 !.env.template
+
+# Database files
+data/*.db
+*.db
+
+# Logs
+logs/
+*.log

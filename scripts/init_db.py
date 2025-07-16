@@ -47,7 +47,7 @@ async def init_database():
         os.environ.setdefault("SLACK_SIGNING_SECRET", "dev-fallback")
         os.environ.setdefault("OPENAI_API_KEY", "dev-fallback")
         os.environ.setdefault("CALENDAR_WEBHOOK_SECRET", "dev-fallback")
-        os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///planner.db")
+        os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///data/admonish.db")
 
         from productivity_bot.common import Base
         from productivity_bot.database import get_database_engine
