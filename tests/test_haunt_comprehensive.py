@@ -39,9 +39,7 @@ async def test_complete_session_cancellation():
         patch(
             "productivity_bot.database.PlanningSessionService.get_session_by_id"
         ) as mock_get_session,
-        patch(
-            "productivity_bot.scheduler.cancel_planning_session_haunt"
-        ) as mock_cancel_job,
+        patch("productivity_bot.scheduler.cancel_user_haunt") as mock_cancel_job,
         patch("productivity_bot.common.get_slack_app") as mock_get_app,
     ):
 
@@ -91,10 +89,10 @@ async def test_first_haunt_attempt():
             "productivity_bot.database.PlanningSessionService.update_session"
         ) as mock_update_session,
         patch(
-            "productivity_bot.scheduler.schedule_planning_session_haunt"
+            "productivity_bot.scheduler.schedule_user_haunt"
         ) as mock_schedule_job,
         patch(
-            "productivity_bot.scheduler.cancel_planning_session_haunt"
+            "productivity_bot.scheduler.cancel_user_haunt"
         ) as mock_cancel_job,
         patch("productivity_bot.common.get_slack_app") as mock_get_app,
         patch("datetime.datetime") as mock_datetime,
@@ -108,22 +106,20 @@ async def test_first_haunt_attempt():
 
         mock_app = AsyncMock()
         mock_get_app.return_value = mock_app
-        mock_app.client.chat_scheduleMessage = AsyncMock(
-            return_value={"scheduled_message_id": "SM789123"}
+        mock_app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True}
         )
 
         # Execute the function
         await haunt_user(2)
 
-        # Verify Slack message scheduling
-        mock_app.client.chat_scheduleMessage.assert_called_once_with(
+        # Verify immediate Slack message for first attempt
+        mock_app.client.chat_postMessage.assert_called_once_with(
             channel="U67890",
             text="⏰ It's time to plan your day! Please open your planning session.",
-            post_at=int(mock_now.timestamp()),
         )
 
         # Verify session updates
-        assert first_session.slack_scheduled_message_id == "SM789123"
         assert first_session.haunt_attempt == 1
         assert first_session.scheduler_job_id == "new_job_456"
 
@@ -162,10 +158,10 @@ async def test_subsequent_haunt_escalation():
             "productivity_bot.database.PlanningSessionService.update_session"
         ) as mock_update_session,
         patch(
-            "productivity_bot.scheduler.schedule_planning_session_haunt"
+            "productivity_bot.scheduler.schedule_user_haunt"
         ) as mock_schedule_job,
         patch(
-            "productivity_bot.scheduler.cancel_planning_session_haunt"
+            "productivity_bot.scheduler.cancel_user_haunt"
         ) as mock_cancel_job,
         patch("productivity_bot.common.get_slack_app") as mock_get_app,
         patch("datetime.datetime") as mock_datetime,
@@ -186,12 +182,17 @@ async def test_subsequent_haunt_escalation():
         # Execute the function
         await haunt_user(3)
 
-        # Verify escalated message text
-        mock_app.client.chat_scheduleMessage.assert_called_once_with(
-            channel="U54321",
-            text="⏰ Reminder 2: don't forget to plan tomorrow's schedule!",
-            post_at=int(mock_now.timestamp()),
-        )
+        # Verify escalated message scheduled with 10s buffer
+        # Get the actual call to check the post_at timestamp
+        call_args = mock_app.client.chat_scheduleMessage.call_args
+        assert call_args is not None
+        assert call_args[1]['channel'] == "U54321"
+        assert call_args[1]['text'] == "⏰ Reminder 2: don't forget to plan tomorrow's schedule!"
+        
+        # Verify the post_at is approximately 10 seconds from mock_now
+        expected_post_at = int((mock_now + timedelta(seconds=10)).timestamp())
+        actual_post_at = call_args[1]['post_at']
+        assert abs(actual_post_at - expected_post_at) <= 1  # Allow 1 second tolerance
 
         # Verify updated session fields
         assert escalation_session.slack_scheduled_message_id == "SM999000"
