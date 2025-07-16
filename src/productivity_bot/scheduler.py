@@ -273,6 +273,86 @@ def schedule_planning_session_haunt(session_id: int, when: datetime) -> str:
         raise
 
 
+def schedule_user_haunt(session_id: int, when: datetime) -> str:
+    """
+    Schedule a haunt_user job for escalating reminders.
+
+    Creates a scheduled job that will trigger haunt_user() function to send
+    escalating reminders with exponential backoff until session is complete.
+
+    Args:
+        session_id: The planning session ID to create reminder for.
+        when: When to send the reminder (absolute datetime).
+
+    Returns:
+        The job ID for the scheduled job, format: "haunt_user_{session_id}".
+
+    Raises:
+        Exception: If job scheduling fails.
+
+    Example:
+        >>> from datetime import datetime, timedelta
+        >>> next_haunt_time = datetime.utcnow() + timedelta(minutes=10)
+        >>> job_id = schedule_user_haunt(42, next_haunt_time)
+        >>> print(job_id)  # "haunt_user_42"
+    """
+    scheduler_instance = get_scheduler()
+
+    job_id = f"haunt_user_{session_id}"
+
+    try:
+        # Remove existing job if it exists
+        try:
+            scheduler_instance.remove_job(job_id)
+            logger.debug(f"Removed existing haunt_user job {job_id}")
+        except Exception:
+            pass  # Job doesn't exist, that's fine
+
+        # Schedule new job pointing to haunt_user function
+        scheduler_instance.add_job(
+            func="productivity_bot.haunter_bot:haunt_user",
+            trigger="date",
+            run_date=when,
+            args=[session_id],
+            id=job_id,
+            replace_existing=True,
+            misfire_grace_time=300,  # 5 minutes grace period
+        )
+
+        logger.info(f"Scheduled haunt_user job {job_id} for {when}")
+        return job_id
+
+    except Exception as e:
+        logger.error(f"Failed to schedule haunt_user job for session {session_id}: {e}")
+        raise
+
+
+def cancel_user_haunt(session_id: int) -> bool:
+    """
+    Cancel a scheduled haunt_user job.
+
+    Args:
+        session_id: The planning session ID to cancel reminder for.
+
+    Returns:
+        True if job was cancelled, False if job didn't exist.
+
+    Example:
+        >>> cancelled = cancel_user_haunt(42)
+        >>> print(f"Job cancelled: {cancelled}")
+    """
+    scheduler_instance = get_scheduler()
+    job_id = f"haunt_user_{session_id}"
+
+    try:
+        scheduler_instance.remove_job(job_id)
+        logger.info(f"Cancelled haunt_user job {job_id}")
+        return True
+    except Exception:
+        logger.debug(f"No haunt_user job {job_id} to cancel")
+        return False
+
+
 def schedule_haunt(session_id: int, when: datetime, attempt: int = 1) -> str:
     """
     Schedule a haunt job for a user planning session with attempt tracking.

@@ -12,7 +12,7 @@ import sys
 from datetime import date, datetime, timedelta
 
 # Add src to path for imports
-sys.path.append("src")
+sys.path.append("../src")
 
 
 async def test_end_to_end_flow():

@@ -458,32 +458,6 @@ async def haunt_planning_session(session_id: int) -> None:
         logger.error(f"Error haunting planning session {session_id}: {e}")
 
 
-def backoff_minutes(attempt: int) -> int:
-    """
-    Calculate exponential back-off delay in minutes.
-
-    Args:
-        attempt: The attempt number (1-based).
-
-    Returns:
-        Delay in minutes following pattern: 5, 10, 20, 40, 60 (max).
-
-    Example:
-        >>> backoff_minutes(1)
-        5
-        >>> backoff_minutes(2)
-        10
-        >>> backoff_minutes(3)
-        20
-    """
-    if attempt <= 0:
-        return 5
-
-    # Exponential back-off: 5, 10, 20, 40, 60 (capped at 60 minutes)
-    delay = min(5 * (2 ** (attempt - 1)), 60)
-    return delay
-
-
 async def get_thread_for_session(session: PlanningSession) -> tuple[str, Optional[str]]:
     """
     Get the Slack channel and thread timestamp for a planning session.
@@ -516,13 +490,10 @@ async def haunt_user(session_id: int) -> None:
 
     from slack_sdk.errors import SlackApiError
 
-    from .common import backoff_minutes, get_slack_app
+    from .common import backoff_minutes
     from .database import PlanningSessionService
     from .models import PlanStatus
-    from .scheduler import (
-        cancel_planning_session_haunt,
-        schedule_planning_session_haunt,
-    )
+    from .scheduler import cancel_user_haunt, schedule_user_haunt
 
     logger = logging.getLogger("haunter_bot")
 
@@ -538,10 +509,20 @@ async def haunt_user(session_id: int) -> None:
             f"haunt_user: session {session_id} is COMPLETE → cancelling reminders"
         )
         # Cancel the APScheduler job
-        cancel_planning_session_haunt(session_id)
+        cancel_user_haunt(session_id)
         # Cancel the Slack scheduled message
         if session.slack_scheduled_message_id:
-            app = get_slack_app()
+            # Get the bot's app instance (assume global app or singleton)
+            from slack_bolt.async_app import AsyncApp
+
+            from .common import get_config
+
+            config = get_config()
+            app = AsyncApp(
+                token=config.slack_bot_token,
+                signing_secret=config.slack_signing_secret,
+            )
+
             try:
                 await app.client.chat_deleteScheduledMessage(
                     channel=session.user_id,
@@ -562,18 +543,41 @@ async def haunt_user(session_id: int) -> None:
         or f"⏰ Reminder {attempt + 1}: don't forget to plan tomorrow's schedule!"
     )
 
-    # 4. Schedule the Slack message immediately
-    app = get_slack_app()
+    # 4. Send Slack message - immediate for first attempt, scheduled for follow-ups
+    from slack_bolt.async_app import AsyncApp
+
+    from .common import get_config
+
+    config = get_config()
+    app = AsyncApp(
+        token=config.slack_bot_token,
+        signing_secret=config.slack_signing_secret,
+    )
+
+    slack_msg_id = None
+
     try:
-        resp = await app.client.chat_scheduleMessage(
-            channel=session.user_id,
-            text=text,
-            post_at=int(datetime.now(timezone.utc).timestamp()),  # post now
-        )
-        slack_msg_id = resp["scheduled_message_id"]
-        logger.info(f"Scheduled Slack reminder {slack_msg_id} for session {session_id}")
+        if attempt == 0:
+            # First attempt: send immediately via postMessage
+            await app.client.chat_postMessage(channel=session.user_id, text=text)
+            logger.info(f"Sent immediate Slack message for session {session_id}")
+            # No scheduled_message_id for immediate messages
+            slack_msg_id = None
+        else:
+            # Follow-up attempts: schedule with small buffer
+            post_at = int(
+                (datetime.now(timezone.utc) + timedelta(seconds=10)).timestamp()
+            )
+            resp = await app.client.chat_scheduleMessage(
+                channel=session.user_id, text=text, post_at=post_at
+            )
+            slack_msg_id = resp["scheduled_message_id"]
+            logger.info(
+                f"Scheduled Slack reminder {slack_msg_id} for session {session_id}"
+            )
+
     except SlackApiError as e:
-        logger.error(f"chat_scheduleMessage failed: {e}")
+        logger.error(f"Slack message failed: {e}")
         return
 
     # 5. Compute next back-off and schedule the next haunt via APScheduler
@@ -582,11 +586,13 @@ async def haunt_user(session_id: int) -> None:
     next_run = datetime.now(timezone.utc) + timedelta(minutes=delay)
 
     # Cancel prior APScheduler job (if exists), then add new one
-    cancel_planning_session_haunt(session_id)
-    job_id = schedule_planning_session_haunt(session_id, next_run)
+    cancel_user_haunt(session_id)
+    job_id = schedule_user_haunt(session_id, next_run)
 
     # 6. Persist updated session fields
-    session.slack_scheduled_message_id = slack_msg_id
+    session.slack_scheduled_message_id = (
+        slack_msg_id  # None for immediate, ID for scheduled
+    )
     session.haunt_attempt = next_attempt
     session.scheduler_job_id = job_id
     await PlanningSessionService.update_session(session)

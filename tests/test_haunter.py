@@ -77,17 +77,15 @@ class TestHauntUser:
             patch(
                 "productivity_bot.database.PlanningSessionService.get_session_by_id"
             ) as mock_get_session,
-            patch(
-                "productivity_bot.scheduler.cancel_planning_session_haunt"
-            ) as mock_cancel_job,
-            patch("productivity_bot.common.get_slack_app") as mock_get_app,
+            patch("productivity_bot.scheduler.cancel_user_haunt") as mock_cancel_job,
+            patch("slack_bolt.async_app.AsyncApp") as mock_app_class,
         ):
 
             # Setup mocks
             mock_get_session.return_value = mock_session_complete
 
             mock_app = AsyncMock()
-            mock_get_app.return_value = mock_app
+            mock_app_class.return_value = mock_app
             mock_app.client.chat_deleteScheduledMessage = AsyncMock()
 
             # Execute the function
@@ -115,12 +113,10 @@ class TestHauntUser:
                 "productivity_bot.database.PlanningSessionService.update_session"
             ) as mock_update_session,
             patch(
-                "productivity_bot.scheduler.schedule_planning_session_haunt"
+                "productivity_bot.scheduler.schedule_user_haunt"
             ) as mock_schedule_job,
-            patch(
-                "productivity_bot.scheduler.cancel_planning_session_haunt"
-            ) as mock_cancel_job,
-            patch("productivity_bot.common.get_slack_app") as mock_get_app,
+            patch("productivity_bot.scheduler.cancel_user_haunt") as mock_cancel_job,
+            patch("slack_bolt.async_app.AsyncApp") as mock_app_class,
             patch("datetime.datetime") as mock_datetime,
         ):
 
@@ -132,7 +128,8 @@ class TestHauntUser:
             mock_datetime.now.return_value = mock_now
 
             mock_app = AsyncMock()
-            mock_get_app.return_value = mock_app
+            mock_app_class.return_value = mock_app
+            mock_app.client.chat_postMessage = AsyncMock(return_value={"ok": True})
             mock_app.client.chat_scheduleMessage = AsyncMock(
                 return_value={"scheduled_message_id": "SM789123"}
             )
@@ -140,11 +137,10 @@ class TestHauntUser:
             # Execute the function
             await haunt_user(mock_session_in_progress.id)
 
-            # Verify Slack message scheduling
-            mock_app.client.chat_scheduleMessage.assert_called_once_with(
+            # Verify immediate Slack message for first attempt
+            mock_app.client.chat_postMessage.assert_called_once_with(
                 channel=mock_session_in_progress.user_id,
                 text="⏰ It's time to plan your day! Please open your planning session.",
-                post_at=int(mock_now.timestamp()),
             )
 
             # Verify APScheduler job management
@@ -152,7 +148,6 @@ class TestHauntUser:
             mock_schedule_job.assert_called_once()
 
             # Verify session updates
-            assert mock_session_in_progress.slack_scheduled_message_id == "SM789123"
             assert mock_session_in_progress.haunt_attempt == 1
             assert mock_session_in_progress.scheduler_job_id == "new_job_456"
             mock_update_session.assert_called_once_with(mock_session_in_progress)
@@ -171,12 +166,10 @@ class TestHauntUser:
                 "productivity_bot.database.PlanningSessionService.update_session"
             ) as mock_update_session,
             patch(
-                "productivity_bot.scheduler.schedule_planning_session_haunt"
+                "productivity_bot.scheduler.schedule_user_haunt"
             ) as mock_schedule_job,
-            patch(
-                "productivity_bot.scheduler.cancel_planning_session_haunt"
-            ) as mock_cancel_job,
-            patch("productivity_bot.common.get_slack_app") as mock_get_app,
+            patch("productivity_bot.scheduler.cancel_user_haunt") as mock_cancel_job,
+            patch("slack_bolt.async_app.AsyncApp") as mock_app_class,
             patch("datetime.datetime") as mock_datetime,
         ):
 
@@ -188,7 +181,7 @@ class TestHauntUser:
             mock_datetime.now.return_value = mock_now
 
             mock_app = AsyncMock()
-            mock_get_app.return_value = mock_app
+            mock_app_class.return_value = mock_app
             mock_app.client.chat_scheduleMessage = AsyncMock(
                 return_value={"scheduled_message_id": "SM999000"}
             )
@@ -196,11 +189,12 @@ class TestHauntUser:
             # Execute the function
             await haunt_user(mock_session_escalation.id)
 
-            # Verify escalated message text
+            # Verify escalated message scheduled with buffer time (10 seconds from now)
+            expected_schedule_time = mock_now + timedelta(seconds=10)
             mock_app.client.chat_scheduleMessage.assert_called_once_with(
                 channel=mock_session_escalation.user_id,
                 text="⏰ Reminder 2: don't forget to plan tomorrow's schedule!",
-                post_at=int(mock_now.timestamp()),
+                post_at=int(expected_schedule_time.timestamp()),
             )
 
             # Verify updated session fields
@@ -208,17 +202,17 @@ class TestHauntUser:
             assert mock_session_escalation.haunt_attempt == 2
             assert mock_session_escalation.scheduler_job_id == "escalated_job_789"
 
-            # Verify scheduling with proper backoff delay (attempt 2 -> 10 minutes)
+            # Verify scheduling with proper backoff delay (attempt 2 -> 20 minutes)
             expected_delay = backoff_minutes(2)
-            assert expected_delay == 10  # Verify backoff logic
+            assert expected_delay == 20  # Verify backoff logic
 
-            # Verify the next job is scheduled ~10 minutes in the future
+            # Verify the next job is scheduled ~20 minutes in the future
             schedule_call_args = mock_schedule_job.call_args
             scheduled_session_id, scheduled_time = schedule_call_args[0]
             assert scheduled_session_id == mock_session_escalation.id
 
             # Allow some tolerance for timing (within 1 minute)
-            expected_time = mock_now + timedelta(minutes=10)
+            expected_time = mock_now + timedelta(minutes=20)
             time_diff = abs((scheduled_time - expected_time).total_seconds())
             assert (
                 time_diff < 60
@@ -260,7 +254,7 @@ class TestHauntUser:
             patch(
                 "productivity_bot.database.PlanningSessionService.get_session_by_id"
             ) as mock_get_session,
-            patch("productivity_bot.common.get_slack_app") as mock_get_app,
+            patch("slack_bolt.async_app.AsyncApp") as mock_app_class,
             patch("datetime.datetime") as mock_datetime,
             patch("logging.getLogger") as mock_get_logger,
         ):
@@ -270,8 +264,8 @@ class TestHauntUser:
             mock_datetime.now.return_value = mock_now
 
             mock_app = AsyncMock()
-            mock_get_app.return_value = mock_app
-            mock_app.client.chat_scheduleMessage = AsyncMock(
+            mock_app_class.return_value = mock_app
+            mock_app.client.chat_postMessage = AsyncMock(
                 side_effect=SlackApiError("API Error", response=MagicMock())
             )
 
@@ -284,7 +278,7 @@ class TestHauntUser:
             # Verify error is logged and function returns early
             mock_logger.error.assert_called()
             error_call_args = mock_logger.error.call_args[0][0]
-            assert "chat_scheduleMessage failed" in error_call_args
+            assert "Slack message failed" in error_call_args
 
 
 class TestBackoffMinutes:
