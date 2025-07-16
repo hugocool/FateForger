@@ -4,12 +4,13 @@ Shared utilities, configuration, and logging for the productivity bot.
 
 import logging
 import os
-from datetime import datetime, timedelta, date, time
-from typing import Optional, List, Dict, Any
-from pydantic_settings import BaseSettings
-from pydantic import Field
-from sqlalchemy.orm import DeclarativeBase
+from datetime import date, datetime, time, timedelta
+from typing import Any, Dict, List, Optional
+
 import httpx
+from pydantic import Field
+from pydantic_settings import BaseSettings
+from sqlalchemy.orm import DeclarativeBase
 
 
 class Base(DeclarativeBase):
@@ -58,7 +59,18 @@ def get_config() -> Config:
 
 
 def setup_logging(level: Optional[str] = None) -> logging.Logger:
-    """Setup application logging."""
+    """Setup application logging with proper configuration.
+
+    Args:
+        level: Optional log level override. If not provided, uses config default.
+
+    Returns:
+        Configured logger instance for the main application.
+
+    Note:
+        Creates logs directory if it doesn't exist and configures both
+        console and file handlers.
+    """
     config = get_config()
     log_level = level or config.log_level
 
@@ -76,14 +88,29 @@ def setup_logging(level: Optional[str] = None) -> logging.Logger:
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Get a logger instance."""
+    """Get a logger instance with hierarchical naming.
+
+    Args:
+        name: Logger name suffix (will be prefixed with 'admonish.')
+
+    Returns:
+        Configured logger instance.
+    """
     return logging.getLogger(f"admonish.{name}")
 
 
 # MCP Calendar Integration Functions
 async def mcp_query(request: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Query the MCP server for calendar operations.
+    """Query the MCP server for calendar operations.
+
+    Args:
+        request: MCP request payload containing method and parameters.
+
+    Returns:
+        Response data from MCP server, or empty dict on error.
+
+    Raises:
+        No exceptions raised - errors are logged and empty dict returned.
     """
     config = get_config()
     mcp_url = config.mcp_endpoint
@@ -100,12 +127,17 @@ async def mcp_query(request: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class BaseEventService:
-    """
-    Service for managing BaseEvent entities via MCP.
-    Provides CRUD operations for all calendar events.
+    """Service for managing BaseEvent entities via MCP.
+
+    This service provides CRUD operations for all calendar events through
+    the Model Context Protocol (MCP) integration with Google Calendar.
+
+    Attributes:
+        logger: Logger instance for this service.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Initialize the BaseEventService."""
         self.logger = get_logger("base_event_service")
 
     async def list_events(
@@ -114,7 +146,16 @@ class BaseEventService:
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
     ) -> List[Dict[str, Any]]:
-        """List events from calendar via MCP."""
+        """List events from calendar via MCP.
+
+        Args:
+            calendar_id: Calendar identifier (default: "primary").
+            start_time: Optional start time filter.
+            end_time: Optional end time filter.
+
+        Returns:
+            List of event dictionaries from the calendar API.
+        """
         request = {
             "method": "calendar.events.list",
             "params": {
@@ -132,7 +173,15 @@ class BaseEventService:
     async def get_event(
         self, event_id: str, calendar_id: str = "primary"
     ) -> Optional[Dict[str, Any]]:
-        """Get a specific event by ID via MCP."""
+        """Get a specific event by ID via MCP.
+
+        Args:
+            event_id: Unique identifier for the event.
+            calendar_id: Calendar identifier (default: "primary").
+
+        Returns:
+            Event dictionary if found, None otherwise.
+        """
         request = {
             "method": "calendar.events.get",
             "params": {"calendarId": calendar_id, "eventId": event_id},
@@ -144,7 +193,15 @@ class BaseEventService:
     async def create_event(
         self, event_data: Dict[str, Any], calendar_id: str = "primary"
     ) -> Optional[Dict[str, Any]]:
-        """Create a new event via MCP."""
+        """Create a new event via MCP.
+
+        Args:
+            event_data: Event data dictionary matching Google Calendar API format.
+            calendar_id: Calendar identifier (default: "primary").
+
+        Returns:
+            Created event dictionary if successful, None otherwise.
+        """
         request = {
             "method": "calendar.events.insert",
             "params": {"calendarId": calendar_id, "resource": event_data},
@@ -156,7 +213,16 @@ class BaseEventService:
     async def update_event(
         self, event_id: str, event_data: Dict[str, Any], calendar_id: str = "primary"
     ) -> Optional[Dict[str, Any]]:
-        """Update an existing event via MCP."""
+        """Update an existing event via MCP.
+
+        Args:
+            event_id: Unique identifier for the event to update.
+            event_data: Updated event data dictionary.
+            calendar_id: Calendar identifier (default: "primary").
+
+        Returns:
+            Updated event dictionary if successful, None otherwise.
+        """
         request = {
             "method": "calendar.events.update",
             "params": {
@@ -249,13 +315,15 @@ async def create_planning_event(
 # Agent Dispatcher for Event-Driven Routing
 async def dispatch_event_change(
     event_data: Dict[str, Any], change_type: str = "updated"
-):
-    """
-    Route event changes to appropriate agents based on event metadata.
+) -> None:
+    """Route event changes to appropriate agents based on event metadata.
 
     Args:
-        event_data: The event data from calendar API
-        change_type: Type of change (created, updated, deleted)
+        event_data: The event data from calendar API.
+        change_type: Type of change (created, updated, deleted).
+
+    Note:
+        This function does not raise exceptions - errors are logged internally.
     """
     logger = get_logger("event_dispatcher")
 
@@ -296,8 +364,13 @@ async def dispatch_event_change(
         logger.error(f"Error dispatching event change: {e}")
 
 
-async def _dispatch_to_planner(event_data: Dict[str, Any], change_type: str):
-    """Dispatch to PlannerAgent."""
+async def _dispatch_to_planner(event_data: Dict[str, Any], change_type: str) -> None:
+    """Dispatch to PlannerAgent.
+
+    Args:
+        event_data: Event data from calendar API.
+        change_type: Type of change (created, updated, deleted).
+    """
     try:
         from .planner_bot import PlannerBot
 
@@ -311,8 +384,13 @@ async def _dispatch_to_planner(event_data: Dict[str, Any], change_type: str):
         logger.error(f"Error dispatching to planner: {e}")
 
 
-async def _dispatch_to_haunter(event_data: Dict[str, Any], change_type: str):
-    """Dispatch to HaunterAgent."""
+async def _dispatch_to_haunter(event_data: Dict[str, Any], change_type: str) -> None:
+    """Dispatch to HaunterAgent.
+
+    Args:
+        event_data: Event data from calendar API.
+        change_type: Type of change (created, updated, deleted).
+    """
     try:
         from .haunter_bot import HaunterBot
 
@@ -326,22 +404,41 @@ async def _dispatch_to_haunter(event_data: Dict[str, Any], change_type: str):
         logger.error(f"Error dispatching to haunter: {e}")
 
 
-async def _dispatch_to_timeboxer(event_data: Dict[str, Any], change_type: str):
-    """Dispatch to TimeboxerAgent (placeholder)."""
+async def _dispatch_to_timeboxer(event_data: Dict[str, Any], change_type: str) -> None:
+    """Dispatch to TimeboxerAgent (placeholder).
+
+    Args:
+        event_data: Event data from calendar API.
+        change_type: Type of change (created, updated, deleted).
+    """
     logger = get_logger("event_dispatcher")
     logger.info(f"Timeboxer agent not implemented yet for event {event_data.get('id')}")
 
 
-async def _dispatch_to_task_creator(event_data: Dict[str, Any], change_type: str):
-    """Dispatch to TaskCreatorAgent (placeholder)."""
+async def _dispatch_to_task_creator(
+    event_data: Dict[str, Any], change_type: str
+) -> None:
+    """Dispatch to TaskCreatorAgent (placeholder).
+
+    Args:
+        event_data: Event data from calendar API.
+        change_type: Type of change (created, updated, deleted).
+    """
     logger = get_logger("event_dispatcher")
     logger.info(
         f"Task creator agent not implemented yet for event {event_data.get('id')}"
     )
 
 
-async def _dispatch_to_default_handler(event_data: Dict[str, Any], change_type: str):
-    """Default handler for events that don't match specific agents."""
+async def _dispatch_to_default_handler(
+    event_data: Dict[str, Any], change_type: str
+) -> None:
+    """Default handler for events that don't match specific agents.
+
+    Args:
+        event_data: Event data from calendar API.
+        change_type: Type of change (created, updated, deleted).
+    """
     logger = get_logger("event_dispatcher")
     logger.debug(
         f"No specific agent for event {event_data.get('id')}, using default handling"

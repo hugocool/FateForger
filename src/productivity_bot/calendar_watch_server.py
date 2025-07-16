@@ -6,17 +6,18 @@ Calendar Watch Server - FastAPI server for calendar webhooks and monitoring.
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
+from typing import Any, Dict, Optional
+
 import uvicorn
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert
 
 from .common import get_config, get_logger, list_events_since
 from .database import get_db_session
 from .models import CalendarEvent, CalendarSync, EventStatus
-from .scheduler import schedule_event_haunt, start_scheduler, get_scheduler
-from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert
+from .scheduler import get_scheduler, schedule_event_haunt, start_scheduler
 
 logger = get_logger("calendar_watch_server")
 

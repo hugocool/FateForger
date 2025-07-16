@@ -2,21 +2,24 @@
 Database models for the productivity bot.
 """
 
-from datetime import datetime, date as DateType
+from datetime import date as DateType
+from datetime import datetime
 from enum import Enum as PyEnum
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
+
 from sqlalchemy import (
-    String,
-    Integer,
-    DateTime,
-    Date,
-    Enum,
-    Text,
-    Boolean,
-    ForeignKey,
     JSON,
+    Boolean,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
 )
-from sqlalchemy.orm import mapped_column, relationship, Mapped
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from .common import Base
 
 

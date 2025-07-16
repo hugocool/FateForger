@@ -14,13 +14,13 @@ import uvicorn
 from fastapi import FastAPI
 
 from .common import (
-    get_config,
-    setup_logging,
-    initialize_services,
     cleanup_services,
+    get_config,
+    health_check_database,
     health_check_mcp,
     health_check_slack,
-    health_check_database,
+    initialize_services,
+    setup_logging,
 )
 
 

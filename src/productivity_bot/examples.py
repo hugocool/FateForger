@@ -3,14 +3,15 @@ Example usage of the PlanningSession model and database services.
 """
 
 import asyncio
-from datetime import datetime, date, timedelta
-from productivity_bot.models import PlanStatus, TaskPriority, TaskStatus
+from datetime import date, datetime, timedelta
+
 from productivity_bot.database import (
     PlanningSessionService,
-    TaskService,
     ReminderService,
+    TaskService,
     UserPreferencesService,
 )
+from productivity_bot.models import PlanStatus, TaskPriority, TaskStatus
 
 
 async def example_usage():

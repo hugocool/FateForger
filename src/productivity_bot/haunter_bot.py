@@ -5,15 +5,16 @@ Haunter Bot - Sends reminders and follows up on tasks.
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
+from sqlalchemy import select
 
 from .common import get_config, get_logger
 from .database import get_db_session
 from .models import CalendarEvent, EventStatus, PlanningSession, PlanStatus
-from sqlalchemy import select
 
 logger = get_logger("haunter_bot")
 
