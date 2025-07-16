@@ -273,11 +273,39 @@ class SlackEventRouter:
             # Handle postpone with validated minutes
             minutes = intent.get_postpone_minutes(default=15)
             try:
-                # TODO: Implement actual scheduler postpone logic
-                await say(
-                    thread_ts=thread_ts,
-                    text=f"⏰ OK, I'll check back in {minutes} minutes.",
-                )
+                # Implement actual scheduler postpone logic
+                from datetime import datetime
+                from .scheduler import reschedule_haunt
+                
+                # Calculate new time
+                new_time = datetime.now() + timedelta(minutes=minutes)
+                
+                # Try to reschedule the haunt job
+                if planning_session.scheduler_job_id:
+                    success = reschedule_haunt(planning_session.id, new_time)
+                    if success:
+                        # Update the session's scheduled time
+                        planning_session.scheduled_for = new_time
+                        # Update in database
+                        async with get_db_session() as db:
+                            await db.merge(planning_session)
+                            await db.commit()
+                        
+                        await say(
+                            thread_ts=thread_ts,
+                            text=f"⏰ OK, I'll check back in {minutes} minutes.",
+                        )
+                    else:
+                        await say(
+                            thread_ts=thread_ts,
+                            text=f"⏰ Noted that you want to postpone {minutes} minutes, but couldn't update scheduler.",
+                        )
+                else:
+                    await say(
+                        thread_ts=thread_ts,
+                        text=f"⏰ OK, I'll check back in {minutes} minutes.",
+                    )
+                    
                 logger.info(
                     f"Postponed planning session {planning_session.id} by {minutes} minutes"
                 )
@@ -292,7 +320,21 @@ class SlackEventRouter:
         elif intent.is_mark_done:
             # Handle completion
             try:
-                # TODO: Update session status in database
+                # Update session status in database and cancel scheduler jobs
+                from .scheduler import cancel_haunt_by_session
+                
+                # Cancel any scheduled haunt jobs
+                if planning_session.scheduler_job_id:
+                    cancel_success = cancel_haunt_by_session(planning_session.id)
+                    if cancel_success:
+                        logger.info(f"Cancelled haunt job for session {planning_session.id}")
+
+                # Update session status in database
+                planning_session.mark_complete()
+                async with get_db_session() as db:
+                    await db.merge(planning_session)
+                    await db.commit()
+                
                 await say(
                     thread_ts=thread_ts, text="✅ Marked planning done. Good work!"
                 )
@@ -310,11 +352,19 @@ class SlackEventRouter:
         elif intent.is_recreate_event:
             # Handle event recreation
             try:
-                # TODO: Implement calendar event recreation
-                await say(thread_ts=thread_ts, text="🔄 Recreated the planning event.")
-                logger.info(
-                    f"Recreated event for planning session {planning_session.id}"
-                )
+                # Implement calendar event recreation
+                success = await planning_session.recreate_event()
+                
+                if success:
+                    await say(thread_ts=thread_ts, text="� Recreated the planning event.")
+                    logger.info(
+                        f"Recreated event for planning session {planning_session.id}"
+                    )
+                else:
+                    await say(
+                        thread_ts=thread_ts,
+                        text="❌ Failed to recreate the planning event. Please check your calendar integration."
+                    )
 
             except Exception as e:
                 logger.error(f"Error recreating event: {e}")

@@ -37,7 +37,7 @@ from .autogen_planner import AutoGenPlannerAgent
 from .common import get_config, get_logger
 from .database import PlanningSessionService, get_db_session
 from .models import PlanStatus  # This should work if the models.py exports it properly
-from .slack_router import SlackRouter
+from .slack_event_router import SlackEventRouter
 
 logger = get_logger("planner_bot")
 
@@ -79,8 +79,8 @@ class PlannerBot:
         self.autogen_agent = AutoGenPlannerAgent()
 
         # Initialize event router for thread interactions
-        # Initialize the new structured output event router
-        self.slack_router = SlackRouter(self.app)
+        # Initialize the structured output event router
+        self.event_router = SlackEventRouter(self.app)
 
         self._register_handlers()
 

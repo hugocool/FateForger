@@ -86,7 +86,7 @@ class PlanningSessionService:
     @staticmethod
     async def get_user_session_for_date(
         user_id: str, session_date: date
-    ) -> Optional[PlanningSession]:
+    ):
         """Get a user's planning session for a specific date."""
         async with get_db_session() as db:
             result = await db.execute(
