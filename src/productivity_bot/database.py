@@ -281,6 +281,42 @@ class PlanningSessionService:
             return new_time
 
     @staticmethod
+    async def update_session_thread_info(
+        session_id: int, thread_ts: str, channel_id: str
+    ) -> bool:
+        """
+        Update a planning session with thread timestamp and channel ID.
+
+        Args:
+            session_id: Planning session ID
+            thread_ts: Slack thread timestamp
+            channel_id: Slack channel ID
+
+        Returns:
+            True if updated successfully, False otherwise
+        """
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(PlanningSession).where(PlanningSession.id == session_id)
+            )
+            session = result.scalar_one_or_none()
+
+            if not session:
+                logger.warning(f"Session {session_id} not found for thread update")
+                return False
+
+            # Update thread information
+            session.thread_ts = thread_ts
+            session.channel_id = channel_id
+
+            await db.commit()
+            logger.info(
+                f"Updated session {session_id} with thread_ts={thread_ts}, channel_id={channel_id}"
+            )
+
+            return True
+
+    @staticmethod
     async def complete_session(session_id: int) -> bool:
         """
         Mark a planning session as complete.

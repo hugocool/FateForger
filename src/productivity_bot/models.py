@@ -247,7 +247,7 @@ class PlanningSession(Base):
             }
 
             # Use MCP to create the calendar event
-            mcp_request = {"method": "create_event", "params": event_data}
+            mcp_request = {"method": "calendar.events.insert", "params": event_data}
             result = await mcp_query(mcp_request)
 
             if result and result.get("success"):

@@ -93,6 +93,11 @@ class SlackEventRouter:
         # Check if this is a planning thread by looking for associated planning session
         planning_session = await self._get_planning_event_for_thread(thread_ts)
 
+        if not planning_session:
+            # No session found by thread_ts. Check if this could be a response to a planning prompt
+            # Look for an active planning session for this user without thread info
+            planning_session = await self._try_link_to_active_session(user_id, thread_ts, channel)
+
         if planning_session:
             # This is a planning thread - forward to agent
             await self._process_planning_thread_reply(
@@ -156,6 +161,56 @@ class SlackEventRouter:
 
         except Exception as e:
             logger.error(f"Error finding planning session for thread {thread_ts}: {e}")
+            return None
+
+    async def _try_link_to_active_session(
+        self, user_id: str, thread_ts: str, channel_id: str
+    ) -> Optional[PlanningSession]:
+        """
+        Try to link a thread to an active planning session that doesn't have thread info yet.
+        
+        This handles the case where a user responds to a planning prompt for the first time,
+        creating a thread that needs to be associated with their planning session.
+        
+        Args:
+            user_id: Slack user ID
+            thread_ts: Thread timestamp
+            channel_id: Channel ID
+            
+        Returns:
+            PlanningSession if found and linked, None otherwise
+        """
+        try:
+            # Look for an active planning session for this user that doesn't have thread info
+            from sqlalchemy import and_, select
+            
+            async with get_db_session() as db:
+                result = await db.execute(
+                    select(PlanningSession).where(
+                        and_(
+                            PlanningSession.user_id == user_id,
+                            PlanningSession.thread_ts.is_(None),  # No thread info yet
+                            PlanningSession.status.in_(['NOT_STARTED', 'IN_PROGRESS'])
+                        )
+                    ).order_by(PlanningSession.scheduled_for.desc())  # Most recent first
+                )
+                session = result.scalar_one_or_none()
+                
+                if session:
+                    # Found a session - link it to this thread
+                    session.thread_ts = thread_ts
+                    session.channel_id = channel_id
+                    
+                    await db.commit()
+                    logger.info(
+                        f"Linked planning session {session.id} to thread {thread_ts} in channel {channel_id}"
+                    )
+                    return session
+                    
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error linking thread {thread_ts} to active session: {e}")
             return None
 
     async def _process_planning_thread_reply(
