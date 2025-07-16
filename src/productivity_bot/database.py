@@ -199,6 +199,15 @@ class PlanningSessionService:
             logger.info(f"Updated session {session_id} with job ID {job_id}")
             return True
 
+    @staticmethod
+    async def update_session(session: PlanningSession) -> bool:
+        """Update a planning session with changes from the provided object."""
+        async with get_db_session() as db:
+            await db.merge(session)
+            await db.commit()
+            logger.info(f"Updated session {session.id}")
+            return True
+
 
 class ReminderService:
     """Service for managing reminders."""

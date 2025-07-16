@@ -168,6 +168,14 @@ class PlanningSession(Base):
         String(100), index=True, nullable=True
     )
 
+    # Slack scheduled message tracking
+    slack_scheduled_message_id: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True
+    )
+
+    # Haunt attempt tracking for escalation
+    haunt_attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
     # Additional fields for better planning tracking
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False

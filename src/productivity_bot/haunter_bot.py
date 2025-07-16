@@ -508,97 +508,92 @@ async def get_thread_for_session(session: PlanningSession) -> tuple[str, Optiona
 
 async def haunt_user(session_id: int) -> None:
     """
-    Haunt a user about their planning session with exponential back-off.
-
-    This function implements the core haunting logic:
-    1. Loads the session and checks status
-    2. If NOT_STARTED, sends a DM/thread message
-    3. Calculates next back-off delay and re-schedules itself
-    4. Cancels future jobs once status=COMPLETE
-
-    Args:
-        session_id: The planning session ID to haunt about.
-
-    Raises:
-        Exception: If database operations or scheduling fails.
-
-    Example:
-        >>> await haunt_user(42)  # Called by APScheduler
+    Send or schedule a haunted reminder for the planning session,
+    escalate with exponential back-off, and cancel if the session is COMPLETE.
     """
+    import logging
+    from datetime import datetime, timedelta, timezone
+
+    from slack_sdk.errors import SlackApiError
+
+    from .common import backoff_minutes, get_slack_app
+    from .database import PlanningSessionService
+    from .models import PlanStatus
+    from .scheduler import (
+        cancel_planning_session_haunt,
+        schedule_planning_session_haunt,
+    )
+
+    logger = logging.getLogger("haunter_bot")
+
+    # 1. Load session
+    session = await PlanningSessionService.get_session_by_id(session_id)
+    if not session:
+        logger.warning(f"haunt_user: session {session_id} not found")
+        return
+
+    # 2. If complete, cancel any pending jobs & scheduled messages
+    if session.status == PlanStatus.COMPLETE:
+        logger.info(
+            f"haunt_user: session {session_id} is COMPLETE → cancelling reminders"
+        )
+        # Cancel the APScheduler job
+        cancel_planning_session_haunt(session_id)
+        # Cancel the Slack scheduled message
+        if session.slack_scheduled_message_id:
+            app = get_slack_app()
+            try:
+                await app.client.chat_deleteScheduledMessage(
+                    channel=session.user_id,
+                    scheduled_message_id=session.slack_scheduled_message_id,
+                )
+                logger.info(
+                    f"Deleted Slack scheduled message {session.slack_scheduled_message_id}"
+                )
+            except SlackApiError as e:
+                logger.error(f"Failed to delete scheduled message: {e}")
+        return
+
+    # 3. Build reminder text (static for now; LLM integration later)
+    attempt = session.haunt_attempt or 0
+    text = (
+        attempt == 0
+        and "⏰ It's time to plan your day! Please open your planning session."
+        or f"⏰ Reminder {attempt + 1}: don't forget to plan tomorrow's schedule!"
+    )
+
+    # 4. Schedule the Slack message immediately
+    app = get_slack_app()
     try:
-        from .scheduler import get_scheduler, schedule_haunt
+        resp = await app.client.chat_scheduleMessage(
+            channel=session.user_id,
+            text=text,
+            post_at=int(datetime.now(timezone.utc).timestamp()),  # post now
+        )
+        slack_msg_id = resp["scheduled_message_id"]
+        logger.info(f"Scheduled Slack reminder {slack_msg_id} for session {session_id}")
+    except SlackApiError as e:
+        logger.error(f"chat_scheduleMessage failed: {e}")
+        return
 
-        logger.info(f"Haunting user for session {session_id}")
+    # 5. Compute next back-off and schedule the next haunt via APScheduler
+    next_attempt = attempt + 1
+    delay = backoff_minutes(next_attempt)  # e.g. 5 → 10 → 20 min
+    next_run = datetime.now(timezone.utc) + timedelta(minutes=delay)
 
-        async with get_db_session() as db:
-            result = await db.execute(  # type: ignore[misc]
-                select(PlanningSession).where(PlanningSession.id == session_id)
-            )
-            session = result.scalar_one_or_none()
+    # Cancel prior APScheduler job (if exists), then add new one
+    cancel_planning_session_haunt(session_id)
+    job_id = schedule_planning_session_haunt(session_id, next_run)
 
-            if not session:
-                logger.warning(f"Planning session {session_id} not found for haunting")
-                return
+    # 6. Persist updated session fields
+    session.slack_scheduled_message_id = slack_msg_id
+    session.haunt_attempt = next_attempt
+    session.scheduler_job_id = job_id
+    await PlanningSessionService.update_session(session)
 
-            # If session is complete, cancel any future jobs and return
-            if session.status == PlanStatus.COMPLETE:
-                logger.info(f"Session {session_id} is complete, cancelling haunts")
-                if session.scheduler_job_id:
-                    scheduler = get_scheduler()
-                    try:
-                        scheduler.remove_job(session.scheduler_job_id)
-                        logger.info(f"Cancelled job {session.scheduler_job_id}")
-                    except Exception:
-                        pass  # Job may have already completed
-                return
-
-            # Get channel and thread info
-            channel, thread_ts = await get_thread_for_session(session)
-
-            # Create reminder message
-            config = get_config()
-
-            # TODO: Replace with actual Slack client call
-            # For now, we'll use chat.scheduleMessage concept
-            message_text = (
-                "⏰ Time to plan your day! Let's commit to tomorrow's schedule."
-            )
-
-            if thread_ts:
-                logger.info(
-                    f"Would send thread message to channel {channel}, thread {thread_ts}: {message_text}"
-                )
-            else:
-                logger.info(f"Would send DM to user {session.user_id}: {message_text}")
-
-            # Calculate next attempt and delay
-            next_attempt = session.next_nudge_attempt + 1
-            delay = backoff_minutes(next_attempt)
-            next_run = datetime.utcnow() + timedelta(minutes=delay)
-
-            # Only reschedule if we haven't hit max attempts (e.g., 5 attempts)
-            if next_attempt <= 5:
-                # Schedule next haunt
-                new_job_id = schedule_haunt(session_id, next_run, attempt=next_attempt)
-
-                # Update session with new job ID and attempt count
-                session.scheduler_job_id = new_job_id
-                session.next_nudge_attempt = next_attempt
-                session.last_nudge_at = datetime.utcnow()
-                await db.commit()  # type: ignore[misc]
-
-                logger.info(
-                    f"Scheduled next haunt for session {session_id} in {delay} minutes (attempt {next_attempt})"
-                )
-            else:
-                logger.info(
-                    f"Reached max attempts for session {session_id}, stopping haunts"
-                )
-                session.scheduler_job_id = None
-                await db.commit()  # type: ignore[misc]
-
-    except Exception as e:
-        logger.error(f"Error haunting user for session {session_id}: {e}")
+    logger.info(
+        f"Rescheduled haunt_user for session {session_id} attempt {next_attempt} at {next_run.isoformat()} (job {job_id})"
+    )
 
 
 def main():

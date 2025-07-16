@@ -261,23 +261,38 @@ class PlannerBot:
                         },
                         "options": [
                             {
-                                "text": {"type": "plain_text", "text": "⚡ High Energy - Felt great all day"},
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "⚡ High Energy - Felt great all day",
+                                },
                                 "value": "high",
                             },
                             {
-                                "text": {"type": "plain_text", "text": "🔋 Good Energy - Productive and focused"},
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "🔋 Good Energy - Productive and focused",
+                                },
                                 "value": "good",
                             },
                             {
-                                "text": {"type": "plain_text", "text": "😐 Medium Energy - Average day"},
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "😐 Medium Energy - Average day",
+                                },
                                 "value": "medium",
                             },
                             {
-                                "text": {"type": "plain_text", "text": "😴 Low Energy - Struggled to focus"},
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "😴 Low Energy - Struggled to focus",
+                                },
                                 "value": "low",
                             },
                             {
-                                "text": {"type": "plain_text", "text": "😵 Exhausted - Very difficult day"},
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "😵 Exhausted - Very difficult day",
+                                },
                                 "value": "exhausted",
                             },
                         ],
@@ -379,9 +394,7 @@ class PlannerBot:
                         today, time(hour=17, minute=0), timezone.utc
                     )
                     session = await PlanningSessionService.create_session(
-                        user_id=user_id,
-                        session_date=today,
-                        scheduled_for=scheduled_for
+                        user_id=user_id, session_date=today, scheduled_for=scheduled_for
                     )
 
                     session_id = session.id
@@ -395,7 +408,9 @@ class PlannerBot:
                         session_id, job_id
                     )
 
-                    logger.info(f"Created new planning session {session_id} with job {job_id}")
+                    logger.info(
+                        f"Created new planning session {session_id} with job {job_id}"
+                    )
 
                 # Send confirmation message
                 await self.app.client.chat_postMessage(
@@ -447,7 +462,9 @@ class PlannerBot:
 
                 # Only enhance with AI for new sessions (goals/notes will be added later via a different flow)
                 if not existing_session:
-                    await self._enhance_plan_with_autogen(session_id, goals_value, today)
+                    await self._enhance_plan_with_autogen(
+                        session_id, goals_value, today
+                    )
 
             except Exception as e:
                 logger.error(f"Error saving plan for user {user_id}: {e}")
@@ -467,15 +484,23 @@ class PlannerBot:
             session_id = int(view["private_metadata"])
 
             # Extract reflection values
-            accomplishments = view["state"]["values"]["accomplishments"]["plain_text_input-action"]["value"]
-            
-            challenges_input = view["state"]["values"]["challenges"]["plain_text_input-action"]
+            accomplishments = view["state"]["values"]["accomplishments"][
+                "plain_text_input-action"
+            ]["value"]
+
+            challenges_input = view["state"]["values"]["challenges"][
+                "plain_text_input-action"
+            ]
             challenges = challenges_input["value"] if challenges_input["value"] else ""
-            
-            lessons_input = view["state"]["values"]["lessons"]["plain_text_input-action"]
+
+            lessons_input = view["state"]["values"]["lessons"][
+                "plain_text_input-action"
+            ]
             lessons = lessons_input["value"] if lessons_input["value"] else ""
-            
-            energy_level = view["state"]["values"]["energy_rating"]["static_select-action"]["selected_option"]["value"]
+
+            energy_level = view["state"]["values"]["energy_rating"][
+                "static_select-action"
+            ]["selected_option"]["value"]
 
             logger.info(f"Saving reflection for session {session_id} by user {user_id}")
 
@@ -509,8 +534,12 @@ class PlannerBot:
                 current_notes = session.notes or ""
                 updated_notes = current_notes + "\n\n" + reflection_summary
 
-                await PlanningSessionService.add_session_notes(session_id, updated_notes)
-                await PlanningSessionService.update_session_status(session_id, PlanStatus.COMPLETE)
+                await PlanningSessionService.add_session_notes(
+                    session_id, updated_notes
+                )
+                await PlanningSessionService.update_session_status(
+                    session_id, PlanStatus.COMPLETE
+                )
 
                 # Cancel any pending haunter jobs
                 await self._cancel_haunter_reminders(session_id)
@@ -518,10 +547,10 @@ class PlannerBot:
                 # Send completion confirmation
                 energy_emoji = {
                     "high": "⚡",
-                    "good": "🔋", 
+                    "good": "🔋",
                     "medium": "😐",
                     "low": "😴",
-                    "exhausted": "😵"
+                    "exhausted": "😵",
                 }
 
                 await self.app.client.chat_postMessage(
@@ -543,7 +572,7 @@ class PlannerBot:
                                     "text": f"*Accomplishments:*\n{accomplishments[:100]}{'...' if len(accomplishments) > 100 else ''}",
                                 },
                                 {
-                                    "type": "mrkdwn", 
+                                    "type": "mrkdwn",
                                     "text": f"*Energy Level:*\n{energy_emoji.get(energy_level, '📊')} {energy_level.title()}",
                                 },
                             ],
@@ -688,21 +717,23 @@ class PlannerBot:
 
             # Add appropriate action buttons based on status
             if session.status != PlanStatus.COMPLETE:
-                action_elements.extend([
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Edit Plan"},
-                        "action_id": "edit_plan",
-                        "value": str(session.id),
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Mark Complete"},
-                        "action_id": "complete_planning_session",
-                        "value": str(session.id),
-                        "style": "primary",
-                    },
-                ])
+                action_elements.extend(
+                    [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Edit Plan"},
+                            "action_id": "edit_plan",
+                            "value": str(session.id),
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Mark Complete"},
+                            "action_id": "complete_planning_session",
+                            "value": str(session.id),
+                            "style": "primary",
+                        },
+                    ]
+                )
 
             await client.chat_postEphemeral(
                 channel=body["channel_id"],
@@ -837,10 +868,14 @@ class PlannerBot:
             if success:
                 logger.info(f"Cancelled haunter job for session {session_id}")
             else:
-                logger.info(f"No haunter job found for session {session_id} (may have already completed)")
+                logger.info(
+                    f"No haunter job found for session {session_id} (may have already completed)"
+                )
 
         except Exception as e:
-            logger.error(f"Failed to cancel haunter reminders for session {session_id}: {e}")
+            logger.error(
+                f"Failed to cancel haunter reminders for session {session_id}: {e}"
+            )
 
     async def _enhance_plan_with_autogen(
         self, session_id: int, goals: str, plan_date: date

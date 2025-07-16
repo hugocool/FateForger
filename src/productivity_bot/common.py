@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from pydantic import Field
 from pydantic_settings import BaseSettings
+from slack_bolt.async_app import AsyncApp
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -56,6 +57,15 @@ class Config(BaseSettings):
 def get_config() -> Config:
     """Get application configuration."""
     return Config()
+
+
+def get_slack_app() -> AsyncApp:
+    """Get a shared AsyncApp instance for Slack interactions."""
+    config = get_config()
+    return AsyncApp(
+        token=config.slack_bot_token,
+        signing_secret=config.slack_signing_secret,
+    )
 
 
 def setup_logging(level: Optional[str] = None) -> logging.Logger:
@@ -539,3 +549,24 @@ async def watch_calendar(calendar_id: str, webhook_url: str) -> Dict[str, Any]:
         logger = get_logger("calendar_sync")
         logger.error(f"Error setting up calendar watch via MCP: {e}")
         return {}
+
+
+def backoff_minutes(attempt: int) -> int:
+    """
+    Calculate exponential backoff delay in minutes for haunt attempts.
+
+    Args:
+        attempt: The attempt number (0-based).
+
+    Returns:
+        Number of minutes to wait before next haunt.
+    """
+    if attempt <= 0:
+        return 5  # Initial delay: 5 minutes
+    elif attempt == 1:
+        return 10  # Second attempt: 10 minutes
+    elif attempt == 2:
+        return 20  # Third attempt: 20 minutes
+    else:
+        # Cap at 60 minutes for subsequent attempts
+        return min(60, 20 * (2 ** (attempt - 2)))
