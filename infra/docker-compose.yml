@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  # Google Calendar MCP Service (TypeScript)
+  mcp:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.mcp
+    container_name: admonish-mcp
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
+      - MCP_PORT=4000
+    networks:
+      - admonish-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Python Bot Service
+  bot:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.bot
+    container_name: admonish-bot
+    ports:
+      - "8000:8000"  # FastAPI calendar webhook server
+      - "3000:3000"  # Slack Bot port (if needed)
+    environment:
+      - PYTHONPATH=/app/src
+      - MCP_ENDPOINT=http://mcp:4000
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CALENDAR_WEBHOOK_SECRET=${CALENDAR_WEBHOOK_SECRET}
+    env_file:
+      - ../.env
+    volumes:
+      - ../logs:/app/logs
+    networks:
+      - admonish-network
+    depends_on:
+      mcp:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Development service (for local development)
+  dev:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.bot
+    container_name: admonish-dev
+    ports:
+      - "8001:8000"  # Different port for dev
+      - "3001:3000"
+    environment:
+      - PYTHONPATH=/app/src
+      - MCP_ENDPOINT=http://mcp:4000
+      - DEVELOPMENT=true
+    env_file:
+      - ../.env
+    volumes:
+      - ../src:/app/src  # Mount source for live reloading
+      - ../tests:/app/tests
+      - ../logs:/app/logs
+      - poetry-cache:/root/.cache/pypoetry
+    networks:
+      - admonish-network
+    depends_on:
+      - mcp
+    command: /bin/bash
+    stdin_open: true
+    tty: true
+
+networks:
+  admonish-network:
+    driver: bridge
+
+volumes:
+  poetry-cache:
+    driver: local

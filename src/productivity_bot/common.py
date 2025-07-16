@@ -1,74 +1,67 @@
 """
-Common utilities and shared functionality for the productivity bot.
+Shared utilities, configuration, and logging for the productivity bot.
 """
 
-import os
 import logging
-from typing import Optional, Dict, Any
-from datetime import datetime
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-
-logger = logging.getLogger(__name__)
+import os
+from typing import Optional
+from pydantic import BaseSettings, Field
 
 
-class Config:
-    """Configuration management for the productivity bot."""
+class Config(BaseSettings):
+    """Application configuration using Pydantic settings."""
 
-    def __init__(self):
-        self.slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
-        self.slack_signing_secret = os.getenv("SLACK_SIGNING_SECRET")
-        self.slack_app_token = os.getenv("SLACK_APP_TOKEN")
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        self.calendar_webhook_url = os.getenv("CALENDAR_WEBHOOK_URL")
-        self.port = int(os.getenv("PORT", "8000"))
-        self.debug = os.getenv("DEBUG", "false").lower() == "true"
+    # Slack Configuration
+    slack_bot_token: str = Field(..., env="SLACK_BOT_TOKEN")
+    slack_signing_secret: str = Field(..., env="SLACK_SIGNING_SECRET")
+    slack_app_token: Optional[str] = Field(None, env="SLACK_APP_TOKEN")
 
-    def validate(self) -> bool:
-        """Validate that required environment variables are set."""
-        required_vars = ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "SLACK_APP_TOKEN"]
+    # OpenAI Configuration
+    openai_api_key: str = Field(..., env="OPENAI_API_KEY")
+    openai_model: str = Field("gpt-4", env="OPENAI_MODEL")
 
-        missing_vars = []
-        for var in required_vars:
-            if not getattr(self, var.lower()):
-                missing_vars.append(var)
+    # MCP Configuration
+    mcp_endpoint: str = Field("http://mcp:4000", env="MCP_ENDPOINT")
 
-        if missing_vars:
-            logger.error(
-                f"Missing required environment variables: {', '.join(missing_vars)}"
-            )
-            return False
+    # Calendar Configuration
+    calendar_webhook_secret: str = Field(..., env="CALENDAR_WEBHOOK_SECRET")
 
-        return True
+    # Application Settings
+    environment: str = Field("production", env="ENVIRONMENT")
+    log_level: str = Field("INFO", env="LOG_LEVEL")
+    development: bool = Field(False, env="DEVELOPMENT")
 
+    # APScheduler Settings
+    scheduler_timezone: str = Field("UTC", env="SCHEDULER_TIMEZONE")
 
-def get_timestamp() -> str:
-    """Get current timestamp as formatted string."""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
 
 
-def safe_get_env(key: str, default: Optional[str] = None) -> Optional[str]:
-    """Safely get environment variable with optional default."""
-    value = os.getenv(key, default)
-    if value is None:
-        logger.warning(f"Environment variable {key} not set")
-    return value
+def get_config() -> Config:
+    """Get application configuration."""
+    return Config()
 
 
-def format_slack_message(
-    message: str, username: str = "ProductivityBot"
-) -> Dict[str, Any]:
-    """Format a message for Slack with standard formatting."""
-    return {
-        "text": message,
-        "username": username,
-        "icon_emoji": ":robot_face:",
-        "timestamp": get_timestamp(),
-    }
+def setup_logging(level: str = None) -> logging.Logger:
+    """Setup application logging."""
+    config = get_config()
+    log_level = level or config.log_level
+
+    # Configure logging format
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper()),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler(), logging.FileHandler("logs/admonish.log")],
+    )
+
+    # Create logs directory if it doesn't exist
+    os.makedirs("logs", exist_ok=True)
+
+    return logging.getLogger("admonish")
+
+
+def get_logger(name: str) -> logging.Logger:
+    """Get a logger instance."""
+    return logging.getLogger(f"admonish.{name}")
