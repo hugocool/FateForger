@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Database operations for planning sessions and related models.
 """
@@ -84,9 +86,7 @@ class PlanningSessionService:
             return result.scalar_one_or_none()
 
     @staticmethod
-    async def get_user_session_for_date(
-        user_id: str, session_date: date
-    ):
+    async def get_user_session_for_date(user_id: str, session_date: date):
         """Get a user's planning session for a specific date."""
         async with get_db_session() as db:
             result = await db.execute(
@@ -102,7 +102,7 @@ class PlanningSessionService:
             return result.scalar_one_or_none()
 
     @staticmethod
-    async def get_user_active_session(user_id: str) -> Optional[PlanningSession]:
+    async def get_user_active_session(user_id: str) -> Optional[models.PlanningSession]:
         """Get a user's currently active planning session."""
         async with get_db_session() as db:
             result = await db.execute(

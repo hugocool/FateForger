@@ -12,7 +12,7 @@ from typing import Optional
 import openai
 
 from ..common import get_logger
-from ..models.planner_action import PlannerAction
+from ..pydantic_models.planner_action import PlannerAction
 
 logger = get_logger("planner_agent")
 

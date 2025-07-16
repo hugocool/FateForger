@@ -14,11 +14,11 @@ from typing import Any, Dict, Optional
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
-from .agents.planner_agent import send_to_planner, send_to_planner_intent
+from .agents.planner_agent import send_to_planner_intent
 from .common import get_logger
 from .database import get_db_session
-from .models import CalendarEvent, PlanningSession
-from .models.planner_action import PlannerAction
+from .models import CalendarEvent, PlanningSession  # SQLAlchemy models from models.py
+from .pydantic_models.planner_action import PlannerAction  # Pydantic model
 from .scheduler import get_scheduler
 
 logger = get_logger("slack_event_router")
@@ -143,11 +143,11 @@ class SlackEventRouter:
         """
         try:
             # Query database for planning session with this thread_ts
-            async with get_db_session() as session:
+            async with get_db_session() as db:
                 from sqlalchemy import select
 
                 # Look for PlanningSession with matching thread_ts
-                result = session.execute(
+                result = await db.execute(
                     select(PlanningSession).where(
                         PlanningSession.thread_ts == thread_ts
                     )

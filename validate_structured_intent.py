@@ -19,7 +19,7 @@ def test_pydantic_model_validation() -> bool:
     print("📋 Step 1: Testing Pydantic Intent Model")
 
     try:
-        from productivity_bot.models.planner_action import PlannerAction
+        from productivity_bot.pydantic_models.planner_action import PlannerAction
 
         # Test valid actions
         postpone = PlannerAction(action="postpone", minutes=15)
@@ -75,7 +75,7 @@ def test_slack_router_integration() -> bool:
         # Test that router has the new structured action method
         import inspect
 
-        from productivity_bot.models.planner_action import PlannerAction
+        from productivity_bot.pydantic_models.planner_action import PlannerAction
         from productivity_bot.slack_event_router import SlackEventRouter
 
         methods = [
@@ -160,7 +160,7 @@ def test_acceptance_criteria() -> bool:
 
     # Criterion 1: Unit test simulation
     try:
-        from productivity_bot.models.planner_action import PlannerAction
+        from productivity_bot.pydantic_models.planner_action import PlannerAction
 
         action = PlannerAction(action="postpone", minutes=15)
         if action.action == "postpone" and action.minutes == 15:
@@ -184,7 +184,7 @@ def test_acceptance_criteria() -> bool:
 
     # Criterion 3: Invalid input handling
     try:
-        from productivity_bot.models.planner_action import PlannerAction
+        from productivity_bot.pydantic_models.planner_action import PlannerAction
 
         # The fallback system ensures we always get a valid PlannerAction
         print(
@@ -196,7 +196,7 @@ def test_acceptance_criteria() -> bool:
 
     # Criterion 4: Edge case handling
     try:
-        from productivity_bot.models.planner_action import PlannerAction
+        from productivity_bot.pydantic_models.planner_action import PlannerAction
 
         action = PlannerAction(action="postpone", minutes=None)
         default_minutes = action.get_postpone_minutes(default=15)

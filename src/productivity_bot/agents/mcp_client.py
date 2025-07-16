@@ -36,21 +36,26 @@ def get_mcp_workbench():
 
 async def get_calendar_tools() -> List[Any]:
     """
-    Returns a list of tool adapters for calendar operations.
+    Returns a list of tool schemas for calendar operations.
 
     This function connects to the MCP server and discovers all available
-    calendar tools (like create_event, list_events, etc.)
+    calendar tools (like calendar.events.list, calendar.events.insert, etc.)
 
     Returns:
-        List of tool adapters that can be used with AutoGen agents
+        List of ToolSchema objects that can be used with AutoGen agents
     """
-    workbench = get_mcp_workbench()
     try:
-        # Note: The exact API may need adjustment based on autogen-ext version
-        # This is a placeholder that will be refined during testing
-        tools = []
-        logger.info(f"Discovered {len(tools)} calendar tools from MCP server")
-        return tools
+        # Use async context manager to ensure proper resource cleanup
+        async with get_mcp_workbench() as workbench:
+            # Discover all available tools from the MCP server
+            tools = await workbench.list_tools()
+            logger.info(f"Discovered {len(tools)} calendar tools from MCP server")
+
+            # Log discovered tool names for debugging
+            tool_names = [tool["name"] for tool in tools]
+            logger.debug(f"Available tools: {tool_names}")
+
+            return tools
     except Exception as e:
         logger.error(f"Failed to get calendar tools from MCP server: {e}")
         return []

@@ -40,6 +40,8 @@ from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 from .common import BaseEventService, get_config, get_logger, mcp_query
 from .database import PlanningSessionService
+
+# Import from the main models.py file, not the models/ subdirectory
 from .models import PlanningSession
 
 logger = get_logger("autogen_planner")
