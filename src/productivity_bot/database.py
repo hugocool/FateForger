@@ -57,14 +57,14 @@ class PlanningSessionService:
         user_id: str,
         session_date: date,
         scheduled_for: datetime,
-    ) -> PlanningSession:
+    ):
         """Create a new planning session with minimal metadata."""
         async with get_db_session() as db:
-            session = PlanningSession(
+            session = models.PlanningSession(
                 user_id=user_id,
                 date=session_date,
                 scheduled_for=scheduled_for,
-                status=PlanStatus.NOT_STARTED,
+                status=models.PlanStatus.NOT_STARTED,
             )
             db.add(session)
             await db.commit()
@@ -73,7 +73,7 @@ class PlanningSessionService:
             return session
 
     @staticmethod
-    async def get_session_by_id(session_id: int) -> Optional[PlanningSession]:
+    async def get_session_by_id(session_id: int):
         """Get a planning session by ID."""
         async with get_db_session() as db:
             result = await db.execute(
@@ -115,6 +115,24 @@ class PlanningSessionService:
                     )
                 )
                 .order_by(desc(PlanningSession.created_at))
+            )
+            return result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_session_by_thread(
+        thread_ts: str, channel_id: str
+    ) -> Optional[PlanningSession]:
+        """Get a planning session by Slack thread timestamp and channel."""
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(PlanningSession)
+                .options(selectinload(PlanningSession.tasks))
+                .where(
+                    and_(
+                        PlanningSession.thread_ts == thread_ts,
+                        PlanningSession.channel_id == channel_id,
+                    )
+                )
             )
             return result.scalar_one_or_none()
 

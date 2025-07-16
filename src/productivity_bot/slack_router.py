@@ -6,15 +6,16 @@ the legacy slack_event_router.py with proper structured output handling,
 database session lookup, and comprehensive error handling.
 """
 
-import logging
-from typing import Optional
+from datetime import timedelta
+from typing import Any, Optional
 
 from slack_bolt.async_app import AsyncApp
 
+from . import models
 from .agents.planner_agent import send_to_planner_intent
 from .common import get_logger
 from .database import PlanningSessionService
-from .models import PlanningSession, PlanStatus
+from .scheduler import cancel_haunt_by_session, reschedule_haunt
 
 logger = get_logger("slack_router")
 
@@ -77,7 +78,7 @@ class SlackRouter:
 
     async def _get_session_by_thread(
         self, thread_ts: str, channel_id: str
-    ) -> Optional[PlanningSession]:
+    ) -> Optional[Any]:
         """
         Look up planning session by thread timestamp and channel.
 
@@ -92,9 +93,10 @@ class SlackRouter:
             PlanningSession if found, None otherwise
         """
         try:
-            # For simplified implementation, just look for recent sessions
-            # In practice, you'd store the thread_ts when creating sessions
-            return None
+            # Use the database service to look up session by thread
+            service = PlanningSessionService()
+            session = await service.get_session_by_thread(thread_ts, channel_id)
+            return session
 
         except Exception as e:
             logger.error(f"Error looking up session by thread {thread_ts}: {e}")
@@ -106,7 +108,7 @@ class SlackRouter:
         user_text: str,
         user_id: str,
         channel: str,
-        planning_session: PlanningSession,
+        planning_session: Any,
         say,
     ) -> None:
         """
@@ -147,7 +149,7 @@ class SlackRouter:
     async def _execute_structured_action(
         self,
         intent,
-        planning_session: PlanningSession,
+        planning_session: Any,
         thread_ts: str,
         user_id: str,
         say,
@@ -203,24 +205,47 @@ class SlackRouter:
 
     async def _handle_postpone_action(
         self,
-        planning_session: PlanningSession,
+        planning_session: Any,
         minutes: int,
         thread_ts: str,
         say,
     ) -> None:
-        """Handle postpone action."""
+        """Handle postpone action with scheduler integration."""
         try:
-            # For now, use a simple postpone by updating the scheduled time
-            # In practice, you'd use the database service methods
-            from datetime import timedelta
+            from datetime import datetime
 
-            await say(
-                text=f"⏰ Planning session postponed by {minutes} minutes.\n"
-                f"New scheduled time: {(planning_session.scheduled_for + timedelta(minutes=minutes)).strftime('%I:%M %p')}",
-                thread_ts=thread_ts,
-            )
+            # Calculate new time
+            new_time = planning_session.scheduled_for + timedelta(minutes=minutes)
 
-            logger.info(f"Postponed session {planning_session.id} by {minutes} minutes")
+            # Try to reschedule the haunt job
+            if planning_session.scheduler_job_id:
+                success = reschedule_haunt(planning_session.id, new_time)
+                if success:
+                    # Update the session's scheduled time
+                    planning_session.scheduled_for = new_time
+                    service = PlanningSessionService()
+                    await service.update_session(planning_session)
+
+                    await say(
+                        text=f"⏰ Planning session postponed by {minutes} minutes.\n"
+                        f"New scheduled time: {new_time.strftime('%I:%M %p')}",
+                        thread_ts=thread_ts,
+                    )
+                    logger.info(
+                        f"Postponed session {planning_session.id} by {minutes} minutes"
+                    )
+                else:
+                    await say(
+                        text=f"⚠️ Acknowledged postpone request for {minutes} minutes, but couldn't update scheduler.",
+                        thread_ts=thread_ts,
+                    )
+            else:
+                # No scheduler job, just acknowledge
+                await say(
+                    text=f"⏰ Planning session postponed by {minutes} minutes.\n"
+                    f"New scheduled time: {new_time.strftime('%I:%M %p')}",
+                    thread_ts=thread_ts,
+                )
 
         except Exception as e:
             logger.error(f"Error postponing session: {e}")
@@ -231,14 +256,25 @@ class SlackRouter:
 
     async def _handle_mark_done_action(
         self,
-        planning_session: PlanningSession,
+        planning_session: Any,
         thread_ts: str,
         say,
     ) -> None:
-        """Handle mark done action."""
+        """Handle mark done action with database and scheduler integration."""
         try:
-            # For now, just send a confirmation message
-            # In practice, you'd update the database status
+            # Cancel any scheduled haunt jobs
+            if planning_session.scheduler_job_id:
+                cancel_success = cancel_haunt_by_session(planning_session.id)
+                if cancel_success:
+                    logger.info(
+                        f"Cancelled haunt job for session {planning_session.id}"
+                    )
+
+            # Update session status in database
+            service = PlanningSessionService()
+            planning_session.mark_complete()
+            await service.update_session(planning_session)
+
             await say(
                 text="✅ Planning session marked as complete! Great job staying on track.",
                 thread_ts=thread_ts,
@@ -255,7 +291,7 @@ class SlackRouter:
 
     async def _handle_recreate_event_action(
         self,
-        planning_session: PlanningSession,
+        planning_session: Any,
         thread_ts: str,
         say,
     ) -> None:

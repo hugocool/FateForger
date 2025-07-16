@@ -537,3 +537,65 @@ def get_job_info(job_id: str) -> Dict[str, Any]:
             return {}
     except Exception:
         return {}
+
+
+def reschedule_haunt(session_id: int, new_time: datetime) -> bool:
+    """
+    Reschedule a haunt job for a planning session.
+
+    Args:
+        session_id: The planning session ID
+        new_time: The new datetime to schedule the haunt
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        scheduler_instance = get_scheduler()
+        job_id = f"haunt-{session_id}"
+
+        # Try to reschedule the existing job
+        scheduler_instance.reschedule_job(job_id, trigger="date", run_date=new_time)
+        logger.info(f"Rescheduled haunt job {job_id} to {new_time}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to reschedule haunt for session {session_id}: {e}")
+        return False
+
+
+def cancel_haunt(job_id: str) -> bool:
+    """
+    Cancel a scheduled haunt job.
+
+    Args:
+        job_id: The APScheduler job ID to cancel
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        scheduler_instance = get_scheduler()
+
+        # Remove the job from the scheduler
+        scheduler_instance.remove_job(job_id)
+        logger.info(f"Cancelled haunt job {job_id}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to cancel haunt job {job_id}: {e}")
+        return False
+
+
+def cancel_haunt_by_session(session_id: int) -> bool:
+    """
+    Cancel a scheduled haunt job by session ID.
+
+    Args:
+        session_id: The planning session ID
+
+    Returns:
+        True if successful, False otherwise
+    """
+    job_id = f"haunt-{session_id}"
+    return cancel_haunt(job_id)
