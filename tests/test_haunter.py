@@ -78,14 +78,14 @@ class TestHauntUser:
                 "productivity_bot.database.PlanningSessionService.get_session_by_id"
             ) as mock_get_session,
             patch("productivity_bot.scheduler.cancel_user_haunt") as mock_cancel_job,
-            patch("slack_bolt.async_app.AsyncApp") as mock_app_class,
+            patch("productivity_bot.common.get_slack_app") as mock_get_app,
         ):
 
             # Setup mocks
             mock_get_session.return_value = mock_session_complete
 
             mock_app = AsyncMock()
-            mock_app_class.return_value = mock_app
+            mock_get_app.return_value = mock_app
             mock_app.client.chat_deleteScheduledMessage = AsyncMock()
 
             # Execute the function
@@ -116,7 +116,7 @@ class TestHauntUser:
                 "productivity_bot.scheduler.schedule_user_haunt"
             ) as mock_schedule_job,
             patch("productivity_bot.scheduler.cancel_user_haunt") as mock_cancel_job,
-            patch("slack_bolt.async_app.AsyncApp") as mock_app_class,
+            patch("productivity_bot.common.get_slack_app") as mock_get_app,
             patch("datetime.datetime") as mock_datetime,
         ):
 
@@ -128,7 +128,7 @@ class TestHauntUser:
             mock_datetime.now.return_value = mock_now
 
             mock_app = AsyncMock()
-            mock_app_class.return_value = mock_app
+            mock_get_app.return_value = mock_app
             mock_app.client.chat_postMessage = AsyncMock(return_value={"ok": True})
             mock_app.client.chat_scheduleMessage = AsyncMock(
                 return_value={"scheduled_message_id": "SM789123"}
@@ -169,7 +169,7 @@ class TestHauntUser:
                 "productivity_bot.scheduler.schedule_user_haunt"
             ) as mock_schedule_job,
             patch("productivity_bot.scheduler.cancel_user_haunt") as mock_cancel_job,
-            patch("slack_bolt.async_app.AsyncApp") as mock_app_class,
+            patch("productivity_bot.common.get_slack_app") as mock_get_app,
             patch("datetime.datetime") as mock_datetime,
         ):
 
@@ -181,7 +181,7 @@ class TestHauntUser:
             mock_datetime.now.return_value = mock_now
 
             mock_app = AsyncMock()
-            mock_app_class.return_value = mock_app
+            mock_get_app.return_value = mock_app
             mock_app.client.chat_scheduleMessage = AsyncMock(
                 return_value={"scheduled_message_id": "SM999000"}
             )
@@ -254,7 +254,7 @@ class TestHauntUser:
             patch(
                 "productivity_bot.database.PlanningSessionService.get_session_by_id"
             ) as mock_get_session,
-            patch("slack_bolt.async_app.AsyncApp") as mock_app_class,
+            patch("productivity_bot.common.get_slack_app") as mock_get_app,
             patch("datetime.datetime") as mock_datetime,
             patch("logging.getLogger") as mock_get_logger,
         ):
@@ -264,7 +264,7 @@ class TestHauntUser:
             mock_datetime.now.return_value = mock_now
 
             mock_app = AsyncMock()
-            mock_app_class.return_value = mock_app
+            mock_get_app.return_value = mock_app
             mock_app.client.chat_postMessage = AsyncMock(
                 side_effect=SlackApiError("API Error", response=MagicMock())
             )

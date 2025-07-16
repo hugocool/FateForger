@@ -512,16 +512,10 @@ async def haunt_user(session_id: int) -> None:
         cancel_user_haunt(session_id)
         # Cancel the Slack scheduled message
         if session.slack_scheduled_message_id:
-            # Get the bot's app instance (assume global app or singleton)
-            from slack_bolt.async_app import AsyncApp
+            # Get the shared app instance
+            from .common import get_slack_app
 
-            from .common import get_config
-
-            config = get_config()
-            app = AsyncApp(
-                token=config.slack_bot_token,
-                signing_secret=config.slack_signing_secret,
-            )
+            app = get_slack_app()
 
             try:
                 await app.client.chat_deleteScheduledMessage(
@@ -544,15 +538,9 @@ async def haunt_user(session_id: int) -> None:
     )
 
     # 4. Send Slack message - immediate for first attempt, scheduled for follow-ups
-    from slack_bolt.async_app import AsyncApp
+    from .common import get_slack_app
 
-    from .common import get_config
-
-    config = get_config()
-    app = AsyncApp(
-        token=config.slack_bot_token,
-        signing_secret=config.slack_signing_secret,
-    )
+    app = get_slack_app()
 
     slack_msg_id = None
 
