@@ -65,6 +65,14 @@ else
     echo "ℹ️  No NGROK_AUTH_TOKEN provided. Skipping ngrok setup."
 fi
 
+# Initialize Database
+echo "🔧 Initializing database..."
+poetry run python init_db.py
+if [ $? -ne 0 ]; then
+    echo "❌ Database initialization failed!"
+    exit 1
+fi
+
 # Start Calendar Watch Server
 echo "📅 Starting Calendar Watch Server..."
 poetry run python -m productivity_bot.calendar_watch_server &

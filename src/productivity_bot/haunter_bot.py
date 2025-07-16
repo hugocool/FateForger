@@ -10,7 +10,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from .common import Config, logger, format_slack_message
+from .common import get_config, get_logger
+from .database import get_db_session
+from .models import CalendarEvent, EventStatus, PlanningSession, PlanStatus
+from sqlalchemy import select
+
+logger = get_logger("haunter_bot")
 
 
 class HaunterBot:
@@ -19,10 +24,8 @@ class HaunterBot:
     Ensures tasks don't fall through the cracks.
     """
 
-    def __init__(self, config: Optional[Config] = None):
-        self.config = config or Config()
-        if not self.config.validate():
-            raise ValueError("Invalid configuration")
+    def __init__(self, config: Optional[Any] = None):
+        self.config = config or get_config()
 
         self.app = App(
             token=self.config.slack_bot_token,
@@ -204,10 +207,254 @@ class HaunterBot:
         self.scheduler.shutdown()
 
 
+# Calendar Event Haunting Functions (called by APScheduler)
+async def haunt_event(event_id: str):
+    """
+    Haunt a user about an upcoming calendar event.
+    This function is called by APScheduler as a scheduled job.
+    """
+    try:
+        logger.info(f"Haunting event {event_id}")
+
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(CalendarEvent).where(CalendarEvent.event_id == event_id)
+            )
+            event = result.scalar_one_or_none()
+
+            if not event:
+                logger.warning(f"Event {event_id} not found for haunting")
+                return
+
+            if event.status != EventStatus.UPCOMING:
+                logger.info(f"Event {event_id} is no longer upcoming, skipping haunt")
+                return
+
+            # Calculate time until event
+            now = datetime.utcnow()
+            time_until = event.start_time - now
+            minutes_until = int(time_until.total_seconds() / 60)
+
+            if minutes_until <= 0:
+                logger.info(
+                    f"Event {event_id} has already started, marking as completed"
+                )
+                event.status = EventStatus.COMPLETED
+                await db.commit()
+                return
+
+            # Create reminder message
+            if minutes_until <= 5:
+                urgency = "🚨 STARTING NOW"
+            elif minutes_until <= 15:
+                urgency = "⚠️ STARTING SOON"
+            else:
+                urgency = "📅 UPCOMING"
+
+            time_text = f"in {minutes_until} minutes" if minutes_until > 0 else "now"
+
+            message_blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"{urgency} *{event.title or 'Untitled Event'}*",
+                    },
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {"type": "mrkdwn", "text": f"*When:* {time_text}"},
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Duration:* {event.duration_minutes} minutes",
+                        },
+                    ],
+                },
+            ]
+
+            if event.location:
+                message_blocks[1]["fields"].append(
+                    {"type": "mrkdwn", "text": f"*Location:* {event.location}"}
+                )
+
+            if event.description:
+                message_blocks.append(
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*Description:* {event.description[:200]}{'...' if len(event.description) > 200 else ''}",
+                        },
+                    }
+                )
+
+            # Add action buttons
+            message_blocks.append(
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Mark as Done"},
+                            "action_id": "mark_event_done",
+                            "value": event_id,
+                            "style": "primary",
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Snooze 10min"},
+                            "action_id": "snooze_event",
+                            "value": f"{event_id}:10",
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Cancel Event"},
+                            "action_id": "cancel_event",
+                            "value": event_id,
+                            "style": "danger",
+                        },
+                    ],
+                }
+            )
+
+            # Try to notify organizer or attendees
+            # For now, we'll use a default channel or user
+            # TODO: Map calendar events to Slack users
+
+            # This is a simplified version - in practice you'd want to:
+            # 1. Map Google Calendar emails to Slack user IDs
+            # 2. Send to appropriate channels based on event type
+            # 3. Handle privacy and permissions properly
+
+            # For demo purposes, log the message
+            logger.info(f"Would send event reminder: {message_blocks}")
+
+            # If you have a way to map organizer email to Slack user, do it here:
+            # if event.organizer_email:
+            #     slack_user_id = await get_slack_user_by_email(event.organizer_email)
+            #     if slack_user_id:
+            #         await send_slack_message(slack_user_id, message_blocks)
+
+    except Exception as e:
+        logger.error(f"Error haunting event {event_id}: {e}")
+
+
+async def haunt_planning_session(session_id: int):
+    """
+    Haunt a user about their planning session.
+    This function is called by APScheduler as a scheduled job.
+    """
+    try:
+        logger.info(f"Haunting planning session {session_id}")
+
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(PlanningSession).where(PlanningSession.id == session_id)
+            )
+            session = result.scalar_one_or_none()
+
+            if not session:
+                logger.warning(f"Planning session {session_id} not found for haunting")
+                return
+
+            if session.status == PlanStatus.COMPLETE:
+                logger.info(
+                    f"Planning session {session_id} is already complete, skipping haunt"
+                )
+                return
+
+            # Determine message based on session status and time
+            now = datetime.utcnow()
+
+            if session.status == PlanStatus.NOT_STARTED:
+                message = f"👻 Time to start your planning session for {session.date.strftime('%A, %B %d')}!"
+                urgency = "🕐 READY TO START"
+
+                # Mark as in progress
+                session.status = PlanStatus.IN_PROGRESS
+                await db.commit()
+
+            else:  # IN_PROGRESS
+                hours_since_scheduled = (
+                    now - session.scheduled_for
+                ).total_seconds() / 3600
+
+                if hours_since_scheduled > 8:
+                    message = f"👻 Your planning session from this morning is still open. Time to wrap up or mark it complete!"
+                    urgency = "⏰ LONG OVERDUE"
+                elif hours_since_scheduled > 4:
+                    message = f"👻 Don't forget to complete your planning session from earlier today!"
+                    urgency = "⚠️ OVERDUE"
+                else:
+                    message = (
+                        f"👻 How's your planning session going? Time for a check-in!"
+                    )
+                    urgency = "📋 CHECK-IN"
+
+            message_blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"{urgency} *Planning Session*\n{message}",
+                    },
+                }
+            ]
+
+            if session.goals:
+                message_blocks.append(
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*Your Goals:*\n{session.goals[:300]}{'...' if len(session.goals) > 300 else ''}",
+                        },
+                    }
+                )
+
+            # Add action buttons
+            message_blocks.append(
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Mark Complete"},
+                            "action_id": "complete_planning_session",
+                            "value": str(session_id),
+                            "style": "primary",
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Review/Update"},
+                            "action_id": "review_planning_session",
+                            "value": str(session_id),
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Snooze 1hr"},
+                            "action_id": "snooze_planning_session",
+                            "value": f"{session_id}:60",
+                        },
+                    ],
+                }
+            )
+
+            # Send to user
+            # TODO: Send actual Slack message to session.user_id
+            logger.info(
+                f"Would send planning session reminder to {session.user_id}: {message_blocks}"
+            )
+
+    except Exception as e:
+        logger.error(f"Error haunting planning session {session_id}: {e}")
+
+
 def main():
     """Main entry point for the haunter bot."""
     try:
-        config = Config()
+        config = get_config()
         bot = HaunterBot(config)
         bot.start()
     except KeyboardInterrupt:

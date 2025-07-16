@@ -11,29 +11,38 @@ from sqlalchemy import select, and_, or_, desc
 from sqlalchemy.orm import selectinload
 
 from .models import (
-    PlanningSession, 
+    PlanningSession,
     PlanStatus,
     Reminder,
     ReminderType,
-    UserPreferences
+    UserPreferences,
+    CalendarEvent,
+    CalendarSync,
+    EventStatus,
 )
 from .common import get_logger, get_config
 
 logger = get_logger("database")
 
+
 # Database setup
 def get_database_engine():
     """Get the database engine."""
     config = get_config()
-    database_url = getattr(config, 'database_url', 'sqlite+aiosqlite:///data/planner.db')
+    database_url = getattr(
+        config, "database_url", "sqlite+aiosqlite:///data/planner.db"
+    )
     return create_async_engine(database_url, echo=False)
+
 
 def get_session_factory():
     """Get database session factory."""
     engine = get_database_engine()
     return sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
+
 SessionLocal = get_session_factory()
+
 
 @asynccontextmanager
 async def get_db_session():
@@ -51,13 +60,13 @@ async def get_db_session():
 
 class PlanningSessionService:
     """Service for managing planning sessions."""
-    
+
     @staticmethod
     async def create_session(
-        user_id: str, 
-        session_date: date, 
+        user_id: str,
+        session_date: date,
         scheduled_for: datetime,
-        goals: Optional[str] = None
+        goals: Optional[str] = None,
     ) -> PlanningSession:
         """Create a new planning session."""
         async with get_db_session() as db:
@@ -66,14 +75,14 @@ class PlanningSessionService:
                 date=session_date,
                 scheduled_for=scheduled_for,
                 goals=goals,
-                status=PlanStatus.NOT_STARTED
+                status=PlanStatus.NOT_STARTED,
             )
             db.add(session)
             await db.commit()
             await db.refresh(session)
             logger.info(f"Created planning session {session.id} for user {user_id}")
             return session
-    
+
     @staticmethod
     async def get_session_by_id(session_id: int) -> Optional[PlanningSession]:
         """Get a planning session by ID."""
@@ -84,9 +93,11 @@ class PlanningSessionService:
                 .where(PlanningSession.id == session_id)
             )
             return result.scalar_one_or_none()
-    
+
     @staticmethod
-    async def get_user_session_for_date(user_id: str, session_date: date) -> Optional[PlanningSession]:
+    async def get_user_session_for_date(
+        user_id: str, session_date: date
+    ) -> Optional[PlanningSession]:
         """Get a user's planning session for a specific date."""
         async with get_db_session() as db:
             result = await db.execute(
@@ -95,12 +106,12 @@ class PlanningSessionService:
                 .where(
                     and_(
                         PlanningSession.user_id == user_id,
-                        PlanningSession.date == session_date
+                        PlanningSession.date == session_date,
                     )
                 )
             )
             return result.scalar_one_or_none()
-    
+
     @staticmethod
     async def get_user_active_session(user_id: str) -> Optional[PlanningSession]:
         """Get a user's currently active planning session."""
@@ -111,18 +122,16 @@ class PlanningSessionService:
                 .where(
                     and_(
                         PlanningSession.user_id == user_id,
-                        PlanningSession.status == PlanStatus.IN_PROGRESS
+                        PlanningSession.status == PlanStatus.IN_PROGRESS,
                     )
                 )
                 .order_by(desc(PlanningSession.created_at))
             )
             return result.scalar_one_or_none()
-    
+
     @staticmethod
     async def get_user_sessions(
-        user_id: str, 
-        limit: int = 10, 
-        status: Optional[PlanStatus] = None
+        user_id: str, limit: int = 10, status: Optional[PlanStatus] = None
     ) -> List[PlanningSession]:
         """Get a user's planning sessions."""
         async with get_db_session() as db:
@@ -132,13 +141,13 @@ class PlanningSessionService:
                 .order_by(desc(PlanningSession.date))
                 .limit(limit)
             )
-            
+
             if status:
                 query = query.where(PlanningSession.status == status)
-            
+
             result = await db.execute(query)
             return result.scalars().all()
-    
+
     @staticmethod
     async def update_session_status(session_id: int, status: PlanStatus) -> bool:
         """Update a planning session's status."""
@@ -147,18 +156,18 @@ class PlanningSessionService:
                 select(PlanningSession).where(PlanningSession.id == session_id)
             )
             session = result.scalar_one_or_none()
-            
+
             if not session:
                 return False
-            
+
             session.status = status
             if status == PlanStatus.COMPLETE:
                 session.completed_at = datetime.utcnow()
-            
+
             await db.commit()
             logger.info(f"Updated session {session_id} status to {status.value}")
             return True
-    
+
     @staticmethod
     async def add_session_notes(session_id: int, notes: str) -> bool:
         """Add notes to a planning session."""
@@ -167,137 +176,18 @@ class PlanningSessionService:
                 select(PlanningSession).where(PlanningSession.id == session_id)
             )
             session = result.scalar_one_or_none()
-            
+
             if not session:
                 return False
-            
+
             session.notes = notes
             await db.commit()
             return True
 
 
-class TaskService:
-    """Service for managing tasks."""
-    
-    @staticmethod
-    async def create_task(
-        planning_session_id: int,
-        title: str,
-        description: Optional[str] = None,
-        priority: TaskPriority = TaskPriority.MEDIUM,
-        estimated_duration_minutes: Optional[int] = None,
-        scheduled_start: Optional[datetime] = None,
-        scheduled_end: Optional[datetime] = None
-    ) -> Task:
-        """Create a new task."""
-        async with get_db_session() as db:
-            task = Task(
-                planning_session_id=planning_session_id,
-                title=title,
-                description=description,
-                priority=priority,
-                estimated_duration_minutes=estimated_duration_minutes,
-                scheduled_start=scheduled_start,
-                scheduled_end=scheduled_end
-            )
-            db.add(task)
-            await db.commit()
-            await db.refresh(task)
-            logger.info(f"Created task {task.id}: {title}")
-            return task
-    
-    @staticmethod
-    async def get_task_by_id(task_id: int) -> Optional[Task]:
-        """Get a task by ID."""
-        async with get_db_session() as db:
-            result = await db.execute(
-                select(Task)
-                .options(selectinload(Task.reminders))
-                .where(Task.id == task_id)
-            )
-            return result.scalar_one_or_none()
-    
-    @staticmethod
-    async def get_session_tasks(session_id: int) -> List[Task]:
-        """Get all tasks for a planning session."""
-        async with get_db_session() as db:
-            result = await db.execute(
-                select(Task)
-                .where(Task.planning_session_id == session_id)
-                .order_by(Task.priority.desc(), Task.created_at)
-            )
-            return result.scalars().all()
-    
-    @staticmethod
-    async def get_user_tasks_due_soon(user_id: str, hours_ahead: int = 24) -> List[Task]:
-        """Get tasks due in the next N hours for a user."""
-        async with get_db_session() as db:
-            cutoff_time = datetime.utcnow() + timedelta(hours=hours_ahead)
-            
-            result = await db.execute(
-                select(Task)
-                .join(PlanningSession)
-                .where(
-                    and_(
-                        PlanningSession.user_id == user_id,
-                        Task.scheduled_end <= cutoff_time,
-                        Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS])
-                    )
-                )
-                .order_by(Task.scheduled_end)
-            )
-            return result.scalars().all()
-    
-    @staticmethod
-    async def update_task_status(task_id: int, status: TaskStatus) -> bool:
-        """Update a task's status."""
-        async with get_db_session() as db:
-            result = await db.execute(
-                select(Task).where(Task.id == task_id)
-            )
-            task = result.scalar_one_or_none()
-            
-            if not task:
-                return False
-            
-            old_status = task.status
-            task.status = status
-            
-            if status == TaskStatus.IN_PROGRESS and old_status != TaskStatus.IN_PROGRESS:
-                task.started_at = datetime.utcnow()
-            elif status == TaskStatus.COMPLETED:
-                task.completed_at = datetime.utcnow()
-                # Calculate actual duration if started
-                if task.started_at:
-                    duration = datetime.utcnow() - task.started_at
-                    task.actual_duration_minutes = int(duration.total_seconds() / 60)
-            
-            await db.commit()
-            logger.info(f"Updated task {task_id} status from {old_status.value} to {status.value}")
-            return True
-    
-    @staticmethod
-    async def get_overdue_tasks() -> List[Task]:
-        """Get all overdue tasks."""
-        async with get_db_session() as db:
-            now = datetime.utcnow()
-            
-            result = await db.execute(
-                select(Task)
-                .where(
-                    and_(
-                        Task.scheduled_end < now,
-                        Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS])
-                    )
-                )
-                .order_by(Task.scheduled_end)
-            )
-            return result.scalars().all()
-
-
 class ReminderService:
     """Service for managing reminders."""
-    
+
     @staticmethod
     async def create_reminder(
         user_id: str,
@@ -305,7 +195,7 @@ class ReminderService:
         message: str,
         scheduled_at: datetime,
         task_id: Optional[int] = None,
-        scheduler_job_id: Optional[str] = None
+        scheduler_job_id: Optional[str] = None,
     ) -> Reminder:
         """Create a new reminder."""
         async with get_db_session() as db:
@@ -315,49 +205,51 @@ class ReminderService:
                 reminder_type=reminder_type,
                 message=message,
                 scheduled_at=scheduled_at,
-                scheduler_job_id=scheduler_job_id
+                scheduler_job_id=scheduler_job_id,
             )
             db.add(reminder)
             await db.commit()
             await db.refresh(reminder)
             logger.info(f"Created reminder {reminder.id} for user {user_id}")
             return reminder
-    
+
     @staticmethod
     async def get_pending_reminders() -> List[Reminder]:
         """Get all pending reminders that should be sent."""
         async with get_db_session() as db:
             now = datetime.utcnow()
-            
+
             result = await db.execute(
                 select(Reminder)
                 .where(
                     and_(
                         Reminder.scheduled_at <= now,
                         Reminder.is_sent == False,
-                        Reminder.is_cancelled == False
+                        Reminder.is_cancelled == False,
                     )
                 )
                 .order_by(Reminder.scheduled_at)
             )
             return result.scalars().all()
-    
+
     @staticmethod
-    async def mark_reminder_sent(reminder_id: int, slack_message_ts: Optional[str] = None) -> bool:
+    async def mark_reminder_sent(
+        reminder_id: int, slack_message_ts: Optional[str] = None
+    ) -> bool:
         """Mark a reminder as sent."""
         async with get_db_session() as db:
             result = await db.execute(
                 select(Reminder).where(Reminder.id == reminder_id)
             )
             reminder = result.scalar_one_or_none()
-            
+
             if not reminder:
                 return False
-            
+
             reminder.mark_sent()
             if slack_message_ts:
                 reminder.slack_message_ts = slack_message_ts
-            
+
             await db.commit()
             logger.info(f"Marked reminder {reminder_id} as sent")
             return True
@@ -365,7 +257,7 @@ class ReminderService:
 
 class UserPreferencesService:
     """Service for managing user preferences."""
-    
+
     @staticmethod
     async def get_or_create_preferences(user_id: str) -> UserPreferences:
         """Get user preferences or create default ones."""
@@ -374,16 +266,16 @@ class UserPreferencesService:
                 select(UserPreferences).where(UserPreferences.user_id == user_id)
             )
             preferences = result.scalar_one_or_none()
-            
+
             if not preferences:
                 preferences = UserPreferences(user_id=user_id)
                 db.add(preferences)
                 await db.commit()
                 await db.refresh(preferences)
                 logger.info(f"Created default preferences for user {user_id}")
-            
+
             return preferences
-    
+
     @staticmethod
     async def update_preferences(user_id: str, **kwargs) -> bool:
         """Update user preferences."""
@@ -392,15 +284,197 @@ class UserPreferencesService:
                 select(UserPreferences).where(UserPreferences.user_id == user_id)
             )
             preferences = result.scalar_one_or_none()
-            
+
             if not preferences:
                 preferences = UserPreferences(user_id=user_id)
                 db.add(preferences)
-            
+
             for key, value in kwargs.items():
                 if hasattr(preferences, key):
                     setattr(preferences, key, value)
-            
+
             await db.commit()
             logger.info(f"Updated preferences for user {user_id}")
             return True
+
+
+class CalendarEventService:
+    """Service class for calendar event operations."""
+
+    @staticmethod
+    async def get_event_by_id(event_id: str) -> Optional[CalendarEvent]:
+        """Get a calendar event by ID."""
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(CalendarEvent).where(CalendarEvent.event_id == event_id)
+            )
+            return result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_upcoming_events(days_ahead: int = 7) -> List[CalendarEvent]:
+        """Get upcoming calendar events."""
+        start_time = datetime.utcnow()
+        end_time = start_time + timedelta(days=days_ahead)
+
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(CalendarEvent)
+                .where(
+                    and_(
+                        CalendarEvent.start_time >= start_time,
+                        CalendarEvent.start_time <= end_time,
+                        CalendarEvent.status == EventStatus.UPCOMING,
+                    )
+                )
+                .order_by(CalendarEvent.start_time)
+            )
+            return result.scalars().all()
+
+    @staticmethod
+    async def get_events_by_calendar(
+        calendar_id: str, days_ahead: int = 30
+    ) -> List[CalendarEvent]:
+        """Get events for a specific calendar."""
+        start_time = datetime.utcnow()
+        end_time = start_time + timedelta(days=days_ahead)
+
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(CalendarEvent)
+                .where(
+                    and_(
+                        CalendarEvent.calendar_id == calendar_id,
+                        CalendarEvent.start_time >= start_time,
+                        CalendarEvent.start_time <= end_time,
+                    )
+                )
+                .order_by(CalendarEvent.start_time)
+            )
+            return result.scalars().all()
+
+    @staticmethod
+    async def upsert_event(event_data: dict) -> CalendarEvent:
+        """Upsert a calendar event."""
+        async with get_db_session() as db:
+            event_id = event_data["event_id"]
+
+            result = await db.execute(
+                select(CalendarEvent).where(CalendarEvent.event_id == event_id)
+            )
+            event = result.scalar_one_or_none()
+
+            if event:
+                # Update existing event
+                for key, value in event_data.items():
+                    if hasattr(event, key):
+                        setattr(event, key, value)
+                event.last_synced_at = datetime.utcnow()
+            else:
+                # Create new event
+                event = CalendarEvent(**event_data)
+                event.last_synced_at = datetime.utcnow()
+                db.add(event)
+
+            await db.commit()
+            await db.refresh(event)
+            return event
+
+    @staticmethod
+    async def mark_event_completed(event_id: str) -> bool:
+        """Mark an event as completed."""
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(CalendarEvent).where(CalendarEvent.event_id == event_id)
+            )
+            event = result.scalar_one_or_none()
+
+            if event:
+                event.status = EventStatus.COMPLETED
+                await db.commit()
+                logger.info(f"Marked event {event_id} as completed")
+                return True
+            return False
+
+    @staticmethod
+    async def mark_event_cancelled(event_id: str) -> bool:
+        """Mark an event as cancelled."""
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(CalendarEvent).where(CalendarEvent.event_id == event_id)
+            )
+            event = result.scalar_one_or_none()
+
+            if event:
+                event.status = EventStatus.CANCELLED
+                await db.commit()
+                logger.info(f"Marked event {event_id} as cancelled")
+                return True
+            return False
+
+
+class CalendarSyncService:
+    """Service class for calendar synchronization operations."""
+
+    @staticmethod
+    async def get_sync_state(calendar_id: str) -> Optional[CalendarSync]:
+        """Get synchronization state for a calendar."""
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(CalendarSync).where(CalendarSync.calendar_id == calendar_id)
+            )
+            return result.scalar_one_or_none()
+
+    @staticmethod
+    async def update_sync_state(calendar_id: str, **kwargs) -> CalendarSync:
+        """Update synchronization state."""
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(CalendarSync).where(CalendarSync.calendar_id == calendar_id)
+            )
+            sync_state = result.scalar_one_or_none()
+
+            if not sync_state:
+                sync_state = CalendarSync(
+                    calendar_id=calendar_id, resource_id=calendar_id
+                )
+                db.add(sync_state)
+
+            for key, value in kwargs.items():
+                if hasattr(sync_state, key):
+                    setattr(sync_state, key, value)
+
+            sync_state.last_sync_at = datetime.utcnow()
+
+            await db.commit()
+            await db.refresh(sync_state)
+            return sync_state
+
+    @staticmethod
+    async def mark_sync_error(calendar_id: str, error: str) -> None:
+        """Mark a synchronization error."""
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(CalendarSync).where(CalendarSync.calendar_id == calendar_id)
+            )
+            sync_state = result.scalar_one_or_none()
+
+            if sync_state:
+                sync_state.sync_error = error
+                sync_state.last_sync_at = datetime.utcnow()
+                await db.commit()
+
+    @staticmethod
+    async def get_calendars_needing_sync() -> List[CalendarSync]:
+        """Get calendars that need synchronization."""
+        cutoff_time = datetime.utcnow() - timedelta(hours=1)
+
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(CalendarSync).where(
+                    or_(
+                        CalendarSync.last_sync_at.is_(None),
+                        CalendarSync.last_sync_at < cutoff_time,
+                    )
+                )
+            )
+            return result.scalars().all()

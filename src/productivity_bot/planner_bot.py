@@ -1,27 +1,31 @@
 """
-Planner Bot - Helps with task planning and scheduling.
+Planner Bot - Helps with task planning and scheduling using Slack modals.
 """
 
-import asyncio
+import os
 import logging
-from typing import List, Dict, Any, Optional
-from slack_bolt import App
-from slack_bolt.adapter.socket_mode import SocketModeHandler
+from datetime import datetime, date
+from typing import Optional, Dict, Any
+from slack_bolt.async_app import AsyncApp
+from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 
-from .common import Config, logger, format_slack_message
+from .common import get_config, get_logger
+from .database import PlanningSessionService, get_db_session
+from .models import PlanStatus
+
+logger = get_logger("planner_bot")
 
 
 class PlannerBot:
     """
-    A Slack bot that helps users plan their tasks and schedule their day.
+    A Slack bot that helps users plan their day using interactive modals.
     """
 
-    def __init__(self, config: Optional[Config] = None):
-        self.config = config or Config()
-        if not self.config.validate():
-            raise ValueError("Invalid configuration")
+    def __init__(self, config: Optional[Any] = None):
+        self.config = config or get_config()
 
-        self.app = App(
+        # Initialize Slack app
+        self.app = AsyncApp(
             token=self.config.slack_bot_token,
             signing_secret=self.config.slack_signing_secret,
         )
@@ -31,97 +35,351 @@ class PlannerBot:
     def _register_handlers(self):
         """Register Slack event handlers."""
 
-        @self.app.message("plan")
-        def handle_plan_request(message, say):
-            """Handle planning requests."""
-            user = message.get("user")
-            text = message.get("text", "")
+        @self.app.command("/plan-today")
+        async def open_plan_modal(ack, body, client):
+            """Open the daily planning modal."""
+            await ack()
 
-            logger.info(f"Plan request from {user}: {text}")
+            user_id = body["user_id"]
+            today = date.today()
 
-            # Extract planning context from message
-            planning_context = self._extract_planning_context(text)
+            logger.info(f"Opening plan modal for user {user_id}")
 
-            # Generate plan using AI
-            plan = self._generate_plan(planning_context)
-
-            # Send response
-            response = format_slack_message(
-                f"Here's your plan for today:\n\n{plan}", "PlannerBot"
+            # Check if user already has a planning session for today
+            existing_session = await PlanningSessionService.get_user_session_for_date(
+                user_id, today
             )
-            say(response)
 
-        @self.app.command("/plan")
-        def handle_plan_command(ack, respond, command):
-            """Handle /plan slash command."""
-            ack()
+            # Pre-populate modal if session exists
+            initial_goals = ""
+            initial_timebox = ""
 
-            user_id = command["user_id"]
-            text = command.get("text", "")
+            if existing_session:
+                initial_goals = existing_session.goals or ""
+                initial_timebox = existing_session.notes or ""
 
-            logger.info(f"Plan command from {user_id}: {text}")
+            await client.views_open(
+                trigger_id=body["trigger_id"],
+                view={
+                    "type": "modal",
+                    "callback_id": "plan_today_view",
+                    "title": {"type": "plain_text", "text": "Daily Planning"},
+                    "submit": {"type": "plain_text", "text": "Save"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*Planning for {today.strftime('%A, %B %d, %Y')}*",
+                            },
+                        },
+                        {"type": "divider"},
+                        {
+                            "type": "input",
+                            "block_id": "goals",
+                            "label": {
+                                "type": "plain_text",
+                                "text": "Top 3 goals for today",
+                            },
+                            "hint": {
+                                "type": "plain_text",
+                                "text": "What are the most important things you want to accomplish?",
+                            },
+                            "element": {
+                                "type": "plain_text_input",
+                                "multiline": True,
+                                "initial_value": initial_goals,
+                                "placeholder": {
+                                    "type": "plain_text",
+                                    "text": "1. Complete project review\n2. Prepare presentation\n3. Team meeting follow-up",
+                                },
+                            },
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "timebox",
+                            "label": {"type": "plain_text", "text": "Time-box summary"},
+                            "hint": {
+                                "type": "plain_text",
+                                "text": "How will you structure your day? Include breaks and buffer time.",
+                            },
+                            "element": {
+                                "type": "plain_text_input",
+                                "multiline": True,
+                                "initial_value": initial_timebox,
+                                "placeholder": {
+                                    "type": "plain_text",
+                                    "text": "9:00-10:30 Deep work\n10:30-11:00 Break\n11:00-12:00 Meetings\n14:00-16:00 Project work",
+                                },
+                            },
+                        },
+                    ],
+                },
+            )
 
-            if not text:
-                respond(
-                    "Please provide some context for your planning needs. Example: `/plan I have meetings at 2pm and 4pm, need to finish the report`"
+        @self.app.view("plan_today_view")
+        async def save_plan(ack, body, view, logger):
+            """Save the daily planning session."""
+            await ack()
+
+            user_id = body["user"]["id"]
+            today = date.today()
+
+            # Extract form values
+            goals_value = view["state"]["values"]["goals"]["plain_text_input-action"][
+                "value"
+            ]
+            timebox_value = view["state"]["values"]["timebox"][
+                "plain_text_input-action"
+            ]["value"]
+
+            logger.info(
+                f"Saving plan for user {user_id} - Goals: {len(goals_value)} chars, Timebox: {len(timebox_value)} chars"
+            )
+
+            try:
+                # Check if session already exists
+                existing_session = (
+                    await PlanningSessionService.get_user_session_for_date(
+                        user_id, today
+                    )
+                )
+
+                if existing_session:
+                    # Update existing session
+                    existing_session.goals = goals_value
+                    existing_session.notes = timebox_value
+                    existing_session.status = PlanStatus.IN_PROGRESS
+
+                    async with get_db_session() as db:
+                        db.add(existing_session)
+                        await db.commit()
+
+                    logger.info(
+                        f"Updated existing planning session {existing_session.id}"
+                    )
+                    session_id = existing_session.id
+
+                else:
+                    # Create new session
+                    scheduled_for = datetime.combine(
+                        today, datetime.min.time().replace(hour=9)
+                    )
+
+                    session = await PlanningSessionService.create_session(
+                        user_id=user_id,
+                        session_date=today,
+                        scheduled_for=scheduled_for,
+                        goals=goals_value,
+                    )
+
+                    # Update with timebox info and set to in progress
+                    await PlanningSessionService.add_session_notes(
+                        session.id, timebox_value
+                    )
+                    await PlanningSessionService.update_session_status(
+                        session.id, PlanStatus.IN_PROGRESS
+                    )
+
+                    logger.info(f"Created new planning session {session.id}")
+                    session_id = session.id
+
+                # Send confirmation message
+                await self.app.client.chat_postMessage(
+                    channel=user_id,
+                    text="✅ Your daily plan has been saved!",
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*Daily Plan Saved* 📋\n\nYour plan for {today.strftime('%A, %B %d')} is ready!",
+                            },
+                        },
+                        {
+                            "type": "section",
+                            "fields": [
+                                {
+                                    "type": "mrkdwn",
+                                    "text": f"*Goals:*\n{goals_value[:200]}{'...' if len(goals_value) > 200 else ''}",
+                                },
+                                {
+                                    "type": "mrkdwn",
+                                    "text": f"*Schedule:*\n{timebox_value[:200]}{'...' if len(timebox_value) > 200 else ''}",
+                                },
+                            ],
+                        },
+                        {
+                            "type": "actions",
+                            "elements": [
+                                {
+                                    "type": "button",
+                                    "text": {
+                                        "type": "plain_text",
+                                        "text": "View Full Plan",
+                                    },
+                                    "action_id": "view_plan",
+                                    "value": str(session_id),
+                                },
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "Edit Plan"},
+                                    "action_id": "edit_plan",
+                                    "value": str(session_id),
+                                },
+                            ],
+                        },
+                    ],
+                )
+
+                # TODO: Schedule follow-up reminder
+                # await self._schedule_followup_reminder(user_id, session_id)
+
+            except Exception as e:
+                logger.error(f"Error saving plan for user {user_id}: {e}")
+
+                # Send error message
+                await self.app.client.chat_postMessage(
+                    channel=user_id,
+                    text="❌ Sorry, there was an error saving your plan. Please try again.",
+                )
+
+        @self.app.action("view_plan")
+        async def view_full_plan(ack, body, client):
+            """Show the full planning session details."""
+            await ack()
+
+            session_id = int(body["actions"][0]["value"])
+            user_id = body["user"]["id"]
+
+            session = await PlanningSessionService.get_session_by_id(session_id)
+
+            if not session:
+                await client.chat_postEphemeral(
+                    channel=body["channel"]["id"],
+                    user=user_id,
+                    text="❌ Planning session not found.",
                 )
                 return
 
-            planning_context = self._extract_planning_context(text)
-            plan = self._generate_plan(planning_context)
+            await client.chat_postEphemeral(
+                channel=body["channel"]["id"],
+                user=user_id,
+                text="📋 Your Daily Plan",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*Daily Plan for {session.date.strftime('%A, %B %d, %Y')}*\n*Status:* {session.status.value.replace('_', ' ').title()}",
+                        },
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*Goals:*\n{session.goals or 'No goals set'}",
+                        },
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*Schedule:*\n{session.notes or 'No schedule set'}",
+                        },
+                    },
+                ],
+            )
 
-            respond(f"🗓️ **Your Plan**\n\n{plan}")
+        @self.app.action("edit_plan")
+        async def edit_plan(ack, body, client):
+            """Re-open the planning modal for editing."""
+            await ack()
 
-    def _extract_planning_context(self, text: str) -> Dict[str, Any]:
-        """Extract planning context from user message."""
-        # TODO: Implement AI-powered context extraction
-        return {"raw_text": text, "tasks": [], "time_constraints": [], "priorities": []}
+            # Trigger the same modal as /plan-today
+            await open_plan_modal(ack, body, client)
 
-    def _generate_plan(self, context: Dict[str, Any]) -> str:
-        """Generate a plan based on the context."""
-        # TODO: Integrate with AutoGen for AI-powered planning
-        raw_text = context.get("raw_text", "")
+        @self.app.command("/plan-status")
+        async def check_plan_status(ack, body, client):
+            """Check the current planning session status."""
+            await ack()
 
-        if not raw_text:
-            return "I need more information to create a plan. Please describe what you need to accomplish."
+            user_id = body["user_id"]
+            today = date.today()
 
-        # Basic planning logic for now
-        return f"""
-📋 **Today's Plan Based on**: {raw_text}
+            session = await PlanningSessionService.get_user_session_for_date(
+                user_id, today
+            )
 
-⏰ **Time Blocks:**
-• 9:00 AM - Focus time for important tasks
-• 11:00 AM - Check and respond to messages  
-• 1:00 PM - Lunch break
-• 2:00 PM - Scheduled meetings/calls
-• 4:00 PM - Wrap up and planning for tomorrow
+            if not session:
+                await client.chat_postEphemeral(
+                    channel=body["channel_id"],
+                    user=user_id,
+                    text="📋 No planning session found for today. Use `/plan-today` to create one!",
+                )
+                return
 
-💡 **Suggestions:**
-• Block calendar time for deep work
-• Set phone to do-not-disturb during focus blocks
-• Take breaks every 90 minutes
-• Review and adjust plan as needed
+            status_emoji = {
+                PlanStatus.NOT_STARTED: "⏳",
+                PlanStatus.IN_PROGRESS: "🏃",
+                PlanStatus.COMPLETE: "✅",
+            }
 
-Would you like me to help you break down any specific tasks?
-        """.strip()
+            await client.chat_postEphemeral(
+                channel=body["channel_id"],
+                user=user_id,
+                text=f"{status_emoji.get(session.status, '📋')} Your planning session status: *{session.status.value.replace('_', ' ').title()}*",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*Planning Session for {today.strftime('%A, %B %d')}*\n*Status:* {session.status.value.replace('_', ' ').title()}",
+                        },
+                    },
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "View Plan"},
+                                "action_id": "view_plan",
+                                "value": str(session.id),
+                            },
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "Edit Plan"},
+                                "action_id": "edit_plan",
+                                "value": str(session.id),
+                            },
+                        ],
+                    },
+                ],
+            )
 
-    def start(self):
+    async def start(self):
         """Start the planner bot."""
         logger.info("Starting Planner Bot...")
 
         if not self.config.slack_app_token:
             raise ValueError("SLACK_APP_TOKEN is required for Socket Mode")
 
-        handler = SocketModeHandler(self.app, self.config.slack_app_token)
-        handler.start()
+        handler = AsyncSocketModeHandler(self.app, self.config.slack_app_token)
+        await handler.start_async()
+
+    async def stop(self):
+        """Stop the planner bot."""
+        logger.info("Stopping Planner Bot...")
+        # Any cleanup logic here
 
 
-def main():
+async def main():
     """Main entry point for the planner bot."""
     try:
-        config = Config()
+        config = get_config()
         bot = PlannerBot(config)
-        bot.start()
+        await bot.start()
     except KeyboardInterrupt:
         logger.info("Planner Bot stopped by user")
     except Exception as e:
@@ -130,4 +388,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+
+    asyncio.run(main())
