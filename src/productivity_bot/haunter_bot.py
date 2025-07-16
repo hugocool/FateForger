@@ -18,6 +18,12 @@ from .models import CalendarEvent, EventStatus, PlanningSession, PlanStatus
 
 logger = get_logger("haunter_bot")
 
+from .common import get_config, get_logger
+from .database import get_db_session
+from .models import CalendarEvent, EventStatus, PlanningSession, PlanStatus
+
+logger = get_logger("haunter_bot")
+
 
 class HaunterBot:
     """
@@ -209,7 +215,7 @@ class HaunterBot:
 
 
 # Calendar Event Haunting Functions (called by APScheduler)
-async def haunt_event(event_id: str):
+async def haunt_event(event_id: str) -> None:
     """
     Haunt a user about an upcoming calendar event.
     This function is called by APScheduler as a scheduled job.
@@ -341,7 +347,7 @@ async def haunt_event(event_id: str):
         logger.error(f"Error haunting event {event_id}: {e}")
 
 
-async def haunt_planning_session(session_id: int):
+async def haunt_planning_session(session_id: int) -> None:
     """
     Haunt a user about their planning session.
     This function is called by APScheduler as a scheduled job.
@@ -450,6 +456,149 @@ async def haunt_planning_session(session_id: int):
 
     except Exception as e:
         logger.error(f"Error haunting planning session {session_id}: {e}")
+
+
+def backoff_minutes(attempt: int) -> int:
+    """
+    Calculate exponential back-off delay in minutes.
+
+    Args:
+        attempt: The attempt number (1-based).
+
+    Returns:
+        Delay in minutes following pattern: 5, 10, 20, 40, 60 (max).
+
+    Example:
+        >>> backoff_minutes(1)
+        5
+        >>> backoff_minutes(2)
+        10
+        >>> backoff_minutes(3)
+        20
+    """
+    if attempt <= 0:
+        return 5
+
+    # Exponential back-off: 5, 10, 20, 40, 60 (capped at 60 minutes)
+    delay = min(5 * (2 ** (attempt - 1)), 60)
+    return delay
+
+
+async def get_thread_for_session(session: PlanningSession) -> tuple[str, Optional[str]]:
+    """
+    Get the Slack channel and thread timestamp for a planning session.
+
+    Args:
+        session: The planning session to get thread info for.
+
+    Returns:
+        Tuple of (channel_id, thread_ts). If no thread exists, thread_ts is None.
+
+    Example:
+        >>> channel, thread = await get_thread_for_session(session)
+        >>> print(f"Channel: {channel}, Thread: {thread}")
+    """
+    # If we have explicit thread tracking
+    if session.channel_id and session.thread_ts:
+        return session.channel_id, session.thread_ts
+
+    # Fall back to DM to the user
+    return session.user_id, None
+
+
+async def haunt_user(session_id: int) -> None:
+    """
+    Haunt a user about their planning session with exponential back-off.
+
+    This function implements the core haunting logic:
+    1. Loads the session and checks status
+    2. If NOT_STARTED, sends a DM/thread message
+    3. Calculates next back-off delay and re-schedules itself
+    4. Cancels future jobs once status=COMPLETE
+
+    Args:
+        session_id: The planning session ID to haunt about.
+
+    Raises:
+        Exception: If database operations or scheduling fails.
+
+    Example:
+        >>> await haunt_user(42)  # Called by APScheduler
+    """
+    try:
+        from .scheduler import get_scheduler, schedule_haunt
+
+        logger.info(f"Haunting user for session {session_id}")
+
+        async with get_db_session() as db:
+            result = await db.execute(  # type: ignore[misc]
+                select(PlanningSession).where(PlanningSession.id == session_id)
+            )
+            session = result.scalar_one_or_none()
+
+            if not session:
+                logger.warning(f"Planning session {session_id} not found for haunting")
+                return
+
+            # If session is complete, cancel any future jobs and return
+            if session.status == PlanStatus.COMPLETE:
+                logger.info(f"Session {session_id} is complete, cancelling haunts")
+                if session.scheduler_job_id:
+                    scheduler = get_scheduler()
+                    try:
+                        scheduler.remove_job(session.scheduler_job_id)
+                        logger.info(f"Cancelled job {session.scheduler_job_id}")
+                    except Exception:
+                        pass  # Job may have already completed
+                return
+
+            # Get channel and thread info
+            channel, thread_ts = await get_thread_for_session(session)
+
+            # Create reminder message
+            config = get_config()
+
+            # TODO: Replace with actual Slack client call
+            # For now, we'll use chat.scheduleMessage concept
+            message_text = (
+                "⏰ Time to plan your day! Let's commit to tomorrow's schedule."
+            )
+
+            if thread_ts:
+                logger.info(
+                    f"Would send thread message to channel {channel}, thread {thread_ts}: {message_text}"
+                )
+            else:
+                logger.info(f"Would send DM to user {session.user_id}: {message_text}")
+
+            # Calculate next attempt and delay
+            next_attempt = session.next_nudge_attempt + 1
+            delay = backoff_minutes(next_attempt)
+            next_run = datetime.utcnow() + timedelta(minutes=delay)
+
+            # Only reschedule if we haven't hit max attempts (e.g., 5 attempts)
+            if next_attempt <= 5:
+                # Schedule next haunt
+                new_job_id = schedule_haunt(session_id, next_run, attempt=next_attempt)
+
+                # Update session with new job ID and attempt count
+                session.scheduler_job_id = new_job_id
+                session.next_nudge_attempt = next_attempt
+                session.last_nudge_at = datetime.utcnow()
+                await db.commit()  # type: ignore[misc]
+
+                logger.info(
+                    f"Scheduled next haunt for session {session_id} in {delay} minutes (attempt {next_attempt})"
+                )
+            else:
+                logger.info(
+                    f"Reached max attempts for session {session_id}, stopping haunts"
+                )
+                session.scheduler_job_id = None
+                await db.commit()  # type: ignore[misc]
+
+    except Exception as e:
+        logger.error(f"Error haunting user for session {session_id}: {e}")
 
 
 def main():

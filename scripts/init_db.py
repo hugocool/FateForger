@@ -4,9 +4,9 @@ Database initialization for development and deployment.
 Tries alembic first, falls back to create_all().
 """
 
+import asyncio
 import os
 import sys
-import asyncio
 from pathlib import Path
 
 # Add src to path
@@ -49,11 +49,10 @@ async def init_database():
         os.environ.setdefault("CALENDAR_WEBHOOK_SECRET", "dev-fallback")
         os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///data/admonish.db")
 
-        from productivity_bot.common import Base
-        from productivity_bot.database import get_database_engine
-
         # Import all models to register them
         from productivity_bot import models  # This imports all models
+        from productivity_bot.common import Base
+        from productivity_bot.database import get_database_engine
 
         engine = get_database_engine()
         async with engine.begin() as conn:

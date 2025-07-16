@@ -1,0 +1,1 @@
+When you install something, do it through poetry to ensure it gets added to `pyproject.toml` and `poetry.lock`.

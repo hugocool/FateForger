@@ -163,6 +163,11 @@ class PlanningSession(Base):
     next_nudge_attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_nudge_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # Scheduler tracking
+    scheduler_job_id: Mapped[Optional[str]] = mapped_column(
+        String(100), index=True, nullable=True
+    )
+
     # Additional fields for better planning tracking
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False

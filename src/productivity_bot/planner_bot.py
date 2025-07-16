@@ -16,10 +16,10 @@ Key Features:
 Example:
     ```python
     from productivity_bot.planner_bot import PlannerBot
-    
+
     # Initialize the bot
     bot = PlannerBot()
-    
+
     # Start the bot service
     await bot.run()
     ```
@@ -27,12 +27,13 @@ Example:
 
 import logging
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional
 
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 
+from .autogen_planner import AutoGenPlannerAgent
 from .common import get_config, get_logger
 from .database import PlanningSessionService, get_db_session
 from .models import PlanStatus
@@ -72,6 +73,9 @@ class PlannerBot:
             token=self.config.slack_bot_token,
             signing_secret=self.config.slack_signing_secret,
         )
+
+        # Initialize AutoGen planner agent
+        self.autogen_agent = AutoGenPlannerAgent()
 
         self._register_handlers()
 
@@ -304,8 +308,9 @@ class PlannerBot:
                     ],
                 )
 
-                # TODO: Schedule follow-up reminder
-                # await self._schedule_followup_reminder(user_id, session_id)
+                # Schedule haunter reminders and get AI enhancements
+                await self._schedule_followup_reminder(user_id, session_id)
+                await self._enhance_plan_with_autogen(session_id, goals_value, today)
 
             except Exception as e:
                 logger.error(f"Error saving plan for user {user_id}: {e}")
@@ -456,6 +461,183 @@ class PlannerBot:
                     },
                 ],
             )
+
+    async def _schedule_followup_reminder(self, user_id: str, session_id: int) -> None:
+        """
+        Schedule haunter follow-up reminders for a planning session.
+
+        Args:
+            user_id: Slack user ID.
+            session_id: Planning session ID.
+        """
+        try:
+            # Import here to avoid circular imports
+            from .scheduler import schedule_haunt
+
+            # Schedule first haunt in 1 hour
+            first_reminder = datetime.utcnow() + timedelta(hours=1)
+
+            job_id = schedule_haunt(session_id, first_reminder, attempt=1)
+
+            # Update the session with the job ID
+            async with get_db_session() as db:
+                session = await PlanningSessionService.get_session_by_id(session_id)
+                if session:
+                    session.scheduler_job_id = job_id
+                    session.next_nudge_attempt = 1
+                    db.add(session)
+                    # Commit handled by context manager
+
+            logger.info(f"Scheduled first haunt for session {session_id} in 1 hour")
+
+        except Exception as e:
+            logger.error(
+                f"Failed to schedule follow-up reminder for session {session_id}: {e}"
+            )
+
+    async def _enhance_plan_with_autogen(
+        self, session_id: int, goals: str, plan_date: date
+    ) -> None:
+        """
+        Enhance the planning session with AutoGen AI analysis.
+
+        Args:
+            session_id: Planning session ID.
+            goals: User's goals for the day.
+            plan_date: Date of the planning session.
+        """
+        try:
+            # Get the session
+            session = await PlanningSessionService.get_session_by_id(session_id)
+            if not session:
+                logger.warning(
+                    f"Session {session_id} not found for AutoGen enhancement"
+                )
+                return
+
+            # Generate enhanced plan using AutoGen
+            enhanced_plan = await self.autogen_agent.generate_daily_plan(
+                user_id=session.user_id,
+                goals=goals,
+                date_str=plan_date.strftime("%Y-%m-%d"),
+            )
+
+            if enhanced_plan.get("success"):
+                # Store AI suggestions in the session notes (append to existing)
+                ai_suggestions = enhanced_plan.get("raw_plan", "")
+
+                current_notes = session.notes or ""
+                enhanced_notes = (
+                    current_notes + "\n\n## AI Suggestions:\n" + ai_suggestions
+                )
+
+                # Update session with enhanced notes
+                await PlanningSessionService.add_session_notes(
+                    session_id, enhanced_notes
+                )
+
+                logger.info(f"Enhanced session {session_id} with AutoGen suggestions")
+
+                # Send AI suggestions to user as follow-up message
+                await self._send_ai_enhancement_message(
+                    session.user_id, session_id, enhanced_plan
+                )
+            else:
+                logger.warning(
+                    f"AutoGen enhancement failed for session {session_id}: {enhanced_plan.get('error')}"
+                )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to enhance plan with AutoGen for session {session_id}: {e}"
+            )
+
+    async def _send_ai_enhancement_message(
+        self, user_id: str, session_id: int, enhanced_plan: Dict[str, Any]
+    ) -> None:
+        """
+        Send AI enhancement suggestions to the user.
+
+        Args:
+            user_id: Slack user ID.
+            session_id: Planning session ID.
+            enhanced_plan: Enhanced plan data from AutoGen.
+        """
+        try:
+            structured_plan = enhanced_plan.get("structured_plan", {})
+            recommendations = structured_plan.get("recommendations", [])
+            schedule_items = structured_plan.get("schedule_items", [])
+
+            # Build message blocks
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "🤖 *AI Planning Assistant*\n\nI've analyzed your calendar and goals. Here are some optimization suggestions:",
+                    },
+                }
+            ]
+
+            # Add schedule suggestions if available
+            if schedule_items:
+                schedule_text = "\n".join(schedule_items[:5])  # Limit to 5 items
+                blocks.append(
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*📅 Suggested Schedule:*\n```{schedule_text}```",
+                        },
+                    }
+                )
+
+            # Add recommendations if available
+            if recommendations:
+                rec_text = "\n".join([f"• {rec}" for rec in recommendations[:5]])
+                blocks.append(
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*💡 Recommendations:*\n{rec_text}",
+                        },
+                    }
+                )
+
+            # Add action buttons
+            blocks.append(
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Apply Suggestions"},
+                            "action_id": "apply_ai_suggestions",
+                            "value": str(session_id),
+                            "style": "primary",
+                        },
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "View Full Analysis",
+                            },
+                            "action_id": "view_ai_analysis",
+                            "value": str(session_id),
+                        },
+                    ],
+                }
+            )
+
+            await self.app.client.chat_postMessage(
+                channel=user_id,
+                text="🤖 AI planning suggestions are ready!",
+                blocks=blocks,
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to send AI enhancement message: {e}")
 
     async def start(self) -> None:
         """

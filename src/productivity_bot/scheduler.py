@@ -15,7 +15,7 @@ Key Features:
 Example:
     ```python
     from productivity_bot.scheduler import schedule_event_haunt
-    
+
     # Schedule a reminder 15 minutes before an event
     job_id = schedule_event_haunt(
         event_id="cal_event_123",
@@ -270,6 +270,61 @@ def schedule_planning_session_haunt(session_id: int, when: datetime) -> str:
         logger.error(
             f"Failed to schedule planning session haunt job for session {session_id}: {e}"
         )
+        raise
+
+
+def schedule_haunt(session_id: int, when: datetime, attempt: int = 1) -> str:
+    """
+    Schedule a haunt job for a user planning session with attempt tracking.
+
+    Creates a scheduled job that will trigger the haunter bot to send
+    a reminder about a planning session, including back-off attempt tracking.
+
+    Args:
+        session_id: The planning session ID to create reminder for.
+        when: When to send the reminder (absolute datetime).
+        attempt: The attempt number for back-off tracking (default: 1).
+
+    Returns:
+        The job ID for the scheduled job, format: "haunt_user_{session_id}_{attempt}".
+
+    Raises:
+        Exception: If job scheduling fails.
+
+    Example:
+        >>> from datetime import datetime, timedelta
+        >>> session_time = datetime.utcnow() + timedelta(minutes=15)
+        >>> job_id = schedule_haunt(42, session_time, attempt=1)
+        >>> print(job_id)  # "haunt_user_42_1"
+    """
+    scheduler_instance = get_scheduler()
+
+    job_id = f"haunt_user_{session_id}_{attempt}"
+
+    try:
+        # Remove existing job if it exists
+        try:
+            scheduler_instance.remove_job(job_id)
+            logger.debug(f"Removed existing job {job_id}")
+        except Exception:
+            pass  # Job doesn't exist, that's fine
+
+        # Schedule new job
+        scheduler_instance.add_job(
+            func="productivity_bot.haunter_bot:haunt_user",
+            trigger="date",
+            run_date=when,
+            args=[session_id],
+            id=job_id,
+            replace_existing=True,
+            misfire_grace_time=300,  # 5 minutes grace period
+        )
+
+        logger.info(f"Scheduled user haunt job {job_id} for {when}")
+        return job_id
+
+    except Exception as e:
+        logger.error(f"Failed to schedule user haunt job for session {session_id}: {e}")
         raise
 
 
