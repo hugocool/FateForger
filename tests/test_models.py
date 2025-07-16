@@ -5,8 +5,7 @@ Tests for database models, schema, and relationships.
 import pytest
 import asyncio
 from datetime import datetime, date
-from sqlalchemy import create_engine, inspect, MetaData
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import inspect
 
 # Test imports
 import sys
@@ -30,12 +29,10 @@ from productivity_bot.models import (
 class TestDatabaseSchema:
     """Test database schema and table structure."""
 
-    @classmethod
-    def setup_class(cls):
-        """Set up test database."""
-        cls.engine = create_engine("sqlite:///:memory:")
-        Base.metadata.create_all(cls.engine)
-        cls.Session = sessionmaker(bind=cls.engine)
+    @pytest.fixture(autouse=True)
+    def _setup(self, memory_engine, session_factory):
+        self.engine = memory_engine
+        self.Session = session_factory
 
     def test_calendar_events_table_exists(self):
         """Test that calendar_events table exists with correct columns."""
@@ -131,12 +128,10 @@ class TestDatabaseSchema:
 class TestModelRelationships:
     """Test SQLAlchemy model relationships and operations."""
 
-    @classmethod
-    def setup_class(cls):
-        """Set up test database."""
-        cls.engine = create_engine("sqlite:///:memory:")
-        Base.metadata.create_all(cls.engine)
-        cls.Session = sessionmaker(bind=cls.engine)
+    @pytest.fixture(autouse=True)
+    def _setup(self, memory_engine, session_factory):
+        self.engine = memory_engine
+        self.Session = session_factory
 
     def test_calendar_event_creation(self):
         """Test creating a CalendarEvent."""

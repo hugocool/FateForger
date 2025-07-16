@@ -5,6 +5,9 @@ Test configuration and fixtures for the productivity bot test suite.
 import os
 from unittest.mock import Mock, patch
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 import pytest
 
 # Set default environment variables before importing application modules
@@ -22,7 +25,7 @@ TEST_ENV_VARS = {
 
 os.environ.update(TEST_ENV_VARS)
 
-from productivity_bot.common import Config
+from productivity_bot.common import Base, Config
 
 
 @pytest.fixture
@@ -81,12 +84,58 @@ def sample_webhook_data():
     }
 
 
-# Test database setup (if needed later)
+# In-memory database for model tests
 @pytest.fixture(scope="session")
-def test_db():
-    """Setup test database if needed."""
-    # For now, return None as we're not using a database yet
-    yield None
+def memory_engine():
+    """Provide an in-memory SQLite engine for tests."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def session_factory(memory_engine):
+    """Return a SQLAlchemy session factory bound to the memory engine."""
+    return sessionmaker(bind=memory_engine)
+
+
+@pytest.fixture
+def db_session(session_factory):
+    """Provide a database session for a test."""
+    session = session_factory()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.fixture
+def calendar_tool():
+    """Return a MCPCalendarTool instance."""
+    from src.productivity_bot.autogen_planner import MCPCalendarTool
+
+    return MCPCalendarTool()
+
+
+@pytest.fixture
+def planner_agent():
+    """Return an AutoGenPlannerAgent with mocked config."""
+    from src.productivity_bot.autogen_planner import AutoGenPlannerAgent
+
+    with patch("src.productivity_bot.autogen_planner.get_config") as mock_config:
+        mock_config.return_value.openai_api_key = "test_key"
+        yield AutoGenPlannerAgent()
+
+
+@pytest.fixture
+def planner_bot(test_config, mock_slack_app):
+    """Return a PlannerBot instance using the mock Slack app."""
+    from productivity_bot.planner_bot import PlannerBot
+
+    with patch("productivity_bot.planner_bot.AsyncApp") as mock_app_class:
+        mock_app_class.return_value = mock_slack_app
+        yield PlannerBot(test_config)
 
 
 # Async test helpers

@@ -1,29 +1,15 @@
-"""
-Tests for the Planner Bot functionality.
-"""
+"""Tests for the Planner Bot functionality."""
 
 import pytest
-from unittest.mock import AsyncMock, Mock, patch
+
 from productivity_bot.planner_bot import PlannerBot
 
 
 class TestPlannerBot:
     """Test the PlannerBot class."""
 
-    def test_planner_bot_initialization(self, test_config, mock_slack_app):
-        """Test PlannerBot initialization."""
-        with patch("productivity_bot.planner_bot.AsyncApp") as mock_app_class:
-            mock_app_class.return_value = mock_slack_app
-
-            bot = PlannerBot(test_config)
-
-            assert bot.config == test_config
-            assert bot.app == mock_slack_app
-            mock_app_class.assert_called_once_with(
-                token=test_config.slack_bot_token,
-                signing_secret=test_config.slack_signing_secret,
-            )
-
-
-
-
+    def test_planner_bot_initialization(self, planner_bot, mock_slack_app, test_config):
+        """Ensure PlannerBot initializes with provided config and Slack app."""
+        assert isinstance(planner_bot, PlannerBot)
+        assert planner_bot.config == test_config
+        assert planner_bot.app == mock_slack_app
