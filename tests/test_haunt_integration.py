@@ -2,9 +2,10 @@
 Simple integration test to verify haunt_user function implementation.
 """
 
-import pytest
 from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from productivity_bot.haunter_bot import haunt_user
 from productivity_bot.models import PlanningSession, PlanStatus
@@ -34,12 +35,8 @@ async def test_haunt_user_integration():
         patch(
             "productivity_bot.database.PlanningSessionService.update_session"
         ) as mock_update_session,
-        patch(
-            "productivity_bot.scheduler.schedule_user_haunt"
-        ) as mock_schedule_job,
-        patch(
-            "productivity_bot.scheduler.cancel_user_haunt"
-        ) as mock_cancel_job,
+        patch("productivity_bot.scheduler.schedule_user_haunt") as mock_schedule_job,
+        patch("productivity_bot.scheduler.cancel_user_haunt") as mock_cancel_job,
         patch("slack_bolt.async_app.AsyncApp") as mock_app_class,
         patch("datetime.datetime") as mock_datetime,
     ):
@@ -52,9 +49,7 @@ async def test_haunt_user_integration():
 
         mock_app = AsyncMock()
         mock_app_class.return_value = mock_app
-        mock_app.client.chat_postMessage = AsyncMock(
-            return_value={"ok": True}
-        )
+        mock_app.client.chat_postMessage = AsyncMock(return_value={"ok": True})
 
         # Execute the function
         await haunt_user(42)

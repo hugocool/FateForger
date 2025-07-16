@@ -8,13 +8,14 @@ This test validates:
 """
 
 import asyncio
-from datetime import date, datetime, timezone, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
+
 import pytest
 
+from productivity_bot.common import backoff_minutes
 from productivity_bot.haunter_bot import haunt_user
 from productivity_bot.models import PlanningSession, PlanStatus
-from productivity_bot.common import backoff_minutes
 
 
 @pytest.mark.asyncio
