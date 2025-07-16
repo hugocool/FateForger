@@ -66,15 +66,13 @@ class PlanningSessionService:
         user_id: str,
         session_date: date,
         scheduled_for: datetime,
-        goals: Optional[str] = None,
     ) -> PlanningSession:
-        """Create a new planning session."""
+        """Create a new planning session with minimal metadata."""
         async with get_db_session() as db:
             session = PlanningSession(
                 user_id=user_id,
                 date=session_date,
                 scheduled_for=scheduled_for,
-                goals=goals,
                 status=PlanStatus.NOT_STARTED,
             )
             db.add(session)
@@ -182,6 +180,23 @@ class PlanningSessionService:
 
             session.notes = notes
             await db.commit()
+            return True
+
+    @staticmethod
+    async def update_session_job_id(session_id: int, job_id: str) -> bool:
+        """Store the APScheduler job ID on the session for later cancellation."""
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(PlanningSession).where(PlanningSession.id == session_id)
+            )
+            session = result.scalar_one_or_none()
+
+            if not session:
+                return False
+
+            session.scheduler_job_id = job_id
+            await db.commit()
+            logger.info(f"Updated session {session_id} with job ID {job_id}")
             return True
 
 

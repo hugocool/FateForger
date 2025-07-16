@@ -27,7 +27,7 @@ Example:
 
 import logging
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
@@ -150,6 +150,142 @@ class PlannerBot:
             ],
         }
 
+    def _build_reflection_modal_view(self, session) -> Dict[str, Any]:
+        """
+        Build the reflection modal view for session completion.
+
+        Args:
+            session: The planning session to reflect on.
+
+        Returns:
+            Dictionary representing the Slack modal view.
+        """
+        return {
+            "type": "modal",
+            "callback_id": "reflection_view",
+            "title": {"type": "plain_text", "text": "Day Reflection"},
+            "submit": {"type": "plain_text", "text": "Complete Session"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": str(session.id),
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Reflecting on {session.date.strftime('%A, %B %d, %Y')}*\n\nLet's wrap up your planning session with a quick reflection.",
+                    },
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Your Goals Today:*\n{session.goals or 'No goals set'}",
+                    },
+                },
+                {"type": "divider"},
+                {
+                    "type": "input",
+                    "block_id": "accomplishments",
+                    "label": {
+                        "type": "plain_text",
+                        "text": "What did you accomplish?",
+                    },
+                    "hint": {
+                        "type": "plain_text",
+                        "text": "Share your wins, completed tasks, and progress made.",
+                    },
+                    "element": {
+                        "type": "plain_text_input",
+                        "multiline": True,
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "• Completed project review\n• Attended 3 meetings\n• Made progress on presentation",
+                        },
+                    },
+                },
+                {
+                    "type": "input",
+                    "block_id": "challenges",
+                    "label": {
+                        "type": "plain_text",
+                        "text": "What challenges did you face?",
+                    },
+                    "hint": {
+                        "type": "plain_text",
+                        "text": "What obstacles or difficulties came up during the day?",
+                    },
+                    "element": {
+                        "type": "plain_text_input",
+                        "multiline": True,
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "• Unexpected urgent tasks\n• Meeting ran over time\n• Technical issues",
+                        },
+                    },
+                    "optional": True,
+                },
+                {
+                    "type": "input",
+                    "block_id": "lessons",
+                    "label": {
+                        "type": "plain_text",
+                        "text": "What did you learn?",
+                    },
+                    "hint": {
+                        "type": "plain_text",
+                        "text": "Any insights or lessons for better planning tomorrow?",
+                    },
+                    "element": {
+                        "type": "plain_text_input",
+                        "multiline": True,
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "• Need more buffer time between meetings\n• Morning deep work is most productive\n• Should schedule breaks more regularly",
+                        },
+                    },
+                    "optional": True,
+                },
+                {
+                    "type": "input",
+                    "block_id": "energy_rating",
+                    "label": {
+                        "type": "plain_text",
+                        "text": "How was your energy level today?",
+                    },
+                    "element": {
+                        "type": "static_select",
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "Rate your energy level",
+                        },
+                        "options": [
+                            {
+                                "text": {"type": "plain_text", "text": "⚡ High Energy - Felt great all day"},
+                                "value": "high",
+                            },
+                            {
+                                "text": {"type": "plain_text", "text": "🔋 Good Energy - Productive and focused"},
+                                "value": "good",
+                            },
+                            {
+                                "text": {"type": "plain_text", "text": "😐 Medium Energy - Average day"},
+                                "value": "medium",
+                            },
+                            {
+                                "text": {"type": "plain_text", "text": "😴 Low Energy - Struggled to focus"},
+                                "value": "low",
+                            },
+                            {
+                                "text": {"type": "plain_text", "text": "😵 Exhausted - Very difficult day"},
+                                "value": "exhausted",
+                            },
+                        ],
+                    },
+                },
+            ],
+        }
+
     def _register_handlers(self) -> None:
         """
         Register Slack event handlers.
@@ -222,7 +358,7 @@ class PlannerBot:
                 )
 
                 if existing_session:
-                    # Update existing session
+                    # Update existing session with goals and notes (preserve existing behavior for editing)
                     existing_session.goals = goals_value
                     existing_session.notes = timebox_value
                     existing_session.status = PlanStatus.IN_PROGRESS
@@ -237,28 +373,29 @@ class PlannerBot:
                     session_id = existing_session.id
 
                 else:
-                    # Create new session
+                    # 1️⃣ Create minimal planning session metadata
+                    #    (no goals/notes stored here)
                     scheduled_for = datetime.combine(
-                        today, datetime.min.time().replace(hour=9)
+                        today, time(hour=17, minute=0), timezone.utc
                     )
-
                     session = await PlanningSessionService.create_session(
                         user_id=user_id,
                         session_date=today,
-                        scheduled_for=scheduled_for,
-                        goals=goals_value,
+                        scheduled_for=scheduled_for
                     )
 
-                    # Update with timebox info and set to in progress
-                    await PlanningSessionService.add_session_notes(
-                        session.id, timebox_value
-                    )
-                    await PlanningSessionService.update_session_status(
-                        session.id, PlanStatus.IN_PROGRESS
-                    )
-
-                    logger.info(f"Created new planning session {session.id}")
                     session_id = session.id
+
+                    # 2️⃣ Immediately schedule first haunt at the planning start time
+                    from .scheduler import schedule_planning_session_haunt
+
+                    job_id = schedule_planning_session_haunt(session_id, scheduled_for)
+                    # Persist the scheduler job ID for future cancellation
+                    await PlanningSessionService.update_session_job_id(
+                        session_id, job_id
+                    )
+
+                    logger.info(f"Created new planning session {session_id} with job {job_id}")
 
                 # Send confirmation message
                 await self.app.client.chat_postMessage(
@@ -308,9 +445,9 @@ class PlannerBot:
                     ],
                 )
 
-                # Schedule haunter reminders and get AI enhancements
-                await self._schedule_followup_reminder(user_id, session_id)
-                await self._enhance_plan_with_autogen(session_id, goals_value, today)
+                # Only enhance with AI for new sessions (goals/notes will be added later via a different flow)
+                if not existing_session:
+                    await self._enhance_plan_with_autogen(session_id, goals_value, today)
 
             except Exception as e:
                 logger.error(f"Error saving plan for user {user_id}: {e}")
@@ -319,6 +456,115 @@ class PlannerBot:
                 await self.app.client.chat_postMessage(
                     channel=user_id,
                     text="❌ Sorry, there was an error saving your plan. Please try again.",
+                )
+
+        @self.app.view("reflection_view")
+        async def save_reflection(ack, body, view, logger):
+            """Save the reflection and mark session as complete."""
+            await ack()
+
+            user_id = body["user"]["id"]
+            session_id = int(view["private_metadata"])
+
+            # Extract reflection values
+            accomplishments = view["state"]["values"]["accomplishments"]["plain_text_input-action"]["value"]
+            
+            challenges_input = view["state"]["values"]["challenges"]["plain_text_input-action"]
+            challenges = challenges_input["value"] if challenges_input["value"] else ""
+            
+            lessons_input = view["state"]["values"]["lessons"]["plain_text_input-action"]
+            lessons = lessons_input["value"] if lessons_input["value"] else ""
+            
+            energy_level = view["state"]["values"]["energy_rating"]["static_select-action"]["selected_option"]["value"]
+
+            logger.info(f"Saving reflection for session {session_id} by user {user_id}")
+
+            try:
+                # Get the session
+                session = await PlanningSessionService.get_session_by_id(session_id)
+                if not session:
+                    await self.app.client.chat_postMessage(
+                        channel=user_id,
+                        text="❌ Planning session not found.",
+                    )
+                    return
+
+                # Build reflection summary
+                reflection_summary = f"""
+## Day Reflection - {session.date.strftime('%A, %B %d, %Y')}
+
+### Accomplishments:
+{accomplishments}
+
+### Challenges:
+{challenges if challenges else 'None noted'}
+
+### Lessons Learned:
+{lessons if lessons else 'None noted'}
+
+### Energy Level: {energy_level.title()}
+"""
+
+                # Update session with reflection and mark complete
+                current_notes = session.notes or ""
+                updated_notes = current_notes + "\n\n" + reflection_summary
+
+                await PlanningSessionService.add_session_notes(session_id, updated_notes)
+                await PlanningSessionService.update_session_status(session_id, PlanStatus.COMPLETE)
+
+                # Cancel any pending haunter jobs
+                await self._cancel_haunter_reminders(session_id)
+
+                # Send completion confirmation
+                energy_emoji = {
+                    "high": "⚡",
+                    "good": "🔋", 
+                    "medium": "😐",
+                    "low": "😴",
+                    "exhausted": "😵"
+                }
+
+                await self.app.client.chat_postMessage(
+                    channel=user_id,
+                    text="✅ Planning session completed!",
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"🎉 *Planning Session Complete!*\n\nGreat work finishing your day with reflection on {session.date.strftime('%A, %B %d')}!",
+                            },
+                        },
+                        {
+                            "type": "section",
+                            "fields": [
+                                {
+                                    "type": "mrkdwn",
+                                    "text": f"*Accomplishments:*\n{accomplishments[:100]}{'...' if len(accomplishments) > 100 else ''}",
+                                },
+                                {
+                                    "type": "mrkdwn", 
+                                    "text": f"*Energy Level:*\n{energy_emoji.get(energy_level, '📊')} {energy_level.title()}",
+                                },
+                            ],
+                        },
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "Use `/plan-today` tomorrow to start planning your next productive day! 🚀",
+                            },
+                        },
+                    ],
+                )
+
+                logger.info(f"Completed planning session {session_id} with reflection")
+
+            except Exception as e:
+                logger.error(f"Error saving reflection for session {session_id}: {e}")
+                await self.app.client.chat_postMessage(
+                    channel=user_id,
+                    text="❌ Sorry, there was an error saving your reflection. Please try again.",
                 )
 
         @self.app.action("view_plan")
@@ -430,6 +676,34 @@ class PlannerBot:
                 PlanStatus.COMPLETE: "✅",
             }
 
+            # Build action buttons based on status
+            action_elements = [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "View Plan"},
+                    "action_id": "view_plan",
+                    "value": str(session.id),
+                }
+            ]
+
+            # Add appropriate action buttons based on status
+            if session.status != PlanStatus.COMPLETE:
+                action_elements.extend([
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Edit Plan"},
+                        "action_id": "edit_plan",
+                        "value": str(session.id),
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Mark Complete"},
+                        "action_id": "complete_planning_session",
+                        "value": str(session.id),
+                        "style": "primary",
+                    },
+                ])
+
             await client.chat_postEphemeral(
                 channel=body["channel_id"],
                 user=user_id,
@@ -444,22 +718,75 @@ class PlannerBot:
                     },
                     {
                         "type": "actions",
-                        "elements": [
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "View Plan"},
-                                "action_id": "view_plan",
-                                "value": str(session.id),
-                            },
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "Edit Plan"},
-                                "action_id": "edit_plan",
-                                "value": str(session.id),
-                            },
-                        ],
+                        "elements": action_elements,
                     },
                 ],
+            )
+
+        @self.app.command("/plan-complete")
+        async def plan_complete_command(ack, body, client):
+            """Mark the current planning session as complete with reflection."""
+            await ack()
+
+            user_id = body["user_id"]
+            today = date.today()
+
+            session = await PlanningSessionService.get_user_session_for_date(
+                user_id, today
+            )
+
+            if not session:
+                await client.chat_postEphemeral(
+                    channel=body["channel_id"],
+                    user=user_id,
+                    text="📋 No planning session found for today. Use `/plan-today` to create one first!",
+                )
+                return
+
+            if session.status == PlanStatus.COMPLETE:
+                await client.chat_postEphemeral(
+                    channel=body["channel_id"],
+                    user=user_id,
+                    text="✅ Your planning session is already marked as complete!",
+                )
+                return
+
+            # Open reflection modal
+            await client.views_open(
+                trigger_id=body["trigger_id"],
+                view=self._build_reflection_modal_view(session),
+            )
+
+        @self.app.action("complete_planning_session")
+        async def complete_planning_session_action(ack, body, client):
+            """Handle completion of planning session from haunter bot buttons."""
+            await ack()
+
+            session_id = int(body["actions"][0]["value"])
+            user_id = body["user"]["id"]
+
+            session = await PlanningSessionService.get_session_by_id(session_id)
+
+            if not session:
+                await client.chat_postEphemeral(
+                    channel=body["channel"]["id"],
+                    user=user_id,
+                    text="❌ Planning session not found.",
+                )
+                return
+
+            if session.status == PlanStatus.COMPLETE:
+                await client.chat_postEphemeral(
+                    channel=body["channel"]["id"],
+                    user=user_id,
+                    text="✅ This planning session is already complete!",
+                )
+                return
+
+            # Open reflection modal
+            await client.views_open(
+                trigger_id=body["trigger_id"],
+                view=self._build_reflection_modal_view(session),
             )
 
     async def _schedule_followup_reminder(self, user_id: str, session_id: int) -> None:
@@ -494,6 +821,26 @@ class PlannerBot:
             logger.error(
                 f"Failed to schedule follow-up reminder for session {session_id}: {e}"
             )
+
+    async def _cancel_haunter_reminders(self, session_id: int) -> None:
+        """
+        Cancel any pending haunter reminders for a planning session.
+
+        Args:
+            session_id: Planning session ID.
+        """
+        try:
+            from .scheduler import cancel_planning_session_haunt
+
+            # Cancel the haunt job for this session
+            success = cancel_planning_session_haunt(session_id)
+            if success:
+                logger.info(f"Cancelled haunter job for session {session_id}")
+            else:
+                logger.info(f"No haunter job found for session {session_id} (may have already completed)")
+
+        except Exception as e:
+            logger.error(f"Failed to cancel haunter reminders for session {session_id}: {e}")
 
     async def _enhance_plan_with_autogen(
         self, session_id: int, goals: str, plan_date: date
