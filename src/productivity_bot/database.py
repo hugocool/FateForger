@@ -10,17 +10,8 @@ from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import selectinload, sessionmaker
 
+from . import models  # Import the models module directly
 from .common import get_config, get_logger
-from .models import (
-    CalendarEvent,
-    CalendarSync,
-    EventStatus,
-    PlanningSession,
-    PlanStatus,
-    Reminder,
-    ReminderType,
-    UserPreferences,
-)
 
 logger = get_logger("database")
 
@@ -207,6 +198,84 @@ class PlanningSessionService:
             await db.commit()
             logger.info(f"Updated session {session.id}")
             return True
+
+    @staticmethod
+    async def get_recent_sessions_for_channel(channel_id: str) -> List[PlanningSession]:
+        """
+        Get recent planning sessions for users in a channel.
+
+        This is a simplified implementation - in practice you'd store
+        channel associations or thread references.
+
+        Args:
+            channel_id: Slack channel ID
+
+        Returns:
+            List of recent planning sessions
+        """
+        async with get_db_session() as db:
+            # For now, return recent sessions from the last 24 hours
+            # In practice, you'd have a proper channel->user mapping
+            from datetime import datetime, timedelta
+
+            cutoff_time = datetime.utcnow() - timedelta(hours=24)
+
+            result = await db.execute(
+                select(PlanningSession)
+                .where(PlanningSession.created_at >= cutoff_time)
+                .order_by(desc(PlanningSession.created_at))
+                .limit(10)
+            )
+            return result.scalars().all()
+
+    @staticmethod
+    async def postpone_session(session_id: int, minutes: int) -> datetime:
+        """
+        Postpone a planning session by the specified number of minutes.
+
+        Args:
+            session_id: Planning session ID
+            minutes: Number of minutes to postpone
+
+        Returns:
+            New scheduled time
+        """
+        async with get_db_session() as db:
+            from datetime import timedelta
+
+            result = await db.execute(
+                select(PlanningSession).where(PlanningSession.id == session_id)
+            )
+            session = result.scalar_one_or_none()
+
+            if not session:
+                raise ValueError(f"Session {session_id} not found")
+
+            # Add the postponement time
+            new_time = session.scheduled_for + timedelta(minutes=minutes)
+            session.scheduled_for = new_time
+
+            await db.commit()
+            logger.info(
+                f"Postponed session {session_id} by {minutes} minutes to {new_time}"
+            )
+
+            return new_time
+
+    @staticmethod
+    async def complete_session(session_id: int) -> bool:
+        """
+        Mark a planning session as complete.
+
+        Args:
+            session_id: Planning session ID
+
+        Returns:
+            True if successful, False otherwise
+        """
+        return await PlanningSessionService.update_session_status(
+            session_id, PlanStatus.COMPLETE
+        )
 
 
 class ReminderService:

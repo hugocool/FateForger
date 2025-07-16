@@ -1,22 +1,18 @@
 """
 Planner Agent for processing user messages in planning threads.
 
-This module creates an OpenAI Assistant Agent that can understand user requests
-and respond with structured JSON actions using OpenAI's Structured Outputs.
+This module provides structured LLM intent parsing using OpenAI's
+Structured Outputs with Pydantic validation.
 """
 
-import json
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Optional
 
-from autogen_agentchat.agents import AssistantAgent
-from autogen_agentchat.messages import TextMessage
-from autogen_ext.models.openai import OpenAIChatCompletionClient
+import openai
 
 from ..common import get_logger
 from ..models.planner_action import PlannerAction
-from .mcp_client import get_calendar_tools, get_llm_client
 
 logger = get_logger("planner_agent")
 
@@ -38,45 +34,9 @@ Always respond with valid JSON that matches the PlannerAction schema. If the use
 """
 
 
-def get_structured_llm_client() -> OpenAIChatCompletionClient:
-    """Get the LLM client configured for structured output."""
-    return OpenAIChatCompletionClient(
-        model="gpt-4o-mini", api_key=os.environ.get("OPENAI_API_KEY", "")
-    )
-
-
-async def create_planner_agent() -> AssistantAgent:
-    """
-    Create an AssistantAgent configured with calendar tools and planning capabilities.
-
-    Returns:
-        Configured AssistantAgent instance
-    """
-    try:
-        # 1. Fetch MCP calendar tools
-        tools = await get_calendar_tools()
-
-        # 2. Get LLM client
-        llm_client = get_llm_client()
-
-        # 3. Create an AssistantAgent with calendar capabilities
-        agent = AssistantAgent(
-            name="planner",
-            model_client=llm_client,
-            tools=tools,
-            system_message=SYSTEM_MESSAGE,
-        )
-
-        logger.info("Created planner agent with calendar tools")
-        return agent
-
-    except Exception as e:
-        logger.error(f"Failed to create planner agent: {e}")
-        # Return a basic agent without tools as fallback
-        llm_client = get_llm_client()
-        return AssistantAgent(
-            name="planner", model_client=llm_client, system_message=SYSTEM_MESSAGE
-        )
+def get_openai_client():
+    """Get OpenAI client configured for structured output."""
+    return openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 
 
 async def send_to_planner_intent(user_text: str) -> PlannerAction:
@@ -101,111 +61,36 @@ async def send_to_planner_intent(user_text: str) -> PlannerAction:
         postpone 15
     """
     try:
-        # For now, use the fallback text parsing until we resolve the AutoGen API issues
-        # TODO: Implement proper structured output when AutoGen API is clarified
-        logger.info(f"Processing user input with fallback parsing: '{user_text}'")
+        logger.info(f"Processing user input with structured output: '{user_text}'")
 
-        # Convert legacy dict response to PlannerAction
-        legacy_response = _extract_action_from_text(user_text)
+        client = get_openai_client()
 
-        # Map legacy response to PlannerAction
-        if legacy_response.get("action") == "postpone":
-            return PlannerAction(
-                action="postpone", minutes=legacy_response.get("minutes")
-            )
-        elif legacy_response.get("action") == "mark_done":
+        # Use OpenAI's structured output with response_format
+        response = await client.beta.chat.completions.parse(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": SYSTEM_MESSAGE},
+                {"role": "user", "content": user_text},
+            ],
+            response_format=PlannerAction,  # This ensures structured output
+        )
+
+        # Parse the structured response
+        action = response.choices[0].message.parsed
+
+        if action is None:
+            logger.warning("OpenAI returned None for parsed response, using default")
             return PlannerAction(action="mark_done", minutes=None)
-        elif legacy_response.get("action") == "recreate_event":
-            return PlannerAction(action="recreate_event", minutes=None)
-        else:
-            # Default to mark_done for unrecognized input
-            logger.warning(
-                f"Unrecognized action, defaulting to mark_done: {legacy_response}"
-            )
-            return PlannerAction(action="mark_done", minutes=None)
+
+        logger.info(
+            f"Structured output result: {action.action} (minutes: {action.minutes})"
+        )
+        return action
 
     except Exception as e:
         logger.error(f"Structured LLM parsing failed for '{user_text}': {e}")
         # Return a safe default
         return PlannerAction(action="mark_done", minutes=None)
-
-
-async def send_to_planner(thread_id: str, user_text: str) -> Dict[str, Any]:
-    """
-    Send user text to the planner agent and get a structured JSON response.
-
-    Args:
-        thread_id: The Slack thread ID for context
-        user_text: The user's message text
-
-    Returns:
-        Dictionary containing the parsed action and parameters
-
-    Example:
-        >>> response = await send_to_planner("123.456", "postpone 30")
-        >>> print(response)
-        {"action": "postpone", "minutes": 30}
-    """
-    try:
-        # For now, use simple text parsing while we figure out AutoGen API
-        # This provides immediate functionality while we sort out the library versions
-
-        logger.info(f"Processing user input from thread {thread_id}: '{user_text}'")
-
-        # TODO: Replace with proper LLM agent when AutoGen API is sorted out
-        # For now, use rule-based parsing
-        return _extract_action_from_text(user_text)
-
-    except Exception as e:
-        logger.error(f"Error in send_to_planner: {e}")
-        # Fallback to simple text parsing
-        return _extract_action_from_text(user_text)
-
-
-def _extract_action_from_text(user_text: str) -> Dict[str, Any]:
-    """
-    Fallback function to extract actions from user text using simple parsing.
-
-    Args:
-        user_text: The user's message text
-
-    Returns:
-        Dictionary containing the parsed action
-    """
-    text = user_text.lower().strip()
-
-    # Check for postpone commands
-    if "postpone" in text or "delay" in text or "later" in text:
-        # Try to extract minutes
-        import re
-
-        numbers = re.findall(r"\d+", text)
-        if numbers:
-            minutes = int(numbers[0])
-            return {"action": "postpone", "minutes": minutes}
-        else:
-            # Default postpone time
-            return {"action": "postpone", "minutes": 15}
-
-    # Check for completion commands
-    if any(word in text for word in ["done", "complete", "finished", "finish"]):
-        return {"action": "mark_done"}
-
-    # Check for recreate commands
-    if any(word in text for word in ["recreate", "create", "reschedule"]):
-        return {"action": "recreate_event"}
-
-    # Check for help commands
-    if any(word in text for word in ["help", "what", "how", "commands"]):
-        return {"action": "help"}
-
-    # Check for status commands
-    if "status" in text:
-        return {"action": "status"}
-
-    # Default to help
-    logger.info(f"Could not parse user text: '{user_text}', defaulting to help")
-    return {"action": "help"}
 
 
 async def test_planner_agent() -> bool:
@@ -216,9 +101,9 @@ async def test_planner_agent() -> bool:
         True if test successful, False otherwise
     """
     try:
-        response = await send_to_planner("test_thread", "postpone 10")
+        action = await send_to_planner_intent("postpone 10")
         expected_action = "postpone"
-        return response.get("action") == expected_action
+        return action.action == expected_action and action.minutes == 10
     except Exception as e:
         logger.error(f"Planner agent test failed: {e}")
         return False

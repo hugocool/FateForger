@@ -1,1 +1,2 @@
 When you install something, do it through poetry to ensure it gets added to `pyproject.toml` and `poetry.lock`.
+When you are running tests, use `poetry run pytest` to ensure the virtual environment is activated.

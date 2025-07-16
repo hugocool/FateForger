@@ -216,6 +216,57 @@ class PlanningSession(Base):
         """Mark the planning session as in progress."""
         self.status = PlanStatus.IN_PROGRESS
 
+    async def recreate_event(self) -> bool:
+        """
+        Recreate the calendar event for this planning session.
+
+        This method attempts to recreate the associated calendar event
+        using the MCP calendar integration.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Import here to avoid circular imports
+            from datetime import timedelta
+
+            from .common import mcp_query
+
+            # Create a new calendar event for this planning session
+            event_data = {
+                "summary": f"Daily Planning Session - {self.date}",
+                "description": f"Planning session for {self.user_id}\n\nGoals: {self.goals or 'Not set'}",
+                "start": {
+                    "dateTime": self.scheduled_for.isoformat(),
+                    "timeZone": "UTC",
+                },
+                "end": {
+                    "dateTime": (self.scheduled_for + timedelta(hours=1)).isoformat(),
+                    "timeZone": "UTC",
+                },
+            }
+
+            # Use MCP to create the calendar event
+            mcp_request = {"method": "create_event", "params": event_data}
+            result = await mcp_query(mcp_request)
+
+            if result and result.get("success"):
+                # Update the event_id if successful
+                self.event_id = result.get("event_id")
+                return True
+            else:
+                return False
+
+        except Exception as e:
+            # Log the error but don't raise - this is best effort
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.error(
+                f"Failed to recreate calendar event for session {self.id}: {e}"
+            )
+            return False
+
 
 class TaskStatus(PyEnum):
     """Status of a task."""
