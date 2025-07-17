@@ -182,6 +182,11 @@ class PlanningSession(Base):
         String(100), nullable=True
     )
 
+    # Slack scheduled message IDs (multiple scheduled messages)
+    slack_sched_ids: Mapped[List[str]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+
     # Haunt attempt tracking for escalation
     haunt_attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 

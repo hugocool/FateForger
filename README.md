@@ -37,14 +37,37 @@ AI-powered productivity bot with intelligent daily planning, persistent reminder
    # Edit .env with your Slack tokens, OpenAI API key, and MCP endpoint
    ```
 
-2. **Development with Docker (Recommended)**
+2. **Install Dependencies with Poetry**
+
+   ```bash
+   poetry install
+   ```
+
+3. **Development Commands (Always use Poetry)**
+
+   ```bash
+   # Run any Python script
+   poetry run python script_name.py
+   
+   # Run tests
+   poetry run pytest
+   
+   # Validate Ticket 4 implementation
+   make validate-all
+   
+   # Or manually:
+   poetry run python validate_syntax_ticket4.py
+   poetry run python test_ticket4_integration.py
+   ```
+
+4. **Development with Docker (Alternative)**
 
    ```bash
    ./setup-dev.sh
    docker-compose run --rm dev
    ```
 
-3. **Run All Services**
+5. **Run All Services**
 
    ```bash
    ./run.sh  # Starts all bots, AI agents, and servers with ngrok tunnels

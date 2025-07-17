@@ -7,6 +7,8 @@ This script validates:
 2. Three new haunter classes with proper inheritance
 3. Integration with BaseHaunter and AutoGen routing
 4. Action schema parsing and validation
+
+Run with: poetry run python validate_ticket4_haunters.py
 """
 
 import asyncio

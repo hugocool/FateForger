@@ -4,6 +4,8 @@ Integration test for Ticket 4 haunter classes.
 
 This test validates that the new haunter classes can properly integrate
 with the AutoGen router system and handle user replies correctly.
+
+Run with: poetry run python test_ticket4_integration.py
 """
 
 import asyncio

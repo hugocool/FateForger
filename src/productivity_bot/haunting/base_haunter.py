@@ -14,10 +14,13 @@ from uuid import UUID
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from slack_sdk.web.async_client import AsyncWebClient
+from sqlalchemy import select
 
 from ..actions.haunt_payload import HauntPayload
 from ..actions.planner_action import PlannerAction, get_planner_system_message
 from ..common import get_logger
+from ..database import get_db_session
+from ..models import PlanningSession
 
 logger = get_logger("base_haunter")
 
@@ -189,7 +192,7 @@ class BaseHaunter(ABC):
         thread_ts: Optional[str] = None,
     ) -> Optional[str]:
         """
-        Schedule a Slack message for future delivery.
+        Schedule a Slack message for future delivery and persist the ID.
 
         Args:
             text: Message text
@@ -201,19 +204,51 @@ class BaseHaunter(ABC):
             Scheduled message ID if successful, None otherwise
         """
         try:
-            # Convert datetime to Unix timestamp
-            post_at_unix = int(post_at.timestamp())
+            # Import here to avoid circular imports
+            from ..slack_utils import schedule_dm
 
-            response = await self.slack.chat_scheduleMessage(
-                channel=channel, text=text, post_at=post_at_unix, thread_ts=thread_ts
+            # Schedule the message
+            post_at_unix = int(post_at.timestamp())
+            scheduled_id = await schedule_dm(
+                self.slack, channel, text, post_at_unix, thread_ts
             )
 
-            scheduled_id = response.get("scheduled_message_id")
-            self.logger.info(f"Scheduled message {scheduled_id} for {post_at}")
+            # Persist the scheduled ID in the database
+            async with get_db_session() as db:
+                if isinstance(self.session_id, int):
+                    session_query = select(PlanningSession).where(
+                        PlanningSession.id == self.session_id
+                    )
+                else:
+                    try:
+                        session_id_int = int(self.session_id)
+                        session_query = select(PlanningSession).where(
+                            PlanningSession.id == session_id_int
+                        )
+                    except (ValueError, TypeError):
+                        self.logger.warning(
+                            f"Cannot convert session_id {self.session_id} to int"
+                        )
+                        return scheduled_id
+
+                result = await db.execute(session_query)  # type: ignore
+                session = result.scalar_one_or_none()
+
+                if session:
+                    if not session.slack_sched_ids:
+                        session.slack_sched_ids = []
+                    session.slack_sched_ids.append(scheduled_id)
+                    # Note: db.commit() is automatic with get_db_session() context manager
+                    self.logger.info(
+                        f"Persisted scheduled message ID {scheduled_id} for session {self.session_id}"
+                    )
+                else:
+                    self.logger.warning(f"No session found with ID {self.session_id}")
+
             return scheduled_id
 
         except Exception as e:
-            self.logger.error(f"Failed to schedule message: {e}")
+            self.logger.error(f"Failed to schedule and persist message: {e}")
             return None
 
     async def delete_scheduled(self, scheduled_id: str, channel: str) -> bool:
@@ -369,6 +404,93 @@ class BaseHaunter(ABC):
             True if reply was handled successfully, False otherwise
         """
         pass
+
+    # ========================================================================
+    # Cleanup Methods
+    # ========================================================================
+
+    async def _stop_reminders(self) -> None:
+        """
+        Cancel all APScheduler jobs + Slack scheduled DMs for this session.
+
+        This method should be called when:
+        - User replies with mark_done
+        - PlanningAgent marks session COMPLETE
+        - CommitmentHaunter receives mark_done
+        """
+        try:
+            # Import here to avoid circular imports
+            from ..slack_utils import delete_scheduled
+
+            # Cancel APScheduler jobs
+            jobs_cancelled = 0
+            for job in self.scheduler.get_jobs():
+                if job.id.startswith(f"{self.session_id}-") or job.id.startswith(
+                    f"haunt_{self.session_id}"
+                ):
+                    self.scheduler.remove_job(job.id)
+                    jobs_cancelled += 1
+
+            # Also cancel jobs tracked in _active_jobs
+            for job_id in list(self._active_jobs):
+                self.cancel_job(job_id)
+
+            self.logger.info(
+                f"Cancelled {jobs_cancelled} scheduler jobs for session {self.session_id}"
+            )
+
+            # Delete Slack scheduled messages
+            async with get_db_session() as db:
+                # Query for the session (session_id might be int, so try both)
+                if isinstance(self.session_id, int):
+                    session_query = select(PlanningSession).where(
+                        PlanningSession.id == self.session_id
+                    )
+                else:
+                    # If session_id is UUID string, need to convert to int or find by different field
+                    # For now, assume session_id is the primary key (int)
+                    try:
+                        session_id_int = int(self.session_id)
+                        session_query = select(PlanningSession).where(
+                            PlanningSession.id == session_id_int
+                        )
+                    except (ValueError, TypeError):
+                        self.logger.warning(
+                            f"Cannot convert session_id {self.session_id} to int"
+                        )
+                        return
+
+                result = await db.execute(session_query)  # type: ignore
+                session = result.scalar_one_or_none()
+
+                if session and session.slack_sched_ids:
+                    deleted_count = 0
+
+                    # Get channel from session or use default
+                    channel = getattr(self, "channel", session.channel_id)
+                    if not channel:
+                        self.logger.warning(
+                            f"No channel found for session {self.session_id}, cannot delete scheduled messages"
+                        )
+                        return
+
+                    for sched_id in session.slack_sched_ids:
+                        success = await delete_scheduled(self.slack, channel, sched_id)
+                        if success:
+                            deleted_count += 1
+
+                    # Clear the scheduled IDs
+                    session.slack_sched_ids = []
+                    # Note: db.commit() is automatic with get_db_session() context manager
+
+                    self.logger.info(
+                        f"Deleted {deleted_count} scheduled Slack messages for session {self.session_id}"
+                    )
+
+        except Exception as e:
+            self.logger.error(
+                f"Error stopping reminders for session {self.session_id}: {e}"
+            )
 
     # ========================================================================
     # Convenience Methods

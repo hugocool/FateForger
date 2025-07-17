@@ -4,6 +4,8 @@ Simple syntax validation for Ticket 4 haunter refactoring.
 
 This script validates that all the new haunter code can be imported
 and has the correct structure without requiring full dependencies.
+
+Run with: poetry run python validate_syntax_ticket4.py
 """
 
 import ast
