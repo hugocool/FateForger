@@ -226,9 +226,9 @@ make lint format test
 ## 📚 Documentation
 
 - [Architecture Overview](architecture/overview.md) - Deep dive into system design
-- [API Reference](api/) - Complete API documentation
-- [Development Guide](development/) - Setup and contribution guidelines
-- [Deployment](deployment/) - Production deployment instructions
+- [API Reference](api/common.md) - Complete API documentation
+- [Development Guide](development/setup.md) - Setup and contribution guidelines
+- [Deployment](deployment/docker.md) - Production deployment instructions
 
 ## 🤝 Contributing
 
@@ -236,7 +236,7 @@ We welcome contributions! Please see our [Contributing Guide](development/contri
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## 🙏 Acknowledgments
 

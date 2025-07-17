@@ -72,6 +72,7 @@ nav:
       - Scheduler: api/scheduler.md
       - Planner Bot: api/planner_bot.md
       - Haunter Bot: api/haunter_bot.md
+      - AutoGen Planner: api/autogen_planner.md
   - Development:
       - Setup: development/setup.md
       - Contributing: development/contributing.md

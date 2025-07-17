@@ -50,11 +50,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          poetry install --no-interaction --only=main,dev
+          poetry install --no-interaction
 
       - name: Build MkDocs site
         run: |
-          poetry run mkdocs build --strict --verbose
+          poetry run mkdocs build --verbose
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

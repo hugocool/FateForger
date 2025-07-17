@@ -419,4 +419,4 @@ To contribute to the AutoGen integration:
 4. Update documentation
 5. Submit a pull request
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for detailed guidelines.
+See [Development Guide](../development/contributing.md) for detailed guidelines.

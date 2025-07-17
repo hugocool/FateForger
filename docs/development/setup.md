@@ -227,6 +227,6 @@ poetry run mkdocs build
 
 ### Getting Help
 
-* Check the [API documentation](../api/) for detailed module information
-* Review [test files](../../tests/) for usage examples
+* Check the [API documentation](../api/common.md) for detailed module information
+* Review test files in the tests directory for usage examples
 * Open an issue on GitHub for bugs or feature requests
