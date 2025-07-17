@@ -198,12 +198,9 @@ class IncompletePlanningHaunter(BaseHaunter):
 
             else:  # unknown action
                 # Try to clarify with user about their incomplete planning
+                clarification_message = await self.generate_message("incomplete_clarification", 1)
                 await self.send(
-                    "I see you started your planning session but didn't finish it. Would you like to:\n"
-                    "• **Postpone** and schedule time to complete your planning?\n"
-                    "• Tell me what happened so I can help better?\n\n"
-                    "No judgment - sometimes planning sessions get interrupted! "
-                    "The important thing is getting back to it when you can.",
+                    clarification_message,
                     channel=self.channel,
                     thread_ts=self.thread_ts,
                 )
@@ -211,8 +208,9 @@ class IncompletePlanningHaunter(BaseHaunter):
 
         except Exception as e:
             self.logger.error(f"Failed to handle incomplete user reply: {e}")
+            error_message = await self.generate_message("error_response", 1)
             await self.send(
-                "Sorry, I encountered an error. Let me try again later.",
+                error_message,
                 channel=self.channel,
                 thread_ts=self.thread_ts,
             )
@@ -225,22 +223,8 @@ class IncompletePlanningHaunter(BaseHaunter):
         Returns:
             Message timestamp if successful, None otherwise
         """
-        if self.incomplete_reason:
-            message = (
-                f"👋 Hi! I noticed your planning session was incomplete ({self.incomplete_reason}).\n\n"
-                "No worries - life happens! Planning sessions sometimes get interrupted. "
-                "The important thing is getting back to it when you can.\n\n"
-                "Would you like me to help you **postpone** and schedule time to finish your planning? "
-                "Even 15-20 minutes can help you wrap up where you left off."
-            )
-        else:
-            message = (
-                "👋 Hi! I noticed your planning session was incomplete.\n\n"
-                "No worries - life happens! Planning sessions sometimes get interrupted. "
-                "The important thing is getting back to it when you can.\n\n"
-                "Would you like me to help you **postpone** and schedule time to finish your planning? "
-                "Even 15-20 minutes can help you wrap up where you left off."
-            )
+        # Generate LLM-powered incomplete followup message
+        message = await self.generate_message("incomplete_followup_initial", 1)
 
         return await self.send(
             message,
@@ -255,16 +239,8 @@ class IncompletePlanningHaunter(BaseHaunter):
         Args:
             attempt: Current attempt number
         """
-        messages = [
-            "👻 Still thinking about finishing that planning session?",
-            "📋 No pressure, but completing your planning could be really helpful!",
-            "🌱 Even a quick 15 minutes to wrap up your planning thoughts could be valuable.",
-            "💡 Sometimes the best planning happens when we come back to it fresh!",
-        ]
-
-        # Cycle through messages based on attempt number
-        message_index = (attempt - 1) % len(messages)
-        message = messages[message_index]
+        # Generate LLM-powered message instead of cycling through hardcoded ones
+        message = await self.generate_message("incomplete_followup", attempt)
 
         await self.send(
             message,
@@ -283,16 +259,8 @@ class IncompletePlanningHaunter(BaseHaunter):
         Returns:
             Message timestamp if successful, None otherwise
         """
-        message = (
-            "🌟 Just a gentle reminder about the planning session you started.\n\n"
-            "Incomplete planning is still valuable! Even if you only had a few minutes, "
-            "that thinking time matters. But if you'd like to wrap it up, I'm here to help.\n\n"
-            "Research shows that even brief planning sessions can:\n"
-            "• Reduce stress and mental clutter\n"
-            "• Improve focus on priorities\n"
-            "• Help you feel more in control\n\n"
-            "No pressure though - just wanted you to know the option is there!"
-        )
+        # Generate LLM-powered encouragement message
+        message = await self.generate_message("gentle_encouragement", 1)
 
         return await self.send(
             message,
@@ -418,6 +386,53 @@ Generate a {tone} follow-up message that:
 - Uses appropriate emojis for attempt #{attempt}
 
 Keep it understanding while gently encouraging action."""
+
+        elif context == "incomplete_followup_initial":
+            return """You are a caring productivity assistant reaching out about an incomplete planning session.
+
+Generate a supportive initial follow-up message that:
+- Acknowledges their planning session was incomplete
+- Shows understanding that interruptions happen
+- Offers to help them reschedule or finish the planning
+- Emphasizes the value of completing even brief planning
+- Uses warm, encouraging emojis (👋, 💙, 📅, etc.)
+
+Keep it non-judgmental and focused on helping them get back on track."""
+
+        elif context == "gentle_encouragement":
+            return """You are an encouraging productivity assistant providing gentle motivation about incomplete planning.
+
+Generate a supportive encouragement message that:
+- Validates that incomplete planning still has value
+- Shares benefits of even brief planning sessions
+- Offers to help them finish if they'd like
+- Maintains no-pressure tone
+- Uses positive, encouraging emojis (🌟, 💡, 🌱, etc.)
+
+Keep it validating and informative without being pushy."""
+
+        elif context == "incomplete_clarification":
+            return """You are a helpful productivity assistant asking for clarification about an incomplete planning session.
+
+Generate a clarifying message that:
+- Acknowledges their incomplete planning session
+- Offers specific options for next steps (postpone, etc.)
+- Shows understanding that sessions get interrupted
+- Maintains supportive, non-judgmental tone
+- Uses friendly emojis (❓, 💭, 🤝, etc.)
+
+Keep it clear and helpful while showing understanding."""
+
+        elif context == "error_response":
+            return """You are a apologetic productivity assistant handling a technical error.
+
+Generate a brief error message that:
+- Apologizes for the technical issue
+- Assures them you'll try again later
+- Maintains professional tone
+- Uses appropriate emojis (😅, 🔧, etc.)
+
+Keep it brief and professional."""
 
         else:
             # Fallback to base implementation

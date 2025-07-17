@@ -297,8 +297,21 @@ class PlanningBootstrapHaunter(BaseHaunter):
 
     async def _daily_check(self):
         """Check if tomorrow has a planning event, start bootstrap if not."""
-        # TODO: Implement when we have proper app context
-        self.logger.info("Daily check for planning events - implementation needed")
+        try:
+            # Check for existing planning events for tomorrow
+            from datetime import datetime, timedelta
+            from sqlalchemy import select, and_
+            
+            tomorrow = datetime.now() + timedelta(days=1)
+            tomorrow_start = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
+            tomorrow_end = tomorrow.replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            # Query would check for existing events in date range
+            # Implementation requires calendar integration context
+            self.logger.info(f"Daily check for planning events on {tomorrow.date()} - calendar integration needed")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to perform daily check: {e}")
 
     async def _start_bootstrap_haunt(self):
         """Start the bootstrap haunting process with LLM-generated messages."""

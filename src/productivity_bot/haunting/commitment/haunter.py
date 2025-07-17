@@ -170,9 +170,9 @@ class CommitmentHaunter(BaseHaunter):
             # Handle based on action type
             if intent.action == "mark_done":
                 # User completed their planning session
+                completion_message = await self.generate_message("completion_celebration", 1)
                 await self.send(
-                    "🎉 Awesome! Great job completing your planning session. "
-                    "I'll check in with you about your next one later.",
+                    completion_message,
                     channel=self.channel,
                     thread_ts=self.thread_ts,
                 )
@@ -185,8 +185,9 @@ class CommitmentHaunter(BaseHaunter):
                 success = await self._route_to_planner(intent)
 
                 if success:
+                    reschedule_success_message = await self.generate_message("reschedule_success", 1)
                     await self.send(
-                        "✅ No problem! I'll help you reschedule your planning session.",
+                        reschedule_success_message,
                         channel=self.channel,
                         thread_ts=self.thread_ts,
                     )
@@ -197,15 +198,17 @@ class CommitmentHaunter(BaseHaunter):
 
                     if success:
                         delay = self.next_delay(attempt + 1)
+                        reschedule_retry_message = await self.generate_message("reschedule_retry", 1)
                         await self.send(
-                            f"I had trouble rescheduling. I'll check back in {delay} minutes.",
+                            reschedule_retry_message,
                             channel=self.channel,
                             thread_ts=self.thread_ts,
                         )
                         return True
                     else:
+                        reschedule_failed_message = await self.generate_message("reschedule_failed", 1)
                         await self.send(
-                            "I'll try to help with rescheduling later.",
+                            reschedule_failed_message,
                             channel=self.channel,
                             thread_ts=self.thread_ts,
                         )
@@ -213,11 +216,9 @@ class CommitmentHaunter(BaseHaunter):
 
             else:  # unknown action
                 # Try to clarify with user
+                clarification_message = await self.generate_message("clarification_request", 1)
                 await self.send(
-                    "I'm not sure what you mean. Since you committed to a planning session, I'd like to know:\n"
-                    "• Did you **complete** your planning session?\n"
-                    "• Do you need to **postpone** it to another time?\n"
-                    "\nJust let me know how it went!",
+                    clarification_message,
                     channel=self.channel,
                     thread_ts=self.thread_ts,
                 )
@@ -225,8 +226,9 @@ class CommitmentHaunter(BaseHaunter):
 
         except Exception as e:
             self.logger.error(f"Failed to handle commitment user reply: {e}")
+            error_message = await self.generate_message("error_response", 1)
             await self.send(
-                "Sorry, I encountered an error. Let me try again later.",
+                error_message,
                 channel=self.channel,
                 thread_ts=self.thread_ts,
             )
@@ -239,23 +241,8 @@ class CommitmentHaunter(BaseHaunter):
         Returns:
             Message timestamp if successful, None otherwise
         """
-        if self.planned_time:
-            time_str = self.planned_time.strftime("%I:%M %p on %B %d")
-            message = (
-                f"⏰ Hey! Just checking in about your planning session scheduled for {time_str}.\n\n"
-                "How did it go? Did you:\n"
-                "• **Complete** your planning session as scheduled?\n"
-                "• Need to **postpone** to a different time?\n\n"
-                "Let me know so I can help you stay on track!"
-            )
-        else:
-            message = (
-                "⏰ Hey! Just checking in about your planning session.\n\n"
-                "How did it go? Did you:\n"
-                "• **Complete** your planning session?\n"
-                "• Need to **postpone** to a different time?\n\n"
-                "Let me know so I can help you stay on track!"
-            )
+        # Generate LLM-powered message instead of hardcoded template
+        message = await self.generate_message("commitment_reminder", 1)
 
         return await self.send(
             message,
@@ -270,16 +257,8 @@ class CommitmentHaunter(BaseHaunter):
         Args:
             attempt: Current attempt number
         """
-        messages = [
-            "👻 Still wondering about your planning session - how did it go?",
-            "📅 Just want to make sure you're staying on track with your planning!",
-            "⚡ Quick check-in: did you get that planning time in?",
-            "🎯 Accountability check! How was your planning session?",
-        ]
-
-        # Cycle through messages based on attempt number
-        message_index = (attempt - 1) % len(messages)
-        message = messages[message_index]
+        # Generate LLM-powered message instead of cycling through hardcoded ones
+        message = await self.generate_message("commitment_followup", attempt)
 
         await self.send(
             message,
@@ -306,16 +285,8 @@ class CommitmentHaunter(BaseHaunter):
         if not self.planned_time:
             return None
 
-        time_str = self.planned_time.strftime("%I:%M %p")
-        message = (
-            f"🔔 Heads up! Your planning session is coming up at {time_str} "
-            f"(in {minutes_before} minutes).\n\n"
-            "This is your dedicated time to:\n"
-            "• Review your goals and priorities\n"
-            "• Plan your upcoming work\n"
-            "• Reflect on your progress\n\n"
-            "Hope it goes well! I'll check in afterward to see how it went."
-        )
+        # Generate LLM-powered reminder message
+        message = await self.generate_message("pre_session_reminder", 1)
 
         return await self.send(
             message,
@@ -393,7 +364,113 @@ class CommitmentHaunter(BaseHaunter):
         Returns:
             Commitment-specific system prompt
         """
-        if context == "event_start":
+        if context == "commitment_reminder":
+            return """You are an encouraging productivity assistant following up about a committed planning session.
+
+Generate a friendly check-in message that:
+- Asks how their committed planning session went
+- Offers options for completion status (complete, postpone, etc.)
+- Shows accountability support without being pushy
+- Uses encouraging emojis (⏰, ✅, 📅, etc.)
+
+Keep it supportive and focused on helping them stay on track."""
+
+        elif context == "commitment_followup":
+            if attempt <= 2:
+                urgency = "gentle and encouraging"
+            elif attempt <= 4:
+                urgency = "more direct but supportive"
+            else:
+                urgency = "persistent but understanding"
+                
+            return f"""You are an encouraging productivity assistant doing follow-up #{attempt} about a planning session commitment.
+
+Generate a {urgency} follow-up message that:
+- Continues to check on their planning session progress
+- Shows persistence appropriate for attempt #{attempt}
+- Maintains accountability support without guilt
+- Uses appropriate emojis for the follow-up level
+
+Keep it balanced between accountability and understanding."""
+
+        elif context == "pre_session_reminder":
+            return """You are a helpful productivity assistant sending a pre-session reminder.
+
+Generate an anticipatory reminder message that:
+- Alerts them their planning session is starting soon
+- Builds excitement and readiness for the session
+- Briefly highlights what they can accomplish
+- Uses motivating emojis (🔔, ⏰, 🎯, etc.)
+
+Keep it energizing and focused on preparation."""
+
+        elif context == "completion_celebration":
+            return """You are an enthusiastic productivity assistant celebrating a completed planning session.
+
+Generate a celebratory message that:
+- Congratulates them on completing their planning session
+- Acknowledges their commitment follow-through
+- Briefly mentions future support
+- Uses celebratory emojis (🎉, ✅, 🌟, etc.)
+
+Keep it positive and encouraging."""
+
+        elif context == "reschedule_success":
+            return """You are a supportive productivity assistant confirming successful rescheduling.
+
+Generate a confirmation message that:
+- Confirms the rescheduling was successful
+- Shows understanding that timing changes happen
+- Maintains positive tone about their planning commitment
+- Uses supportive emojis (✅, 📅, 👍, etc.)
+
+Keep it reassuring and supportive."""
+
+        elif context == "reschedule_retry":
+            return """You are a helpful productivity assistant explaining a rescheduling issue.
+
+Generate a brief message that:
+- Explains there was a technical difficulty with rescheduling
+- Reassures them you'll try again soon
+- Maintains helpful tone despite the issue
+- Uses appropriate emojis (🔄, ⏰, etc.)
+
+Keep it brief and reassuring."""
+
+        elif context == "reschedule_failed":
+            return """You are a understanding productivity assistant handling a rescheduling failure.
+
+Generate a brief message that:
+- Acknowledges the rescheduling attempt didn't work
+- Offers to try again later
+- Maintains supportive tone
+- Uses appropriate emojis (🤝, ⏰, etc.)
+
+Keep it understanding and brief."""
+
+        elif context == "clarification_request":
+            return """You are a helpful productivity assistant asking for clarification about a planning session.
+
+Generate a clarifying message that:
+- Acknowledges you didn't understand their response
+- Asks specifically about completion or postponement
+- Offers clear options for their response
+- Uses friendly emojis (❓, 💭, etc.)
+
+Keep it clear and helpful."""
+
+        elif context == "error_response":
+            return """You are a apologetic productivity assistant handling a technical error.
+
+Generate a brief error message that:
+- Apologizes for the technical issue
+- Assures them you'll try again later
+- Maintains professional tone
+- Uses appropriate emojis (😅, 🔧, etc.)
+
+Keep it brief and professional."""
+
+        elif context == "event_start":
             return """You are an encouraging productivity assistant helping someone who has committed to a planning session.
 
 Generate an energetic, motivational message that:
