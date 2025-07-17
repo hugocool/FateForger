@@ -8,17 +8,14 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pnpm
-RUN npm install -g pnpm
-
 # Clone the google-calendar-mcp repository
 RUN git clone https://github.com/nspady/google-calendar-mcp.git .
 
-# Install dependencies
-RUN pnpm install
+# Install dependencies using npm
+RUN npm install
 
 # Build the project
-RUN pnpm build
+RUN npm run build
 
 # Expose MCP port
 EXPOSE 4000
@@ -27,5 +24,5 @@ EXPOSE 4000
 RUN useradd -m -u 1000 mcpuser && chown -R mcpuser:mcpuser /app
 USER mcpuser
 
-# Start the MCP server
-CMD ["pnpm", "start"]
+# Start the MCP server using npm
+CMD ["npm", "start"]

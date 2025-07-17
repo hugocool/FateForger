@@ -73,7 +73,7 @@ class SlackAssistantAgent:
             workbench = None
             tools = []
             try:
-                MCP_URL = "http://mcp:4000/mcp"
+                MCP_URL = "http://calendar-mcp:3000/mcp"
                 server_params = SseServerParams(
                     url=MCP_URL, timeout=30, sse_read_timeout=300
                 )

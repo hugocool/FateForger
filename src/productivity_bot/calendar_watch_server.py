@@ -16,8 +16,19 @@ from sqlalchemy.dialects.sqlite import insert
 
 from .common import get_config, get_logger, list_events_since
 from .database import get_db_session
-from .models import CalendarEvent, CalendarSync, EventStatus
-from .scheduler import get_scheduler, schedule_event_haunt, start_scheduler
+from .models import (
+    CalendarEvent,
+    CalendarSync,
+    EventStatus,
+    PlanningSession,
+    PlanStatus,
+)
+from .scheduler import (
+    get_scheduler,
+    reschedule_haunt,
+    schedule_event_haunt,
+    start_scheduler,
+)
 
 logger = get_logger("calendar_watch_server")
 
@@ -178,7 +189,7 @@ class CalendarWatchServer:
         try:
             # Get sync state from database
             async with get_db_session() as db:
-                result = await db.execute(
+                result = db.execute(
                     select(CalendarSync).where(CalendarSync.calendar_id == calendar_id)
                 )
                 sync_record = result.scalar_one_or_none()
@@ -217,7 +228,6 @@ class CalendarWatchServer:
                     )
                     db.add(new_sync)
 
-                await db.commit()
                 logger.info(f"Calendar sync completed for {calendar_id}")
 
         except Exception as e:
@@ -230,8 +240,8 @@ class CalendarWatchServer:
                     sync_record.last_sync_at = datetime.utcnow()
                     await db.commit()
 
-    async def _upsert_calendar_event(self, event_data: Dict[str, Any]):
-        """Upsert a calendar event and schedule haunting if needed."""
+    async def _upsert_calendar_event(self, event_data: Dict[str, Any]) -> None:
+        """Upsert a calendar event and handle moves/deletes with scheduler synchronization."""
         try:
             event_id = event_data.get("id")
             if not event_id:
@@ -262,7 +272,29 @@ class CalendarWatchServer:
                 )
                 existing_event = result.scalar_one_or_none()
 
+                # Track time changes for move detection
+                time_changed = False
+                was_cancelled = False
+
                 if existing_event:
+                    # Detect event moves (time changes)
+                    if (
+                        existing_event.start_time != start_time
+                        or existing_event.end_time != end_time
+                    ):
+                        time_changed = True
+                        logger.info(
+                            f"Event {event_id} moved: {existing_event.start_time} -> {start_time}"
+                        )
+
+                    # Detect cancellations
+                    if (
+                        existing_event.status != EventStatus.CANCELLED
+                        and event_status == EventStatus.CANCELLED
+                    ):
+                        was_cancelled = True
+                        logger.info(f"Event {event_id} was cancelled")
+
                     # Update existing event
                     existing_event.title = event_data.get("summary", "")
                     existing_event.description = event_data.get("description", "")
@@ -308,28 +340,189 @@ class CalendarWatchServer:
                     db.add(calendar_event)
                     logger.info(f"Created new event {event_id}")
 
-                await db.commit()
+                # Handle scheduler synchronization
+                await self._sync_scheduler_for_event(
+                    calendar_event, time_changed, was_cancelled
+                )
 
-                # Schedule haunt job if event is upcoming
-                if (
-                    event_status == EventStatus.UPCOMING
-                    and start_time > datetime.utcnow() + timedelta(minutes=5)
-                ):
-
-                    # Schedule reminder 15 minutes before event
-                    reminder_time = start_time - timedelta(minutes=15)
-
-                    if reminder_time > datetime.utcnow():
-                        job_id = schedule_event_haunt(event_id, reminder_time)
-                        calendar_event.scheduler_job_id = job_id
-                        await db.commit()
-
-                        logger.info(
-                            f"Scheduled haunt for event {event_id} at {reminder_time}"
-                        )
+                # Update related planning sessions if this is a planning event
+                await self._sync_planning_sessions(
+                    calendar_event, time_changed, was_cancelled
+                )
 
         except Exception as e:
             logger.error(f"Error upserting calendar event: {e}")
+
+    async def _sync_scheduler_for_event(
+        self, calendar_event: CalendarEvent, time_changed: bool, was_cancelled: bool
+    ) -> None:
+        """Synchronize scheduler jobs for calendar event changes."""
+        try:
+            from .scheduler import cancel_haunt, schedule_event_haunt
+
+            # Handle cancellations or completed events
+            if was_cancelled or calendar_event.status == EventStatus.CANCELLED:
+                if calendar_event.scheduler_job_id:
+                    logger.info(
+                        f"Cancelling haunt job for cancelled event {calendar_event.event_id}"
+                    )
+                    cancel_haunt(calendar_event.scheduler_job_id)
+
+                    # Update database
+                    async with get_db_session() as db:
+                        calendar_event.scheduler_job_id = None
+
+                    # Send agentic Slack notification about cancellation
+                    await self._send_agentic_cancellation_notification(calendar_event)
+                return
+
+            # Handle upcoming events that need scheduling/rescheduling
+            if calendar_event.status == EventStatus.UPCOMING:
+                start_time = calendar_event.start_time
+
+                # Only schedule if event is more than 5 minutes in the future
+                if start_time > datetime.utcnow() + timedelta(minutes=5):
+                    # Calculate reminder time (15 minutes before)
+                    reminder_time = start_time - timedelta(minutes=15)
+
+                    if reminder_time > datetime.utcnow():
+                        # Cancel existing job if it exists
+                        if calendar_event.scheduler_job_id:
+                            cancel_haunt(calendar_event.scheduler_job_id)
+
+                        # Schedule new/rescheduled job
+                        job_id = schedule_event_haunt(
+                            calendar_event.event_id, reminder_time
+                        )
+
+                        # Update database with new job ID
+                        async with get_db_session() as db:
+                            calendar_event.scheduler_job_id = job_id
+
+                        action = "Rescheduled" if time_changed else "Scheduled"
+                        logger.info(
+                            f"{action} haunt for event {calendar_event.event_id} at {reminder_time}"
+                        )
+
+                        # Send agentic notification about move if time changed
+                        if time_changed:
+                            await self._send_agentic_move_notification(calendar_event)
+                    else:
+                        logger.info(
+                            f"Reminder time {reminder_time} is in the past, not scheduling"
+                        )
+                else:
+                    logger.info(
+                        f"Event {calendar_event.event_id} starts too soon, not scheduling reminder"
+                    )
+
+        except Exception as e:
+            logger.error(
+                f"Error syncing scheduler for event {calendar_event.event_id}: {e}"
+            )
+
+    async def _sync_planning_sessions(
+        self, calendar_event: CalendarEvent, time_changed: bool, was_cancelled: bool
+    ) -> None:
+        """Update related planning sessions when calendar events change."""
+        try:
+            async with get_db_session() as db:
+                # Find planning sessions linked to this event
+                result = await db.execute(
+                    select(PlanningSession).where(
+                        PlanningSession.event_id == calendar_event.event_id
+                    )
+                )
+                planning_sessions = result.scalars().all()
+
+                for session in planning_sessions:
+                    if was_cancelled or calendar_event.status == EventStatus.CANCELLED:
+                        # Handle cancelled planning sessions
+                        session.status = (
+                            PlanStatus.COMPLETE
+                        )  # Mark as complete to avoid further haunting
+                        session.notes = (
+                            session.notes or ""
+                        ) + f"\n[Auto] Event cancelled at {datetime.utcnow()}"
+
+                        # Cancel scheduler job if exists
+                        if session.scheduler_job_id:
+                            from .scheduler import cancel_haunt
+
+                            cancel_haunt(session.scheduler_job_id)
+                            session.scheduler_job_id = None
+
+                        logger.info(
+                            f"Marked planning session {session.id} as complete due to event cancellation"
+                        )
+
+                    elif time_changed:
+                        # Update session timing for moves
+                        session.scheduled_for = calendar_event.start_time
+                        session.updated_at = datetime.utcnow()
+
+                        # Reschedule haunt job if exists and session is not complete
+                        if (
+                            session.scheduler_job_id
+                            and session.status != PlanStatus.COMPLETE
+                        ):
+                            from .scheduler import reschedule_haunt
+
+                            if reschedule_haunt(session.id, calendar_event.start_time):
+                                logger.info(
+                                    f"Rescheduled planning session {session.id} haunt job"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Failed to reschedule planning session {session.id} haunt job"
+                                )
+
+        except Exception as e:
+            logger.error(
+                f"Error syncing planning sessions for event {calendar_event.event_id}: {e}"
+            )
+
+    async def _send_agentic_cancellation_notification(
+        self, calendar_event: CalendarEvent
+    ) -> None:
+        """Log cancellation notification (placeholder for future agentic Slack integration)."""
+        try:
+            cancellation_message = (
+                f"📅 Event Cancelled: {calendar_event.title}\n"
+                f"⏰ Was scheduled for: {calendar_event.start_time.strftime('%Y-%m-%d %H:%M')}\n"
+                f"📍 Location: {calendar_event.location or 'Not specified'}\n\n"
+                f"This event has been cancelled. Any related reminders have been cleared."
+            )
+
+            # For now, log the notification. Future enhancement will use AssistantAgent for Slack
+            logger.info(f"CANCELLATION NOTIFICATION: {cancellation_message}")
+
+            # TODO: Implement agentic Slack notification using AssistantAgent
+            # This would require setting up proper Slack channel routing and message formatting
+
+        except Exception as e:
+            logger.error(f"Error preparing cancellation notification: {e}")
+
+    async def _send_agentic_move_notification(
+        self, calendar_event: CalendarEvent
+    ) -> None:
+        """Log move notification (placeholder for future agentic Slack integration)."""
+        try:
+            move_message = (
+                f"📅 Event Rescheduled: {calendar_event.title}\n"
+                f"🕐 New time: {calendar_event.start_time.strftime('%Y-%m-%d %H:%M')} - {calendar_event.end_time.strftime('%H:%M')}\n"
+                f"📍 Location: {calendar_event.location or 'Not specified'}\n\n"
+                f"This event has been moved. Reminders have been updated accordingly."
+            )
+
+            # For now, log the notification. Future enhancement will use AssistantAgent for Slack
+            logger.info(f"MOVE NOTIFICATION: {move_message}")
+
+            # TODO: Implement agentic Slack notification using AssistantAgent
+            # This would require setting up proper Slack channel routing and message formatting
+
+        except Exception as e:
+            logger.error(f"Error preparing move notification: {e}")
 
     def _parse_datetime(self, time_data: Dict[str, Any]) -> Optional[datetime]:
         """Parse datetime from Google Calendar API format."""
@@ -357,9 +550,11 @@ class CalendarWatchServer:
             logger.error(f"Error parsing datetime {time_data}: {e}")
             return None
 
-    async def start_server(self, host: str = "0.0.0.0", port: Optional[int] = None):
+    async def start_server(
+        self, host: str = "0.0.0.0", port: Optional[int] = None
+    ) -> None:
         """Start the calendar watch server with scheduler."""
-        port = port or self.config.port
+        port = port or 8000  # Default port
 
         # Start the scheduler
         await start_scheduler()
@@ -372,13 +567,13 @@ class CalendarWatchServer:
             self.app,
             host=host,
             port=port,
-            log_level="info" if self.config.debug else "warning",
+            log_level="info" if self.config.development else "warning",
         )
         server = uvicorn.Server(config)
         await server.serve()
 
 
-async def main():
+async def main() -> None:
     """Main entry point for the calendar watch server."""
     try:
         config = get_config()
@@ -391,7 +586,7 @@ async def main():
         raise
 
 
-def sync_main():
+def sync_main() -> None:
     """Synchronous main entry point."""
     import asyncio
 

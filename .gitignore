@@ -8,7 +8,8 @@ __pycache__/
 
 # history
 .history
-
+# secrets
+secrets/
 # Distribution / packaging
 .Python
 build/

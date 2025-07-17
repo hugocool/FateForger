@@ -41,7 +41,10 @@ name = "admonish"
 version = "0.1.0"
 description = "does the productivity for you"
 authors = ["hugocool <hugo.evers@gmail.com>"]
-packages = [{include = "productivity_bot", from = "src"}]
+packages = [
+    {include = "productivity_bot", from = "src"},
+    {include = "scripts"}
+]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.1"
@@ -61,6 +64,15 @@ mypy = "^1.17.0"
 plan = "productivity_bot.planner_bot:main"
 haunt = "productivity_bot.haunter_bot:main"
 watch = "productivity_bot.calendar_watch_server:main"
+
+# Docker and infrastructure management scripts
+mcp-build = "scripts.docker_utils:build_mcp_server"
+mcp-start = "scripts.docker_utils:start_mcp_server"
+mcp-stop = "scripts.docker_utils:stop_mcp_server"
+mcp-logs = "scripts.docker_utils:mcp_logs"
+infra-up = "scripts.docker_utils:start_all_services"
+infra-down = "scripts.docker_utils:stop_all_services"
+dev-setup = "scripts.dev_utils:setup_development_environment"
 
 
 [build-system]

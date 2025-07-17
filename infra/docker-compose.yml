@@ -1,24 +1,43 @@
-version: '3.8'
+version: "3.9"
 
 services:
-  # Google Calendar MCP Service (TypeScript)
-  mcp:
+  # Google Calendar MCP Service (using upstream Dockerfile)
+  calendar-mcp:
+    # ───────────────────────────────────────────────
+    # Build directly from the GitHub repo @ tag
     build:
-      context: ..
-      dockerfile: infra/Dockerfile.mcp
-    container_name: admonish-mcp
+      context: https://github.com/nspady/google-calendar-mcp.git#${MCP_VERSION}
+      dockerfile: Dockerfile          # the one in the repo root
+    image: myorg/calendar-mcp:${MCP_VERSION}
+    # ───────────────────────────────────────────────
+    
+    container_name: admonish-calendar-mcp
+    env_file:
+      - .env  # Use local infra/.env for MCP-specific configs
+    # mount your OAuth JSON (or use secrets)
+    volumes:
+      - type: bind
+        source: ../secrets/gcal-oauth.json
+        target: /app/gcp-oauth.keys.json
+        read_only: true
+      - calendar-mcp-tokens:/home/node/.config/google-calendar-mcp
+    
     ports:
-      - "4000:4000"
+      - "${PORT}:${PORT}"
+      - "3500:3500"  # OAuth authentication server port
     environment:
-      - NODE_ENV=production
-      - MCP_PORT=4000
+      TRANSPORT: "${TRANSPORT}"
+      PORT: "${PORT}"
+      GOOGLE_OAUTH_CREDENTIALS: "/app/gcp-oauth.keys.json"
+      HOST: "0.0.0.0"
+    
     networks:
       - admonish-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT}/healthz"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
 
   # Python Bot Service
@@ -29,22 +48,22 @@ services:
     container_name: admonish-bot
     ports:
       - "8000:8000"  # FastAPI calendar webhook server
-      - "3000:3000"  # Slack Bot port (if needed)
+      - "3001:3000"  # Slack Bot port (if needed) - changed to avoid conflict
     environment:
       - PYTHONPATH=/app/src
-      - MCP_ENDPOINT=http://mcp:4000
+      - MCP_ENDPOINT=http://calendar-mcp:${PORT}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - CALENDAR_WEBHOOK_SECRET=${CALENDAR_WEBHOOK_SECRET}
     env_file:
-      - ../.env
+      - .env  # Use local infra/.env for consistency
     volumes:
       - ../logs:/app/logs
     networks:
       - admonish-network
     depends_on:
-      mcp:
+      calendar-mcp:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -61,13 +80,13 @@ services:
     container_name: admonish-dev
     ports:
       - "8001:8000"  # Different port for dev
-      - "3001:3000"
+      - "3002:3000"  # Different port for dev
     environment:
       - PYTHONPATH=/app/src
-      - MCP_ENDPOINT=http://mcp:4000
+      - MCP_ENDPOINT=http://calendar-mcp:${PORT}
       - DEVELOPMENT=true
     env_file:
-      - ../.env
+      - .env  # Use local infra/.env for consistency
     volumes:
       - ../src:/app/src  # Mount source for live reloading
       - ../tests:/app/tests
@@ -76,7 +95,7 @@ services:
     networks:
       - admonish-network
     depends_on:
-      - mcp
+      - calendar-mcp
     command: /bin/bash
     stdin_open: true
     tty: true
@@ -86,5 +105,7 @@ networks:
     driver: bridge
 
 volumes:
+  calendar-mcp-tokens:
+    driver: local
   poetry-cache:
     driver: local

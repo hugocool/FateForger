@@ -29,7 +29,7 @@ class CalendarMcpClient:
     TODO: Implement actual tool calling once MCP server interface is clarified.
     """
 
-    def __init__(self, mcp_server_url: str = "http://mcp:4000"):
+    def __init__(self, mcp_server_url: str = "http://calendar-mcp:3000"):
         """
         Initialize the MCP calendar client.
 
