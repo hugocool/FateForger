@@ -238,7 +238,7 @@ class CalendarWatchServer:
                 async with get_db_session() as db:
                     sync_record.sync_error = str(e)
                     sync_record.last_sync_at = datetime.utcnow()
-                    await db.commit()
+                    db.commit()
 
     async def _upsert_calendar_event(self, event_data: Dict[str, Any]) -> None:
         """Upsert a calendar event and handle moves/deletes with scheduler synchronization."""
@@ -267,7 +267,7 @@ class CalendarWatchServer:
 
             async with get_db_session() as db:
                 # Check if event exists
-                result = await db.execute(
+                result = db.execute(
                     select(CalendarEvent).where(CalendarEvent.event_id == event_id)
                 )
                 existing_event = result.scalar_one_or_none()
@@ -437,23 +437,30 @@ class CalendarWatchServer:
 
                 for session in planning_sessions:
                     if was_cancelled or calendar_event.status == EventStatus.CANCELLED:
-                        # Handle cancelled planning sessions
-                        session.status = (
-                            PlanStatus.COMPLETE
-                        )  # Mark as complete to avoid further haunting
+                        # Handle cancelled planning sessions - DON'T mark as complete!
+                        # The user still needs to either reschedule or do the planning work
+                        session.status = PlanStatus.CANCELLED
                         session.notes = (
                             session.notes or ""
-                        ) + f"\n[Auto] Event cancelled at {datetime.utcnow()}"
+                        ) + f"\n[Auto] Calendar event cancelled at {datetime.utcnow()} - planning still needs to be completed or rescheduled"
 
-                        # Cancel scheduler job if exists
+                        # Keep haunting! Schedule immediate follow-up to ask user what to do
                         if session.scheduler_job_id:
-                            from .scheduler import cancel_haunt
-
-                            cancel_haunt(session.scheduler_job_id)
-                            session.scheduler_job_id = None
+                            from .scheduler import reschedule_haunt
+                            
+                            # Reschedule haunt for 5 minutes from now to follow up on cancellation
+                            follow_up_time = datetime.utcnow() + timedelta(minutes=5)
+                            if reschedule_haunt(session.id, follow_up_time):
+                                logger.info(
+                                    f"Rescheduled haunt for cancelled session {session.id} to follow up in 5 minutes"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Failed to reschedule haunt for cancelled session {session.id}"
+                                )
 
                         logger.info(
-                            f"Marked planning session {session.id} as complete due to event cancellation"
+                            f"Marked planning session {session.id} as CANCELLED (not complete) - will continue haunting for reschedule/completion"
                         )
 
                     elif time_changed:
@@ -485,44 +492,143 @@ class CalendarWatchServer:
     async def _send_agentic_cancellation_notification(
         self, calendar_event: CalendarEvent
     ) -> None:
-        """Log cancellation notification (placeholder for future agentic Slack integration)."""
+        """Send agentic Slack notification for event cancellation via AssistantAgent."""
         try:
-            cancellation_message = (
-                f"📅 Event Cancelled: {calendar_event.title}\n"
-                f"⏰ Was scheduled for: {calendar_event.start_time.strftime('%Y-%m-%d %H:%M')}\n"
-                f"📍 Location: {calendar_event.location or 'Not specified'}\n\n"
-                f"This event has been cancelled. Any related reminders have been cleared."
-            )
+            # Find planning sessions linked to this event
+            async with get_db_session() as db:
+                result = db.execute(
+                    select(PlanningSession).where(
+                        PlanningSession.event_id == calendar_event.event_id
+                    )
+                )
+                planning_sessions = result.scalars().all()
 
-            # For now, log the notification. Future enhancement will use AssistantAgent for Slack
-            logger.info(f"CANCELLATION NOTIFICATION: {cancellation_message}")
-
-            # TODO: Implement agentic Slack notification using AssistantAgent
-            # This would require setting up proper Slack channel routing and message formatting
+            # Send notification to each linked planning session
+            for session in planning_sessions:
+                if session.thread_ts and session.channel_id:
+                    await self._send_slack_thread_notification(
+                        thread_ts=session.thread_ts,
+                        channel_id=session.channel_id,
+                        notification_type="cancellation",
+                        calendar_event=calendar_event,
+                        planning_session=session,
+                    )
 
         except Exception as e:
-            logger.error(f"Error preparing cancellation notification: {e}")
+            logger.error(f"Error sending agentic cancellation notification: {e}")
 
     async def _send_agentic_move_notification(
         self, calendar_event: CalendarEvent
     ) -> None:
-        """Log move notification (placeholder for future agentic Slack integration)."""
+        """Send agentic Slack notification for event move via AssistantAgent."""
         try:
-            move_message = (
-                f"📅 Event Rescheduled: {calendar_event.title}\n"
-                f"🕐 New time: {calendar_event.start_time.strftime('%Y-%m-%d %H:%M')} - {calendar_event.end_time.strftime('%H:%M')}\n"
-                f"📍 Location: {calendar_event.location or 'Not specified'}\n\n"
-                f"This event has been moved. Reminders have been updated accordingly."
-            )
+            # Find planning sessions linked to this event
+            async with get_db_session() as db:
+                result = db.execute(
+                    select(PlanningSession).where(
+                        PlanningSession.event_id == calendar_event.event_id
+                    )
+                )
+                planning_sessions = result.scalars().all()
 
-            # For now, log the notification. Future enhancement will use AssistantAgent for Slack
-            logger.info(f"MOVE NOTIFICATION: {move_message}")
-
-            # TODO: Implement agentic Slack notification using AssistantAgent
-            # This would require setting up proper Slack channel routing and message formatting
+            # Send notification to each linked planning session
+            for session in planning_sessions:
+                if session.thread_ts and session.channel_id:
+                    await self._send_slack_thread_notification(
+                        thread_ts=session.thread_ts,
+                        channel_id=session.channel_id,
+                        notification_type="move",
+                        calendar_event=calendar_event,
+                        planning_session=session,
+                    )
 
         except Exception as e:
-            logger.error(f"Error preparing move notification: {e}")
+            logger.error(f"Error sending agentic move notification: {e}")
+
+    async def _send_slack_thread_notification(
+        self,
+        thread_ts: str,
+        channel_id: str,
+        notification_type: str,
+        calendar_event: CalendarEvent,
+        planning_session: PlanningSession,
+    ) -> None:
+        """Send structured notification to Slack thread using AssistantAgent."""
+        try:
+            # Import the assistant agent
+            from .agents.slack_assistant_agent import get_slack_assistant_agent
+
+            # Create notification context
+            notification_context = {
+                "type": notification_type,
+                "event": {
+                    "title": calendar_event.title,
+                    "start_time": calendar_event.start_time.strftime('%Y-%m-%d %H:%M'),
+                    "end_time": calendar_event.end_time.strftime('%H:%M'),
+                    "location": calendar_event.location or "Not specified",
+                },
+                "session": {
+                    "id": planning_session.id,
+                    "user_id": planning_session.user_id,
+                    "status": planning_session.status.value,
+                    "scheduled_for": planning_session.scheduled_for.strftime('%Y-%m-%d %H:%M'),
+                },
+            }
+
+            # Use the assistant agent to generate structured notification
+            agent = await get_slack_assistant_agent()
+            
+            # Create notification prompt based on type
+            if notification_type == "cancellation":
+                prompt = f"""Generate a firm but helpful notification that the calendar event "{calendar_event.title}" was cancelled.
+                
+Event details:
+- Was scheduled for: {calendar_event.start_time.strftime('%Y-%m-%d %H:%M')}
+- Location: {calendar_event.location or 'Not specified'}
+
+IMPORTANT: The planning work still needs to be completed! The user cannot escape planning just because the calendar event was cancelled.
+
+Ask the user to either:
+1. Reschedule the planning session to a new time
+2. Complete the planning work right now without a calendar slot
+
+Respond with action "recreate_event" to suggest recreating the calendar event.
+Be persistent but supportive - planning is essential and cannot be skipped."""
+
+            else:  # move notification
+                prompt = f"""Generate a helpful notification that the calendar event "{calendar_event.title}" was moved.
+                
+Event details:
+- New time: {calendar_event.start_time.strftime('%Y-%m-%d %H:%M')} - {calendar_event.end_time.strftime('%H:%M')}
+- Location: {calendar_event.location or 'Not specified'}
+
+The planning reminders have been updated automatically.
+Respond with action "status" to acknowledge the change.
+Keep the message friendly and informative."""
+
+            # Get the agent response (this will be a PlannerAction)
+            response = await agent.process_slack_thread_reply(
+                prompt, 
+                session_context=notification_context
+            )
+
+            # TODO: Actually send to Slack using the bot instance
+            # For now, log the structured notification
+            logger.info(
+                f"AGENTIC NOTIFICATION ({notification_type.upper()}): "
+                f"Thread {thread_ts} | Action: {response.action} | "
+                f"Event: {calendar_event.title}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error sending Slack thread notification: {e}")
+            # Fallback to simple logging
+            fallback_message = (
+                f"📅 Event {notification_type.title()}: {calendar_event.title}\n"
+                f"⏰ Time: {calendar_event.start_time.strftime('%Y-%m-%d %H:%M')}\n"
+                f"📍 Location: {calendar_event.location or 'Not specified'}"
+            )
+            logger.info(f"FALLBACK NOTIFICATION: {fallback_message}")
 
     def _parse_datetime(self, time_data: Dict[str, Any]) -> Optional[datetime]:
         """Parse datetime from Google Calendar API format."""

@@ -133,6 +133,7 @@ class PlanStatus(PyEnum):
     NOT_STARTED = "NOT_STARTED"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETE = "COMPLETE"
+    CANCELLED = "CANCELLED"  # Event was cancelled, but planning still needs to be done
 
 
 class PlanningSession(Base):
