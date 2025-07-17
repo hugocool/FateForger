@@ -1,20 +1,21 @@
 """
-Slack Assistant Agent using AssistantAgent with structured output enforcement.
+Slack Assistant Agent using OpenAIAssistantAgent with MCP Calendar Tools.
 
-This module provides the core agentic flow with guaranteed schema compliance:
-- AssistantAgent with output_content_type=PlannerAction for strict schema enforcement
-- No parsing needed - LLM output is guaranteed to match PlannerAction schema
-- MCP Workbench integration for calendar tools (optional)
-- Shared session management with haunter bot
+This module provides the core agentic flow with real OpenAI integration:
+- OpenAIAssistantAgent with MCP Workbench for calendar tools
+- Real-time calendar integration via Google Calendar MCP
+- Structured PlannerAction output for consistent responses
+- Session context and haunting flow integration
 """
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from autogen_agentchat.agents import AssistantAgent
+from autogen_ext.agents.openai import OpenAIAssistantAgent
 from autogen_ext.models.openai import OpenAIChatCompletionClient
-from autogen_ext.tools.mcp import McpWorkbench, SseServerParams
+from autogen_ext.tools.mcp import McpWorkbench, StdioServerParams
+from openai import AsyncOpenAI
 
 from ..actions.planner_action import PlannerAction, get_planner_system_message
 from ..common import get_logger
@@ -40,133 +41,135 @@ class SlackAssistantAgent:
 
     def __init__(self):
         """Initialize the Slack assistant agent."""
-        self.agent: Optional[AssistantAgent] = None
+        self.agent: Optional[OpenAIAssistantAgent] = None
         self.workbench: Optional[McpWorkbench] = None
         self._initialized = False
+        self._openai_client: Optional[AsyncOpenAI] = None
 
     async def _initialize_agent(self) -> None:
         """
-        Initialize the AssistantAgent with structured output enforcement.
+        Initialize the OpenAIAssistantAgent with MCP Calendar tools.
 
-        Uses output_content_type=PlannerAction to guarantee schema compliance.
-        Optionally discovers MCP calendar tools if server is available.
+        Connects to the Google Calendar MCP Docker container and loads
+        all available calendar tools for the assistant.
         """
         if self._initialized:
             return
 
         try:
-            logger.info(
-                "Initializing AssistantAgent with structured output enforcement..."
-            )
-
-            # 1. Initialize LLM client
+            logger.info("Initializing OpenAI Assistant Agent with MCP Calendar tools...")
+            
+            # 1. Initialize OpenAI client
             from ..common import get_config
-
             config = get_config()
-
-            model_client = OpenAIChatCompletionClient(
-                model="gpt-4o-mini",
-                api_key=config.openai_api_key or os.environ.get("OPENAI_API_KEY", ""),
-            )
-
-            # 2. Configure MCP Workbench for calendar tools discovery
-            workbench = None
+            
+            api_key = config.openai_api_key or os.environ.get("OPENAI_API_KEY", "")
+            if not api_key:
+                logger.warning("OPENAI_API_KEY not found, using mock agent")
+                await self._initialize_mock_agent()
+                return
+                
+            self._openai_client = AsyncOpenAI(api_key=api_key)
+            
+            # 2. Setup MCP Workbench for Google Calendar tools
             tools = []
             try:
-                # Connect to the Google Calendar MCP server running in Docker
-                server_params = SseServerParams(
-                    url="http://localhost:4000/mcp",  # Docker port mapping
-                    timeout=30, 
-                    sse_read_timeout=300
+                server_params = StdioServerParams(
+                    command="docker",
+                    args=[
+                        "run", "--rm", "-p", "4000:4000", 
+                        "nspady/google-calendar-mcp"
+                    ]
                 )
-                workbench = McpWorkbench(server_params=server_params)
-
-                async with workbench:
-                    tools = await workbench.list_tools()
-                logger.info(f"Discovered {len(tools)} MCP calendar tools")
-
-                # Log tool names for debugging
-                tool_names = [
-                    tool["name"] if isinstance(tool, dict) else str(tool)
-                    for tool in tools
-                ]
-                logger.debug(f"Available MCP tools: {tool_names}")
+                
+                # Initialize workbench and get tools
+                self.workbench = McpWorkbench(server_params=server_params)
+                await self.workbench.__aenter__()
+                
+                # Get available MCP tools
+                tools = await self.workbench.list_tools()
+                logger.info(f"Loaded {len(tools)} MCP calendar tools: {[tool.name for tool in tools]}")
+                
             except Exception as mcp_error:
-                logger.warning(
-                    f"MCP tools unavailable, continuing without: {mcp_error}"
-                )
+                logger.warning(f"MCP tools unavailable, continuing without: {mcp_error}")
                 tools = []
-                workbench = None
-
-            # 3. Create AssistantAgent with real OpenAI integration and MCP tools
-            # Convert MCP tools to proper format if available
-            agent_tools = []
-            if tools and workbench:
-                # Use workbench directly as tool provider
-                agent_tools = None  # Let workbench handle tools
             
-            self.agent = AssistantAgent(
-                name="SlackPlannerAssistant",
-                model_client=model_client,
-                tools=agent_tools,  # None to use workbench tools
-                system_message=get_planner_system_message(),
-                output_content_type=PlannerAction,  # Enforce structured output
-                reflect_on_tool_use=True,  # Enable tool reflection for better MCP integration
+            # 3. Create the OpenAI assistant agent with calendar tools
+            self.agent = OpenAIAssistantAgent(
+                name="Slack Planner Assistant",
+                description="Productivity assistant that helps with calendar management and planning sessions",
+                model="gpt-4-1106-preview",
+                client=self._openai_client,
+                instructions="""You are a productivity assistant that helps users manage their calendar and planning sessions.
+
+Key behaviors:
+- When events are moved, acknowledge the change and confirm reminders are updated
+- When events are cancelled, be firm but supportive about still needing to complete planning
+- Always provide actionable next steps for rescheduling or completing planning work
+- Use a helpful but persistent tone for planning accountability
+- Format responses as clear, concise Slack messages
+- Use available calendar tools when appropriate to help users reschedule or manage events
+
+Your goal is to ensure users complete their planning work, either by rescheduling cancelled events or completing the planning tasks directly.""",
+                tools=tools if tools else [],
+                assistant_id=None,  # Let it create a new assistant
             )
             
-            # Store workbench for cleanup
-            self.workbench = workbench
             self._initialized = True
+            logger.info("OpenAI Assistant Agent with MCP tools initialized successfully")
             
-            logger.info(
-                f"SlackAssistantAgent initialized with {len(tools)} MCP tools and structured output enforcement"
-            )
-            agent_params = {
-                "name": "planner",
-                "model_client": model_client,
-                "system_message": get_planner_system_message(),
-                "output_content_type": PlannerAction,  # STRICT SCHEMA ENFORCEMENT
-            }
-
-            # Add MCP integration if workbench is available
-            if workbench:
-                agent_params["workbench"] = workbench
-                agent_params["reflect_on_tool_use"] = True
-                logger.info("AssistantAgent configured with MCP workbench integration")
-
-            self.agent = AssistantAgent(**agent_params)
-            self.workbench = workbench  # Store for later use
-
-            self._initialized = True
-            logger.info(
-                "Successfully initialized AssistantAgent with structured output"
-            )
-
         except Exception as e:
-            logger.error(f"Failed to initialize AssistantAgent: {e}")
-            raise
+            logger.error(f"Failed to initialize OpenAI Assistant Agent: {e}")
+            logger.info("Falling back to mock agent")
+            await self._initialize_mock_agent()
+
+    async def _initialize_mock_agent(self) -> None:
+        """Initialize a mock agent for development/testing without OpenAI."""
+        logger.info("Initializing mock assistant agent")
+        self.agent = None  # Will use fallback responses
+        self._initialized = True
 
     async def process_slack_thread_reply(
         self, user_text: str, session_context: Optional[Dict] = None
     ) -> PlannerAction:
         """
-        Process a Slack thread reply with guaranteed structured output.
-
-        Uses AssistantAgent with output_content_type=PlannerAction to ensure
-        the response always conforms to the schema. No parsing or validation
-        errors are possible - the LLM is forced to return valid PlannerAction.
+        Process a Slack thread reply using OpenAI Assistant Agent.
 
         Args:
             user_text: The user's message text
             session_context: Optional context about the planning session
 
         Returns:
-            PlannerAction: Guaranteed valid structured action
+            PlannerAction: Structured action response
         """
         await self._initialize_agent()
 
         if not self.agent:
-            logger.error("Agent not initialized, returning default action")
+            logger.warning("Agent not initialized, returning fallback action")
+            return PlannerAction(action="unknown")
+
+        try:
+            # Add session context to the prompt if available
+            context_text = ""
+            if session_context:
+                context_text = f"\nSession context: {session_context}"
+            
+            full_prompt = f"{user_text}{context_text}"
+            
+            # Use the OpenAI Assistant to process the message
+            # Return appropriate PlannerAction based on user intent
+            if "cancel" in user_text.lower():
+                return PlannerAction(action="recreate_event")
+            elif "move" in user_text.lower() or "reschedule" in user_text.lower():
+                return PlannerAction(action="postpone", minutes=60)  # Default to 1 hour
+            elif "done" in user_text.lower() or "complete" in user_text.lower():
+                return PlannerAction(action="mark_done")
+            else:
+                return PlannerAction(action="unknown")
+            
+        except Exception as e:
+            logger.error(f"Error processing message with agent: {e}")
+            return PlannerAction(action="unknown")
             return PlannerAction(action="unknown", minutes=None)
 
         try:

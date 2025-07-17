@@ -509,6 +509,7 @@ async def haunt_user(session_id: int) -> None:
     """
     Send or schedule a haunted reminder for the planning session,
     escalate with exponential back-off, and cancel if the session is COMPLETE.
+    CANCELLED sessions remain active until explicitly resolved (with 24h timeout).
     """
     import logging
     from datetime import datetime, timedelta, timezone
@@ -528,10 +529,10 @@ async def haunt_user(session_id: int) -> None:
         logger.warning(f"haunt_user: session {session_id} not found")
         return
 
-    # 2. If complete, cancel any pending jobs & scheduled messages
-    if session.status == PlanStatus.COMPLETE:
+    # 2. If complete or rescheduled, cancel any pending jobs & scheduled messages
+    if session.status in [PlanStatus.COMPLETE, PlanStatus.RESCHEDULED]:
         logger.info(
-            f"haunt_user: session {session_id} is COMPLETE → cancelling reminders"
+            f"haunt_user: session {session_id} is {session.status.value} → cancelling reminders"
         )
         # Cancel the APScheduler job
         cancel_user_haunt(session_id)
@@ -539,7 +540,19 @@ async def haunt_user(session_id: int) -> None:
         await _cleanup_scheduled_slack_message(session)
         return
 
-    # 3. Build reminder text - CANCELLED sessions get special persistent messaging
+    # 3. Check 24-hour timeout for CANCELLED sessions
+    if session.status == PlanStatus.CANCELLED:
+        session_age = datetime.now(timezone.utc) - session.created_at
+        if session_age > timedelta(hours=24):
+            logger.info(
+                f"haunt_user: CANCELLED session {session_id} is >24h old ({session_age}), letting go but keeping status for review"
+            )
+            # Cancel further haunting but keep session status as CANCELLED for review
+            cancel_user_haunt(session_id)
+            await _cleanup_scheduled_slack_message(session)
+            return
+
+    # 4. Build reminder text - CANCELLED sessions get special persistent messaging
     attempt = session.haunt_attempt or 0
 
     if session.status == PlanStatus.CANCELLED:
@@ -560,7 +573,7 @@ async def haunt_user(session_id: int) -> None:
             or f"⏰ Reminder {attempt + 1}: don't forget to plan tomorrow's schedule!"
         )
 
-    # 4. Send Slack message - immediate for first attempt, scheduled for follow-ups
+    # 5. Send Slack message - immediate for first attempt, scheduled for follow-ups
     from .common import get_slack_app
 
     app = get_slack_app()
@@ -591,7 +604,7 @@ async def haunt_user(session_id: int) -> None:
         logger.error(f"Slack message failed: {e}")
         return
 
-    # 5. Compute next back-off and schedule the next haunt via APScheduler
+    # 6. Compute next back-off and schedule the next haunt via APScheduler
     next_attempt = attempt + 1
     delay = backoff_minutes(next_attempt)  # e.g. 5 → 10 → 20 min
     next_run = datetime.now(timezone.utc) + timedelta(minutes=delay)
@@ -600,7 +613,7 @@ async def haunt_user(session_id: int) -> None:
     cancel_user_haunt(session_id)
     job_id = schedule_user_haunt(session_id, next_run)
 
-    # 6. Persist updated session fields
+    # 7. Persist updated session fields
     session.slack_scheduled_message_id = (
         slack_msg_id  # None for immediate, ID for scheduled
     )
