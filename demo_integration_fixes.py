@@ -18,8 +18,9 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
-# Fast demo mode - mock all slow operations
+# Fast demo mode - mock all slow operations EXCEPT MCP (which is now real)
 FAST_DEMO_MODE = True
+REAL_MCP_DEMO = True  # Use real MCP implementation
 
 logger = logging.getLogger("integration_demo")
 

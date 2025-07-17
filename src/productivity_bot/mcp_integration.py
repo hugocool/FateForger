@@ -102,18 +102,48 @@ class CalendarMcpClient:
 
         Returns:
             List of calendar events
-
-        TODO: Implement actual MCP tool calling mechanism
         """
         if not await self._ensure_initialized():
             logger.warning("MCP not available, returning empty event list")
             return []
 
         try:
-            # TODO: Replace with actual MCP tool calling
-            # For now, return empty list as placeholder
-            logger.info("MCP list_events called (placeholder implementation)")
-            return []
+            # Prepare parameters for MCP tool call
+            params = {
+                "calendarId": calendar_id or "primary",
+                "singleEvents": True,
+                "orderBy": "startTime"
+            }
+            
+            if start_date:
+                params["timeMin"] = start_date
+            if end_date:
+                params["timeMax"] = end_date
+
+            # Call MCP tool through workbench
+            if not self.workbench:
+                raise RuntimeError("Workbench not initialized")
+                
+            result = await self.workbench.call_tool("calendar.events.list", params)
+                
+            # Extract events from ToolResult
+            events = []
+            if result.result:
+                for content in result.result:
+                    if hasattr(content, 'content') and isinstance(content.content, str):
+                        # Try to parse JSON response
+                        import json
+                        try:
+                            data = json.loads(content.content)
+                            if isinstance(data, dict) and 'items' in data:
+                                events = data['items']
+                            elif isinstance(data, list):
+                                events = data
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse MCP response as JSON: {content.content}")
+                
+            logger.info(f"Retrieved {len(events)} events via MCP")
+            return events
 
         except Exception as e:
             logger.error(f"MCP list_events failed: {e}")
@@ -141,19 +171,53 @@ class CalendarMcpClient:
 
         Returns:
             Created event data or None if failed
-
-        TODO: Implement actual MCP tool calling mechanism
         """
         if not await self._ensure_initialized():
             logger.warning("MCP not available, cannot create event")
             return None
 
         try:
-            # TODO: Replace with actual MCP tool calling
-            logger.info(
-                f"MCP create_event called for '{title}' (placeholder implementation)"
-            )
-            return None
+            # Prepare event data for Google Calendar API format
+            event_resource = {
+                "summary": title,
+                "start": {"dateTime": start_time},
+                "end": {"dateTime": end_time}
+            }
+            
+            if description:
+                event_resource["description"] = description
+            if location:
+                event_resource["location"] = location
+
+            params = {
+                "calendarId": calendar_id or "primary",
+                "resource": event_resource
+            }
+
+            # Call MCP tool
+            if not self.workbench:
+                raise RuntimeError("Workbench not initialized")
+                
+            result = await self.workbench.call_tool("calendar.events.insert", params)
+            
+            # Extract created event from ToolResult
+            created_event = None
+            if result.result:
+                for content in result.result:
+                    if hasattr(content, 'content') and isinstance(content.content, str):
+                        import json
+                        try:
+                            created_event = json.loads(content.content)
+                            break
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse MCP create response: {content.content}")
+                
+            if created_event:
+                logger.info(f"Created event '{title}' via MCP with ID: {created_event.get('id')}")
+            else:
+                logger.warning(f"MCP create_event returned no event data")
+                
+            return created_event
 
         except Exception as e:
             logger.error(f"MCP create_event failed: {e}")
@@ -181,19 +245,76 @@ class CalendarMcpClient:
 
         Returns:
             Updated event data or None if failed
-
-        TODO: Implement actual MCP tool calling mechanism
         """
         if not await self._ensure_initialized():
             logger.warning("MCP not available, cannot update event")
             return None
 
         try:
-            # TODO: Replace with actual MCP tool calling
-            logger.info(
-                f"MCP update_event called for {event_id} (placeholder implementation)"
-            )
-            return None
+            # First get the existing event to preserve unchanged fields
+            get_params = {
+                "calendarId": "primary",
+                "eventId": event_id
+            }
+            
+            if not self.workbench:
+                raise RuntimeError("Workbench not initialized")
+                
+            get_result = await self.workbench.call_tool("calendar.events.get", get_params)
+            
+            # Parse existing event
+            existing_event = {}
+            if get_result.result:
+                for content in get_result.result:
+                    if hasattr(content, 'content') and isinstance(content.content, str):
+                        import json
+                        try:
+                            existing_event = json.loads(content.content)
+                            break
+                        except json.JSONDecodeError:
+                            pass
+            
+            # Prepare update data (only include changed fields)
+            event_resource = existing_event.copy()
+            
+            if title is not None:
+                event_resource["summary"] = title
+            if start_time is not None:
+                event_resource["start"] = {"dateTime": start_time}
+            if end_time is not None:
+                event_resource["end"] = {"dateTime": end_time}
+            if description is not None:
+                event_resource["description"] = description
+            if location is not None:
+                event_resource["location"] = location
+
+            update_params = {
+                "calendarId": "primary",
+                "eventId": event_id,
+                "resource": event_resource
+            }
+
+            # Call MCP update tool
+            result = await self.workbench.call_tool("calendar.events.update", update_params)
+            
+            # Extract updated event
+            updated_event = None
+            if result.result:
+                for content in result.result:
+                    if hasattr(content, 'content') and isinstance(content.content, str):
+                        import json
+                        try:
+                            updated_event = json.loads(content.content)
+                            break
+                        except json.JSONDecodeError:
+                            pass
+                
+            if updated_event:
+                logger.info(f"Updated event {event_id} via MCP")
+            else:
+                logger.warning(f"MCP update_event returned no data for {event_id}")
+                
+            return updated_event
 
         except Exception as e:
             logger.error(f"MCP update_event failed: {e}")
@@ -208,23 +329,86 @@ class CalendarMcpClient:
 
         Returns:
             True if deletion successful, False otherwise
-
-        TODO: Implement actual MCP tool calling mechanism
         """
         if not await self._ensure_initialized():
             logger.warning("MCP not available, cannot delete event")
             return False
 
         try:
-            # TODO: Replace with actual MCP tool calling
-            logger.info(
-                f"MCP delete_event called for {event_id} (placeholder implementation)"
-            )
-            return False
+            params = {
+                "calendarId": "primary",
+                "eventId": event_id
+            }
+
+            # Call MCP delete tool
+            if not self.workbench:
+                raise RuntimeError("Workbench not initialized")
+                
+            result = await self.workbench.call_tool("calendar.events.delete", params)
+            
+            # Check if deletion was successful (usually returns empty result on success)
+            success = not result.is_error
+            
+            if success:
+                logger.info(f"Deleted event {event_id} via MCP")
+            else:
+                logger.warning(f"MCP delete_event failed for {event_id}")
+                
+            return success
 
         except Exception as e:
             logger.error(f"MCP delete_event failed: {e}")
             return False
+
+    async def get_event(self, event_id: str, calendar_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get a specific calendar event using MCP.
+
+        Args:
+            event_id: Event ID to retrieve
+            calendar_id: Calendar ID (defaults to primary)
+
+        Returns:
+            Event data or None if not found
+        """
+        if not await self._ensure_initialized():
+            logger.warning("MCP not available, cannot get event")
+            return None
+
+        try:
+            params = {
+                "calendarId": calendar_id or "primary",
+                "eventId": event_id
+            }
+
+            # Call MCP get tool
+            if not self.workbench:
+                raise RuntimeError("Workbench not initialized")
+                
+            result = await self.workbench.call_tool("calendar.events.get", params)
+            
+            # Extract event data
+            event_data = None
+            if result.result:
+                for content in result.result:
+                    if hasattr(content, 'content') and isinstance(content.content, str):
+                        import json
+                        try:
+                            event_data = json.loads(content.content)
+                            break
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse MCP get response: {content.content}")
+                
+            if event_data:
+                logger.info(f"Retrieved event {event_id} via MCP")
+            else:
+                logger.warning(f"Event {event_id} not found via MCP")
+                
+            return event_data
+
+        except Exception as e:
+            logger.error(f"MCP get_event failed: {e}")
+            return None
 
     async def get_available_tools(self) -> List[str]:
         """
