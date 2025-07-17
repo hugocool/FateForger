@@ -5,6 +5,7 @@ This module provides the core agentic flow with guaranteed schema compliance:
 - AssistantAgent with output_content_type=PlannerAction for strict schema enforcement
 - No parsing needed - LLM output is guaranteed to match PlannerAction schema
 - MCP Workbench integration for calendar tools (optional)
+- Shared session management with haunter bot
 """
 
 import logging
@@ -17,6 +18,7 @@ from autogen_ext.tools.mcp import McpWorkbench, SseServerParams
 
 from ..actions.planner_action import PlannerAction, get_planner_system_message
 from ..common import get_logger
+from ..session_manager import get_session_registry
 
 logger = get_logger("slack_assistant_agent")
 
@@ -139,6 +141,9 @@ class SlackAssistantAgent:
                 f"Processing thread reply with structured output: '{user_text}'"
             )
 
+            # Get session registry for shared session management
+            session_registry = get_session_registry()
+
             # Build message with optional session context
             message_content = user_text
             if session_context:
@@ -149,7 +154,7 @@ class SlackAssistantAgent:
 
             # Use AssistantAgent with structured output enforcement
             # The agent is configured with output_content_type=PlannerAction
-            from autogen_agentchat._types import UserMessage
+            from autogen_agentchat.messages import UserMessage
             from autogen_core import CancellationToken
 
             user_message = UserMessage(content=message_content, source="user")
@@ -162,9 +167,33 @@ class SlackAssistantAgent:
             # With output_content_type=PlannerAction, the response content is guaranteed to be valid
             if response and response.chat_message:
                 # The content should be a PlannerAction due to output_content_type enforcement
-                content = response.chat_message.content
+                chat_message = response.chat_message
+                if hasattr(chat_message, "content"):
+                    content = chat_message.content
+                elif hasattr(chat_message, "model_dump"):
+                    # Try to extract from model dump if direct access fails
+                    message_data = chat_message.model_dump()
+                    content = message_data.get("content")
+                else:
+                    content = None
+
                 if isinstance(content, PlannerAction):
                     logger.info(f"Agent returned structured action: {content}")
+
+                    # Handle special actions with session management
+                    if (
+                        content.is_mark_done
+                        and session_context
+                        and session_context.get("session_id")
+                    ):
+                        # Mark session as done and add emoji
+                        await session_registry.mark_session_done(
+                            session_context["session_id"], add_emoji=True
+                        )
+                        logger.info(
+                            f"Marked session {session_context['session_id']} as complete"
+                        )
+
                     return content
                 else:
                     # This should never happen with proper structured output enforcement

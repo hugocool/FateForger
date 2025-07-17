@@ -4,6 +4,11 @@ Slack Event Router for Planning Thread Management.
 This module handles Slack events and routes thread replies to the AI planner agent.
 When users reply in planning threads, their messages are forwarded to an OpenAI
 Assistant Agent for parsing into structured actions.
+
+Key improvements:
+- Shared session management with haunter bot
+- Proper thread identification and emoji feedback
+- Session cleanup for orphaned sessions
 """
 
 import asyncio
@@ -20,6 +25,7 @@ from .database import get_db_session
 from .models import CalendarEvent, PlanningSession  # SQLAlchemy models from models.py
 from .actions.planner_action import PlannerAction  # Pydantic model
 from .scheduler import get_scheduler
+from .session_manager import get_session_registry
 
 logger = get_logger("slack_event_router")
 
