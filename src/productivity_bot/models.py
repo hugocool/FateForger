@@ -225,7 +225,7 @@ class PlanningSession(Base):
         """Mark the planning session as in progress."""
         self.status = PlanStatus.IN_PROGRESS
 
-    async def recreate_event(self) -> bool:
+    async def create_event(self) -> bool:
         """
         Recreate the calendar event for this planning session.
 

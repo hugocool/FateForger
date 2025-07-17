@@ -182,8 +182,8 @@ class SlackRouter:
                     say=say,
                 )
 
-            elif action == "recreate_event":
-                await self._handle_recreate_event_action(
+            elif action == "create_event":
+                await self._handle_create_event_action(
                     planning_session=planning_session,
                     thread_ts=thread_ts,
                     say=say,
@@ -289,7 +289,7 @@ class SlackRouter:
                 thread_ts=thread_ts,
             )
 
-    async def _handle_recreate_event_action(
+    async def _handle_create_event_action(
         self,
         planning_session: Any,
         thread_ts: str,
@@ -298,7 +298,7 @@ class SlackRouter:
         """Handle recreate event action."""
         try:
             # Recreate the calendar event
-            success = await planning_session.recreate_event()
+            success = await planning_session.create_event()
 
             if success:
                 await say(

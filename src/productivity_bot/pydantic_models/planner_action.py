@@ -18,7 +18,7 @@ class PlannerAction(BaseModel):
     properly typed parameters, eliminating the need for regex parsing.
     """
 
-    action: Literal["postpone", "mark_done", "recreate_event"] = Field(
+    action: Literal["postpone", "mark_done", "create_event"] = Field(
         ..., description="Type of user intent"
     )
     minutes: Optional[int] = Field(
@@ -43,9 +43,9 @@ class PlannerAction(BaseModel):
         return self.action == "mark_done"
 
     @property
-    def is_recreate_event(self) -> bool:
-        """Check if this is a recreate event action."""
-        return self.action == "recreate_event"
+    def is_create_event(self) -> bool:
+        """Check if this is a create event action."""
+        return self.action == "create_event"
 
     def get_postpone_minutes(self, default: int = 15) -> int:
         """

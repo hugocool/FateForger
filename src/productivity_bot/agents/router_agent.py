@@ -35,51 +35,51 @@ Do not add explanations or extra text - only return the JSON response.
 class RouterAgent:
     """
     Lightweight routing agent for haunter payloads.
-    
+
     This agent uses a very cheap model to make routing decisions
     with minimal token cost. Currently routes all payloads to
     the PlanningAgent, but designed for future extensibility.
     """
-    
+
     def __init__(self):
         """Initialize the router agent."""
         config = get_config()
         self.client = openai.AsyncOpenAI(api_key=config.openai_api_key)
         logger.info("RouterAgent initialized")
-    
+
     async def route_payload(self, payload: HauntPayload) -> Dict[str, Any]:
         """
         Route a haunter payload to the appropriate agent.
-        
+
         Args:
             payload: The HauntPayload to route
-            
+
         Returns:
             Dictionary with target agent and routed payload
-            
+
         Raises:
             Exception: If routing fails
         """
         try:
             logger.info(f"Routing payload: {payload}")
-            
+
             # Convert payload to string for the router
             payload_str = json.dumps(payload.to_dict())
-            
+
             # Send to router via OpenAI
             response = await self.client.chat.completions.create(
                 model="gpt-3.5-turbo-0125",
                 messages=[
                     {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-                    {"role": "user", "content": payload_str}
+                    {"role": "user", "content": payload_str},
                 ],
                 temperature=0.1,
                 max_tokens=200,
             )
-            
+
             # Parse the response
             response_content = response.choices[0].message.content
-            
+
             # Parse JSON response
             if response_content:
                 try:
@@ -90,20 +90,14 @@ class RouterAgent:
                     logger.error(f"Failed to parse router response: {response_content}")
             else:
                 logger.error("Empty response from router")
-            
+
             # Fallback to default routing
-            return {
-                "target": "planner",
-                "payload": payload.to_dict()
-            }
-                
+            return {"target": "planner", "payload": payload.to_dict()}
+
         except Exception as e:
             logger.error(f"Routing failed for payload {payload}: {e}")
             # Fallback to default routing
-            return {
-                "target": "planner", 
-                "payload": payload.to_dict()
-            }
+            return {"target": "planner", "payload": payload.to_dict()}
 
 
 # Global router instance
@@ -113,7 +107,7 @@ _router_instance: Optional[RouterAgent] = None
 def get_router_agent() -> RouterAgent:
     """
     Get the global router agent instance.
-    
+
     Returns:
         RouterAgent instance (singleton)
     """
@@ -126,10 +120,10 @@ def get_router_agent() -> RouterAgent:
 async def route_haunt_payload(payload: HauntPayload) -> Dict[str, Any]:
     """
     Route a haunter payload using the global router agent.
-    
+
     Args:
         payload: The HauntPayload to route
-        
+
     Returns:
         Dictionary with routing decision and payload
     """
