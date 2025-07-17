@@ -1,6 +1,6 @@
-# admonish
+# FateForger
 
-AI-powered productivity bot with intelligent daily planning, persistent reminders, and calendar integration.
+AI-powered productivity system that **forges your fate** through intelligent daily planning, persistent reminders, and seamless calendar integration. Unlike traditional productivity tools that passively wait for you to open them, FateForger actively shapes your destiny by ensuring you maintain your planning rituals and follow through on commitments.
 
 ## Features
 
@@ -130,7 +130,7 @@ OPENAI_API_KEY=your-openai-api-key
 MCP_ENDPOINT=http://mcp:4000
 
 # Database
-DATABASE_URL=sqlite+aiosqlite:///data/admonish.db
+DATABASE_URL=sqlite+aiosqlite:///data/fateforger.db
 
 # Development
 LOG_LEVEL=INFO

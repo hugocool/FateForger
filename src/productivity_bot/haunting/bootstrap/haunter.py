@@ -6,13 +6,17 @@ Focuses on creating calendar events and basic postponement actions.
 """
 
 import logging
-from datetime import datetime
+import uuid
+from datetime import date, datetime, timedelta
 from typing import Optional, Union
 from uuid import UUID
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from slack_sdk.web.async_client import AsyncWebClient
+from sqlalchemy import select
 
+from ...database import get_db_session
+from ...models import PlanningSession, PlanStatus
 from ..base_haunter import BaseHaunter
 from .action import BOOTSTRAP_PROMPT, BootstrapAction
 
@@ -231,15 +235,8 @@ class PlanningBootstrapHaunter(BaseHaunter):
         Returns:
             Message timestamp if successful, None otherwise
         """
-        message = (
-            "👋 Hi there! I'm here to help you set up your first planning session.\n\n"
-            "Planning sessions are dedicated time blocks where you can:\n"
-            "• Review your goals and priorities\n"
-            "• Plan your week ahead\n"
-            "• Reflect on what's working and what isn't\n\n"
-            "Would you like me to **create a planning event** on your calendar? "
-            "Just tell me when works best for you, or say **postpone** if you'd prefer to do this later."
-        )
+        # Generate LLM-powered message instead of hardcoded template
+        message = await self.generate_message("initial_bootstrap", 1)
 
         return await self.send(
             message,
@@ -254,16 +251,8 @@ class PlanningBootstrapHaunter(BaseHaunter):
         Args:
             attempt: Current attempt number
         """
-        messages = [
-            "👻 Just checking in! Ready to set up that planning session?",
-            "📅 Still thinking about that planning session? I'm here when you're ready!",
-            "⏰ No pressure, but I'd love to help you get that planning time on your calendar.",
-            "🎯 Planning sessions can really help with productivity - shall we schedule one?",
-        ]
-
-        # Cycle through messages based on attempt number
-        message_index = (attempt - 1) % len(messages)
-        message = messages[message_index]
+        # Generate LLM-powered message instead of cycling through hardcoded ones
+        message = await self.generate_message("followup_reminder", attempt)
 
         await self.send(
             message,
@@ -274,3 +263,116 @@ class PlanningBootstrapHaunter(BaseHaunter):
         self.logger.info(
             f"Sent bootstrap follow-up #{attempt} for session {self.session_id}"
         )
+
+    # ========================================================================
+    # Daily Bootstrap Management
+    # ========================================================================
+
+    @classmethod
+    def schedule_daily(cls):
+        """Schedule the daily bootstrap check at 17:00 Amsterdam time."""
+        from apscheduler.triggers.cron import CronTrigger
+
+        from ...scheduler import get_scheduler
+
+        sched = get_scheduler()
+        if not sched.get_job("daily-planning-bootstrap"):
+            sched.add_job(
+                cls._run_daily_check,
+                CronTrigger(hour=17, minute=0, timezone="Europe/Amsterdam"),
+                id="daily-planning-bootstrap",
+            )
+
+    @classmethod
+    async def _run_daily_check(cls):
+        """Run the daily check for missing planning events."""
+        # TODO: Get app context for slack/scheduler
+        # For now, just log that we would check
+        from ...common import get_logger
+
+        logger = get_logger("bootstrap_daily")
+        logger.info(
+            "Daily bootstrap check triggered - would check for missing planning events"
+        )
+
+    async def _daily_check(self):
+        """Check if tomorrow has a planning event, start bootstrap if not."""
+        # TODO: Implement when we have proper app context
+        self.logger.info("Daily check for planning events - implementation needed")
+
+    async def _start_bootstrap_haunt(self):
+        """Start the bootstrap haunting process with LLM-generated messages."""
+        try:
+            # Generate and send initial bootstrap message
+            initial_message = await self.generate_message("initial_bootstrap", 1)
+            message_ts = await self.send(
+                initial_message,
+                channel=self.channel,
+                thread_ts=self.thread_ts,
+            )
+            
+            if message_ts:
+                self.logger.info(f"Sent initial bootstrap message: {message_ts}")
+                # Schedule follow-up reminder using exponential backoff
+                from datetime import datetime, timedelta
+                followup_time = datetime.now() + timedelta(minutes=self.backoff_base_minutes)
+                followup_message = await self.generate_message("followup_reminder", 2)
+                
+                await self.schedule_slack(
+                    text=followup_message,
+                    post_at=followup_time,
+                    channel=self.channel,
+                    thread_ts=self.thread_ts,
+                )
+            else:
+                self.logger.error("Failed to send initial bootstrap message")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to start bootstrap haunt: {e}")
+
+    def _get_message_system_prompt(self, context: str, attempt: int) -> str:
+        """
+        Get bootstrap-specific system prompt for message generation.
+        
+        Args:
+            context: Message context 
+            attempt: Current attempt number
+            
+        Returns:
+            Bootstrap-specific system prompt
+        """
+        if context == "initial_bootstrap":
+            return """You are a friendly, encouraging productivity assistant helping someone set up their first planning session.
+
+Generate a warm, welcoming message that:
+- Introduces yourself as a planning assistant 
+- Explains what planning sessions are and their benefits
+- Offers to create a planning event on their calendar
+- Gives them options to schedule now or postpone
+- Uses encouraging but not pushy tone
+- Includes relevant emojis (👋, 📅, ⏰, etc.)
+
+Keep it conversational and focus on the value of planning without being overwhelming."""
+
+        elif context == "followup_reminder":
+            if attempt <= 3:
+                urgency = "gentle"
+            elif attempt <= 5:
+                urgency = "moderate"
+            else:
+                urgency = "persistent"
+                
+            return f"""You are a friendly productivity assistant following up about scheduling a planning session.
+
+Generate a {urgency} reminder message (attempt #{attempt}) that:
+- Acknowledges they haven't responded yet
+- Reiterates the value of planning sessions
+- Offers flexible scheduling options
+- Maintains encouraging tone appropriate for attempt #{attempt}
+- Uses friendly emojis (📅, ⏰, 🎯, etc.)
+
+Keep it brief and focused on helping them take the next step."""
+
+        else:
+            # Fallback to base implementation
+            return super()._get_message_system_prompt(context, attempt)

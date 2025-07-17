@@ -368,6 +368,75 @@ class BaseHaunter(ABC):
             # Return unknown action as fallback
             return PlannerAction(action="unknown")
 
+    async def generate_message(self, context: str, attempt: int = 1) -> str:
+        """
+        Generate LLM-powered message based on context and attempt number.
+
+        Args:
+            context: Context for message generation (e.g., "initial_bootstrap", "followup_reminder", "event_start")
+            attempt: Current attempt number for escalation/variety
+
+        Returns:
+            Generated message string
+        """
+        try:
+            # Import OpenAI client (lazy import to avoid circular dependencies)
+            from openai import AsyncOpenAI
+
+            from ..common import get_config
+
+            config = get_config()
+            client = AsyncOpenAI(api_key=config.openai_api_key)
+
+            # Get haunter-specific system prompt for message generation
+            system_prompt = self._get_message_system_prompt(context, attempt)
+
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Generate a {context} message for attempt #{attempt}"},
+                ],
+                temperature=0.7,  # Higher temperature for message variety
+                max_tokens=500,
+            )
+
+            message = response.choices[0].message.content
+            if message:
+                return message.strip()
+            else:
+                self.logger.error(f"Empty response from LLM for context '{context}'")
+                return f"Hi! I'm here to help with your planning session. (attempt {attempt})"
+
+        except Exception as e:
+            self.logger.error(f"Failed to generate message for context '{context}': {e}")
+            # Return basic fallback message
+            return f"Hi! I'm here to help with your planning session. (attempt {attempt})"
+
+    def _get_message_system_prompt(self, context: str, attempt: int) -> str:
+        """
+        Get haunter-specific system prompt for message generation.
+        
+        Override this method in concrete haunters to provide context-specific prompts.
+        
+        Args:
+            context: Message context (e.g., "initial_bootstrap", "followup_reminder")
+            attempt: Current attempt number
+            
+        Returns:
+            System prompt for message generation
+        """
+        # Default base prompt - concrete haunters should override this
+        return f"""You are a helpful productivity assistant. Generate a friendly, encouraging message for context: {context}.
+        
+This is attempt #{attempt}. Make the message:
+- Natural and conversational
+- Encouraging but not pushy
+- Focused on helping with productivity planning
+- Appropriate for the attempt number (more urgent if higher attempts)
+
+Keep the message concise (1-3 sentences) and include relevant emojis."""
+
     # ========================================================================
     # Abstract Handoff Interface
     # ========================================================================

@@ -299,3 +299,126 @@ class IncompletePlanningHaunter(BaseHaunter):
             channel=self.channel,
             thread_ts=self.thread_ts,
         )
+
+    # ========================================================================
+    # Overdue Session Polling
+    # ========================================================================
+
+    @classmethod
+    async def poll_overdue_sessions(cls):
+        """Poll for overdue sessions and start incomplete haunting."""
+        try:
+            from datetime import datetime, timedelta
+            from sqlalchemy import and_, select
+            
+            from ...database import get_db_session
+            from ...models import PlanningSession, PlanStatus, BaseEvent
+            
+            logger = logging.getLogger(__name__)
+            
+            # Find sessions that are overdue (event ended but session not complete)
+            cutoff_time = datetime.now() - timedelta(hours=2)  # 2 hours grace period
+            
+            async with get_db_session() as db:
+                result = await db.execute(
+                    select(PlanningSession, BaseEvent)
+                    .join(BaseEvent, PlanningSession.event_id == BaseEvent.event_id)
+                    .where(
+                        and_(
+                            BaseEvent.end_time < cutoff_time,
+                            PlanningSession.status.in_([PlanStatus.NOT_STARTED, PlanStatus.IN_PROGRESS]),
+                        )
+                    )
+                )
+                overdue_sessions = result.all()
+                
+                logger.info(f"Found {len(overdue_sessions)} overdue sessions")
+                
+                # TODO: Start incomplete haunters for overdue sessions
+                # This would require scheduler and Slack client setup
+                # For now, just log the sessions found
+                for session, event in overdue_sessions:
+                    logger.info(f"Overdue session: {session.id} for user {session.user_id}")
+                    
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to poll overdue sessions: {e}")
+
+    async def start_incomplete_haunt(self):
+        """Start haunting for an incomplete/overdue session."""
+        try:
+            # Generate and send initial incomplete message
+            incomplete_message = await self.generate_message("incomplete_start", 1)
+            message_ts = await self.send(
+                incomplete_message,
+                channel=self.channel,
+                thread_ts=self.thread_ts,
+            )
+            
+            if message_ts:
+                self.logger.info(f"Sent incomplete start message for session {self.session_id}: {message_ts}")
+                # Schedule escalating follow-ups for incomplete sessions
+                from datetime import datetime, timedelta
+                
+                # First follow-up in 4 hours
+                followup_time = datetime.now() + timedelta(hours=4)
+                followup_message = await self.generate_message("incomplete_followup", 2)
+                
+                await self.schedule_slack(
+                    text=followup_message,
+                    post_at=followup_time,
+                    channel=self.channel,
+                    thread_ts=self.thread_ts,
+                )
+                
+            else:
+                self.logger.error(f"Failed to send incomplete start message for session {self.session_id}")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to start incomplete haunt for session {self.session_id}: {e}")
+
+    def _get_message_system_prompt(self, context: str, attempt: int) -> str:
+        """
+        Get incomplete-specific system prompt for message generation.
+        
+        Args:
+            context: Message context 
+            attempt: Current attempt number
+            
+        Returns:
+            Incomplete-specific system prompt
+        """
+        if context == "incomplete_start":
+            return """You are a caring productivity assistant reaching out about a missed planning session.
+
+Generate a supportive, non-judgmental message that:
+- Acknowledges they missed their planned session time
+- Emphasizes that it's okay and life happens
+- Offers to help them reschedule or complete the planning now
+- Maintains encouraging tone without guilt or pressure
+- Uses warm, understanding emojis (💙, 🤗, 📅, ✨, etc.)
+
+Keep it supportive and solution-focused rather than dwelling on what was missed."""
+
+        elif context == "incomplete_followup":
+            if attempt <= 3:
+                tone = "gentle and patient"
+            elif attempt <= 5:
+                tone = "more direct but understanding"
+            else:
+                tone = "persistent but caring"
+                
+            return f"""You are a caring productivity assistant following up on a missed planning session (attempt #{attempt}).
+
+Generate a {tone} follow-up message that:
+- Shows continued support despite the missed session
+- Offers flexible options for completing the planning
+- Acknowledges that sometimes planning gets delayed
+- Provides encouragement to get back on track
+- Uses appropriate emojis for attempt #{attempt}
+
+Keep it understanding while gently encouraging action."""
+
+        else:
+            # Fallback to base implementation
+            return super()._get_message_system_prompt(context, attempt)

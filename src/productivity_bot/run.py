@@ -1,7 +1,23 @@
 """
-Main orchestrator for the Admonish productivity bot.
-Coordinates Slack Bot, APScheduler, FastAPI server, and MCP communication.
+Main orchestrator for the FateForger productivity system.
+
+This module coordinates all services including the planning bot,
+haunter system, and calendar watch server.
 """
+
+import asyncio
+import signal
+import sys
+from contextlib import asynccontextmanager
+from typing import Dict, List, Optional
+
+from .common import get_logger, setup_logging
+from .calendar_watch_server import CalendarWatchServer
+from .haunter_bot import HaunterBot
+from .planner_bot import PlannerBot
+
+
+class FateForgerOrchestrator:
 
 import asyncio
 import logging
@@ -24,8 +40,8 @@ from .common import (
 )
 
 
-class AdmonishOrchestrator:
-    """Main orchestrator for all Admonish services."""
+class FateForgerOrchestrator:
+    """Main orchestrator for all FateForger services."""
 
     def __init__(self):
         self.config = get_config()
@@ -34,7 +50,7 @@ class AdmonishOrchestrator:
 
     async def initialize(self):
         """Initialize all services."""
-        self.logger.info("Initializing Admonish Orchestrator...")
+        self.logger.info("Initializing FateForger Orchestrator...")
 
         # Initialize all common services
         await initialize_services()
@@ -61,7 +77,7 @@ class AdmonishOrchestrator:
         if self.running:
             return
 
-        self.logger.info("Starting Admonish services...")
+        self.logger.info("Starting FateForger services...")
         self.running = True
 
         # Perform initial health check
@@ -88,7 +104,7 @@ class AdmonishOrchestrator:
         if not self.running:
             return
 
-        self.logger.info("Stopping Admonish services...")
+        self.logger.info("Stopping FateForger services...")
         self.running = False
 
         # Cleanup all services
@@ -109,7 +125,7 @@ class AdmonishOrchestrator:
 
 async def main():
     """Main entry point."""
-    orchestrator = AdmonishOrchestrator()
+    orchestrator = FateForgerOrchestrator()
     orchestrator.setup_signal_handlers()
 
     try:

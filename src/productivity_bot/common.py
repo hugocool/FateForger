@@ -88,25 +88,25 @@ def setup_logging(level: Optional[str] = None) -> logging.Logger:
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler(), logging.FileHandler("logs/admonish.log")],
+        handlers=[logging.StreamHandler(), logging.FileHandler("logs/fateforger.log")],
     )
 
     # Create logs directory if it doesn't exist
     os.makedirs("logs", exist_ok=True)
 
-    return logging.getLogger("admonish")
+    return logging.getLogger("fateforger")
 
 
 def get_logger(name: str) -> logging.Logger:
     """Get a logger instance with hierarchical naming.
 
     Args:
-        name: Logger name suffix (will be prefixed with 'admonish.')
+        name: Logger name suffix (will be prefixed with 'fateforger.')
 
     Returns:
         Configured logger instance.
     """
-    return logging.getLogger(f"admonish.{name}")
+    return logging.getLogger(f"fateforger.{name}")
 
 
 # MCP Calendar Integration Functions

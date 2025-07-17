@@ -1,7 +1,7 @@
 [project]
-name = "admonish"
+name = "fateforger"
 version = "0.1.0"
-description = "does the productivity for you"
+description = "AI-powered productivity system that forges your fate through intelligent planning and persistent reminders"
 authors = [
     {name = "hugocool",email = "hugo.evers@gmail.com"}
 ]
@@ -37,9 +37,9 @@ haunt = "productivity_bot.haunter_bot:main"
 watch = "productivity_bot.calendar_watch_server:main"
 
 [tool.poetry]
-name = "admonish"
+name = "fateforger"
 version = "0.1.0"
-description = "does the productivity for you"
+description = "AI-powered productivity system that forges your fate through intelligent planning and persistent reminders"
 authors = ["hugocool <hugo.evers@gmail.com>"]
 packages = [
     {include = "productivity_bot", from = "src"},

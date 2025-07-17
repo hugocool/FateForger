@@ -1,18 +1,18 @@
-# Admonish - Agentic AI Productivity Bot
+# FateForger - Agentic AI Productivity System
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Poetry](https://img.shields.io/badge/dependency%20management-poetry-blue.svg)](https://python-poetry.org/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An intelligent productivity system that **admonishes and haunts you** until you actually do the work. Unlike traditional productivity tools that passively wait for you to open them, Admonish actively ensures you maintain your planning rituals and follow through on commitments.
+An intelligent productivity system that **forges your fate** through relentless accountability and intelligent planning. Unlike traditional productivity tools that passively wait for you to open them, FateForger actively shapes your destiny by ensuring you maintain your planning rituals and follow through on commitments.
 
 ## 🚀 Quick Start
 
 ```bash
 # Clone the repository
-git clone https://github.com/hugocool/admonish.git
-cd admonish
+git clone https://github.com/hugocool/fateforger.git
+cd fateforger
 
 # Install dependencies with Poetry
 poetry install

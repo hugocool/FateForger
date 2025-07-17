@@ -12,7 +12,10 @@ from uuid import UUID
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from slack_sdk.web.async_client import AsyncWebClient
+from sqlalchemy import select
 
+from ...database import get_db_session
+from ...models import PlanningSession, PlanStatus
 from ..base_haunter import BaseHaunter
 from .action import COMMITMENT_PROMPT, CommitmentAction
 
@@ -319,3 +322,113 @@ class CommitmentHaunter(BaseHaunter):
             channel=self.channel,
             thread_ts=self.thread_ts,
         )
+
+    # ========================================================================
+    # Event-Start Haunting
+    # ========================================================================
+
+    async def start_event_haunt(self):
+        """Start haunting when the event begins."""
+        try:
+            # Generate and send event-start message
+            event_start_message = await self.generate_message("event_start", 1)
+            message_ts = await self.send(
+                event_start_message,
+                channel=self.channel,
+                thread_ts=self.thread_ts,
+            )
+            
+            if message_ts:
+                self.logger.info(f"Sent event start message for session {self.session_id}: {message_ts}")
+                # Schedule timeout check using commitment-specific timing
+                from datetime import datetime, timedelta
+                timeout_check_time = datetime.now() + timedelta(minutes=15)  # 15 min grace period
+                timeout_message = await self.generate_message("timeout_check", 2)
+                
+                await self.schedule_slack(
+                    text=timeout_message,
+                    post_at=timeout_check_time,
+                    channel=self.channel,
+                    thread_ts=self.thread_ts,
+                )
+            else:
+                self.logger.error(f"Failed to send event start message for session {self.session_id}")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to start event haunt for session {self.session_id}: {e}")
+
+    async def _check_started_timeout(self):
+        """Check if session is still incomplete after timeout."""
+        try:
+            # Check current session status from database
+            async with get_db_session() as db:
+                result = await db.execute(
+                    select(PlanningSession).where(PlanningSession.id == self.session_id)
+                )
+                session = result.scalar_one_or_none()
+                
+                if session and session.status == PlanStatus.NOT_STARTED:
+                    # Session hasn't started yet - send follow-up
+                    timeout_message = await self.generate_message("timeout_followup", 3)
+                    await self.send(
+                        timeout_message,
+                        channel=self.channel,
+                        thread_ts=self.thread_ts,
+                    )
+                    self.logger.info(f"Sent timeout followup for session {self.session_id}")
+                else:
+                    self.logger.info(f"Session {self.session_id} status changed, no timeout followup needed")
+                    
+        except Exception as e:
+            self.logger.error(f"Failed to check started timeout for session {self.session_id}: {e}")
+
+    def _get_message_system_prompt(self, context: str, attempt: int) -> str:
+        """
+        Get commitment-specific system prompt for message generation.
+        
+        Args:
+            context: Message context 
+            attempt: Current attempt number
+            
+        Returns:
+            Commitment-specific system prompt
+        """
+        if context == "event_start":
+            return """You are an encouraging productivity assistant helping someone who has committed to a planning session.
+
+Generate an energetic, motivational message that:
+- Acknowledges their planning session is starting now
+- Celebrates their commitment to planning
+- Encourages them to begin with focus and intention
+- Offers gentle guidance on how to make the most of the session
+- Uses positive, energizing emojis (🎯, ⚡, 🔥, 💪, etc.)
+
+Keep it motivational and action-oriented without being overwhelming."""
+
+        elif context == "timeout_check":
+            return """You are a helpful productivity assistant checking in during a planning session.
+
+Generate a gentle check-in message that:
+- Acknowledges their planning session should have started
+- Offers encouragement if they're running behind
+- Provides gentle guidance to help them get started
+- Maintains supportive tone without being pushy
+- Uses encouraging emojis (⏰, 💙, 🌟, etc.)
+
+Keep it supportive and understanding."""
+
+        elif context == "timeout_followup":
+            return """You are a caring productivity assistant following up on a planning session that hasn't started yet.
+
+Generate a supportive follow-up message that:
+- Acknowledges the session time has passed
+- Offers flexible options (start now, reschedule, etc.)
+- Maintains encouraging tone without guilt
+- Shows understanding that life happens
+- Uses warm, supportive emojis (💙, 🤗, 📅, etc.)
+
+Keep it understanding and solution-focused."""
+
+        else:
+            # Fallback to base implementation
+            return super()._get_message_system_prompt(context, attempt)

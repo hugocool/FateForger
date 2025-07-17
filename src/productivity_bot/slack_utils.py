@@ -11,6 +11,8 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from .common import get_logger
 
+__all__ = ["schedule_dm", "delete_scheduled", "send_immediate_dm"]
+
 logger = get_logger("slack_utils")
 
 

@@ -4,7 +4,7 @@ This directory contains all database files for the Admonish productivity bot.
 
 ## Files
 
-- `admonish.db` - Main application database (production/development)
+- `fateforger.db` - Main application database (production/development)
 - `test_*.db` - Test databases created during test runs
 - `.gitkeep` - Ensures this directory is tracked in git
 

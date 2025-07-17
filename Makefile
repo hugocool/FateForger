@@ -25,17 +25,33 @@ validate-integration: ## Run integration tests for Ticket 4
 	@echo "🔗 Running Ticket 4 integration tests..."
 	@poetry run python test_ticket4_integration.py
 
-validate-all: ## Run all Ticket 4 validations
+validate-all-tickets: ## Run all Ticket 4 validations
 	@echo "✅ Running all Ticket 4 validations..."
 	@poetry run python validate_syntax_ticket4.py
 	@echo ""
 	@poetry run python test_ticket4_integration.py
 
 # Ticket 5 validation commands
-validate-ticket5: ## Run Ticket 5 Slack utilities validation
-	@echo "🔗 Running Ticket 5 Slack utilities validation..."
+validate-ticket5-structure: ## Run Ticket 5 structure validation
+	@echo "🏗️  Running Ticket 5 structure validation..."
+	@poetry run python validate_ticket5_structure.py
+
+validate-ticket5-imports: ## Run Ticket 5 import validation
+	@echo "� Running Ticket 5 import validation..."
 	@poetry run python -c "from src.productivity_bot.slack_utils import schedule_dm, delete_scheduled; print('✅ Slack utilities import successfully')"
 	@echo "✅ Slack utilities validation passed"
+
+validate-ticket5: validate-ticket5-structure validate-ticket5-imports ## Run all Ticket 5 validations
+	@echo "🎉 All Ticket 5 validations completed!"
+
+validate-all: ## Run all ticket validations
+	@echo "✅ Running all ticket validations..."
+	@poetry run python validate_syntax_ticket4.py
+	@echo ""
+	@poetry run python test_ticket4_integration.py
+	@echo ""
+	@poetry run python validate_ticket5_structure.py
+	@echo "🎉 All validations completed!"
 
 lint: ## Run linting
 	@docker-compose run --rm dev poetry run pylint src/productivity_bot/
