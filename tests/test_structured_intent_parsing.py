@@ -10,8 +10,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from productivity_bot.actions.planner_action import PlannerAction
 from productivity_bot.agents.planner_agent import send_to_planner_intent
-from productivity_bot.models.planner_action import PlannerAction
 
 
 class TestPlannerAction:
@@ -48,13 +48,11 @@ class TestPlannerAction:
         """Test getting postpone minutes when specified."""
         action = PlannerAction(action="postpone", minutes=30)
         assert action.get_postpone_minutes() == 30
-        assert action.get_postpone_minutes(default=60) == 30
 
     def test_get_postpone_minutes_with_default(self):
         """Test getting postpone minutes with default fallback."""
         action = PlannerAction(action="postpone", minutes=None)
         assert action.get_postpone_minutes() == 15  # default
-        assert action.get_postpone_minutes(default=45) == 45
 
     def test_get_postpone_minutes_non_postpone_action(self):
         """Test getting postpone minutes for non-postpone actions."""

@@ -15,10 +15,16 @@ import asyncio
 import logging
 from typing import Any, Dict
 
-from .agents.mcp_client import get_calendar_tools, test_mcp_connection
-from .agents.planner_agent import send_to_planner, test_planner_agent
-from .common import get_logger
-from .slack_event_router import test_event_router
+from ..src.productivity_bot.agents.mcp_client import (
+    get_calendar_tools,
+    test_mcp_connection,
+)
+from ..src.productivity_bot.agents.planner_agent import (
+    send_to_planner,
+    test_planner_agent,
+)
+from ..src.productivity_bot.common import get_logger
+from ..src.productivity_bot.slack_event_router import test_event_router
 
 logger = get_logger("test_agent_integration")
 

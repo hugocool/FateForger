@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.productivity_bot.autogen_planner import AutoGenPlannerAgent, MCPCalendarTool
-from src.productivity_bot.models import PlanningSession, PlanStatus
+from productivity_bot.autogen_planner import AutoGenPlannerAgent, MCPCalendarTool
+from productivity_bot.models import PlanningSession, PlanStatus
 
 
 class TestMCPCalendarTool:

@@ -14,12 +14,12 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from productivity_bot.actions.planner_action import PlannerAction
 from productivity_bot.agents.planner_agent import (
     send_to_planner_intent,
     test_planner_agent,
 )
 from productivity_bot.models import PlanningSession, PlanStatus
-from productivity_bot.models.planner_action import PlannerAction
 from productivity_bot.slack_router import SlackRouter
 
 
@@ -46,7 +46,7 @@ class TestStructuredIntentParsing:
 
             assert result.action == "postpone"
             assert result.minutes == 30
-            assert result.is_postpone()
+            assert result.is_postpone
 
     @pytest.mark.asyncio
     async def test_mark_done_intent(self):
@@ -68,7 +68,7 @@ class TestStructuredIntentParsing:
 
             assert result.action == "mark_done"
             assert result.minutes is None
-            assert result.is_mark_done()
+            assert result.is_mark_done
 
     @pytest.mark.asyncio
     async def test_recreate_event_intent(self):
@@ -90,7 +90,7 @@ class TestStructuredIntentParsing:
 
             assert result.action == "recreate_event"
             assert result.minutes is None
-            assert result.is_recreate_event()
+            assert result.is_recreate_event
 
     @pytest.mark.asyncio
     async def test_llm_parsing_error_fallback(self):
@@ -150,21 +150,21 @@ class TestPlannerActionModel:
         action = PlannerAction(action="postpone", minutes=15)
         assert action.action == "postpone"
         assert action.minutes == 15
-        assert action.is_postpone()
+        assert action.is_postpone
 
     def test_valid_mark_done_action(self):
         """Test creating valid mark done action."""
         action = PlannerAction(action="mark_done", minutes=None)
         assert action.action == "mark_done"
         assert action.minutes is None
-        assert action.is_mark_done()
+        assert action.is_mark_done
 
     def test_valid_recreate_event_action(self):
         """Test creating valid recreate event action."""
         action = PlannerAction(action="recreate_event", minutes=None)
         assert action.action == "recreate_event"
         assert action.minutes is None
-        assert action.is_recreate_event()
+        assert action.is_recreate_event
 
     def test_postpone_default_minutes(self):
         """Test postpone action with default minutes."""
@@ -184,7 +184,7 @@ class TestPlannerActionModel:
     def test_invalid_action_validation(self):
         """Test that invalid actions are rejected."""
         with pytest.raises(ValueError):
-            PlannerAction(action="invalid_action")
+            PlannerAction(action="unknown")
 
 
 class TestSlackRouter:

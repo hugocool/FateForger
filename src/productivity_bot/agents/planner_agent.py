@@ -11,8 +11,8 @@ from typing import Optional
 
 import openai
 
+from ..actions.planner_action import PlannerAction
 from ..common import get_logger
-from ..pydantic_models.planner_action import PlannerAction
 
 logger = get_logger("planner_agent")
 

@@ -14,11 +14,11 @@ from typing import Any, Dict, Optional
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
-from .agents.planner_agent import send_to_planner_intent
+from .agents.slack_assistant_agent import process_slack_thread_reply
 from .common import get_logger
 from .database import get_db_session
 from .models import CalendarEvent, PlanningSession  # SQLAlchemy models from models.py
-from .pydantic_models.planner_action import PlannerAction  # Pydantic model
+from .actions.planner_action import PlannerAction  # Pydantic model
 from .scheduler import get_scheduler
 
 logger = get_logger("slack_event_router")
@@ -234,9 +234,19 @@ class SlackEventRouter:
             say: Slack say function for responses
         """
         try:
-            # 1. Use structured LLM parsing instead of regex
+            # 1. Use AssistantAgent with MCP tools for structured intent parsing
             logger.info(f"Processing structured intent from: '{user_text}'")
-            intent = await send_to_planner_intent(user_text)
+            
+            # Build session context for the agent
+            session_context = {
+                "session_id": planning_session.id,
+                "user_id": planning_session.user_id,
+                "date": str(planning_session.date),
+                "status": planning_session.status.value,
+                "goals": planning_session.goals or "Not specified"
+            }
+            
+            intent = await process_slack_thread_reply(user_text, session_context)
 
             # 2. Execute the structured action
             await self._execute_structured_action(
@@ -326,7 +336,7 @@ class SlackEventRouter:
 
         if intent.is_postpone:
             # Handle postpone with validated minutes
-            minutes = intent.get_postpone_minutes(default=15)
+            minutes = intent.get_postpone_minutes() or 15  # Default to 15 if None
             try:
                 # Implement actual scheduler postpone logic
                 from datetime import datetime

@@ -570,3 +570,45 @@ def backoff_minutes(attempt: int) -> int:
     else:
         # Cap at 60 minutes for subsequent attempts
         return min(60, 20 * (2 ** (attempt - 2)))
+
+
+def get_timestamp() -> str:
+    """
+    Get current timestamp in ISO format.
+
+    Returns:
+        str: Current timestamp in ISO format
+    """
+    return datetime.now().isoformat()
+
+
+def safe_get_env(key: str, default: Optional[str] = None) -> Optional[str]:
+    """
+    Safely get environment variable.
+
+    Args:
+        key: Environment variable key
+        default: Default value if not found
+
+    Returns:
+        Environment variable value or default
+    """
+    return os.environ.get(key, default)
+
+
+def format_slack_message(message: str, **kwargs: Any) -> str:
+    """
+    Format a Slack message with optional formatting.
+
+    Args:
+        message: Base message string
+        **kwargs: Additional formatting parameters
+
+    Returns:
+        str: Formatted message
+    """
+    try:
+        return message.format(**kwargs)
+    except KeyError as e:
+        logger.warning(f"Missing key in message formatting: {e}")
+        return message
