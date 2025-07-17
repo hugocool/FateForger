@@ -25,6 +25,31 @@ from .models import CalendarEvent, EventStatus, PlanningSession, PlanStatus
 logger = get_logger("haunter_bot")
 
 
+async def _cleanup_scheduled_slack_message(session) -> None:
+    """
+    Cancel any scheduled Slack message for the session.
+    
+    This ensures that when a user responds or when events change,
+    any pending scheduled reminders are cleaned up.
+    """
+    if session.slack_scheduled_message_id:
+        try:
+            from .common import get_slack_app
+            app = get_slack_app()
+            
+            await app.client.chat_deleteScheduledMessage(
+                channel=session.user_id,
+                scheduled_message_id=session.slack_scheduled_message_id,
+            )
+            logger.info(
+                f"Deleted scheduled Slack message {session.slack_scheduled_message_id} for session {session.id}"
+            )
+            # Clear the ID from the session
+            session.slack_scheduled_message_id = None
+        except Exception as e:
+            logger.error(f"Failed to delete scheduled Slack message: {e}")
+
+
 class HaunterBot:
     """
     A Slack bot that haunts users with reminders and follow-ups.
@@ -511,31 +536,29 @@ async def haunt_user(session_id: int) -> None:
         # Cancel the APScheduler job
         cancel_user_haunt(session_id)
         # Cancel the Slack scheduled message
-        if session.slack_scheduled_message_id:
-            # Get the shared app instance
-            from .common import get_slack_app
-
-            app = get_slack_app()
-
-            try:
-                await app.client.chat_deleteScheduledMessage(
-                    channel=session.user_id,
-                    scheduled_message_id=session.slack_scheduled_message_id,
-                )
-                logger.info(
-                    f"Deleted Slack scheduled message {session.slack_scheduled_message_id}"
-                )
-            except SlackApiError as e:
-                logger.error(f"Failed to delete scheduled message: {e}")
+        await _cleanup_scheduled_slack_message(session)
         return
 
-    # 3. Build reminder text (static for now; LLM integration later)
+    # 3. Build reminder text - CANCELLED sessions get special persistent messaging
     attempt = session.haunt_attempt or 0
-    text = (
-        attempt == 0
-        and "⏰ It's time to plan your day! Please open your planning session."
-        or f"⏰ Reminder {attempt + 1}: don't forget to plan tomorrow's schedule!"
-    )
+
+    if session.status == PlanStatus.CANCELLED:
+        # CANCELLED sessions get persistent, escalating reminders until they reschedule or complete
+        if attempt == 0:
+            text = "👻 ❌ Your planning event was cancelled, but the planning work STILL needs to be done! Please either reschedule your planning session or complete the planning work now."
+        elif attempt == 1:
+            text = "👻 ⚠️ Just because your calendar event was cancelled doesn't mean you can skip planning! You still need to organize your tasks and priorities."
+        elif attempt == 2:
+            text = "👻 🚨 This is attempt #3 - You CANNOT escape planning by cancelling calendar events. Either reschedule a proper planning session or do the planning work right now."
+        else:
+            text = f"👻 💀 PERSISTENT REMINDER #{attempt + 1}: Planning is not optional! Your cancelled event doesn't change that. Please reschedule or complete your planning session immediately."
+    else:
+        # Regular NOT_STARTED/IN_PROGRESS messaging
+        text = (
+            attempt == 0
+            and "⏰ It's time to plan your day! Please open your planning session."
+            or f"⏰ Reminder {attempt + 1}: don't forget to plan tomorrow's schedule!"
+        )
 
     # 4. Send Slack message - immediate for first attempt, scheduled for follow-ups
     from .common import get_slack_app

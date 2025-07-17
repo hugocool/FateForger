@@ -340,6 +340,9 @@ class SlackEventRouter:
 
         logger.info(f"Executing structured action: {intent}")
 
+        # First, cleanup any scheduled Slack messages since user is responding
+        await self._cleanup_session_scheduled_messages(planning_session)
+
         if intent.is_postpone:
             # Handle postpone with validated minutes
             minutes = intent.get_postpone_minutes() or 15  # Default to 15 if None
@@ -566,6 +569,30 @@ I can help you manage your planning session. Here's what you can do:
 Just reply in this thread with any of these commands, and I'll take care of it! 🎯"""
 
         await say(thread_ts=thread_ts, text=help_text)
+
+    async def _cleanup_session_scheduled_messages(self, planning_session: PlanningSession) -> None:
+        """Clean up any scheduled Slack messages for the session when user responds."""
+        if planning_session.slack_scheduled_message_id:
+            try:
+                from .common import get_slack_app
+                app = get_slack_app()
+                
+                await app.client.chat_deleteScheduledMessage(
+                    channel=planning_session.user_id,
+                    scheduled_message_id=planning_session.slack_scheduled_message_id,
+                )
+                logger.info(
+                    f"Deleted scheduled message {planning_session.slack_scheduled_message_id} for session {planning_session.id}"
+                )
+                
+                # Clear the scheduled message ID and update database
+                planning_session.slack_scheduled_message_id = None
+                async with get_db_session() as db:
+                    await db.merge(planning_session)
+                    await db.commit()
+                    
+            except Exception as e:
+                logger.error(f"Failed to cleanup scheduled message: {e}")
 
 
 def create_event_router(slack_app: AsyncApp) -> SlackEventRouter:

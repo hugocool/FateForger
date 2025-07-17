@@ -441,13 +441,14 @@ class CalendarWatchServer:
                         # The user still needs to either reschedule or do the planning work
                         session.status = PlanStatus.CANCELLED
                         session.notes = (
-                            session.notes or ""
-                        ) + f"\n[Auto] Calendar event cancelled at {datetime.utcnow()} - planning still needs to be completed or rescheduled"
+                            (session.notes or "")
+                            + f"\n[Auto] Calendar event cancelled at {datetime.utcnow()} - planning still needs to be completed or rescheduled"
+                        )
 
                         # Keep haunting! Schedule immediate follow-up to ask user what to do
                         if session.scheduler_job_id:
                             from .scheduler import reschedule_haunt
-                            
+
                             # Reschedule haunt for 5 minutes from now to follow up on cancellation
                             follow_up_time = datetime.utcnow() + timedelta(minutes=5)
                             if reschedule_haunt(session.id, follow_up_time):
@@ -563,21 +564,23 @@ class CalendarWatchServer:
                 "type": notification_type,
                 "event": {
                     "title": calendar_event.title,
-                    "start_time": calendar_event.start_time.strftime('%Y-%m-%d %H:%M'),
-                    "end_time": calendar_event.end_time.strftime('%H:%M'),
+                    "start_time": calendar_event.start_time.strftime("%Y-%m-%d %H:%M"),
+                    "end_time": calendar_event.end_time.strftime("%H:%M"),
                     "location": calendar_event.location or "Not specified",
                 },
                 "session": {
                     "id": planning_session.id,
                     "user_id": planning_session.user_id,
                     "status": planning_session.status.value,
-                    "scheduled_for": planning_session.scheduled_for.strftime('%Y-%m-%d %H:%M'),
+                    "scheduled_for": planning_session.scheduled_for.strftime(
+                        "%Y-%m-%d %H:%M"
+                    ),
                 },
             }
 
             # Use the assistant agent to generate structured notification
             agent = await get_slack_assistant_agent()
-            
+
             # Create notification prompt based on type
             if notification_type == "cancellation":
                 prompt = f"""Generate a firm but helpful notification that the calendar event "{calendar_event.title}" was cancelled.
@@ -608,16 +611,15 @@ Keep the message friendly and informative."""
 
             # Get the agent response (this will be a PlannerAction)
             response = await agent.process_slack_thread_reply(
-                prompt, 
-                session_context=notification_context
+                prompt, session_context=notification_context
             )
 
-            # TODO: Actually send to Slack using the bot instance
-            # For now, log the structured notification
-            logger.info(
-                f"AGENTIC NOTIFICATION ({notification_type.upper()}): "
-                f"Thread {thread_ts} | Action: {response.action} | "
-                f"Event: {calendar_event.title}"
+            # Actually send to Slack using the bot instance
+            await self._send_agent_message_to_slack(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                response=response,
+                calendar_event=calendar_event
             )
 
         except Exception as e:
@@ -629,6 +631,52 @@ Keep the message friendly and informative."""
                 f"📍 Location: {calendar_event.location or 'Not specified'}"
             )
             logger.info(f"FALLBACK NOTIFICATION: {fallback_message}")
+
+    async def _send_agent_message_to_slack(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        response: Any,  # PlannerAction response from agent
+        calendar_event: CalendarEvent
+    ) -> None:
+        """Send the agent-generated message to Slack."""
+        try:
+            from .common import get_slack_app
+            app = get_slack_app()
+            
+            # Extract message text from agent response
+            if hasattr(response, 'message') and response.message:
+                message_text = response.message
+            elif hasattr(response, 'action') and response.action:
+                # Fallback: generate message based on action
+                message_text = f"📅 Calendar event '{calendar_event.title}' has been updated. Please check your calendar and planning session."
+            else:
+                message_text = f"📅 Calendar notification for '{calendar_event.title}'"
+            
+            # Send the actual Slack message
+            slack_response = await app.client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=thread_ts,
+                text=message_text
+            )
+            
+            logger.info(
+                f"Successfully sent calendar notification to Slack: channel={channel_id}, thread={thread_ts}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to send agent message to Slack: {e}")
+            # Fall back to basic message
+            try:
+                from .common import get_slack_app
+                app = get_slack_app()
+                await app.client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_ts,
+                    text=f"📅 Your calendar event '{calendar_event.title}' has been updated."
+                )
+            except Exception as fallback_error:
+                logger.error(f"Fallback Slack message also failed: {fallback_error}")
 
     def _parse_datetime(self, time_data: Dict[str, Any]) -> Optional[datetime]:
         """Parse datetime from Google Calendar API format."""

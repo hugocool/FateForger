@@ -73,9 +73,11 @@ class SlackAssistantAgent:
             workbench = None
             tools = []
             try:
-                MCP_URL = "http://calendar-mcp:3000/mcp"
+                # Connect to the Google Calendar MCP server running in Docker
                 server_params = SseServerParams(
-                    url=MCP_URL, timeout=30, sse_read_timeout=300
+                    url="http://localhost:4000/mcp",  # Docker port mapping
+                    timeout=30, 
+                    sse_read_timeout=300
                 )
                 workbench = McpWorkbench(server_params=server_params)
 
@@ -96,8 +98,29 @@ class SlackAssistantAgent:
                 tools = []
                 workbench = None
 
-            # 3. Create AssistantAgent with MCP integration and structured output
-            # Key changes: workbench=workbench, reflect_on_tool_use=True for proper MCP integration
+            # 3. Create AssistantAgent with real OpenAI integration and MCP tools
+            # Convert MCP tools to proper format if available
+            agent_tools = []
+            if tools and workbench:
+                # Use workbench directly as tool provider
+                agent_tools = None  # Let workbench handle tools
+            
+            self.agent = AssistantAgent(
+                name="SlackPlannerAssistant",
+                model_client=model_client,
+                tools=agent_tools,  # None to use workbench tools
+                system_message=get_planner_system_message(),
+                output_content_type=PlannerAction,  # Enforce structured output
+                reflect_on_tool_use=True,  # Enable tool reflection for better MCP integration
+            )
+            
+            # Store workbench for cleanup
+            self.workbench = workbench
+            self._initialized = True
+            
+            logger.info(
+                f"SlackAssistantAgent initialized with {len(tools)} MCP tools and structured output enforcement"
+            )
             agent_params = {
                 "name": "planner",
                 "model_client": model_client,
@@ -164,7 +187,7 @@ class SlackAssistantAgent:
 
             # Use AssistantAgent with structured output enforcement
             # The agent is configured with output_content_type=PlannerAction
-            from autogen_agentchat.messages import UserMessage
+            from autogen_agentchat.messages._types import UserMessage
             from autogen_core import CancellationToken
 
             user_message = UserMessage(content=message_content, source="user")
