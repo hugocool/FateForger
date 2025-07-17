@@ -99,7 +99,10 @@ class SlackEventRouter:
         # Check if this is a planning thread by looking for associated planning session
         planning_session = await self._get_planning_event_for_thread(thread_ts)
 
-        if not planning_session:
+        # Also check for bootstrap sessions
+        bootstrap_session = await self._get_bootstrap_session_for_thread(thread_ts)
+
+        if not planning_session and not bootstrap_session:
             # No session found by thread_ts. Check if this could be a response to a planning prompt
             # Look for an active planning session for this user without thread info
             planning_session = await self._try_link_to_active_session(
@@ -116,8 +119,20 @@ class SlackEventRouter:
                 planning_session=planning_session,
                 say=say,
             )
+        elif bootstrap_session:
+            # This is a bootstrap thread - forward to bootstrap haunter
+            await self._process_bootstrap_thread_reply(
+                thread_ts=thread_ts,
+                user_text=user_text,
+                user_id=user_id,
+                channel=channel,
+                bootstrap_session=bootstrap_session,
+                say=say,
+            )
         else:
-            logger.debug(f"Thread {thread_ts} is not a planning thread, ignoring")
+            logger.debug(
+                f"Thread {thread_ts} is not a planning or bootstrap thread, ignoring"
+            )
 
     async def _handle_app_mention(self, event: Dict[str, Any], say) -> None:
         """
@@ -605,6 +620,89 @@ Just reply in this thread with any of these commands, and I'll take care of it! 
 
             except Exception as e:
                 logger.error(f"Failed to cleanup scheduled message: {e}")
+
+    async def _get_bootstrap_session_for_thread(self, thread_ts: str):
+        """
+        Get the bootstrap session associated with a Slack thread.
+
+        Args:
+            thread_ts: The Slack thread timestamp
+
+        Returns:
+            Bootstrap session if found, None otherwise
+        """
+        try:
+            # Import here to avoid circular imports
+            from .models import PlanningBootstrapSession
+
+            # Query database for bootstrap session with this thread_ts
+            async with get_db_session() as db:
+                from sqlalchemy import select
+
+                result = db.execute(
+                    select(PlanningBootstrapSession).where(
+                        PlanningBootstrapSession.thread_ts == thread_ts
+                    )
+                )
+                return result.scalar_one_or_none()
+
+        except Exception as e:
+            logger.error(f"Error finding bootstrap session for thread {thread_ts}: {e}")
+            return None
+
+    async def _process_bootstrap_thread_reply(
+        self,
+        thread_ts: str,
+        user_text: str,
+        user_id: str,
+        channel: str,
+        bootstrap_session,
+        say,
+    ) -> None:
+        """
+        Process a user reply in a bootstrap thread.
+
+        Routes messages posted in bootstrap threads to PlanningBootstrapHaunter.handle_user_reply.
+        On PlannerAction.recreate_event, hand-off to PlanningAgent.create_planning_event.
+        On postpone, reschedule next haunt with min(minutes,240).
+
+        Args:
+            thread_ts: The Slack thread timestamp
+            user_text: User's message text
+            user_id: Slack user ID
+            channel: Slack channel ID
+            bootstrap_session: The associated bootstrap session
+            say: Slack say function for responses
+        """
+        try:
+            logger.info(f"Processing bootstrap thread reply: '{user_text}'")
+
+            # Create bootstrap haunter instance
+            from .haunting.bootstrap_haunter import PlanningBootstrapHaunter
+
+            haunter = PlanningBootstrapHaunter(
+                session_id=bootstrap_session.id,
+                slack=self.client,
+                scheduler=self.scheduler,
+            )
+
+            # Handle the user reply
+            await haunter.handle_user_reply(user_text, user_id, thread_ts)
+
+            logger.info(
+                f"Bootstrap thread reply processed for session {bootstrap_session.id}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error processing bootstrap thread reply: {e}")
+            # Send error message to user
+            try:
+                await say(
+                    thread_ts=thread_ts,
+                    text="Sorry, I had trouble processing your response. Could you try again?",
+                )
+            except Exception as say_error:
+                logger.error(f"Failed to send error message: {say_error}")
 
 
 def create_event_router(slack_app: AsyncApp) -> SlackEventRouter:

@@ -672,3 +672,84 @@ class CalendarSync(Base):
         if not self.channel_expiration:
             return True
         return datetime.utcnow() > self.channel_expiration
+
+
+class PlanningBootstrapSession(Base):
+    """
+    Tracks modular planning bootstrap sessions for different commitment types.
+    Supports 'plan tomorrow' MVP and future expansion to other event/commitment haunting.
+    """
+
+    __tablename__ = "planning_bootstrap_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # Target date for the commitment/planning
+    target_date: Mapped[DateType] = mapped_column(Date, index=True, nullable=False)
+
+    # Type of commitment (modular support for different types)
+    commitment_type: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="PLANNING"
+    )
+
+    # Session status tracking
+    status: Mapped[PlanStatus] = mapped_column(
+        Enum(PlanStatus, name="plan_status"),
+        default=PlanStatus.NOT_STARTED,
+        nullable=False,
+    )
+
+    # Agent handoff tracking
+    handoff_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Slack interaction tracking
+    thread_ts: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    channel_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
+    # Context and metadata (JSON field for flexibility)
+    context: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    def __repr__(self):
+        return f"<PlanningBootstrapSession(id={self.id}, target_date={self.target_date}, commitment_type='{self.commitment_type}', status={self.status.value})>"
+
+    @property
+    def is_pending(self) -> bool:
+        """Check if this session is pending."""
+        return self.status == PlanStatus.NOT_STARTED
+
+    @property
+    def is_in_progress(self) -> bool:
+        """Check if this session is in progress."""
+        return self.status == PlanStatus.IN_PROGRESS
+
+    @property
+    def is_complete(self) -> bool:
+        """Check if this session is complete."""
+        return self.status == PlanStatus.COMPLETE
+
+    @property
+    def is_cancelled(self) -> bool:
+        """Check if this session is cancelled."""
+        return self.status == PlanStatus.CANCELLED
+
+    def mark_complete(self):
+        """Mark the session as complete."""
+        self.status = PlanStatus.COMPLETE
+        self.completed_at = datetime.utcnow()
+
+    def mark_in_progress(self):
+        """Mark the session as in progress."""
+        self.status = PlanStatus.IN_PROGRESS
+
+    def mark_cancelled(self):
+        """Mark the session as cancelled."""
+        self.status = PlanStatus.CANCELLED

@@ -36,7 +36,7 @@ from slack_bolt.async_app import AsyncApp
 from .autogen_planner import AutoGenPlannerAgent
 from .common import get_config, get_logger
 from .database import PlanningSessionService, get_db_session
-from .models import PlanStatus  # This should work if the models.py exports it properly
+from .models import PlanningBootstrapSession, PlanStatus  # Import both models
 from .slack_event_router import SlackEventRouter
 
 logger = get_logger("planner_bot")
@@ -1025,6 +1025,114 @@ class PlannerBot:
 
         except Exception as e:
             logger.error(f"Failed to send AI enhancement message: {e}")
+
+    async def handle_bootstrap_request(self, handoff_message: Dict[str, Any]) -> None:
+        """
+        Handle bootstrap request from DailyPlannerChecker using Autogen handoff pattern.
+
+        Args:
+            handoff_message: Dictionary containing bootstrap session details
+        """
+        try:
+            session_id = handoff_message.get("session_id")
+            target_date = handoff_message.get("target_date")
+            commitment_type = handoff_message.get("commitment_type")
+
+            logger.info(
+                f"Received bootstrap request for session {session_id}, target_date {target_date}, type {commitment_type}"
+            )
+
+            # Get session from database
+            async with get_db_session() as db_session:
+                from sqlalchemy import select
+
+                from .models import PlanningBootstrapSession
+
+                result = await db_session.execute(
+                    select(PlanningBootstrapSession).where(
+                        PlanningBootstrapSession.id == session_id
+                    )
+                )
+                bootstrap_session = result.scalar_one_or_none()
+
+                if not bootstrap_session:
+                    logger.error(f"Bootstrap session {session_id} not found")
+                    return
+
+                # For MVP, we'll focus on PLANNING type commitments
+                if commitment_type == "PLANNING":
+                    await self._handle_planning_bootstrap(bootstrap_session, db_session)
+                else:
+                    logger.info(
+                        f"Commitment type {commitment_type} not yet implemented"
+                    )
+                    # Future: Handle other commitment types (WORKOUT, TASK, MEETING, etc.)
+
+        except Exception as e:
+            logger.error(f"Error handling bootstrap request: {e}")
+
+    async def _handle_planning_bootstrap(self, bootstrap_session, db_session) -> None:
+        """
+        Handle planning-specific bootstrap workflow.
+
+        Args:
+            bootstrap_session: PlanningBootstrapSession instance
+            db_session: Database session
+        """
+        try:
+            # For MVP: Send a proactive message to trigger planning
+            # In the future, this could be more sophisticated agent handoff
+
+            # Get the target user (for now, use a default or configuration)
+            # TODO: Add user_id to PlanningBootstrapSession model
+            target_user = os.getenv(
+                "DEFAULT_PLANNING_USER_ID", "U06V05RTVFF"
+            )  # Default user
+
+            target_date_str = bootstrap_session.target_date.strftime("%B %d, %Y")
+
+            # Send proactive planning message
+            message_text = f"🗓️ *Planning Reminder*\n\nHi! I noticed you don't have a planning session scheduled for {target_date_str}.\n\nWould you like to plan your day now?"
+
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": message_text}},
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Plan Now"},
+                            "action_id": "open_plan_modal",
+                            "value": f"bootstrap_{bootstrap_session.id}",
+                            "style": "primary",
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Remind me later"},
+                            "action_id": "postpone_planning",
+                            "value": f"bootstrap_{bootstrap_session.id}",
+                        },
+                    ],
+                },
+            ]
+
+            # Send the message
+            response = await self.app.client.chat_postMessage(
+                channel=target_user, text=message_text, blocks=blocks
+            )
+
+            # Update session with Slack thread info
+            bootstrap_session.thread_ts = response["ts"]
+            bootstrap_session.channel_id = target_user
+            bootstrap_session.status = PlanStatus.IN_PROGRESS
+            db_session.commit()
+
+            logger.info(
+                f"Sent planning bootstrap message for session {bootstrap_session.id}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error in planning bootstrap workflow: {e}")
 
     async def start(self) -> None:
         """

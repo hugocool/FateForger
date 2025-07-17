@@ -28,14 +28,18 @@ class PlannerAction(BaseModel):
     ensuring all responses are valid and parseable without fallback logic.
     """
 
-    action: Literal["postpone", "mark_done", "recreate_event", "unknown"] = Field(
-        description="The action type to perform"
-    )
+    action: Literal[
+        "postpone", "mark_done", "recreate_event", "commit_time", "unknown"
+    ] = Field(description="The action type to perform")
     minutes: Optional[int] = Field(
         default=None,
         description="Minutes for postpone action (null for other actions)",
         ge=1,  # Must be positive if provided
         le=1440,  # Max 24 hours
+    )
+    commitment_time: Optional[str] = Field(
+        default=None,
+        description="Time commitment for scheduling (e.g., '8pm tomorrow', '21:00', 'after dinner')",
     )
 
     @property
@@ -52,6 +56,11 @@ class PlannerAction(BaseModel):
     def is_recreate_event(self) -> bool:
         """Check if this is a recreate event action."""
         return self.action == "recreate_event"
+
+    @property
+    def is_commit_time(self) -> bool:
+        """Check if this is a time commitment action."""
+        return self.action == "commit_time"
 
     @property
     def is_unknown(self) -> bool:
