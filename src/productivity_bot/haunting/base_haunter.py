@@ -15,6 +15,7 @@ from uuid import UUID
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from slack_sdk.web.async_client import AsyncWebClient
 
+from ..actions.haunt_payload import HauntPayload
 from ..actions.planner_action import PlannerAction, get_planner_system_message
 from ..common import get_logger
 
@@ -337,7 +338,7 @@ class BaseHaunter(ABC):
     # ========================================================================
 
     @abstractmethod
-    async def _route_to_planner(self, intent: PlannerAction) -> bool:
+    async def _route_to_planner(self, intent: Any) -> bool:
         """
         Route parsed intent to PlanningAgent for calendar operations.
 
@@ -345,10 +346,27 @@ class BaseHaunter(ABC):
         handoff to PlanningAgent based on the parsed user intent.
 
         Args:
-            intent: Parsed PlannerAction from user input
+            intent: Parsed action from user input (schema varies by haunter type)
 
         Returns:
             True if handoff was successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def handle_user_reply(self, text: str, attempt: int = 0) -> bool:
+        """
+        Handle user reply and route to appropriate action.
+
+        This method must be implemented by each concrete haunter to parse
+        user input and take appropriate action based on their persona.
+
+        Args:
+            text: User's reply text
+            attempt: Current attempt number for follow-up tracking
+
+        Returns:
+            True if reply was handled successfully, False otherwise
         """
         pass
 

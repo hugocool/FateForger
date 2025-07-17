@@ -20,16 +20,18 @@ class HauntPayload(BaseModel):
     """
 
     session_id: UUID = Field(description="Unique identifier for the planning session")
-    action: Literal["create_event", "postpone", "mark_done", "commit_time"] = Field(
-        description="The action to perform"
-    )
+    action: Literal[
+        "create_event", "postpone", "mark_done", "commit_time", "unknown"
+    ] = Field(description="The action to perform")
     minutes: Optional[int] = Field(
         default=None,
         description="Minutes for postpone action (null for other actions)",
         ge=1,
         le=1440,  # Max 24 hours
     )
-    commit_time_str: str = Field(description="Raw user text containing time commitment")
+    commit_time_str: Optional[str] = Field(
+        default=None, description="Raw user text containing time commitment"
+    )
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -44,7 +46,11 @@ class HauntPayload(BaseModel):
     def from_dict(cls, data: dict) -> "HauntPayload":
         """Create instance from dictionary."""
         return cls(
-            session_id=UUID(data["session_id"]),
+            session_id=(
+                UUID(data["session_id"])
+                if isinstance(data["session_id"], str)
+                else data["session_id"]
+            ),
             action=data["action"],
             minutes=data.get("minutes"),
             commit_time_str=data["commit_time_str"],
