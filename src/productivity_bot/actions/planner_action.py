@@ -16,7 +16,7 @@ class ActionType(str, Enum):
 
     POSTPONE = "postpone"
     MARK_DONE = "mark_done"
-    RECREATE_EVENT = "recreate_event"
+    CREATE_EVENT = "create_event"
     UNKNOWN = "unknown"
 
 
@@ -29,7 +29,7 @@ class PlannerAction(BaseModel):
     """
 
     action: Literal[
-        "postpone", "mark_done", "recreate_event", "commit_time", "unknown"
+        "postpone", "mark_done", "create_event", "commit_time", "unknown"
     ] = Field(description="The action type to perform")
     minutes: Optional[int] = Field(
         default=None,
@@ -53,9 +53,9 @@ class PlannerAction(BaseModel):
         return self.action == "mark_done"
 
     @property
-    def is_recreate_event(self) -> bool:
-        """Check if this is a recreate event action."""
-        return self.action == "recreate_event"
+    def is_create_event(self) -> bool:
+        """Check if this is a create event action."""
+        return self.action == "create_event"
 
     @property
     def is_commit_time(self) -> bool:
@@ -103,10 +103,10 @@ Parse Slack thread replies in planning sessions into valid JSON objects matching
     done, finished, complete, all set, yes, good, wrap up, all good, end, finalized, ready, ok, perfect
     </examples>
 </action>
-<action name="recreate_event">
-    <desc>Recreate or remake event in calendar.</desc>
+<action name="create_event">
+    <desc>Create or recreate event in calendar.</desc>
     <examples>
-    recreate event, reschedule, new event, add to calendar, redo, restart, create calendar entry, remake, schedule again
+    create event, reschedule, new event, add to calendar, redo, restart, create calendar entry, remake, schedule again
     </examples>
 </action>
 <action name="unknown">

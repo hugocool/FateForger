@@ -318,8 +318,8 @@ class SlackEventRouter:
         elif action_type == "mark_done":
             await self._handle_mark_done_action(planning_session, thread_ts, say)
 
-        elif action_type == "recreate_event":
-            await self._handle_recreate_event_action(planning_session, thread_ts, say)
+        elif action_type == "create_event":
+            await self._handle_create_event_action(planning_session, thread_ts, say)
 
         elif action_type == "status":
             await self._handle_status_action(planning_session, thread_ts, say)
@@ -445,11 +445,11 @@ class SlackEventRouter:
                     text=f"❌ Sorry, I couldn't mark the session as done: {str(e)}",
                 )
 
-        elif intent.is_recreate_event:
+        elif intent.is_create_event:
             # Handle event recreation
             try:
                 # Implement calendar event recreation
-                success = await planning_session.recreate_event()
+                success = await planning_session.create_event()
 
                 if success:
                     await say(
@@ -530,7 +530,7 @@ class SlackEventRouter:
                 text=f"❌ Sorry, I couldn't mark the session as done: {str(e)}",
             )
 
-    async def _handle_recreate_event_action(
+    async def _handle_create_event_action(
         self, planning_session: PlanningSession, thread_ts: str, say
     ) -> None:
         """Handle recreate event action."""
@@ -663,7 +663,7 @@ Just reply in this thread with any of these commands, and I'll take care of it! 
         Process a user reply in a bootstrap thread.
 
         Routes messages posted in bootstrap threads to PlanningBootstrapHaunter.handle_user_reply.
-        On PlannerAction.recreate_event, hand-off to PlanningAgent.create_planning_event.
+        On PlannerAction.create_event, hand-off to PlanningAgent.create_planning_event.
         On postpone, reschedule next haunt with min(minutes,240).
 
         Args:

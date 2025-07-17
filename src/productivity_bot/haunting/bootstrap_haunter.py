@@ -141,11 +141,11 @@ class PlanningBootstrapHaunter(BaseHaunter):
             
             if action.is_postpone:
                 await self._handle_postpone(action, thread_ts)
-            elif action.is_recreate_event:
-                await self._handle_recreate_event(action, thread_ts)
+            elif action.is_create_event:
+                await self._handle_create_event(action, thread_ts)
             else:
-                # Default to recreate_event for time commitments
-                await self._handle_recreate_event(action, thread_ts)
+                # Default to create_event for time commitments
+                await self._handle_create_event(action, thread_ts)
                 
         except Exception as e:
             logger.error(f"Error handling bootstrap reply: {e}")
@@ -173,8 +173,8 @@ class PlanningBootstrapHaunter(BaseHaunter):
         except Exception as e:
             logger.error(f"Error handling bootstrap postpone: {e}")
     
-    async def _handle_recreate_event(self, action: PlannerAction, thread_ts: str) -> None:
-        """Handle recreate event action - hand off to PlanningAgent."""
+    async def _handle_create_event(self, action: PlannerAction, thread_ts: str) -> None:
+        """Handle create event action - hand off to PlanningAgent."""
         try:
             # Hand off to PlanningAgent for event creation
             await self._route_to_planner(action)
@@ -185,7 +185,7 @@ class PlanningBootstrapHaunter(BaseHaunter):
             self.cleanup_all_jobs()
             
         except Exception as e:
-            logger.error(f"Error handling bootstrap recreate event: {e}")
+            logger.error(f"Error handling bootstrap create event: {e}")
     
     async def _route_to_planner(self, intent: PlannerAction) -> bool:
         """
@@ -200,17 +200,38 @@ class PlanningBootstrapHaunter(BaseHaunter):
             True if handoff was successful, False otherwise
         """
         try:
-            # Route to PlanningAgent.create_planning_event
-            # This would integrate with the existing create_planning_event function
-            logger.info(f"Routing bootstrap intent to PlanningAgent: {intent}")
+            from uuid import UUID
+            from ..actions.haunt_payload import HauntPayload
+            from ..agents.router_agent import route_haunt_payload
+            from ..agents.planning_agent import handle_router_handoff
             
-            # Integration point for PlanningAgent.create_planning_event
-            # result = await PlanningAgent.create_planning_event(
-            #     date=tomorrow,
-            #     commitment_time=intent.commitment_time
-            # )
+            # Create structured payload for the handoff
+            # Map commit_time and unknown to create_event for routing
+            action_type = intent.action
+            if action_type in ("commit_time", "unknown"):
+                action_type = "create_event"
             
-            return True
+            payload = HauntPayload(
+                session_id=UUID(str(self.session_id)),
+                action=action_type,
+                minutes=intent.minutes,
+                commit_time_str=getattr(intent, 'commitment_time', '') or 'Tomorrow 08:00'
+            )
+            
+            logger.info(f"Routing bootstrap intent to PlanningAgent: {payload}")
+            
+            # Route through RouterAgent
+            router_msg = await route_haunt_payload(payload)
+            
+            # Hand off to PlanningAgent
+            result = await handle_router_handoff(router_msg)
+            
+            if result.get("status") == "ok":
+                logger.info(f"Successfully routed bootstrap session {self.session_id} to PlanningAgent")
+                return True
+            else:
+                logger.error(f"PlanningAgent handoff failed: {result.get('message', 'Unknown error')}")
+                return False
             
         except Exception as e:
             logger.error(f"Error routing to planner: {e}")

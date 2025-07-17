@@ -595,7 +595,7 @@ Ask the user to either:
 1. Reschedule the planning session to a new time
 2. Complete the planning work right now without a calendar slot
 
-Respond with action "recreate_event" to suggest recreating the calendar event.
+Respond with action "create_event" to suggest creating the calendar event.
 Be persistent but supportive - planning is essential and cannot be skipped."""
 
             else:  # move notification
@@ -649,7 +649,7 @@ Keep the message friendly and informative."""
 
             # Generate message text based on PlannerAction
             if hasattr(response, "action"):
-                if response.action == "recreate_event":
+                if response.action == "create_event":
                     message_text = f"📅 ❌ Your planning event '{calendar_event.title}' was cancelled.\n\n⚠️ **Important**: The planning work still needs to be completed! Please either:\n• Reschedule the planning session to a new time\n• Complete the planning work right now\n\nPlanning is essential and cannot be skipped."
                 elif response.action == "postpone":
                     message_text = f"📅 🔄 Your planning event '{calendar_event.title}' has been moved.\n\n✅ I've automatically updated your planning reminders for the new time:\n• **New time**: {calendar_event.start_time.strftime('%Y-%m-%d %H:%M')}\n• **Location**: {calendar_event.location or 'Not specified'}\n\nYou'll receive reminders as usual for your planning session."

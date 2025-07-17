@@ -171,7 +171,7 @@ Your goal is to ensure users complete their planning work, either by reschedulin
             # Use the OpenAI Assistant to process the message
             # Return appropriate PlannerAction based on user intent
             if "cancel" in user_text.lower():
-                return PlannerAction(action="recreate_event")
+                return PlannerAction(action="create_event")
             elif "move" in user_text.lower() or "reschedule" in user_text.lower():
                 return PlannerAction(action="postpone", minutes=60)  # Default to 1 hour
             elif "done" in user_text.lower() or "complete" in user_text.lower():

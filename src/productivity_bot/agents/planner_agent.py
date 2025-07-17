@@ -27,8 +27,8 @@ Parse the user's reply into a structured PlannerAction. You can only respond wit
 2. mark_done - When user indicates they're finished
    - Examples: "done", "finished", "complete", "I'm done"
 
-3. recreate_event - When user wants to recreate the calendar event  
-   - Examples: "recreate event", "create again", "reschedule"
+3. create_event - When user wants to create the calendar event  
+   - Examples: "create event", "create again", "reschedule"
 
 Always respond with valid JSON that matches the PlannerAction schema. If the user's intent is unclear, choose the most likely action based on context.
 """
