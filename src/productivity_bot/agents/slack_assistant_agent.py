@@ -74,7 +74,9 @@ class SlackAssistantAgent:
             tools = []
             try:
                 MCP_URL = "http://mcp:4000/mcp"
-                server_params = SseServerParams(url=MCP_URL, timeout=30, sse_read_timeout=300)
+                server_params = SseServerParams(
+                    url=MCP_URL, timeout=30, sse_read_timeout=300
+                )
                 workbench = McpWorkbench(server_params=server_params)
 
                 async with workbench:
@@ -102,13 +104,13 @@ class SlackAssistantAgent:
                 "system_message": get_planner_system_message(),
                 "output_content_type": PlannerAction,  # STRICT SCHEMA ENFORCEMENT
             }
-            
+
             # Add MCP integration if workbench is available
             if workbench:
                 agent_params["workbench"] = workbench
                 agent_params["reflect_on_tool_use"] = True
                 logger.info("AssistantAgent configured with MCP workbench integration")
-            
+
             self.agent = AssistantAgent(**agent_params)
             self.workbench = workbench  # Store for later use
 

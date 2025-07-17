@@ -21,6 +21,7 @@ from sqlalchemy import (
 
 # Import logger
 from .common import get_logger
+
 logger = get_logger(__name__)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -233,6 +234,7 @@ class PlanningSession(Base):
         try:
             # Import here to avoid circular imports
             from datetime import timedelta
+
             from .mcp_integration import get_mcp_client
 
             # Get MCP client
@@ -258,15 +260,17 @@ class PlanningSession(Base):
             # Create event via MCP
             created_event = await mcp_client.create_event(
                 title=event_data["summary"],
-                start_time=event_data["start"]["dateTime"], 
+                start_time=event_data["start"]["dateTime"],
                 end_time=event_data["end"]["dateTime"],
-                description=event_data["description"]
+                description=event_data["description"],
             )
 
             if created_event and created_event.get("id"):
                 # Update the event_id if successful
                 self.event_id = created_event.get("id")
-                logger.info(f"Successfully recreated event for planning session {self.id}")
+                logger.info(
+                    f"Successfully recreated event for planning session {self.id}"
+                )
                 return True
             else:
                 logger.warning(f"Failed to create event for planning session {self.id}")

@@ -250,11 +250,13 @@ class BaseEventService:
 async def find_planning_event(date: date) -> Optional[Dict[str, Any]]:
     """Find the planning event for a specific date."""
     from .mcp_integration import get_mcp_client
-    
+
     try:
         mcp_client = await get_mcp_client()
         if not mcp_client:
-            get_logger(__name__).warning("MCP client not available for find_planning_event")
+            get_logger(__name__).warning(
+                "MCP client not available for find_planning_event"
+            )
             return None
 
         # Search for events on the date with planning-related titles
@@ -274,7 +276,8 @@ async def find_planning_event(date: date) -> Optional[Dict[str, Any]]:
 
             # Check for planning-related keywords
             if any(
-                keyword in title for keyword in ["plan", "planning", "tomorrow", "daily"]
+                keyword in title
+                for keyword in ["plan", "planning", "tomorrow", "daily"]
             ):
                 return event
 
@@ -302,17 +305,21 @@ async def create_planning_event(
 ) -> Dict[str, Any]:
     """Create a new planning event for the specified date."""
     from .mcp_integration import get_mcp_client
-    
+
     try:
         mcp_client = await get_mcp_client()
         if not mcp_client:
-            get_logger(__name__).warning("MCP client not available for create_planning_event")
+            get_logger(__name__).warning(
+                "MCP client not available for create_planning_event"
+            )
             return {}
 
         # Parse time
         hour, minute = map(int, default_time.split(":"))
         start_datetime = datetime.combine(date, time(hour, minute))
-        end_datetime = start_datetime + timedelta(minutes=30)  # 30-minute planning session
+        end_datetime = start_datetime + timedelta(
+            minutes=30
+        )  # 30-minute planning session
 
         title = f"🧠 Plan Tomorrow - {date.strftime('%A, %B %d')}"
         description = (
@@ -327,7 +334,7 @@ async def create_planning_event(
             title=title,
             start_time=start_datetime.isoformat(),
             end_time=end_datetime.isoformat(),
-            description=description
+            description=description,
         )
 
         if not created_event:
@@ -335,7 +342,7 @@ async def create_planning_event(
 
         logger = get_logger("planning_service")
         logger.info(f"Created planning event for {date}: {created_event.get('id')}")
-        
+
         return created_event
     except Exception as e:
         get_logger(__name__).error(f"Error creating planning event: {e}")

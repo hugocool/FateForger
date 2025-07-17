@@ -79,7 +79,7 @@ class MCPCalendarTool:
         """
         try:
             from .mcp_integration import get_mcp_client
-            
+
             if not start_date:
                 start_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -90,7 +90,11 @@ class MCPCalendarTool:
             # Use MCP client to list events
             mcp_client = await get_mcp_client()
             if not mcp_client:
-                return {"success": False, "error": "MCP client not available", "events": []}
+                return {
+                    "success": False,
+                    "error": "MCP client not available",
+                    "events": [],
+                }
 
             start_iso = f"{start_date}T00:00:00"
             end_iso = f"{end_date}T23:59:59"
@@ -131,7 +135,7 @@ class MCPCalendarTool:
         """
         try:
             from .mcp_integration import get_mcp_client
-            
+
             mcp_client = await get_mcp_client()
             if not mcp_client:
                 return {"success": False, "error": "MCP client not available"}
@@ -140,7 +144,7 @@ class MCPCalendarTool:
                 title=title,
                 start_time=start_time,
                 end_time=end_time,
-                description=description or ""
+                description=description or "",
             )
 
             if created_event:
