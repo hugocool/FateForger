@@ -69,15 +69,16 @@ class SlackAssistantAgent:
                 api_key=config.openai_api_key or os.environ.get("OPENAI_API_KEY", ""),
             )
 
-            # 2. Optional: Configure MCP Workbench for calendar tools discovery
+            # 2. Configure MCP Workbench for calendar tools discovery
+            workbench = None
             tools = []
             try:
                 MCP_URL = "http://mcp:4000/mcp"
-                server_params = SseServerParams(url=MCP_URL, timeout=30)
-                self.workbench = McpWorkbench(server_params=server_params)
+                server_params = SseServerParams(url=MCP_URL, timeout=30, sse_read_timeout=300)
+                workbench = McpWorkbench(server_params=server_params)
 
-                async with self.workbench:
-                    tools = await self.workbench.list_tools()
+                async with workbench:
+                    tools = await workbench.list_tools()
                 logger.info(f"Discovered {len(tools)} MCP calendar tools")
 
                 # Log tool names for debugging
@@ -91,18 +92,25 @@ class SlackAssistantAgent:
                     f"MCP tools unavailable, continuing without: {mcp_error}"
                 )
                 tools = []
+                workbench = None
 
-            # 3. Create AssistantAgent with STRICT schema enforcement
-            # This is the key change: output_content_type=PlannerAction ensures
-            # the LLM response will always match the PlannerAction schema
-            self.agent = AssistantAgent(
-                name="planner",
-                model_client=model_client,
-                system_message=get_planner_system_message(),
-                output_content_type=PlannerAction,  # STRICT SCHEMA ENFORCEMENT
-                # TODO: Add MCP tools once tool format adaptation is complete
-                # tools=adapted_tools,
-            )
+            # 3. Create AssistantAgent with MCP integration and structured output
+            # Key changes: workbench=workbench, reflect_on_tool_use=True for proper MCP integration
+            agent_params = {
+                "name": "planner",
+                "model_client": model_client,
+                "system_message": get_planner_system_message(),
+                "output_content_type": PlannerAction,  # STRICT SCHEMA ENFORCEMENT
+            }
+            
+            # Add MCP integration if workbench is available
+            if workbench:
+                agent_params["workbench"] = workbench
+                agent_params["reflect_on_tool_use"] = True
+                logger.info("AssistantAgent configured with MCP workbench integration")
+            
+            self.agent = AssistantAgent(**agent_params)
+            self.workbench = workbench  # Store for later use
 
             self._initialized = True
             logger.info(

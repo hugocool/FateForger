@@ -18,6 +18,10 @@ from sqlalchemy import (
     String,
     Text,
 )
+
+# Import logger
+from .common import get_logger
+logger = get_logger(__name__)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .common import Base
@@ -229,10 +233,15 @@ class PlanningSession(Base):
         try:
             # Import here to avoid circular imports
             from datetime import timedelta
+            from .mcp_integration import get_mcp_client
 
-            from .common import mcp_query
+            # Get MCP client
+            mcp_client = await get_mcp_client()
+            if not mcp_client:
+                logger.warning("MCP client not available for event recreation")
+                return False
 
-            # Create a new calendar event for this planning session
+            # Create event using MCP client
             event_data = {
                 "summary": f"Daily Planning Session - {self.date}",
                 "description": f"Planning session for {self.user_id}\n\nGoals: {self.goals or 'Not set'}",
@@ -246,25 +255,25 @@ class PlanningSession(Base):
                 },
             }
 
-            # Use MCP to create the calendar event
-            mcp_request = {"method": "calendar.events.insert", "params": event_data}
-            result = await mcp_query(mcp_request)
+            # Create event via MCP
+            created_event = await mcp_client.create_event(
+                title=event_data["summary"],
+                start_time=event_data["start"]["dateTime"], 
+                end_time=event_data["end"]["dateTime"],
+                description=event_data["description"]
+            )
 
-            if result and result.get("success"):
+            if created_event and created_event.get("id"):
                 # Update the event_id if successful
-                self.event_id = result.get("event_id")
+                self.event_id = created_event.get("id")
+                logger.info(f"Successfully recreated event for planning session {self.id}")
                 return True
             else:
+                logger.warning(f"Failed to create event for planning session {self.id}")
                 return False
 
         except Exception as e:
-            # Log the error but don't raise - this is best effort
-            import logging
-
-            logger = logging.getLogger(__name__)
-            logger.error(
-                f"Failed to recreate calendar event for session {self.id}: {e}"
-            )
+            logger.error(f"Error recreating event for planning session {self.id}: {e}")
             return False
 
 

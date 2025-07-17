@@ -52,9 +52,11 @@ class CalendarMcpClient:
             return True
 
         try:
-            # Configure MCP server parameters
+            # Configure MCP server parameters with SSE read timeout
             server_params = SseServerParams(
-                url=f"{self.mcp_server_url}/mcp", timeout=30
+                url=f"{self.mcp_server_url}/mcp", 
+                timeout=30,
+                sse_read_timeout=300
             )
 
             # Create workbench instance

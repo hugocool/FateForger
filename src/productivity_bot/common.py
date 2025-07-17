@@ -249,30 +249,39 @@ class BaseEventService:
 # Planning Event Management Functions
 async def find_planning_event(date: date) -> Optional[Dict[str, Any]]:
     """Find the planning event for a specific date."""
-    service = BaseEventService()
+    from .mcp_integration import get_mcp_client
+    
+    try:
+        mcp_client = await get_mcp_client()
+        if not mcp_client:
+            get_logger(__name__).warning("MCP client not available for find_planning_event")
+            return None
 
-    # Search for events on the date with planning-related titles
-    start_time = datetime.combine(date, datetime.min.time())
-    end_time = datetime.combine(date, datetime.max.time())
+        # Search for events on the date with planning-related titles
+        start_time = datetime.combine(date, datetime.min.time()).isoformat()
+        end_time = datetime.combine(date, datetime.max.time()).isoformat()
 
-    events = await service.list_events(start_time=start_time, end_time=end_time)
+        events = await mcp_client.list_events(start_date=start_time, end_date=end_time)
 
-    # Look for planning events (check for bot metadata or title patterns)
-    for event in events:
-        title = event.get("summary", "").lower()
-        description = event.get("description", "")
+        # Look for planning events (check for bot metadata or title patterns)
+        for event in events:
+            title = event.get("summary", "").lower()
+            description = event.get("description", "")
 
-        # Check if this is a bot-created planning event
-        if "🧠 plan tomorrow" in title or "metadata.bot_id" in description:
-            return event
+            # Check if this is a bot-created planning event
+            if "🧠 plan tomorrow" in title or "metadata.bot_id" in description:
+                return event
 
-        # Check for planning-related keywords
-        if any(
-            keyword in title for keyword in ["plan", "planning", "tomorrow", "daily"]
-        ):
-            return event
+            # Check for planning-related keywords
+            if any(
+                keyword in title for keyword in ["plan", "planning", "tomorrow", "daily"]
+            ):
+                return event
 
-    return None
+        return None
+    except Exception as e:
+        get_logger(__name__).error(f"Error finding planning event: {e}")
+        return None
 
 
 async def ensure_planning_event(
@@ -292,34 +301,45 @@ async def create_planning_event(
     date: date, default_time: str = "17:00"
 ) -> Dict[str, Any]:
     """Create a new planning event for the specified date."""
-    service = BaseEventService()
+    from .mcp_integration import get_mcp_client
+    
+    try:
+        mcp_client = await get_mcp_client()
+        if not mcp_client:
+            get_logger(__name__).warning("MCP client not available for create_planning_event")
+            return {}
 
-    # Parse time
-    hour, minute = map(int, default_time.split(":"))
-    start_datetime = datetime.combine(date, time(hour, minute))
-    end_datetime = start_datetime + timedelta(minutes=30)  # 30-minute planning session
+        # Parse time
+        hour, minute = map(int, default_time.split(":"))
+        start_datetime = datetime.combine(date, time(hour, minute))
+        end_datetime = start_datetime + timedelta(minutes=30)  # 30-minute planning session
 
-    event_data = {
-        "summary": f"🧠 Plan Tomorrow - {date.strftime('%A, %B %d')}",
-        "description": (
+        title = f"🧠 Plan Tomorrow - {date.strftime('%A, %B %d')}"
+        description = (
             "Daily planning session to organize tomorrow's tasks and priorities.\n\n"
             "This event is managed by the Productivity Bot.\n"
             "metadata.bot_id: productivity_bot\n"
             "metadata.agent_type: planner"
-        ),
-        "start": {"dateTime": start_datetime.isoformat(), "timeZone": "UTC"},
-        "end": {"dateTime": end_datetime.isoformat(), "timeZone": "UTC"},
-        "visibility": "private",
-    }
+        )
 
-    event = await service.create_event(event_data)
-    if not event:
-        raise Exception(f"Failed to create planning event for {date}")
+        # Create event via MCP
+        created_event = await mcp_client.create_event(
+            title=title,
+            start_time=start_datetime.isoformat(),
+            end_time=end_datetime.isoformat(),
+            description=description
+        )
 
-    logger = get_logger("planning_service")
-    logger.info(f"Created planning event for {date}: {event.get('id')}")
+        if not created_event:
+            raise Exception(f"Failed to create planning event for {date}")
 
-    return event
+        logger = get_logger("planning_service")
+        logger.info(f"Created planning event for {date}: {created_event.get('id')}")
+        
+        return created_event
+    except Exception as e:
+        get_logger(__name__).error(f"Error creating planning event: {e}")
+        raise Exception(f"Failed to create planning event for {date}") from e
 
 
 # Agent Dispatcher for Event-Driven Routing

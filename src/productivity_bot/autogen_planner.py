@@ -38,7 +38,7 @@ from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
-from .common import BaseEventService, get_config, get_logger, mcp_query
+from .common import get_config, get_logger, mcp_query
 from .database import PlanningSessionService
 
 # Import from the main models.py file, not the models/ subdirectory
@@ -59,7 +59,6 @@ class MCPCalendarTool:
     def __init__(self) -> None:
         """Initialize the MCP calendar tool."""
         self.config = get_config()
-        self.service = BaseEventService()
 
     async def list_calendar_events(
         self,
@@ -79,6 +78,8 @@ class MCPCalendarTool:
             Dictionary containing list of calendar events and metadata.
         """
         try:
+            from .mcp_integration import get_mcp_client
+            
             if not start_date:
                 start_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -86,12 +87,16 @@ class MCPCalendarTool:
                 end_dt = datetime.strptime(start_date, "%Y-%m-%d") + timedelta(days=7)
                 end_date = end_dt.strftime("%Y-%m-%d")
 
-            # Use the existing BaseEventService to list events
-            start_dt = datetime.strptime(f"{start_date}T00:00:00", "%Y-%m-%dT%H:%M:%S")
-            end_dt = datetime.strptime(f"{end_date}T23:59:59", "%Y-%m-%dT%H:%M:%S")
+            # Use MCP client to list events
+            mcp_client = await get_mcp_client()
+            if not mcp_client:
+                return {"success": False, "error": "MCP client not available", "events": []}
 
-            events = await self.service.list_events(
-                start_time=start_dt, end_time=end_dt
+            start_iso = f"{start_date}T00:00:00"
+            end_iso = f"{end_date}T23:59:59"
+
+            events = await mcp_client.list_events(
+                start_date=start_iso, end_date=end_iso
             )
 
             return {
@@ -125,29 +130,30 @@ class MCPCalendarTool:
             Dictionary containing created event data or error information.
         """
         try:
-            request = {
-                "method": "create_event",
-                "params": {
-                    "title": title,
-                    "start_time": start_time,
-                    "end_time": end_time,
-                    "description": description or "",
-                },
-            }
+            from .mcp_integration import get_mcp_client
+            
+            mcp_client = await get_mcp_client()
+            if not mcp_client:
+                return {"success": False, "error": "MCP client not available"}
 
-            response = await mcp_query(request)
+            created_event = await mcp_client.create_event(
+                title=title,
+                start_time=start_time,
+                end_time=end_time,
+                description=description or ""
+            )
 
-            if response.get("success"):
+            if created_event:
                 logger.info(f"Created calendar event: {title}")
                 return {
                     "success": True,
-                    "event": response.get("event", {}),
+                    "event": created_event,
                     "message": f"Successfully created event '{title}'",
                 }
             else:
                 return {
                     "success": False,
-                    "error": response.get("error", "Unknown error creating event"),
+                    "error": "Failed to create event via MCP",
                 }
 
         except Exception as e:
