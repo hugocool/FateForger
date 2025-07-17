@@ -620,7 +620,7 @@ Keep the message friendly and informative."""
                 thread_ts=thread_ts,
                 response=response,
                 calendar_event=calendar_event,
-                planning_session=planning_session
+                planning_session=planning_session,
             )
 
         except Exception as e:
@@ -639,15 +639,16 @@ Keep the message friendly and informative."""
         thread_ts: str,
         response: Any,  # PlannerAction response from agent
         calendar_event: CalendarEvent,
-        planning_session: PlanningSession
+        planning_session: PlanningSession,
     ) -> None:
         """Send the agent-generated message to Slack."""
         try:
             from .common import get_slack_app
+
             app = get_slack_app()
-            
+
             # Generate message text based on PlannerAction
-            if hasattr(response, 'action'):
+            if hasattr(response, "action"):
                 if response.action == "recreate_event":
                     message_text = f"📅 ❌ Your planning event '{calendar_event.title}' was cancelled.\n\n⚠️ **Important**: The planning work still needs to be completed! Please either:\n• Reschedule the planning session to a new time\n• Complete the planning work right now\n\nPlanning is essential and cannot be skipped."
                 elif response.action == "postpone":
@@ -658,42 +659,44 @@ Keep the message friendly and informative."""
                     message_text = f"📅 Update for '{calendar_event.title}': Your calendar event has been updated. Please check your calendar and planning session status."
             else:
                 message_text = f"📅 Calendar notification for '{calendar_event.title}'"
-            
+
             # Clean up any existing scheduled messages for this session
             await self._cleanup_session_scheduled_messages(planning_session)
-            
+
             # Send the actual Slack message
             slack_response = await app.client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=thread_ts,
-                text=message_text
+                channel=channel_id, thread_ts=thread_ts, text=message_text
             )
-            
+
             logger.info(
                 f"Successfully sent calendar notification to Slack: channel={channel_id}, thread={thread_ts}, action={getattr(response, 'action', 'unknown')}"
             )
-            
+
         except Exception as e:
             logger.error(f"Failed to send agent message to Slack: {e}")
             # Fall back to basic message
             try:
                 from .common import get_slack_app
+
                 app = get_slack_app()
                 await app.client.chat_postMessage(
                     channel=channel_id,
                     thread_ts=thread_ts,
-                    text=f"📅 Your calendar event '{calendar_event.title}' has been updated."
+                    text=f"📅 Your calendar event '{calendar_event.title}' has been updated.",
                 )
             except Exception as fallback_error:
                 logger.error(f"Fallback Slack message also failed: {fallback_error}")
 
-    async def _cleanup_session_scheduled_messages(self, session: PlanningSession) -> None:
+    async def _cleanup_session_scheduled_messages(
+        self, session: PlanningSession
+    ) -> None:
         """Clean up scheduled Slack messages for a planning session."""
         if session.slack_scheduled_message_id:
             try:
                 from .common import get_slack_app
+
                 app = get_slack_app()
-                
+
                 await app.client.chat_deleteScheduledMessage(
                     channel=session.user_id,
                     scheduled_message_id=session.slack_scheduled_message_id,
@@ -701,10 +704,10 @@ Keep the message friendly and informative."""
                 logger.info(
                     f"Cleaned up scheduled message {session.slack_scheduled_message_id} for session {session.id}"
                 )
-                
+
                 # Clear the scheduled message ID from the session
                 session.slack_scheduled_message_id = None
-                
+
             except Exception as e:
                 logger.error(f"Failed to cleanup scheduled message: {e}")
 

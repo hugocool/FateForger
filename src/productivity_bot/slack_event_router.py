@@ -19,11 +19,11 @@ from typing import Any, Dict, Optional
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
+from .actions.planner_action import PlannerAction  # Pydantic model
 from .agents.slack_assistant_agent import process_slack_thread_reply
 from .common import get_logger
 from .database import get_db_session
 from .models import CalendarEvent, PlanningSession  # SQLAlchemy models from models.py
-from .actions.planner_action import PlannerAction  # Pydantic model
 from .scheduler import get_scheduler
 from .session_manager import get_session_registry
 
@@ -102,7 +102,9 @@ class SlackEventRouter:
         if not planning_session:
             # No session found by thread_ts. Check if this could be a response to a planning prompt
             # Look for an active planning session for this user without thread info
-            planning_session = await self._try_link_to_active_session(user_id, thread_ts, channel)
+            planning_session = await self._try_link_to_active_session(
+                user_id, thread_ts, channel
+            )
 
         if planning_session:
             # This is a planning thread - forward to agent
@@ -174,47 +176,49 @@ class SlackEventRouter:
     ) -> Optional[PlanningSession]:
         """
         Try to link a thread to an active planning session that doesn't have thread info yet.
-        
+
         This handles the case where a user responds to a planning prompt for the first time,
         creating a thread that needs to be associated with their planning session.
-        
+
         Args:
             user_id: Slack user ID
             thread_ts: Thread timestamp
             channel_id: Channel ID
-            
+
         Returns:
             PlanningSession if found and linked, None otherwise
         """
         try:
             # Look for an active planning session for this user that doesn't have thread info
             from sqlalchemy import and_, select
-            
+
             async with get_db_session() as db:
                 result = await db.execute(
-                    select(PlanningSession).where(
+                    select(PlanningSession)
+                    .where(
                         and_(
                             PlanningSession.user_id == user_id,
                             PlanningSession.thread_ts.is_(None),  # No thread info yet
-                            PlanningSession.status.in_(['NOT_STARTED', 'IN_PROGRESS'])
+                            PlanningSession.status.in_(["NOT_STARTED", "IN_PROGRESS"]),
                         )
-                    ).order_by(PlanningSession.scheduled_for.desc())  # Most recent first
+                    )
+                    .order_by(PlanningSession.scheduled_for.desc())  # Most recent first
                 )
                 session = result.scalar_one_or_none()
-                
+
                 if session:
                     # Found a session - link it to this thread
                     session.thread_ts = thread_ts
                     session.channel_id = channel_id
-                    
+
                     await db.commit()
                     logger.info(
                         f"Linked planning session {session.id} to thread {thread_ts} in channel {channel_id}"
                     )
                     return session
-                    
+
                 return None
-                
+
         except Exception as e:
             logger.error(f"Error linking thread {thread_ts} to active session: {e}")
             return None
@@ -242,16 +246,16 @@ class SlackEventRouter:
         try:
             # 1. Use AssistantAgent with MCP tools for structured intent parsing
             logger.info(f"Processing structured intent from: '{user_text}'")
-            
+
             # Build session context for the agent
             session_context = {
                 "session_id": planning_session.id,
                 "user_id": planning_session.user_id,
                 "date": str(planning_session.date),
                 "status": planning_session.status.value,
-                "goals": planning_session.goals or "Not specified"
+                "goals": planning_session.goals or "Not specified",
             }
-            
+
             intent = await process_slack_thread_reply(user_text, session_context)
 
             # 2. Execute the structured action
@@ -349,11 +353,12 @@ class SlackEventRouter:
             try:
                 # Implement actual scheduler postpone logic
                 from datetime import datetime
+
                 from .scheduler import reschedule_haunt
-                
+
                 # Calculate new time
                 new_time = datetime.now() + timedelta(minutes=minutes)
-                
+
                 # Try to reschedule the haunt job
                 if planning_session.scheduler_job_id:
                     success = reschedule_haunt(planning_session.id, new_time)
@@ -364,7 +369,7 @@ class SlackEventRouter:
                         async with get_db_session() as db:
                             await db.merge(planning_session)
                             await db.commit()
-                        
+
                         await say(
                             thread_ts=thread_ts,
                             text=f"⏰ OK, I'll check back in {minutes} minutes.",
@@ -379,7 +384,7 @@ class SlackEventRouter:
                         thread_ts=thread_ts,
                         text=f"⏰ OK, I'll check back in {minutes} minutes.",
                     )
-                    
+
                 logger.info(
                     f"Postponed planning session {planning_session.id} by {minutes} minutes"
                 )
@@ -396,19 +401,21 @@ class SlackEventRouter:
             try:
                 # Update session status in database and cancel scheduler jobs
                 from .scheduler import cancel_haunt_by_session
-                
+
                 # Cancel any scheduled haunt jobs
                 if planning_session.scheduler_job_id:
                     cancel_success = cancel_haunt_by_session(planning_session.id)
                     if cancel_success:
-                        logger.info(f"Cancelled haunt job for session {planning_session.id}")
+                        logger.info(
+                            f"Cancelled haunt job for session {planning_session.id}"
+                        )
 
                 # Update session status in database
                 planning_session.mark_complete()
                 async with get_db_session() as db:
                     await db.merge(planning_session)
                     await db.commit()
-                
+
                 await say(
                     thread_ts=thread_ts, text="✅ Marked planning done. Good work!"
                 )
@@ -428,16 +435,18 @@ class SlackEventRouter:
             try:
                 # Implement calendar event recreation
                 success = await planning_session.recreate_event()
-                
+
                 if success:
-                    await say(thread_ts=thread_ts, text="� Recreated the planning event.")
+                    await say(
+                        thread_ts=thread_ts, text="� Recreated the planning event."
+                    )
                     logger.info(
                         f"Recreated event for planning session {planning_session.id}"
                     )
                 else:
                     await say(
                         thread_ts=thread_ts,
-                        text="❌ Failed to recreate the planning event. Please check your calendar integration."
+                        text="❌ Failed to recreate the planning event. Please check your calendar integration.",
                     )
 
             except Exception as e:
@@ -570,13 +579,16 @@ Just reply in this thread with any of these commands, and I'll take care of it! 
 
         await say(thread_ts=thread_ts, text=help_text)
 
-    async def _cleanup_session_scheduled_messages(self, planning_session: PlanningSession) -> None:
+    async def _cleanup_session_scheduled_messages(
+        self, planning_session: PlanningSession
+    ) -> None:
         """Clean up any scheduled Slack messages for the session when user responds."""
         if planning_session.slack_scheduled_message_id:
             try:
                 from .common import get_slack_app
+
                 app = get_slack_app()
-                
+
                 await app.client.chat_deleteScheduledMessage(
                     channel=planning_session.user_id,
                     scheduled_message_id=planning_session.slack_scheduled_message_id,
@@ -584,13 +596,13 @@ Just reply in this thread with any of these commands, and I'll take care of it! 
                 logger.info(
                     f"Deleted scheduled message {planning_session.slack_scheduled_message_id} for session {planning_session.id}"
                 )
-                
+
                 # Clear the scheduled message ID and update database
                 planning_session.slack_scheduled_message_id = None
                 async with get_db_session() as db:
                     await db.merge(planning_session)
                     await db.commit()
-                    
+
             except Exception as e:
                 logger.error(f"Failed to cleanup scheduled message: {e}")
 

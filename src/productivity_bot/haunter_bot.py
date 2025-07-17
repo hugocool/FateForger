@@ -28,15 +28,16 @@ logger = get_logger("haunter_bot")
 async def _cleanup_scheduled_slack_message(session) -> None:
     """
     Cancel any scheduled Slack message for the session.
-    
+
     This ensures that when a user responds or when events change,
     any pending scheduled reminders are cleaned up.
     """
     if session.slack_scheduled_message_id:
         try:
             from .common import get_slack_app
+
             app = get_slack_app()
-            
+
             await app.client.chat_deleteScheduledMessage(
                 channel=session.user_id,
                 scheduled_message_id=session.slack_scheduled_message_id,

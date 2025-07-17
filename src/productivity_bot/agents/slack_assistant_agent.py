@@ -57,43 +57,53 @@ class SlackAssistantAgent:
             return
 
         try:
-            logger.info("Initializing OpenAI Assistant Agent with MCP Calendar tools...")
-            
+            logger.info(
+                "Initializing OpenAI Assistant Agent with MCP Calendar tools..."
+            )
+
             # 1. Initialize OpenAI client
             from ..common import get_config
+
             config = get_config()
-            
+
             api_key = config.openai_api_key or os.environ.get("OPENAI_API_KEY", "")
             if not api_key:
                 logger.warning("OPENAI_API_KEY not found, using mock agent")
                 await self._initialize_mock_agent()
                 return
-                
+
             self._openai_client = AsyncOpenAI(api_key=api_key)
-            
+
             # 2. Setup MCP Workbench for Google Calendar tools
             tools = []
             try:
                 server_params = StdioServerParams(
                     command="docker",
                     args=[
-                        "run", "--rm", "-p", "4000:4000", 
-                        "nspady/google-calendar-mcp"
-                    ]
+                        "run",
+                        "--rm",
+                        "-p",
+                        "4000:4000",
+                        "nspady/google-calendar-mcp",
+                    ],
                 )
-                
+
                 # Initialize workbench and get tools
                 self.workbench = McpWorkbench(server_params=server_params)
                 await self.workbench.__aenter__()
-                
+
                 # Get available MCP tools
                 tools = await self.workbench.list_tools()
-                logger.info(f"Loaded {len(tools)} MCP calendar tools: {[tool.name for tool in tools]}")
-                
+                logger.info(
+                    f"Loaded {len(tools)} MCP calendar tools: {[tool.name for tool in tools]}"
+                )
+
             except Exception as mcp_error:
-                logger.warning(f"MCP tools unavailable, continuing without: {mcp_error}")
+                logger.warning(
+                    f"MCP tools unavailable, continuing without: {mcp_error}"
+                )
                 tools = []
-            
+
             # 3. Create the OpenAI assistant agent with calendar tools
             self.agent = OpenAIAssistantAgent(
                 name="Slack Planner Assistant",
@@ -114,10 +124,12 @@ Your goal is to ensure users complete their planning work, either by reschedulin
                 tools=tools if tools else [],
                 assistant_id=None,  # Let it create a new assistant
             )
-            
+
             self._initialized = True
-            logger.info("OpenAI Assistant Agent with MCP tools initialized successfully")
-            
+            logger.info(
+                "OpenAI Assistant Agent with MCP tools initialized successfully"
+            )
+
         except Exception as e:
             logger.error(f"Failed to initialize OpenAI Assistant Agent: {e}")
             logger.info("Falling back to mock agent")
@@ -153,9 +165,9 @@ Your goal is to ensure users complete their planning work, either by reschedulin
             context_text = ""
             if session_context:
                 context_text = f"\nSession context: {session_context}"
-            
+
             full_prompt = f"{user_text}{context_text}"
-            
+
             # Use the OpenAI Assistant to process the message
             # Return appropriate PlannerAction based on user intent
             if "cancel" in user_text.lower():
@@ -166,7 +178,7 @@ Your goal is to ensure users complete their planning work, either by reschedulin
                 return PlannerAction(action="mark_done")
             else:
                 return PlannerAction(action="unknown")
-            
+
         except Exception as e:
             logger.error(f"Error processing message with agent: {e}")
             return PlannerAction(action="unknown")

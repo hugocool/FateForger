@@ -134,7 +134,9 @@ class PlanStatus(PyEnum):
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETE = "COMPLETE"
     CANCELLED = "CANCELLED"  # Event was cancelled, but planning still needs to be done
-    RESCHEDULED = "RESCHEDULED"  # User picked a new slot, old session transitions to new
+    RESCHEDULED = (
+        "RESCHEDULED"  # User picked a new slot, old session transitions to new
+    )
 
 
 class PlanningSession(Base):
