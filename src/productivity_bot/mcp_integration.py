@@ -112,9 +112,9 @@ class CalendarMcpClient:
             params = {
                 "calendarId": calendar_id or "primary",
                 "singleEvents": True,
-                "orderBy": "startTime"
+                "orderBy": "startTime",
             }
-            
+
             if start_date:
                 params["timeMin"] = start_date
             if end_date:
@@ -123,25 +123,28 @@ class CalendarMcpClient:
             # Call MCP tool through workbench
             if not self.workbench:
                 raise RuntimeError("Workbench not initialized")
-                
+
             result = await self.workbench.call_tool("calendar.events.list", params)
-                
+
             # Extract events from ToolResult
             events = []
             if result.result:
                 for content in result.result:
-                    if hasattr(content, 'content') and isinstance(content.content, str):
+                    if hasattr(content, "content") and isinstance(content.content, str):
                         # Try to parse JSON response
                         import json
+
                         try:
                             data = json.loads(content.content)
-                            if isinstance(data, dict) and 'items' in data:
-                                events = data['items']
+                            if isinstance(data, dict) and "items" in data:
+                                events = data["items"]
                             elif isinstance(data, list):
                                 events = data
                         except json.JSONDecodeError:
-                            logger.warning(f"Failed to parse MCP response as JSON: {content.content}")
-                
+                            logger.warning(
+                                f"Failed to parse MCP response as JSON: {content.content}"
+                            )
+
             logger.info(f"Retrieved {len(events)} events via MCP")
             return events
 
@@ -181,9 +184,9 @@ class CalendarMcpClient:
             event_resource = {
                 "summary": title,
                 "start": {"dateTime": start_time},
-                "end": {"dateTime": end_time}
+                "end": {"dateTime": end_time},
             }
-            
+
             if description:
                 event_resource["description"] = description
             if location:
@@ -191,32 +194,37 @@ class CalendarMcpClient:
 
             params = {
                 "calendarId": calendar_id or "primary",
-                "resource": event_resource
+                "resource": event_resource,
             }
 
             # Call MCP tool
             if not self.workbench:
                 raise RuntimeError("Workbench not initialized")
-                
+
             result = await self.workbench.call_tool("calendar.events.insert", params)
-            
+
             # Extract created event from ToolResult
             created_event = None
             if result.result:
                 for content in result.result:
-                    if hasattr(content, 'content') and isinstance(content.content, str):
+                    if hasattr(content, "content") and isinstance(content.content, str):
                         import json
+
                         try:
                             created_event = json.loads(content.content)
                             break
                         except json.JSONDecodeError:
-                            logger.warning(f"Failed to parse MCP create response: {content.content}")
-                
+                            logger.warning(
+                                f"Failed to parse MCP create response: {content.content}"
+                            )
+
             if created_event:
-                logger.info(f"Created event '{title}' via MCP with ID: {created_event.get('id')}")
+                logger.info(
+                    f"Created event '{title}' via MCP with ID: {created_event.get('id')}"
+                )
             else:
                 logger.warning(f"MCP create_event returned no event data")
-                
+
             return created_event
 
         except Exception as e:
@@ -252,31 +260,31 @@ class CalendarMcpClient:
 
         try:
             # First get the existing event to preserve unchanged fields
-            get_params = {
-                "calendarId": "primary",
-                "eventId": event_id
-            }
-            
+            get_params = {"calendarId": "primary", "eventId": event_id}
+
             if not self.workbench:
                 raise RuntimeError("Workbench not initialized")
-                
-            get_result = await self.workbench.call_tool("calendar.events.get", get_params)
-            
+
+            get_result = await self.workbench.call_tool(
+                "calendar.events.get", get_params
+            )
+
             # Parse existing event
             existing_event = {}
             if get_result.result:
                 for content in get_result.result:
-                    if hasattr(content, 'content') and isinstance(content.content, str):
+                    if hasattr(content, "content") and isinstance(content.content, str):
                         import json
+
                         try:
                             existing_event = json.loads(content.content)
                             break
                         except json.JSONDecodeError:
                             pass
-            
+
             # Prepare update data (only include changed fields)
             event_resource = existing_event.copy()
-            
+
             if title is not None:
                 event_resource["summary"] = title
             if start_time is not None:
@@ -291,29 +299,32 @@ class CalendarMcpClient:
             update_params = {
                 "calendarId": "primary",
                 "eventId": event_id,
-                "resource": event_resource
+                "resource": event_resource,
             }
 
             # Call MCP update tool
-            result = await self.workbench.call_tool("calendar.events.update", update_params)
-            
+            result = await self.workbench.call_tool(
+                "calendar.events.update", update_params
+            )
+
             # Extract updated event
             updated_event = None
             if result.result:
                 for content in result.result:
-                    if hasattr(content, 'content') and isinstance(content.content, str):
+                    if hasattr(content, "content") and isinstance(content.content, str):
                         import json
+
                         try:
                             updated_event = json.loads(content.content)
                             break
                         except json.JSONDecodeError:
                             pass
-                
+
             if updated_event:
                 logger.info(f"Updated event {event_id} via MCP")
             else:
                 logger.warning(f"MCP update_event returned no data for {event_id}")
-                
+
             return updated_event
 
         except Exception as e:
@@ -335,32 +346,31 @@ class CalendarMcpClient:
             return False
 
         try:
-            params = {
-                "calendarId": "primary",
-                "eventId": event_id
-            }
+            params = {"calendarId": "primary", "eventId": event_id}
 
             # Call MCP delete tool
             if not self.workbench:
                 raise RuntimeError("Workbench not initialized")
-                
+
             result = await self.workbench.call_tool("calendar.events.delete", params)
-            
+
             # Check if deletion was successful (usually returns empty result on success)
             success = not result.is_error
-            
+
             if success:
                 logger.info(f"Deleted event {event_id} via MCP")
             else:
                 logger.warning(f"MCP delete_event failed for {event_id}")
-                
+
             return success
 
         except Exception as e:
             logger.error(f"MCP delete_event failed: {e}")
             return False
 
-    async def get_event(self, event_id: str, calendar_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    async def get_event(
+        self, event_id: str, calendar_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """
         Get a specific calendar event using MCP.
 
@@ -376,34 +386,34 @@ class CalendarMcpClient:
             return None
 
         try:
-            params = {
-                "calendarId": calendar_id or "primary",
-                "eventId": event_id
-            }
+            params = {"calendarId": calendar_id or "primary", "eventId": event_id}
 
             # Call MCP get tool
             if not self.workbench:
                 raise RuntimeError("Workbench not initialized")
-                
+
             result = await self.workbench.call_tool("calendar.events.get", params)
-            
+
             # Extract event data
             event_data = None
             if result.result:
                 for content in result.result:
-                    if hasattr(content, 'content') and isinstance(content.content, str):
+                    if hasattr(content, "content") and isinstance(content.content, str):
                         import json
+
                         try:
                             event_data = json.loads(content.content)
                             break
                         except json.JSONDecodeError:
-                            logger.warning(f"Failed to parse MCP get response: {content.content}")
-                
+                            logger.warning(
+                                f"Failed to parse MCP get response: {content.content}"
+                            )
+
             if event_data:
                 logger.info(f"Retrieved event {event_id} via MCP")
             else:
                 logger.warning(f"Event {event_id} not found via MCP")
-                
+
             return event_data
 
         except Exception as e:
