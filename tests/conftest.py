@@ -1,94 +1,86 @@
-"""
-Test configuration and fixtures for the productivity bot test suite.
-"""
+import asyncio
+from datetime import datetime
 
 import pytest
-import os
-from unittest.mock import Mock, patch
-from productivity_bot.common import Config
+import pytest_asyncio
+from httpx import AsyncClient
+from pytest_httpx import HTTPXMock
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+
+from fateforger.core.scheduler import get_scheduler, reset_scheduler
+from fateforger.haunters.bootstrap import PlanningBootstrapHaunter
+from fateforger.agents.planning import PlanningAgent
+from fateforger.infra import Base
 
 
-@pytest.fixture
-def mock_env_vars():
-    """Mock environment variables for testing."""
-    env_vars = {
-        "SLACK_BOT_TOKEN": "xoxb-test-token",
-        "SLACK_SIGNING_SECRET": "test-signing-secret",
-        "SLACK_APP_TOKEN": "xapp-test-app-token",
-        "OPENAI_API_KEY": "test-openai-key",
-        "CALENDAR_WEBHOOK_URL": "https://test.webhook.url",
-        "PORT": "8000",
-        "DEBUG": "true",
-    }
-
-    with patch.dict(os.environ, env_vars, clear=True):
-        yield env_vars
-
-
-@pytest.fixture
-def test_config(mock_env_vars):
-    """Create a test configuration instance."""
-    return Config()
-
-
-@pytest.fixture
-def mock_slack_app():
-    """Mock Slack app for testing."""
-    app = Mock()
-    app.client = Mock()
-    app.client.chat_postMessage = Mock()
-    return app
-
-
-@pytest.fixture
-def sample_slack_message():
-    """Sample Slack message for testing."""
-    return {
-        "user": "U123456789",
-        "text": "remind me to submit report in 2 hours",
-        "channel": "C123456789",
-        "ts": "1234567890.123456",
-    }
-
-
-@pytest.fixture
-def sample_calendar_event():
-    """Sample calendar event for testing."""
-    return {
-        "id": "event123",
-        "summary": "Team Meeting",
-        "start": {"dateTime": "2023-07-16T14:00:00Z"},
-        "end": {"dateTime": "2023-07-16T15:00:00Z"},
-        "attendees": [{"email": "user@example.com"}],
-    }
-
-
-@pytest.fixture
-def sample_webhook_data():
-    """Sample webhook data for testing."""
-    return {
-        "source": "google_calendar",
-        "channel_id": "test-channel-123",
-        "resource_id": "test-resource-456",
-        "state": "exists",
-        "timestamp": "2023-07-16T10:00:00Z",
-    }
-
-
-# Test database setup (if needed later)
 @pytest.fixture(scope="session")
-def test_db():
-    """Setup test database if needed."""
-    # For now, return None as we're not using a database yet
-    yield None
-
-
-# Async test helpers
-@pytest.fixture
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    import asyncio
-
-    loop = asyncio.get_event_loop_policy().new_event_loop()
+def event_loop(request):
+    loop = asyncio.new_event_loop()
     yield loop
     loop.close()
+
+
+@pytest_asyncio.fixture(scope="session")
+async def sqlite_engine():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture()
+async def db_session(sqlite_engine) -> AsyncSession:
+    async_session = async_sessionmaker(sqlite_engine, expire_on_commit=False)
+    async with async_session() as session:
+        yield session
+        await session.rollback()
+
+
+@pytest.fixture(scope="session")
+def mock_slack_client():
+    class Slack:
+        async def chat_postMessage(self, channel, text):
+            return {"ts": "1"}
+
+        async def chat_scheduleMessage(self, channel, text, post_at, thread_ts=None):
+            return {"scheduled_message_id": "sched1"}
+
+        async def chat_deleteScheduledMessage(self, channel, scheduled_message_id):
+            return {"ok": True}
+
+    return Slack()
+
+
+@pytest.fixture(scope="session")
+def mock_openai(monkeypatch):
+    class Dummy:
+        pass
+
+    monkeypatch.setattr("openai.AsyncOpenAI", Dummy)
+
+
+@pytest_asyncio.fixture()
+async def scheduler():
+    reset_scheduler()
+    sched = get_scheduler()
+    yield sched
+    sched.remove_all_jobs()
+    reset_scheduler()
+
+
+@pytest_asyncio.fixture()
+async def bootstrap_haunter(db_session, mock_slack_client, scheduler, mocker):
+    client = AsyncClient(base_url="http://testserver")
+    planner = PlanningAgent(client)
+    mocker.patch.object(planner, "_create_event", autospec=True)
+    haunter = PlanningBootstrapHaunter(1, mock_slack_client, scheduler, db_session, planner)
+    yield haunter
+    await client.aclose()
+
+
+@pytest.fixture()
+def mock_mcp(httpx_mock: HTTPXMock):
+    httpx_mock.assert_all_called = False
+    httpx_mock.add_response(url="http://testserver/mcp/create_event", json={"id": "evt"})
+    return httpx_mock

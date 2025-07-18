@@ -41,6 +41,11 @@ class BaseHaunter(ABC):
         delay = min(base * (2 ** attempt), cap)
         return datetime.utcnow() + timedelta(minutes=delay)
 
+    @staticmethod
+    def next_delay(attempt: int, base: int = 5, cap: int = 120) -> int:
+        """Return delay in minutes using exponential backoff."""
+        return min(base * (2 ** attempt), cap)
+
     @abstractmethod
     async def handle_reply(self, text: str) -> None:
         pass

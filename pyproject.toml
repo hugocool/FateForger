@@ -43,6 +43,7 @@ description = "AI-powered productivity system that forges your fate through inte
 authors = ["hugocool <hugo.evers@gmail.com>"]
 packages = [
     {include = "productivity_bot", from = "src"},
+    {include = "fateforger"},
     {include = "scripts"}
 ]
 
@@ -50,6 +51,8 @@ packages = [
 pytest = "^8.4.1"
 pytest-mock = "^3.14.1"
 pytest-asyncio = "^0.21.0"
+pytest-httpx = "^0.30.0"
+freezegun = "^1.5.0"
 mkdocs = "^1.6.1"
 mkdocs-material = "^9.6.15"
 mkdocstrings = "^0.29.1"
@@ -142,7 +145,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["src"]
+source = ["src", "fateforger"]
 omit = [
     "*/tests/*",
     "*/test_*",
