@@ -7,16 +7,11 @@ user responses when they've committed to a planning time.
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+from fateforger.actions.base import ActionBase
 
 
-class HaunterActionBase(BaseModel):
-    """Base class for all haunter action schemas."""
-
-    action: str = Field(description="The action type to perform")
-
-
-class CommitmentAction(HaunterActionBase):
+class CommitmentAction(ActionBase):
     """
     Action schema for commitment planning sessions.
 
