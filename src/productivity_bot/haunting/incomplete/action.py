@@ -7,16 +7,11 @@ user responses when planning sessions remain incomplete.
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+from fateforger.actions.base import ActionBase
 
 
-class HaunterActionBase(BaseModel):
-    """Base class for all haunter action schemas."""
-
-    action: str = Field(description="The action type to perform")
-
-
-class IncompleteAction(HaunterActionBase):
+class IncompleteAction(ActionBase):
     """
     Action schema for incomplete planning sessions.
 

@@ -22,9 +22,7 @@ logger = get_logger("database")
 def get_database_engine():
     """Get the database engine."""
     config = get_config()
-    database_url = getattr(
-        config, "database_url", "sqlite+aiosqlite:///data/fateforger.db"
-    )
+    database_url = getattr(config, "database_url", None) or "sqlite+aiosqlite:///data/fateforger.db"
     return create_async_engine(database_url, echo=False)
 
 

@@ -16,7 +16,8 @@ def mock_env_vars():
         "SLACK_SIGNING_SECRET": "test-signing-secret",
         "SLACK_APP_TOKEN": "xapp-test-app-token",
         "OPENAI_API_KEY": "test-openai-key",
-        "CALENDAR_WEBHOOK_URL": "https://test.webhook.url",
+        "CALENDAR_WEBHOOK_SECRET": "test-webhook-secret",
+        "DATABASE_URL": "sqlite+aiosqlite:///./test.db",
         "PORT": "8000",
         "DEBUG": "true",
     }
