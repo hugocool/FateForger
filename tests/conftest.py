@@ -4,11 +4,10 @@ from datetime import datetime
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
-from pytest_httpx import HTTPXMock
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 from fateforger.core.scheduler import get_scheduler, reset_scheduler
-from fateforger.haunters.bootstrap import PlanningBootstrapHaunter
+from fateforger.agents.haunters.bootstrap import PlanningBootstrapHaunter
 from fateforger.agents.planning import PlanningAgent
 from fateforger.infra import Base
 
@@ -30,7 +29,7 @@ async def sqlite_engine():
 
 
 @pytest_asyncio.fixture()
-async def db_session(sqlite_engine) -> AsyncSession:
+async def db_session(sqlite_engine):
     async_session = async_sessionmaker(sqlite_engine, expire_on_commit=False)
     async with async_session() as session:
         yield session
@@ -80,7 +79,7 @@ async def bootstrap_haunter(db_session, mock_slack_client, scheduler, mocker):
 
 
 @pytest.fixture()
-def mock_mcp(httpx_mock: HTTPXMock):
+def mock_mcp(httpx_mock):
     httpx_mock.assert_all_called = False
     httpx_mock.add_response(url="http://testserver/mcp/create_event", json={"id": "evt"})
     return httpx_mock
