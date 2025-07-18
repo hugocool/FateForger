@@ -1,43 +1,20 @@
-# Agent Architecture
+---
+title: Agents
+---
 
-## Bot Agents
+## PlannerAgent
 
-The system includes several specialized AI agents, each designed for specific productivity tasks:
+- Triggered by Slack commands or cron
+- Stores planning sessions in `models.py`
 
-### Planner Bot
+## BootstrapHaunter
 
-**Purpose**: Intelligent task scheduling and optimization
+- Watches for unsubmitted plans
 
-**Capabilities**:
+## CommitmentHaunter
 
-* Analyzes calendar events and tasks
-* Suggests optimal scheduling
-* Identifies conflicts and bottlenecks
-* Provides time management recommendations
+- Reminds about incomplete tasks
 
-### Haunter Bot
+## RouterAgent
 
-**Purpose**: Persistent reminders and follow-through
-
-**Capabilities**:
-
-* Tracks task completion
-* Sends gentle reminders
-* Escalates notifications for important deadlines
-* Maintains engagement without being intrusive
-
-## Agent Communication
-
-Agents communicate through:
-
-* Shared database state
-* Event-driven messaging
-* Scheduled coordination points
-* User interaction callbacks
-
-## AI Integration
-
-* OpenAI API for natural language processing
-* Custom prompts for domain-specific tasks
-* Context-aware responses
-* Learning from user preferences
+- Dispatches Slack events via `slack_router.py`
