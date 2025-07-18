@@ -1,109 +1,52 @@
-"""
-Planner Agent for processing user messages in planning threads.
-
-This module provides structured LLM intent parsing using OpenAI's
-Structured Outputs with Pydantic validation.
-"""
+"""Planner intent agent using structured output."""
 
 import logging
 import os
 from typing import Optional
 
-import openai
+from autogen_agentchat.agents import AssistantAgent
+from autogen_ext.models.openai import OpenAIChatCompletionClient
 
-from ..actions.planner_action import PlannerAction
+from ..actions.planner_action import (
+    PlannerAction,
+    get_planner_system_message,
+)
 from ..common import get_logger
 
 logger = get_logger("planner_agent")
 
-SYSTEM_MESSAGE = """You are the productivity planner assistant. 
-
-Parse the user's reply into a structured PlannerAction. You can only respond with these exact actions:
-
-1. postpone - When user wants to delay the planning session
-   - Include "minutes" field with the number of minutes to postpone
-   - Examples: "postpone 15", "delay for 30 minutes", "later" 
-
-2. mark_done - When user indicates they're finished
-   - Examples: "done", "finished", "complete", "I'm done"
-
-3. create_event - When user wants to create the calendar event  
-   - Examples: "create event", "create again", "reschedule"
-
-Always respond with valid JSON that matches the PlannerAction schema. If the user's intent is unclear, choose the most likely action based on context.
-"""
+_planner_agent: Optional[AssistantAgent] = None
 
 
-def get_openai_client():
-    """Get OpenAI client configured for structured output."""
-    return openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+def build_planner_agent(api_key: str) -> AssistantAgent:
+    client = OpenAIChatCompletionClient(
+        model="gpt-4o-mini",
+        api_key=api_key,
+        response_format=PlannerAction,
+    )
+    return AssistantAgent(
+        name="planner_agent",
+        model_client=client,
+        system_message=get_planner_system_message(),
+        output_content_type=PlannerAction,
+    )
+
+
+def _get_agent() -> AssistantAgent:
+    global _planner_agent
+    if _planner_agent is None:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        _planner_agent = build_planner_agent(api_key)
+    return _planner_agent
 
 
 async def send_to_planner_intent(user_text: str) -> PlannerAction:
-    """
-    Sends the raw user message to OpenAI using the PlannerAction model for structured output.
-
-    This function uses OpenAI's Structured Outputs feature to ensure the response
-    is always a valid PlannerAction instance, eliminating parsing errors.
-
-    Args:
-        user_text: The user's natural language input
-
-    Returns:
-        PlannerAction: Validated structured action
-
-    Raises:
-        Exception: If LLM call fails or response is invalid
-
-    Example:
-        >>> action = await send_to_planner_intent("postpone 15")
-        >>> print(action.action, action.minutes)
-        postpone 15
-    """
+    """Parse user text into a PlannerAction using the planner agent."""
+    agent = _get_agent()
+    logger.info(f"Processing user input: '{user_text}'")
     try:
-        logger.info(f"Processing user input with structured output: '{user_text}'")
-
-        client = get_openai_client()
-
-        # Use OpenAI's structured output with response_format
-        response = await client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": SYSTEM_MESSAGE},
-                {"role": "user", "content": user_text},
-            ],
-            response_format=PlannerAction,  # This ensures structured output
-        )
-
-        # Parse the structured response
-        action = response.choices[0].message.parsed
-
-        if action is None:
-            logger.warning("OpenAI returned None for parsed response, using default")
-            return PlannerAction(action="mark_done", minutes=None)
-
-        logger.info(
-            f"Structured output result: {action.action} (minutes: {action.minutes})"
-        )
-        return action
-
+        result = await agent.run(task=user_text)
+        return result.chat_message.content
     except Exception as e:
-        logger.error(f"Structured LLM parsing failed for '{user_text}': {e}")
-        # Return a safe default
-        return PlannerAction(action="mark_done", minutes=None)
-
-
-async def test_planner_agent() -> bool:
-    """
-    Test the planner agent with a sample message.
-
-    Returns:
-        True if test successful, False otherwise
-    """
-    try:
-        action = await send_to_planner_intent("postpone 10")
-        expected_action = "postpone"
-        return action.action == expected_action and action.minutes == 10
-    except Exception as e:
-        logger.error(f"Planner agent test failed: {e}")
-        return False
+        logger.error(f"Planner agent failed: {e}")
+        return PlannerAction(action="unknown")
