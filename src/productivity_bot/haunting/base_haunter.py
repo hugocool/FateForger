@@ -395,7 +395,10 @@ class BaseHaunter(ABC):
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Generate a {context} message for attempt #{attempt}"},
+                    {
+                        "role": "user",
+                        "content": f"Generate a {context} message for attempt #{attempt}",
+                    },
                 ],
                 temperature=0.7,  # Higher temperature for message variety
                 max_tokens=500,
@@ -409,20 +412,24 @@ class BaseHaunter(ABC):
                 return f"Hi! I'm here to help with your planning session. (attempt {attempt})"
 
         except Exception as e:
-            self.logger.error(f"Failed to generate message for context '{context}': {e}")
+            self.logger.error(
+                f"Failed to generate message for context '{context}': {e}"
+            )
             # Return basic fallback message
-            return f"Hi! I'm here to help with your planning session. (attempt {attempt})"
+            return (
+                f"Hi! I'm here to help with your planning session. (attempt {attempt})"
+            )
 
     def _get_message_system_prompt(self, context: str, attempt: int) -> str:
         """
         Get haunter-specific system prompt for message generation.
-        
+
         Override this method in concrete haunters to provide context-specific prompts.
-        
+
         Args:
             context: Message context (e.g., "initial_bootstrap", "followup_reminder")
             attempt: Current attempt number
-            
+
         Returns:
             System prompt for message generation
         """

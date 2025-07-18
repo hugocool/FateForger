@@ -300,16 +300,21 @@ class PlanningBootstrapHaunter(BaseHaunter):
         try:
             # Check for existing planning events for tomorrow
             from datetime import datetime, timedelta
-            from sqlalchemy import select, and_
-            
+
+            from sqlalchemy import and_, select
+
             tomorrow = datetime.now() + timedelta(days=1)
             tomorrow_start = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
-            tomorrow_end = tomorrow.replace(hour=23, minute=59, second=59, microsecond=999999)
-            
+            tomorrow_end = tomorrow.replace(
+                hour=23, minute=59, second=59, microsecond=999999
+            )
+
             # Query would check for existing events in date range
             # Implementation requires calendar integration context
-            self.logger.info(f"Daily check for planning events on {tomorrow.date()} - calendar integration needed")
-            
+            self.logger.info(
+                f"Daily check for planning events on {tomorrow.date()} - calendar integration needed"
+            )
+
         except Exception as e:
             self.logger.error(f"Failed to perform daily check: {e}")
 
@@ -323,14 +328,17 @@ class PlanningBootstrapHaunter(BaseHaunter):
                 channel=self.channel,
                 thread_ts=self.thread_ts,
             )
-            
+
             if message_ts:
                 self.logger.info(f"Sent initial bootstrap message: {message_ts}")
                 # Schedule follow-up reminder using exponential backoff
                 from datetime import datetime, timedelta
-                followup_time = datetime.now() + timedelta(minutes=self.backoff_base_minutes)
+
+                followup_time = datetime.now() + timedelta(
+                    minutes=self.backoff_base_minutes
+                )
                 followup_message = await self.generate_message("followup_reminder", 2)
-                
+
                 await self.schedule_slack(
                     text=followup_message,
                     post_at=followup_time,
@@ -339,18 +347,18 @@ class PlanningBootstrapHaunter(BaseHaunter):
                 )
             else:
                 self.logger.error("Failed to send initial bootstrap message")
-                
+
         except Exception as e:
             self.logger.error(f"Failed to start bootstrap haunt: {e}")
 
     def _get_message_system_prompt(self, context: str, attempt: int) -> str:
         """
         Get bootstrap-specific system prompt for message generation.
-        
+
         Args:
-            context: Message context 
+            context: Message context
             attempt: Current attempt number
-            
+
         Returns:
             Bootstrap-specific system prompt
         """
@@ -374,7 +382,7 @@ Keep it conversational and focus on the value of planning without being overwhel
                 urgency = "moderate"
             else:
                 urgency = "persistent"
-                
+
             return f"""You are a friendly productivity assistant following up about scheduling a planning session.
 
 Generate a {urgency} reminder message (attempt #{attempt}) that:

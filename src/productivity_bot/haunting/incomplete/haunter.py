@@ -198,7 +198,9 @@ class IncompletePlanningHaunter(BaseHaunter):
 
             else:  # unknown action
                 # Try to clarify with user about their incomplete planning
-                clarification_message = await self.generate_message("incomplete_clarification", 1)
+                clarification_message = await self.generate_message(
+                    "incomplete_clarification", 1
+                )
                 await self.send(
                     clarification_message,
                     channel=self.channel,
@@ -277,16 +279,17 @@ class IncompletePlanningHaunter(BaseHaunter):
         """Poll for overdue sessions and start incomplete haunting."""
         try:
             from datetime import datetime, timedelta
+
             from sqlalchemy import and_, select
-            
+
             from ...database import get_db_session
-            from ...models import PlanningSession, PlanStatus, BaseEvent
-            
+            from ...models import BaseEvent, PlanningSession, PlanStatus
+
             logger = logging.getLogger(__name__)
-            
+
             # Find sessions that are overdue (event ended but session not complete)
             cutoff_time = datetime.now() - timedelta(hours=2)  # 2 hours grace period
-            
+
             async with get_db_session() as db:
                 result = await db.execute(
                     select(PlanningSession, BaseEvent)
@@ -294,20 +297,24 @@ class IncompletePlanningHaunter(BaseHaunter):
                     .where(
                         and_(
                             BaseEvent.end_time < cutoff_time,
-                            PlanningSession.status.in_([PlanStatus.NOT_STARTED, PlanStatus.IN_PROGRESS]),
+                            PlanningSession.status.in_(
+                                [PlanStatus.NOT_STARTED, PlanStatus.IN_PROGRESS]
+                            ),
                         )
                     )
                 )
                 overdue_sessions = result.all()
-                
+
                 logger.info(f"Found {len(overdue_sessions)} overdue sessions")
-                
+
                 # TODO: Start incomplete haunters for overdue sessions
                 # This would require scheduler and Slack client setup
                 # For now, just log the sessions found
                 for session, event in overdue_sessions:
-                    logger.info(f"Overdue session: {session.id} for user {session.user_id}")
-                    
+                    logger.info(
+                        f"Overdue session: {session.id} for user {session.user_id}"
+                    )
+
         except Exception as e:
             logger = logging.getLogger(__name__)
             logger.error(f"Failed to poll overdue sessions: {e}")
@@ -322,37 +329,43 @@ class IncompletePlanningHaunter(BaseHaunter):
                 channel=self.channel,
                 thread_ts=self.thread_ts,
             )
-            
+
             if message_ts:
-                self.logger.info(f"Sent incomplete start message for session {self.session_id}: {message_ts}")
+                self.logger.info(
+                    f"Sent incomplete start message for session {self.session_id}: {message_ts}"
+                )
                 # Schedule escalating follow-ups for incomplete sessions
                 from datetime import datetime, timedelta
-                
+
                 # First follow-up in 4 hours
                 followup_time = datetime.now() + timedelta(hours=4)
                 followup_message = await self.generate_message("incomplete_followup", 2)
-                
+
                 await self.schedule_slack(
                     text=followup_message,
                     post_at=followup_time,
                     channel=self.channel,
                     thread_ts=self.thread_ts,
                 )
-                
+
             else:
-                self.logger.error(f"Failed to send incomplete start message for session {self.session_id}")
-                
+                self.logger.error(
+                    f"Failed to send incomplete start message for session {self.session_id}"
+                )
+
         except Exception as e:
-            self.logger.error(f"Failed to start incomplete haunt for session {self.session_id}: {e}")
+            self.logger.error(
+                f"Failed to start incomplete haunt for session {self.session_id}: {e}"
+            )
 
     def _get_message_system_prompt(self, context: str, attempt: int) -> str:
         """
         Get incomplete-specific system prompt for message generation.
-        
+
         Args:
-            context: Message context 
+            context: Message context
             attempt: Current attempt number
-            
+
         Returns:
             Incomplete-specific system prompt
         """
@@ -375,7 +388,7 @@ Keep it supportive and solution-focused rather than dwelling on what was missed.
                 tone = "more direct but understanding"
             else:
                 tone = "persistent but caring"
-                
+
             return f"""You are a caring productivity assistant following up on a missed planning session (attempt #{attempt}).
 
 Generate a {tone} follow-up message that:

@@ -170,7 +170,9 @@ class CommitmentHaunter(BaseHaunter):
             # Handle based on action type
             if intent.action == "mark_done":
                 # User completed their planning session
-                completion_message = await self.generate_message("completion_celebration", 1)
+                completion_message = await self.generate_message(
+                    "completion_celebration", 1
+                )
                 await self.send(
                     completion_message,
                     channel=self.channel,
@@ -185,7 +187,9 @@ class CommitmentHaunter(BaseHaunter):
                 success = await self._route_to_planner(intent)
 
                 if success:
-                    reschedule_success_message = await self.generate_message("reschedule_success", 1)
+                    reschedule_success_message = await self.generate_message(
+                        "reschedule_success", 1
+                    )
                     await self.send(
                         reschedule_success_message,
                         channel=self.channel,
@@ -198,7 +202,9 @@ class CommitmentHaunter(BaseHaunter):
 
                     if success:
                         delay = self.next_delay(attempt + 1)
-                        reschedule_retry_message = await self.generate_message("reschedule_retry", 1)
+                        reschedule_retry_message = await self.generate_message(
+                            "reschedule_retry", 1
+                        )
                         await self.send(
                             reschedule_retry_message,
                             channel=self.channel,
@@ -206,7 +212,9 @@ class CommitmentHaunter(BaseHaunter):
                         )
                         return True
                     else:
-                        reschedule_failed_message = await self.generate_message("reschedule_failed", 1)
+                        reschedule_failed_message = await self.generate_message(
+                            "reschedule_failed", 1
+                        )
                         await self.send(
                             reschedule_failed_message,
                             channel=self.channel,
@@ -216,7 +224,9 @@ class CommitmentHaunter(BaseHaunter):
 
             else:  # unknown action
                 # Try to clarify with user
-                clarification_message = await self.generate_message("clarification_request", 1)
+                clarification_message = await self.generate_message(
+                    "clarification_request", 1
+                )
                 await self.send(
                     clarification_message,
                     channel=self.channel,
@@ -308,14 +318,19 @@ class CommitmentHaunter(BaseHaunter):
                 channel=self.channel,
                 thread_ts=self.thread_ts,
             )
-            
+
             if message_ts:
-                self.logger.info(f"Sent event start message for session {self.session_id}: {message_ts}")
+                self.logger.info(
+                    f"Sent event start message for session {self.session_id}: {message_ts}"
+                )
                 # Schedule timeout check using commitment-specific timing
                 from datetime import datetime, timedelta
-                timeout_check_time = datetime.now() + timedelta(minutes=15)  # 15 min grace period
+
+                timeout_check_time = datetime.now() + timedelta(
+                    minutes=15
+                )  # 15 min grace period
                 timeout_message = await self.generate_message("timeout_check", 2)
-                
+
                 await self.schedule_slack(
                     text=timeout_message,
                     post_at=timeout_check_time,
@@ -323,10 +338,14 @@ class CommitmentHaunter(BaseHaunter):
                     thread_ts=self.thread_ts,
                 )
             else:
-                self.logger.error(f"Failed to send event start message for session {self.session_id}")
-                
+                self.logger.error(
+                    f"Failed to send event start message for session {self.session_id}"
+                )
+
         except Exception as e:
-            self.logger.error(f"Failed to start event haunt for session {self.session_id}: {e}")
+            self.logger.error(
+                f"Failed to start event haunt for session {self.session_id}: {e}"
+            )
 
     async def _check_started_timeout(self):
         """Check if session is still incomplete after timeout."""
@@ -337,7 +356,7 @@ class CommitmentHaunter(BaseHaunter):
                     select(PlanningSession).where(PlanningSession.id == self.session_id)
                 )
                 session = result.scalar_one_or_none()
-                
+
                 if session and session.status == PlanStatus.NOT_STARTED:
                     # Session hasn't started yet - send follow-up
                     timeout_message = await self.generate_message("timeout_followup", 3)
@@ -346,21 +365,27 @@ class CommitmentHaunter(BaseHaunter):
                         channel=self.channel,
                         thread_ts=self.thread_ts,
                     )
-                    self.logger.info(f"Sent timeout followup for session {self.session_id}")
+                    self.logger.info(
+                        f"Sent timeout followup for session {self.session_id}"
+                    )
                 else:
-                    self.logger.info(f"Session {self.session_id} status changed, no timeout followup needed")
-                    
+                    self.logger.info(
+                        f"Session {self.session_id} status changed, no timeout followup needed"
+                    )
+
         except Exception as e:
-            self.logger.error(f"Failed to check started timeout for session {self.session_id}: {e}")
+            self.logger.error(
+                f"Failed to check started timeout for session {self.session_id}: {e}"
+            )
 
     def _get_message_system_prompt(self, context: str, attempt: int) -> str:
         """
         Get commitment-specific system prompt for message generation.
-        
+
         Args:
-            context: Message context 
+            context: Message context
             attempt: Current attempt number
-            
+
         Returns:
             Commitment-specific system prompt
         """
@@ -382,7 +407,7 @@ Keep it supportive and focused on helping them stay on track."""
                 urgency = "more direct but supportive"
             else:
                 urgency = "persistent but understanding"
-                
+
             return f"""You are an encouraging productivity assistant doing follow-up #{attempt} about a planning session commitment.
 
 Generate a {urgency} follow-up message that:
