@@ -13,13 +13,12 @@ from .common import *
 # from .haunter_bot import HaunterBot  # TODO: Fix imports
 # from .calendar_watch_server import CalendarWatchServer  # TODO: Fix imports
 # from .models import PlanningSession, Reminder, UserPreferences
-from .planner_bot import PlannerBot
+
 
 # from .database import PlanningSessionService, ReminderService, UserPreferencesService
 
 
 __all__ = [
-    "PlannerBot",
     # "HaunterBot",  # TODO: Fix imports
     # "CalendarWatchServer",  # TODO: Fix imports
     # "PlanningSession",

@@ -144,119 +144,49 @@ Your goal is to ensure users complete their planning work, either by reschedulin
     async def process_slack_thread_reply(
         self, user_text: str, session_context: Optional[Dict] = None
     ) -> PlannerAction:
-        """
-        Process a Slack thread reply using OpenAI Assistant Agent.
+        """Process a Slack thread reply using the structured planner agent."""
 
-        Args:
-            user_text: The user's message text
-            session_context: Optional context about the planning session
-
-        Returns:
-            PlannerAction: Structured action response
-        """
         await self._initialize_agent()
 
         if not self.agent:
             logger.warning("Agent not initialized, returning fallback action")
             return PlannerAction(action="unknown")
 
-        try:
-            # Add session context to the prompt if available
-            context_text = ""
-            if session_context:
-                context_text = f"\nSession context: {session_context}"
+        # Build message with optional session context
+        message_content = user_text
+        if session_context:
+            import json
 
-            full_prompt = f"{user_text}{context_text}"
-
-            # Use the OpenAI Assistant to process the message
-            # Return appropriate PlannerAction based on user intent
-            if "cancel" in user_text.lower():
-                return PlannerAction(action="create_event")
-            elif "move" in user_text.lower() or "reschedule" in user_text.lower():
-                return PlannerAction(action="postpone", minutes=60)  # Default to 1 hour
-            elif "done" in user_text.lower() or "complete" in user_text.lower():
-                return PlannerAction(action="mark_done")
-            else:
-                return PlannerAction(action="unknown")
-
-        except Exception as e:
-            logger.error(f"Error processing message with agent: {e}")
-            return PlannerAction(action="unknown")
-            return PlannerAction(action="unknown", minutes=None)
-
-        try:
-            logger.info(
-                f"Processing thread reply with structured output: '{user_text}'"
+            context_str = (
+                f"Planning session info: {json.dumps(session_context, default=str)}\n\nUser message: {user_text}"
             )
+            message_content = context_str
 
-            # Get session registry for shared session management
+        try:
+            result = await self.agent.run(task=message_content)
+            payload = result.chat_message.content
+
             session_registry = get_session_registry()
+            if (
+                isinstance(payload, PlannerAction)
+                and payload.is_mark_done
+                and session_context
+                and session_context.get("session_id")
+            ):
+                await session_registry.mark_session_done(
+                    session_context["session_id"], add_emoji=True
+                )
 
-            # Build message with optional session context
-            message_content = user_text
-            if session_context:
-                import json
+            if isinstance(payload, PlannerAction):
+                return payload
 
-                context_str = f"Planning session info: {json.dumps(session_context, default=str)}\n\nUser message: {user_text}"
-                message_content = context_str
-
-            # Use AssistantAgent with structured output enforcement
-            # The agent is configured with output_content_type=PlannerAction
-            from autogen_agentchat.messages._types import UserMessage
-            from autogen_core import CancellationToken
-
-            user_message = UserMessage(content=message_content, source="user")
-            cancellation_token = CancellationToken()
-
-            # Run the agent - this returns structured output guaranteed to match PlannerAction
-            response = await self.agent.on_messages([user_message], cancellation_token)
-
-            # Extract the PlannerAction from the structured response
-            # With output_content_type=PlannerAction, the response content is guaranteed to be valid
-            if response and response.chat_message:
-                # The content should be a PlannerAction due to output_content_type enforcement
-                chat_message = response.chat_message
-                if hasattr(chat_message, "content"):
-                    content = chat_message.content
-                elif hasattr(chat_message, "model_dump"):
-                    # Try to extract from model dump if direct access fails
-                    message_data = chat_message.model_dump()
-                    content = message_data.get("content")
-                else:
-                    content = None
-
-                if isinstance(content, PlannerAction):
-                    logger.info(f"Agent returned structured action: {content}")
-
-                    # Handle special actions with session management
-                    if (
-                        content.is_mark_done
-                        and session_context
-                        and session_context.get("session_id")
-                    ):
-                        # Mark session as done and add emoji
-                        await session_registry.mark_session_done(
-                            session_context["session_id"], add_emoji=True
-                        )
-                        logger.info(
-                            f"Marked session {session_context['session_id']} as complete"
-                        )
-
-                    return content
-                else:
-                    # This should never happen with proper structured output enforcement
-                    logger.warning(
-                        f"Unexpected response content type: {type(content)} - structured output not working"
-                    )
-                    return PlannerAction(action="unknown", minutes=None)
-            else:
-                logger.warning("Empty response from agent")
-                return PlannerAction(action="unknown", minutes=None)
-
+            logger.warning(
+                f"Unexpected response content type: {type(payload)}"
+            )
+            return PlannerAction(action="unknown")
         except Exception as e:
             logger.error(f"Agent processing failed for '{user_text}': {e}")
-            # Return safe default - even errors are valid PlannerAction objects
-            return PlannerAction(action="unknown", minutes=None)
+            return PlannerAction(action="unknown")
 
     async def cleanup(self) -> None:
         """Clean up MCP workbench resources."""

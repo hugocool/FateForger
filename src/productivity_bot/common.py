@@ -21,22 +21,27 @@ class Base(DeclarativeBase):
 
 
 class Config(BaseSettings):
-    """Application configuration using Pydantic settings."""
+    """Application configuration using Pydantic settings.
+
+    All fields are optional to allow instantiation without environment
+    variables for testing. Use :py:meth:`validate` to ensure required
+    values are present in production.
+    """
 
     # Slack Configuration
-    slack_bot_token: str = Field(..., env="SLACK_BOT_TOKEN")
-    slack_signing_secret: str = Field(..., env="SLACK_SIGNING_SECRET")
+    slack_bot_token: Optional[str] = Field(None, env="SLACK_BOT_TOKEN")
+    slack_signing_secret: Optional[str] = Field(None, env="SLACK_SIGNING_SECRET")
     slack_app_token: Optional[str] = Field(None, env="SLACK_APP_TOKEN")
 
     # OpenAI Configuration
-    openai_api_key: str = Field(..., env="OPENAI_API_KEY")
+    openai_api_key: Optional[str] = Field(None, env="OPENAI_API_KEY")
     openai_model: str = Field("gpt-4", env="OPENAI_MODEL")
 
     # MCP Configuration
     mcp_endpoint: str = Field("http://mcp:4000", env="MCP_ENDPOINT")
 
     # Calendar Configuration
-    calendar_webhook_secret: str = Field(..., env="CALENDAR_WEBHOOK_SECRET")
+    calendar_webhook_secret: Optional[str] = Field(None, env="CALENDAR_WEBHOOK_SECRET")
 
     # Application Settings
     environment: str = Field("production", env="ENVIRONMENT")
@@ -44,7 +49,7 @@ class Config(BaseSettings):
     development: bool = Field(False, env="DEVELOPMENT")
 
     # Database Settings
-    database_url: str = Field(..., env="DATABASE_URL")
+    database_url: Optional[str] = Field(None, env="DATABASE_URL")
 
     # APScheduler Settings
     scheduler_timezone: str = Field("UTC", env="SCHEDULER_TIMEZONE")
@@ -52,6 +57,16 @@ class Config(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+
+    def validate(self) -> bool:
+        """Check that required configuration values are present."""
+        required = [
+            self.slack_bot_token,
+            self.slack_signing_secret,
+            self.calendar_webhook_secret,
+            self.database_url,
+        ]
+        return all(required)
 
 
 def get_config() -> Config:

@@ -316,56 +316,14 @@ class BaseHaunter(ABC):
     # ========================================================================
 
     async def parse_intent(self, text: str) -> PlannerAction:
-        """
-        Parse user text into a PlannerAction using LLM.
+        """Parse user text into a PlannerAction using the shared planner agent."""
 
-        This uses the existing PlannerAction schema and system prompt
-        to extract structured intent from user replies.
-
-        Args:
-            text: User's raw text input
-
-        Returns:
-            PlannerAction with parsed intent
-        """
         try:
-            # Import OpenAI client (lazy import to avoid circular dependencies)
-            from openai import AsyncOpenAI
+            from ..agents.planner_agent import send_to_planner_intent
 
-            from ..common import get_config
-
-            config = get_config()
-            client = AsyncOpenAI(api_key=config.openai_api_key)
-
-            # Use existing PlannerAction system prompt
-            system_message = get_planner_system_message()
-
-            response = await client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": text},
-                ],
-                temperature=0.1,
-                max_tokens=200,
-            )
-
-            # Parse JSON response into PlannerAction
-            json_content = response.choices[0].message.content
-            if json_content:
-                json_content = json_content.strip()
-                import json
-
-                action_data = json.loads(json_content)
-
-                return PlannerAction(**action_data)
-            else:
-                self.logger.error("Empty response from LLM")
-                return PlannerAction(action="unknown")
-
+            return await send_to_planner_intent(text)
         except Exception as e:
             self.logger.error(f"Failed to parse intent from '{text}': {e}")
-            # Return unknown action as fallback
             return PlannerAction(action="unknown")
 
     async def generate_message(self, context: str, attempt: int = 1) -> str:
