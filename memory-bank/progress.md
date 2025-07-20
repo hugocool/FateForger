@@ -2,22 +2,23 @@
 
 ## Done
 
-- Extracted working AutoGen MCP calendar agent from notebook
-- Created CalendarHaunter class in fateforger/agents/haunters/calendar.py
-- Fixed FateForger settings configuration for additional environment variables
-- Fixed import paths in base.py and bootstrap.py
-- Added Poetry-first pytest configuration with asyncio support
-- Created comprehensive unit tests for CalendarHaunter
-- Tests are passing with proper mocking and error handling
-- Production-ready code following FateForger patterns
+- Implemented Ticket #1: Data contracts & hand-off stub
+- Created PlanDiff and CalendarOp Pydantic models in fateforger/contracts/
+- Created sync_plan_to_calendar stub in fateforger/runtime/
+- Created tools_config module for MCP server parameters
+- Reorganized code according to proper FateForger structure
+- Validated acceptance criteria for Ticket #1
+- All models work with json_output parameter for structured LLM responses
 
 ## Doing
 
-- Final documentation cleanup
-- Integration testing with real MCP server
+- Ready to proceed with Ticket #2: PlannerAgent structured JSON output
 
 ## Next
 
-- Add CalendarHaunter to FateForger main application flow
-- Create example usage scripts
-- Performance optimization and error handling improvements
+- Ticket #2: Update PlannerAgent to emit structured PlanDiff JSON
+- Ticket #3: Implement TaskQueueAgent (ClosureAgent)
+- Ticket #4: CalAgent MCP wiring
+- Ticket #5: SequentialWorkflow orchestration
+- Ticket #6: ResultCollector & verification loop
+- Ticket #7: Test harness & observability
