@@ -1,4 +1,10 @@
-# FateForger AI Development Guide
+---
+applyTo: "**"
+---
+
+# 🧠 MemoriPilot Memory-First Directive
+**Always call `memory_bank_show_memory` before you answer or run code.**  
+Memory is the single source of truth for project knowledge and history.
 
 ## Poetry-First Development Environment
 
@@ -15,112 +21,27 @@ poetry add package_name              # Add runtime dependency
 poetry add --group dev package_name  # Add dev dependency
 ```
 
-## Architecture Overview
 
-FateForger is an **AI-powered productivity system** with a modular haunter architecture:
+## When new knowledge appears
+| Situation | Call this MemoriPilot tool |
+|-----------|---------------------------|
+| Architectural / tech choice | `memory_bank_log_decision` |
+| Switch of focus / task | `memory_bank_update_context` |
+| Progress update (done/doing/next) | `memory_bank_update_progress` |
+| New pattern / convention | `memory_bank_update_system_patterns` |
 
-### Core Components
-- **Haunter System**: Three-stage lifecycle (Bootstrap → Commitment → Incomplete)
-- **MCP Integration**: Model Context Protocol for calendar operations 
-- **AutoGen AI**: LLM-powered planning with structured outputs
-- **APScheduler**: Persistent job scheduling with SQLAlchemy store
-- **Slack Integration**: Modal interfaces with threaded conversations
+## Working-mode hints
+- **architect** for high-level design  
+- **code** for implementation details  
+- **debug** for troubleshooting  
+- **ask** for information retrieval  
+Use `memory_bank_switch_mode` when mode changes.
 
-### Haunter Lifecycle Pattern
-```
-Bootstrap → Commitment → Incomplete
-  ↓           ↓            ↓
-Daily      Event-Start   Overdue
-Check      Haunting      Polling
-```
+> Detailed architecture, workflows, commands and patterns live in the **memory-bank/** directory and must be consulted via `memory_bank_show_memory`.
 
-## Key File Patterns
 
-### 1. Haunter Architecture (`src/productivity_bot/haunting/`)
-```
-haunting/
-├── base_haunter.py          # Abstract base with exponential backoff
-├── bootstrap/haunter.py     # Daily planning outreach
-├── commitment/haunter.py    # Event-start engagement  
-├── incomplete/haunter.py    # Overdue session follow-up
-└── */action.py             # Pydantic schemas per haunter type
-```
 
-**Pattern**: Each haunter inherits from `BaseHaunter` with specific `backoff_base_minutes`:
-- Bootstrap: 15min (moderate persistence)
-- Commitment: 10min (urgent follow-up)
-- Incomplete: 20min (gentle encouragement)
 
-### 2. LLM Integration Pattern
-All haunters use OpenAI AsyncClient with structured outputs:
-```python
-async def parse_intent(self, text: str) -> ActionSchema:
-    client = AsyncOpenAI(api_key=config.openai_api_key)
-    # Uses haunter-specific system prompts for varied messages
-```
-
-### 3. Database Models (`src/productivity_bot/models.py`)
-- `PlanningSession` with `slack_sched_ids: List[str]` for message tracking
-- `PlanningBootstrapSession` for modular commitment types
-- Async SQLAlchemy with `get_db_session()` context manager
-
-## Development Workflows
-
-### Validation Commands (Always via Poetry)
-```bash
-# Ticket validation (project-specific pattern)
-make validate-ticket5-structure    # Structure validation
-make validate-ticket5             # Complete validation
-poetry run python validate_ticket5_structure.py
-
-# Testing
-poetry run pytest tests/
-poetry run python test_ticket4_integration.py
-```
-
-### Slack Development
-- Use `slack_utils.py` functions: `schedule_dm()`, `delete_scheduled()`
-- All Slack operations track IDs in `slack_sched_ids` column
-- Thread-aware messaging with `thread_ts` parameter
-
-### Scheduler Operations
-```python
-from .scheduler import get_scheduler, schedule_event_haunt
-scheduler = get_scheduler()  # Singleton with SQLAlchemy persistence
-```
-
-## Project-Specific Conventions
-
-### 1. Import Patterns
-```python
-# Lazy imports to avoid circular dependencies
-from productivity_bot.common import get_config, get_logger
-from productivity_bot.database import get_db_session
-```
-
-### 2. Error Handling
-- Comprehensive logging with haunter-specific loggers
-- Graceful degradation with TODO stubs for complex implementations
-- Database async patterns with proper session management
-
-### 3. Configuration
-- Environment-based config via Pydantic Settings
-- MCP endpoint integration: `http://mcp:4000`
-- Timezone-aware scheduling: Amsterdam time for daily operations
-
-## Testing Patterns
-
-### Structure Validation
-The project uses custom validation scripts that check for method existence:
-```python
-def check_code_contains(file_path: str, search_text: str, description: str) -> bool:
-    # Validates implementation completeness without import issues
-```
-
-### Integration Testing
-- Mock Slack/Scheduler dependencies
-- AsyncMock for async operations
-- UUID-based session tracking
 
 ## AI-Specific Guidelines
 

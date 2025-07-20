@@ -4,11 +4,11 @@ from datetime import datetime
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from fateforger.core.scheduler import get_scheduler, reset_scheduler
 from fateforger.agents.haunters.bootstrap import PlanningBootstrapHaunter
 from fateforger.agents.planning import PlanningAgent
+from fateforger.core.scheduler import get_scheduler, reset_scheduler
 from fateforger.infra import Base
 
 
@@ -73,7 +73,9 @@ async def bootstrap_haunter(db_session, mock_slack_client, scheduler, mocker):
     client = AsyncClient(base_url="http://testserver")
     planner = PlanningAgent(client)
     mocker.patch.object(planner, "_create_event", autospec=True)
-    haunter = PlanningBootstrapHaunter(1, mock_slack_client, scheduler, db_session, planner)
+    haunter = PlanningBootstrapHaunter(
+        1, mock_slack_client, scheduler, db_session, planner
+    )
     yield haunter
     await client.aclose()
 
@@ -81,5 +83,7 @@ async def bootstrap_haunter(db_session, mock_slack_client, scheduler, mocker):
 @pytest.fixture()
 def mock_mcp(httpx_mock):
     httpx_mock.assert_all_called = False
-    httpx_mock.add_response(url="http://testserver/mcp/create_event", json={"id": "evt"})
+    httpx_mock.add_response(
+        url="http://testserver/mcp/create_event", json={"id": "evt"}
+    )
     return httpx_mock

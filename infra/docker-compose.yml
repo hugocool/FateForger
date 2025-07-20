@@ -11,9 +11,9 @@ services:
     image: myorg/calendar-mcp:${MCP_VERSION}
     # ───────────────────────────────────────────────
     
-    container_name: admonish-calendar-mcp
+    container_name: google-calendar-mcp
     env_file:
-      - .env  # Use local infra/.env for MCP-specific configs
+      - ../.env  # Use root .env for MCP-specific configs
     # mount your OAuth JSON (or use secrets)
     volumes:
       - type: bind
@@ -57,7 +57,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - CALENDAR_WEBHOOK_SECRET=${CALENDAR_WEBHOOK_SECRET}
     env_file:
-      - .env  # Use local infra/.env for consistency
+      - ../.env  # Use root .env for consistency
     volumes:
       - ../logs:/app/logs
     networks:
@@ -86,7 +86,7 @@ services:
       - MCP_ENDPOINT=http://calendar-mcp:${PORT}
       - DEVELOPMENT=true
     env_file:
-      - .env  # Use local infra/.env for consistency
+      - ../.env  # Use root .env for consistency
     volumes:
       - ../src:/app/src  # Mount source for live reloading
       - ../tests:/app/tests

@@ -1,11 +1,13 @@
+from .base import BaseHaunter
 from .bootstrap import PlanningBootstrapHaunter
+from .calendar import CalendarHaunter
 from .commitment import CommitmentHaunter
 from .incomplete import IncompletePlanningHaunter
-from .base import BaseHaunter
 
 __all__ = [
-    "PlanningBootstrapHaunter",
+    "BaseHaunter",
+    "CalendarHaunter",
     "CommitmentHaunter",
     "IncompletePlanningHaunter",
-    "BaseHaunter",
+    "PlanningBootstrapHaunter",
 ]

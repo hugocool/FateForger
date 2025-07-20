@@ -2,8 +2,23 @@
 
 ## Current Goals
 
-- Goal 1
+- Extracting minimal working AutoGen MCP calendar agent from notebook into FateForger codebase. Focus: Place calendar haunter functionality in proper agents/haunters structure, create comprehensive tests, follow FateForger patterns and Poetry-first development.
+
+## USER'S EXPLICIT ARCHITECTURAL CHOICES:
+1. **✅ USE AUTOGEN AssistantAgent** - NOT custom classes, NOT simple agents
+2. **✅ USE AUTOGEN'S MCP INTEGRATION** - NOT manual HTTP calls, NOT direct REST API
+3. **✅ USE MCP WORKBENCH** - The user insisted "no bypassing, you are going to use MCP workbench whether you like it or not"
+4. **✅ CONNECT TO REAL CALENDAR DATA** - NOT mock data, NOT fake events
+5. **✅ NO HANGING** - All operations must have timeouts
+
+## 🚫 FORBIDDEN SOLUTIONS:
+- ❌ Manual HTTP requests to MCP server
+- ❌ Custom agent classes instead of AutoGen AssistantAgent  
+- ❌ Mock/fake data when user wants real calendar events
+- ❌ Bypassing AutoGen MCP system with "simpler" alternatives
+- ❌ Suggesting different frameworks than what user chose
+
 
 ## Current Blockers
 
-- None yet
+- MCP server connection issues - need to ensure the server is running and accessible
