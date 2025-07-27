@@ -22,7 +22,7 @@ from pathlib import Path
 # Add fateforger to path for examples
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fateforger.agents.haunters.calendar import create_calendar_haunter_agent
+from src.agents.admonisher.calendar import create_calendar_haunter_agent
 
 
 async def main():

@@ -2,7 +2,7 @@
 
 ## Current Goals
 
-- Implementing Ticket #1 of the Sequential Workflow project: Define data contracts & hand-off stub for AutoGen's structured multi-agent calendar pipeline. Creating PlanDiff and CalendarOp Pydantic models plus sync_plan_to_calendar stub for Sequential Workflow pattern with MCP calendar integration.
+- Debugging PlannerAgent hanging issue - agent handler not being called despite message being sent successfully
 
 ## USER'S EXPLICIT ARCHITECTURAL CHOICES:
 1. **✅ USE AUTOGEN AssistantAgent** - NOT custom classes, NOT simple agents

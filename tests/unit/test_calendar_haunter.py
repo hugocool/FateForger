@@ -10,7 +10,7 @@ import pytest
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
 
-from fateforger.agents.haunters.calendar import (
+from src.agents.admonisher.calendar import (
     CalendarHaunter,
     create_calendar_haunter_agent,
 )

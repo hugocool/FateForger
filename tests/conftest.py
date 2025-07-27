@@ -6,10 +6,10 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from fateforger.agents.haunters.bootstrap import PlanningBootstrapHaunter
-from fateforger.agents.planning import PlanningAgent
-from fateforger.core.scheduler import get_scheduler, reset_scheduler
-from fateforger.infra import Base
+from src.agents.admonisher.bootstrap import PlanningBootstrapHaunter
+from agents.schedular.planning import PlanningAgent
+from src.core.scheduler import get_scheduler, reset_scheduler
+from src.infra import Base
 
 
 @pytest.fixture(scope="session")

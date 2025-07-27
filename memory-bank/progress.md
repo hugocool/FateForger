@@ -1,24 +1,21 @@
-# Progress (Updated: 2025-07-20)
+# Progress (Updated: 2025-07-27)
 
 ## Done
 
-- Implemented Ticket #1: Data contracts & hand-off stub
-- Created PlanDiff and CalendarOp Pydantic models in fateforger/contracts/
-- Created sync_plan_to_calendar stub in fateforger/runtime/
-- Created tools_config module for MCP server parameters
-- Reorganized code according to proper FateForger structure
-- Validated acceptance criteria for Ticket #1
-- All models work with json_output parameter for structured LLM responses
+- Fixed PlannerAgent async initialization issue
+- Fixed import paths for tools_config
+- Added missing get_calendar_mcp_params function
+- Fixed agent registration with factory pattern
+- Agent now successfully receives and processes messages
 
 ## Doing
 
-- Ready to proceed with Ticket #2: PlannerAgent structured JSON output
+- Debugging why agent responses are None
+- Need to check MCP server connection
+- Investigating agent internal processing
 
 ## Next
 
-- Ticket #2: Update PlannerAgent to emit structured PlanDiff JSON
-- Ticket #3: Implement TaskQueueAgent (ClosureAgent)
-- Ticket #4: CalAgent MCP wiring
-- Ticket #5: SequentialWorkflow orchestration
-- Ticket #6: ResultCollector & verification loop
-- Ticket #7: Test harness & observability
+- Set up proper MCP server for testing
+- Implement proper response handling
+- Add error logging to agent

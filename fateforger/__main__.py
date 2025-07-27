@@ -1,1 +1,0 @@
-print('FateForger orchestrator placeholder')

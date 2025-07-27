@@ -1,6 +1,6 @@
 import pytest
 
-from fateforger.infra import PlanningSession, SlackMessage, SessionStatus
+from src.infra import PlanningSession, SlackMessage, SessionStatus
 
 
 class TestModels:

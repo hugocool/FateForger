@@ -1,6 +1,6 @@
 import pytest
 
-from fateforger.haunters.commitment import CommitmentHaunter
+from src.haunters.commitment import CommitmentHaunter
 
 
 class TestCommitmentFlow:

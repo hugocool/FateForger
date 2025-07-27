@@ -8,14 +8,14 @@ This test validates the acceptance criteria for Ticket #1:
 
 from datetime import datetime
 
-from fateforger.contracts import (
+from src.contracts import (
     CalendarEvent,
     CalendarOp,
     EventDateTime,
     OpType,
     PlanDiff,
 )
-from fateforger.runtime import create_workflow_runtime, sync_plan_to_calendar
+from src.runtime import create_workflow_runtime, sync_plan_to_calendar
 
 
 def test_plan_diff_model_validate():

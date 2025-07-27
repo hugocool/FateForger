@@ -2,7 +2,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from fateforger.actions import BootstrapAction
+from src.actions import BootstrapAction
 
 
 class TestActions:

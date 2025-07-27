@@ -1,7 +1,7 @@
 from freezegun import freeze_time
 
-from fateforger.core.scheduler import get_scheduler, reset_scheduler
-from fateforger.haunters.bootstrap import PlanningBootstrapHaunter
+from src.core.scheduler import get_scheduler, reset_scheduler
+from src.haunters.bootstrap import PlanningBootstrapHaunter
 
 
 class TestSchedulerJobs:

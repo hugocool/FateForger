@@ -9,7 +9,7 @@ from datetime import date, datetime
 
 import pytest
 
-from fateforger.contracts import (
+from src.contracts import (
     CalendarEvent,
     CalendarOp,
     EventDateTime,

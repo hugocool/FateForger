@@ -1,4 +1,4 @@
-from fateforger.haunters import BaseHaunter
+from src.haunters import BaseHaunter
 
 
 class TestBackoff:

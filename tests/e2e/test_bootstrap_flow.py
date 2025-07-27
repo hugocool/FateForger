@@ -1,6 +1,6 @@
 import pytest
 from freezegun import freeze_time
-from fateforger.infra import PlanningSession
+from src.infra import PlanningSession
 
 
 class TestBootstrapFlow:

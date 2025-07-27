@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from fateforger.agents.haunters.calendar import (
+from src.agents.admonisher.calendar import (
     CalendarHaunter,
     create_calendar_haunter_agent,
 )

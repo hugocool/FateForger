@@ -1,8 +1,8 @@
 import pytest
 
-from fateforger.actions import HauntPayload
-from fateforger.agents.planning import PlanningAgent
-from fateforger.agents.router import RouterAgent
+from src.actions import HauntPayload
+from agents.schedular.planning import PlanningAgent
+from src.agents.router import RouterAgent
 
 
 class TestRouterAgent:
