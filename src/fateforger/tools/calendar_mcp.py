@@ -6,10 +6,10 @@ Provides a standardized function for loading Google Calendar MCP tools for AutoG
 Environment variables should be loaded and managed externally.
 """
 
-from autogen_ext.tools.mcp import mcp_server_tools, StreamableHttpServerParams
+from autogen_ext.tools.mcp import StreamableHttpServerParams, mcp_server_tools
 
 
-def get_calendar_mcp_tools(server_url: str, timeout: float = 5.0):  # type: ignore
+async def get_calendar_mcp_tools(server_url: str, timeout: float = 5.0):  # type: ignore
     """
     Return the list of MCP tools for Google Calendar using HTTP transport.
 
@@ -24,4 +24,4 @@ def get_calendar_mcp_tools(server_url: str, timeout: float = 5.0):  # type: igno
         url=server_url,
         timeout=timeout,
     )
-    return mcp_server_tools(params)
+    return await mcp_server_tools(params)
