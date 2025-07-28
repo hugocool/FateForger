@@ -1,21 +1,19 @@
-# Progress (Updated: 2025-07-27)
+# Progress (Updated: 2025-07-28)
 
 ## Done
 
-- Fixed PlannerAgent async initialization issue
-- Fixed import paths for tools_config
-- Added missing get_calendar_mcp_params function
-- Fixed agent registration with factory pattern
-- Agent now successfully receives and processes messages
+- Fixed SQLModel CalendarEvent JSON serialization issue
+- Updated calendar_event.py to use JSON columns for complex types
+- Verified solution works in test notebook
+- Fixed model imports to use BaseModel for non-table classes
+- Documented complete solution pattern for future use
 
 ## Doing
 
-- Debugging why agent responses are None
-- Need to check MCP server connection
-- Investigating agent internal processing
+
 
 ## Next
 
-- Set up proper MCP server for testing
-- Implement proper response handling
-- Add error logging to agent
+- Run database migrations for any existing databases
+- Test with real Google Calendar API data
+- Performance testing of JSON queries

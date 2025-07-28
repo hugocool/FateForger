@@ -10,7 +10,9 @@ from datetime import date as Date
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import JSON, Column
+from sqlmodel import Field, SQLModel
 
 
 class EventDateTime(BaseModel):
@@ -65,42 +67,53 @@ class ExtendedProperties(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
-class CalendarEvent(BaseModel):
-    """
-    Google Calendar event structure optimized for constrained generation.
+class CalendarEvent(SQLModel, table=True):
+    __tablename__ = "calendar_events"
 
-    Compatible with json_output= parameter in AutoGen for validated LLM responses.
-    Matches Google Calendar API v3 event resource structure.
-    """
-
-    id: Optional[str] = Field(None, description="Calendar event ID")
+    id: Optional[int] = Field(
+        default=None, primary_key=True, description="Local primary key"
+    )
+    google_event_id: Optional[str] = Field(
+        default=None, alias="id", description="Google Calendar event ID"
+    )
+    calendar_id: Optional[int] = Field(default=None, description="Local calendar ID")
     status: Optional[str] = Field(
-        None, description="Event status: confirmed | tentative | cancelled"
+        default=None, description="Event status: confirmed | tentative | cancelled"
     )
-    summary: Optional[str] = Field(None, description="Event title/summary")
-    description: Optional[str] = Field(None, description="Event description")
-    location: Optional[str] = Field(None, description="Event location")
+    summary: Optional[str] = Field(default=None, description="Event title/summary")
+    description: Optional[str] = Field(default=None, description="Event description")
+    location: Optional[str] = Field(default=None, description="Event location")
     color_id: Optional[str] = Field(
-        None, alias="colorId", description="Event color ID (1-11)"
+        default=None, alias="colorId", description="Event color ID (1-11)"
     )
-    creator: Optional[CreatorOrganizer] = Field(None, description="Event creator")
-    start: Optional[EventDateTime] = Field(None, description="Event start time")
-    end: Optional[EventDateTime] = Field(None, description="Event end time")
+    creator: Optional[CreatorOrganizer] = Field(
+        default=None, sa_column=Column(JSON), description="Event creator"
+    )
+    start: Optional[EventDateTime] = Field(
+        default=None, sa_column=Column(JSON), description="Event start date/time"
+    )
+    end: Optional[EventDateTime] = Field(
+        default=None, sa_column=Column(JSON), description="Event end date/time"
+    )
     source: Optional[Dict[str, str]] = Field(
-        None,
+        default=None,
+        sa_column=Column(JSON),
         description="Source info: {'url': '<your-notion-url>', 'title': 'Open in Notion'}",
     )
     transparency: Optional[str] = Field(
-        None, description="Free/busy status: opaque | transparent"
+        default=None, description="Free/busy status: opaque | transparent"
     )
     extended_properties: Optional[ExtendedProperties] = Field(
-        None, alias="extendedProperties", description="Extended properties"
+        default=None,
+        sa_column=Column(JSON),
+        alias="extendedProperties",
+        description="Extended properties",
     )
-    reminders: Optional[Reminders] = Field(None, description="Reminder settings")
+    reminders: Optional[Reminders] = Field(
+        default=None, sa_column=Column(JSON), description="Reminder settings"
+    )
     event_type: Optional[str] = Field(
-        None,
+        default=None,
         alias="eventType",
         description="Event type: default | workingLocation | outOfOffice | focusTime | birthday",
     )
-
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
