@@ -11,8 +11,57 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import JSON, Column
+from sqlalchemy import Column
 from sqlmodel import Field, SQLModel
+
+# --- Generic support for persisting nested Pydantic models -----------------
+from sqlalchemy.types import TypeDecorator, JSON as _JSON
+from pydantic import BaseModel, parse_obj_as
+
+
+class PydanticJSON(TypeDecorator):
+    """
+    SQLAlchemy TypeDecorator that transparently serialises / deserialises any
+    Pydantic model (or list / dict of models) to a JSON column.  The concrete
+    Pydantic class that should be reconstructed is provided via the
+    ``model_class`` constructor argument.  On reads the raw JSON is converted
+    back into the declared model with ``parse_obj_as`` so the SQLModel field
+    retains its annotated type.
+    """
+
+    impl = _JSON
+    cache_ok = True  # safe for SQLAlchemy’s type caching
+
+    def __init__(
+        self, model_class
+    ):  # model_class can be a BaseModel subclass or typing hints like List[Model]
+        if not isinstance(model_class, type):
+            # Handles typing constructs like List[Model] / Dict[str, Model]
+            # They cannot be `issubclass`, but parse_obj_as will cope.
+            self._model_factory = lambda obj: parse_obj_as(model_class, obj)
+        elif issubclass(model_class, BaseModel):
+            self._model_factory = lambda obj: model_class.model_validate(obj)
+        else:
+            raise TypeError(
+                "model_class must be a Pydantic BaseModel or typing construct"
+            )
+
+        super().__init__()
+
+    # convert Python -> JSON
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, BaseModel):
+            # Ensure all nested datetimes / complex types are JSON‑serialisable
+            return value.model_dump(by_alias=True, mode="json")
+        return value  # assume already JSON‑serialisable (e.g. dict / list)
+
+    # convert JSON -> Python (typed)
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return self._model_factory(value)
 
 
 class EventDateTime(BaseModel):
@@ -67,6 +116,7 @@ class ExtendedProperties(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
+# TODO: maybe add serializers so when we query from the db we get models instead of json
 class CalendarEvent(SQLModel, table=True):
     __tablename__ = "calendar_events"
 
@@ -87,17 +137,23 @@ class CalendarEvent(SQLModel, table=True):
         default=None, alias="colorId", description="Event color ID (1-11)"
     )
     creator: Optional[CreatorOrganizer] = Field(
-        default=None, sa_column=Column(JSON), description="Event creator"
+        default=None,
+        sa_column=Column(PydanticJSON(CreatorOrganizer)),
+        description="Event creator",
     )
     start: Optional[EventDateTime] = Field(
-        default=None, sa_column=Column(JSON), description="Event start date/time"
+        default=None,
+        sa_column=Column(PydanticJSON(EventDateTime)),
+        description="Event start date/time",
     )
     end: Optional[EventDateTime] = Field(
-        default=None, sa_column=Column(JSON), description="Event end date/time"
+        default=None,
+        sa_column=Column(PydanticJSON(EventDateTime)),
+        description="Event end date/time",
     )
     source: Optional[Dict[str, str]] = Field(
         default=None,
-        sa_column=Column(JSON),
+        sa_column=Column(_JSON),
         description="Source info: {'url': '<your-notion-url>', 'title': 'Open in Notion'}",
     )
     transparency: Optional[str] = Field(
@@ -105,12 +161,14 @@ class CalendarEvent(SQLModel, table=True):
     )
     extended_properties: Optional[ExtendedProperties] = Field(
         default=None,
-        sa_column=Column(JSON),
+        sa_column=Column(PydanticJSON(ExtendedProperties)),
         alias="extendedProperties",
         description="Extended properties",
     )
     reminders: Optional[Reminders] = Field(
-        default=None, sa_column=Column(JSON), description="Reminder settings"
+        default=None,
+        sa_column=Column(PydanticJSON(Reminders)),
+        description="Reminder settings",
     )
     event_type: Optional[str] = Field(
         default=None,
