@@ -2,7 +2,7 @@
 
 ## Current Goals
 
-- Successfully implemented user's improved approach for CalendarEvent model: using nested Pydantic models (CreatorOrganizer, EventDateTime) with sa_column=Column(JSON) instead of raw Dict types. This provides full type safety, validation, and IDE auto-completion while storing efficiently as JSON. Also renamed remote_event_id to google_event_id for clarity.
+- Converting ScheduleDraft JSON events to proper relational foreign key model. User frustrated with false success claims - must verify execution works before declaring anything successful. Currently debugging table creation issues in notebook environment.
 
 ## USER'S EXPLICIT ARCHITECTURAL CHOICES:
 1. **✅ USE AUTOGEN AssistantAgent** - NOT custom classes, NOT simple agents

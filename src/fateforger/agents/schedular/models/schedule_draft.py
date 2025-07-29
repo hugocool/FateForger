@@ -1,33 +1,36 @@
-from datetime import date
-from typing import List, Optional
+from datetime import date as Date
+from typing import TYPE_CHECKING, List, Optional
 
-from sqlmodel import SQLModel, Field, Column, Session, select
-from fateforger.agents.schedular.models.calendar_event import CalendarEvent
-from fateforger.agents.schedular.models.calendar_event import PydanticJSON
+from sqlmodel import Field, Relationship, Session, SQLModel, select
+
+if TYPE_CHECKING:
+    from .calendar_event import CalendarEvent
 
 
+# TODO: consider relationship to planningsessions
 class ScheduleDraft(SQLModel, table=True):
     """
-    Represents a draft schedule for a given date,
-    holding a list of CalendarEvent objects.
+    Represents a draft schedule for a given date.
+    Related events are linked via CalendarEvent.schedule_draft_id foreign key.
     """
 
-    __tablename__ = "schedule_drafts"
+    __tablename__ = "schedule_draft"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    date: date = Field(
+    date: Date = Field(
         index=True, nullable=False, description="Date of the draft schedule"
     )
-    events: List[CalendarEvent] = Field(
-        default_factory=list,
-        sa_column=Column(PydanticJSON(List[CalendarEvent])),
-        description="List of CalendarEvent objects for this draft",
+
+    # Proper one-to-many relationship
+    events: List["CalendarEvent"] = Relationship(
+        back_populates="schedule_draft",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
 
 
 class DraftStore:
     """
-    Provides CRUD operations for ScheduleDraft entries.
+    Provides CRUD operations for ScheduleDraft entries using SQLModel relationships.
     """
 
     def __init__(self, session: Session):
@@ -35,33 +38,28 @@ class DraftStore:
 
     def save(self, draft: ScheduleDraft) -> ScheduleDraft:
         """
-        Save a new draft or update an existing one.
+        Save a new draft or update an existing one using relationships.
         """
         self.session.add(draft)
         self.session.commit()
         self.session.refresh(draft)
         return draft
 
-    def get_by_date(self, draft_date: date) -> Optional[ScheduleDraft]:
-        """
-        Retrieve a ScheduleDraft by its date.
-        """
-        statement = select(ScheduleDraft).where(ScheduleDraft.date == draft_date)
-        result = self.session.exec(statement).first()
-        return result
+    def get_by_date(self, draft_date: Date) -> Optional[ScheduleDraft]:
+        """Get a draft by date."""
+        stmt = select(ScheduleDraft).where(ScheduleDraft.date == draft_date)
+        return self.session.exec(stmt).first()
 
     def list_all(self) -> List[ScheduleDraft]:
-        """
-        List all stored drafts.
-        """
-        statement = select(ScheduleDraft)
-        return self.session.exec(statement).all()
+        """List all drafts."""
+        stmt = select(ScheduleDraft)
+        return list(self.session.exec(stmt).all())
+
+    # def add_events()
 
     def delete(self, draft_id: int) -> None:
-        """
-        Delete a draft by its ID.
-        """
+        """Delete a draft and cascade to related events."""
         draft = self.session.get(ScheduleDraft, draft_id)
         if draft:
-            self.session.delete(draft)
+            self.session.delete(draft)  # Cascades to events
             self.session.commit()

@@ -1,19 +1,20 @@
-# Progress (Updated: 2025-07-28)
+# Progress (Updated: 2025-07-29)
 
 ## Done
 
-- Fixed SQLModel CalendarEvent JSON serialization issue
-- Updated calendar_event.py to use JSON columns for complex types
-- Verified solution works in test notebook
-- Fixed model imports to use BaseModel for non-table classes
-- Documented complete solution pattern for future use
+- Converted CalendarEvent and ScheduleDraft from JSON-based to relational one-to-many model
+- Added foreign key schedule_draft_id to CalendarEvent
+- Added back_populates relationships between models
+- Identified SQLAlchemy 2.0 Mapped annotation requirements
 
 ## Doing
 
-
+- Testing relational model in notebook
+- Debugging SQLAlchemy relationship configuration
+- Working around notebook metadata caching issues
 
 ## Next
 
-- Run database migrations for any existing databases
-- Test with real Google Calendar API data
-- Performance testing of JSON queries
+- Get relational model working completely
+- Create migration for production database
+- Test full CRUD operations with relationships

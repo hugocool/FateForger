@@ -8,15 +8,20 @@ generation with AutoGen's json_output parameter.
 
 from datetime import date as Date
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Column
-from sqlmodel import Field, SQLModel
+from sqlalchemy.orm import Mapped
+from sqlmodel import Field, Relationship, SQLModel
+
+if TYPE_CHECKING:
+    from .schedule_draft import ScheduleDraft
 
 # --- Generic support for persisting nested Pydantic models -----------------
-from sqlalchemy.types import TypeDecorator, JSON as _JSON
 from pydantic import BaseModel, parse_obj_as
+from sqlalchemy.types import JSON as _JSON
+from sqlalchemy.types import TypeDecorator
 
 
 class PydanticJSON(TypeDecorator):
@@ -175,3 +180,9 @@ class CalendarEvent(SQLModel, table=True):
         alias="eventType",
         description="Event type: default | workingLocation | outOfOffice | focusTime | birthday",
     )
+
+    # Foreign key to ScheduleDraft
+    schedule_draft_id: Optional[int] = Field(
+        default=None, foreign_key="schedule_draft.id", index=True
+    )
+    schedule_draft: Optional["ScheduleDraft"] = Relationship(back_populates="events")
