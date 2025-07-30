@@ -8,11 +8,12 @@ generation with AutoGen's json_output parameter.
 
 from datetime import date as Date
 from datetime import datetime
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Column
-from sqlalchemy.orm import Mapped
+from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import Field as PydanticField
+from pydantic import field_validator, parse_obj_as
+from sqlalchemy import Column, DateTime
 from sqlmodel import Field, Relationship, SQLModel
 
 if TYPE_CHECKING:
@@ -38,7 +39,9 @@ class PydanticJSON(TypeDecorator):
     cache_ok = True  # safe for SQLAlchemy’s type caching
 
     def __init__(
-        self, model_class
+        self, model_class: Any
+    ) -> (
+        None
     ):  # model_class can be a BaseModel subclass or typing hints like List[Model]
         if not isinstance(model_class, type):
             # Handles typing constructs like List[Model] / Dict[str, Model]
@@ -51,10 +54,10 @@ class PydanticJSON(TypeDecorator):
                 "model_class must be a Pydantic BaseModel or typing construct"
             )
 
-        super().__init__()
+        super().__init__()  # tyoe: ignore
 
     # convert Python -> JSON
-    def process_bind_param(self, value, dialect):
+    def process_bind_param(self, value: Any, dialect: Any) -> Any:
         if value is None:
             return None
         if isinstance(value, BaseModel):
@@ -63,126 +66,109 @@ class PydanticJSON(TypeDecorator):
         return value  # assume already JSON‑serialisable (e.g. dict / list)
 
     # convert JSON -> Python (typed)
-    def process_result_value(self, value, dialect):
+    def process_result_value(self, value: Any, dialect: Any) -> Any:
         if value is None:
             return None
         return self._model_factory(value)
 
 
-class EventDateTime(BaseModel):
-    """Google Calendar EventDateTime structure."""
+# Helper to emit ISO8601 without milliseconds
+def _iso_no_ms(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
-    date: Optional[Date] = Field(None, description="All-day date (yyyy-mm-dd)")
-    date_time: Optional[datetime] = Field(
-        None, alias="dateTime", description="RFC3339 timestamp"
+
+# --- Attendee and Reminder models (strict, extra-forbid) -------------------
+class Attendee(BaseModel, extra="forbid"):
+    email: EmailStr = PydanticField(..., description="Email address of the attendee")
+
+
+class ReminderOverride(BaseModel, extra="forbid"):
+    method: Literal["email", "popup"] = PydanticField(
+        "popup", description="Reminder method"
     )
-    time_zone: Optional[str] = Field(
-        None, alias="timeZone", description="IANA TZ name (e.g. Europe/Amsterdam)"
+    minutes: int = PydanticField(
+        ..., description="Minutes before the event to trigger the reminder"
     )
-
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-
-class CreatorOrganizer(BaseModel):
-    """Google Calendar creator/organizer structure."""
-
-    id: Optional[str] = None
-    email: Optional[str] = None
-    display_name: Optional[str] = Field(None, alias="displayName")
-    self_: Optional[bool] = Field(None, alias="self")
-
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-
-class RemindersOverride(BaseModel):
-    """Individual reminder override."""
-
-    method: Optional[str] = None  # "email" | "popup"
-    minutes: Optional[int] = None
-
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
 class Reminders(BaseModel):
-    """Google Calendar reminders structure."""
-
-    use_default: Optional[bool] = Field(None, alias="useDefault")
-    overrides: Optional[List[RemindersOverride]] = None
-
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-
-class ExtendedProperties(BaseModel):
-    """Google Calendar extended properties."""
-
-    private: Optional[Dict[str, str]] = None
-    shared: Optional[Dict[str, str]] = None
-
+    useDefault: bool = PydanticField(
+        ..., alias="useDefault", description="Whether to use the default reminders"
+    )
+    overrides: Optional[List[ReminderOverride]] = PydanticField(
+        None, alias="overrides", description="Custom reminders"
+    )
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
 # TODO: maybe add serializers so when we query from the db we get models instead of json
-class CalendarEvent(SQLModel, table=True):
-    __tablename__ = "calendar_events"
+class CalendarEvent(
+    SQLModel,
+    table=True,
+    extra="forbid",
+    # validate_by_alias=True,
+    validate_by_name=True,
+    json_encoders={datetime: lambda v: v.strftime("%Y-%m-%dT%H:%M:%S")},
+):
+    __tablename__ = "calendar_events"  # type: ignore
 
+    # --- DB-only fields (excluded on dump) --------------------------------
     id: Optional[int] = Field(
-        default=None, primary_key=True, description="Local primary key"
+        default=None, primary_key=True, exclude=True, description="Local primary key"
     )
-    google_event_id: Optional[str] = Field(
-        default=None, alias="id", description="Google Calendar event ID"
-    )
-    calendar_id: Optional[int] = Field(default=None, description="Local calendar ID")
-    status: Optional[str] = Field(
-        default=None, description="Event status: confirmed | tentative | cancelled"
-    )
-    summary: Optional[str] = Field(default=None, description="Event title/summary")
-    description: Optional[str] = Field(default=None, description="Event description")
-    location: Optional[str] = Field(default=None, description="Event location")
-    color_id: Optional[str] = Field(
-        default=None, alias="colorId", description="Event color ID (1-11)"
-    )
-    creator: Optional[CreatorOrganizer] = Field(
+    eventId: Optional[str] = Field(
         default=None,
-        sa_column=Column(PydanticJSON(CreatorOrganizer)),
-        description="Event creator",
+        # exclude=True,
+        description="Google Calendar event ID",
     )
-    start: Optional[EventDateTime] = Field(
-        default=None,
-        sa_column=Column(PydanticJSON(EventDateTime)),
-        description="Event start date/time",
+
+    # Foreign key to ScheduleDraft
+    schedule_draft_id: Optional[int] = Field(
+        default=None, foreign_key="schedule_draft.id", index=True, exclude=True
     )
-    end: Optional[EventDateTime] = Field(
-        default=None,
-        sa_column=Column(PydanticJSON(EventDateTime)),
-        description="Event end date/time",
+    schedule_draft: Optional["ScheduleDraft"] = Relationship(back_populates="events")
+    # --- API payload fields ------------------------------------------------
+    calendarId: str = Field(
+        default="primary",
+        description="ID of the calendar (use 'primary' for the main calendar)",
     )
-    source: Optional[Dict[str, str]] = Field(
-        default=None,
-        sa_column=Column(_JSON),
-        description="Source info: {'url': '<your-notion-url>', 'title': 'Open in Notion'}",
+    summary: str = Field(..., description="Title of the event")
+    description: Optional[str] = Field(
+        None, description="Description/notes for the event"
     )
-    transparency: Optional[str] = Field(
-        default=None, description="Free/busy status: opaque | transparent"
+    start: datetime = Field(
+        ...,
+        description="Event start time: ISO8601 no milliseconds",
+        sa_column=Column(DateTime),
     )
-    extended_properties: Optional[ExtendedProperties] = Field(
-        default=None,
-        sa_column=Column(PydanticJSON(ExtendedProperties)),
-        alias="extendedProperties",
-        description="Extended properties",
+    end: datetime = Field(
+        ...,
+        description="Event end time: ISO8601 no milliseconds",
+        sa_column=Column(DateTime),
     )
+    timeZone: Optional[str] = Field(
+        default="Europe/Amsterdam",
+        description="IANA TZ name (e.g. Europe/Amsterdam)",
+    )
+    location: Optional[str] = Field(None)
+    attendees: Optional[List[Attendee]] = Field(
+        None,
+        description="List of attendee email addresses",
+        sa_column=Column(PydanticJSON(List[Attendee])),
+    )
+    colorId: Optional[str] = Field(None, description="color ID (1-11)")
     reminders: Optional[Reminders] = Field(
         default=None,
         sa_column=Column(PydanticJSON(Reminders)),
         description="Reminder settings",
     )
-    event_type: Optional[str] = Field(
-        default=None,
-        alias="eventType",
-        description="Event type: default | workingLocation | outOfOffice | focusTime | birthday",
+    recurrence: Optional[List[str]] = Field(
+        None, description="Recurrence rules in RFC5545 format", sa_column=Column(_JSON)
     )
 
-    # Foreign key to ScheduleDraft
-    schedule_draft_id: Optional[int] = Field(
-        default=None, foreign_key="schedule_draft.id", index=True
-    )
-    schedule_draft: Optional["ScheduleDraft"] = Relationship(back_populates="events")
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def _parse_datetime(cls, v: Union[str, datetime]) -> datetime:
+        if isinstance(v, str):
+            return datetime.fromisoformat(v)
+        return v

@@ -97,3 +97,18 @@ class PlannerAgent(RoutedAgent):
         )
 
         return resp.chat_message
+
+from .models import CalendarEvent
+class MCPCRUDAgent(RoutedAgent):
+    """
+
+    """
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.tool = get_calendar_mcp_tools(SERVER_URL)
+        
+
+
+    @message_handler
+    async def handle_calendar_event(self, event: CalendarEvent, ctx: MessageContext) -> TextMessage:
