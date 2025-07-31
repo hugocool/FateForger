@@ -13,7 +13,7 @@ services:
     
     container_name: google-calendar-mcp
     env_file:
-      - ../.env  # Use root .env for MCP-specific configs
+      - ../.env  # Use the main .env file from project root (relative to docker-compose.yml)
     # mount your OAuth JSON (or use secrets)
     volumes:
       - type: bind
@@ -40,71 +40,136 @@ services:
       timeout: 5s
       retries: 3
 
-  # Python Bot Service
-  bot:
-    build:
-      context: ..
-      dockerfile: infra/Dockerfile.bot
-    container_name: admonish-bot
-    ports:
-      - "8000:8000"  # FastAPI calendar webhook server
-      - "3001:3000"  # Slack Bot port (if needed) - changed to avoid conflict
-    environment:
-      - PYTHONPATH=/app/src
-      - MCP_ENDPOINT=http://calendar-mcp:${PORT}
-      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
-      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - CALENDAR_WEBHOOK_SECRET=${CALENDAR_WEBHOOK_SECRET}
-    env_file:
-      - ../.env  # Use root .env for consistency
-    volumes:
-      - ../logs:/app/logs
-    networks:
-      - admonish-network
-    depends_on:
-      calendar-mcp:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+  # ticktick-auth:
+  #   build:
+  #     context: https://github.com/hugolytics/ticktick-mcp.git#main
+  #     dockerfile: Dockerfile          # built from your fork
+  #   command: python -m ticktick_mcp.auth_trigger
+  #   environment:
+  #     - TICKTICK_CLIENT_ID=${TICKTICK_CLIENT_ID}
+  #     - TICKTICK_CLIENT_SECRET=${TICKTICK_CLIENT_SECRET}
+  #     - TICKTICK_REDIRECT_URI=http://host.docker.internal:8765/callback  # automatic callback capture
+  #     - TICKTICK_USERNAME=${TICKTICK_USERNAME}
+  #     - TICKTICK_PASSWORD=${TICKTICK_PASSWORD}
+  #     - DOTENV_DIR=/root/.config/ticktick-mcp    # if your config expects it
+  #     - TICKTICK_AUTO_CALLBACK=true              # enable automatic callback handling
+  #     - TICKTICK_CALLBACK_HOST=0.0.0.0           # bind to all interfaces inside container
+  #     - TICKTICK_CALLBACK_PORT=8765              # callback server port
+  #   ports:
+  #     - "8765:8765"                             # expose callback server for automatic OAuth redirect
+  #   volumes:
+  #     - ticktick-token:/root/.config/ticktick-mcp
+  #   profiles: ["setup"]
+  #   stdin_open: true                            # for interactive mode if needed
+  #   tty: true                                   # for interactive mode if needed
 
-  # Development service (for local development)
-  dev:
-    build:
-      context: ..
-      dockerfile: infra/Dockerfile.bot
-    container_name: admonish-dev
-    ports:
-      - "8001:8000"  # Different port for dev
-      - "3002:3000"  # Different port for dev
-    environment:
-      - PYTHONPATH=/app/src
-      - MCP_ENDPOINT=http://calendar-mcp:${PORT}
-      - DEVELOPMENT=true
-    env_file:
-      - ../.env  # Use root .env for consistency
-    volumes:
-      - ../src:/app/src  # Mount source for live reloading
-      - ../tests:/app/tests
-      - ../logs:/app/logs
-      - poetry-cache:/root/.cache/pypoetry
-    networks:
-      - admonish-network
-    depends_on:
-      - calendar-mcp
-    command: /bin/bash
-    stdin_open: true
-    tty: true
+  # # TickTick MCP Service
+  # ticktick-mcp:
+  #   build:
+  #     context: https://github.com/hugolytics/ticktick-mcp.git#main
+  #     dockerfile: Dockerfile
+  #   image: myorg/ticktick-mcp:main
+
+  #   environment:
+  #     # MCP transport & networking
+  #     - SERVER_TRANSPORT=${TICKTICK_SERVER_TRANSPORT:-streamable-http}
+  #     - SERVER_HOST=${TICKTICK_SERVER_HOST:-0.0.0.0}
+  #     - SERVER_PORT=${TICKTICK_SERVER_PORT:-8150}
+
+  #     # TickTick API creds & login
+  #     - TICKTICK_CLIENT_ID=${TICKTICK_CLIENT_ID}
+  #     - TICKTICK_CLIENT_SECRET=${TICKTICK_CLIENT_SECRET}
+  #     - TICKTICK_REDIRECT_URI=${TICKTICK_REDIRECT_URI}
+  #     - TICKTICK_USERNAME=${TICKTICK_USERNAME}
+  #     - TICKTICK_PASSWORD=${TICKTICK_PASSWORD}
+
+  #   volumes:
+  #     - ticktick-token:/root/.config/ticktick-mcp
+
+  #   ports:
+  #     - "${TICKTICK_SERVER_PORT:-8150}:${TICKTICK_SERVER_PORT:-8150}"
+
+  #   networks:
+  #     - admonish-network
+
+  #   restart: unless-stopped
+  #   depends_on: [ticktick-auth]
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:${TICKTICK_SERVER_PORT:-8150}/health"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 3
+
+  # Python Bot Service
+  # bot:
+  #   build:
+  #     context: ..
+  #     dockerfile: infra/Dockerfile.bot
+  #   container_name: admonish-bot
+  #   ports:
+  #     - "8000:8000"  # FastAPI calendar webhook server
+  #     - "3001:3000"  # Slack Bot port (if needed) - changed to avoid conflict
+  #   environment:
+  #     - PYTHONPATH=/app/src
+  #     - MCP_ENDPOINT=http://calendar-mcp:${PORT}
+  #     - TICKTICK_MCP_ENDPOINT=http://ticktick-mcp:${TICKTICK_SERVER_PORT}
+  #     - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+  #     - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
+  #     - OPENAI_API_KEY=${OPENAI_API_KEY}
+  #     - CALENDAR_WEBHOOK_SECRET=${CALENDAR_WEBHOOK_SECRET}
+  #   env_file:
+  #     - ../.env  # Use the main .env file from project root (relative to docker-compose.yml)
+  #   volumes:
+  #     - ../logs:/app/logs
+  #   networks:
+  #     - admonish-network
+  #   depends_on:
+  #     calendar-mcp:
+  #       condition: service_healthy
+  #     ticktick-mcp:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+
+  # # Development service (for local development)
+  # dev:
+  #   build:
+  #     context: ..
+  #     dockerfile: infra/Dockerfile.bot
+  #   container_name: admonish-dev
+  #   ports:
+  #     - "8001:8000"  # Different port for dev
+  #     - "3002:3000"  # Different port for dev
+  #   environment:
+  #     - PYTHONPATH=/app/src
+  #     - MCP_ENDPOINT=http://calendar-mcp:${PORT}
+  #     - DEVELOPMENT=true
+  #   env_file:
+  #     - ../.env  # Use root .env for consistency
+  #   volumes:
+  #     - ../src:/app/src  # Mount source for live reloading
+  #     - ../tests:/app/tests
+  #     - ../logs:/app/logs
+  #     - poetry-cache:/root/.cache/pypoetry
+  #   networks:
+  #     - admonish-network
+  #   depends_on:
+  #     - calendar-mcp
+  #   command: /bin/bash
+  #   stdin_open: true
+  #   tty: true
 
 networks:
   admonish-network:
     driver: bridge
 
 volumes:
+  ticktick-token:
+    driver: local
   calendar-mcp-tokens:
     driver: local
   poetry-cache:
