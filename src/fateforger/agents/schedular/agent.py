@@ -98,17 +98,35 @@ class PlannerAgent(RoutedAgent):
 
         return resp.chat_message
 
+
 from .models import CalendarEvent
-class MCPCRUDAgent(RoutedAgent):
+
+import json
+from autogen_core import RoutedAgent, message_handler, MessageContext
+from autogen_core.messages import TextMessage
+from autogen_ext.tools.mcp import MCPWorkbench, StreamableHttpServerParams
+
+
+class CalendarEventWorkerAgent(RoutedAgent):
+    """
+    Worker agent that receives a CalendarEvent and calls the "create-event" MCP tool.
     """
 
-    """
-
-    def __init__(self, name: str):
-        super().__init__(name)
-        self.tool = get_calendar_mcp_tools(SERVER_URL)
-        
-
+    def __init__(self, name: str, server_url: str):
+        super().__init__(description=name)
+        params = StreamableHttpServerParams(url=server_url, timeout=5.0)
+        self.workbench = MCPWorkbench(params, timeout=5)
 
     @message_handler
-    async def handle_calendar_event(self, event: CalendarEvent, ctx: MessageContext) -> TextMessage:
+    async def handle_calendar_event(
+        self, event: CalendarEvent, ctx: MessageContext
+    ) -> TextMessage:
+        # Serialize the Pydantic/SQLModel object into a raw dict with proper aliases
+        payload = event.model_dump(exclude_none=True)
+        # Call the MCP tool "create-event" with our event payload
+        result = await self.workbench.call_tool("create-event", arguments=payload)
+        # while result.is_error:
+        #     print(f"Error creating event: {result.result[0].content}. Retrying...")
+        #     result = await self.workbench.call_tool("create-event", arguments=event.model_dump(exclude_none=True))
+        # Return the raw JSON result back as a text message
+        return result

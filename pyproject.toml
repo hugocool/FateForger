@@ -35,9 +35,9 @@ dependencies = [
 ]
 
 [project.scripts]
-plan = "productivity_bot.planner_bot:main"
-haunt = "productivity_bot.haunter_bot:main"
-watch = "productivity_bot.calendar_watch_server:main"
+plan = "fateforger.bots.planner_bot:main"
+haunt = "fateforger.bots.haunter_bot:main"
+watch = "fateforger.bots.calendar_watch_server:main"
 
 [tool.poetry]
 name = "fateforger"
@@ -45,8 +45,7 @@ version = "0.1.0"
 description = "AI-powered productivity system that forges your fate through intelligent planning and persistent reminders"
 authors = ["hugocool <hugo.evers@gmail.com>"]
 packages = [
-    {include = "productivity_bot", from = "src"},
-    {include = "fateforger"},
+    {include = "fateforger", from = "src"},
     {include = "scripts"}
 ]
 

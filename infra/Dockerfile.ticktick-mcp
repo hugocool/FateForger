@@ -1,0 +1,59 @@
+# syntax=docker/dockerfile:1
+################## builder ##################
+FROM python:3.11-slim AS builder
+WORKDIR /wheels
+ARG MCP_REF=main        # pin a tag or SHA in CI
+
+RUN apt-get update && apt-get install -y git build-essential gcc \
+    && pip install --upgrade pip \
+    && pip wheel git+https://github.com/jen6/ticktick-mcp.git@${MCP_REF}
+
+################## runtime ##################
+FROM python:3.11-slim
+ENV PYTHONUNBUFFERED=1 \
+    DOTENV_DIR=/home/mcp/.config/ticktick-mcp \
+    SERVER_TRANSPORT=http \
+    SERVER_HOST=0.0.0.0 \
+    SERVER_PORT=8150
+
+# — non‑root for safer token persistence
+RUN adduser --disabled-password --gecos "" mcp
+
+# copy wheels and install as root to put in global site-packages
+COPY --from=builder /wheels /tmp/wheels
+RUN pip install --no-cache-dir --no-deps /tmp/wheels/*.whl && rm -rf /tmp/wheels
+
+# Switch to non-root user for runtime
+USER mcp
+WORKDIR /app
+
+# entrypoint: write .env once, then launch
+COPY --chown=mcp:mcp <<'EOF' /entrypoint.sh
+#!/usr/bin/env bash
+set -e
+mkdir -p "$DOTENV_DIR"
+ENV_FILE="$DOTENV_DIR/.env"
+
+if [ ! -s "$ENV_FILE" ]; then
+  cat >"$ENV_FILE" <<ENV
+TICKTICK_CLIENT_ID=${TICKTICK_CLIENT_ID}
+TICKTICK_CLIENT_SECRET=${TICKTICK_CLIENT_SECRET}
+TICKTICK_REDIRECT_URI=${TICKTICK_REDIRECT_URI}
+TICKTICK_USERNAME=${TICKTICK_USERNAME}
+TICKTICK_PASSWORD=${TICKTICK_PASSWORD}
+ENV
+  echo "✅ wrote $ENV_FILE"
+fi
+
+exec python -m ticktick_mcp.cli serve \
+     --transport "$SERVER_TRANSPORT" \
+     --host "$SERVER_HOST" \
+     --port "$SERVER_PORT" \
+     --dotenv-dir "$DOTENV_DIR"
+EOF
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 8150
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -fs http://localhost:${SERVER_PORT}/health || exit 1
+ENTRYPOINT ["/entrypoint.sh"]

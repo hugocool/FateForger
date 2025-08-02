@@ -1,5 +1,18 @@
 version: "3.9"
 
+# Base configuration for TickTick services
+x-ticktick-base: &ticktick-base
+  build:
+    context: https://github.com/alexarevalo9/ticktick-mcp-server.git#main
+    dockerfile: Dockerfile
+  image: myorg/ticktick-mcp:alex
+  working_dir: /app
+  environment:
+    TICKTICK_CLIENT_ID: ${TICKTICK_CLIENT_ID}
+    TICKTICK_CLIENT_SECRET: ${TICKTICK_CLIENT_SECRET}
+  volumes:
+    - ticktick-mcp-env:/app/.env     # shared .env for persisted credentials
+
 services:
   # Google Calendar MCP Service (using upstream Dockerfile)
   calendar-mcp:
@@ -40,65 +53,41 @@ services:
       timeout: 5s
       retries: 3
 
-  # ticktick-auth:
-  #   build:
-  #     context: https://github.com/hugolytics/ticktick-mcp.git#main
-  #     dockerfile: Dockerfile          # built from your fork
-  #   command: python -m ticktick_mcp.auth_trigger
-  #   environment:
-  #     - TICKTICK_CLIENT_ID=${TICKTICK_CLIENT_ID}
-  #     - TICKTICK_CLIENT_SECRET=${TICKTICK_CLIENT_SECRET}
-  #     - TICKTICK_REDIRECT_URI=http://host.docker.internal:8765/callback  # automatic callback capture
-  #     - TICKTICK_USERNAME=${TICKTICK_USERNAME}
-  #     - TICKTICK_PASSWORD=${TICKTICK_PASSWORD}
-  #     - DOTENV_DIR=/root/.config/ticktick-mcp    # if your config expects it
-  #     - TICKTICK_AUTO_CALLBACK=true              # enable automatic callback handling
-  #     - TICKTICK_CALLBACK_HOST=0.0.0.0           # bind to all interfaces inside container
-  #     - TICKTICK_CALLBACK_PORT=8765              # callback server port
-  #   ports:
-  #     - "8765:8765"                             # expose callback server for automatic OAuth redirect
-  #   volumes:
-  #     - ticktick-token:/root/.config/ticktick-mcp
-  #   profiles: ["setup"]
-  #   stdin_open: true                            # for interactive mode if needed
-  #   tty: true                                   # for interactive mode if needed
+  # TickTick MCP Services (using alexarevalo9/ticktick-mcp-server)
+  
+  # OAuth bootstrapper: run once (interactive) to get TICKTICK_ACCESS_TOKEN
+  ticktick-auth:
+    <<: *ticktick-base
+    command: ["npm", "run", "start:auth"]  # triggers the CLI that opens browser and writes access token to .env
+    ports:
+      - "8000:8000"    # callback redirect URI must be http://localhost:8000/callback
+    stdin_open: true    # allow interactive approval if attached
+    tty: true
+    restart: "no"       # one-off service
+    profiles: ["setup"]
+    networks:
+      - admonish-network
 
-  # # TickTick MCP Service
-  # ticktick-mcp:
-  #   build:
-  #     context: https://github.com/hugolytics/ticktick-mcp.git#main
-  #     dockerfile: Dockerfile
-  #   image: myorg/ticktick-mcp:main
-
-  #   environment:
-  #     # MCP transport & networking
-  #     - SERVER_TRANSPORT=${TICKTICK_SERVER_TRANSPORT:-streamable-http}
-  #     - SERVER_HOST=${TICKTICK_SERVER_HOST:-0.0.0.0}
-  #     - SERVER_PORT=${TICKTICK_SERVER_PORT:-8150}
-
-  #     # TickTick API creds & login
-  #     - TICKTICK_CLIENT_ID=${TICKTICK_CLIENT_ID}
-  #     - TICKTICK_CLIENT_SECRET=${TICKTICK_CLIENT_SECRET}
-  #     - TICKTICK_REDIRECT_URI=${TICKTICK_REDIRECT_URI}
-  #     - TICKTICK_USERNAME=${TICKTICK_USERNAME}
-  #     - TICKTICK_PASSWORD=${TICKTICK_PASSWORD}
-
-  #   volumes:
-  #     - ticktick-token:/root/.config/ticktick-mcp
-
-  #   ports:
-  #     - "${TICKTICK_SERVER_PORT:-8150}:${TICKTICK_SERVER_PORT:-8150}"
-
-  #   networks:
-  #     - admonish-network
-
-  #   restart: unless-stopped
-  #   depends_on: [ticktick-auth]
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:${TICKTICK_SERVER_PORT:-8150}/health"]
-  #     interval: 30s
-  #     timeout: 5s
-  #     retries: 3
+  # MCP server, depends on auth having populated the token
+  ticktick-mcp:
+    <<: *ticktick-base
+    env_file:
+      - ../.env               # load main .env file
+    environment:
+      TICKTICK_CLIENT_ID: ${TICKTICK_CLIENT_ID}
+      TICKTICK_CLIENT_SECRET: ${TICKTICK_CLIENT_SECRET}
+      TICKTICK_ACCESS_TOKEN: ${TICKTICK_ACCESS_TOKEN:-}  # will be set after auth
+    ports:
+      - "${TICKTICK_SERVER_PORT:-8150}:8150"          # expose the MCP server port
+    command: ["npm", "run", "start:server"]  # start the MCP server
+    restart: unless-stopped
+    networks:
+      - admonish-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8150/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   # Python Bot Service
   # bot:
@@ -169,6 +158,8 @@ networks:
 
 volumes:
   ticktick-token:
+    driver: local
+  ticktick-mcp-env:
     driver: local
   calendar-mcp-tokens:
     driver: local

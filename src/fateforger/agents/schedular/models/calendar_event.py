@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr
 from pydantic import Field as PydanticField
 from pydantic import field_validator, parse_obj_as
 from sqlalchemy import Column, DateTime
-from sqlmodel import Field, Relationship, SQLModel
+from sqlmodel import Enum, Field, Relationship, SQLModel
 
 if TYPE_CHECKING:
     from .schedule_draft import ScheduleDraft
@@ -100,7 +100,28 @@ class Reminders(BaseModel):
     )
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+from datetime import datetime
+from enum import Enum
+from typing import Annotated, List, Optional
 
+from pydantic import computed_field, Field
+from sqlalchemy import Column
+from sqlalchemy.types import Enum as SQLEnum
+from sqlmodel import Field as ORMField, Relationship, SQLModel
+from enum import Enum
+
+
+from datetime import datetime
+from typing import Annotated, Literal, List, Optional
+
+from pydantic import BaseModel, computed_field, Field
+from sqlalchemy import Column
+from sqlalchemy.types import Enum as SQLEnum
+from sqlmodel import Field as ORMField, Relationship, SQLModel
+
+
+
+# TODO: make the color id a computed field based on the event type
 # TODO: maybe add serializers so when we query from the db we get models instead of json
 class CalendarEvent(
     SQLModel,
@@ -113,15 +134,17 @@ class CalendarEvent(
     __tablename__ = "calendar_events"  # type: ignore
 
     # --- DB-only fields (excluded on dump) --------------------------------
-    id: Optional[int] = Field(
+    id: Optional[int] = ORMField(
         default=None, primary_key=True, exclude=True, description="Local primary key"
     )
-    eventId: Optional[str] = Field(
+    eventId: Optional[str] = ORMField(
         default=None,
         # exclude=True,
         description="Google Calendar event ID",
     )
-
+    event_type: Optional[EventType] = Field(
+        exclude=True, default=None, sa_column=)
+    )
     # Foreign key to ScheduleDraft
     schedule_draft_id: Optional[int] = Field(
         default=None, foreign_key="schedule_draft.id", index=True, exclude=True
@@ -165,6 +188,11 @@ class CalendarEvent(
     recurrence: Optional[List[str]] = Field(
         None, description="Recurrence rules in RFC5545 format", sa_column=Column(_JSON)
     )
+    duration: str = Field(
+        default="00:30:00",
+        description="Duration of the event in ISO8601 format (e.g. PT30M)",
+        exclude=True,
+    )
 
     @field_validator("start", "end", mode="before")
     @classmethod
@@ -172,3 +200,5 @@ class CalendarEvent(
         if isinstance(v, str):
             return datetime.fromisoformat(v)
         return v
+# help me define that delegator agent.
+# So lets say the delegator agent fetches the ScheduleDraft from the db, like

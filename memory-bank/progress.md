@@ -1,20 +1,19 @@
-# Progress (Updated: 2025-07-29)
+# Progress (Updated: 2025-08-02)
 
 ## Done
 
-- Converted CalendarEvent and ScheduleDraft from JSON-based to relational one-to-many model
-- Added foreign key schedule_draft_id to CalendarEvent
-- Added back_populates relationships between models
-- Identified SQLAlchemy 2.0 Mapped annotation requirements
+- Python 3.11.8 successfully configured via Poetry
+- Calendar MCP container restarted with HTTP transport
+- All Poetry dependencies installed successfully
+- Virtual environment recreated with Python 3.11
 
 ## Doing
 
-- Testing relational model in notebook
-- Debugging SQLAlchemy relationship configuration
-- Working around notebook metadata caching issues
+- Testing MCP server HTTP connectivity
+- Setting up Python 3.11 environment
 
 ## Next
 
-- Get relational model working completely
-- Create migration for production database
-- Test full CRUD operations with relationships
+- Debug MCP server HTTP endpoint issues
+- Test AutoGen MCP integration with Python 3.11
+- Implement calendar agent functionality
