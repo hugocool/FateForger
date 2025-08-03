@@ -16,7 +16,7 @@ from autogen_core import (
 from fateforger.agents.schedular.agent import PlannerAgent
 
 
-async def initialize_runtime():
+async def initialize_runtime() -> SingleThreadedAgentRuntime:
     """Initialize the runtime with all agents."""
     runtime = SingleThreadedAgentRuntime()
     await PlannerAgent.register(

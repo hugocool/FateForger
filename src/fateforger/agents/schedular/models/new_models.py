@@ -34,6 +34,7 @@ from sqlalchemy.types import TypeDecorator
 from sqlmodel import Enum as SQLModelEnum
 from sqlmodel import Field as SQLModelField
 from sqlmodel import Relationship, SQLModel
+from functools import lru_cache
 
 # choice_helpers.py
 
@@ -172,9 +173,22 @@ class EventType(ChoiceEnum, extra_field_kwargs=["color_id"]):
     BUFFER = ChoiceField("BU", description="buffer time", color_id="5")
     BACKGROUND = ChoiceField("BG", description="passive/background tasks", color_id="1")
 
-    # @property
-    # def color_id(self) -> str:
-    #     return self.color_id
+    @classmethod
+    @lru_cache(maxsize=1)
+    def _color_id_map(cls) -> dict[str, "EventType"]:
+        # build once
+        return {member.color_id: member for member in cls}
+
+    @classmethod
+    def get_event_type_from_color_id(cls, color_id: str) -> "EventType":
+        """
+        Return the EventType whose extra field `color_id` matches the input.
+        Raises KeyError if no match.
+        """
+        try:
+            return cls._color_id_map()[color_id]
+        except KeyError:
+            raise KeyError(f"No EventType with color_id={color_id!r}")
 
 
 # --- 1) Our flag on Field: include_in_schema (default True) ------------
@@ -361,6 +375,11 @@ class DraftStore:
     def get_by_date(self, draft_date: Date) -> Optional[ScheduleDraft]:
         """Get a draft by date."""
         stmt = select(ScheduleDraft).where(ScheduleDraft.date == draft_date)
+        return self.session.exec(stmt).first()
+
+    def get_by_id(self, draft_id: int) -> Optional[ScheduleDraft]:
+        """Get a draft by ID."""
+        stmt = select(ScheduleDraft).where(ScheduleDraft.id == draft_id)
         return self.session.exec(stmt).first()
 
     def list_all(self) -> List[ScheduleDraft]:
