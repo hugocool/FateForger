@@ -7,7 +7,7 @@ authors = [
 ]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<4.0"
 dependencies = [
     "slack-bolt (>=1.23.0,<2.0.0)",
     "slack-sdk (>=3.36.0,<4.0.0)",
@@ -31,7 +31,8 @@ dependencies = [
     "jinja2 (>=3.1.6,<4.0.0)",
     "deepdiff (>=8.5.0,<9.0.0)",
     "sqlmodel (>=0.0.24,<0.0.25)",
-    "isodate (>=0.7.2,<0.8.0)"
+    "isodate (>=0.7.2,<0.8.0)",
+    "trustcall (>=0.0.39,<0.0.40)"
 ]
 
 [project.scripts]

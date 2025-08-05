@@ -2,7 +2,7 @@
 
 
 from datetime import date as Date
-from datetime import datetime
+from datetime import datetime, time
 from enum import Enum, EnumMeta
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
 
@@ -474,6 +474,7 @@ class Reminders(BaseModel):
 from datetime import timedelta
 
 from pydantic import ValidationInfo
+from sqlalchemy import Column, Time as SQLTime
 
 
 # TODO: make the color id a computed field based on the event type
@@ -519,26 +520,43 @@ class CalendarEvent(
         default="primary",
         description="ID of the calendar (use 'primary' for the main calendar)",
     )
-    summary: str = ORMField(..., description="Title of the event")
+    summary: str = ORMField(..., description="Title of the event", alias="t")
     description: Optional[str] = ORMField(
         None, description="Description/notes for the event"
     )
-    start: Optional[datetime] = ORMField(
-        default=None,
-        description="Event start time: ISO8601 no milliseconds, no timezone",
-        sa_column=Column(SQLDateTime),
+    start: Optional[time] = (
+        ORMField(  # #TODO: We want the LLM to only provide the time, but when we export to the json for export to the calendar we need to have this field be datetime..
+            default=None,
+            description="Event start time (HH:MM)",
+            sa_column=Column(SQLTime),
+            alias="s",  # for JSON schema compatibility
+        )
     )
-    end: Optional[datetime] = ORMField(
+    end: Optional[time] = ORMField(
         default=None,
-        description="Event end time: ISO8601 no milliseconds, no timezone",
-        sa_column=Column(SQLDateTime),
+        description="Event end time (HH:MM)",
+        sa_column=Column(SQLTime),
+        alias="e",  # for JSON schema compatibility
     )
     duration: Optional[timedelta] = ORMField(
         default=None,
         description="Duration of the event in ISO8601 format (e.g. PT30M)",
         exclude=True,
         sa_column=Column(Interval),
+        alias="d",  # for JSON schema compatibility
     )
+    flex_back: bool = ORMField(
+        default=False,
+        description="If True, the event starts at the end of the previous event",
+        exclude=True,
+    )
+    _calc: Optional[list[Literal["s", "e", "d"]]] = ORMField(
+        default=None,
+        description="List of fields to calculate",
+        exclude=True,
+        sa_column=Column(_JSON),
+    )
+
     timeZone: Optional[str] = ORMField(
         default="Europe/Amsterdam",
         description="IANA TZ name (e.g. Europe/Amsterdam)",
@@ -552,7 +570,7 @@ class CalendarEvent(
     )
 
     reminders: Optional[Reminders] = ORMField(
-        default=None,
+        default=None,  # TODO: make it so default is no reminders
         sa_column=Column(PydanticJSON(Reminders)),
         description="Reminder settings",
     )
