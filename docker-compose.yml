@@ -1,0 +1,52 @@
+version: "3.9"
+
+volumes:
+  ticktick_config: {}
+
+x-ticktick-build: &ticktick_build
+  context: https://github.com/JakobGruen/ticktick-mcp.git#feature/docker-and-http-support
+
+x-common: &common
+  build: *ticktick_build
+  env_file: .env
+  volumes:
+    - ticktick_config:/root/.config/ticktick-mcp
+    - .env:/app/.env
+
+services:
+  ticktick-mcp-auth:
+    <<: *common
+    profiles: ["auth"]          # ← only runs when you ask for it
+    container_name: ticktick-mcp-auth
+    ports:
+      - "8000:8000"
+    command: ["/bin/sh","-lc","uv run -m ticktick_mcp.cli auth"]
+    stdin_open: true
+    tty: true
+    restart: "no"
+
+  ticktick-mcp:
+    <<: *common
+    container_name: ticktick-mcp
+    ports:
+      - "8002:8000"
+    restart: unless-stopped
+
+  # notion-mcp:
+  #   <<: *common-env
+  #   build:
+  #     context: https://github.com/makenotion/notion-mcp-server.git#main
+  #   command: >
+  #     npx -y @notionhq/notion-mcp-server
+  #     --transport streamable-https
+  #     --port 8002
+  #   environment:
+  #     MCP_TRANSPORT: streamable-https
+  #     NOTION_TOKEN: ${NOTION_TOKEN}
+  #   ports:
+  #     - "8002:8002"
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "https://localhost:8002/health"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 3

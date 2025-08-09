@@ -1,19 +1,18 @@
-# Progress (Updated: 2025-08-02)
+# Progress (Updated: 2025-08-08)
 
 ## Done
 
-- Python 3.11.8 successfully configured via Poetry
-- Calendar MCP container restarted with HTTP transport
-- All Poetry dependencies installed successfully
-- Virtual environment recreated with Python 3.11
+- Fixed docker-compose.yml configuration for TickTick MCP server
+- Successfully building Docker containers with UV package manager
+- Resolved port conflicts and environment file paths
+- TickTick MCP auth container starting correctly
 
 ## Doing
 
-- Testing MCP server HTTP connectivity
-- Setting up Python 3.11 environment
+- Docker-compose auth service working correctly
 
 ## Next
 
-- Debug MCP server HTTP endpoint issues
-- Test AutoGen MCP integration with Python 3.11
-- Implement calendar agent functionality
+- Complete OAuth flow for TickTick authentication
+- Test production MCP server container
+- Set up Notion MCP integration
