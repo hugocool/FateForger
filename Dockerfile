@@ -44,4 +44,4 @@ USER appuser
 EXPOSE 8000
 
 # Default command
-CMD ["poetry", "run", "python", "-m", "admonish"]
+CMD ["poetry", "run", "python", "-m", "agentic_runtime"]

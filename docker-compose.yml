@@ -2,6 +2,13 @@ version: "3.9"
 
 volumes:
   ticktick_config: {}
+  calendar-mcp-tokens:
+    driver: local
+  poetry-cache:
+    driver: local
+networks:
+  admonish-network:
+    driver: bridge
 
 x-ticktick-build: &ticktick_build
   context: https://github.com/JakobGruen/ticktick-mcp.git#feature/docker-and-http-support
@@ -14,6 +21,62 @@ x-common: &common
     - .env:/app/.env
 
 services:
+  app:
+    container_name: admonish-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    volumes:
+      - .:/app
+      - poetry-cache:/root/.cache/pypoetry
+    ports:
+      - "3000:3000"
+    networks:
+      - admonish-network
+    restart: unless-stopped
+    depends_on:
+      - calendar-mcp
+      - ticktick-mcp
+      - notion-mcp
+
+  calendar-mcp:
+    # ───────────────────────────────────────────────
+    # Build directly from the GitHub repo @ tag
+    build:
+      context: https://github.com/nspady/google-calendar-mcp.git#${MCP_VERSION}
+      dockerfile: Dockerfile          # the one in the repo root
+    image: myorg/calendar-mcp:${MCP_VERSION}
+    # ───────────────────────────────────────────────
+    
+    container_name: google-calendar-mcp
+    env_file:
+      - .env  # Use the main .env file from project root (relative to docker-compose.yml)
+    # mount your OAuth JSON (or use secrets)
+    volumes:
+      - type: bind
+        source: ./secrets/gcal-oauth.json
+        target: /app/gcp-oauth.keys.json
+        read_only: true
+      - calendar-mcp-tokens:/home/node/.config/google-calendar-mcp
+    
+    ports:
+      - "${PORT}:${PORT}"
+      - "3500:3500"  # OAuth authentication server port
+    environment:
+      TRANSPORT: "${TRANSPORT}"
+      PORT: "${PORT}"
+      GOOGLE_OAUTH_CREDENTIALS: "/app/gcp-oauth.keys.json"
+      HOST: "0.0.0.0"
+    
+    networks:
+      - admonish-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT}/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
   ticktick-mcp-auth:
     <<: *common
     profiles: ["auth"]          # ← only runs when you ask for it
@@ -50,3 +113,20 @@ services:
   #     interval: 30s
   #     timeout: 5s
   #     retries: 3
+
+
+  notion-mcp:
+    build:
+      context: https://github.com/makenotion/notion-mcp-server.git#main
+    command: [
+      "npx","-y","@notionhq/notion-mcp-server",
+      "--transport","http",
+      "--port","${MCP_HTTP_PORT}",
+      "--auth-token","${MCP_HTTP_AUTH_TOKEN}"
+    ]
+    environment:
+      # Notion API credential (internal integration token: ntn_...)
+      NOTION_TOKEN: ${NOTION_TOKEN}
+    ports:
+      - "${MCP_HTTP_PORT}:${MCP_HTTP_PORT}"
+    restart: unless-stopped
