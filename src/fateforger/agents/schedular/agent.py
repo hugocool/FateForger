@@ -3,10 +3,10 @@
 """
 
 import datetime as dt
+import json
 import logging
 import os
 from dataclasses import dataclass
-
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
@@ -18,9 +18,13 @@ from autogen_core import (
     default_subscription,
     message_handler,
 )
+from autogen_core.messages import TextMessage
 from autogen_ext.models.openai import OpenAIChatCompletionClient
+from autogen_ext.tools.mcp import MCPWorkbench, StreamableHttpServerParams
 
 from fateforger.tools.calendar_mcp import get_calendar_mcp_tools
+
+from .models import CalendarEvent
 
 # THe first planner simply handles the connection to the calendar and single event CRUD.
 # So when the user sends a CalendarEvent, it will create the event in the calendar.
@@ -97,14 +101,6 @@ class PlannerAgent(RoutedAgent):
         )
 
         return resp.chat_message
-
-
-from .models import CalendarEvent
-
-import json
-from autogen_core import RoutedAgent, message_handler, MessageContext
-from autogen_core.messages import TextMessage
-from autogen_ext.tools.mcp import MCPWorkbench, StreamableHttpServerParams
 
 
 class CalendarEventWorkerAgent(RoutedAgent):
