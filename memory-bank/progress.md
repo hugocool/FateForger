@@ -1,18 +1,14 @@
-# Progress (Updated: 2025-08-08)
+# Progress (Updated: 2025-08-13)
 
 ## Done
 
-- Fixed docker-compose.yml configuration for TickTick MCP server
-- Successfully building Docker containers with UV package manager
-- Resolved port conflicts and environment file paths
-- TickTick MCP auth container starting correctly
+- Renamed CalendarEvent.anchor_to_previous to anchor_prev with a short alias ap, clarified description, kept DB column name flex_back for backward compatibility, default True
 
 ## Doing
 
-- Docker-compose auth service working correctly
+
 
 ## Next
 
-- Complete OAuth flow for TickTick authentication
-- Test production MCP server container
-- Set up Notion MCP integration
+- Wire field usage where anchoring logic is applied in scheduling passes, if needed
+- Add tests to cover ap=True/False semantics in duration-only events

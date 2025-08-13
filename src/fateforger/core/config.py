@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     """Application configuration using environment variables."""
 
     # Core Configuration
-    slack_bot_token: str = Field(default="x")
+    slack_bot_token: str = Field(default="x", env="SLACK_BOT_TOKEN")
     slack_signing_secret: str = Field(default="x")
     # Slack Configuration
     slack_app_token: str = Field(default="your_slack_app_token_here")

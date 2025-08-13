@@ -16,7 +16,7 @@ from pydantic import (
     model_validator,
     parse_obj_as,
 )
-from sqlalchemy import Column
+from sqlalchemy import Boolean, Column
 from sqlalchemy import DateTime as SQLDateTime
 from sqlalchemy import Interval
 from sqlalchemy import Time as SQLTime
@@ -29,6 +29,12 @@ from sqlalchemy.types import Enum as SQLEnum
 from sqlmodel import Field, Relationship, Session, SQLModel, select
 
 from .core import ChoiceEnum, ChoiceField, ORMField, PydanticJSON
+
+# all background events must have a start and end, these are not calculated based on the
+# background events are not considered in the processing of event start and end times
+# the start of the last event cannot be in the next day, so the event before the last event must end before the next day starts
+# events cannot overlap
+# the first event must have a start or end time so we can anchor the rest of the events to it
 
 
 # TODO: consider relationship to planningsessions
@@ -59,7 +65,7 @@ class ScheduleDraft(SQLModel, table=True):
         Assumptions
         -----------
         • self.events is already ordered in the desired processing sequence
-        • CalendarEvent.duration is a ``timedelta`` (parsed in the model)
+
         """
         last_non_bg: Optional[CalendarEvent] = None
 
@@ -253,23 +259,23 @@ class CalendarEvent(
     description: Optional[str] = ORMField(
         None, description="Description/notes for the event"
     )
-    start_date: Optional[Date] = ORMField(
+    start: Optional[Date] = ORMField(
         default=None,
         description="Event start date (YYYY-MM-DD)",
         sa_column=Column(SQLDateTime),
+        include_in_schema=False,
     )
-    end_date: Optional[Date] = ORMField(
+    end: Optional[Date] = ORMField(
         default=None,
         description="Event end date (YYYY-MM-DD)",
         sa_column=Column(SQLDateTime),
+        include_in_schema=False,
     )
-    start_time: Optional[time] = (
-        ORMField(  # #TODO: We want the LLM to only provide the time, but when we export to the json for export to the calendar we need to have this field be datetime..
-            default=None,
-            description="Event start time (HH:MM)",
-            sa_column=Column(SQLTime),
-            alias="s",  # for JSON schema compatibility
-        )
+    start_time: Optional[time] = ORMField(
+        default=None,
+        description="Event start time (HH:MM)",
+        sa_column=Column(SQLTime),
+        alias="s",  # for JSON schema compatibility
     )
     end_time: Optional[time] = ORMField(
         default=None,
@@ -284,12 +290,17 @@ class CalendarEvent(
         sa_column=Column(Interval),
         alias="d",  # for JSON schema compatibility
     )
-    flex_back: bool = ORMField(
-        default=False,
-        description="If True, the event starts at the end of the previous event",
+    anchor_prev: bool = ORMField(
+        default=True,
+        alias="ap",  # short alias for LLM planning/timeboxing agents
+        description=(
+            "When both start and end are omitted: True → start at the previous event's end; "
+            "False → end at the next event's start."
+        ),
         exclude=True,
     )
-    _calc: Optional[list[Literal["s", "e", "d"]]] = ORMField(
+
+    calc: Optional[list[Literal["s", "e", "d"]]] = ORMField(
         default=None,
         description="List of fields to calculate",
         exclude=True,
@@ -346,4 +357,5 @@ class CalendarEvent(
     @property
     def colorId(self) -> str:
         # uses the dynamic .color_id property on EventType
-        return self.event_type.color_id
+        et = self.event_type
+        return getattr(et, "color_id")

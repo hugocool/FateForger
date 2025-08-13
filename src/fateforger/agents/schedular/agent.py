@@ -18,9 +18,9 @@ from autogen_core import (
     default_subscription,
     message_handler,
 )
-from autogen_core.messages import TextMessage
+from autogen_agentchat.messages import TextMessage
 from autogen_ext.models.openai import OpenAIChatCompletionClient
-from autogen_ext.tools.mcp import MCPWorkbench, StreamableHttpServerParams
+from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
 
 from fateforger.tools.calendar_mcp import get_calendar_mcp_tools
 
@@ -82,7 +82,7 @@ class PlannerAgent(RoutedAgent):
         self._delegate = AssistantAgent(
             self.id.type,
             system_message=prompt,
-            model_client=OpenAIChatCompletionClient(model="gpt-4o"),
+            model_client=OpenAIChatCompletionClient(model="gpt-5"),
             tools=tools,
             reflect_on_tool_use=True,
             max_tool_iterations=5,
@@ -90,17 +90,49 @@ class PlannerAgent(RoutedAgent):
 
     @message_handler
     async def handle_message(
-        self, message: MyMessage, ctx: MessageContext
+        self, message: TextMessage, ctx: MessageContext
     ) -> TextMessage:
         logging.debug("PlannerAgent: received user message: %s", message.content)
         await self._ensure_initialized()
 
         resp = await self._delegate.on_messages(
-            [TextMessage(content=message.content, source="user")],
+            [message],
             ctx.cancellation_token,
         )
 
         return resp.chat_message
+
+
+from autogen_core.tools import ToolResult
+import logging
+from tenacity import retry, retry_if_result, stop_after_attempt, wait_random_exponential
+
+from autogen_core.tools import ToolResult
+
+logger = logging.getLogger("mcp")
+
+
+def _is_error(result: ToolResult) -> bool:
+    return bool(getattr(result, "is_error", False))
+
+
+def _log_retry(retry_state):
+    # Called only when _is_error(result) is True
+    logger.warning(
+        "MCP create-event returned is_error=True; retrying (attempt %s)",
+        retry_state.attempt_number,
+    )
+
+
+@retry(
+    retry=retry_if_result(_is_error),  # retry ONLY when result.is_error == True
+    stop=stop_after_attempt(3),  # 3 tries total
+    wait=wait_random_exponential(0.5, max=4),  # tiny backoff + jitter
+    before_sleep=_log_retry,
+)
+async def call_create_event_with_retry(workbench, payload: dict) -> ToolResult:
+    # tenacity will re-call this if _is_error(result) is True
+    return await workbench.call_tool("create-event", arguments=payload)
 
 
 class CalendarEventWorkerAgent(RoutedAgent):
@@ -111,18 +143,15 @@ class CalendarEventWorkerAgent(RoutedAgent):
     def __init__(self, name: str, server_url: str):
         super().__init__(description=name)
         params = StreamableHttpServerParams(url=server_url, timeout=5.0)
-        self.workbench = MCPWorkbench(params, timeout=5)
+        self.workbench = McpWorkbench(params)  # auto-starts on first call if needed
 
     @message_handler
     async def handle_calendar_event(
-        self, event: CalendarEvent, ctx: MessageContext
-    ) -> TextMessage:
-        # Serialize the Pydantic/SQLModel object into a raw dict with proper aliases
-        payload = event.model_dump(exclude_none=True)
-        # Call the MCP tool "create-event" with our event payload
-        result = await self.workbench.call_tool("create-event", arguments=payload)
-        # while result.is_error:
-        #     print(f"Error creating event: {result.result[0].content}. Retrying...")
-        #     result = await self.workbench.call_tool("create-event", arguments=event.model_dump(exclude_none=True))
-        # Return the raw JSON result back as a text message
+        self, message: CalendarEvent, ctx: MessageContext
+    ) -> ToolResult:
+
+        payload = message.model_dump(exclude_none=True)
+        result = await call_create_event_with_retry(self.workbench, payload)
+        if result.is_error:
+            raise RuntimeError("create-event failed after 3 attempts")
         return result
