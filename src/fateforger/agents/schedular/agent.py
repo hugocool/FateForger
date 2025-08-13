@@ -18,13 +18,14 @@ from autogen_core import (
     default_subscription,
     message_handler,
 )
-from autogen_agentchat.messages import TextMessage
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
 
+from fateforger.debug.diag import with_timeout
 from fateforger.tools.calendar_mcp import get_calendar_mcp_tools
 
 from .models import CalendarEvent
+from ...core.config import settings
 
 # THe first planner simply handles the connection to the calendar and single event CRUD.
 # So when the user sends a CalendarEvent, it will create the event in the calendar.
@@ -76,13 +77,20 @@ class PlannerAgent(RoutedAgent):
     async def _ensure_initialized(self) -> None:
         if self._delegate:
             return
+        # (1) wrap MCP discovery so it can't hang silently
 
-        tools = await get_calendar_mcp_tools(SERVER_URL)
-        logging.debug("PlannerAgent: received MCP tools: %s", tools)
+        tools = await with_timeout(
+            "mcp:get_calendar_mcp_tools",
+            get_calendar_mcp_tools(SERVER_URL),
+            timeout_s=5,
+        )
+
         self._delegate = AssistantAgent(
             self.id.type,
             system_message=prompt,
-            model_client=OpenAIChatCompletionClient(model="gpt-5"),
+            model_client=OpenAIChatCompletionClient(
+                model="gpt-4o", api_key=settings.openai_api_key
+            ),
             tools=tools,
             reflect_on_tool_use=True,
             max_tool_iterations=5,
@@ -95,19 +103,22 @@ class PlannerAgent(RoutedAgent):
         logging.debug("PlannerAgent: received user message: %s", message.content)
         await self._ensure_initialized()
 
-        resp = await self._delegate.on_messages(
-            [message],
-            ctx.cancellation_token,
-        )
+        # Ensure delegate is initialized
+        assert self._delegate is not None, "Delegate should be initialized"
 
+        # (2) wrap the actual LLM/tool run
+        resp = await with_timeout(
+            "assistant:on_messages",
+            self._delegate.on_messages([message], ctx.cancellation_token),
+            timeout_s=20,
+        )
         return resp.chat_message
 
 
-from autogen_core.tools import ToolResult
 import logging
-from tenacity import retry, retry_if_result, stop_after_attempt, wait_random_exponential
 
 from autogen_core.tools import ToolResult
+from tenacity import retry, retry_if_result, stop_after_attempt, wait_random_exponential
 
 logger = logging.getLogger("mcp")
 

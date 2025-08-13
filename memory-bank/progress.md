@@ -2,7 +2,8 @@
 
 ## Done
 
-- Renamed CalendarEvent.anchor_to_previous to anchor_prev with a short alias ap, clarified description, kept DB column name flex_back for backward compatibility, default True
+- Identified exact cause of AutoGen runtime hanging: missing runtime.start() and incorrect AgentId format
+- Fixed hanging issue - runtime now works with correct AgentId('planner_agent', 'default') and runtime.start()
 
 ## Doing
 
@@ -10,5 +11,5 @@
 
 ## Next
 
-- Wire field usage where anchoring logic is applied in scheduling passes, if needed
-- Add tests to cover ap=True/False semantics in duration-only events
+- Test timeboxing workflow with working AutoGen runtime
+- Integrate calendar MCP tools with the working planner agent

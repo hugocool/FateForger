@@ -22,6 +22,7 @@ async def initialize_runtime() -> SingleThreadedAgentRuntime:
     await PlannerAgent.register(
         runtime, "planner_agent", lambda: PlannerAgent("planner_agent")
     )
+    runtime.start()
     return runtime
 
 

@@ -1,10 +1,13 @@
 version: "3.9"
 
 volumes:
-  ticktick_config: {}
-  calendar-mcp-tokens:
+  ticktick_data:
     driver: local
-  poetry-cache:
+  app_data:
+    driver: local
+  notion_data:
+    driver: local
+  calendar-mcp-tokens:
     driver: local
 networks:
   admonish-network:
@@ -58,7 +61,7 @@ services:
         source: ./secrets/gcal-oauth.json
         target: /app/gcp-oauth.keys.json
         read_only: true
-      - calendar-mcp-tokens:/home/node/.config/google-calendar-mcp
+      - calendar-mcp-tokens:/home/nodejs/.config/google-calendar-mcp
     
     ports:
       - "${PORT}:${PORT}"
@@ -77,6 +80,35 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  calendar-mcp-auth:
+    # Auth service to get initial tokens - run once then stop
+    build:
+      context: https://github.com/nspady/google-calendar-mcp.git#${MCP_VERSION}
+      dockerfile: Dockerfile
+    container_name: google-calendar-mcp-auth
+    profiles: ["auth"]  # Only runs when specifically requested
+    env_file:
+      - .env
+    volumes:
+      - type: bind
+        source: ./secrets/gcal-oauth.json
+        target: /app/gcp-oauth.keys.json
+        read_only: true
+      - calendar-mcp-tokens:/home/nodejs/.config/google-calendar-mcp
+    ports:
+      - "3001:3001"  # Different port for auth server
+      - "3002:3002"
+      - "3003:3003"
+      - "3004:3004"
+    environment:
+      GOOGLE_OAUTH_CREDENTIALS: "/app/gcp-oauth.keys.json"
+    command: ["npm", "run", "auth"]
+    stdin_open: true
+    tty: true
+    restart: "no"
+    networks:
+      - admonish-network
   ticktick-mcp-auth:
     <<: *common
     profiles: ["auth"]          # ← only runs when you ask for it

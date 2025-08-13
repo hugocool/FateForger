@@ -69,11 +69,12 @@ async def build_app() -> AsyncApp:
             TextMessage(content=text, source=user),
             recipient=agent_id,
         )
-        reply = (
-            getattr(getattr(result, "chat_message", None), "content", None)
-            or "(no response)"
-        )
-        await say(text=reply, thread_ts=thread_ts or ts)
+        # after: result = await runtime.send_message(...)
+        msg = (
+            getattr(result, "chat_message", None) or result
+        )  # handle Response OR TextMessage
+        reply_text = getattr(msg, "content", None) or "(no response)"
+        await say(text=reply_text, thread_ts=thread_ts or ts)
 
     # public channels: only react when mentioned
     @app.event("app_mention")
