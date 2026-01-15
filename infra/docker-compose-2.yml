@@ -13,15 +13,19 @@ x-ticktick-base: &ticktick-base
   volumes:
     - ticktick-mcp-env:/app/.env     # shared .env for persisted credentials
 
+x-google-calendar-mcp: &google-calendar-mcp
+  # Pin the google-calendar-mcp version in a single place.
+  build:
+    context: https://github.com/nspady/google-calendar-mcp.git#v1.4.8
+    dockerfile: Dockerfile  # repo root
+  image: myorg/calendar-mcp:v1.4.8
+
 services:
   # Google Calendar MCP Service (using upstream Dockerfile)
   calendar-mcp:
+    <<: *google-calendar-mcp
     # ───────────────────────────────────────────────
     # Build directly from the GitHub repo @ tag
-    build:
-      context: https://github.com/nspady/google-calendar-mcp.git#${MCP_VERSION}
-      dockerfile: Dockerfile          # the one in the repo root
-    image: myorg/calendar-mcp:${MCP_VERSION}
     # ───────────────────────────────────────────────
     
     container_name: google-calendar-mcp

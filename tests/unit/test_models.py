@@ -1,6 +1,10 @@
 import pytest
 
-from src.infra import PlanningSession, SlackMessage, SessionStatus
+from fateforger.agents.admonisher.models import (
+    PlanningSession,
+    SessionStatus,
+    SlackMessage,
+)
 
 
 class TestModels:

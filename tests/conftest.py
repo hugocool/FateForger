@@ -1,15 +1,13 @@
 import asyncio
-from datetime import datetime
 
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from unittest.mock import MagicMock
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel import SQLModel
 
-from src.agents.admonisher.bootstrap import PlanningBootstrapHaunter
-from agents.schedular.planning import PlanningAgent
-from src.core.scheduler import get_scheduler, reset_scheduler
-from src.infra import Base
+from fateforger.agents.admonisher.models import Base as AdmonisherBase
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 
 @pytest.fixture(scope="session")
@@ -23,7 +21,8 @@ def event_loop(request):
 async def sqlite_engine():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(AdmonisherBase.metadata.create_all)
+        await conn.run_sync(SQLModel.metadata.create_all)
     yield engine
     await engine.dispose()
 
@@ -39,7 +38,7 @@ async def db_session(sqlite_engine):
 @pytest.fixture(scope="session")
 def mock_slack_client():
     class Slack:
-        async def chat_postMessage(self, channel, text):
+        async def chat_postMessage(self, channel, text, thread_ts=None):
             return {"ts": "1"}
 
         async def chat_scheduleMessage(self, channel, text, post_at, thread_ts=None):
@@ -51,39 +50,19 @@ def mock_slack_client():
     return Slack()
 
 
-@pytest.fixture(scope="session")
-def mock_openai(monkeypatch):
-    class Dummy:
-        pass
+@pytest.fixture()
+def mock_slack(mock_slack_client):
+    return mock_slack_client
 
-    monkeypatch.setattr("openai.AsyncOpenAI", Dummy)
+
+@pytest.fixture()
+def mock_scheduler():
+    return MagicMock()
 
 
 @pytest_asyncio.fixture()
 async def scheduler():
-    reset_scheduler()
-    sched = get_scheduler()
+    sched = AsyncIOScheduler()
+    sched.start()
     yield sched
-    sched.remove_all_jobs()
-    reset_scheduler()
-
-
-@pytest_asyncio.fixture()
-async def bootstrap_haunter(db_session, mock_slack_client, scheduler, mocker):
-    client = AsyncClient(base_url="http://testserver")
-    planner = PlanningAgent(client)
-    mocker.patch.object(planner, "_create_event", autospec=True)
-    haunter = PlanningBootstrapHaunter(
-        1, mock_slack_client, scheduler, db_session, planner
-    )
-    yield haunter
-    await client.aclose()
-
-
-@pytest.fixture()
-def mock_mcp(httpx_mock):
-    httpx_mock.assert_all_called = False
-    httpx_mock.add_response(
-        url="http://testserver/mcp/create_event", json={"id": "evt"}
-    )
-    return httpx_mock
+    sched.shutdown(wait=False)

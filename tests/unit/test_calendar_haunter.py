@@ -7,62 +7,73 @@ from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+pytest.importorskip("autogen_agentchat")
+
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
 
-from src.agents.admonisher.calendar import (
+from fateforger.agents.admonisher.calendar import (
     CalendarHaunter,
     create_calendar_haunter_agent,
 )
 
 
+@pytest.fixture
+def mock_slack():
+    """Mock Slack client."""
+    return AsyncMock()
+
+
+@pytest.fixture
+def mock_scheduler():
+    """Mock scheduler."""
+    return MagicMock()
+
+
+@pytest.fixture
+def calendar_haunter(mock_slack, mock_scheduler):
+    """Create CalendarHaunter instance with mocks."""
+    return CalendarHaunter(
+        session_id=123,
+        slack=mock_slack,
+        scheduler=mock_scheduler,
+        channel="C123456",
+    )
+
+
+@pytest.fixture
+def mock_mcp_tools():
+    """Mock MCP tools."""
+    mock_tool1 = MagicMock()
+    mock_tool1.name = "list-calendars"
+    mock_tool2 = MagicMock()
+    mock_tool2.name = "list-events"
+    mock_tool3 = MagicMock()
+    mock_tool3.name = "search-events"
+    return [mock_tool1, mock_tool2, mock_tool3]
+
+
+@pytest.fixture
+def mock_agent_response():
+    """Mock agent response."""
+    mock_response = MagicMock()
+    mock_chat_message = MagicMock()
+    mock_chat_message.content = [{"type": "text", "text": "Test calendar response"}]
+    mock_response.chat_message = mock_chat_message
+    return mock_response
+
+
 class TestCalendarHaunter:
     """Test the CalendarHaunter class."""
 
-    @pytest.fixture
-    def mock_slack(self):
-        """Mock Slack client."""
-        return AsyncMock()
-
-    @pytest.fixture
-    def mock_scheduler(self):
-        """Mock scheduler."""
-        return MagicMock()
-
-    @pytest.fixture
-    def calendar_haunter(self, mock_slack, mock_scheduler):
-        """Create CalendarHaunter instance with mocks."""
-        return CalendarHaunter(
-            session_id=123,
-            slack=mock_slack,
-            scheduler=mock_scheduler,
-            channel="C123456",
-        )
-
-    @pytest.fixture
-    def mock_mcp_tools(self):
-        """Mock MCP tools."""
-        mock_tool1 = MagicMock()
-        mock_tool1.name = "list-calendars"
-        mock_tool2 = MagicMock()
-        mock_tool2.name = "list-events"
-        mock_tool3 = MagicMock()
-        mock_tool3.name = "search-events"
-        return [mock_tool1, mock_tool2, mock_tool3]
-
-    @pytest.fixture
-    def mock_agent_response(self):
-        """Mock agent response."""
-        mock_response = MagicMock()
-        mock_chat_message = MagicMock()
-        mock_chat_message.content = [{"type": "text", "text": "Test calendar response"}]
-        mock_response.chat_message = mock_chat_message
-        return mock_response
-
     @pytest.mark.asyncio
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
-    @patch("fateforger.agents.haunters.calendar.mcp_server_tools")
-    @patch("fateforger.agents.haunters.calendar.AssistantAgent")
+    @patch(
+        "fateforger.agents.admonisher.calendar.mcp_server_tools",
+        new_callable=AsyncMock,
+    )
+    @patch("fateforger.agents.admonisher.calendar.AssistantAgent")
     async def test_create_calendar_agent(
         self, mock_assistant, mock_mcp_tools_patch, calendar_haunter, mock_mcp_tools
     ):
@@ -88,7 +99,7 @@ class TestCalendarHaunter:
         assert call_args.kwargs["tools"] == mock_mcp_tools
 
     @pytest.mark.asyncio
-    @patch("fateforger.agents.haunters.calendar.settings")
+    @patch("fateforger.agents.admonisher.calendar.settings")
     async def test_create_calendar_agent_no_api_key(
         self, mock_settings, calendar_haunter
     ):
@@ -99,7 +110,10 @@ class TestCalendarHaunter:
             await calendar_haunter._create_calendar_agent()
 
     @pytest.mark.asyncio
-    @patch("fateforger.agents.haunters.calendar.mcp_server_tools")
+    @patch(
+        "fateforger.agents.admonisher.calendar.mcp_server_tools",
+        new_callable=AsyncMock,
+    )
     async def test_create_calendar_agent_no_tools(
         self, mock_mcp_tools, calendar_haunter
     ):
@@ -279,8 +293,11 @@ class TestCreateCalendarHaunterAgent:
         os.environ,
         {"OPENAI_API_KEY": "test-key", "MCP_CALENDAR_SERVER_URL": "http://test:3000"},
     )
-    @patch("fateforger.agents.haunters.calendar.mcp_server_tools")
-    @patch("fateforger.agents.haunters.calendar.AssistantAgent")
+    @patch(
+        "fateforger.agents.admonisher.calendar.mcp_server_tools",
+        new_callable=AsyncMock,
+    )
+    @patch("fateforger.agents.admonisher.calendar.AssistantAgent")
     async def test_create_calendar_haunter_agent_success(
         self, mock_assistant, mock_mcp_tools
     ):
@@ -316,7 +333,10 @@ class TestCreateCalendarHaunterAgent:
             await create_calendar_haunter_agent()
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
-    @patch("fateforger.agents.haunters.calendar.mcp_server_tools")
+    @patch(
+        "fateforger.agents.admonisher.calendar.mcp_server_tools",
+        new_callable=AsyncMock,
+    )
     async def test_create_calendar_haunter_agent_no_tools(self, mock_mcp_tools):
         """Test creation fails when no tools are loaded."""
         mock_mcp_tools.return_value = []
@@ -325,7 +345,10 @@ class TestCreateCalendarHaunterAgent:
             await create_calendar_haunter_agent()
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
-    @patch("fateforger.agents.haunters.calendar.mcp_server_tools")
+    @patch(
+        "fateforger.agents.admonisher.calendar.mcp_server_tools",
+        new_callable=AsyncMock,
+    )
     async def test_default_mcp_server_url(self, mock_mcp_tools):
         """Test default MCP server URL is used when env var not set."""
         mock_mcp_tools.return_value = []  # Will cause early exit
@@ -387,7 +410,10 @@ class TestCalendarHaunterRobustness:
 
     async def test_mcp_server_timeout(self, calendar_haunter):
         """Test handling MCP server timeout."""
-        with patch("fateforger.agents.haunters.calendar.mcp_server_tools") as mock_mcp:
+        with patch(
+            "fateforger.agents.admonisher.calendar.mcp_server_tools",
+            new_callable=AsyncMock,
+        ) as mock_mcp:
             mock_mcp.side_effect = asyncio.TimeoutError("Server timeout")
 
             with pytest.raises(

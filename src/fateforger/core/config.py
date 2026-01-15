@@ -40,6 +40,9 @@ class Settings(BaseSettings):
 
     # Notion Configuration
     notion_token: str = Field(default="")
+    notion_timeboxing_parent_page_id: str = Field(
+        default="", env="NOTION_TIMEBOXING_PARENT_PAGE_ID"
+    )
 
     # Database Configuration
     alembic_database_url: str = Field(default="sqlite:///data/admonish.db")

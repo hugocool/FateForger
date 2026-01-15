@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.agents.admonisher.calendar import (
+pytest.importorskip("autogen_agentchat")
+
+from fateforger.agents.admonisher.calendar import (
     CalendarHaunter,
     create_calendar_haunter_agent,
 )

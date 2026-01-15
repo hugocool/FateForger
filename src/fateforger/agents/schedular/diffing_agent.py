@@ -17,11 +17,10 @@ from autogen_core import CancellationToken
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.tools.mcp import mcp_server_tools
 
-from ...contracts import CalendarEvent, CalendarOp, OpType, PlanDiff
+from fateforger.contracts import CalendarEvent, CalendarOp, OpType, PlanDiff
 from ...tools_config import get_calendar_mcp_params
 
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 
 # TODO: use deepdiff for this instead
@@ -36,7 +35,8 @@ class PlannerAgentFactory:
         Returns:
             AssistantAgent configured with json_output=PlanDiff and list-events tool
         """
-        if not OPENAI_API_KEY:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
             raise RuntimeError("OPENAI_API_KEY environment variable is required")
 
         # Load MCP calendar tools
@@ -59,7 +59,7 @@ class PlannerAgentFactory:
         agent = AssistantAgent(
             name="PlannerAgent",
             model_client=OpenAIChatCompletionClient(
-                model="gpt-4o-mini", api_key=OPENAI_API_KEY
+                model="gpt-4o-mini", api_key=api_key
             ),
             tools=[list_events_tool],
             output_content_type=PlanDiff,  # Structured output into PlanDiff
@@ -132,9 +132,6 @@ NO prose, NO explanations - just the JSON.
                 content = getattr(response.chat_message, "content")
                 if isinstance(content, PlanDiff):
                     return content
-                elif isinstance(content, str):
-                    # Fallback: parse JSON string to PlanDiff
-                    return PlanDiff.model_validate_json(content)
                 else:
                     # Try to convert to PlanDiff
                     return PlanDiff.model_validate(content)

@@ -11,7 +11,7 @@ Tests the key acceptance criteria for Ticket #2:
 from datetime import datetime, timezone
 
 from agents.schedular.planner_agent import compute_plan_diff, compute_time_range
-from src.contracts import CalendarEvent, CalendarOp, EventDateTime, OpType, PlanDiff
+from fateforger.contracts import CalendarEvent, CalendarOp, EventDateTime, OpType, PlanDiff
 
 
 def test_diff_logic_validation():

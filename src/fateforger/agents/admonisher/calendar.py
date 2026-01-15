@@ -58,6 +58,9 @@ class CalendarHaunter(BaseHaunter):
                 timeout=10.0,
             )
 
+            if not settings.openai_api_key:
+                raise RuntimeError("OpenAI API key not configured")
+
             logger.info(f"📡 Loading calendar tools from {self._mcp_server_url}")
             tools = await mcp_server_tools(params)
 
@@ -69,10 +72,6 @@ class CalendarHaunter(BaseHaunter):
             logger.info(
                 f"🛠️ Loaded {len(tools)} calendar tools: {[getattr(t, 'name', str(t)[:30]) for t in tools[:3]]}..."
             )
-
-            # Get OpenAI API key from settings
-            if not settings.openai_api_key:
-                raise RuntimeError("OpenAI API key not configured")
 
             agent = AssistantAgent(
                 name="CalendarHaunter",

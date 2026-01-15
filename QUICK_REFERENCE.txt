@@ -1,0 +1,173 @@
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║         GOOGLE CALENDAR MCP QUERY - QUICK REFERENCE (Dec 10, 2025)            ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+🎯 WHERE DO YOU QUERY GOOGLE CALENDAR?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1️⃣  PRODUCTION (✅ USE THIS)
+    Location: src/fateforger/agents/admonisher/calendar.py
+    Class: CalendarHaunter
+    Status: ✅ MATURE - Production Ready
+    
+2️⃣  ARCHIVE (⚠️ REFERENCE ONLY)
+    Location: archive/productivity_bot/mcp_integration.py
+    Class: CalendarMcpClient
+    Status: ⚠️ OLD - Use CalendarHaunter instead
+    
+3️⃣  NOTEBOOKS (📚 DEVELOPMENT)
+    Location: notebooks/minimal_working_mcp.ipynb
+    Status: 📚 REFERENCE - Good for learning
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📖 MOST MATURE IMPLEMENTATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📁 File:     src/fateforger/agents/admonisher/calendar.py
+🏷️  Class:    CalendarHaunter(BaseHaunter)
+�� Transport: HTTP (StreamableHttpServerParams)
+🎯 Purpose:   AutoGen-powered calendar haunter with real Google Calendar MCP
+📊 Status:    ✅ PRODUCTION READY
+
+🛠️  KEY METHODS:
+    await haunter.get_todays_events()
+    await haunter.get_weekly_schedule()
+    await haunter.list_calendars()
+    await haunter.search_events(query)
+    await haunter.create_event(title, start_time, description)
+    await haunter.ask_calendar_question(natural_language_question)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💻 BASIC USAGE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+from fateforger.agents.admonisher.calendar import CalendarHaunter
+
+# Create haunter
+haunter = CalendarHaunter(
+    session_id=123,
+    slack=slack_client,
+    scheduler=scheduler,
+    channel="C123456"
+)
+
+# Query calendar
+response = await haunter.ask_calendar_question(
+    "What events do I have today?"
+)
+
+print(response)  # ← Natural language formatted response
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔌 ENVIRONMENT SETUP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+export MCP_CALENDAR_SERVER_URL=http://localhost:3000
+export OPENAI_API_KEY=sk-your-api-key
+
+# Start MCP server (Docker)
+docker run -it \
+  -e GOOGLE_CALENDAR_CREDENTIALS_PATH=/secrets/gcal-oauth.json \
+  -p 3000:3000 \
+  nspady/google-calendar-mcp
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📚 DOCUMENTATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📖 Main Guide:
+   → GOOGLE_CALENDAR_MCP_GUIDE.md
+   
+📋 File Inventory:
+   → CALENDAR_QUERY_LOCATIONS.md
+   
+🔄 Migration from Old Code:
+   → MIGRATION_ARCHIVE_TO_CALENDAR_HAUNTER.md
+   
+💡 Working Examples:
+   → examples/calendar_queries.py
+   
+📄 This Summary:
+   → README_CALENDAR_MCP.md
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 AVAILABLE MCP TOOLS (via CalendarHaunter)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. list-calendars      - List available calendars
+2. list-events         - List events in date range
+3. search-events       - Full-text search
+4. get-event           - Get specific event details
+5. create-event        - Create new event
+6. update-event        - Modify existing event
+7. delete-event        - Delete event
+8. get-freebusy        - Check availability
+9. get-current-time    - Get server time
+
+All tools are automatically loaded by CalendarHaunter!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚡ QUICK EXAMPLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Simple queries
+today = await haunter.get_todays_events()
+week = await haunter.get_weekly_schedule()
+cals = await haunter.list_calendars()
+search = await haunter.search_events("meeting")
+
+# Complex questions
+response = await haunter.ask_calendar_question(
+    "Do I have any free slots tomorrow afternoon longer than 1 hour?"
+)
+
+# Create event
+confirm = await haunter.create_event(
+    title="Team Sync",
+    start_time="2025-12-10 15:00",
+    description="Weekly sync"
+)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+�� RECOMMENDATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ USE CalendarHaunter FOR ALL GOOGLE CALENDAR QUERIES
+
+Why?
+  ✓ Production-ready
+  ✓ Natural language interface
+  ✓ Integrated with Slack
+  ✓ Proper error handling
+  ✓ Well-tested
+  ✓ Cleaner API
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+❓ TROUBLESHOOTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Issue: "No MCP tools loaded"
+→ Check: MCP_CALENDAR_SERVER_URL is correct and server is running
+
+Issue: "OpenAI API key not configured"
+→ Check: OPENAI_API_KEY environment variable is set
+
+Issue: "Connection timeout"
+→ Check: MCP server is accessible, network is connected
+
+Issue: "Google auth failed"
+→ Check: OAuth credentials are valid, API is enabled
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Last Updated: December 10, 2025
+Status: ✅ CalendarHaunter is the mature implementation to use
+

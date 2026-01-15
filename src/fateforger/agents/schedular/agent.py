@@ -22,6 +22,9 @@ from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
 
 from fateforger.debug.diag import with_timeout
+from fateforger.haunt.mixins import HauntAwareAgentMixin
+from fateforger.haunt.models import FollowUpPlan, HauntTone
+from fateforger.haunt.orchestrator import HauntOrchestrator, HauntTicket
 from fateforger.tools.calendar_mcp import get_calendar_mcp_tools
 
 from .models import CalendarEvent
@@ -69,9 +72,15 @@ class MyMessage:
     content: str
 
 
-class PlannerAgent(RoutedAgent):
-    def __init__(self, name: str):
-        super().__init__(name)
+class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
+    def __init__(self, name: str, *, haunt: HauntOrchestrator):
+        RoutedAgent.__init__(self, name)
+        HauntAwareAgentMixin.__init__(
+            self,
+            haunt_orchestrator=haunt,
+            haunt_agent_id=f"planner::{name}",
+            default_channel="planner-thread",
+        )
         self._delegate: AssistantAgent | None = None
 
     async def _ensure_initialized(self) -> None:
@@ -101,6 +110,13 @@ class PlannerAgent(RoutedAgent):
         self, message: TextMessage, ctx: MessageContext
     ) -> TextMessage:
         logging.debug("PlannerAgent: received user message: %s", message.content)
+
+        session_id = self._session_id(ctx)
+        await self._log_inbound(
+            session_id=session_id,
+            content=message.content,
+            core_intent=self._summarize(message.content),
+        )
         await self._ensure_initialized()
 
         # Ensure delegate is initialized
@@ -112,7 +128,48 @@ class PlannerAgent(RoutedAgent):
             self._delegate.on_messages([message], ctx.cancellation_token),
             timeout_s=20,
         )
-        return resp.chat_message
+
+        chat_message = resp.chat_message
+        follow_up = self._follow_up_plan(getattr(chat_message, "content", ""))
+
+        if isinstance(chat_message, TextMessage):
+            await self._log_outbound(
+                session_id=session_id,
+                content=chat_message.content,
+                core_intent=self._summarize(chat_message.content),
+                follow_up=follow_up,
+                tone=HauntTone.SUPPORTIVE,
+            )
+
+        return chat_message
+
+    @staticmethod
+    def _summarize(text: str) -> str:
+        clean = " ".join(text.split())
+        return clean[:160]
+
+    @staticmethod
+    def _session_id(ctx: MessageContext) -> str:
+        topic = getattr(ctx, "topic_id", None)
+        if topic:
+            return str(topic)
+        convo = getattr(ctx, "conversation_id", None)
+        if convo:
+            return str(convo)
+        return "planner-session"
+
+    @staticmethod
+    def _follow_up_plan(content: str) -> FollowUpPlan:
+        if "?" in content:
+            return FollowUpPlan(required=True, delay_minutes=10)
+        return FollowUpPlan(required=False)
+
+    async def on_haunt_follow_up(self, ticket: HauntTicket) -> None:
+        reminder = f"👻 Planner reminder: {ticket.payload.core_intent}"
+        await self.publish_message(
+            TextMessage(content=reminder, source=self._haunt_agent_id),
+            DefaultTopicId(),
+        )
 
 
 import logging

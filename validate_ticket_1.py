@@ -8,7 +8,7 @@ This test validates the acceptance criteria for Ticket #1:
 
 from datetime import datetime
 
-from src.contracts import (
+from fateforger.contracts import (
     CalendarEvent,
     CalendarOp,
     EventDateTime,

@@ -179,6 +179,11 @@ class Reminders(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
+def _no_reminders_default() -> Reminders:
+    """Provide a reminders payload that explicitly disables reminders."""
+    return Reminders(useDefault=False, overrides=[])
+
+
 class EventType(ChoiceEnum, extra_field_kwargs=["color_id"]):
     MEETING = ChoiceField(
         "M", description="stakeholder-driven appointments", color_id="6"
@@ -240,6 +245,8 @@ class CalendarEvent(
             nullable=False,
         ),
         exclude=True,
+        include_in_schema=True,
+        alias="type",  # short alias for LLM planning/timeboxing agents
     )
     # Foreign key to ScheduleDraft
     schedule_draft_id: Optional[int] = ORMField(
@@ -255,7 +262,7 @@ class CalendarEvent(
         default="primary",
         description="ID of the calendar (use 'primary' for the main calendar)",
     )
-    summary: str = ORMField(..., description="Title of the event", alias="t")
+    summary: str = ORMField(..., description="Title of the event")
     description: Optional[str] = ORMField(
         None, description="Description/notes for the event"
     )
@@ -275,24 +282,24 @@ class CalendarEvent(
         default=None,
         description="Event start time (HH:MM)",
         sa_column=Column(SQLTime),
-        alias="s",  # for JSON schema compatibility
+        alias="ST",  # for JSON schema compatibility
     )
     end_time: Optional[time] = ORMField(
         default=None,
         description="Event end time (HH:MM)",
         sa_column=Column(SQLTime),
-        alias="e",  # for JSON schema compatibility
+        alias="ET",  # for JSON schema compatibility
     )
     duration: Optional[timedelta] = ORMField(
         default=None,
         description="Duration of the event in ISO8601 format (e.g. PT30M)",
         exclude=True,
         sa_column=Column(Interval),
-        alias="d",  # for JSON schema compatibility
+        alias="DT",  # for JSON schema compatibility
     )
     anchor_prev: bool = ORMField(
         default=True,
-        alias="ap",  # short alias for LLM planning/timeboxing agents
+        alias="AP",  # short alias for LLM planning/timeboxing agents
         description=(
             "When both start and end are omitted: True → start at the previous event's end; "
             "False → end at the next event's start."
@@ -310,6 +317,7 @@ class CalendarEvent(
     timeZone: Optional[str] = ORMField(
         default="Europe/Amsterdam",
         description="IANA TZ name (e.g. Europe/Amsterdam)",
+        # include_in_schema=False
     )
     location: Optional[str] = ORMField(None)
     attendees: Optional[List[Attendee]] = ORMField(
@@ -320,7 +328,7 @@ class CalendarEvent(
     )
 
     reminders: Optional[Reminders] = ORMField(
-        default=None,  # TODO: make it so default is no reminders
+        default_factory=_no_reminders_default,
         sa_column=Column(PydanticJSON(Reminders)),
         description="Reminder settings",
     )
@@ -355,7 +363,7 @@ class CalendarEvent(
 
     @computed_field
     @property
-    def colorId(self) -> str:
+    def colorId(self) -> str:  # should not be part of the json schema
         # uses the dynamic .color_id property on EventType
         et = self.event_type
         return getattr(et, "color_id")

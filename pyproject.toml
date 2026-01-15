@@ -34,8 +34,10 @@ dependencies = [
     "isodate (>=0.7.2,<0.8.0)",
     "trustcall (>=0.0.39,<0.0.40)",
     "autogen-core (>=0.7.2)",
-    "ultimate-notion (>=0.8,<0.9)",
-    "cachetools (>=6.1.0,<7.0.0)"
+    "ultimate-notion[all] (>=0.9.6,<0.10.0)",
+    "cachetools (>=6.1.0,<7.0.0)",
+    "gradio (>=5.49.1,<6.0.0)",
+    "langchain-openai (>=1.0.0,<2.0.0)"
 ]
 
 [project.scripts]
