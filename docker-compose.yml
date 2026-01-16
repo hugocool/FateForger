@@ -30,29 +30,48 @@ x-common: &common
 x-google-calendar-mcp:
   &google_calendar_mcp # Pin the google-calendar-mcp version in a single place.
   build:
-    context: https://github.com/nspady/google-calendar-mcp.git#v2.0.1
+    context: https://github.com/nspady/google-calendar-mcp.git#v2.3.1
     dockerfile: Dockerfile # repo root
-  image: myorg/calendar-mcp:v2.0.1 # optional, for easier identification
+  image: myorg/calendar-mcp:v2.3.1 # optional, for easier identification
 
 services:
-  app:
-    container_name: admonish-app
+  setup-wizard:
+    container_name: fateforger-setup-wizard
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "fateforger.setup_wizard.app"]
+    env_file: .env
+    environment:
+      WIZARD_ENV_PATH: "/config/.env"
+      WIZARD_SECRETS_DIR: "/config/secrets"
+      WIZARD_PORT: "8080"
+    volumes:
+      - ./:/config
+      - calendar-mcp-tokens:/config/calendar-mcp-tokens:ro
+      - ticktick_config:/config/ticktick-config:ro
+    ports:
+      - "${WIZARD_HOST_PORT:-8080}:8080"
+    networks:
+      - admonish-network
+    restart: unless-stopped
+
+  slack-bot:
+    container_name: fateforger-slack-bot
     build:
       context: .
       dockerfile: Dockerfile
     env_file: .env
+    environment:
+      MCP_CALENDAR_SERVER_URL: "http://calendar-mcp:${PORT}"
     volumes:
-      - .:/app
+      - app_data:/app/data
       - poetry-cache:/root/.cache/pypoetry
-    ports:
-      - "3000:3000"
     networks:
       - admonish-network
     restart: unless-stopped
     depends_on:
       - calendar-mcp
-      - ticktick-mcp
-      - notion-mcp
 
   calendar-mcp:
     <<: *google_calendar_mcp
@@ -84,7 +103,11 @@ services:
       - admonish-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${PORT}/healthz"]
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "const http=require(''http'');const port=process.env.PORT||3000;const req=http.request({hostname:''127.0.0.1'',port,path:''/healthz'',headers:{Accept:''text/event-stream''}},res=>process.exit(res.statusCode>=200&&res.statusCode<300?0:1));req.on(''error'',()=>process.exit(1));req.end();"',
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -117,7 +140,7 @@ services:
       - admonish-network
   ticktick-mcp-auth:
     <<: *common
-    profiles: ["auth"] # ← only runs when you ask for it
+    profiles: ["ticktick", "auth"] # ← only runs when you ask for it
     container_name: ticktick-mcp-auth
     ports:
       - "8000:8000"
@@ -128,6 +151,7 @@ services:
 
   ticktick-mcp:
     <<: *common
+    profiles: ["ticktick"]
     container_name: ticktick-mcp
     ports:
       - "8002:8000"
@@ -153,6 +177,7 @@ services:
   #     retries: 3
 
   notion-mcp:
+    profiles: ["notion"]
     build:
       context: https://github.com/makenotion/notion-mcp-server.git#main
     command:

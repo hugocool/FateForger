@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <h2>Google Calendar MCP</h2>
+    <p class="muted">This writes <code>secrets/gcal-oauth.json</code>, which is mounted into the <code>calendar-mcp</code> container.</p>
+
+    {% if gcal_present %}
+      <p class="pill ok">OAuth JSON present: <code>{{ gcal_path }}</code></p>
+    {% else %}
+      <p class="pill warn">Missing OAuth JSON: <code>{{ gcal_path }}</code></p>
+    {% endif %}
+
+    <div class="hr"></div>
+    <p class="muted">
+      Upstream docs:
+      <a href="https://github.com/nspady/google-calendar-mcp" target="_blank" rel="noreferrer">google-calendar-mcp</a>
+      •
+      <a href="https://github.com/nspady/google-calendar-mcp/blob/main/docs/authentication.md" target="_blank" rel="noreferrer">Authentication</a>
+      •
+      <a href="https://github.com/nspady/google-calendar-mcp/blob/main/docs/docker.md" target="_blank" rel="noreferrer">Docker</a>
+    </p>
+
+    <div class="hr"></div>
+    <form method="post" action="/setup/google" enctype="multipart/form-data">
+      <label>Upload OAuth credentials JSON (Desktop app type)</label>
+      <input name="gcal_oauth_json" type="file" accept="application/json" />
+      <div class="actions">
+        <button class="btn" type="submit">Upload</button>
+        <a class="btn" href="/">Back</a>
+      </div>
+    </form>
+
+    <div class="hr"></div>
+    <p class="muted">After upload, (re)start the stack:</p>
+    <pre>docker compose up -d --build calendar-mcp</pre>
+  </div>
+{% endblock %}

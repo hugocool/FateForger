@@ -92,3 +92,13 @@ def check_code_contains(file_path: str, search_text: str, description: str) -> b
 - Mock Slack/Scheduler dependencies
 - AsyncMock for async operations
 - UUID-based session tracking
+
+## Production Setup Wizard Service
+
+Provide a minimal FastAPI + Jinja2 admin wizard (`setup-wizard` compose service) that writes secrets into host-mounted `.env` and `secrets/` and runs health checks. MCP checks must use AutoGen MCP tool discovery (`mcp_server_tools(StreamableHttpServerParams)`) rather than manual MCP HTTP calls. Wizard is protected by `WIZARD_ADMIN_TOKEN` + `WIZARD_SESSION_SECRET`.
+
+### Examples
+
+- src/fateforger/setup_wizard/app.py
+- docker-compose.yml service `setup-wizard`
+- docs/reference/setup/setup_wizard.md

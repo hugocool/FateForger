@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <h2>Keys & env</h2>
+    <p class="muted">Writes values into <code>{{ env_path }}</code>. Existing comments and unrelated keys are preserved.</p>
+
+    {% if saved %}
+      <p class="pill ok">Saved: {{ updates|join(', ') }}</p>
+      {% if not changed %}
+        <p class="muted">No changes detected (values already matched).</p>
+      {% endif %}
+    {% endif %}
+
+    <form method="post" action="/setup/env">
+      <label>SLACK_BOT_TOKEN</label>
+      <input name="slack_bot_token" type="password" placeholder="xoxb-..." />
+
+      <label>SLACK_APP_TOKEN (Socket Mode)</label>
+      <input name="slack_app_token" type="password" placeholder="xapp-..." />
+
+      <label>SLACK_SIGNING_SECRET</label>
+      <input name="slack_signing_secret" type="password" placeholder="..." />
+
+      <label>OPENAI_API_KEY</label>
+      <input name="openai_api_key" type="password" placeholder="sk-..." />
+
+      <label>OPENAI_MODEL</label>
+      <input name="openai_model" type="text" value="{{ env.get('OPENAI_MODEL', 'gpt-4o-mini') }}" />
+
+      <div class="hr"></div>
+
+      <label>NOTION_TOKEN</label>
+      <input name="notion_token" type="password" placeholder="ntn_..." />
+
+      <label>MCP_HTTP_AUTH_TOKEN (Notion MCP bearer)</label>
+      <input name="mcp_http_auth_token" type="password" placeholder="long-random-secret" />
+
+      <div class="actions">
+        <button class="btn" type="submit">Save</button>
+        <a class="btn" href="/">Back</a>
+      </div>
+    </form>
+
+    <form method="post" action="/setup/notion/generate-auth-token" style="margin-top: 10px;">
+      <button class="btn" type="submit">Generate Notion MCP auth token</button>
+    </form>
+
+    <div class="hr"></div>
+    <p class="muted">Current keys present (safe view):</p>
+    <pre>{% for k, v in env.items() %}{% if k in ['SLACK_BOT_TOKEN','SLACK_APP_TOKEN','SLACK_SIGNING_SECRET','OPENAI_API_KEY','NOTION_TOKEN','MCP_HTTP_AUTH_TOKEN'] %}{{ k }}={{ 'SET' if v else '' }}
+{% endif %}{% endfor %}</pre>
+  </div>
+{% endblock %}

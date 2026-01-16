@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <h2>Overview</h2>
+    <div class="row">
+      <span class="pill">env: <code>{{ env_path }}</code></span>
+      <span class="pill">secrets: <code>{{ secrets_dir }}</code></span>
+      {% if gcal_present %}
+        <span class="pill ok">gcal-oauth.json present</span>
+      {% else %}
+        <span class="pill warn">gcal-oauth.json missing</span>
+      {% endif %}
+      <a class="btn" href="/diagnostics.json">Download diagnostics.json</a>
+    </div>
+    <div class="hr"></div>
+    <p class="muted">This page checks connectivity using AutoGen MCP tool discovery (not raw HTTP MCP calls). If keys change, restart containers for them to take effect.</p>
+  </div>
+
+  <div class="grid" style="margin-top: 12px;">
+    {% for c in checks %}
+      <div class="card">
+        <h2>{{ c.name }}</h2>
+        {% if c.ok %}
+          <span class="pill ok">OK</span>
+        {% else %}
+          <span class="pill bad">FAILED</span>
+        {% endif %}
+
+        <div class="hr"></div>
+        <div class="muted">
+          {% for k, v in c.details.items() %}
+            <div><code>{{ k }}</code>: {{ v }}</div>
+          {% endfor %}
+        </div>
+
+        {% if c.error %}
+          <div class="hr"></div>
+          <pre>{{ c.error }}</pre>
+          <p class="muted">Tip: for container logs run <code>docker compose logs --tail 200 {{ 'calendar-mcp' if c.name == 'calendar-mcp' else c.name }}</code></p>
+        {% endif %}
+
+        <div class="actions">
+          {% if c.name == 'slack' %}
+            <a class="btn" href="/setup/env">Fix Slack keys</a>
+            <a class="btn" href="https://github.com/slackapi/bolt-python" target="_blank" rel="noreferrer">Slack Bolt docs</a>
+          {% elif c.name == 'calendar-mcp' %}
+            <a class="btn" href="/setup/google">Fix Google OAuth file</a>
+            <a class="btn" href="https://github.com/nspady/google-calendar-mcp" target="_blank" rel="noreferrer">google-calendar-mcp docs</a>
+          {% elif c.name == 'notion-mcp' %}
+            <a class="btn" href="/setup/env">Fix Notion tokens</a>
+            <a class="btn" href="https://github.com/makenotion/notion-mcp-server" target="_blank" rel="noreferrer">notion-mcp-server docs</a>
+          {% elif c.name == 'ticktick-mcp' %}
+            <a class="btn" href="/setup/ticktick">Fix TickTick keys</a>
+            <a class="btn" href="https://github.com/JakobGruen/ticktick-mcp" target="_blank" rel="noreferrer">ticktick-mcp docs</a>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <div class="card" style="margin-top: 12px;">
+    <h2>Next actions</h2>
+    <pre>docker compose up -d --build
+# If you enabled optional services:
+# docker compose --profile notion --profile ticktick up -d --build</pre>
+    <p class="muted">Restart is required after changing <code>.env</code> or uploading new secrets.</p>
+  </div>
+{% endblock %}

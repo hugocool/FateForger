@@ -105,10 +105,15 @@ class ReceptionistAgent(HauntAwareAgentMixin, RoutedAgent):
                 tone=HauntTone.ENCOURAGING,
             )
         else:
+            target_name = (
+                chat_message.target
+                if isinstance(chat_message.target, str)
+                else getattr(chat_message.target, "name", str(chat_message.target))
+            )
             await self._log_outbound(
                 session_id=session_id,
-                content=f"handoff:{chat_message.target.name}",
-                core_intent=f"Hand off to {chat_message.target.name}",
+                content=f"handoff:{target_name}",
+                core_intent=f"Hand off to {target_name}",
                 follow_up=FollowUpPlan(required=False),
                 tone=HauntTone.NEUTRAL,
             )

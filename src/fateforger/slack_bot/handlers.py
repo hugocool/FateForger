@@ -2,20 +2,19 @@ from __future__ import annotations
 
 from typing import Callable
 
+from autogen_agentchat.messages import TextMessage
+from autogen_core import AgentId
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
-
-from autogen_core import AgentId
-from autogen_agentchat.messages import TextMessage
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from fateforger.core.config import settings
 from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
 from fateforger.agents.timeboxing.preferences import (
     ConstraintStatus,
     ConstraintStore,
     ensure_constraint_schema,
 )
+from fateforger.core.config import settings
 from fateforger.slack_bot.constraint_review import (
     CONSTRAINT_REVIEW_ACTION_ID,
     CONSTRAINT_REVIEW_VIEW_CALLBACK_ID,
@@ -111,6 +110,7 @@ async def route_slack_event(
     event: dict,
     bot_user_id: str | None,
     say: Callable,
+    client: AsyncWebClient,
 ) -> None:
     channel = event["channel"]
     user = event.get("user") or event.get("bot_id") or "unknown"
@@ -132,6 +132,11 @@ async def route_slack_event(
         ts=ts,
     )
 
+    # Visual feedback: indicate processing
+    processing_msg = await say(
+        text=":hourglass_flowing_sand: Processing...", thread_ts=thread_ts or ts
+    )
+
     result = await runtime.send_message(msg, recipient=AgentId(agent_type, key=key))
     chat_message = getattr(result, "chat_message", result)
     handoff_target = _extract_handoff_target(chat_message)
@@ -142,6 +147,13 @@ async def route_slack_event(
             handoff_target = None
 
     if handoff_target:
+        # Update feedback for handoff
+        await client.chat_update(
+            channel=processing_msg["channel"],
+            ts=processing_msg["ts"],
+            text=f":left_right_arrow: Handing off to *{handoff_target}*...",
+        )
+
         handoff_msg = _build_agent_message(
             agent_type=handoff_target,
             cleaned_text=cleaned_text,
@@ -155,7 +167,14 @@ async def route_slack_event(
         )
 
     payload = _slack_payload_from_result(result)
-    await say(thread_ts=thread_ts or ts, **payload)
+
+    # Update the processing message with the final response
+    await client.chat_update(
+        channel=processing_msg["channel"],
+        ts=processing_msg["ts"],
+        text=payload.get("text", ""),
+        blocks=payload.get("blocks"),
+    )
 
 
 def register_handlers(
@@ -332,6 +351,7 @@ def register_handlers(
             event=body["event"],
             bot_user_id=context.get("bot_user_id"),
             say=say,
+            client=client,
         )
 
     # --- Direct messages (IM) ---
@@ -350,6 +370,7 @@ def register_handlers(
             event=event,
             bot_user_id=context.get("bot_user_id"),
             say=say,
+            client=client,
         )
 
 

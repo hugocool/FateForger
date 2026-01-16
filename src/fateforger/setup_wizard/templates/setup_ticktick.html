@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <h2>TickTick MCP</h2>
+    <p class="muted">TickTick uses OAuth. You paste <code>TICKTICK_CLIENT_ID</code> and <code>TICKTICK_CLIENT_SECRET</code>, then run the auth flow once.</p>
+
+    <p class="muted">
+      Upstream docs:
+      <a href="https://github.com/JakobGruen/ticktick-mcp" target="_blank" rel="noreferrer">ticktick-mcp</a>
+      •
+      <a href="https://developer.ticktick.com/manage" target="_blank" rel="noreferrer">TickTick Developer Center</a>
+    </p>
+
+    {% if saved %}
+      <p class="pill ok">Saved: {{ updates|join(', ') }}</p>
+    {% endif %}
+
+    <div class="hr"></div>
+
+    <form method="post" action="/setup/ticktick">
+      <label>TICKTICK_CLIENT_ID</label>
+      <input name="ticktick_client_id" type="password" placeholder="..." />
+
+      <label>TICKTICK_CLIENT_SECRET</label>
+      <input name="ticktick_client_secret" type="password" placeholder="..." />
+
+      <div class="actions">
+        <button class="btn" type="submit">Save</button>
+        <a class="btn" href="/">Back</a>
+      </div>
+    </form>
+
+    <div class="hr"></div>
+
+    <p class="muted">Then run the interactive auth container (redirect URI must be <code>http://localhost:8000/callback</code> according to upstream docs):</p>
+    <pre>docker compose --profile ticktick --profile auth run --rm ticktick-mcp-auth</pre>
+
+    <p class="muted">After the auth flow completes, start the service:</p>
+    <pre>docker compose --profile ticktick up -d --build ticktick-mcp</pre>
+  </div>
+{% endblock %}

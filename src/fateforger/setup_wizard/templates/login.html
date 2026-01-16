@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <h2>Login</h2>
+    <p class="muted">This wizard can edit deployment secrets. Use your admin token.</p>
+
+    {% if not admin_token_configured %}
+      <p class="pill bad">WIZARD_ADMIN_TOKEN is not set</p>
+      <p class="muted">Set <code>WIZARD_ADMIN_TOKEN</code> in <code>.env</code> and restart the wizard.</p>
+    {% endif %}
+
+    {% if not session_secret_configured %}
+      <p class="pill warn">WIZARD_SESSION_SECRET is not set</p>
+      <p class="muted">For production, set a long random <code>WIZARD_SESSION_SECRET</code> in <code>.env</code>.</p>
+    {% endif %}
+
+    {% if error %}
+      <p class="pill bad">{{ error }}</p>
+    {% endif %}
+
+    <form method="post" action="/login">
+      <label>Admin token</label>
+      <input name="token" type="password" autocomplete="current-password" placeholder="Paste WIZARD_ADMIN_TOKEN" />
+      <div class="actions">
+        <button class="btn" type="submit">Login</button>
+      </div>
+    </form>
+  </div>
+{% endblock %}

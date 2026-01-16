@@ -37,7 +37,8 @@ dependencies = [
     "ultimate-notion[all] (>=0.9.6,<0.10.0)",
     "cachetools (>=6.1.0,<7.0.0)",
     "gradio (>=5.49.1,<6.0.0)",
-    "langchain-openai (>=1.0.0,<2.0.0)"
+    "langchain-openai (>=1.0.0,<2.0.0)",
+    "python-multipart (>=0.0.21,<0.0.22)"
 ]
 
 [project.scripts]

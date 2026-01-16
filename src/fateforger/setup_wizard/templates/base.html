@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title if title else "FateForger Setup" }}</title>
+    <style>
+      :root {
+        --bg: #0b1020;
+        --panel: #121a33;
+        --muted: #9aa6c0;
+        --text: #e7ecff;
+        --ok: #2dd4bf;
+        --bad: #fb7185;
+        --warn: #fbbf24;
+        --border: rgba(231, 236, 255, 0.10);
+      }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+        background: radial-gradient(80rem 60rem at 10% 10%, rgba(45,212,191,0.12), transparent 50%),
+                    radial-gradient(70rem 60rem at 90% 30%, rgba(99,102,241,0.12), transparent 45%),
+                    var(--bg);
+        color: var(--text);
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 18px 22px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(18,26,51,0.6);
+        backdrop-filter: blur(8px);
+      }
+      header h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
+      a { color: inherit; }
+      .container { max-width: 980px; margin: 0 auto; padding: 22px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+      .card {
+        background: rgba(18,26,51,0.75);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px;
+      }
+      .card h2 { margin: 0 0 8px; font-size: 14px; }
+      .muted { color: var(--muted); font-size: 13px; line-height: 1.35; }
+      .pill { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); }
+      .ok { color: var(--ok); border-color: rgba(45,212,191,0.35); }
+      .bad { color: var(--bad); border-color: rgba(251,113,133,0.45); }
+      .warn { color: var(--warn); border-color: rgba(251,191,36,0.45); }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      .btn {
+        display: inline-block;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: rgba(231,236,255,0.06);
+        text-decoration: none;
+        font-size: 13px;
+      }
+      .btn:hover { background: rgba(231,236,255,0.10); }
+      input, textarea {
+        width: 100%;
+        background: rgba(11,16,32,0.75);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+        color: var(--text);
+        font-size: 13px;
+        box-sizing: border-box;
+      }
+      label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 6px; }
+      .actions { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: rgba(11,16,32,0.75);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+        font-size: 12px;
+        color: rgba(231,236,255,0.92);
+      }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+      .hr { height: 1px; background: var(--border); margin: 14px 0; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>FateForger — Setup & Diagnostics</h1>
+      <div class="row">
+        {% if request.session.get('wizard_ok') %}
+        <a class="btn" href="/">Dashboard</a>
+        <a class="btn" href="/setup/env">Keys</a>
+        <a class="btn" href="/setup/google">Google</a>
+        <a class="btn" href="/setup/ticktick">TickTick</a>
+        <form method="post" action="/logout" style="display:inline">
+          <button class="btn" type="submit">Logout</button>
+        </form>
+        {% endif %}
+      </div>
+    </header>
+
+    <div class="container">
+      {% block content %}{% endblock %}
+    </div>
+  </body>
+</html>
