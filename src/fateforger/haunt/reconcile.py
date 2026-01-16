@@ -28,6 +28,9 @@ class CalendarClient(Protocol):
     ) -> list[dict]:
         ...
 
+    async def get_event(self, *, calendar_id: str, event_id: str) -> dict | None:
+        ...
+
 
 @dataclass(frozen=True)
 class PlanningRuleConfig:
@@ -81,6 +84,21 @@ class McpCalendarClient:
         params = StreamableHttpServerParams(url=server_url, timeout=timeout)
         self._workbench = McpWorkbench(params)
 
+    async def get_event(self, *, calendar_id: str, event_id: str) -> dict | None:
+        args = {"calendarId": calendar_id, "eventId": event_id}
+        try:
+            result = await self._workbench.call_tool("get-event", arguments=args)
+        except Exception:
+            # Older MCP server versions may not expose get-event.
+            return None
+        payload = _extract_tool_payload(result)
+        event = _normalize_event(payload)
+        if not event:
+            return None
+        if (event.get("status") or "").lower() == "cancelled":
+            return None
+        return event
+
     async def list_events(
         self,
         *,
@@ -119,9 +137,19 @@ class PlanningSessionRule:
         scope: str,
         user_id: str | None = None,
         channel_id: str | None = None,
+        planning_event_id: str | None = None,
     ) -> list[DesiredJob]:
         start = now.astimezone(timezone.utc)
         end = start + self._config.horizon
+
+        if planning_event_id:
+            anchor = await self._calendar_client.get_event(
+                calendar_id=self._config.calendar_id,
+                event_id=planning_event_id,
+            )
+            if anchor:
+                return []
+
         events = await self._calendar_client.list_events(
             calendar_id=self._config.calendar_id,
             time_min=start.isoformat(),
@@ -212,17 +240,29 @@ class PlanningReconciler:
         self._dispatcher = dispatcher or self._log_dispatch
         self._rule = rule or PlanningSessionRule(calendar_client=calendar_client)
 
+    @property
+    def calendar_client(self) -> CalendarClient:
+        return self._calendar_client
+
+    def set_dispatcher(self, dispatcher: Callable[[PlanningReminder], Awaitable[None]]) -> None:
+        self._dispatcher = dispatcher
+
     async def reconcile_missing_planning(
         self,
         *,
         scope: str,
         user_id: str | None = None,
         channel_id: str | None = None,
+        planning_event_id: str | None = None,
         now: datetime | None = None,
     ) -> list[DesiredJob]:
         now_dt = now or datetime.now(timezone.utc)
         desired = await self._rule.evaluate(
-            now=now_dt, scope=scope, user_id=user_id, channel_id=channel_id
+            now=now_dt,
+            scope=scope,
+            user_id=user_id,
+            channel_id=channel_id,
+            planning_event_id=planning_event_id,
         )
         prefix = f"rule:{self._rule.rule_id}:{scope}:"
         current_ids = {
@@ -280,6 +320,19 @@ def _normalize_events(payload: Any) -> list[dict]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
     return []
+
+
+def _normalize_event(payload: Any) -> dict | None:
+    if isinstance(payload, dict):
+        if "id" in payload or "summary" in payload:
+            return payload
+        item = payload.get("item")
+        if isinstance(item, dict):
+            return item
+        event = payload.get("event")
+        if isinstance(event, dict):
+            return event
+    return None
 
 
 __all__ = [

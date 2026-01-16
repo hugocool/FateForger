@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <h2>Slack</h2>
+    <p class="muted">Configures Slack app tokens and validates them via <code>auth.test</code> (and a brief Socket Mode connect if <code>xapp-</code> is provided).</p>
+
+    {% if saved %}
+      <p class="pill ok">Saved: {{ updates|join(', ') }}</p>
+    {% endif %}
+
+    {% if check %}
+      <div class="hr"></div>
+      {% if check.ok %}
+        <span class="pill ok">OK</span>
+      {% else %}
+        <span class="pill bad">FAILED</span>
+      {% endif %}
+      <div class="muted" style="margin-top: 8px;">
+        {% for k, v in check.details.items() %}
+          <div><code>{{ k }}</code>: {{ v }}</div>
+        {% endfor %}
+      </div>
+      {% if check.error %}
+        <div class="hr"></div>
+        <pre>{{ check.error }}</pre>
+      {% endif %}
+    {% endif %}
+
+    <div class="hr"></div>
+
+    <form method="post" action="/setup/slack">
+      <label>SLACK_BOT_TOKEN</label>
+      <input name="slack_bot_token" type="password" placeholder="xoxb-..." />
+
+      <label>SLACK_APP_TOKEN (Socket Mode)</label>
+      <input name="slack_app_token" type="password" placeholder="xapp-..." />
+
+      <label>SLACK_SIGNING_SECRET</label>
+      <input name="slack_signing_secret" type="password" placeholder="..." />
+
+      <div class="actions">
+        <button class="btn" type="submit">Save</button>
+        <a class="btn" href="/">Back</a>
+        <a class="btn" href="https://api.slack.com/apps" target="_blank" rel="noreferrer">Slack app settings</a>
+        <a class="btn" href="https://github.com/slackapi/bolt-python" target="_blank" rel="noreferrer">Slack Bolt docs</a>
+      </div>
+    </form>
+
+    <div class="hr"></div>
+    <p class="muted">After saving, restart the bot:</p>
+    <pre>docker compose up -d --build slack-bot</pre>
+  </div>
+{% endblock %}

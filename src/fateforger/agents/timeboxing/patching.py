@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 from typing import Iterable, List
 
-from langchain_openai import ChatOpenAI
 from trustcall import create_extractor
+
+from fateforger.llm import build_langchain_chat_openai
 
 from .actions import TimeboxAction
 from .preferences import Constraint
@@ -14,8 +15,14 @@ from .timebox import Timebox
 
 
 class TimeboxPatcher:
-    def __init__(self, *, model: str, temperature: float = 0.3) -> None:
-        llm = ChatOpenAI(model=model, temperature=temperature)
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        temperature: float = 0.3,
+        agent_type: str = "timebox_patcher",
+    ) -> None:
+        llm = build_langchain_chat_openai(agent_type, model=model, temperature=temperature)
         self._extractor = create_extractor(
             llm,
             tools=[Timebox],

@@ -102,3 +102,24 @@ Provide a minimal FastAPI + Jinja2 admin wizard (`setup-wizard` compose service)
 - src/fateforger/setup_wizard/app.py
 - docker-compose.yml service `setup-wizard`
 - docs/reference/setup/setup_wizard.md
+
+
+## TRMNL Dashboard Design Patterns
+
+For TRMNL e-ink dashboards, use 1-bit color only (#000000 or #FFFFFF). No animations or grayscale. Layouts should be fixed to 800x480 resolution. Data is provided via data.json and rendered using Shopify Liquid.
+
+### Examples
+
+- src/trmnl_frontend/template.liquid
+- src/trmnl_frontend/data.json
+
+
+## Backend Pre-computation for Dumb Templates
+
+All complex logic (time quantization, progress calculations, data merging) happens in Python backend. Templates (Liquid, Jinja2) only render pre-computed values. This prevents logic duplication, ensures testability, and keeps templates simple.
+
+### Examples
+
+- src/trmnl_frontend/template.liquid uses only {{ }} and {% for %}; no math
+- Backend computes block_dots array as ['filled','current','empty'] for direct rendering
+- Remaining time pre-calculated as range string '40–45m' not computed in template

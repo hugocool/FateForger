@@ -6,9 +6,8 @@ import logging
 from typing import Any, Dict
 
 from autogen_agentchat.agents import AssistantAgent
-from autogen_ext.models.openai import OpenAIChatCompletionClient
 
-from fateforger.core.config import settings
+from fateforger.llm import build_autogen_chat_client
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +27,7 @@ def build_calendar_submitter() -> AssistantAgent:
     return AssistantAgent(
         name="CalendarSubmitter",
         system_message=system_prompt,
-        model_client=OpenAIChatCompletionClient(
-            model="gpt-4o-mini", api_key=settings.openai_api_key
-        ),
+        model_client=build_autogen_chat_client("calendar_submitter"),
         reflect_on_tool_use=False,
         max_tool_iterations=1,
     )

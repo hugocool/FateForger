@@ -13,8 +13,28 @@
       <a class="btn" href="/diagnostics.json">Download diagnostics.json</a>
     </div>
     <div class="hr"></div>
-    <p class="muted">This page checks connectivity using AutoGen MCP tool discovery (not raw HTTP MCP calls). If keys change, restart containers for them to take effect.</p>
+      <p class="muted">This dashboard validates Slack + all MCP servers using AutoGen MCP tool discovery (not raw HTTP MCP calls). Optional services (Notion/TickTick/Toggl) may show “Not running” until you enable their compose profiles.</p>
   </div>
+
+    <div class="grid" style="margin-top: 12px;">
+      <div class="card">
+        <h2>Accounts & tokens (safe)</h2>
+        <div class="muted">
+          <div><code>calendar-mcp-tokens</code>: {{ calendar_tokens_summary }}</div>
+          <div><code>ticktick-config</code>: {{ ticktick_tokens_summary }}</div>
+        </div>
+        <div class="hr"></div>
+        <p class="muted">These are file-based hints (no secrets), useful to confirm which accounts have been authenticated.</p>
+      </div>
+
+      <div class="card">
+        <h2>Quick actions</h2>
+        <pre>docker compose up -d --build
+        # Optional services:
+        # docker compose --profile notion --profile ticktick --profile toggl up -d --build</pre>
+        <p class="muted">Restart is required after changing <code>.env</code> or uploading new secrets.</p>
+      </div>
+    </div>
 
   <div class="grid" style="margin-top: 12px;">
     {% for c in checks %}
@@ -41,17 +61,20 @@
 
         <div class="actions">
           {% if c.name == 'slack' %}
-            <a class="btn" href="/setup/env">Fix Slack keys</a>
+            <a class="btn" href="/setup/slack">Setup Slack</a>
             <a class="btn" href="https://github.com/slackapi/bolt-python" target="_blank" rel="noreferrer">Slack Bolt docs</a>
           {% elif c.name == 'calendar-mcp' %}
             <a class="btn" href="/setup/google">Fix Google OAuth file</a>
             <a class="btn" href="https://github.com/nspady/google-calendar-mcp" target="_blank" rel="noreferrer">google-calendar-mcp docs</a>
           {% elif c.name == 'notion-mcp' %}
-            <a class="btn" href="/setup/env">Fix Notion tokens</a>
+            <a class="btn" href="/setup/notion">Setup Notion</a>
             <a class="btn" href="https://github.com/makenotion/notion-mcp-server" target="_blank" rel="noreferrer">notion-mcp-server docs</a>
           {% elif c.name == 'ticktick-mcp' %}
             <a class="btn" href="/setup/ticktick">Fix TickTick keys</a>
             <a class="btn" href="https://github.com/JakobGruen/ticktick-mcp" target="_blank" rel="noreferrer">ticktick-mcp docs</a>
+          {% elif c.name == 'toggl-mcp' %}
+            <a class="btn" href="/setup/toggl">Setup Toggl</a>
+            <a class="btn" href="https://github.com/verygoodplugins/mcp-toggl" target="_blank" rel="noreferrer">mcp-toggl docs</a>
           {% endif %}
         </div>
       </div>
@@ -62,7 +85,7 @@
     <h2>Next actions</h2>
     <pre>docker compose up -d --build
 # If you enabled optional services:
-# docker compose --profile notion --profile ticktick up -d --build</pre>
+# docker compose --profile notion --profile ticktick --profile toggl up -d --build</pre>
     <p class="muted">Restart is required after changing <code>.env</code> or uploading new secrets.</p>
   </div>
 {% endblock %}

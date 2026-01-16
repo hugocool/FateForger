@@ -26,6 +26,8 @@ x-common: &common
   volumes:
     - ticktick_config:/root/.config/ticktick-mcp
     - .env:/app/.env
+  networks:
+    - admonish-network
 
 x-google-calendar-mcp:
   &google_calendar_mcp # Pin the google-calendar-mcp version in a single place.
@@ -156,6 +158,8 @@ services:
     ports:
       - "8002:8000"
     restart: unless-stopped
+    networks:
+      - admonish-network
 
   # notion-mcp:
   #   <<: *common-env
@@ -197,4 +201,32 @@ services:
       NOTION_TOKEN: ${NOTION_TOKEN}
     ports:
       - "${MCP_HTTP_PORT}:${MCP_HTTP_PORT}"
+    restart: unless-stopped
+    networks:
+      - admonish-network
+
+  toggl-mcp:
+    profiles: ["toggl"]
+    image: supercorp/supergateway:3.4.3
+    container_name: toggl-mcp
+    env_file: .env
+    command:
+      [
+        "--stdio",
+        "npx -y @verygoodplugins/mcp-toggl@1.0.0",
+        "--outputTransport",
+        "streamableHttp",
+        "--port",
+        "8000",
+        "--streamableHttpPath",
+        "/mcp",
+        "--healthEndpoint",
+        "/healthz",
+        "--logLevel",
+        "info",
+      ]
+    ports:
+      - "${TOGGL_MCP_HOST_PORT:-8004}:8000"
+    networks:
+      - admonish-network
     restart: unless-stopped

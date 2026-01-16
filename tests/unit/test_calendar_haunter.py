@@ -327,10 +327,21 @@ class TestCreateCalendarHaunterAgent:
     @patch.dict(os.environ, {"OPENAI_API_KEY": ""})
     async def test_create_calendar_haunter_agent_no_api_key(self):
         """Test creation fails without API key."""
-        with pytest.raises(
-            RuntimeError, match="OPENAI_API_KEY environment variable not set"
-        ):
-            await create_calendar_haunter_agent()
+        from fateforger.core.config import settings
+
+        prior_openai = settings.openai_api_key
+        prior_openrouter = settings.openrouter_api_key
+        settings.openai_api_key = ""
+        settings.openrouter_api_key = ""
+        try:
+            with pytest.raises(
+                RuntimeError,
+                match="No LLM API key configured\\. Set OPENAI_API_KEY or OPENROUTER_API_KEY\\.",
+            ):
+                await create_calendar_haunter_agent()
+        finally:
+            settings.openai_api_key = prior_openai
+            settings.openrouter_api_key = prior_openrouter
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
     @patch(

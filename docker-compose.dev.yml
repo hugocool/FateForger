@@ -1,0 +1,13 @@
+version: "3.9"
+
+services:
+  slack-bot:
+    volumes:
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
+    environment:
+      - PYTHONPATH=/app
+    # Uses watchfiles (installed via uvicorn[standard]) to auto-reload on code changes
+    command: watchfiles "python -m fateforger.slack_bot.bot" /app/src

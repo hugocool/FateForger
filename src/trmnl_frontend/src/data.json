@@ -1,0 +1,65 @@
+{
+  "meta": {
+    "today_label": "Tue 16 Jan",
+    "timezone": "Europe/Amsterdam",
+    "refresh_minutes": 5,
+    "now_window": "10:45–10:50",
+    "snapshot_local": "10:45",
+    "next_refresh_local": "10:50"
+  },
+  "day": {
+    "start_local": "09:00",
+    "end_local": "17:00",
+    "total_slices": 96,
+    "current_slice": 22,
+    "progress_pct": 22.9
+  },
+  "now": {
+    "event_type": "DW",
+    "block_title": "Product Strategy",
+    "subtitle": "One Thing: Finalize MVP Spec",
+    "starts_local": "09:00",
+    "ends_local": "10:30",
+    "remaining_range_label": "40–45m",
+    "bucket_hint": "Coarse time: you are in the 10:45–10:50 slice (device refreshes every 5m).",
+    "block_dots": ["filled","filled","filled","filled","filled","filled","filled","filled","filled","current","empty","empty","empty","empty","empty","empty","empty","empty"]
+  },
+  "next": {
+    "event_type": "M",
+    "title": "Standup",
+    "subtitle": "Team sync",
+    "starts_local": "10:30"
+  },
+  "metrics": {
+    "deepwork": {
+      "tracked_min": 75,
+      "planned_min": 210,
+      "progress_pct": 35.7,
+      "label_right": "75m / 210m"
+    },
+    "tasks": {
+      "done": 3,
+      "total": 6,
+      "progress_pct": 50,
+      "label_right": "3/6 DONE"
+    }
+  },
+  "pipeline": {
+    "source_label": "TickTick",
+    "items": [
+      { "title": "Finalize MVP Spec doc", "status": "next", "tags": ["ONETHING"], "est_min": 60, "emphasis": 3 },
+      { "title": "Review PR #402", "status": "next", "tags": ["DW"], "est_min": 30, "emphasis": 2 },
+      { "title": "Email vendor re: invoice", "status": "later", "tags": ["SW"], "est_min": 5, "emphasis": 1 },
+      { "title": "Update standup notes", "status": "done", "tags": ["M"], "est_min": 10, "emphasis": 1 }
+    ]
+  },
+  "microsteps": {
+    "title": "MICRO-STEPS (ONE THING)",
+    "items": [
+      { "title": "Draft section 1 (Intent)", "status": "done" },
+      { "title": "Draft section 2 (Data Model)", "status": "done" },
+      { "title": "Draft section 3 (Views)", "status": "doing" },
+      { "title": "Tighten & format", "status": "next" }
+    ]
+  }
+}

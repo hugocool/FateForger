@@ -9,14 +9,12 @@ from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.base import Handoff as HandoffBase
 from autogen_agentchat.messages import HandoffMessage, TextMessage
 from autogen_core import DefaultTopicId, MessageContext, RoutedAgent, message_handler
-from autogen_ext.models.openai import OpenAIChatCompletionClient
 
-from fateforger.core.config import settings
 from fateforger.debug.diag import with_timeout
 from fateforger.haunt.mixins import HauntAwareAgentMixin
 from fateforger.haunt.models import FollowUpPlan, HauntTone
 from fateforger.haunt.orchestrator import HauntOrchestrator, HauntTicket
-
+from fateforger.llm import build_autogen_chat_client
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +30,8 @@ select a specialist, ask a brief clarification question.
 Routing guidelines:
 - If the user wants a concrete schedule for a day (timeboxing, time blocks, plan tomorrow/today with specific blocks), hand off to `timeboxing_agent`.
 - If the user wants to inspect or edit calendar events (what's on my calendar, create/move/delete an event, find a slot), hand off to `planner_agent`.
+- If the user wants a review / retro / plan the week / reflect and prioritize, hand off to `revisor_agent`.
+- If the user wants to capture / triage / prioritize tasks, hand off to `tasks_agent`.
 """.strip()
 
 
@@ -58,9 +58,7 @@ class ReceptionistAgent(HauntAwareAgentMixin, RoutedAgent):
         self._assistant = AssistantAgent(
             name=f"{name}_assistant",
             system_message=RECEPTIONIST_PROMPT,
-            model_client=OpenAIChatCompletionClient(
-                model="gpt-4o-mini", api_key=settings.openai_api_key
-            ),
+            model_client=build_autogen_chat_client("receptionist_agent"),
             handoffs=allowed_handoffs,
             reflect_on_tool_use=False,
             max_tool_iterations=3,

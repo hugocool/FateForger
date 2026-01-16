@@ -18,7 +18,6 @@ from autogen_core import (
     default_subscription,
     message_handler,
 )
-from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
 
 from fateforger.debug.diag import with_timeout
@@ -26,9 +25,9 @@ from fateforger.haunt.mixins import HauntAwareAgentMixin
 from fateforger.haunt.models import FollowUpPlan, HauntTone
 from fateforger.haunt.orchestrator import HauntOrchestrator, HauntTicket
 from fateforger.tools.calendar_mcp import get_calendar_mcp_tools
+from fateforger.llm import build_autogen_chat_client
 
 from .models import CalendarEvent
-from ...core.config import settings
 
 # THe first planner simply handles the connection to the calendar and single event CRUD.
 # So when the user sends a CalendarEvent, it will create the event in the calendar.
@@ -57,10 +56,11 @@ from ...core.config import settings
 # TODO: transplant the logix from the planning.py to there
 prompt = (
     f"You are PlannerAgent with Calendar MCP access. Today is {dt.date.today()}.\n"
-    "Use the calendar tools for create/update/delete/list.\n"
+    "Use the calendar tools for create/update/delete/list/get.\n"
     "Ask clarifying questions when needed."
     "\nWhen you call a tool, do not describe the plan. "
     "Call the tool, wait for its result, then answer the user directly."
+    "\nIf the user provides an explicit `eventId`, you MUST preserve it and use it for get/update operations."
 )
 
 
@@ -97,9 +97,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         self._delegate = AssistantAgent(
             self.id.type,
             system_message=prompt,
-            model_client=OpenAIChatCompletionClient(
-                model="gpt-4o", api_key=settings.openai_api_key
-            ),
+            model_client=build_autogen_chat_client("planner_agent"),
             tools=tools,
             reflect_on_tool_use=True,
             max_tool_iterations=5,

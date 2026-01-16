@@ -8,6 +8,7 @@ This folder contains the **Setup & Diagnostics wizard** (FastAPI) that provides 
 - Google Calendar MCP (OAuth JSON upload + connectivity checks)
 - Notion MCP (NOTION_TOKEN + HTTP bearer auth token)
 - TickTick MCP (client id/secret + guided OAuth flow)
+- Toggl MCP (API token + workspace visibility)
 
 The wizard is meant to be reachable at the VM's **main address** and act as a single place to verify whether the stack is correctly configured.
 
@@ -34,4 +35,5 @@ Treat the wizard as an **admin console**. Do not expose it publicly without addi
 - Google Calendar MCP: https://github.com/nspady/google-calendar-mcp
 - Notion MCP server: https://github.com/makenotion/notion-mcp-server
 - TickTick MCP: https://github.com/JakobGruen/ticktick-mcp
+- Toggl MCP server: https://github.com/verygoodplugins/mcp-toggl
 - Slack Bolt Python: https://github.com/slackapi/bolt-python

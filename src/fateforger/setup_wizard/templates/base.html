@@ -35,6 +35,38 @@
       header h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
       a { color: inherit; }
       .container { max-width: 980px; margin: 0 auto; padding: 22px; }
+      .layout { max-width: 1180px; margin: 0 auto; padding: 22px; display: grid; grid-template-columns: 280px 1fr; gap: 14px; }
+      .sidebar {
+        position: sticky;
+        top: 18px;
+        align-self: start;
+        background: rgba(18,26,51,0.75);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px;
+      }
+      .sidebar h2 { margin: 0 0 10px; font-size: 13px; color: var(--muted); font-weight: 600; letter-spacing: 0.2px; }
+      .nav { display: flex; flex-direction: column; gap: 6px; }
+      .nav a {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 10px;
+        border-radius: 12px;
+        text-decoration: none;
+        border: 1px solid transparent;
+        background: rgba(231,236,255,0.04);
+      }
+      .nav a:hover { background: rgba(231,236,255,0.07); }
+      .nav a.active { border-color: rgba(99,102,241,0.55); background: rgba(99,102,241,0.14); }
+      .nav .left { display: flex; flex-direction: column; gap: 2px; }
+      .nav .title { font-size: 13px; }
+      .nav .sub { font-size: 12px; color: var(--muted); }
+      .dot { width: 10px; height: 10px; border-radius: 999px; border: 1px solid var(--border); background: rgba(231,236,255,0.06); }
+      .dot.ok { background: rgba(45,212,191,0.85); border-color: rgba(45,212,191,0.55); }
+      .dot.bad { background: rgba(251,113,133,0.85); border-color: rgba(251,113,133,0.55); }
+      .dot.warn { background: rgba(251,191,36,0.85); border-color: rgba(251,191,36,0.55); }
       .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
       .card {
         background: rgba(18,26,51,0.75);
@@ -83,6 +115,10 @@
       }
       code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
       .hr { height: 1px; background: var(--border); margin: 14px 0; }
+      @media (max-width: 920px) {
+        .layout { grid-template-columns: 1fr; }
+        .sidebar { position: static; }
+      }
     </style>
   </head>
   <body>
@@ -93,6 +129,7 @@
         <a class="btn" href="/">Dashboard</a>
         <a class="btn" href="/setup/env">Keys</a>
         <a class="btn" href="/setup/google">Google</a>
+        <a class="btn" href="/setup/toggl">Toggl</a>
         <a class="btn" href="/setup/ticktick">TickTick</a>
         <form method="post" action="/logout" style="display:inline">
           <button class="btn" type="submit">Logout</button>
@@ -101,8 +138,40 @@
       </div>
     </header>
 
-    <div class="container">
-      {% block content %}{% endblock %}
-    </div>
+    {% set nav_integrations = integrations|default([]) %}
+    {% if request.session.get('wizard_ok') %}
+      <div class="layout">
+        <aside class="sidebar">
+          <h2>Integrations</h2>
+          <div class="nav">
+            {% for i in nav_integrations %}
+              <a href="{{ i.href }}" class="{% if i.id == active_integration %}active{% endif %}">
+                <div class="left">
+                  <div class="title">{{ i.label }}</div>
+                  <div class="sub">{{ i.subtitle }}</div>
+                </div>
+                <div class="dot {{ i.status_class }}" title="{{ i.status_text }}"></div>
+              </a>
+            {% endfor %}
+          </div>
+          <div class="hr"></div>
+          <div class="muted">If you change keys or secrets, restart containers.</div>
+          <div class="actions" style="margin-top: 10px;">
+            <a class="btn" href="/diagnostics.json">diagnostics.json</a>
+          </div>
+        </aside>
+        <main>
+    {% else %}
+      <div class="container">
+    {% endif %}
+
+    {% block content %}{% endblock %}
+
+    {% if request.session.get('wizard_ok') %}
+        </main>
+      </div>
+    {% else %}
+      </div>
+    {% endif %}
   </body>
 </html>

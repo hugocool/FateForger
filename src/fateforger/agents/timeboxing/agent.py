@@ -16,7 +16,6 @@ from autogen_core import (
     RoutedAgent,
     message_handler,
 )
-from autogen_ext.models.openai import OpenAIChatCompletionClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from fateforger.core.config import settings
@@ -24,6 +23,7 @@ from fateforger.debug.diag import with_timeout
 from fateforger.agents.timeboxing.notion_constraint_extractor import (
     NotionConstraintExtractor,
 )
+from fateforger.llm import build_autogen_chat_client
 from fateforger.tools.constraint_mcp import get_constraint_mcp_tools
 
 from .messages import (
@@ -87,15 +87,13 @@ class TimeboxingFlowAgent(RoutedAgent):
     def __init__(self, name: str) -> None:
         super().__init__(description=name)
         self._sessions: Dict[str, Session] = {}
-        self._model_client = OpenAIChatCompletionClient(
-            model="gpt-4o-mini",
-            api_key=settings.openai_api_key,
-            parallel_tool_calls=False,
+        self._model_client = build_autogen_chat_client(
+            "timeboxing_agent", parallel_tool_calls=False
         )
         self._constraint_store: ConstraintStore | None = None
         self._constraint_engine = None
         self._constraint_agent = self._build_constraint_agent()
-        self._timebox_patcher = TimeboxPatcher(model="gpt-4o-mini")
+        self._timebox_patcher = TimeboxPatcher()
         self._constraint_mcp_tools: list | None = None
         self._notion_extractor: NotionConstraintExtractor | None = None
         self._constraint_extractor_tool = None

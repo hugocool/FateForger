@@ -40,6 +40,16 @@ class DummySay:
 
     async def __call__(self, **payload):
         self.calls.append(payload)
+        return {"channel": "C1", "ts": f"p{len(self.calls)}"}
+
+
+class DummyClient:
+    def __init__(self):
+        self.updates = []
+
+    async def chat_update(self, **payload):
+        self.updates.append(payload)
+        return {"ok": True}
 
 
 @pytest.mark.asyncio
@@ -49,6 +59,7 @@ async def test_slack_handoff_sets_focus_and_forwards():
         ttl_seconds=3600, allowed_agents=["receptionist_agent", "planner_agent"]
     )
     say = DummySay()
+    client = DummyClient()
 
     event = {"channel": "C1", "user": "U1", "text": "hello", "ts": "1"}
     await route_slack_event(
@@ -58,10 +69,12 @@ async def test_slack_handoff_sets_focus_and_forwards():
         event=event,
         bot_user_id=None,
         say=say,
+        client=client,
     )
 
     assert runtime.calls == ["receptionist_agent", "planner_agent"]
-    assert say.calls[0]["text"] == "Planner response"
+    assert say.calls[0]["text"] == ":hourglass_flowing_sand: *receptionist_agent* is thinking..."
+    assert client.updates[-1]["text"] == "*planner_agent*\nPlanner response"
 
     key = FocusManager.thread_key("C1", None, "1")
     binding = focus.get_focus(key)
@@ -82,6 +95,7 @@ async def test_slack_handoff_sets_focus_and_forwards():
         event=event_followup,
         bot_user_id=None,
         say=say,
+        client=client,
     )
 
     assert runtime.calls[-1] == "planner_agent"

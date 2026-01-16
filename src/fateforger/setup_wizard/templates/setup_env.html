@@ -27,6 +27,74 @@
       <label>OPENAI_MODEL</label>
       <input name="openai_model" type="text" value="{{ env.get('OPENAI_MODEL', 'gpt-4o-mini') }}" />
 
+      <label>OPENAI_BASE_URL (optional)</label>
+      <input name="openai_base_url" type="text" value="{{ env.get('OPENAI_BASE_URL', '') }}" placeholder="https://api.openai.com/v1" />
+
+      <div class="hr"></div>
+
+      <label>LLM_PROVIDER</label>
+      <select name="llm_provider">
+        {% set provider = env.get('LLM_PROVIDER', 'openai') %}
+        <option value="openai" {% if provider == 'openai' %}selected{% endif %}>openai</option>
+        <option value="openrouter" {% if provider == 'openrouter' %}selected{% endif %}>openrouter</option>
+      </select>
+
+      <label>OPENROUTER_API_KEY</label>
+      <input name="openrouter_api_key" type="password" placeholder="or-..." />
+
+      <label>OPENROUTER_BASE_URL</label>
+      <input name="openrouter_base_url" type="text" value="{{ env.get('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1') }}" />
+
+      <label>OPENROUTER_HTTP_REFERER (optional)</label>
+      <input name="openrouter_http_referer" type="text" value="{{ env.get('OPENROUTER_HTTP_REFERER', '') }}" placeholder="http://localhost:3000" />
+
+      <label>OPENROUTER_TITLE (optional)</label>
+      <input name="openrouter_title" type="text" value="{{ env.get('OPENROUTER_TITLE', 'FateForger') }}" />
+
+      <label>OPENROUTER_SEND_REASONING_EFFORT_HEADER</label>
+      <input name="openrouter_send_reasoning_effort_header" type="text" value="{{ env.get('OPENROUTER_SEND_REASONING_EFFORT_HEADER', 'false') }}" placeholder="false" />
+
+      <label>OPENROUTER_REASONING_EFFORT_HEADER</label>
+      <input name="openrouter_reasoning_effort_header" type="text" value="{{ env.get('OPENROUTER_REASONING_EFFORT_HEADER', 'X-Reasoning-Effort') }}" />
+
+      <div class="hr"></div>
+
+      <h3>Agent models</h3>
+      <p class="muted">Optional per-agent overrides. Use provider-specific model IDs (e.g., OpenRouter: <code>google/gemini-2.0-flash-001</code>).</p>
+
+      <label>LLM_MODEL_RECEPTIONIST</label>
+      <input name="llm_model_receptionist" type="text" value="{{ env.get('LLM_MODEL_RECEPTIONIST', '') }}" />
+
+      <label>LLM_MODEL_ADMONISHER</label>
+      <input name="llm_model_admonisher" type="text" value="{{ env.get('LLM_MODEL_ADMONISHER', '') }}" />
+
+      <label>LLM_MODEL_TIMEBOXING</label>
+      <input name="llm_model_timeboxing" type="text" value="{{ env.get('LLM_MODEL_TIMEBOXING', '') }}" />
+
+      <label>LLM_MODEL_TIMEBOX_PATCHER</label>
+      <input name="llm_model_timebox_patcher" type="text" value="{{ env.get('LLM_MODEL_TIMEBOX_PATCHER', '') }}" />
+
+      <label>LLM_MODEL_PLANNER</label>
+      <input name="llm_model_planner" type="text" value="{{ env.get('LLM_MODEL_PLANNER', '') }}" />
+
+      <label>LLM_MODEL_REVISOR</label>
+      <input name="llm_model_revisor" type="text" value="{{ env.get('LLM_MODEL_REVISOR', '') }}" />
+
+      <label>LLM_MODEL_TASKS</label>
+      <input name="llm_model_tasks" type="text" value="{{ env.get('LLM_MODEL_TASKS', '') }}" />
+
+      <h3>Reasoning effort</h3>
+      <p class="muted">OpenRouter-only. Sent as request body <code>reasoning.effort</code> (optionally also as a header if enabled). Values: <code>low</code>, <code>medium</code>, <code>high</code>.</p>
+
+      <label>LLM_REASONING_EFFORT_TIMEBOXING</label>
+      <input name="llm_reasoning_effort_timeboxing" type="text" value="{{ env.get('LLM_REASONING_EFFORT_TIMEBOXING', '') }}" placeholder="high" />
+
+      <label>LLM_REASONING_EFFORT_REVISOR</label>
+      <input name="llm_reasoning_effort_revisor" type="text" value="{{ env.get('LLM_REASONING_EFFORT_REVISOR', '') }}" placeholder="medium" />
+
+      <label>LLM_REASONING_EFFORT_TASKS</label>
+      <input name="llm_reasoning_effort_tasks" type="text" value="{{ env.get('LLM_REASONING_EFFORT_TASKS', '') }}" placeholder="medium" />
+
       <div class="hr"></div>
 
       <label>NOTION_TOKEN</label>
@@ -47,7 +115,7 @@
 
     <div class="hr"></div>
     <p class="muted">Current keys present (safe view):</p>
-    <pre>{% for k, v in env.items() %}{% if k in ['SLACK_BOT_TOKEN','SLACK_APP_TOKEN','SLACK_SIGNING_SECRET','OPENAI_API_KEY','NOTION_TOKEN','MCP_HTTP_AUTH_TOKEN'] %}{{ k }}={{ 'SET' if v else '' }}
+    <pre>{% for k, v in env.items() %}{% if k in ['SLACK_BOT_TOKEN','SLACK_APP_TOKEN','SLACK_SIGNING_SECRET','OPENAI_API_KEY','OPENROUTER_API_KEY','NOTION_TOKEN','MCP_HTTP_AUTH_TOKEN'] %}{{ k }}={{ 'SET' if v else '' }}
 {% endif %}{% endfor %}</pre>
   </div>
 {% endblock %}

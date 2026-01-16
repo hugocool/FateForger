@@ -3,6 +3,7 @@ import os
 from dataclasses import dataclass
 from typing import Callable
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from autogen_core import (
     AgentId,
     DefaultTopicId,
@@ -13,27 +14,36 @@ from autogen_core import (
     message_handler,
 )
 from autogen_core.tool_agent import ToolAgent
-
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from fateforger.agents.receptionist import HandoffBase, ReceptionistAgent
+from fateforger.agents.revisor.agent import RevisorAgent
 
 # Import agents
 from fateforger.agents.schedular.agent import PlannerAgent
-from fateforger.agents.receptionist import ReceptionistAgent, HandoffBase
+from fateforger.agents.tasks import TasksAgent
 from fateforger.agents.timeboxing.agent import TimeboxingFlowAgent
 from fateforger.core.config import settings
 from fateforger.haunt.agents import HauntingAgent, UserChannelAgent
-from fateforger.haunt.messages import UserFacingMessage
 from fateforger.haunt.intervention import HauntingInterventionHandler
+from fateforger.haunt.messages import UserFacingMessage
 from fateforger.haunt.orchestrator import HauntOrchestrator
+from fateforger.haunt.planning_guardian import PlanningGuardian
+from fateforger.haunt.planning_store import (
+    SqlAlchemyPlanningAnchorStore,
+    ensure_planning_anchor_schema,
+)
+from fateforger.haunt.reconcile import (
+    McpCalendarClient,
+    PlanningReconciler,
+    PlanningReminder,
+)
 from fateforger.haunt.service import HauntingService
 from fateforger.haunt.settings_store import (
     SqlAlchemyAdmonishmentSettingsStore,
     ensure_admonishment_settings_schema,
 )
 from fateforger.haunt.tools import build_haunting_tools
-from fateforger.haunt.reconcile import McpCalendarClient, PlanningReconciler, PlanningReminder
 
 USER_CHANNEL_AGENT_TYPE = "user_channel"
 HAUNTING_AGENT_TYPE = "haunting_agent"
@@ -52,12 +62,15 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
 
     settings_store = None
     settings_engine = None
+    planning_anchor_store = None
     if settings.database_url:
         async_url = _coerce_async_database_url(settings.database_url)
         settings_engine = create_async_engine(async_url)
         await ensure_admonishment_settings_schema(settings_engine)
         sessionmaker = async_sessionmaker(settings_engine, expire_on_commit=False)
         settings_store = SqlAlchemyAdmonishmentSettingsStore(sessionmaker)
+        await ensure_planning_anchor_schema(settings_engine)
+        planning_anchor_store = SqlAlchemyPlanningAnchorStore(sessionmaker)
 
     haunting_service = HauntingService(scheduler, settings_store=settings_store)
     intervention = HauntingInterventionHandler(
@@ -132,6 +145,16 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
         "timeboxing_agent",
         lambda: TimeboxingFlowAgent("timeboxing_agent"),
     )
+    await RevisorAgent.register(
+        runtime,
+        "revisor_agent",
+        lambda: RevisorAgent("revisor_agent"),
+    )
+    await TasksAgent.register(
+        runtime,
+        "tasks_agent",
+        lambda: TasksAgent("tasks_agent"),
+    )
     await ReceptionistAgent.register(
         runtime,
         "receptionist_agent",
@@ -146,6 +169,14 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
                     target="timeboxing_agent",
                     description="Timeboxing day planner that proposes a concrete schedule and iterates on it.",
                 ),
+                HandoffBase(
+                    target="revisor_agent",
+                    description="Strategic review agent for weekly reviews, long-term project management and system optimization.",
+                ),
+                HandoffBase(
+                    target="tasks_agent",
+                    description="Task triage and execution agent.",
+                ),
             ],
             haunt=haunt,
         ),
@@ -156,6 +187,16 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     setattr(runtime, "haunting_tools", haunting_tools)
     setattr(runtime, "haunting_settings_engine", settings_engine)
     setattr(runtime, "planning_reconciler", reconciler)
+    setattr(runtime, "planning_anchor_store", planning_anchor_store)
+    planning_guardian = None
+    if planning_anchor_store and reconciler:
+        planning_guardian = PlanningGuardian(
+            scheduler,
+            anchor_store=planning_anchor_store,
+            reconciler=reconciler,
+        )
+        planning_guardian.schedule_daily()
+    setattr(runtime, "planning_guardian", planning_guardian)
     return runtime
 
 
@@ -241,6 +282,21 @@ async def initialize_runtime() -> SingleThreadedAgentRuntime:
 # )
 
 # # Start the runtime and send a direct message to the checker.
+# runtime.start()
+# await runtime.send_message(Message(10), AgentId("checker", "default"))
+# await runtime.stop_when_idle()
+# runtime.start()
+# await runtime.send_message(Message(10), AgentId("checker", "default"))
+# await runtime.stop_when_idle()
+# runtime.start()
+# await runtime.send_message(Message(10), AgentId("checker", "default"))
+# await runtime.stop_when_idle()
+# runtime.start()
+# await runtime.send_message(Message(10), AgentId("checker", "default"))
+# await runtime.stop_when_idle()
+# runtime.start()
+# await runtime.send_message(Message(10), AgentId("checker", "default"))
+# await runtime.stop_when_idle()
 # runtime.start()
 # await runtime.send_message(Message(10), AgentId("checker", "default"))
 # await runtime.stop_when_idle()

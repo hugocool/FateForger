@@ -1,0 +1,11 @@
+---
+# TRMNL local dev server configuration
+# See: https://github.com/usetrmnl/trmnlp
+
+# Auto-reload when files change
+watch:
+  - src
+  - .trmnlp.yml
+
+# Time zone for trmnl.user context
+time_zone: Europe/Amsterdam

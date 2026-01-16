@@ -38,6 +38,22 @@ def _json_ok(path: Path) -> tuple[bool, str | None]:
         return False, _safe_error(e)
 
 
+def _looks_like_not_running(error: str | None) -> bool:
+    if not error:
+        return False
+    lowered = error.lower()
+    return any(
+        needle in lowered
+        for needle in [
+            "connecterror",
+            "connection refused",
+            "name or service not known",
+            "nodename nor servname provided",
+            "timeout",
+        ]
+    )
+
+
 async def _probe_mcp_tools(
     *,
     name: str,
@@ -125,6 +141,7 @@ async def check_notion_mcp() -> CheckResult:
             "notion_token_present": bool(notion_token),
             "notion_token_format_ok": notion_token_ok,
             "auth_token_present": bool(auth),
+            "service_reachable": not _looks_like_not_running(err),
         },
         error=(
             err
@@ -178,6 +195,89 @@ async def check_ticktick_mcp() -> CheckResult:
             "tool_count": len(tools),
             "tool_names_sample": [n for n in tool_names if n][:8],
             "invocation": invocation,
+            "service_reachable": not _looks_like_not_running(err),
+        },
+        error=err,
+    )
+
+
+async def check_toggl_mcp() -> CheckResult:
+    url = os.getenv("WIZARD_TOGGL_MCP_URL") or "http://toggl-mcp:8000"
+
+    tools, resolved, err = await _probe_mcp_tools(
+        name="toggl-mcp", url=url, timeout_s=6.0, try_mcp_suffix=True
+    )
+
+    toggl_api_key_present = bool(
+        (os.getenv("TOGGL_API_KEY") or "").strip()
+        or (os.getenv("TOGGL_API_TOKEN") or "").strip()
+        or (os.getenv("TOGGL_TOKEN") or "").strip()
+    )
+
+    invocation: dict[str, Any] = {"attempted": False}
+    account: dict[str, Any] | None = None
+    workspaces: list[dict[str, Any]] | None = None
+    try:
+        check_auth = next(
+            (t for t in tools if getattr(t, "name", "") == "toggl_check_auth"), None
+        )
+        if check_auth:
+            invocation["attempted"] = True
+            res = await check_auth.run_json({}, CancellationToken())
+            invocation["ok"] = True
+
+            parsed: Any = res
+            if isinstance(res, dict) and isinstance(res.get("content"), list):
+                text = next(
+                    (
+                        item.get("text")
+                        for item in res["content"]
+                        if isinstance(item, dict) and item.get("type") == "text"
+                    ),
+                    None,
+                )
+                if isinstance(text, str):
+                    try:
+                        parsed = json.loads(text)
+                    except Exception:
+                        parsed = None
+            elif isinstance(res, str):
+                try:
+                    parsed = json.loads(res)
+                except Exception:
+                    parsed = None
+
+            if isinstance(parsed, dict):
+                account = parsed.get("user")
+                workspaces = parsed.get("workspaces")
+            else:
+                invocation["result_type"] = type(res).__name__
+        else:
+            invocation["ok"] = False
+            invocation["reason"] = "toggl_check_auth tool not exposed"
+    except Exception as e:
+        invocation["ok"] = False
+        invocation["error"] = _safe_error(e)
+
+    tool_names = [getattr(t, "name", None) for t in tools]
+    ok = (
+        bool(tools)
+        and err is None
+        and (not invocation.get("attempted") or invocation.get("ok") is True)
+    )
+
+    return CheckResult(
+        ok=ok,
+        name="toggl-mcp",
+        details={
+            "url": resolved,
+            "tool_count": len(tools),
+            "tool_names_sample": [n for n in tool_names if n][:8],
+            "invocation": invocation,
+            "toggl_api_key_present": toggl_api_key_present,
+            "account": account,
+            "workspaces": workspaces,
+            "service_reachable": not _looks_like_not_running(err),
         },
         error=err,
     )
@@ -251,6 +351,7 @@ async def run_all_checks() -> list[CheckResult]:
         check_calendar_mcp(),
         check_notion_mcp(),
         check_ticktick_mcp(),
+        check_toggl_mcp(),
         return_exceptions=False,
     )
     return list(results)
@@ -264,7 +365,20 @@ def config_snapshot() -> dict[str, Any]:
         "MCP_CALENDAR_SERVER_URL",
         "MCP_HTTP_PORT",
         "SLACK_SOCKET_MODE",
+        "LLM_PROVIDER",
         "OPENAI_MODEL",
+        "OPENAI_BASE_URL",
+        "OPENROUTER_BASE_URL",
+        "OPENROUTER_HTTP_REFERER",
+        "OPENROUTER_TITLE",
+        "OPENROUTER_SEND_REASONING_EFFORT_HEADER",
+        "LLM_MODEL_RECEPTIONIST",
+        "LLM_MODEL_TIMEBOXING",
+        "LLM_MODEL_REVISOR",
+        "LLM_MODEL_TASKS",
+        "LLM_REASONING_EFFORT_TIMEBOXING",
+        "LLM_REASONING_EFFORT_REVISOR",
+        "LLM_REASONING_EFFORT_TASKS",
         "ENVIRONMENT",
         "LOG_LEVEL",
     ]
@@ -273,8 +387,10 @@ def config_snapshot() -> dict[str, Any]:
         "SLACK_APP_TOKEN",
         "SLACK_SIGNING_SECRET",
         "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
         "NOTION_TOKEN",
         "MCP_HTTP_AUTH_TOKEN",
+        "TOGGL_API_KEY",
     ]
 
     return {

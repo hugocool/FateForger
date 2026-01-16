@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <h2>Notion MCP</h2>
+    <p class="muted">Notion MCP uses your <code>NOTION_TOKEN</code> (internal integration token: <code>ntn_...</code>) plus an HTTP bearer token (<code>MCP_HTTP_AUTH_TOKEN</code>) for the MCP server itself.</p>
+
+    <p class="muted">
+      Upstream docs:
+      <a href="https://github.com/makenotion/notion-mcp-server" target="_blank" rel="noreferrer">notion-mcp-server</a>
+    </p>
+
+    {% if saved %}
+      <p class="pill ok">Saved: {{ updates|join(', ') }}</p>
+    {% endif %}
+
+    {% if check %}
+      <div class="hr"></div>
+      {% if check.ok %}
+        <span class="pill ok">OK</span>
+      {% else %}
+        <span class="pill bad">FAILED</span>
+      {% endif %}
+
+      <div class="muted" style="margin-top: 8px;">
+        {% for k, v in check.details.items() %}
+          <div><code>{{ k }}</code>: {{ v }}</div>
+        {% endfor %}
+      </div>
+
+      {% if check.error %}
+        <div class="hr"></div>
+        <pre>{{ check.error }}</pre>
+        <p class="muted">Tip: Notion MCP is an optional compose profile. Start it with:</p>
+        <pre>docker compose --profile notion up -d --build notion-mcp</pre>
+      {% endif %}
+    {% endif %}
+
+    <div class="hr"></div>
+
+    <form method="post" action="/setup/notion">
+      <label>NOTION_TOKEN</label>
+      <input name="notion_token" type="password" placeholder="ntn_..." />
+
+      <label>MCP_HTTP_AUTH_TOKEN (Notion MCP bearer)</label>
+      <input name="mcp_http_auth_token" type="password" placeholder="long-random-secret" />
+
+      <div class="actions">
+        <button class="btn" type="submit">Save</button>
+        <a class="btn" href="/">Back</a>
+      </div>
+    </form>
+
+    <form method="post" action="/setup/notion/generate-auth-token" style="margin-top: 10px;">
+      <button class="btn" type="submit">Generate Notion MCP auth token</button>
+    </form>
+
+    <div class="hr"></div>
+    <p class="muted">After saving, start/restart Notion MCP:</p>
+    <pre>docker compose --profile notion up -d --build notion-mcp</pre>
+  </div>
+{% endblock %}

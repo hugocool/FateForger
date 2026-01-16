@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/trmnl/timebox-mvp.schema.json",
+  "title": "TRMNL Timebox MVP Payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["meta", "day", "now", "next", "metrics", "pipeline", "microsteps"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["today_label", "timezone", "refresh_minutes", "now_window", "snapshot_local", "next_refresh_local"],
+      "properties": {
+        "today_label": { "type": "string", "description": "e.g. Tue 16 Jan" },
+        "timezone": { "type": "string", "description": "IANA tz, e.g. Europe/Amsterdam" },
+        "refresh_minutes": { "type": "integer", "minimum": 1, "maximum": 60 },
+        "now_window": { "type": "string", "description": "Bucket window label, e.g. 10:45–10:50" },
+        "snapshot_local": { "type": "string", "description": "Timestamp label at bucket start, e.g. 10:45" },
+        "next_refresh_local": { "type": "string", "description": "Timestamp label, e.g. 10:50" }
+      }
+    },
+
+    "day": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_local", "end_local", "total_slices", "current_slice", "progress_pct"],
+      "properties": {
+        "start_local": { "type": "string", "description": "e.g. 09:00" },
+        "end_local": { "type": "string", "description": "e.g. 17:00" },
+        "total_slices": { "type": "integer", "minimum": 1, "description": "5-min slices in day window; 8h => 96" },
+        "current_slice": { "type": "integer", "minimum": 1 },
+        "progress_pct": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    },
+
+    "now": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_type",
+        "block_title",
+        "subtitle",
+        "starts_local",
+        "ends_local",
+        "remaining_range_label",
+        "bucket_hint",
+        "block_dots"
+      ],
+      "properties": {
+        "event_type": {
+          "type": "string",
+          "enum": ["DW", "M", "SW", "H", "R", "BU", "PR", "BG"],
+          "description": "Matches your timeboxing taxonomy"
+        },
+        "block_title": { "type": "string", "description": "Large headline (category or focus)" },
+        "subtitle": { "type": "string", "description": "One Thing / task summary line" },
+        "starts_local": { "type": "string", "description": "e.g. 09:00" },
+        "ends_local": { "type": "string", "description": "e.g. 10:30" },
+        "remaining_range_label": {
+          "type": "string",
+          "description": "Range to avoid 'stuck minute hand', e.g. 45–50m"
+        },
+        "bucket_hint": {
+          "type": "string",
+          "description": "Explain the coarse time model, e.g. 'You are in the 10:45–10:50 slice (refresh every 5m)'"
+        },
+        "block_dots": {
+          "type": "array",
+          "description": "One dot per 5-min slice in THIS block (manageable).",
+          "items": { "type": "string", "enum": ["filled", "current", "empty"] },
+          "minItems": 1,
+          "maxItems": 60
+        }
+      }
+    },
+
+    "next": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_type", "title", "starts_local", "subtitle"],
+      "properties": {
+        "event_type": { "type": "string", "enum": ["DW", "M", "SW", "H", "R", "BU", "PR", "BG"] },
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "starts_local": { "type": "string" }
+      }
+    },
+
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deepwork", "tasks"],
+      "properties": {
+        "deepwork": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tracked_min", "planned_min", "progress_pct", "label_right"],
+          "properties": {
+            "tracked_min": { "type": "integer", "minimum": 0 },
+            "planned_min": { "type": "integer", "minimum": 0 },
+            "progress_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+            "label_right": { "type": "string", "description": "e.g. 75m / 210m" }
+          }
+        },
+        "tasks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["done", "total", "progress_pct", "label_right"],
+          "properties": {
+            "done": { "type": "integer", "minimum": 0 },
+            "total": { "type": "integer", "minimum": 0 },
+            "progress_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+            "label_right": { "type": "string", "description": "e.g. 3/6 DONE" }
+          }
+        }
+      }
+    },
+
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_label", "items"],
+      "properties": {
+        "source_label": { "type": "string", "description": "e.g. TickTick | Notion | Mixed" },
+        "items": {
+          "type": "array",
+          "maxItems": 25,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["title", "status", "tags", "est_min", "emphasis"],
+            "properties": {
+              "title": { "type": "string" },
+              "status": { "type": "string", "enum": ["done", "next", "later"] },
+              "tags": {
+                "type": "array",
+                "maxItems": 3,
+                "items": { "type": "string" }
+              },
+              "est_min": { "type": "integer", "minimum": 0 },
+              "emphasis": { "type": "integer", "minimum": 1, "maximum": 3, "description": "Maps to item--emphasis-*" }
+            }
+          }
+        }
+      }
+    },
+
+    "microsteps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "items"],
+      "properties": {
+        "title": { "type": "string", "description": "e.g. MICRO-STEPS (ONE THING)" },
+        "items": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["title", "status"],
+            "properties": {
+              "title": { "type": "string" },
+              "status": { "type": "string", "enum": ["done", "doing", "next"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

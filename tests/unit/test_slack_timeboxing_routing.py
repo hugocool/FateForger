@@ -37,16 +37,27 @@ class _FakeRuntime:
         return _FakeResult(TextMessage(content="ok", source="bot"))
 
 
+class _FakeClient:
+    def __init__(self):
+        self.updates = []
+
+    async def chat_update(self, **payload):
+        self.updates.append(payload)
+        return {"ok": True}
+
+
 @pytest.mark.asyncio
 async def test_routes_root_message_to_timeboxing_start_when_focused():
     focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
     focus.set_focus("C1:111", "timeboxing_agent", by_user="U1")
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
+    client = _FakeClient()
 
     said = {}
 
     async def say(**kwargs):
         said.update(kwargs)
+        return {"channel": "C1", "ts": "p1"}
 
     await route_slack_event(
         runtime=runtime,
@@ -55,6 +66,7 @@ async def test_routes_root_message_to_timeboxing_start_when_focused():
         event={"channel": "C1", "user": "U1", "text": "plan tomorrow", "ts": "111"},
         bot_user_id=None,
         say=say,
+        client=client,
     )
 
     assert len(runtime.calls) == 1
@@ -75,11 +87,13 @@ async def test_handoff_from_receptionist_resends_as_timeboxing_start():
             _FakeResult(TextMessage(content="ok", source="bot")),
         ]
     )
+    client = _FakeClient()
 
     said = {}
 
     async def say(**kwargs):
         said.update(kwargs)
+        return {"channel": "C1", "ts": "p2"}
 
     await route_slack_event(
         runtime=runtime,
@@ -88,6 +102,7 @@ async def test_handoff_from_receptionist_resends_as_timeboxing_start():
         event={"channel": "C1", "user": "U1", "text": "timebox tomorrow", "ts": "222"},
         bot_user_id=None,
         say=say,
+        client=client,
     )
 
     assert len(runtime.calls) == 2
@@ -107,9 +122,10 @@ async def test_routes_thread_reply_to_timeboxing_user_reply():
     focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
     focus.set_focus("C1:root", "timeboxing_agent", by_user="U1")
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
+    client = _FakeClient()
 
     async def say(**kwargs):
-        return None
+        return {"channel": "C1", "ts": "p3"}
 
     await route_slack_event(
         runtime=runtime,
@@ -124,10 +140,10 @@ async def test_routes_thread_reply_to_timeboxing_user_reply():
         },
         bot_user_id=None,
         say=say,
+        client=client,
     )
 
     assert len(runtime.calls) == 1
     msg, _ = runtime.calls[0]
     assert isinstance(msg, TimeboxingUserReply)
     assert msg.thread_ts == "root"
-

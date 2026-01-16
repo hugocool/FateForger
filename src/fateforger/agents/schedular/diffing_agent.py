@@ -5,7 +5,6 @@ Implements Ticket #2: Uses json_output=PlanDiff for structured output and integr
 list-events MCP tool for diff-against-calendar logic.
 """
 
-import os
 import json
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
@@ -14,10 +13,11 @@ from dotenv import load_dotenv
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
 from autogen_core import CancellationToken
-from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.tools.mcp import mcp_server_tools
 
 from fateforger.contracts import CalendarEvent, CalendarOp, OpType, PlanDiff
+from fateforger.core.config import settings
+from fateforger.llm import build_autogen_chat_client
 from ...tools_config import get_calendar_mcp_params
 
 load_dotenv()
@@ -35,9 +35,10 @@ class PlannerAgentFactory:
         Returns:
             AssistantAgent configured with json_output=PlanDiff and list-events tool
         """
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY environment variable is required")
+        if not (settings.openrouter_api_key or settings.openai_api_key):
+            raise RuntimeError(
+                "No LLM API key configured. Set OPENAI_API_KEY or OPENROUTER_API_KEY."
+            )
 
         # Load MCP calendar tools
         params = get_calendar_mcp_params(timeout=10.0)
@@ -58,9 +59,7 @@ class PlannerAgentFactory:
         # Create agent with structured output
         agent = AssistantAgent(
             name="PlannerAgent",
-            model_client=OpenAIChatCompletionClient(
-                model="gpt-4o-mini", api_key=api_key
-            ),
+            model_client=build_autogen_chat_client("planner_agent"),
             tools=[list_events_tool],
             output_content_type=PlanDiff,  # Structured output into PlanDiff
             system_message="""

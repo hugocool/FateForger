@@ -9,10 +9,14 @@ class DummyCalendarClient:
     def __init__(self, events):
         self._events = events
         self.calls = []
+        self.event_lookup = {}
 
     async def list_events(self, *, calendar_id: str, time_min: str, time_max: str):
         self.calls.append((calendar_id, time_min, time_max))
         return list(self._events)
+
+    async def get_event(self, *, calendar_id: str, event_id: str):
+        return self.event_lookup.get((calendar_id, event_id))
 
 
 class FakeScheduler:
@@ -61,6 +65,27 @@ async def test_reconcile_adds_and_clears_jobs():
         user_id="U1",
         channel_id="C1",
         now=now + timedelta(hours=1),
+    )
+
+    assert jobs == []
+    assert scheduler.get_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_uses_anchor_event_id_when_provided():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    client.event_lookup[("primary", "ff-planning-u1")] = {"id": "ff-planning-u1"}
+
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        planning_event_id="ff-planning-u1",
+        now=now,
     )
 
     assert jobs == []

@@ -16,10 +16,57 @@ class Settings(BaseSettings):
     slack_port: int = Field(default=3000, env="SLACK_PORT")
     slack_focus_ttl_seconds: int = Field(default=60 * 60, env="SLACK_FOCUS_TTL_SECONDS")
     slack_app_name: str = Field(default="FateForger")
+    slack_timeboxing_channel_id: str = Field(default="", env="SLACK_TIMEBOXING_CHANNEL_ID")
+    slack_strategy_channel_id: str = Field(default="", env="SLACK_STRATEGY_CHANNEL_ID")
+    slack_tasks_channel_id: str = Field(default="", env="SLACK_TASKS_CHANNEL_ID")
+    slack_ops_channel_id: str = Field(default="", env="SLACK_OPS_CHANNEL_ID")
+    slack_general_channel_id: str = Field(default="", env="SLACK_GENERAL_CHANNEL_ID")
 
     openai_api_key: str = Field(default="x")
+    openai_model: str = Field(default="gpt-4o-mini", env="OPENAI_MODEL")
+    openai_base_url: str = Field(default="", env="OPENAI_BASE_URL")
     gemini_api_key: str = Field(default="x")
     database_url: str = Field(default="sqlite:///:memory:")
+
+    # LLM Provider Configuration
+    # - "openai": OpenAI-hosted models via https://api.openai.com/v1
+    # - "openrouter": OpenRouter OpenAI-compatible endpoint via https://openrouter.ai/api/v1
+    llm_provider: str = Field(default="openai", env="LLM_PROVIDER")
+    openrouter_api_key: str = Field(default="", env="OPENROUTER_API_KEY")
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1", env="OPENROUTER_BASE_URL"
+    )
+    openrouter_http_referer: str = Field(default="", env="OPENROUTER_HTTP_REFERER")
+    openrouter_title: str = Field(default="FateForger", env="OPENROUTER_TITLE")
+    openrouter_send_reasoning_effort_header: bool = Field(
+        default=False, env="OPENROUTER_SEND_REASONING_EFFORT_HEADER"
+    )
+    openrouter_reasoning_effort_header: str = Field(
+        default="X-Reasoning-Effort", env="OPENROUTER_REASONING_EFFORT_HEADER"
+    )
+
+    # Per-agent model selection (optional; provider-specific model IDs)
+    llm_model_receptionist: str = Field(default="", env="LLM_MODEL_RECEPTIONIST")
+    llm_model_admonisher: str = Field(default="", env="LLM_MODEL_ADMONISHER")
+    llm_model_timeboxing: str = Field(default="", env="LLM_MODEL_TIMEBOXING")
+    llm_model_timebox_patcher: str = Field(default="", env="LLM_MODEL_TIMEBOX_PATCHER")
+    llm_model_planner: str = Field(default="", env="LLM_MODEL_PLANNER")
+    llm_model_revisor: str = Field(default="", env="LLM_MODEL_REVISOR")
+    llm_model_tasks: str = Field(default="", env="LLM_MODEL_TASKS")
+    llm_model_calendar_submitter: str = Field(
+        default="", env="LLM_MODEL_CALENDAR_SUBMITTER"
+    )
+
+    # Per-agent reasoning effort (OpenRouter: request body `reasoning.effort`; "low"|"medium"|"high")
+    llm_reasoning_effort_timeboxing: str = Field(
+        default="", env="LLM_REASONING_EFFORT_TIMEBOXING"
+    )
+    llm_reasoning_effort_revisor: str = Field(
+        default="", env="LLM_REASONING_EFFORT_REVISOR"
+    )
+    llm_reasoning_effort_tasks: str = Field(
+        default="", env="LLM_REASONING_EFFORT_TASKS"
+    )
 
     # MCP Server Configuration
     mcp_version: str = Field(default="v1.4.8")

@@ -10,11 +10,11 @@ from typing import Any, List, Optional, Union
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
 from autogen_core import CancellationToken
-from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.tools.mcp import StreamableHttpServerParams, mcp_server_tools
 
 from ...core.config import settings
 from ...core.logging import get_logger
+from fateforger.llm import build_autogen_chat_client
 from .base import BaseHaunter
 
 logger = get_logger(__name__)
@@ -75,9 +75,7 @@ class CalendarHaunter(BaseHaunter):
 
             agent = AssistantAgent(
                 name="CalendarHaunter",
-                model_client=OpenAIChatCompletionClient(
-                    model="gpt-4o-mini", api_key=settings.openai_api_key
-                ),
+                model_client=build_autogen_chat_client("admonisher_agent"),
                 system_message=(
                     f"You are a calendar haunter in the FateForger system. "
                     f"Today is {dt.date.today().isoformat()}. "
@@ -190,10 +188,10 @@ async def create_calendar_haunter_agent() -> AssistantAgent:
         Configured AssistantAgent with Google Calendar tools
     """
     mcp_server_url = os.getenv("MCP_CALENDAR_SERVER_URL", "http://localhost:3000")
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-
-    if not openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY environment variable not set")
+    if not (settings.openrouter_api_key or settings.openai_api_key):
+        raise RuntimeError(
+            "No LLM API key configured. Set OPENAI_API_KEY or OPENROUTER_API_KEY."
+        )
 
     # Configure HTTP transport (bypasses broken SSE)
     params = StreamableHttpServerParams(url=mcp_server_url, timeout=10.0)
@@ -207,9 +205,7 @@ async def create_calendar_haunter_agent() -> AssistantAgent:
     # Create AutoGen agent with real tools
     return AssistantAgent(
         name="CalendarAgent",
-        model_client=OpenAIChatCompletionClient(
-            model="gpt-4o-mini", api_key=openai_api_key
-        ),
+        model_client=build_autogen_chat_client("admonisher_agent"),
         system_message=f"You are a calendar assistant. Today is {dt.date.today().isoformat()}.",
         tools=tools,  # type: ignore - MCP tools are compatible
     )

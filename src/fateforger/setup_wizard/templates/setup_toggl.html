@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <h2>Toggl MCP</h2>
+    <p class="muted">Toggl Track uses a personal API token (no OAuth). We run <code>@verygoodplugins/mcp-toggl</code> behind a Streamable HTTP bridge so FateForger can probe tools over HTTP.</p>
+
+    <p class="muted">
+      Upstream docs:
+      <a href="https://github.com/verygoodplugins/mcp-toggl" target="_blank" rel="noreferrer">mcp-toggl</a>
+      •
+      <a href="https://track.toggl.com/profile" target="_blank" rel="noreferrer">Find your Toggl API key</a>
+    </p>
+
+    {% if saved %}
+      <p class="pill ok">Saved: {{ updates|join(', ') }}</p>
+    {% endif %}
+
+    {% if check %}
+      <div class="hr"></div>
+      {% if check.ok %}
+        <span class="pill ok">OK</span>
+      {% else %}
+        <span class="pill bad">FAILED</span>
+      {% endif %}
+
+      <div class="muted" style="margin-top: 8px;">
+        {% if check.details.account %}
+          <div><code>account</code>: {{ check.details.account }}</div>
+        {% endif %}
+        {% if check.details.workspaces %}
+          <div><code>workspaces</code>: {{ check.details.workspaces }}</div>
+        {% endif %}
+        {% for k, v in check.details.items() %}
+          {% if k != 'account' and k != 'workspaces' %}
+            <div><code>{{ k }}</code>: {{ v }}</div>
+          {% endif %}
+        {% endfor %}
+      </div>
+
+      {% if check.error %}
+        <div class="hr"></div>
+        <pre>{{ check.error }}</pre>
+      {% endif %}
+    {% endif %}
+
+    <div class="hr"></div>
+    <form method="post" action="/setup/toggl">
+      <label>TOGGL_API_KEY</label>
+      <input name="toggl_api_key" type="password" placeholder="your_toggl_api_key_here" />
+
+      <label>TOGGL_DEFAULT_WORKSPACE_ID (optional)</label>
+      <input name="toggl_default_workspace_id" type="text" placeholder="123456" />
+
+      <label>TOGGL_CACHE_TTL (optional, ms)</label>
+      <input name="toggl_cache_ttl" type="text" placeholder="3600000" />
+
+      <label>TOGGL_CACHE_SIZE (optional)</label>
+      <input name="toggl_cache_size" type="text" placeholder="1000" />
+
+      <label>WIZARD_TOGGL_MCP_URL (optional override)</label>
+      <input name="wizard_toggl_mcp_url" type="text" placeholder="http://toggl-mcp:8000/mcp" />
+
+      <div class="actions">
+        <button class="btn" type="submit">Save</button>
+        <a class="btn" href="/setup/toggl">Re-run checks</a>
+        <a class="btn" href="/">Back</a>
+      </div>
+    </form>
+
+    <div class="hr"></div>
+    <p class="muted">After saving, start/restart the optional Toggl service:</p>
+    <pre>docker compose --profile toggl up -d --build toggl-mcp</pre>
+    <p class="muted">If you’re debugging: <code>docker compose logs --tail 200 toggl-mcp</code></p>
+
+  </div>
+{% endblock %}

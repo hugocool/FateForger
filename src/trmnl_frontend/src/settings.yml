@@ -1,0 +1,16 @@
+---
+# TRMNL Plugin Settings
+# See: https://help.usetrmnl.com/en/articles/10542599-importing-and-exporting-private-plugins
+
+name: FateForger Dashboard
+description: Productivity metrics with 5-minute time quantization
+author: hugocool
+version: "0.1.0"
+
+# Polling configuration
+polling:
+  enabled: true
+  interval: 300  # 5 minutes in seconds
+
+# No custom fields for MVP (data comes from backend endpoint)
+custom_fields: []

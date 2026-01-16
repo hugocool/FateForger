@@ -1,0 +1,8 @@
+services:
+  trmnlp:
+    image: trmnl/trmnlp:latest
+    volumes:
+      - .:/plugin
+    ports:
+      - "4567:4567"
+    command: serve
