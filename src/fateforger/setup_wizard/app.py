@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,9 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .checks import config_snapshot, run_all_checks
 from .envfile import read_env_file, update_env_file
+
+# Global cache for health checks
+_health_cache: dict[str, Any] = {"checks": None, "timestamp": None}
 
 
 def _env_path() -> Path:
@@ -73,6 +77,27 @@ def _status_from(check: Any | None, configured: bool) -> tuple[str, str, str]:
         return "bad", "Not running", "Enable/start service"
 
     return "bad", "Needs attention", "Check keys/logs"
+
+
+async def _get_health_checks(
+    force_refresh: bool = False,
+) -> tuple[list[Any], str | None]:
+    """Get health checks from cache or run fresh if needed.
+
+    Returns:
+        (checks, last_checked_iso) where last_checked_iso is None on first run
+    """
+    if force_refresh or _health_cache["checks"] is None:
+        checks = await run_all_checks()
+        _health_cache["checks"] = checks
+        _health_cache["timestamp"] = datetime.utcnow()
+        return checks, _health_cache["timestamp"].isoformat() + "Z"
+
+    return _health_cache["checks"], (
+        _health_cache["timestamp"].isoformat() + "Z"
+        if _health_cache["timestamp"]
+        else None
+    )
 
 
 def _build_integrations(
@@ -227,6 +252,14 @@ async def logout(request: Request):
     return RedirectResponse(url="/login", status_code=303)
 
 
+@app.post("/health/refresh", dependencies=[Depends(_require_admin)])
+async def refresh_health_checks(request: Request):
+    """Force refresh all health checks and redirect back."""
+    await _get_health_checks(force_refresh=True)
+    referer = request.headers.get("referer", "/")
+    return RedirectResponse(url=referer, status_code=303)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     if not request.session.get("wizard_ok"):
@@ -235,7 +268,7 @@ async def index(request: Request):
     env_path = _env_path()
     secrets_dir = _secrets_dir()
     env = read_env_file(env_path)
-    checks = await run_all_checks()
+    checks, last_checked = await _get_health_checks()
     checks_by_name = {c.name: c for c in checks}
 
     gcal_path = secrets_dir / "gcal-oauth.json"
@@ -263,6 +296,7 @@ async def index(request: Request):
             "ticktick_tokens_summary": ticktick_tokens_summary,
             "integrations": integrations,
             "active_integration": "dashboard",
+            "last_checked": last_checked,
         },
     )
 

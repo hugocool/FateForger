@@ -48,6 +48,8 @@ services:
       WIZARD_ENV_PATH: "/config/.env"
       WIZARD_SECRETS_DIR: "/config/secrets"
       WIZARD_PORT: "8080"
+      WIZARD_ADMIN_TOKEN: "${WIZARD_ADMIN_TOKEN}"
+      WIZARD_SESSION_SECRET: "${WIZARD_SESSION_SECRET}"
     volumes:
       - ./:/config
       - calendar-mcp-tokens:/config/calendar-mcp-tokens:ro

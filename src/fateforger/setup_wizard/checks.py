@@ -92,7 +92,7 @@ async def check_calendar_mcp() -> CheckResult:
 
     try:
         tools, resolved, err = await _probe_mcp_tools(
-            name="calendar-mcp", url=url, timeout_s=5.0, try_mcp_suffix=False
+            name="calendar-mcp", url=url, timeout_s=3.0, try_mcp_suffix=False
         )
         tool_names = [getattr(t, "name", None) for t in tools]
         ok = bool(tools) and err is None
@@ -122,7 +122,7 @@ async def check_notion_mcp() -> CheckResult:
     headers = {"Authorization": f"Bearer {auth}"} if auth else None
 
     tools, resolved, err = await _probe_mcp_tools(
-        name="notion-mcp", url=url, headers=headers, timeout_s=6.0, try_mcp_suffix=True
+        name="notion-mcp", url=url, headers=headers, timeout_s=2.0, try_mcp_suffix=True
     )
     tool_names = [getattr(t, "name", None) for t in tools]
     ok = bool(tools) and err is None
@@ -155,7 +155,7 @@ async def check_ticktick_mcp() -> CheckResult:
     url = os.getenv("WIZARD_TICKTICK_MCP_URL") or "http://ticktick-mcp:8000"
 
     tools, resolved, err = await _probe_mcp_tools(
-        name="ticktick-mcp", url=url, timeout_s=6.0, try_mcp_suffix=True
+        name="ticktick-mcp", url=url, timeout_s=2.0, try_mcp_suffix=True
     )
 
     # Try a cheap real call if possible to validate credentials (read-only).
@@ -205,7 +205,7 @@ async def check_toggl_mcp() -> CheckResult:
     url = os.getenv("WIZARD_TOGGL_MCP_URL") or "http://toggl-mcp:8000"
 
     tools, resolved, err = await _probe_mcp_tools(
-        name="toggl-mcp", url=url, timeout_s=6.0, try_mcp_suffix=True
+        name="toggl-mcp", url=url, timeout_s=2.0, try_mcp_suffix=True
     )
 
     toggl_api_key_present = bool(
@@ -333,7 +333,7 @@ async def check_slack() -> CheckResult:
                 await asyncio.sleep(1.0)
                 await socket_client.disconnect()
 
-            await asyncio.wait_for(_connect_briefly(), timeout=8.0)
+            await asyncio.wait_for(_connect_briefly(), timeout=3.0)
             details["socket_mode"]["ok"] = True
         except Exception as e:
             details["socket_mode"]["ok"] = False

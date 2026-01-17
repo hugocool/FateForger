@@ -11,7 +11,13 @@
         <span class="pill warn">gcal-oauth.json missing</span>
       {% endif %}
       <a class="btn" href="/diagnostics.json">Download diagnostics.json</a>
+      <form method="post" action="/health/refresh" style="display:inline">
+        <button class="btn" type="submit">🔄 Refresh Health</button>
+      </form>
     </div>
+    {% if last_checked %}
+      <p class="muted" style="margin-top: 8px;">Last health check: <code>{{ last_checked }}</code></p>
+    {% endif %}
     <div class="hr"></div>
       <p class="muted">This dashboard validates Slack + all MCP servers using AutoGen MCP tool discovery (not raw HTTP MCP calls). Optional services (Notion/TickTick/Toggl) may show “Not running” until you enable their compose profiles.</p>
   </div>
