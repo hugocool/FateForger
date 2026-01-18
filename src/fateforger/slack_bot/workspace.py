@@ -3,6 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional
 
+from fateforger.core.config import settings
+
+CHANNEL_NAME_ALIASES: dict[str, str] = {
+    "timeboxing": "plan-sessions",
+    "tasks": "task-marshalling",
+    "strategy": "review",
+    "ops": "scheduling",
+}
+
 
 @dataclass(frozen=True)
 class SlackPersona:
@@ -22,7 +31,9 @@ class WorkspaceDirectory:
         return self.channels_by_agent.get(agent_type)
 
     def channel_for_name(self, name: str) -> str | None:
-        return self.channels_by_name.get(name.lstrip("#"))
+        cleaned = name.lstrip("#")
+        canonical = CHANNEL_NAME_ALIASES.get(cleaned, cleaned)
+        return self.channels_by_name.get(canonical)
 
     def persona_for_agent(self, agent_type: str) -> SlackPersona | None:
         return self.personas_by_agent.get(agent_type)
@@ -40,12 +51,40 @@ class WorkspaceRegistry:
         return cls._global
 
 
+def _icon_url(filename: str) -> str | None:
+    base = (getattr(settings, "slack_agent_icon_base_url", "") or "").strip()
+    if not base:
+        return None
+    return base.rstrip("/") + "/" + filename.lstrip("/")
+
+
 DEFAULT_PERSONAS: dict[str, SlackPersona] = {
     "receptionist_agent": SlackPersona(username="FateForger", icon_emoji=":crystal_ball:"),
-    "timeboxing_agent": SlackPersona(username="Timeboxer", icon_emoji=":spiral_calendar_pad:"),
-    "planner_agent": SlackPersona(username="Planner", icon_emoji=":gear:"),
-    "revisor_agent": SlackPersona(username="Revisor", icon_emoji=":mag:"),
-    "tasks_agent": SlackPersona(username="Task Marshal", icon_emoji=":clipboard:"),
+    "timeboxing_agent": SlackPersona(
+        username="The Schedular",
+        icon_emoji=":spiral_calendar_pad:",
+        icon_url=_icon_url("Schedular.png"),
+    ),
+    "planner_agent": SlackPersona(
+        username="The Schedular",
+        icon_emoji=":gear:",
+        icon_url=_icon_url("Schedular.png"),
+    ),
+    "revisor_agent": SlackPersona(
+        username="Reviewer",
+        icon_emoji=":mag:",
+        icon_url=_icon_url("Revisor.png"),
+    ),
+    "tasks_agent": SlackPersona(
+        username="TaskMarshal",
+        icon_emoji=":clipboard:",
+        icon_url=_icon_url("TaskMarshal.png"),
+    ),
+    "admonisher_agent": SlackPersona(
+        username="Admonisher",
+        icon_emoji=":warning:",
+        icon_url=_icon_url("Admonisher.png"),
+    ),
 }
 
 

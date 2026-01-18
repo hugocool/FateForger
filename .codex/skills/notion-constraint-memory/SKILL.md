@@ -11,6 +11,8 @@ Use this skill when working with the timeboxing preference memory stored in Noti
 Do NOT call Notion APIs directly; use the MCP tools from the constraint-memory server.
 
 Tools
+- `constraint.get_store_info()`
+- `constraint.get_constraint(uid)`
 - `constraint.query_types(stage, event_types)`
 - `constraint.query_constraints(filters, type_ids, tags, sort, limit)`
 - `constraint.upsert_constraint(record, event)`

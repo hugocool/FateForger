@@ -85,7 +85,14 @@ async def test_revisor_handoff_redirects_into_configured_strategy_channel(monkey
 
     assert [r.type for _, r in runtime.calls] == ["receptionist_agent", "revisor_agent"]
     assert runtime.calls[1][1].key == "C_STRATEGY:rev_root"
-    assert client.posted[0]["channel"] == "C_STRATEGY"
-    assert client.posted[0].get("username") == "Revisor"
+    assert any(p["channel"] == "C_STRATEGY" for p in client.posted)
+    revisor_root = next(p for p in client.posted if p["channel"] == "C_STRATEGY" and not p.get("thread_ts"))
+    assert revisor_root.get("username") == "Reviewer"
     assert client.opened and client.opened[0]["users"] == ["U1"]
     assert any(p["channel"] == "D_DM" and "Go to Thread" in str(p.get("blocks")) for p in client.posted)
+    assert any(
+        u.get("blocks")
+        and "Go to Thread" in str(u.get("blocks"))
+        and "url" in str(u.get("blocks"))
+        for u in client.updates
+    )

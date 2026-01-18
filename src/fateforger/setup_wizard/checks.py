@@ -11,6 +11,7 @@ from typing import Any, Optional
 import httpx
 from autogen_core import CancellationToken
 from autogen_ext.tools.mcp import StreamableHttpServerParams, mcp_server_tools
+from slack_sdk.errors import SlackApiError
 from slack_sdk.socket_mode.aiohttp import SocketModeClient
 from slack_sdk.web.async_client import AsyncWebClient
 
@@ -322,6 +323,36 @@ async def check_slack() -> CheckResult:
             ok=False, name="slack", details=details, error=_safe_error(e)
         )
 
+    # Permissions check: validate we can list channels (required for auto-provisioning).
+    details["scopes"] = {"conversations_list": {"attempted": True}}
+    try:
+        await client.conversations_list(
+            limit=1,
+            types="public_channel,private_channel",
+            exclude_archived=True,
+        )
+        details["scopes"]["conversations_list"]["ok"] = True
+    except SlackApiError as e:
+        resp = getattr(e, "response", None)
+        body = resp.data if resp is not None else {}
+        details["scopes"]["conversations_list"]["ok"] = False
+        details["scopes"]["conversations_list"]["error"] = body.get("error") or _safe_error(e)
+        details["scopes"]["conversations_list"]["needed"] = body.get("needed")
+        details["scopes"]["conversations_list"]["provided"] = body.get("provided")
+        return CheckResult(
+            ok=False,
+            name="slack",
+            details=details,
+            error=(
+                "Slack token missing scopes required for workspace bootstrap. "
+                "Add the needed scopes in the Slack app config and reinstall the app."
+            ),
+        )
+    except Exception as e:
+        details["scopes"]["conversations_list"]["ok"] = False
+        details["scopes"]["conversations_list"]["error"] = _safe_error(e)
+        return CheckResult(ok=False, name="slack", details=details, error=_safe_error(e))
+
     # Optional Socket Mode handshake (fast, but requires xapp- token)
     if app_token and app_token.startswith("xapp-"):
         try:
@@ -374,11 +405,15 @@ def config_snapshot() -> dict[str, Any]:
         "OPENROUTER_SEND_REASONING_EFFORT_HEADER",
         "LLM_MODEL_RECEPTIONIST",
         "LLM_MODEL_TIMEBOXING",
+        "LLM_MODEL_TIMEBOXING_DRAFT",
+        "LLM_MODEL_TIMEBOX_PATCHER",
         "LLM_MODEL_REVISOR",
         "LLM_MODEL_TASKS",
         "LLM_REASONING_EFFORT_TIMEBOXING",
+        "LLM_REASONING_EFFORT_TIMEBOXING_DRAFT",
         "LLM_REASONING_EFFORT_REVISOR",
         "LLM_REASONING_EFFORT_TASKS",
+        "LLM_REASONING_EFFORT_TIMEBOX_PATCHER",
         "ENVIRONMENT",
         "LOG_LEVEL",
     ]

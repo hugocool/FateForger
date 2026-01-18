@@ -15,6 +15,9 @@ async def with_timeout(label: str, awaitable, timeout_s: float):
         logging.error("[diag] ⏰ TIMEOUT in %s after %.1fs", label, timeout_s)
         dump_asyncio_tasks(label)
         raise
+    except Exception:
+        logging.exception("[diag] ❌ ERROR in %s", label)
+        raise
 
 
 def dump_asyncio_tasks(reason: str):

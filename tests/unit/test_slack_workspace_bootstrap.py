@@ -46,17 +46,17 @@ async def test_ensure_workspace_ready_creates_and_joins_required_channels():
     assert directory.team_id == "T1"
     assert directory.channels_by_name["general"] == "C_GENERAL"
     # Required channels created
-    assert set(directory.channels_by_name.keys()) >= {"timeboxing", "strategy", "tasks", "ops", "general"}
-    assert ("timeboxing", False) in client.created
-    assert ("strategy", False) in client.created
-    assert ("tasks", False) in client.created
-    assert ("ops", False) in client.created
+    assert set(directory.channels_by_name.keys()) >= {"plan-sessions", "review", "task-marshalling", "scheduling", "general"}
+    assert ("plan-sessions", False) in client.created
+    assert ("review", False) in client.created
+    assert ("task-marshalling", False) in client.created
+    assert ("scheduling", False) in client.created
     # Bot joins channels (including general)
     assert "C_GENERAL" in client.joined
-    assert "C_timeboxing" in client.joined
-    assert "C_strategy" in client.joined
-    assert "C_tasks" in client.joined
-    assert "C_ops" in client.joined
+    assert "C_plan-sessions" in client.joined
+    assert "C_review" in client.joined
+    assert "C_task-marshalling" in client.joined
+    assert "C_scheduling" in client.joined
 
 
 @pytest.mark.asyncio
@@ -69,4 +69,5 @@ async def test_ensure_workspace_ready_sets_workspace_registry_global():
 
     global_dir = WorkspaceRegistry.get_global()
     assert global_dir is directory
+    # Legacy channel name maps to the new canonical key.
     assert global_dir.channel_for_name("timeboxing") == "C_TIMEBOX"

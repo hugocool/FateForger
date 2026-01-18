@@ -412,13 +412,16 @@ async def setup_env_submit(
     llm_model_receptionist: str = Form(""),
     llm_model_admonisher: str = Form(""),
     llm_model_timeboxing: str = Form(""),
+    llm_model_timeboxing_draft: str = Form(""),
     llm_model_timebox_patcher: str = Form(""),
     llm_model_planner: str = Form(""),
     llm_model_revisor: str = Form(""),
     llm_model_tasks: str = Form(""),
     llm_reasoning_effort_timeboxing: str = Form(""),
+    llm_reasoning_effort_timeboxing_draft: str = Form(""),
     llm_reasoning_effort_revisor: str = Form(""),
     llm_reasoning_effort_tasks: str = Form(""),
+    llm_reasoning_effort_timebox_patcher: str = Form(""),
     notion_token: str = Form(""),
     mcp_http_auth_token: str = Form(""),
 ):
@@ -448,13 +451,16 @@ async def setup_env_submit(
     _maybe("LLM_MODEL_RECEPTIONIST", llm_model_receptionist)
     _maybe("LLM_MODEL_ADMONISHER", llm_model_admonisher)
     _maybe("LLM_MODEL_TIMEBOXING", llm_model_timeboxing)
+    _maybe("LLM_MODEL_TIMEBOXING_DRAFT", llm_model_timeboxing_draft)
     _maybe("LLM_MODEL_TIMEBOX_PATCHER", llm_model_timebox_patcher)
     _maybe("LLM_MODEL_PLANNER", llm_model_planner)
     _maybe("LLM_MODEL_REVISOR", llm_model_revisor)
     _maybe("LLM_MODEL_TASKS", llm_model_tasks)
     _maybe("LLM_REASONING_EFFORT_TIMEBOXING", llm_reasoning_effort_timeboxing)
+    _maybe("LLM_REASONING_EFFORT_TIMEBOXING_DRAFT", llm_reasoning_effort_timeboxing_draft)
     _maybe("LLM_REASONING_EFFORT_REVISOR", llm_reasoning_effort_revisor)
     _maybe("LLM_REASONING_EFFORT_TASKS", llm_reasoning_effort_tasks)
+    _maybe("LLM_REASONING_EFFORT_TIMEBOX_PATCHER", llm_reasoning_effort_timebox_patcher)
     _maybe("NOTION_TOKEN", notion_token)
     _maybe("MCP_HTTP_AUTH_TOKEN", mcp_http_auth_token)
 

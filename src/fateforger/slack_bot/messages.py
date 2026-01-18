@@ -11,5 +11,11 @@ class SlackBlockMessage:
     text: str
     blocks: List[dict[str, Any]]
 
+@dataclass(frozen=True)
+class SlackThreadStateMessage:
+    text: str
+    blocks: List[dict[str, Any]] | None = None
+    thread_state: str | None = None
 
-__all__ = ["SlackBlockMessage"]
+
+__all__ = ["SlackBlockMessage", "SlackThreadStateMessage"]

@@ -79,6 +79,8 @@ def _serialize_constraint(page) -> Dict[str, Any]:
             type_id = None
     topics = getattr(props, "topics", None) or []
     return {
+        "page_id": str(page.id),
+        "url": getattr(page, "url", None),
         "uid": getattr(props, "uid", None),
         "name": getattr(props, "name", None),
         "description": getattr(props, "description", None),
@@ -94,6 +96,60 @@ def _serialize_constraint(page) -> Dict[str, Any]:
         "type_id": type_id,
         "topics": [str(topic) for topic in topics],
     }
+
+
+@mcp.tool(name="constraint.get_store_info")
+def get_store_info() -> Dict[str, Any]:
+    """Return parent page + DB ids/URLs for the constraint memory store."""
+
+    store = _get_store()
+    parent_page_id = os.getenv("NOTION_TIMEBOXING_PARENT_PAGE_ID", "").strip()
+    info: Dict[str, Any] = {
+        "parent_page_id": parent_page_id,
+        "parent_page_title": None,
+        "parent_page_url": None,
+        "dbs": {
+            "topics": {
+                "db_id": str(store.topics_db.id),
+                "db_url": getattr(store.topics_db, "url", None),
+            },
+            "types": {
+                "db_id": str(store.types_db.id),
+                "db_url": getattr(store.types_db, "url", None),
+            },
+            "constraints": {
+                "db_id": str(store.constraints_db.id),
+                "db_url": getattr(store.constraints_db, "url", None),
+            },
+            "windows": {
+                "db_id": str(store.windows_db.id),
+                "db_url": getattr(store.windows_db, "url", None),
+            },
+            "events": {
+                "db_id": str(store.events_db.id),
+                "db_url": getattr(store.events_db, "url", None),
+            },
+        },
+    }
+    if parent_page_id:
+        try:
+            page = store.notion.get_page(parent_page_id)
+            info["parent_page_title"] = getattr(page, "title", None) or str(page)
+            info["parent_page_url"] = getattr(page, "url", None)
+        except Exception:
+            pass
+    return info
+
+
+@mcp.tool(name="constraint.get_constraint")
+def get_constraint(uid: str) -> Dict[str, Any] | None:
+    """Get a single constraint by UID (includes page_id + url)."""
+
+    store = _get_store()
+    page = store._get_constraint_by_uid(uid)
+    if not page:
+        return None
+    return _serialize_constraint(page)
 
 
 @mcp.tool(name="constraint.query_types")

@@ -32,6 +32,9 @@ Routing guidelines:
 - If the user wants to inspect or edit calendar events (what's on my calendar, create/move/delete an event, find a slot), hand off to `planner_agent`.
 - If the user wants a review / retro / plan the week / reflect and prioritize, hand off to `revisor_agent`.
 - If the user wants to capture / triage / prioritize tasks, hand off to `tasks_agent`.
+
+Default assumption:
+- If the user says "plan tomorrow/today" (or similar) without extra details, assume they want *timeboxing* and hand off to `timeboxing_agent` (do not ask the schedule-vs-calendar clarifier).
 """.strip()
 
 
@@ -79,11 +82,23 @@ class ReceptionistAgent(HauntAwareAgentMixin, RoutedAgent):
             core_intent=self._summarize(message.content),
         )
 
-        response = await with_timeout(
-            "receptionist:on_messages",
-            self._assistant.on_messages([message], ctx.cancellation_token),
-            timeout_s=20,
-        )
+        try:
+            response = await with_timeout(
+                "receptionist:on_messages",
+                self._assistant.on_messages([message], ctx.cancellation_token),
+                timeout_s=20,
+            )
+        except Exception as e:
+            logger.exception("Receptionist LLM call failed")
+            hint = _format_llm_failure(e)
+            await self._log_outbound(
+                session_id=session_id,
+                content=f"error:{hint}",
+                core_intent="LLM call failed",
+                follow_up=FollowUpPlan(required=False),
+                tone=HauntTone.NEUTRAL,
+            )
+            return TextMessage(content=hint, source=self.id.type)
 
         chat_message = response.chat_message
         if not isinstance(chat_message, (TextMessage, HandoffMessage)):
@@ -148,3 +163,19 @@ class ReceptionistAgent(HauntAwareAgentMixin, RoutedAgent):
 
 
 __all__ = ["ReceptionistAgent", "HandoffBase"]
+
+
+def _format_llm_failure(exc: Exception) -> str:
+    name = type(exc).__name__
+    msg = str(exc)
+    low = msg.lower()
+    if "openrouter" in low and "api_key" in low:
+        return "LLM config error: OpenRouter API key is missing. Set `OPENROUTER_API_KEY` and restart."
+    if "error code: 401" in low or " 401 " in low or "user not found" in low:
+        return "LLM auth error: OpenRouter rejected the API key (401). Update `OPENROUTER_API_KEY` and restart."
+    if "error code: 429" in low or "rate limit" in low:
+        return "LLM rate limit: OpenRouter/OpenAI rate limited this request. Try again in a bit."
+    if "timeout" in low:
+        return "LLM timeout: the provider didn’t respond in time. Try again."
+    # Generic fallback (avoid leaking anything sensitive in the error string).
+    return f"LLM error ({name}). Check server logs for details."

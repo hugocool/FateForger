@@ -71,6 +71,9 @@
       <label>LLM_MODEL_TIMEBOXING</label>
       <input name="llm_model_timeboxing" type="text" value="{{ env.get('LLM_MODEL_TIMEBOXING', '') }}" />
 
+      <label>LLM_MODEL_TIMEBOXING_DRAFT</label>
+      <input name="llm_model_timeboxing_draft" type="text" value="{{ env.get('LLM_MODEL_TIMEBOXING_DRAFT', '') }}" />
+
       <label>LLM_MODEL_TIMEBOX_PATCHER</label>
       <input name="llm_model_timebox_patcher" type="text" value="{{ env.get('LLM_MODEL_TIMEBOX_PATCHER', '') }}" />
 
@@ -89,11 +92,17 @@
       <label>LLM_REASONING_EFFORT_TIMEBOXING</label>
       <input name="llm_reasoning_effort_timeboxing" type="text" value="{{ env.get('LLM_REASONING_EFFORT_TIMEBOXING', '') }}" placeholder="high" />
 
+      <label>LLM_REASONING_EFFORT_TIMEBOXING_DRAFT</label>
+      <input name="llm_reasoning_effort_timeboxing_draft" type="text" value="{{ env.get('LLM_REASONING_EFFORT_TIMEBOXING_DRAFT', '') }}" placeholder="high" />
+
       <label>LLM_REASONING_EFFORT_REVISOR</label>
       <input name="llm_reasoning_effort_revisor" type="text" value="{{ env.get('LLM_REASONING_EFFORT_REVISOR', '') }}" placeholder="medium" />
 
       <label>LLM_REASONING_EFFORT_TASKS</label>
       <input name="llm_reasoning_effort_tasks" type="text" value="{{ env.get('LLM_REASONING_EFFORT_TASKS', '') }}" placeholder="medium" />
+
+      <label>LLM_REASONING_EFFORT_TIMEBOX_PATCHER</label>
+      <input name="llm_reasoning_effort_timebox_patcher" type="text" value="{{ env.get('LLM_REASONING_EFFORT_TIMEBOX_PATCHER', '') }}" placeholder="high" />
 
       <div class="hr"></div>
 

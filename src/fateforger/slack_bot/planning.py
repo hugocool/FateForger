@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
+import base64
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Optional
@@ -13,17 +15,26 @@ from slack_sdk.web.async_client import AsyncWebClient
 from autogen_agentchat.messages import TextMessage
 from autogen_core import AgentId
 
+from fateforger.agents.schedular.messages import UpsertCalendarEvent
 from fateforger.core.config import settings
 from fateforger.haunt.planning_guardian import PlanningGuardian
 from fateforger.haunt.planning_store import PlanningAnchorPayload, SqlAlchemyPlanningAnchorStore
 from fateforger.haunt.reconcile import PlanningReconciler, PlanningReminder
 from fateforger.slack_bot.constraint_review import decode_metadata, encode_metadata
 from fateforger.slack_bot.focus import FocusManager
+from fateforger.slack_bot.messages import SlackBlockMessage
+from fateforger.slack_bot.ui import link_button
+from fateforger.slack_bot.workspace import DEFAULT_PERSONAS, WorkspaceRegistry
+from fateforger.slack_bot.workspace import WorkspaceRegistry
 
 logger = logging.getLogger(__name__)
 
 FF_PLANNING_SCHEDULE_ACTION_ID = "ff_planning_schedule_suggested"
 FF_PLANNING_PICK_TIME_ACTION_ID = "ff_planning_pick_time"
+FF_PLANNING_TIME_MODAL_CALLBACK_ID = "ff_planning_time_modal"
+
+_PLANNING_TIME_INPUT_BLOCK_ID = "planning_time_input"
+_PLANNING_TIME_ACTION_ID = "planning_time_select"
 
 DEFAULT_PLANNING_DURATION_MINUTES = 30
 DEFAULT_PLANNING_TIMEZONE = "Europe/Amsterdam"
@@ -39,11 +50,12 @@ class PlanningSuggestion:
 
 
 def planning_event_id_for_user(user_id: str) -> str:
-    safe = re.sub(r"[^a-z0-9_-]+", "-", (user_id or "").lower()).strip("-")
-    if not safe:
-        safe = "unknown"
-    # Google Calendar event IDs allow [a-zA-Z0-9_-]. Keep it short + deterministic.
-    return f"ff-planning-{safe}"[:64]
+    # The Google Calendar MCP server validates custom event IDs as base32hex:
+    # lowercase letters a-v and digits 0-9 only (no hyphens/underscores).
+    cleaned = re.sub(r"\s+", "", (user_id or "").strip().lower())
+    digest = hashlib.sha1(cleaned.encode("utf-8")).digest()
+    token = base64.b32hexencode(digest).decode("ascii").lower().rstrip("=")
+    return ("ffplanning" + token)[:64]
 
 
 class PlanningCoordinator:
@@ -59,6 +71,8 @@ class PlanningCoordinator:
             runtime, "planning_reconciler", None
         )
         self._pending: dict[tuple[str, str], dict[str, str]] = {}
+        # DM-friendly fallback: allow "pick another time" replies without requiring thread replies.
+        self._pending_by_user: dict[tuple[str, str], dict[str, str]] = {}
 
     def attach_reconciler_dispatch(self) -> None:
         if not self._reconciler:
@@ -103,6 +117,11 @@ class PlanningCoordinator:
         if not user_id:
             return
 
+        directory = WorkspaceRegistry.get_global()
+        admonishments_channel_id = (
+            (directory.channel_for_name("admonishments") if directory else "") or ""
+        ).strip()
+
         dm_channel = await self._resolve_dm_channel(user_id=user_id)
         if not dm_channel:
             return
@@ -111,21 +130,72 @@ class PlanningCoordinator:
         suggestion = await self._suggest_slot(anchor.calendar_id)
 
         blocks = self._build_reminder_blocks(reminder, anchor, suggestion)
-        resp = await self._client.chat_postMessage(
-            channel=dm_channel,
-            text=reminder.message,
-            blocks=blocks,
+
+        directory = WorkspaceRegistry.get_global()
+        persona = (
+            directory.persona_for_agent("admonisher_agent")
+            if directory
+            else DEFAULT_PERSONAS.get("admonisher_agent")
         )
+
+        if admonishments_channel_id:
+            try:
+                payload = {
+                    "channel": admonishments_channel_id,
+                    "text": f"<@{user_id}>: {reminder.message}",
+                }
+                if persona and persona.username:
+                    payload["username"] = persona.username
+                if persona and persona.icon_emoji:
+                    payload["icon_emoji"] = persona.icon_emoji
+                if persona and persona.icon_url:
+                    payload["icon_url"] = persona.icon_url
+                log = await self._client.chat_postMessage(**payload)
+                log_ts = log.get("ts")
+                if log_ts:
+                    perma = await self._client.chat_getPermalink(
+                        channel=admonishments_channel_id, message_ts=log_ts
+                    )
+                    log_link = perma.get("permalink")
+                    if log_link:
+                        # Add a deep-link button to the DM prompt so the user can jump to the log thread.
+                        for block in blocks:
+                            if block.get("type") == "actions":
+                                elems = block.get("elements") or []
+                                if isinstance(elems, list) and len(elems) < 5:
+                                    elems.append(
+                                        link_button(
+                                            text="Open log",
+                                            url=log_link,
+                                            action_id="ff_open_admonishments_log",
+                                        )
+                                    )
+                                    block["elements"] = elems
+                                break
+            except Exception:
+                logger.debug("Failed to post planning reminder to #admonishments", exc_info=True)
+
+        payload = {"channel": dm_channel, "text": reminder.message, "blocks": blocks}
+        if persona and persona.username:
+            payload["username"] = persona.username
+        if persona and persona.icon_emoji:
+            payload["icon_emoji"] = persona.icon_emoji
+        if persona and persona.icon_url:
+            payload["icon_url"] = persona.icon_url
+        resp = await self._client.chat_postMessage(**payload)
         root_ts = resp.get("ts")
         if root_ts and suggestion:
-            self._pending[(dm_channel, root_ts)] = {
+            meta = {
                 "user_id": user_id,
                 "calendar_id": anchor.calendar_id,
                 "event_id": anchor.event_id,
                 "start": suggestion.start.astimezone(timezone.utc).isoformat(),
                 "end": suggestion.end.astimezone(timezone.utc).isoformat(),
                 "tz": suggestion.tz,
+                "prompt_ts": root_ts,
             }
+            self._pending[(dm_channel, root_ts)] = meta
+            self._pending_by_user[(dm_channel, user_id)] = meta
 
     async def handle_schedule_action(
         self, *, value: str, channel_id: str, thread_ts: str, actor_user_id: str | None
@@ -148,9 +218,9 @@ class PlanningCoordinator:
         else:
             suggestion = await self._suggest_slot(calendar_id)
             if not suggestion:
-                await self._client.chat_postMessage(
-                    channel=channel_id,
-                    thread_ts=thread_ts,
+                await self._update_prompt_message(
+                    channel_id=channel_id,
+                    message_ts=thread_ts,
                     text="I couldn't find a free 30m slot. Reply with a specific time (e.g. `tomorrow 10:00`).",
                 )
                 return
@@ -173,6 +243,96 @@ class PlanningCoordinator:
             text="Reply with a time like `today 16:00` or `tomorrow 10:00`.",
         )
 
+    async def handle_pick_time_modal(
+        self,
+        *,
+        trigger_id: str,
+        value: str,
+        channel_id: str,
+        thread_ts: str,
+        actor_user_id: str | None,
+    ) -> None:
+        metadata = self.decode_action_value(value)
+        user_id = metadata.get("user_id") or actor_user_id or ""
+        if not user_id:
+            return
+
+        calendar_id = metadata.get("calendar_id") or "primary"
+        event_id = metadata.get("event_id") or planning_event_id_for_user(user_id)
+        tz_name = metadata.get("tz") or DEFAULT_PLANNING_TIMEZONE
+        tz = ZoneInfo(tz_name)
+
+        start_utc = metadata.get("start")
+        if start_utc:
+            start = date_parser.isoparse(start_utc).astimezone(tz)
+        else:
+            suggestion = await self._suggest_slot(calendar_id)
+            start = suggestion.start if suggestion else datetime.now(timezone.utc).astimezone(tz)
+
+        initial_ts = int(start.astimezone(timezone.utc).timestamp())
+        private_metadata = encode_metadata(
+            {
+                "user_id": user_id,
+                "calendar_id": calendar_id,
+                "event_id": event_id,
+                "tz": tz.key,
+                # The message we're updating lives at this ts.
+                "prompt_ts": thread_ts,
+                "channel_id": channel_id,
+            }
+        )
+        view = _build_planning_time_modal(
+            private_metadata=private_metadata,
+            initial_date_time=initial_ts,
+            tz=tz.key,
+            duration_minutes=DEFAULT_PLANNING_DURATION_MINUTES,
+        )
+        await self._client.views_open(trigger_id=trigger_id, view=view)
+
+    async def handle_time_modal_submission(
+        self,
+        *,
+        private_metadata: str,
+        state_values: dict[str, Any],
+        actor_user_id: str | None,
+    ) -> None:
+        metadata = decode_metadata(private_metadata)
+        user_id = metadata.get("user_id") or actor_user_id or ""
+        channel_id = metadata.get("channel_id") or ""
+        prompt_ts = metadata.get("prompt_ts") or ""
+        if not (user_id and channel_id and prompt_ts):
+            return
+
+        calendar_id = metadata.get("calendar_id") or "primary"
+        tz_name = metadata.get("tz") or DEFAULT_PLANNING_TIMEZONE
+        tz = ZoneInfo(tz_name)
+
+        picked = (
+            (state_values.get(_PLANNING_TIME_INPUT_BLOCK_ID) or {})
+            .get(_PLANNING_TIME_ACTION_ID, {})
+            .get("selected_date_time")
+        )
+        if not picked:
+            await self._update_prompt_message(
+                channel_id=channel_id,
+                message_ts=prompt_ts,
+                text="No time was selected. Please try again.",
+            )
+            return
+
+        start = datetime.fromtimestamp(int(picked), tz=timezone.utc).astimezone(tz)
+        end = start + timedelta(minutes=DEFAULT_PLANNING_DURATION_MINUTES)
+
+        await self._schedule_planning_event(
+            user_id=user_id,
+            channel_id=channel_id,
+            thread_ts=prompt_ts,
+            calendar_id=calendar_id,
+            start=start,
+            end=end,
+            tz=tz,
+        )
+
     async def maybe_handle_time_reply(
         self,
         *,
@@ -181,10 +341,16 @@ class PlanningCoordinator:
         thread_ts: str | None,
         text: str,
     ) -> bool:
-        if not thread_ts:
-            return False
-        pending = self.pending_metadata(channel_id=channel_id, thread_ts=thread_ts)
+        pending: dict[str, str] | None
+        if thread_ts:
+            pending = self.pending_metadata(channel_id=channel_id, thread_ts=thread_ts)
+        else:
+            # In DMs, users often reply inline instead of in a thread; accept that.
+            pending = self._pending_by_user.get((channel_id, user_id))
         if not pending:
+            return False
+        prompt_ts = pending.get("prompt_ts") or thread_ts
+        if not prompt_ts:
             return False
 
         tz_name = pending.get("tz") or DEFAULT_PLANNING_TIMEZONE
@@ -204,7 +370,7 @@ class PlanningCoordinator:
         await self._schedule_planning_event(
             user_id=user_id,
             channel_id=channel_id,
-            thread_ts=thread_ts,
+            thread_ts=prompt_ts,
             calendar_id=pending.get("calendar_id") or "primary",
             start=start,
             end=end,
@@ -224,41 +390,67 @@ class PlanningCoordinator:
         tz: ZoneInfo,
     ) -> None:
         anchor = await self.ensure_anchor(user_id=user_id, channel_id=channel_id, calendar_id=calendar_id)
-        await self._client.chat_postMessage(
-            channel=channel_id,
-            thread_ts=thread_ts,
+        await self._update_prompt_message(
+            channel_id=channel_id,
+            message_ts=thread_ts,
             text=f"Scheduling *Planning session* at {start.strftime('%a %H:%M')}–{end.strftime('%H:%M')} ({tz.key})…",
         )
 
         runtime_key = FocusManager.thread_key(channel_id, thread_ts=thread_ts, ts=thread_ts)
-        prompt = (
-            "Schedule a planning session on Google Calendar.\n"
-            "If an event with this eventId already exists, update it instead of creating a duplicate.\n\n"
-            f"calendarId: {calendar_id}\n"
-            f"eventId: {anchor.event_id}\n"
-            "summary: Planning session\n"
-            f"start: {start.replace(tzinfo=None).isoformat(timespec='seconds')}\n"
-            f"end: {end.replace(tzinfo=None).isoformat(timespec='seconds')}\n"
-            f"timeZone: {tz.key}\n"
-            "colorId: 10\n"
-        )
         result = await self._runtime.send_message(
-            TextMessage(content=prompt, source=user_id),
+            UpsertCalendarEvent(
+                user_id=user_id,
+                calendar_id=calendar_id,
+                event_id=anchor.event_id,
+                summary="Planning session",
+                start=start.replace(tzinfo=None).isoformat(timespec="seconds"),
+                end=end.replace(tzinfo=None).isoformat(timespec="seconds"),
+                time_zone=tz.key,
+                color_id="10",
+            ),
             recipient=AgentId("planner_agent", key=runtime_key),
         )
-        content = _extract_text(result)
-        await self._client.chat_postMessage(
-            channel=channel_id,
-            thread_ts=thread_ts,
-            text=content or "Done.",
+        await self._update_prompt_message(
+            channel_id=channel_id,
+            message_ts=thread_ts,
+            text=(result.text if isinstance(result, SlackBlockMessage) else _extract_text(result))
+            or "Done.",
+            blocks=(result.blocks if isinstance(result, SlackBlockMessage) else None),
         )
 
         self._pending.pop((channel_id, thread_ts), None)
+        self._pending_by_user.pop((channel_id, user_id), None)
         if self._guardian:
             try:
                 await self._guardian.reconcile_user(user_id=anchor.user_id)
             except Exception:
                 logger.exception("Planning guardian reconcile_user failed after scheduling")
+
+    async def _update_prompt_message(
+        self,
+        *,
+        channel_id: str,
+        message_ts: str,
+        text: str,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> None:
+        try:
+            payload: dict[str, Any] = {"channel": channel_id, "ts": message_ts, "text": text}
+            if blocks:
+                payload["blocks"] = blocks
+            await self._client.chat_update(**payload)
+        except Exception:
+            # Fallback: if the original message can't be updated, at least post a visible reply.
+            try:
+                is_dm = str(channel_id).startswith("D")
+                payload = {"channel": channel_id, "text": text}
+                if blocks:
+                    payload["blocks"] = blocks
+                if not is_dm:
+                    payload["thread_ts"] = message_ts
+                await self._client.chat_postMessage(**payload)
+            except Exception:
+                logger.exception("Failed to update or post planning prompt message")
 
     async def _resolve_dm_channel(self, *, user_id: str) -> str | None:
         try:
@@ -314,7 +506,7 @@ class PlanningCoordinator:
                     {
                         "type": "button",
                         "action_id": FF_PLANNING_PICK_TIME_ACTION_ID,
-                        "text": {"type": "plain_text", "text": "Pick another time"},
+                        "text": {"type": "plain_text", "text": "Pick a time"},
                         "value": value,
                     },
                 ],
@@ -452,6 +644,43 @@ def _extract_text(result: Any) -> str:
 __all__ = [
     "FF_PLANNING_PICK_TIME_ACTION_ID",
     "FF_PLANNING_SCHEDULE_ACTION_ID",
+    "FF_PLANNING_TIME_MODAL_CALLBACK_ID",
     "PlanningCoordinator",
     "planning_event_id_for_user",
 ]
+
+
+def _build_planning_time_modal(
+    *,
+    private_metadata: str,
+    initial_date_time: int,
+    tz: str,
+    duration_minutes: int,
+) -> dict[str, Any]:
+    return {
+        "type": "modal",
+        "callback_id": FF_PLANNING_TIME_MODAL_CALLBACK_ID,
+        "private_metadata": private_metadata,
+        "title": {"type": "plain_text", "text": "Schedule planning"},
+        "submit": {"type": "plain_text", "text": "OK"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"Pick a start time. Duration is fixed at *{duration_minutes}m*.\nTime zone: `{tz}`",
+                },
+            },
+            {
+                "type": "input",
+                "block_id": _PLANNING_TIME_INPUT_BLOCK_ID,
+                "label": {"type": "plain_text", "text": "Start time"},
+                "element": {
+                    "type": "datetimepicker",
+                    "action_id": _PLANNING_TIME_ACTION_ID,
+                    "initial_date_time": int(initial_date_time),
+                },
+            },
+        ],
+    }

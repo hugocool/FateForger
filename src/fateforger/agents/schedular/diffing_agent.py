@@ -59,7 +59,9 @@ class PlannerAgentFactory:
         # Create agent with structured output
         agent = AssistantAgent(
             name="PlannerAgent",
-            model_client=build_autogen_chat_client("planner_agent"),
+            model_client=build_autogen_chat_client(
+                "planner_agent", parallel_tool_calls=False
+            ),
             tools=[list_events_tool],
             output_content_type=PlanDiff,  # Structured output into PlanDiff
             system_message="""

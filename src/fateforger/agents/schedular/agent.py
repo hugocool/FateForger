@@ -7,6 +7,8 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+import asyncio
+from zoneinfo import ZoneInfo
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
@@ -20,14 +22,19 @@ from autogen_core import (
 )
 from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
 
+from fateforger.core.config import settings
 from fateforger.debug.diag import with_timeout
 from fateforger.haunt.mixins import HauntAwareAgentMixin
 from fateforger.haunt.models import FollowUpPlan, HauntTone
 from fateforger.haunt.orchestrator import HauntOrchestrator, HauntTicket
+from fateforger.slack_bot.messages import SlackBlockMessage
 from fateforger.tools.calendar_mcp import get_calendar_mcp_tools
 from fateforger.llm import build_autogen_chat_client
 
 from .models import CalendarEvent
+from .messages import UpsertCalendarEvent
+
+from dateutil import parser as date_parser
 
 # THe first planner simply handles the connection to the calendar and single event CRUD.
 # So when the user sends a CalendarEvent, it will create the event in the calendar.
@@ -65,6 +72,7 @@ prompt = (
 
 
 SERVER_URL = os.getenv("CALENDAR_MCP_URL", "http://localhost:3000")
+SERVER_URL = os.getenv("MCP_CALENDAR_SERVER_URL", SERVER_URL)
 
 
 @dataclass
@@ -82,6 +90,203 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             default_channel="planner-thread",
         )
         self._delegate: AssistantAgent | None = None
+        self._workbench: McpWorkbench | None = None
+
+    def _ensure_workbench(self) -> McpWorkbench:
+        if self._workbench:
+            return self._workbench
+        params = StreamableHttpServerParams(url=SERVER_URL, timeout=10.0)
+        self._workbench = McpWorkbench(params)
+        return self._workbench
+
+    @staticmethod
+    def _extract_tool_payload(result: object) -> object:
+        if isinstance(result, dict):
+            return result
+        payload = getattr(result, "content", None)
+        if payload is not None:
+            return payload
+        payload = getattr(result, "result", None)
+        if payload is not None:
+            return payload
+        return {}
+
+    @staticmethod
+    def _normalize_event(payload: object) -> dict | None:
+        if isinstance(payload, dict):
+            if "id" in payload or "summary" in payload:
+                return payload
+            item = payload.get("item")
+            if isinstance(item, dict):
+                return item
+            event = payload.get("event")
+            if isinstance(event, dict):
+                return event
+        if isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict):
+                    return item
+        return None
+
+    @staticmethod
+    def _parse_event_dt(raw: dict | str | None, *, tz: ZoneInfo) -> dt.datetime | None:
+        if not raw:
+            return None
+        if isinstance(raw, str):
+            try:
+                parsed = date_parser.isoparse(raw)
+            except Exception:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=tz)
+            return parsed.astimezone(tz)
+        if isinstance(raw, dict):
+            if raw.get("dateTime"):
+                parsed = date_parser.isoparse(raw["dateTime"])
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=tz)
+                return parsed.astimezone(tz)
+            if raw.get("date"):
+                day = date_parser.isoparse(raw["date"]).date()
+                return dt.datetime.combine(day, dt.time(0, 0), tz)
+        return None
+
+    @classmethod
+    def _format_event_when(cls, event: dict, *, tz: ZoneInfo) -> str | None:
+        start = cls._parse_event_dt(event.get("start"), tz=tz)
+        end = cls._parse_event_dt(event.get("end"), tz=tz)
+        if not start or not end:
+            return None
+        if start.date() == end.date():
+            return f"{start.strftime('%a %d %b %H:%M')}–{end.strftime('%H:%M')} ({tz.key})"
+        return f"{start.strftime('%a %d %b %H:%M')}–{end.strftime('%a %d %b %H:%M')} ({tz.key})"
+
+    @classmethod
+    def _event_blocks(
+        cls,
+        *,
+        title: str,
+        event: dict,
+        calendar_id: str,
+        tz: ZoneInfo,
+        note: str | None = None,
+    ) -> SlackBlockMessage:
+        summary = event.get("summary") or title
+        html_link = event.get("htmlLink")
+        when = cls._format_event_when(event, tz=tz) or "(time unavailable)"
+        event_id = event.get("id") or ""
+
+        blocks: list[dict] = [
+            {"type": "header", "text": {"type": "plain_text", "text": f"📅 {summary}"}},
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*When*\n{when}"},
+                    {"type": "mrkdwn", "text": f"*Calendar*\n`{calendar_id}`"},
+                ],
+            },
+        ]
+        if note:
+            blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": note}]})
+        if html_link:
+            blocks.append(
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "action_id": "ff_open_google_calendar_event",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "Open in Google Calendar",
+                            },
+                            "url": html_link,
+                            "style": "primary",
+                        }
+                    ],
+                }
+            )
+        if event_id:
+            blocks.append(
+                {
+                    "type": "context",
+                    "elements": [{"type": "mrkdwn", "text": f"Event id: `{event_id}`"}],
+                }
+            )
+        return SlackBlockMessage(text=f"{summary}\n{when}", blocks=blocks)
+
+    @message_handler
+    async def handle_upsert_calendar_event(
+        self, message: UpsertCalendarEvent, ctx: MessageContext
+    ) -> SlackBlockMessage | TextMessage:
+        workbench = self._ensure_workbench()
+        tz = ZoneInfo(message.time_zone or "UTC")
+
+        # Prefer deterministic upsert (get → update|create) over LLM tool-routing.
+        exists = False
+        try:
+            fetched = await workbench.call_tool(
+                "get-event",
+                arguments={"calendarId": message.calendar_id, "eventId": message.event_id},
+            )
+            event = self._normalize_event(self._extract_tool_payload(fetched))
+            exists = bool(event)
+        except Exception:
+            exists = False
+
+        try:
+            if exists:
+                await workbench.call_tool(
+                    "update-event",
+                    arguments={
+                        "calendarId": message.calendar_id,
+                        "eventId": message.event_id,
+                        "summary": message.summary,
+                        "start": message.start,
+                        "end": message.end,
+                        "timeZone": message.time_zone,
+                        "colorId": message.color_id,
+                        "description": message.description,
+                    },
+                )
+                note = "Updated existing event."
+            else:
+                await workbench.call_tool(
+                    "create-event",
+                    arguments={
+                        "calendarId": message.calendar_id,
+                        "eventId": message.event_id,
+                        "summary": message.summary,
+                        "start": message.start,
+                        "end": message.end,
+                        "timeZone": message.time_zone,
+                        "colorId": message.color_id,
+                        "description": message.description,
+                    },
+                )
+                note = "Created new event."
+        except Exception as e:
+            return TextMessage(
+                content=f"Failed to schedule that on Google Calendar: {e}",
+                source=self.id.type,
+            )
+
+        try:
+            fetched = await workbench.call_tool(
+                "get-event",
+                arguments={"calendarId": message.calendar_id, "eventId": message.event_id},
+            )
+            event = self._normalize_event(self._extract_tool_payload(fetched)) or {}
+        except Exception:
+            event = {"id": message.event_id, "summary": message.summary}
+
+        return self._event_blocks(
+            title=message.summary,
+            event=event,
+            calendar_id=message.calendar_id,
+            tz=tz,
+            note=note,
+        )
 
     async def _ensure_initialized(self) -> None:
         if self._delegate:
@@ -91,16 +296,18 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         tools = await with_timeout(
             "mcp:get_calendar_mcp_tools",
             get_calendar_mcp_tools(SERVER_URL),
-            timeout_s=5,
+            timeout_s=settings.agent_mcp_discovery_timeout_seconds,
         )
 
         self._delegate = AssistantAgent(
             self.id.type,
             system_message=prompt,
-            model_client=build_autogen_chat_client("planner_agent"),
+            model_client=build_autogen_chat_client(
+                "planner_agent", parallel_tool_calls=False
+            ),
             tools=tools,
-            reflect_on_tool_use=True,
-            max_tool_iterations=5,
+            reflect_on_tool_use=False,
+            max_tool_iterations=3,
         )
 
     @message_handler
@@ -121,23 +328,54 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         assert self._delegate is not None, "Delegate should be initialized"
 
         # (2) wrap the actual LLM/tool run
-        resp = await with_timeout(
-            "assistant:on_messages",
-            self._delegate.on_messages([message], ctx.cancellation_token),
-            timeout_s=20,
-        )
-
-        chat_message = resp.chat_message
-        follow_up = self._follow_up_plan(getattr(chat_message, "content", ""))
-
-        if isinstance(chat_message, TextMessage):
-            await self._log_outbound(
-                session_id=session_id,
-                content=chat_message.content,
-                core_intent=self._summarize(chat_message.content),
-                follow_up=follow_up,
-                tone=HauntTone.SUPPORTIVE,
+        try:
+            resp = await with_timeout(
+                "assistant:on_messages",
+                self._delegate.on_messages([message], ctx.cancellation_token),
+                timeout_s=settings.agent_on_messages_timeout_seconds,
             )
+        except asyncio.TimeoutError:
+            return TextMessage(
+                content=(
+                    "I'm still waiting on the calendar tools. "
+                    "Please try again in a moment (or ask a narrower question like "
+                    "\"what's on my calendar on Sunday between 9 and 12?\")."
+                ),
+                source=self.id.type,
+            )
+
+        chat_message = getattr(resp, "chat_message", None)
+        content = getattr(chat_message, "content", None)
+        if content is None:
+            content = getattr(resp, "content", None)
+
+        # AutoGen can return other BaseTextChatMessage variants (e.g. ToolCallSummaryMessage)
+        # when tools were called. The RoutedAgent return type must remain stable (TextMessage),
+        # so coerce to TextMessage for downstream Slack handlers.
+        if type(chat_message) is not TextMessage:
+            source = getattr(chat_message, "source", None)
+            if not source:
+                try:
+                    source = self.id.type
+                except Exception:
+                    source = "planner_agent"
+            chat_message = TextMessage(
+                content=str(
+                    getattr(chat_message, "content", None)
+                    or content
+                    or "(no response)"
+                ),
+                source=source,
+            )
+
+        follow_up = self._follow_up_plan(chat_message.content)
+        await self._log_outbound(
+            session_id=session_id,
+            content=chat_message.content,
+            core_intent=self._summarize(chat_message.content),
+            follow_up=follow_up,
+            tone=HauntTone.SUPPORTIVE,
+        )
 
         return chat_message
 

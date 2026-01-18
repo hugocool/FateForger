@@ -39,11 +39,19 @@ class _FakeRuntime:
 
 class _FakeClient:
     def __init__(self):
+        self.posted = []
         self.updates = []
+
+    async def chat_postMessage(self, **payload):
+        self.posted.append(payload)
+        return {"channel": payload["channel"], "ts": "p1"}
 
     async def chat_update(self, **payload):
         self.updates.append(payload)
         return {"ok": True}
+
+async def _unused_say(**_kwargs):
+    return {"channel": "C1", "ts": "unused"}
 
 
 @pytest.mark.asyncio
@@ -53,19 +61,13 @@ async def test_routes_root_message_to_timeboxing_start_when_focused():
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
     client = _FakeClient()
 
-    said = {}
-
-    async def say(**kwargs):
-        said.update(kwargs)
-        return {"channel": "C1", "ts": "p1"}
-
     await route_slack_event(
         runtime=runtime,
         focus=focus,
         default_agent="receptionist_agent",
         event={"channel": "C1", "user": "U1", "text": "plan tomorrow", "ts": "111"},
         bot_user_id=None,
-        say=say,
+        say=_unused_say,
         client=client,
     )
 
@@ -89,19 +91,13 @@ async def test_handoff_from_receptionist_resends_as_timeboxing_start():
     )
     client = _FakeClient()
 
-    said = {}
-
-    async def say(**kwargs):
-        said.update(kwargs)
-        return {"channel": "C1", "ts": "p2"}
-
     await route_slack_event(
         runtime=runtime,
         focus=focus,
         default_agent="receptionist_agent",
         event={"channel": "C1", "user": "U1", "text": "timebox tomorrow", "ts": "222"},
         bot_user_id=None,
-        say=say,
+        say=_unused_say,
         client=client,
     )
 
@@ -124,9 +120,6 @@ async def test_routes_thread_reply_to_timeboxing_user_reply():
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
     client = _FakeClient()
 
-    async def say(**kwargs):
-        return {"channel": "C1", "ts": "p3"}
-
     await route_slack_event(
         runtime=runtime,
         focus=focus,
@@ -139,7 +132,7 @@ async def test_routes_thread_reply_to_timeboxing_user_reply():
             "ts": "333",
         },
         bot_user_id=None,
-        say=say,
+        say=_unused_say,
         client=client,
     )
 

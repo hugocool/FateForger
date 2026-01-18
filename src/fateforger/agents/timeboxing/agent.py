@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
+import asyncio
 from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from autogen_agentchat.agents import AssistantAgent
@@ -16,6 +20,8 @@ from autogen_core import (
     RoutedAgent,
     message_handler,
 )
+from dateutil import parser as date_parser
+from zoneinfo import ZoneInfo
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from fateforger.core.config import settings
@@ -28,6 +34,7 @@ from fateforger.tools.constraint_mcp import get_constraint_mcp_tools
 
 from .messages import (
     StartTimeboxing,
+    TimeboxingCommitDate,
     TimeboxingFinalResult,
     TimeboxingUserReply,
     TimeboxingUpdate,
@@ -54,8 +61,12 @@ from .timebox import Timebox
 from .patching import TimeboxPatcher
 from .actions import TimeboxAction
 from .prompts import TIMEBOXING_SYSTEM_PROMPT, DRAFT_PROMPT
-from fateforger.slack_bot.constraint_review import build_review_prompt_blocks
-from fateforger.slack_bot.messages import SlackBlockMessage
+from fateforger.slack_bot.constraint_review import build_review_prompt_blocks, encode_metadata
+from fateforger.slack_bot.messages import SlackBlockMessage, SlackThreadStateMessage
+from fateforger.slack_bot.timeboxing_commit import (
+    FF_TIMEBOX_COMMIT_PICK_DAY_ACTION_ID,
+    FF_TIMEBOX_COMMIT_START_ACTION_ID,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -71,6 +82,12 @@ class Session:
     last_user_message: str | None = None
     last_response: str | None = None
     completed: bool = False
+    committed: bool = False
+    planned_date: str | None = None
+    tz_name: str = "UTC"
+    prefetched_immovables_by_date: Dict[str, List[Dict[str, str]]] = field(
+        default_factory=dict
+    )
     active_constraints: List[Constraint] = field(default_factory=list)
     timebox: Timebox | None = None
     stage: TimeboxingStage = TimeboxingStage.COLLECT_CONSTRAINTS
@@ -90,6 +107,10 @@ class TimeboxingFlowAgent(RoutedAgent):
         self._model_client = build_autogen_chat_client(
             "timeboxing_agent", parallel_tool_calls=False
         )
+        self._draft_model_client = build_autogen_chat_client(
+            "timeboxing_draft", parallel_tool_calls=False
+        )
+        self._calendar_client: _McpCalendarClient | None = None
         self._constraint_store: ConstraintStore | None = None
         self._constraint_engine = None
         self._constraint_agent = self._build_constraint_agent()
@@ -113,6 +134,135 @@ class TimeboxingFlowAgent(RoutedAgent):
             return fallback
         agent = ctx.sender if ctx.sender else None
         return agent.key if agent else "default"
+
+    def _default_tz_name(self) -> str:
+        return getattr(settings, "planning_timezone", "") or "Europe/Amsterdam"
+
+    def _ensure_calendar_client(self) -> _McpCalendarClient | None:
+        if self._calendar_client:
+            return self._calendar_client
+        server_url = os.getenv("MCP_CALENDAR_SERVER_URL", "http://localhost:3000").strip()
+        if not server_url:
+            return None
+        try:
+            self._calendar_client = _McpCalendarClient(
+                server_url=server_url,
+                timeout=float(getattr(settings, "agent_mcp_discovery_timeout_seconds", 10)),
+            )
+        except Exception:
+            logger.debug("Failed to initialize MCP calendar client", exc_info=True)
+            return None
+        return self._calendar_client
+
+    @staticmethod
+    def _infer_planned_date(text: str, *, now: datetime, tz: ZoneInfo) -> str:
+        cleaned = (text or "").strip().lower()
+        match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", cleaned)
+        if match:
+            return match.group(1)
+        if "tomorrow" in cleaned:
+            return (now.astimezone(tz).date() + timedelta(days=1)).isoformat()
+        if "today" in cleaned:
+            return now.astimezone(tz).date().isoformat()
+
+        weekdays = {
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6,
+        }
+        for name, target in weekdays.items():
+            if name not in cleaned:
+                continue
+            base = now.astimezone(tz).date()
+            delta = (target - base.weekday()) % 7
+            if delta == 0:
+                delta = 7 if "next" in cleaned else 0
+            return (base + timedelta(days=delta)).isoformat()
+
+        return now.astimezone(tz).date().isoformat()
+
+    async def _prefetch_calendar_immovables(self, session: Session, planned_date: str) -> None:
+        if planned_date in session.prefetched_immovables_by_date:
+            return
+        client = self._ensure_calendar_client()
+        if not client:
+            return
+        try:
+            tz = ZoneInfo(session.tz_name or "UTC")
+        except Exception:
+            tz = ZoneInfo("UTC")
+        try:
+            immovables = await client.list_day_immovables(
+                calendar_id="primary",
+                day=date.fromisoformat(planned_date),
+                tz=tz,
+            )
+            session.prefetched_immovables_by_date[planned_date] = immovables
+        except Exception:
+            logger.debug("Calendar prefetch failed for %s", planned_date, exc_info=True)
+
+    def _apply_prefetched_calendar_immovables(self, session: Session) -> None:
+        planned_date = session.planned_date
+        if not planned_date:
+            return
+        immovables = session.prefetched_immovables_by_date.get(planned_date) or []
+        if not immovables:
+            return
+        existing = session.frame_facts.get("immovables")
+        if isinstance(existing, list) and existing:
+            return
+        session.frame_facts["immovables"] = immovables
+
+    def _build_commit_prompt_blocks(self, *, session: Session) -> SlackBlockMessage:
+        tz_name = session.tz_name or "UTC"
+        planned_date = session.planned_date or ""
+        meta = encode_metadata(
+            {
+                "channel_id": session.channel_id,
+                "thread_ts": session.thread_ts,
+                "user_id": session.user_id,
+                "date": planned_date,
+                "tz": tz_name,
+            }
+        )
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*Before we start:* confirm which day you want to timebox.\n"
+                        f"Suggested: *{planned_date}* ({tz_name})"
+                    ),
+                },
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "action_id": FF_TIMEBOX_COMMIT_START_ACTION_ID,
+                        "text": {"type": "plain_text", "text": "Start timeboxing"},
+                        "style": "primary",
+                        "value": meta,
+                    },
+                    {
+                        "type": "button",
+                        "action_id": FF_TIMEBOX_COMMIT_PICK_DAY_ACTION_ID,
+                        "text": {"type": "plain_text", "text": "Pick another day"},
+                        "value": meta,
+                    },
+                ],
+            },
+        ]
+        return SlackBlockMessage(
+            text=f"Confirm planned date: {planned_date} ({tz_name})",
+            blocks=blocks,
+        )
 
     async def _ensure_stage_agents(self) -> None:
         if (
@@ -152,7 +302,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         self._draft_agent = AssistantAgent(
             name="StageDraftSkeleton",
-            model_client=self._model_client,
+            model_client=self._draft_model_client,
             tools=tools,
             output_content_type=Timebox,
             system_message=f"{TIMEBOXING_SYSTEM_PROMPT}\n\n{DRAFT_PROMPT}",
@@ -325,7 +475,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             session.stage_missing = list(gate.missing or [])
             session.stage_question = gate.question
             session.frame_facts.update(gate.facts or {})
-            return TextMessage(content=self._format_stage_message(gate))
+            return TextMessage(content=self._format_stage_message(gate), source=self.id.type)
 
         if session.stage == TimeboxingStage.CAPTURE_INPUTS:
             gate = await self._run_stage_gate(
@@ -337,21 +487,27 @@ class TimeboxingFlowAgent(RoutedAgent):
             session.stage_missing = list(gate.missing or [])
             session.stage_question = gate.question
             session.input_facts.update(gate.facts or {})
-            return TextMessage(content=self._format_stage_message(gate))
+            return TextMessage(content=self._format_stage_message(gate), source=self.id.type)
 
         if session.stage == TimeboxingStage.SKELETON:
             if not session.frame_facts and not session.input_facts:
-                return TextMessage(content="Stage 3/5 (Skeleton)\nMissing prior inputs. Please go back to earlier stages.")
+                return TextMessage(
+                    content="Stage 3/5 (Skeleton)\nMissing prior inputs. Please go back to earlier stages.",
+                    source=self.id.type,
+                )
             session.timebox = await self._run_skeleton_draft(session)
             gate = await self._run_timebox_summary(stage=TimeboxingStage.SKELETON, timebox=session.timebox)
             session.stage_ready = gate.ready
             session.stage_missing = list(gate.missing or [])
             session.stage_question = gate.question
-            return TextMessage(content=self._format_stage_message(gate))
+            return TextMessage(content=self._format_stage_message(gate), source=self.id.type)
 
         if session.stage == TimeboxingStage.REFINE:
             if not session.timebox:
-                return TextMessage(content="Stage 4/5 (Refine)\nNo draft timebox yet. Proceed from Skeleton first.")
+                return TextMessage(
+                    content="Stage 4/5 (Refine)\nNo draft timebox yet. Proceed from Skeleton first.",
+                    source=self.id.type,
+                )
             if user_message.strip():
                 constraints = await self._collect_constraints(session)
                 session.timebox = await self._timebox_patcher.apply_patch(
@@ -364,18 +520,21 @@ class TimeboxingFlowAgent(RoutedAgent):
             session.stage_ready = True
             session.stage_missing = []
             session.stage_question = gate.question
-            return TextMessage(content=self._format_stage_message(gate))
+            return TextMessage(content=self._format_stage_message(gate), source=self.id.type)
 
         if session.stage == TimeboxingStage.REVIEW_COMMIT:
             if not session.timebox:
-                return TextMessage(content="Stage 5/5 (ReviewCommit)\nNo draft timebox yet. Go back to Skeleton.")
+                return TextMessage(
+                    content="Stage 5/5 (ReviewCommit)\nNo draft timebox yet. Go back to Skeleton.",
+                    source=self.id.type,
+                )
             gate = await self._run_review_commit(timebox=session.timebox)
             session.stage_ready = True
             session.stage_missing = []
             session.stage_question = gate.question
-            return TextMessage(content=self._format_stage_message(gate))
+            return TextMessage(content=self._format_stage_message(gate), source=self.id.type)
 
-        return TextMessage(content=f"Unknown stage: {session.stage.value}")
+        return TextMessage(content=f"Unknown stage: {session.stage.value}", source=self.id.type)
 
     async def _proceed(self, session: Session) -> None:
         next_map = {
@@ -515,25 +674,61 @@ class TimeboxingFlowAgent(RoutedAgent):
     @message_handler
     async def on_start(
         self, message: StartTimeboxing, ctx: MessageContext
-    ) -> TextMessage:
+    ) -> TextMessage | SlackBlockMessage:
         key = self._session_key(ctx, fallback=message.thread_ts)
         logger.info("Starting timeboxing session on key=%s", key)
+        tz_name = self._default_tz_name()
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("UTC")
+            tz_name = "UTC"
+        planned_date = self._infer_planned_date(
+            message.user_input,
+            now=datetime.now(timezone.utc),
+            tz=tz,
+        )
         session = Session(
             thread_ts=message.thread_ts,
             channel_id=message.channel_id,
             user_id=message.user_id,
             last_user_message=message.user_input,
+            committed=False,
+            planned_date=planned_date,
+            tz_name=tz_name,
         )
         self._sessions[key] = session
-        extracted = await self._extract_constraints(session, message.user_input)
+        asyncio.create_task(self._prefetch_calendar_immovables(session, planned_date))
+        return self._build_commit_prompt_blocks(session=session)
 
-        response = await self._run_stage(session, user_message=message.user_input)
-        actions: List[TimeboxAction] = []
-        await self._publish_update(
-            session=session,
-            user_message=response.content,
-            actions=actions,
-        )
+    @message_handler
+    async def on_commit_date(
+        self, message: TimeboxingCommitDate, ctx: MessageContext
+    ) -> TextMessage | SlackBlockMessage:
+        key = self._session_key(ctx, fallback=message.thread_ts)
+        session = self._sessions.get(key)
+        if not session:
+            session = Session(
+                thread_ts=message.thread_ts,
+                channel_id=message.channel_id,
+                user_id=message.user_id,
+                last_user_message="",
+            )
+            self._sessions[key] = session
+
+        session.committed = True
+        session.planned_date = message.planned_date
+        session.tz_name = message.timezone or session.tz_name or "UTC"
+        session.frame_facts.setdefault("date", message.planned_date)
+        session.frame_facts.setdefault("timezone", session.tz_name)
+
+        await self._prefetch_calendar_immovables(session, message.planned_date)
+        self._apply_prefetched_calendar_immovables(session)
+
+        user_message = session.last_user_message or ""
+        extracted = await self._extract_constraints(session, user_message)
+        response = await self._run_stage(session, user_message=user_message)
+        await self._publish_update(session=session, user_message=response.content, actions=[])
         if extracted:
             return _wrap_with_constraint_review(
                 response,
@@ -545,40 +740,61 @@ class TimeboxingFlowAgent(RoutedAgent):
     @message_handler
     async def on_user_reply(
         self, message: TimeboxingUserReply, ctx: MessageContext
-    ) -> TextMessage:
+    ) -> TextMessage | SlackBlockMessage | SlackThreadStateMessage:
         key = self._session_key(ctx, fallback=message.thread_ts)
         session = self._sessions.get(key)
         if not session:
+            tz_name = self._default_tz_name()
+            try:
+                tz = ZoneInfo(tz_name)
+            except Exception:
+                tz = ZoneInfo("UTC")
+                tz_name = "UTC"
+            planned_date = self._infer_planned_date(
+                message.text,
+                now=datetime.now(timezone.utc),
+                tz=tz,
+            )
             session = Session(
                 thread_ts=message.thread_ts,
                 channel_id=message.channel_id,
                 user_id=message.user_id,
                 last_user_message=message.text,
+                committed=False,
+                planned_date=planned_date,
+                tz_name=tz_name,
             )
             self._sessions[key] = session
-            extracted = await self._extract_constraints(session, message.text)
-            response = await self._run_stage(session, user_message=message.text)
-            actions: List[TimeboxAction] = []
-            await self._publish_update(
-                session=session,
-                user_message=response.content,
-                actions=actions,
+            asyncio.create_task(self._prefetch_calendar_immovables(session, planned_date))
+            return self._build_commit_prompt_blocks(session=session)
+
+        if not session.committed:
+            tz_name = session.tz_name or self._default_tz_name()
+            try:
+                tz = ZoneInfo(tz_name)
+            except Exception:
+                tz = ZoneInfo("UTC")
+                tz_name = "UTC"
+            planned_date = self._infer_planned_date(
+                message.text,
+                now=datetime.now(timezone.utc),
+                tz=tz,
             )
-            if extracted:
-                return _wrap_with_constraint_review(
-                    response,
-                    count=len(extracted.constraints),
-                    session=session,
-                )
-            return response
+            session.planned_date = planned_date
+            session.tz_name = tz_name
+            asyncio.create_task(self._prefetch_calendar_immovables(session, planned_date))
+            return self._build_commit_prompt_blocks(session=session)
 
         extracted = await self._extract_constraints(session, message.text)
         decision = await self._decide_next_action(session, user_message=message.text)
         if decision.action == "cancel":
             session.completed = True
-            reply = TextMessage(content="Okay—stopping this timeboxing session.")
-            await self._publish_update(session=session, user_message=reply.content, actions=[])
-            return reply
+            reply_text = "Okay—stopping this timeboxing session."
+            await self._publish_update(session=session, user_message=reply_text, actions=[])
+            return SlackThreadStateMessage(
+                text=reply_text,
+                thread_state="canceled",
+            )
         if decision.action == "back":
             target = decision.target_stage or self._previous_stage(session.stage)
             await self._advance_stage(session, next_stage=target)
@@ -586,7 +802,10 @@ class TimeboxingFlowAgent(RoutedAgent):
         elif decision.action == "proceed":
             if session.stage == TimeboxingStage.REVIEW_COMMIT:
                 session.completed = True
-                reply = TextMessage(content="Finalized. If you want changes, say so and I can go back to Refine.")
+                reply_text = (
+                    "Finalized. If you want changes, say so and I can go back to Refine."
+                )
+                reply = SlackThreadStateMessage(text=reply_text, thread_state="done")
             else:
                 await self._proceed(session)
                 reply = await self._run_stage(session, user_message="")
@@ -596,32 +815,55 @@ class TimeboxingFlowAgent(RoutedAgent):
 
         await self._publish_update(
             session=session,
-            user_message=reply.content,
+            user_message=getattr(reply, "content", None) or getattr(reply, "text", "") or "",
             actions=[],
         )
         if extracted:
-            return _wrap_with_constraint_review(
-                reply,
-                count=len(extracted.constraints),
-                session=session,
-            )
+            if isinstance(reply, TextMessage):
+                return _wrap_with_constraint_review(
+                    reply,
+                    count=len(extracted.constraints),
+                    session=session,
+                )
         return reply
 
     @message_handler
-    async def on_user_text(self, message: TextMessage, ctx: MessageContext) -> TextMessage:
+    async def on_user_text(
+        self, message: TextMessage, ctx: MessageContext
+    ) -> TextMessage | SlackBlockMessage | SlackThreadStateMessage:
         key = self._session_key(ctx)
         session = self._sessions.get(key)
         if not session:
             return TextMessage(
-                content="Let's start by telling me what window you want to plan."
+                content="Let's start by telling me what window you want to plan.",
+                source=self.id.type,
             )
+        if not session.committed:
+            tz_name = session.tz_name or self._default_tz_name()
+            try:
+                tz = ZoneInfo(tz_name)
+            except Exception:
+                tz = ZoneInfo("UTC")
+                tz_name = "UTC"
+            planned_date = self._infer_planned_date(
+                message.content,
+                now=datetime.now(timezone.utc),
+                tz=tz,
+            )
+            session.planned_date = planned_date
+            session.tz_name = tz_name
+            asyncio.create_task(self._prefetch_calendar_immovables(session, planned_date))
+            return self._build_commit_prompt_blocks(session=session)
         extracted = await self._extract_constraints(session, message.content)
         decision = await self._decide_next_action(session, user_message=message.content)
         if decision.action == "cancel":
             session.completed = True
-            reply = TextMessage(content="Okay—stopping this timeboxing session.")
-            await self._publish_update(session=session, user_message=reply.content, actions=[])
-            return reply
+            reply_text = "Okay—stopping this timeboxing session."
+            await self._publish_update(session=session, user_message=reply_text, actions=[])
+            return SlackThreadStateMessage(
+                text=reply_text,
+                thread_state="canceled",
+            )
         if decision.action == "back":
             target = decision.target_stage or self._previous_stage(session.stage)
             await self._advance_stage(session, next_stage=target)
@@ -629,7 +871,10 @@ class TimeboxingFlowAgent(RoutedAgent):
         elif decision.action == "proceed":
             if session.stage == TimeboxingStage.REVIEW_COMMIT:
                 session.completed = True
-                reply = TextMessage(content="Finalized. If you want changes, say so and I can go back to Refine.")
+                reply_text = (
+                    "Finalized. If you want changes, say so and I can go back to Refine."
+                )
+                reply = SlackThreadStateMessage(text=reply_text, thread_state="done")
             else:
                 await self._proceed(session)
                 reply = await self._run_stage(session, user_message="")
@@ -637,15 +882,16 @@ class TimeboxingFlowAgent(RoutedAgent):
             reply = await self._run_stage(session, user_message=message.content)
         await self._publish_update(
             session=session,
-            user_message=reply.content,
+            user_message=getattr(reply, "content", None) or getattr(reply, "text", "") or "",
             actions=[],
         )
         if extracted:
-            return _wrap_with_constraint_review(
-                reply,
-                count=len(extracted.constraints),
-                session=session,
-            )
+            if isinstance(reply, TextMessage):
+                return _wrap_with_constraint_review(
+                    reply,
+                    count=len(extracted.constraints),
+                    session=session,
+                )
         return reply
 
     @message_handler
@@ -655,7 +901,8 @@ class TimeboxingFlowAgent(RoutedAgent):
         key = self._session_key(ctx)
         self._sessions.pop(key, None)
         return TextMessage(
-            content=f"Session {message.thread_ts} marked {message.status}: {message.summary}"
+            content=f"Session {message.thread_ts} marked {message.status}: {message.summary}",
+            source=self.id.type,
         )
 
 
@@ -804,6 +1051,97 @@ def _wrap_with_constraint_review(
         user_id=session.user_id,
     )
     return SlackBlockMessage(text=message.content, blocks=blocks)
+
+
+class _McpCalendarClient:
+    def __init__(self, *, server_url: str, timeout: float = 10.0) -> None:
+        try:
+            from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError("autogen_ext tools are required for MCP calendar access") from e
+        params = StreamableHttpServerParams(url=server_url, timeout=timeout)
+        self._workbench = McpWorkbench(params)
+
+    @staticmethod
+    def _extract_tool_payload(result: Any) -> Any:
+        if isinstance(result, dict):
+            return result
+        payload = getattr(result, "content", None)
+        if payload is not None:
+            return payload
+        payload = getattr(result, "result", None)
+        if payload is not None:
+            return payload
+        return {}
+
+    @staticmethod
+    def _normalize_events(payload: Any) -> list[dict]:
+        if isinstance(payload, dict):
+            items = payload.get("items")
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+            return []
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _parse_event_dt(raw: dict[str, Any] | None, *, tz: ZoneInfo) -> datetime | None:
+        if not raw:
+            return None
+        if "dateTime" in raw and raw["dateTime"]:
+            dt_val = date_parser.isoparse(raw["dateTime"])
+            return dt_val.astimezone(tz)
+        if "date" in raw and raw["date"]:
+            day_val = date_parser.isoparse(raw["date"]).date()
+            return datetime.combine(day_val, datetime.min.time(), tz)
+        return None
+
+    @staticmethod
+    def _to_hhmm(dt_val: datetime | None, *, tz: ZoneInfo) -> str | None:
+        if not dt_val:
+            return None
+        return dt_val.astimezone(tz).strftime("%H:%M")
+
+    async def list_day_immovables(
+        self, *, calendar_id: str, day: date, tz: ZoneInfo
+    ) -> list[dict[str, str]]:
+        start = (
+            datetime.combine(day, datetime.min.time(), tz)
+            .astimezone(timezone.utc)
+            .isoformat()
+        )
+        end = (
+            (datetime.combine(day, datetime.min.time(), tz) + timedelta(days=1))
+            .astimezone(timezone.utc)
+            .isoformat()
+        )
+        args = {
+            "calendarId": calendar_id,
+            "timeMin": start,
+            "timeMax": end,
+            "singleEvents": True,
+            "orderBy": "startTime",
+        }
+        result = await self._workbench.call_tool("list-events", arguments=args)
+        payload = self._extract_tool_payload(result)
+        events = self._normalize_events(payload)
+
+        immovables: list[dict[str, str]] = []
+        for event in events:
+            if (event.get("status") or "").lower() == "cancelled":
+                continue
+            summary = (event.get("summary") or "").strip() or "Busy"
+            start_dt = self._parse_event_dt(event.get("start"), tz=tz)
+            end_dt = self._parse_event_dt(event.get("end"), tz=tz)
+            if not start_dt or not end_dt or end_dt <= start_dt:
+                continue
+            start_str = self._to_hhmm(start_dt, tz=tz)
+            end_str = self._to_hhmm(end_dt, tz=tz)
+            if not start_str or not end_str:
+                continue
+            immovables.append({"title": summary, "start": start_str, "end": end_str})
+        return immovables
 
 
 def _coerce_async_database_url(database_url: str) -> str:

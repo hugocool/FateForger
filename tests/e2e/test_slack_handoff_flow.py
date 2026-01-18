@@ -45,7 +45,12 @@ class DummySay:
 
 class DummyClient:
     def __init__(self):
+        self.posted = []
         self.updates = []
+
+    async def chat_postMessage(self, **payload):
+        self.posted.append(payload)
+        return {"channel": payload["channel"], "ts": "p1"}
 
     async def chat_update(self, **payload):
         self.updates.append(payload)
@@ -73,8 +78,11 @@ async def test_slack_handoff_sets_focus_and_forwards():
     )
 
     assert runtime.calls == ["receptionist_agent", "planner_agent"]
-    assert say.calls[0]["text"] == ":hourglass_flowing_sand: *receptionist_agent* is thinking..."
-    assert client.updates[-1]["text"] == "*planner_agent*\nPlanner response"
+    assert client.posted[0]["text"] == ":hourglass_flowing_sand: *receptionist_agent* is thinking..."
+    assert any(
+        p.get("text") == "*planner_agent*\nPlanner response" for p in client.posted
+    )
+    assert any("Handed off to *planner_agent*" in (u.get("text") or "") for u in client.updates)
 
     key = FocusManager.thread_key("C1", None, "1")
     binding = focus.get_focus(key)

@@ -110,3 +110,14 @@ def test_openrouter_non_openai_model_id_does_not_require_model_info(monkeypatch)
         "receptionist_agent", model="google/gemini-2.0-flash-001"
     )
     assert client is not None
+
+
+def test_openrouter_api_key_can_fall_back_to_openai_api_key(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "openrouter", raising=False)
+    monkeypatch.setattr(settings, "openrouter_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test", raising=False)
+    monkeypatch.setattr(
+        settings, "openrouter_base_url", "https://openrouter.test/api/v1", raising=False
+    )
+    client = build_autogen_chat_client("tasks_agent", model="google/gemini-2.0-flash-001")
+    assert client is not None

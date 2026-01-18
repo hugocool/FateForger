@@ -3,6 +3,7 @@
   <div class="card">
     <h2>Slack</h2>
     <p class="muted">Configures Slack app tokens and validates them via <code>auth.test</code> (and a brief Socket Mode connect if <code>xapp-</code> is provided).</p>
+    <p class="muted">The wizard also checks permissions required for auto-provisioning channels (via <code>conversations.list</code>). If it says <code>missing_scope</code>, add the scopes in Slack and reinstall the app.</p>
 
     {% if saved %}
       <p class="pill ok">Saved: {{ updates|join(', ') }}</p>

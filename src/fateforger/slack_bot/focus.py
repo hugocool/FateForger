@@ -21,6 +21,14 @@ class ThreadRedirect:
     note: str | None = None
 
 
+@dataclass(frozen=True)
+class ThreadLabel:
+    title: str
+    request_excerpt: str | None
+    state: str
+    set_by_user: str
+
+
 class FocusManager:
     """
     Thread-scoped focus mapping: (channel, thread_ts|ts) -> FocusBinding
@@ -31,6 +39,7 @@ class FocusManager:
         self._cache = TTLCache(maxsize=10_000, ttl=ttl_seconds)
         self._redirects = TTLCache(maxsize=10_000, ttl=ttl_seconds)
         self._user_focus = TTLCache(maxsize=10_000, ttl=ttl_seconds)
+        self._thread_labels = TTLCache(maxsize=10_000, ttl=ttl_seconds)
         self._allowed = set(allowed_agents)
 
     @staticmethod
@@ -99,3 +108,37 @@ class FocusManager:
 
     def get_user_focus(self, user_id: str) -> str | None:
         return self._user_focus.get(user_id)
+
+    def set_thread_label(
+        self,
+        key: str,
+        *,
+        title: str,
+        request_excerpt: str | None,
+        state: str,
+        by_user: str,
+    ) -> ThreadLabel:
+        label = ThreadLabel(
+            title=title.strip(),
+            request_excerpt=(request_excerpt.strip() if request_excerpt else None),
+            state=state.strip(),
+            set_by_user=by_user,
+        )
+        self._thread_labels[key] = label
+        return label
+
+    def get_thread_label(self, key: str) -> ThreadLabel | None:
+        return self._thread_labels.get(key)
+
+    def update_thread_state(self, key: str, *, state: str) -> ThreadLabel | None:
+        label = self._thread_labels.get(key)
+        if not label:
+            return None
+        updated = ThreadLabel(
+            title=label.title,
+            request_excerpt=label.request_excerpt,
+            state=state.strip(),
+            set_by_user=label.set_by_user,
+        )
+        self._thread_labels[key] = updated
+        return updated

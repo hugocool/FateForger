@@ -24,6 +24,17 @@ class StartTimeboxing:
 
 
 @dataclass
+class TimeboxingCommitDate:
+    """Stage 0: user commits the date (before constraints/calendar hydration)."""
+
+    channel_id: str
+    thread_ts: str
+    user_id: str
+    planned_date: str  # YYYY-MM-DD
+    timezone: str  # IANA TZ name
+
+
+@dataclass
 class TimeboxingUserReply:
     """User feedback that should update the in-flight timeboxing session."""
 
@@ -70,6 +81,7 @@ class TimeboxingUpdate:
 
 __all__ = [
     "StartTimeboxing",
+    "TimeboxingCommitDate",
     "TimeboxingUserReply",
     "TimeboxingFinalResult",
     "TimeboxPatchRecord",

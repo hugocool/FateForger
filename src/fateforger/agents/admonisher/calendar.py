@@ -16,6 +16,7 @@ from ...core.config import settings
 from ...core.logging import get_logger
 from fateforger.llm import build_autogen_chat_client
 from .base import BaseHaunter
+from .prompts import ADMONISHER_PERSONA_PROMPT
 
 logger = get_logger(__name__)
 
@@ -75,13 +76,15 @@ class CalendarHaunter(BaseHaunter):
 
             agent = AssistantAgent(
                 name="CalendarHaunter",
-                model_client=build_autogen_chat_client("admonisher_agent"),
-                system_message=(
-                    f"You are a calendar haunter in the FateForger system. "
-                    f"Today is {dt.date.today().isoformat()}. "
-                    f"Use your Google Calendar tools to help users manage their schedules. "
-                    f"Be helpful, conversational, and proactive in suggesting calendar improvements."
+                model_client=build_autogen_chat_client(
+                    "admonisher_agent", parallel_tool_calls=False
                 ),
+                system_message=f"""
+{ADMONISHER_PERSONA_PROMPT}
+
+You are a calendar haunter in the FateForger system. Today is {dt.date.today().isoformat()}.
+Use your Google Calendar tools to help the user manage their schedule. Be precise and proactive.
+""".strip(),
                 tools=tools,  # type: ignore - MCP tools are compatible
             )
 
@@ -206,6 +209,10 @@ async def create_calendar_haunter_agent() -> AssistantAgent:
     return AssistantAgent(
         name="CalendarAgent",
         model_client=build_autogen_chat_client("admonisher_agent"),
-        system_message=f"You are a calendar assistant. Today is {dt.date.today().isoformat()}.",
+        system_message=f"""
+{ADMONISHER_PERSONA_PROMPT}
+
+You are a calendar assistant. Today is {dt.date.today().isoformat()}.
+""".strip(),
         tools=tools,  # type: ignore - MCP tools are compatible
     )

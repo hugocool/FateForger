@@ -1,3 +1,5 @@
+import os
+import sys
 from typing import Optional
 
 from pydantic import Field
@@ -16,11 +18,14 @@ class Settings(BaseSettings):
     slack_port: int = Field(default=3000, env="SLACK_PORT")
     slack_focus_ttl_seconds: int = Field(default=60 * 60, env="SLACK_FOCUS_TTL_SECONDS")
     slack_app_name: str = Field(default="FateForger")
-    slack_timeboxing_channel_id: str = Field(default="", env="SLACK_TIMEBOXING_CHANNEL_ID")
+    slack_timeboxing_channel_id: str = Field(
+        default="", env="SLACK_TIMEBOXING_CHANNEL_ID"
+    )
     slack_strategy_channel_id: str = Field(default="", env="SLACK_STRATEGY_CHANNEL_ID")
     slack_tasks_channel_id: str = Field(default="", env="SLACK_TASKS_CHANNEL_ID")
     slack_ops_channel_id: str = Field(default="", env="SLACK_OPS_CHANNEL_ID")
     slack_general_channel_id: str = Field(default="", env="SLACK_GENERAL_CHANNEL_ID")
+    slack_agent_icon_base_url: str = Field(default="", env="SLACK_AGENT_ICON_BASE_URL")
 
     openai_api_key: str = Field(default="x")
     openai_model: str = Field(default="gpt-4o-mini", env="OPENAI_MODEL")
@@ -44,11 +49,18 @@ class Settings(BaseSettings):
     openrouter_reasoning_effort_header: str = Field(
         default="X-Reasoning-Effort", env="OPENROUTER_REASONING_EFFORT_HEADER"
     )
+    openrouter_default_model_flash: str = Field(
+        default="google/gemini-2.0-flash-001", env="OPENROUTER_DEFAULT_MODEL_FLASH"
+    )
+    openrouter_default_model_pro: str = Field(
+        default="google/gemini-3-flash-preview", env="OPENROUTER_DEFAULT_MODEL_PRO"
+    )
 
     # Per-agent model selection (optional; provider-specific model IDs)
     llm_model_receptionist: str = Field(default="", env="LLM_MODEL_RECEPTIONIST")
     llm_model_admonisher: str = Field(default="", env="LLM_MODEL_ADMONISHER")
     llm_model_timeboxing: str = Field(default="", env="LLM_MODEL_TIMEBOXING")
+    llm_model_timeboxing_draft: str = Field(default="", env="LLM_MODEL_TIMEBOXING_DRAFT")
     llm_model_timebox_patcher: str = Field(default="", env="LLM_MODEL_TIMEBOX_PATCHER")
     llm_model_planner: str = Field(default="", env="LLM_MODEL_PLANNER")
     llm_model_revisor: str = Field(default="", env="LLM_MODEL_REVISOR")
@@ -61,11 +73,17 @@ class Settings(BaseSettings):
     llm_reasoning_effort_timeboxing: str = Field(
         default="", env="LLM_REASONING_EFFORT_TIMEBOXING"
     )
+    llm_reasoning_effort_timeboxing_draft: str = Field(
+        default="", env="LLM_REASONING_EFFORT_TIMEBOXING_DRAFT"
+    )
     llm_reasoning_effort_revisor: str = Field(
         default="", env="LLM_REASONING_EFFORT_REVISOR"
     )
     llm_reasoning_effort_tasks: str = Field(
         default="", env="LLM_REASONING_EFFORT_TASKS"
+    )
+    llm_reasoning_effort_timebox_patcher: str = Field(
+        default="", env="LLM_REASONING_EFFORT_TIMEBOX_PATCHER"
     )
 
     # MCP Server Configuration
@@ -108,8 +126,23 @@ class Settings(BaseSettings):
     environment: str = Field(default="development")
     development: str = Field(default="true")
 
+    wizard_admin_token: str = Field(default="admin_token", env="WIZARD_ADMIN_TOKEN")
+    wizard_session_secret: str = Field(default="", env="WIZARD_SESSION_SECRET")
+
+    # Agent runtime timeouts (seconds)
+    agent_on_messages_timeout_seconds: int = Field(
+        default=60, env="AGENT_ON_MESSAGES_TIMEOUT_SECONDS"
+    )
+    agent_mcp_discovery_timeout_seconds: int = Field(
+        default=10, env="AGENT_MCP_DISCOVERY_TIMEOUT_SECONDS"
+    )
+
     class Config:
-        env_file = ".env"
+        env_file = (
+            None
+            if ("pytest" in sys.modules) or os.getenv("PYTEST_CURRENT_TEST")
+            else os.getenv("FATEFORGER_ENV_FILE", ".env")
+        )
         case_sensitive = False
 
 

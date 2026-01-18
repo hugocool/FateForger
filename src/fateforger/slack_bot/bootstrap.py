@@ -23,11 +23,19 @@ class ChannelSpec:
 
 
 DEFAULT_CHANNEL_SPECS: list[ChannelSpec] = [
-    ChannelSpec(name="timeboxing", agent_type="timeboxing_agent", purpose="Daily schedules & timeboxes"),
-    ChannelSpec(name="strategy", agent_type="revisor_agent", purpose="Reviews, retros, weekly planning"),
-    ChannelSpec(name="tasks", agent_type="tasks_agent", purpose="Task triage, planning, execution"),
-    ChannelSpec(name="ops", agent_type="planner_agent", purpose="Calendar + operational planning"),
+    ChannelSpec(name="plan-sessions", agent_type="timeboxing_agent", purpose="Daily schedules & timeboxes"),
+    ChannelSpec(name="review", agent_type="revisor_agent", purpose="Reviews, retros, weekly planning"),
+    ChannelSpec(name="task-marshalling", agent_type="tasks_agent", purpose="Task triage, planning, execution"),
+    ChannelSpec(name="scheduling", agent_type="planner_agent", purpose="Calendar + operational planning"),
+    ChannelSpec(name="admonishments", agent_type="admonisher_agent", purpose="Automated reminders & nudges (log)"),
 ]
+
+_LEGACY_CHANNEL_ALIASES: dict[str, list[str]] = {
+    "plan-sessions": ["timeboxing"],
+    "task-marshalling": ["tasks"],
+    "review": ["strategy"],
+    "scheduling": ["ops"],
+}
 
 
 async def ensure_workspace_ready(
@@ -57,7 +65,21 @@ async def ensure_workspace_ready(
         logger.warning("Slack auth_test returned no team_id; skipping workspace bootstrap")
         return None
 
-    existing = await _list_channels_by_name(client)
+    try:
+        existing = await _list_channels_by_name(client)
+    except SlackApiError as e:
+        data = getattr(e, "response", None)
+        needed = None
+        if data is not None:
+            try:
+                needed = data.get("needed")
+            except Exception:
+                needed = None
+        logger.warning(
+            "Workspace bootstrap skipped (Slack API missing scopes). needed=%s",
+            needed,
+        )
+        return None
     channels_by_name: Dict[str, str] = {}
     if include_general and "general" in existing:
         channels_by_name["general"] = existing["general"]
@@ -66,6 +88,15 @@ async def ensure_workspace_ready(
     for spec in required_channels:
         name = spec.name.lstrip("#")
         channel_id = existing.get(name)
+        if not channel_id:
+            for legacy_name in _LEGACY_CHANNEL_ALIASES.get(name, []):
+                channel_id = existing.get(legacy_name)
+                if channel_id:
+                    # Try to rename the existing legacy channel to the canonical name.
+                    await _rename_channel_best_effort(
+                        client, channel_id=channel_id, new_name=name
+                    )
+                    break
         if not channel_id:
             channel_id = await _create_channel(client, name=name, is_private=spec.is_private)
             if channel_id:
@@ -172,6 +203,23 @@ async def _join_channel(client: AsyncWebClient, channel_id: str) -> None:
         logger.debug("Failed to join channel %s (error=%s)", channel_id, err)
     except Exception:
         logger.debug("Failed to join channel %s", channel_id, exc_info=True)
+
+
+async def _rename_channel_best_effort(
+    client: AsyncWebClient, *, channel_id: str, new_name: str
+) -> None:
+    try:
+        await client.conversations_rename(channel=channel_id, name=new_name)
+    except SlackApiError as e:
+        err = (e.response or {}).get("error") if hasattr(e, "response") else None
+        # Renames are frequently restricted; treat this as best-effort.
+        logger.debug(
+            "Failed to rename channel %s -> #%s (error=%s)", channel_id, new_name, err
+        )
+    except Exception:
+        logger.debug(
+            "Failed to rename channel %s -> #%s", channel_id, new_name, exc_info=True
+        )
 
 
 async def _post_ready(

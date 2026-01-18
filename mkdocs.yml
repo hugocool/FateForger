@@ -17,6 +17,7 @@ nav:
       - Scheduling: architecture/scheduling.md
   - Reference:
       - MCP Tools: reference/api/mcp_tools.md
+      - LLM Configuration: reference/setup/llm.md
       - Slack Events: reference/slack/events.md
       - Autogen Patterns: reference/autogen/agent_patterns.md
   - Change Log: change_log.md

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Literal, Mapping
 
@@ -10,6 +11,8 @@ from langchain_openai import ChatOpenAI
 from fateforger.core.config import settings
 
 ReasoningEffort = Literal["low", "medium", "high"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -28,7 +31,21 @@ def _openai_compatible_provider_config(
 ) -> OpenAICompatibleProviderConfig:
     provider = _clean(settings.llm_provider).lower() or "openai"
     if provider == "openrouter":
-        api_key = _clean(settings.openrouter_api_key) or _clean(settings.openai_api_key)
+        api_key = _clean(settings.openrouter_api_key)
+        # Back-compat / convenience: if the user put their OpenRouter key into OPENAI_API_KEY,
+        # accept it as a fallback (this is common in OpenAI-compatible stacks).
+        if not api_key:
+            openai_key = _clean(settings.openai_api_key)
+            if openai_key and openai_key != "x":
+                logger.warning(
+                    "OPENROUTER_API_KEY is not set; falling back to OPENAI_API_KEY for OpenRouter auth"
+                )
+                api_key = openai_key
+        if not api_key:
+            raise RuntimeError(
+                "LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set. "
+                "Add OPENROUTER_API_KEY to `.env` (or set OPENAI_API_KEY to your OpenRouter key)."
+            )
         base_url = _clean(settings.openrouter_base_url) or "https://openrouter.ai/api/v1"
         headers: dict[str, str] = {}
         if _clean(settings.openrouter_http_referer):
@@ -55,7 +72,8 @@ def _model_for_agent(agent_type: str) -> str:
 
     # Provider-specific defaults; override via `LLM_MODEL_*` env vars.
     openai_default = _clean(settings.openai_model) or "gpt-4o-mini"
-    openrouter_flash = "google/gemini-2.0-flash-001"
+    openrouter_flash = _clean(getattr(settings, "openrouter_default_model_flash", "")) or "google/gemini-2.0-flash-001"
+    openrouter_pro = _clean(getattr(settings, "openrouter_default_model_pro", "")) or "google/gemini-3-flash-preview"
 
     def pick(override: str, *, openai: str, openrouter: str) -> str:
         override = _clean(override)
@@ -75,11 +93,15 @@ def _model_for_agent(agent_type: str) -> str:
         return pick(
             settings.llm_model_timeboxing, openai=openai_default, openrouter=openrouter_flash
         )
+    if agent_type == "timeboxing_draft":
+        return pick(
+            settings.llm_model_timeboxing_draft, openai="gpt-4o", openrouter=openrouter_pro
+        )
     if agent_type == "revisor_agent":
-        return pick(settings.llm_model_revisor, openai="gpt-4o", openrouter=openrouter_flash)
+        return pick(settings.llm_model_revisor, openai="gpt-4o", openrouter=openrouter_pro)
     if agent_type == "tasks_agent":
         return pick(
-            settings.llm_model_tasks, openai=openai_default, openrouter=openrouter_flash
+            settings.llm_model_tasks, openai=openai_default, openrouter=openrouter_pro
         )
     if agent_type == "calendar_submitter":
         return pick(
@@ -91,7 +113,7 @@ def _model_for_agent(agent_type: str) -> str:
         return pick(
             settings.llm_model_timebox_patcher,
             openai=openai_default,
-            openrouter=openrouter_flash,
+            openrouter=openrouter_pro,
         )
     if agent_type == "admonisher_agent":
         return pick(
@@ -116,10 +138,14 @@ def _reasoning_effort_for_agent(agent_type: str) -> ReasoningEffort | None:
 
     if agent_type == "timeboxing_agent":
         return normalize(settings.llm_reasoning_effort_timeboxing) or "high"
+    if agent_type == "timeboxing_draft":
+        return normalize(settings.llm_reasoning_effort_timeboxing_draft) or "high"
     if agent_type == "revisor_agent":
         return normalize(settings.llm_reasoning_effort_revisor) or "medium"
     if agent_type == "tasks_agent":
         return normalize(settings.llm_reasoning_effort_tasks) or "medium"
+    if agent_type == "timebox_patcher":
+        return normalize(settings.llm_reasoning_effort_timebox_patcher) or "high"
     return None
 
 

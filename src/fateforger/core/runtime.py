@@ -25,6 +25,7 @@ from fateforger.agents.tasks import TasksAgent
 from fateforger.agents.timeboxing.agent import TimeboxingFlowAgent
 from fateforger.core.config import settings
 from fateforger.haunt.agents import HauntingAgent, UserChannelAgent
+from fateforger.haunt.delivery import deliver_user_facing
 from fateforger.haunt.intervention import HauntingInterventionHandler
 from fateforger.haunt.messages import UserFacingMessage
 from fateforger.haunt.orchestrator import HauntOrchestrator
@@ -84,7 +85,7 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     await UserChannelAgent.register(
         runtime,
         USER_CHANNEL_AGENT_TYPE,
-        lambda: UserChannelAgent(USER_CHANNEL_AGENT_TYPE),
+        lambda: UserChannelAgent(USER_CHANNEL_AGENT_TYPE, deliver=deliver_user_facing),
     )
     await HauntingAgent.register(
         runtime,

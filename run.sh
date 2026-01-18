@@ -17,7 +17,7 @@ else
 fi
 
 # Check required environment variables
-required_vars=("SLACK_BOT_TOKEN" "SLACK_SIGNING_SECRET" "SLACK_APP_TOKEN" "OPENAI_API_KEY")
+required_vars=("SLACK_BOT_TOKEN" "SLACK_SIGNING_SECRET" "SLACK_APP_TOKEN")
 missing_vars=()
 
 for var in "${required_vars[@]}"; do
@@ -25,6 +25,18 @@ for var in "${required_vars[@]}"; do
         missing_vars+=("$var")
     fi
 done
+
+# LLM key requirement depends on provider.
+LLM_PROVIDER_VALUE="${LLM_PROVIDER:-openai}"
+if [ "$LLM_PROVIDER_VALUE" = "openrouter" ]; then
+    if [ -z "${OPENROUTER_API_KEY}" ] && [ -z "${OPENAI_API_KEY}" ]; then
+        missing_vars+=("OPENROUTER_API_KEY (or OPENAI_API_KEY as fallback)")
+    fi
+else
+    if [ -z "${OPENAI_API_KEY}" ]; then
+        missing_vars+=("OPENAI_API_KEY")
+    fi
+fi
 
 if [ ${#missing_vars[@]} -ne 0 ]; then
     echo "❌ Missing required environment variables:"
