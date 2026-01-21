@@ -64,6 +64,7 @@ class PlanningGuardian:
             user_id=anchor.user_id,
             channel_id=anchor.channel_id,
             planning_event_id=anchor.event_id,
+            first_nudge_offset=timedelta(seconds=0),
             now=self._now(),
         )
 
@@ -96,4 +97,3 @@ class PlanningGuardian:
 
 
 __all__ = ["PlanningGuardian"]
-

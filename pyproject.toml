@@ -72,6 +72,8 @@ pymdown-extensions = "^10.16"
 mkdocstrings-python = "^1.16.12"
 flake8 = "^7.3.0"
 mypy = "^1.17.0"
+ipykernel = "^7.1.0"
+nbclient = "^0.10.4"
 
 [tool.poetry.scripts]
 plan = "productivity_bot.planner_bot:main"

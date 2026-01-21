@@ -1,61 +1,68 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-import re
-import base64
-import hashlib
+import uuid
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
-from typing import Any, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
+from autogen_core import AgentId
 from dateutil import parser as date_parser
 from slack_sdk.web.async_client import AsyncWebClient
 
-from autogen_agentchat.messages import TextMessage
-from autogen_core import AgentId
-
-from fateforger.agents.schedular.messages import UpsertCalendarEvent
-from fateforger.core.config import settings
+from fateforger.agents.schedular.messages import (
+    SuggestedSlot,
+    SuggestNextSlot,
+    UpsertCalendarEvent,
+    UpsertCalendarEventResult,
+)
+from fateforger.haunt.event_draft_store import (
+    DraftStatus,
+    EventDraftPayload,
+    SqlAlchemyEventDraftStore,
+)
 from fateforger.haunt.planning_guardian import PlanningGuardian
-from fateforger.haunt.planning_store import PlanningAnchorPayload, SqlAlchemyPlanningAnchorStore
+from fateforger.haunt.planning_store import (
+    PlanningAnchorPayload,
+    SqlAlchemyPlanningAnchorStore,
+)
 from fateforger.haunt.reconcile import PlanningReconciler, PlanningReminder
-from fateforger.slack_bot.constraint_review import decode_metadata, encode_metadata
+from fateforger.haunt.timeboxing_activity import timeboxing_activity
 from fateforger.slack_bot.focus import FocusManager
-from fateforger.slack_bot.messages import SlackBlockMessage
-from fateforger.slack_bot.ui import link_button
 from fateforger.slack_bot.workspace import DEFAULT_PERSONAS, WorkspaceRegistry
-from fateforger.slack_bot.workspace import WorkspaceRegistry
 
 logger = logging.getLogger(__name__)
 
-FF_PLANNING_SCHEDULE_ACTION_ID = "ff_planning_schedule_suggested"
-FF_PLANNING_PICK_TIME_ACTION_ID = "ff_planning_pick_time"
-FF_PLANNING_TIME_MODAL_CALLBACK_ID = "ff_planning_time_modal"
 
-_PLANNING_TIME_INPUT_BLOCK_ID = "planning_time_input"
-_PLANNING_TIME_ACTION_ID = "planning_time_select"
+FF_EVENT_START_AT_ACTION_ID = "start_at"
+FF_EVENT_START_DATE_ACTION_ID = "start_date"
+FF_EVENT_START_TIME_ACTION_ID = "start_time"
+FF_EVENT_DURATION_ACTION_ID = "duration_min"
+FF_EVENT_ADD_ACTION_ID = "add_to_calendar"
+FF_EVENT_ADD_DISABLED_ACTION_ID = "add_to_calendar_disabled"
+FF_EVENT_RETRY_ACTION_ID = "retry_add_to_calendar"
+FF_EVENT_OPEN_URL_ACTION_ID = "open_event_url"
 
-DEFAULT_PLANNING_DURATION_MINUTES = 30
-DEFAULT_PLANNING_TIMEZONE = "Europe/Amsterdam"
-DEFAULT_WORK_START = time(9, 0)
-DEFAULT_WORK_END = time(18, 0)
+FF_EVENT_BLOCK_DESC = "desc"
+FF_EVENT_BLOCK_SUMMARY = "summary"
+FF_EVENT_BLOCK_EDIT = "edit_controls"
+FF_EVENT_BLOCK_STATUS = "status"
+
+DEFAULT_PLANNING_TITLE = "Daily planning session"
+DEFAULT_PLANNING_DESCRIPTION = "Plan tomorrow’s priorities and prep for shutdown."
+DEFAULT_DURATION_OPTIONS = (15, 30, 45, 60, 90, 120)
+DEFAULT_DURATION_MINUTES = 30
+DEFAULT_TIMEZONE = "Europe/Amsterdam"
 
 
 @dataclass(frozen=True)
-class PlanningSuggestion:
-    start: datetime
-    end: datetime
+class SlotSuggestion:
+    start_utc: datetime
+    end_utc: datetime
     tz: str
-
-
-def planning_event_id_for_user(user_id: str) -> str:
-    # The Google Calendar MCP server validates custom event IDs as base32hex:
-    # lowercase letters a-v and digits 0-9 only (no hyphens/underscores).
-    cleaned = re.sub(r"\s+", "", (user_id or "").strip().lower())
-    digest = hashlib.sha1(cleaned.encode("utf-8")).digest()
-    token = base64.b32hexencode(digest).decode("ascii").lower().rstrip("=")
-    return ("ffplanning" + token)[:64]
 
 
 class PlanningCoordinator:
@@ -66,13 +73,27 @@ class PlanningCoordinator:
         self._anchor_store: SqlAlchemyPlanningAnchorStore | None = getattr(
             runtime, "planning_anchor_store", None
         )
-        self._guardian: PlanningGuardian | None = getattr(runtime, "planning_guardian", None)
+        self._draft_store: SqlAlchemyEventDraftStore | None = getattr(
+            runtime, "event_draft_store", None
+        )
+        self._guardian: PlanningGuardian | None = getattr(
+            runtime, "planning_guardian", None
+        )
         self._reconciler: PlanningReconciler | None = getattr(
             runtime, "planning_reconciler", None
         )
-        self._pending: dict[tuple[str, str], dict[str, str]] = {}
-        # DM-friendly fallback: allow "pick another time" replies without requiring thread replies.
-        self._pending_by_user: dict[tuple[str, str], dict[str, str]] = {}
+        if self._guardian:
+            timeboxing_activity.set_on_idle(self._handle_timeboxing_idle)
+
+    async def _handle_timeboxing_idle(self, user_id: str) -> None:
+        if not self._guardian:
+            return
+        try:
+            await self._guardian.reconcile_user(user_id=user_id)
+        except Exception:
+            logger.exception(
+                "Planning guardian reconcile_user failed after idle for %s", user_id
+            )
 
     def attach_reconciler_dispatch(self) -> None:
         if not self._reconciler:
@@ -86,10 +107,15 @@ class PlanningCoordinator:
         channel_id: str | None,
         calendar_id: str = "primary",
     ) -> PlanningAnchorPayload:
+        from fateforger.slack_bot.planning_ids import planning_event_id_for_user
+
         event_id = planning_event_id_for_user(user_id)
         if not self._anchor_store:
             return PlanningAnchorPayload(
-                user_id=user_id, channel_id=channel_id, calendar_id=calendar_id, event_id=event_id
+                user_id=user_id,
+                channel_id=channel_id,
+                calendar_id=calendar_id,
+                event_id=event_id,
             )
 
         existing = await self._anchor_store.get(user_id=user_id)
@@ -101,7 +127,9 @@ class PlanningCoordinator:
             event_id=event_id,
         )
 
-    async def maybe_register_user(self, *, user_id: str, channel_id: str, channel_type: str) -> None:
+    async def maybe_register_user(
+        self, *, user_id: str, channel_id: str, channel_type: str
+    ) -> None:
         if not user_id:
             return
         preferred_channel = channel_id if channel_type == "im" else None
@@ -110,347 +138,418 @@ class PlanningCoordinator:
             try:
                 await self._guardian.reconcile_user(user_id=user_id)
             except Exception:
-                logger.exception("Planning guardian reconcile_user failed for %s", user_id)
+                logger.exception(
+                    "Planning guardian reconcile_user failed for %s", user_id
+                )
 
     async def dispatch_planning_reminder(self, reminder: PlanningReminder) -> None:
-        user_id = reminder.user_id
-        if not user_id:
+        if not reminder.user_id:
+            logger.debug("dispatch_planning_reminder: no user_id, skipping")
             return
-
-        directory = WorkspaceRegistry.get_global()
-        admonishments_channel_id = (
-            (directory.channel_for_name("admonishments") if directory else "") or ""
-        ).strip()
-
-        dm_channel = await self._resolve_dm_channel(user_id=user_id)
-        if not dm_channel:
-            return
-
-        anchor = await self.ensure_anchor(user_id=user_id, channel_id=dm_channel)
-        suggestion = await self._suggest_slot(anchor.calendar_id)
-
-        blocks = self._build_reminder_blocks(reminder, anchor, suggestion)
-
-        directory = WorkspaceRegistry.get_global()
-        persona = (
-            directory.persona_for_agent("admonisher_agent")
-            if directory
-            else DEFAULT_PERSONAS.get("admonisher_agent")
-        )
-
-        if admonishments_channel_id:
-            try:
-                payload = {
-                    "channel": admonishments_channel_id,
-                    "text": f"<@{user_id}>: {reminder.message}",
-                }
-                if persona and persona.username:
-                    payload["username"] = persona.username
-                if persona and persona.icon_emoji:
-                    payload["icon_emoji"] = persona.icon_emoji
-                if persona and persona.icon_url:
-                    payload["icon_url"] = persona.icon_url
-                log = await self._client.chat_postMessage(**payload)
-                log_ts = log.get("ts")
-                if log_ts:
-                    perma = await self._client.chat_getPermalink(
-                        channel=admonishments_channel_id, message_ts=log_ts
-                    )
-                    log_link = perma.get("permalink")
-                    if log_link:
-                        # Add a deep-link button to the DM prompt so the user can jump to the log thread.
-                        for block in blocks:
-                            if block.get("type") == "actions":
-                                elems = block.get("elements") or []
-                                if isinstance(elems, list) and len(elems) < 5:
-                                    elems.append(
-                                        link_button(
-                                            text="Open log",
-                                            url=log_link,
-                                            action_id="ff_open_admonishments_log",
-                                        )
-                                    )
-                                    block["elements"] = elems
-                                break
-            except Exception:
-                logger.debug("Failed to post planning reminder to #admonishments", exc_info=True)
-
-        payload = {"channel": dm_channel, "text": reminder.message, "blocks": blocks}
-        if persona and persona.username:
-            payload["username"] = persona.username
-        if persona and persona.icon_emoji:
-            payload["icon_emoji"] = persona.icon_emoji
-        if persona and persona.icon_url:
-            payload["icon_url"] = persona.icon_url
-        resp = await self._client.chat_postMessage(**payload)
-        root_ts = resp.get("ts")
-        if root_ts and suggestion:
-            meta = {
-                "user_id": user_id,
-                "calendar_id": anchor.calendar_id,
-                "event_id": anchor.event_id,
-                "start": suggestion.start.astimezone(timezone.utc).isoformat(),
-                "end": suggestion.end.astimezone(timezone.utc).isoformat(),
-                "tz": suggestion.tz,
-                "prompt_ts": root_ts,
-            }
-            self._pending[(dm_channel, root_ts)] = meta
-            self._pending_by_user[(dm_channel, user_id)] = meta
-
-    async def handle_schedule_action(
-        self, *, value: str, channel_id: str, thread_ts: str, actor_user_id: str | None
-    ) -> None:
-        metadata = self.decode_action_value(value)
-        user_id = metadata.get("user_id") or actor_user_id or ""
-        if not user_id:
-            return
-
-        calendar_id = metadata.get("calendar_id") or "primary"
-        event_id = metadata.get("event_id") or planning_event_id_for_user(user_id)
-        tz_name = metadata.get("tz") or DEFAULT_PLANNING_TIMEZONE
-        tz = ZoneInfo(tz_name)
-
-        start_utc = metadata.get("start")
-        end_utc = metadata.get("end")
-        if start_utc and end_utc:
-            start = date_parser.isoparse(start_utc).astimezone(tz)
-            end = date_parser.isoparse(end_utc).astimezone(tz)
-        else:
-            suggestion = await self._suggest_slot(calendar_id)
-            if not suggestion:
-                await self._update_prompt_message(
-                    channel_id=channel_id,
-                    message_ts=thread_ts,
-                    text="I couldn't find a free 30m slot. Reply with a specific time (e.g. `tomorrow 10:00`).",
-                )
-                return
-            start, end = suggestion.start, suggestion.end
-
-        await self._schedule_planning_event(
-            user_id=user_id,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-            calendar_id=calendar_id,
-            start=start,
-            end=end,
-            tz=tz,
-        )
-
-    async def handle_pick_time_action(self, *, channel_id: str, thread_ts: str) -> None:
-        await self._client.chat_postMessage(
-            channel=channel_id,
-            thread_ts=thread_ts,
-            text="Reply with a time like `today 16:00` or `tomorrow 10:00`.",
-        )
-
-    async def handle_pick_time_modal(
-        self,
-        *,
-        trigger_id: str,
-        value: str,
-        channel_id: str,
-        thread_ts: str,
-        actor_user_id: str | None,
-    ) -> None:
-        metadata = self.decode_action_value(value)
-        user_id = metadata.get("user_id") or actor_user_id or ""
-        if not user_id:
-            return
-
-        calendar_id = metadata.get("calendar_id") or "primary"
-        event_id = metadata.get("event_id") or planning_event_id_for_user(user_id)
-        tz_name = metadata.get("tz") or DEFAULT_PLANNING_TIMEZONE
-        tz = ZoneInfo(tz_name)
-
-        start_utc = metadata.get("start")
-        if start_utc:
-            start = date_parser.isoparse(start_utc).astimezone(tz)
-        else:
-            suggestion = await self._suggest_slot(calendar_id)
-            start = suggestion.start if suggestion else datetime.now(timezone.utc).astimezone(tz)
-
-        initial_ts = int(start.astimezone(timezone.utc).timestamp())
-        private_metadata = encode_metadata(
-            {
-                "user_id": user_id,
-                "calendar_id": calendar_id,
-                "event_id": event_id,
-                "tz": tz.key,
-                # The message we're updating lives at this ts.
-                "prompt_ts": thread_ts,
-                "channel_id": channel_id,
-            }
-        )
-        view = _build_planning_time_modal(
-            private_metadata=private_metadata,
-            initial_date_time=initial_ts,
-            tz=tz.key,
-            duration_minutes=DEFAULT_PLANNING_DURATION_MINUTES,
-        )
-        await self._client.views_open(trigger_id=trigger_id, view=view)
-
-    async def handle_time_modal_submission(
-        self,
-        *,
-        private_metadata: str,
-        state_values: dict[str, Any],
-        actor_user_id: str | None,
-    ) -> None:
-        metadata = decode_metadata(private_metadata)
-        user_id = metadata.get("user_id") or actor_user_id or ""
-        channel_id = metadata.get("channel_id") or ""
-        prompt_ts = metadata.get("prompt_ts") or ""
-        if not (user_id and channel_id and prompt_ts):
-            return
-
-        calendar_id = metadata.get("calendar_id") or "primary"
-        tz_name = metadata.get("tz") or DEFAULT_PLANNING_TIMEZONE
-        tz = ZoneInfo(tz_name)
-
-        picked = (
-            (state_values.get(_PLANNING_TIME_INPUT_BLOCK_ID) or {})
-            .get(_PLANNING_TIME_ACTION_ID, {})
-            .get("selected_date_time")
-        )
-        if not picked:
-            await self._update_prompt_message(
-                channel_id=channel_id,
-                message_ts=prompt_ts,
-                text="No time was selected. Please try again.",
+        if timeboxing_activity.is_active(reminder.user_id):
+            logger.info(
+                "dispatch_planning_reminder: timeboxing active for %s; skipping",
+                reminder.user_id,
             )
             return
+        if not self._draft_store:
+            logger.warning("event_draft_store not configured; skipping planning card")
+            return
 
-        start = datetime.fromtimestamp(int(picked), tz=timezone.utc).astimezone(tz)
-        end = start + timedelta(minutes=DEFAULT_PLANNING_DURATION_MINUTES)
-
-        await self._schedule_planning_event(
-            user_id=user_id,
-            channel_id=channel_id,
-            thread_ts=prompt_ts,
-            calendar_id=calendar_id,
-            start=start,
-            end=end,
-            tz=tz,
+        logger.info(
+            "dispatch_planning_reminder: starting for user %s", reminder.user_id
         )
 
-    async def maybe_handle_time_reply(
+        try:
+            dm_channel = await self._resolve_dm_channel(user_id=reminder.user_id)
+            if not dm_channel:
+                logger.warning(
+                    "dispatch_planning_reminder: could not resolve DM channel"
+                )
+                return
+
+            anchor = await self.ensure_anchor(
+                user_id=reminder.user_id, channel_id=dm_channel
+            )
+            logger.debug(
+                "dispatch_planning_reminder: got anchor, suggesting next slot..."
+            )
+
+            # Use a timeout for slot suggestion to avoid blocking
+            try:
+                suggested = await asyncio.wait_for(
+                    self._suggest_next_slot(calendar_id=anchor.calendar_id),
+                    timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "dispatch_planning_reminder: slot suggestion timed out, using defaults"
+                )
+                suggested = None
+
+            logger.debug(
+                "dispatch_planning_reminder: got suggested slot: %s", suggested
+            )
+            start_utc = (
+                suggested.start_utc
+                if suggested
+                else (datetime.now(timezone.utc) + timedelta(minutes=30))
+            )
+            end_utc = (
+                suggested.end_utc
+                if suggested
+                else (start_utc + timedelta(minutes=DEFAULT_DURATION_MINUTES))
+            )
+            tz_name = (
+                suggested.tz if suggested else DEFAULT_TIMEZONE
+            ) or DEFAULT_TIMEZONE
+
+            draft_id = f"draft_{uuid.uuid4().hex}"
+            logger.debug("dispatch_planning_reminder: creating draft %s", draft_id)
+            draft = await self._draft_store.create(
+                draft_id=draft_id,
+                user_id=reminder.user_id,
+                channel_id=dm_channel,
+                calendar_id=anchor.calendar_id,
+                event_id=anchor.event_id,
+                title=DEFAULT_PLANNING_TITLE,
+                description=DEFAULT_PLANNING_DESCRIPTION,
+                timezone=tz_name,
+                start_at_utc=start_utc.isoformat(),
+                duration_min=DEFAULT_DURATION_MINUTES,
+            )
+            logger.debug("dispatch_planning_reminder: draft created")
+
+            status_lines = []
+            if reminder.message:
+                status_lines.append(reminder.message)
+            status_lines.append("_Not added yet_")
+            payload = _card_payload(draft, status_override="\n".join(status_lines))
+            logger.debug(
+                "dispatch_planning_reminder: card payload built with %d blocks",
+                len(payload.get("blocks", [])),
+            )
+
+            # Post admonishment (with interactive card) to the admonishments channel
+            await self._post_admonishment_log(reminder, card_payload=payload)
+            logger.debug(
+                "dispatch_planning_reminder: posted admonishment log with card"
+            )
+
+            # Get admonisher persona for the planning card
+            directory = WorkspaceRegistry.get_global()
+            persona = (
+                directory.persona_for_agent("admonisher_agent")
+                if directory
+                else DEFAULT_PERSONAS.get("admonisher_agent")
+            )
+            post_kwargs: dict[str, Any] = {
+                "channel": dm_channel,
+                "text": payload["text"],
+                "blocks": payload["blocks"],
+            }
+            if persona and persona.username:
+                post_kwargs["username"] = persona.username
+            if persona and persona.icon_emoji:
+                post_kwargs["icon_emoji"] = persona.icon_emoji
+            if persona and persona.icon_url:
+                post_kwargs["icon_url"] = persona.icon_url
+
+            logger.debug("dispatch_planning_reminder: posting card to DM...")
+            resp = await self._client.chat_postMessage(**post_kwargs)
+            message_ts = resp.get("ts")
+            logger.info(
+                "Posted planning card to DM: channel=%s, ts=%s, draft_id=%s",
+                dm_channel,
+                message_ts,
+                draft.draft_id,
+            )
+            if message_ts:
+                await self._draft_store.attach_message(
+                    draft_id=draft.draft_id,
+                    channel_id=dm_channel,
+                    message_ts=message_ts,
+                )
+        except Exception:
+            logger.exception(
+                "dispatch_planning_reminder failed for user %s", reminder.user_id
+            )
+
+    async def _post_admonishment_log(
+        self, reminder: PlanningReminder, *, card_payload: dict[str, Any] | None = None
+    ) -> str | None:
+        """Post the admonishment (with interactive card) to the admonishments channel and return permalink."""
+        directory = WorkspaceRegistry.get_global()
+        if not directory:
+            return None
+
+        admonishments_channel_id = (
+            directory.channel_for_name("admonishments") or ""
+        ).strip()
+        if not admonishments_channel_id:
+            logger.debug("No admonishments channel configured; skipping log")
+            return None
+
+        persona = directory.persona_for_agent(
+            "admonisher_agent"
+        ) or DEFAULT_PERSONAS.get("admonisher_agent")
+
+        try:
+            user_mention = f"<@{reminder.user_id}>" if reminder.user_id else "User"
+            log_message = f"{user_mention}: {reminder.message}"
+
+            post_kwargs: dict[str, Any] = {
+                "channel": admonishments_channel_id,
+                "text": log_message,
+            }
+            # Include the interactive card blocks if provided
+            if card_payload and card_payload.get("blocks"):
+                post_kwargs["blocks"] = card_payload["blocks"]
+            if persona and persona.username:
+                post_kwargs["username"] = persona.username
+            if persona and persona.icon_emoji:
+                post_kwargs["icon_emoji"] = persona.icon_emoji
+            if persona and persona.icon_url:
+                post_kwargs["icon_url"] = persona.icon_url
+
+            res = await self._client.chat_postMessage(**post_kwargs)
+            ts = res.get("ts")
+            if ts:
+                perma = await self._client.chat_getPermalink(
+                    channel=admonishments_channel_id, message_ts=ts
+                )
+                return perma.get("permalink")
+        except Exception:
+            logger.debug("Failed to post planning admonishment log", exc_info=True)
+
+        return None
+
+    async def handle_start_at_changed(
         self,
         *,
-        user_id: str,
         channel_id: str,
-        thread_ts: str | None,
-        text: str,
-    ) -> bool:
-        pending: dict[str, str] | None
-        if thread_ts:
-            pending = self.pending_metadata(channel_id=channel_id, thread_ts=thread_ts)
-        else:
-            # In DMs, users often reply inline instead of in a thread; accept that.
-            pending = self._pending_by_user.get((channel_id, user_id))
-        if not pending:
-            return False
-        prompt_ts = pending.get("prompt_ts") or thread_ts
-        if not prompt_ts:
-            return False
-
-        tz_name = pending.get("tz") or DEFAULT_PLANNING_TIMEZONE
-        tz = ZoneInfo(tz_name)
-        now = datetime.now(timezone.utc)
-
-        cleaned = (text or "").strip().lower()
-        if cleaned in {"yes", "y", "yep", "ok", "okay", "do it", "schedule it"}:
-            start = date_parser.isoparse(pending["start"]).astimezone(tz)
-            end = date_parser.isoparse(pending["end"]).astimezone(tz)
-        else:
-            parsed = self.parse_time_reply(text, now=now, tz=tz)
-            if not parsed:
-                return False
-            start, end = parsed
-
-        await self._schedule_planning_event(
-            user_id=user_id,
+        message_ts: str,
+        selected_date_time: int,
+    ) -> EventDraftPayload | None:
+        if not self._draft_store:
+            return None
+        start = datetime.fromtimestamp(int(selected_date_time), tz=timezone.utc)
+        return await self._draft_store.update_time(
             channel_id=channel_id,
-            thread_ts=prompt_ts,
-            calendar_id=pending.get("calendar_id") or "primary",
-            start=start,
-            end=end,
-            tz=tz,
+            message_ts=message_ts,
+            start_at_utc=start.isoformat(),
         )
-        return True
 
-    async def _schedule_planning_event(
+    async def handle_start_date_changed(
         self,
         *,
-        user_id: str,
         channel_id: str,
-        thread_ts: str,
-        calendar_id: str,
-        start: datetime,
-        end: datetime,
-        tz: ZoneInfo,
+        message_ts: str,
+        selected_date: str,
+    ) -> EventDraftPayload | None:
+        if not self._draft_store:
+            return None
+        draft = await self._draft_store.get_by_message(
+            channel_id=channel_id, message_ts=message_ts
+        )
+        if not draft:
+            return None
+        try:
+            tz = ZoneInfo(draft.timezone or DEFAULT_TIMEZONE)
+        except Exception:
+            tz = ZoneInfo(DEFAULT_TIMEZONE)
+        try:
+            new_date = date_parser.isoparse(selected_date).date()
+        except Exception:
+            return None
+        start_local = date_parser.isoparse(draft.start_at_utc).astimezone(tz)
+        new_local = datetime(
+            new_date.year,
+            new_date.month,
+            new_date.day,
+            start_local.hour,
+            start_local.minute,
+            tzinfo=tz,
+        )
+        return await self._draft_store.update_time(
+            channel_id=channel_id,
+            message_ts=message_ts,
+            start_at_utc=new_local.astimezone(timezone.utc).isoformat(),
+        )
+
+    async def handle_start_time_changed(
+        self,
+        *,
+        channel_id: str,
+        message_ts: str,
+        selected_time: str,
+    ) -> EventDraftPayload | None:
+        if not self._draft_store:
+            return None
+        draft = await self._draft_store.get_by_message(
+            channel_id=channel_id, message_ts=message_ts
+        )
+        if not draft:
+            return None
+        try:
+            tz = ZoneInfo(draft.timezone or DEFAULT_TIMEZONE)
+        except Exception:
+            tz = ZoneInfo(DEFAULT_TIMEZONE)
+        try:
+            hour_str, minute_str = selected_time.split(":", 1)
+            hour = int(hour_str)
+            minute = int(minute_str)
+        except Exception:
+            return None
+        start_local = date_parser.isoparse(draft.start_at_utc).astimezone(tz)
+        new_local = start_local.replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        return await self._draft_store.update_time(
+            channel_id=channel_id,
+            message_ts=message_ts,
+            start_at_utc=new_local.astimezone(timezone.utc).isoformat(),
+        )
+
+    async def handle_duration_changed(
+        self,
+        *,
+        channel_id: str,
+        message_ts: str,
+        duration_min: int,
+    ) -> EventDraftPayload | None:
+        if not self._draft_store:
+            return None
+        return await self._draft_store.update_time(
+            channel_id=channel_id,
+            message_ts=message_ts,
+            duration_min=duration_min,
+        )
+
+    async def start_add_to_calendar(
+        self,
+        *,
+        draft_id: str,
+        respond,
     ) -> None:
-        anchor = await self.ensure_anchor(user_id=user_id, channel_id=channel_id, calendar_id=calendar_id)
-        await self._update_prompt_message(
-            channel_id=channel_id,
-            message_ts=thread_ts,
-            text=f"Scheduling *Planning session* at {start.strftime('%a %H:%M')}–{end.strftime('%H:%M')} ({tz.key})…",
+        if not self._draft_store:
+            return
+        draft = await self._draft_store.get_by_draft_id(draft_id=draft_id)
+        if not draft:
+            return
+        if draft.status in {DraftStatus.PENDING, DraftStatus.SUCCESS}:
+            return
+
+        await self._draft_store.update_status(
+            draft_id=draft.draft_id, status=DraftStatus.PENDING, last_error=None
+        )
+        pending = await self._draft_store.get_by_draft_id(draft_id=draft.draft_id)
+        if pending:
+            payload = _card_payload(pending, status_override="⏳ Adding to calendar…")
+            await respond(
+                text=payload["text"], blocks=payload["blocks"], replace_original=True
+            )
+
+        asyncio.create_task(
+            self._add_to_calendar_async(draft_id=draft.draft_id, respond=respond)
         )
 
-        runtime_key = FocusManager.thread_key(channel_id, thread_ts=thread_ts, ts=thread_ts)
+    async def _add_to_calendar_async(self, *, draft_id: str, respond) -> None:
+        if not self._draft_store:
+            return
+        draft = await self._draft_store.get_by_draft_id(draft_id=draft_id)
+        if not draft:
+            return
+
+        try:
+            tz = ZoneInfo(draft.timezone or DEFAULT_TIMEZONE)
+        except Exception:
+            tz = ZoneInfo(DEFAULT_TIMEZONE)
+
+        start = date_parser.isoparse(draft.start_at_utc).astimezone(timezone.utc)
+        end = start + timedelta(minutes=int(draft.duration_min))
+
+        runtime_key = FocusManager.thread_key(
+            draft.channel_id, thread_ts=draft.message_ts, ts=draft.message_ts or "root"
+        )
         result = await self._runtime.send_message(
             UpsertCalendarEvent(
-                user_id=user_id,
-                calendar_id=calendar_id,
-                event_id=anchor.event_id,
-                summary="Planning session",
-                start=start.replace(tzinfo=None).isoformat(timespec="seconds"),
-                end=end.replace(tzinfo=None).isoformat(timespec="seconds"),
+                calendar_id=draft.calendar_id,
+                event_id=draft.event_id,
+                summary=draft.title,
+                description=draft.description,
+                start=start.isoformat(),
+                end=end.isoformat(),
                 time_zone=tz.key,
                 color_id="10",
             ),
             recipient=AgentId("planner_agent", key=runtime_key),
         )
-        await self._update_prompt_message(
-            channel_id=channel_id,
-            message_ts=thread_ts,
-            text=(result.text if isinstance(result, SlackBlockMessage) else _extract_text(result))
-            or "Done.",
-            blocks=(result.blocks if isinstance(result, SlackBlockMessage) else None),
+
+        logger.info(
+            "UpsertCalendarEvent result: type=%s, ok=%s",
+            type(result).__name__,
+            getattr(result, "ok", None),
         )
 
-        self._pending.pop((channel_id, thread_ts), None)
-        self._pending_by_user.pop((channel_id, user_id), None)
-        if self._guardian:
-            try:
-                await self._guardian.reconcile_user(user_id=anchor.user_id)
-            except Exception:
-                logger.exception("Planning guardian reconcile_user failed after scheduling")
+        if isinstance(result, UpsertCalendarEventResult) and result.ok:
+            await self._draft_store.update_status(
+                draft_id=draft.draft_id,
+                status=DraftStatus.SUCCESS,
+                event_url=result.event_url,
+                last_error=None,
+            )
+            updated = await self._draft_store.get_by_draft_id(draft_id=draft.draft_id)
+            if updated:
+                payload = _card_payload(updated, status_override="✅ Added to calendar")
+                await respond(
+                    text=payload["text"],
+                    blocks=payload["blocks"],
+                    replace_original=True,
+                )
+            if self._guardian:
+                try:
+                    await self._guardian.reconcile_user(user_id=draft.user_id)
+                except Exception:
+                    logger.exception(
+                        "Planning guardian reconcile_user failed after scheduling"
+                    )
+            return
 
-    async def _update_prompt_message(
-        self,
-        *,
-        channel_id: str,
-        message_ts: str,
-        text: str,
-        blocks: list[dict[str, Any]] | None = None,
+        error = (
+            getattr(result, "error", None)
+            if isinstance(result, UpsertCalendarEventResult)
+            else None
+        )
+        if not error:
+            error = "Calendar operation failed"
+        await self._draft_store.update_status(
+            draft_id=draft.draft_id, status=DraftStatus.FAILURE, last_error=str(error)
+        )
+        updated = await self._draft_store.get_by_draft_id(draft_id=draft.draft_id)
+        if updated:
+            payload = _card_payload(
+                updated,
+                status_override=f"⚠️ Not added: {updated.last_error or 'unknown error'}",
+            )
+            await respond(
+                text=payload["text"], blocks=payload["blocks"], replace_original=True
+            )
+
+    async def refresh_card_for_message(
+        self, *, channel_id: str, message_ts: str, respond
     ) -> None:
-        try:
-            payload: dict[str, Any] = {"channel": channel_id, "ts": message_ts, "text": text}
-            if blocks:
-                payload["blocks"] = blocks
-            await self._client.chat_update(**payload)
-        except Exception:
-            # Fallback: if the original message can't be updated, at least post a visible reply.
-            try:
-                is_dm = str(channel_id).startswith("D")
-                payload = {"channel": channel_id, "text": text}
-                if blocks:
-                    payload["blocks"] = blocks
-                if not is_dm:
-                    payload["thread_ts"] = message_ts
-                await self._client.chat_postMessage(**payload)
-            except Exception:
-                logger.exception("Failed to update or post planning prompt message")
+        if not self._draft_store:
+            return
+        draft = await self._draft_store.get_by_message(
+            channel_id=channel_id, message_ts=message_ts
+        )
+        if not draft:
+            return
+        payload = _card_payload(draft, status_override=_status_text(draft))
+        await respond(
+            text=payload["text"], blocks=payload["blocks"], replace_original=True
+        )
 
     async def _resolve_dm_channel(self, *, user_id: str) -> str | None:
         try:
@@ -460,227 +559,196 @@ class PlanningCoordinator:
             logger.exception("Failed to open DM for %s", user_id)
             return None
 
-    def _build_reminder_blocks(
-        self,
-        reminder: PlanningReminder,
-        anchor: PlanningAnchorPayload,
-        suggestion: PlanningSuggestion | None,
-    ) -> list[dict[str, Any]]:
-        suggested_text = ""
-        meta: dict[str, str] = {
-            "user_id": anchor.user_id,
-            "calendar_id": anchor.calendar_id,
-            "event_id": anchor.event_id,
-        }
-        if suggestion:
-            local_start = suggestion.start.strftime("%a %H:%M")
-            local_end = suggestion.end.strftime("%H:%M")
-            suggested_text = f"\nSuggested: *{local_start}–{local_end}* ({suggestion.tz})"
-            meta.update(
-                {
-                    "start": suggestion.start.astimezone(timezone.utc).isoformat(),
-                    "end": suggestion.end.astimezone(timezone.utc).isoformat(),
-                    "tz": suggestion.tz,
-                }
-            )
-
-        value = encode_metadata(meta)
-        return [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"{reminder.message}{suggested_text}\nEvent id: `{anchor.event_id}`",
-                },
-            },
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "action_id": FF_PLANNING_SCHEDULE_ACTION_ID,
-                        "text": {"type": "plain_text", "text": "Schedule planning session"},
-                        "value": value,
-                        "style": "primary",
-                    },
-                    {
-                        "type": "button",
-                        "action_id": FF_PLANNING_PICK_TIME_ACTION_ID,
-                        "text": {"type": "plain_text", "text": "Pick a time"},
-                        "value": value,
-                    },
-                ],
-            },
-            {
-                "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": "Reply with a time (e.g. `tomorrow 10:00`) or press Schedule.",
-                    }
-                ],
-            },
-        ]
-
-    async def _suggest_slot(self, calendar_id: str) -> PlanningSuggestion | None:
-        if not self._reconciler:
-            return None
-
-        tz_name = getattr(settings, "planning_timezone", "") or DEFAULT_PLANNING_TIMEZONE
-        tz = ZoneInfo(tz_name)
-        now = datetime.now(timezone.utc).astimezone(tz)
-
-        duration = timedelta(minutes=DEFAULT_PLANNING_DURATION_MINUTES)
-        for day_offset in range(0, 2):
-            day = (now + timedelta(days=day_offset)).date()
-            window_start = datetime.combine(day, DEFAULT_WORK_START, tz)
-            window_end = datetime.combine(day, DEFAULT_WORK_END, tz)
-            if day_offset == 0:
-                window_start = max(window_start, now + timedelta(minutes=5))
-            if window_end <= window_start:
-                continue
-
-            events = await self._reconciler.calendar_client.list_events(
+    async def _suggest_next_slot(self, *, calendar_id: str) -> SlotSuggestion | None:
+        tz_name = DEFAULT_TIMEZONE
+        runtime_key = FocusManager.thread_key(
+            "dm", thread_ts=None, ts="planning_suggest"
+        )
+        result = await self._runtime.send_message(
+            SuggestNextSlot(
                 calendar_id=calendar_id,
-                time_min=window_start.astimezone(timezone.utc).isoformat(),
-                time_max=window_end.astimezone(timezone.utc).isoformat(),
+                duration_min=DEFAULT_DURATION_MINUTES,
+                time_zone=tz_name,
+                horizon_days=2,
+                work_start_hour=9,
+                work_end_hour=18,
+            ),
+            recipient=AgentId("planner_agent", key=runtime_key),
+        )
+        if (
+            isinstance(result, SuggestedSlot)
+            and result.ok
+            and result.start_utc
+            and result.end_utc
+        ):
+            return SlotSuggestion(
+                start_utc=date_parser.isoparse(result.start_utc).astimezone(
+                    timezone.utc
+                ),
+                end_utc=date_parser.isoparse(result.end_utc).astimezone(timezone.utc),
+                tz=result.time_zone or tz_name,
             )
-            busy = _busy_intervals(events, tz)
-            start = _first_gap(window_start, window_end, busy, duration)
-            if start:
-                end = start + duration
-                return PlanningSuggestion(start=start, end=end, tz=tz.key)
         return None
 
-    def pending_metadata(self, *, channel_id: str, thread_ts: str) -> dict[str, str] | None:
-        return self._pending.get((channel_id, thread_ts))
 
-    @staticmethod
-    def parse_time_reply(text: str, *, now: datetime, tz: ZoneInfo) -> tuple[datetime, datetime] | None:
-        cleaned = (text or "").strip()
-        if not cleaned:
-            return None
-        try:
-            parsed = date_parser.parse(cleaned, default=now.astimezone(tz), fuzzy=True)
-        except Exception:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=tz)
-        start = parsed.astimezone(tz)
-        end = start + timedelta(minutes=DEFAULT_PLANNING_DURATION_MINUTES)
-        return start, end
-
-    @staticmethod
-    def decode_action_value(value: str) -> dict[str, str]:
-        return decode_metadata(value)
+def _status_text(draft: EventDraftPayload) -> str:
+    if draft.status is DraftStatus.SUCCESS:
+        return "✅ Added to calendar"
+    if draft.status is DraftStatus.FAILURE:
+        reason = (draft.last_error or "unknown error").strip()
+        return f"⚠️ Not added: {reason}"
+    if draft.status is DraftStatus.PENDING:
+        return "⏳ Adding to calendar…"
+    return "Not added yet"
 
 
-def _parse_event_dt(raw: dict[str, Any] | None, *, tz: ZoneInfo) -> datetime | None:
-    if not raw:
-        return None
-    if "dateTime" in raw and raw["dateTime"]:
-        dt = date_parser.isoparse(raw["dateTime"])
-        return dt.astimezone(tz)
-    if "date" in raw and raw["date"]:
-        day = date_parser.isoparse(raw["date"]).date()
-        return datetime.combine(day, time(0, 0), tz)
-    return None
+def _card_payload(
+    draft: EventDraftPayload, *, status_override: str | None = None
+) -> dict[str, Any]:
+    tz = ZoneInfo(draft.timezone or DEFAULT_TIMEZONE)
+    start = date_parser.isoparse(draft.start_at_utc).astimezone(tz)
+    end = start + timedelta(minutes=int(draft.duration_min))
 
+    when = f"{start.strftime('%a %H:%M')}"
+    end_str = f"{end.strftime('%H:%M')}"
+    duration_label = f"{int(draft.duration_min)} min"
 
-def _busy_intervals(events: list[dict[str, Any]], tz: ZoneInfo) -> list[tuple[datetime, datetime]]:
-    intervals: list[tuple[datetime, datetime]] = []
-    for event in events:
-        if (event.get("status") or "").lower() == "cancelled":
-            continue
-        start = _parse_event_dt(event.get("start"), tz=tz)
-        end = _parse_event_dt(event.get("end"), tz=tz)
-        if start and end and end > start:
-            intervals.append((start, end))
-    intervals.sort(key=lambda pair: pair[0])
+    text = f"{draft.title} • {when} ({duration_label})"
+    status_text = status_override or _status_text(draft)
 
-    merged: list[tuple[datetime, datetime]] = []
-    for start, end in intervals:
-        if not merged or start > merged[-1][1]:
-            merged.append((start, end))
+    summary_text = f"*When*\n{when}–{end_str}\n*Duration*\n{duration_label}"
+
+    def duration_option(minutes: int) -> dict[str, Any]:
+        return {
+            "text": {"type": "plain_text", "text": f"{minutes} min"},
+            "value": str(minutes),
+        }
+
+    duration_options = [duration_option(m) for m in DEFAULT_DURATION_OPTIONS]
+    initial_duration = duration_option(int(draft.duration_min))
+
+    date_element = {
+        "type": "datepicker",
+        "action_id": FF_EVENT_START_DATE_ACTION_ID,
+        "initial_date": start.strftime("%Y-%m-%d"),
+        "placeholder": {"type": "plain_text", "text": "Pick date"},
+    }
+    time_element = {
+        "type": "timepicker",
+        "action_id": FF_EVENT_START_TIME_ACTION_ID,
+        "initial_time": start.strftime("%H:%M"),
+        "placeholder": {"type": "plain_text", "text": "Pick time"},
+    }
+    duration_element = {
+        "type": "static_select",
+        "action_id": FF_EVENT_DURATION_ACTION_ID,
+        "initial_option": initial_duration,
+        "options": duration_options,
+    }
+
+    if draft.status is DraftStatus.SUCCESS and draft.event_url:
+        actions_block = {
+            "type": "actions",
+            "block_id": "post_add_actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Open event"},
+                    "url": draft.event_url,
+                    "action_id": FF_EVENT_OPEN_URL_ACTION_ID,
+                }
+            ],
+        }
+    else:
+        if draft.status is DraftStatus.PENDING:
+            action_id = FF_EVENT_ADD_DISABLED_ACTION_ID
+            label = "Adding…"
+        elif draft.status is DraftStatus.FAILURE:
+            action_id = FF_EVENT_RETRY_ACTION_ID
+            label = "Try again"
         else:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-    return merged
+            action_id = FF_EVENT_ADD_ACTION_ID
+            label = "Add to calendar"
+
+        actions_block = {
+            "type": "actions",
+            "block_id": FF_EVENT_BLOCK_EDIT,
+            "elements": [
+                {
+                    "type": "button",
+                    "action_id": action_id,
+                    "text": {"type": "plain_text", "text": label},
+                    "style": "primary",
+                    "value": json.dumps({"draft_id": draft.draft_id}),
+                }
+            ],
+        }
+
+    blocks: list[dict[str, Any]] = [
+        {"type": "header", "text": {"type": "plain_text", "text": draft.title}},
+        {
+            "type": "section",
+            "block_id": FF_EVENT_BLOCK_DESC,
+            "text": {"type": "mrkdwn", "text": draft.description or ""},
+        },
+        {
+            "type": "section",
+            "block_id": FF_EVENT_BLOCK_SUMMARY,
+            "text": {"type": "mrkdwn", "text": summary_text},
+        },
+    ]
+    if draft.status is DraftStatus.SUCCESS and draft.event_url:
+        blocks.append(actions_block)
+    else:
+        blocks.extend(
+            [
+                {
+                    "type": "actions",
+                    "block_id": "edit_date",
+                    "elements": [date_element],
+                },
+                {
+                    "type": "actions",
+                    "block_id": "edit_time",
+                    "elements": [time_element],
+                },
+                {
+                    "type": "actions",
+                    "block_id": "edit_duration",
+                    "elements": [duration_element],
+                },
+                actions_block,
+            ]
+        )
+    blocks.append(
+        {
+            "type": "context",
+            "block_id": FF_EVENT_BLOCK_STATUS,
+            "elements": [{"type": "mrkdwn", "text": status_text}],
+        }
+    )
+    return {"text": text, "blocks": blocks}
 
 
-def _first_gap(
-    window_start: datetime,
-    window_end: datetime,
-    busy: list[tuple[datetime, datetime]],
-    duration: timedelta,
-) -> datetime | None:
-    cursor = window_start
-    for start, end in busy:
-        if start - cursor >= duration:
-            return cursor
-        cursor = max(cursor, end)
-        if cursor >= window_end:
-            return None
-    if window_end - cursor >= duration:
-        return cursor
+def parse_draft_id_from_value(value: str) -> str | None:
+    try:
+        obj = json.loads(value or "{}")
+    except Exception:
+        return None
+    if isinstance(obj, dict):
+        draft_id = obj.get("draft_id")
+        return str(draft_id) if draft_id else None
     return None
-
-
-def _extract_text(result: Any) -> str:
-    chat_message = getattr(result, "chat_message", None) or result
-    content = getattr(chat_message, "content", None)
-    if content is None:
-        content = getattr(result, "content", None)
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict) and "text" in item:
-                parts.append(str(item["text"]))
-            else:
-                parts.append(str(item))
-        return "\n".join(parts).strip()
-    return str(content or "").strip()
 
 
 __all__ = [
-    "FF_PLANNING_PICK_TIME_ACTION_ID",
-    "FF_PLANNING_SCHEDULE_ACTION_ID",
-    "FF_PLANNING_TIME_MODAL_CALLBACK_ID",
+    "FF_EVENT_ADD_ACTION_ID",
+    "FF_EVENT_ADD_DISABLED_ACTION_ID",
+    "FF_EVENT_DURATION_ACTION_ID",
+    "FF_EVENT_RETRY_ACTION_ID",
+    "FF_EVENT_START_AT_ACTION_ID",
+    "FF_EVENT_START_DATE_ACTION_ID",
+    "FF_EVENT_START_TIME_ACTION_ID",
     "PlanningCoordinator",
-    "planning_event_id_for_user",
+    "parse_draft_id_from_value",
 ]
-
-
-def _build_planning_time_modal(
-    *,
-    private_metadata: str,
-    initial_date_time: int,
-    tz: str,
-    duration_minutes: int,
-) -> dict[str, Any]:
-    return {
-        "type": "modal",
-        "callback_id": FF_PLANNING_TIME_MODAL_CALLBACK_ID,
-        "private_metadata": private_metadata,
-        "title": {"type": "plain_text", "text": "Schedule planning"},
-        "submit": {"type": "plain_text", "text": "OK"},
-        "close": {"type": "plain_text", "text": "Cancel"},
-        "blocks": [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"Pick a start time. Duration is fixed at *{duration_minutes}m*.\nTime zone: `{tz}`",
-                },
-            },
-            {
-                "type": "input",
-                "block_id": _PLANNING_TIME_INPUT_BLOCK_ID,
-                "label": {"type": "plain_text", "text": "Start time"},
-                "element": {
-                    "type": "datetimepicker",
-                    "action_id": _PLANNING_TIME_ACTION_ID,
-                    "initial_date_time": int(initial_date_time),
-                },
-            },
-        ],
-    }

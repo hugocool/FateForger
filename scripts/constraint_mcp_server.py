@@ -60,6 +60,15 @@ def _date_to_iso(value) -> Optional[str]:
     return getattr(value, "isoformat", lambda: str(value))()
 
 
+def _safe_str(value) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        return str(value)
+    except Exception:
+        return None
+
+
 def _serialize_constraint(page) -> Dict[str, Any]:
     props = page.props
     type_id = None
@@ -77,6 +86,8 @@ def _serialize_constraint(page) -> Dict[str, Any]:
                 type_id = getattr(rel_pages[0].props, "type_id", None)
         except Exception:
             type_id = None
+    if not type_id:
+        type_id = _option_name(getattr(props, "rule_kind", None))
     topics = getattr(props, "topics", None) or []
     return {
         "page_id": str(page.id),
@@ -111,31 +122,31 @@ def get_store_info() -> Dict[str, Any]:
         "dbs": {
             "topics": {
                 "db_id": str(store.topics_db.id),
-                "db_url": getattr(store.topics_db, "url", None),
+                "db_url": _safe_str(getattr(store.topics_db, "url", None)),
             },
             "types": {
                 "db_id": str(store.types_db.id),
-                "db_url": getattr(store.types_db, "url", None),
+                "db_url": _safe_str(getattr(store.types_db, "url", None)),
             },
             "constraints": {
                 "db_id": str(store.constraints_db.id),
-                "db_url": getattr(store.constraints_db, "url", None),
+                "db_url": _safe_str(getattr(store.constraints_db, "url", None)),
             },
             "windows": {
                 "db_id": str(store.windows_db.id),
-                "db_url": getattr(store.windows_db, "url", None),
+                "db_url": _safe_str(getattr(store.windows_db, "url", None)),
             },
             "events": {
                 "db_id": str(store.events_db.id),
-                "db_url": getattr(store.events_db, "url", None),
+                "db_url": _safe_str(getattr(store.events_db, "url", None)),
             },
         },
     }
     if parent_page_id:
         try:
             page = store.notion.get_page(parent_page_id)
-            info["parent_page_title"] = getattr(page, "title", None) or str(page)
-            info["parent_page_url"] = getattr(page, "url", None)
+            info["parent_page_title"] = _safe_str(getattr(page, "title", None)) or _safe_str(page)
+            info["parent_page_url"] = _safe_str(getattr(page, "url", None))
         except Exception:
             pass
     return info

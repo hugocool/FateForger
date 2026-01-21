@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import logging
-from typing import Callable
 import asyncio
+import logging
 import re
+import time
+from typing import Awaitable, Callable
 
 from autogen_agentchat.messages import TextMessage
 from autogen_core import AgentId
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
 from fateforger.agents.timeboxing.preferences import (
+    Constraint,
     ConstraintStatus,
     ConstraintStore,
     ensure_constraint_schema,
@@ -20,29 +22,40 @@ from fateforger.agents.timeboxing.preferences import (
 from fateforger.core.config import settings
 from fateforger.slack_bot.bootstrap import ensure_workspace_ready
 from fateforger.slack_bot.constraint_review import (
-    CONSTRAINT_REVIEW_ACTION_ID,
     CONSTRAINT_REVIEW_VIEW_CALLBACK_ID,
+    CONSTRAINT_ROW_REVIEW_ACTION_ID,
     build_constraint_review_view,
+    build_constraint_row_blocks,
     decode_metadata,
-    parse_constraint_decisions,
+    parse_constraint_review_submission,
 )
 from fateforger.slack_bot.messages import SlackBlockMessage, SlackThreadStateMessage
 from fateforger.slack_bot.planning import (
-    FF_PLANNING_PICK_TIME_ACTION_ID,
-    FF_PLANNING_SCHEDULE_ACTION_ID,
-    FF_PLANNING_TIME_MODAL_CALLBACK_ID,
+    FF_EVENT_ADD_ACTION_ID,
+    FF_EVENT_ADD_DISABLED_ACTION_ID,
+    FF_EVENT_DURATION_ACTION_ID,
+    FF_EVENT_RETRY_ACTION_ID,
+    FF_EVENT_START_AT_ACTION_ID,
+    FF_EVENT_START_DATE_ACTION_ID,
+    FF_EVENT_START_TIME_ACTION_ID,
     PlanningCoordinator,
+    parse_draft_id_from_value,
 )
 from fateforger.slack_bot.timeboxing_commit import (
-    FF_TIMEBOX_COMMIT_MODAL_CALLBACK_ID,
-    FF_TIMEBOX_COMMIT_PICK_DAY_ACTION_ID,
+    FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID,
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
     TimeboxingCommitCoordinator,
+    format_relative_day_label,
 )
 
 from .focus import FocusManager
 from .ui import link_button, open_link_blocks
-from .workspace import DEFAULT_PERSONAS, SlackPersona, WorkspaceRegistry
+from .workspace import (
+    DEFAULT_PERSONAS,
+    SlackPersona,
+    WorkspaceDirectory,
+    WorkspaceRegistry,
+)
 from .workspace_store import SlackWorkspaceStore, ensure_slack_workspace_schema
 
 try:
@@ -54,7 +67,8 @@ except Exception:  # pragma: no cover - optional dependency wiring
 FF_APPHOME_WEEKLY_REVIEW_ACTION_ID = "ff_apphome_weekly_review"
 
 _TIMEBOXING_STATE_EMOJI = {
-    "active": ":large_yellow_circle:",
+    "pending": ":large_yellow_circle:",
+    "in_progress": ":large_blue_circle:",
     "done": ":white_check_mark:",
     "canceled": ":no_entry_sign:",
 }
@@ -78,12 +92,49 @@ def _timeboxing_excerpt_from_text(text: str) -> str:
     return cleaned
 
 
-def _timeboxing_thread_root_text(*, title: str, request_excerpt: str | None, state: str) -> str:
-    emoji = _TIMEBOXING_STATE_EMOJI.get(state, _TIMEBOXING_STATE_EMOJI["active"])
-    header = f"{emoji} Timeboxing — {title}"
-    if request_excerpt:
-        return header + "\n" + f"> {request_excerpt}"
-    return header
+def _timeboxing_thread_root_text(
+    *, title: str, request_excerpt: str | None, state: str
+) -> str:
+    emoji = _TIMEBOXING_STATE_EMOJI.get(state, _TIMEBOXING_STATE_EMOJI["pending"])
+    return f"{emoji} {title}"
+
+
+def _build_timeboxing_thread_root_blocks(
+    *,
+    title: str,
+    state: str,
+    constraints: list[Constraint],
+    thread_ts: str,
+    user_id: str,
+) -> list[dict[str, object]]:
+    """Build the thread-root blocks with active constraints."""
+    blocks: list[dict[str, object]] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": _timeboxing_thread_root_text(
+                    title=title, request_excerpt=None, state=state
+                ),
+            },
+        }
+    ]
+    active = [c for c in constraints if c.status != ConstraintStatus.DECLINED]
+    if active:
+        blocks.append({"type": "divider"})
+        blocks.extend(
+            build_constraint_row_blocks(
+                active, thread_ts=thread_ts, user_id=user_id, limit=20
+            )
+        )
+    else:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": "No active constraints yet."}],
+            }
+        )
+    return blocks
 
 
 def _extract_thread_state(result) -> str | None:
@@ -92,6 +143,53 @@ def _extract_thread_state(result) -> str | None:
         if isinstance(state, str) and state.strip():
             return state.strip()
     return None
+
+
+async def _maybe_update_timeboxing_thread_constraints(
+    *,
+    client: AsyncWebClient,
+    focus: FocusManager,
+    thread_key: str,
+    user_id: str,
+    store: ConstraintStore | None,
+) -> None:
+    """Update the timeboxing thread root with the latest active constraints."""
+    if not store:
+        return
+    try:
+        channel_id, thread_root_ts = thread_key.split(":", 1)
+    except Exception:
+        return
+    if thread_root_ts == "dm":
+        return
+    label = focus.get_thread_label(thread_key)
+    if not label:
+        return
+    constraints = await store.list_constraints(
+        user_id=user_id,
+        channel_id=channel_id,
+        thread_ts=thread_root_ts,
+    )
+    blocks = _build_timeboxing_thread_root_blocks(
+        title=label.title,
+        state=label.state,
+        constraints=constraints,
+        thread_ts=thread_root_ts,
+        user_id=user_id,
+    )
+    try:
+        await client.chat_update(
+            channel=channel_id,
+            ts=thread_root_ts,
+            text=_timeboxing_thread_root_text(
+                title=label.title,
+                request_excerpt=label.request_excerpt,
+                state=label.state,
+            ),
+            blocks=blocks,
+        )
+    except Exception:
+        return
 
 
 async def _maybe_update_timeboxing_thread_header(
@@ -151,7 +249,14 @@ def _format_workspace_ready_response(directory) -> str:
         return f"• <#{cid}> (`{cid}`)"
 
     lines = []
-    for name in ["general", "plan-sessions", "review", "task-marshalling", "scheduling", "admonishments"]:
+    for name in [
+        "general",
+        "plan-sessions",
+        "review",
+        "task-marshalling",
+        "scheduling",
+        "admonishments",
+    ]:
         line = _line(name)
         if line:
             lines.append(line)
@@ -168,7 +273,14 @@ def _workspace_ready_blocks(directory) -> list[dict]:
     channels_by_name = getattr(directory, "channels_by_name", {}) or {}
 
     channels = []
-    for name in ["general", "plan-sessions", "review", "task-marshalling", "scheduling", "admonishments"]:
+    for name in [
+        "general",
+        "plan-sessions",
+        "review",
+        "task-marshalling",
+        "scheduling",
+        "admonishments",
+    ]:
         cid = channels_by_name.get(name)
         if cid:
             channels.append((name, cid))
@@ -184,7 +296,9 @@ def _workspace_ready_blocks(directory) -> list[dict]:
         }
     ]
     if channel_mentions:
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": channel_mentions}})
+        blocks.append(
+            {"type": "section", "text": {"type": "mrkdwn", "text": channel_mentions}}
+        )
 
     if team_id:
         buttons = [
@@ -346,14 +460,29 @@ def _build_app_home_view(*, user_id: str, focus_agent: str | None) -> dict:
         return fallback
 
     fields = [
-        {"type": "mrkdwn", "text": f"*The Schedular*\n{_mention(schedular, 'not configured')}"},
-        {"type": "mrkdwn", "text": f"*Reviewer*\n{_mention(reviews, 'not configured')}"},
-        {"type": "mrkdwn", "text": f"*TaskMarshal*\n{_mention(task_marshal, 'not configured')}"},
-        {"type": "mrkdwn", "text": f"*Scheduling*\n{_mention(scheduling, 'not configured')}"},
+        {
+            "type": "mrkdwn",
+            "text": f"*The Schedular*\n{_mention(schedular, 'not configured')}",
+        },
+        {
+            "type": "mrkdwn",
+            "text": f"*Reviewer*\n{_mention(reviews, 'not configured')}",
+        },
+        {
+            "type": "mrkdwn",
+            "text": f"*TaskMarshal*\n{_mention(task_marshal, 'not configured')}",
+        },
+        {
+            "type": "mrkdwn",
+            "text": f"*Scheduling*\n{_mention(scheduling, 'not configured')}",
+        },
     ]
 
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": "Welcome to FateForger"}},
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "Welcome to FateForger"},
+        },
         {
             "type": "section",
             "text": {
@@ -398,19 +527,28 @@ def _persona_for_agent(agent_type: str) -> SlackPersona | None:
 
 
 def _channel_for_agent(agent_type: str) -> str | None:
+    if agent_type == "timeboxing_agent":
+        cid = (settings.slack_timeboxing_channel_id or "").strip()
+        if cid:
+            return cid
+    if agent_type == "revisor_agent":
+        cid = (getattr(settings, "slack_strategy_channel_id", "") or "").strip()
+        if cid:
+            return cid
+    if agent_type == "tasks_agent":
+        cid = (getattr(settings, "slack_tasks_channel_id", "") or "").strip()
+        if cid:
+            return cid
+    if agent_type == "planner_agent":
+        cid = (getattr(settings, "slack_ops_channel_id", "") or "").strip()
+        if cid:
+            return cid
+
     directory = WorkspaceRegistry.get_global()
     if directory:
         cid = directory.channel_for_agent(agent_type)
         if cid:
             return cid
-    if agent_type == "timeboxing_agent":
-        return (settings.slack_timeboxing_channel_id or "").strip() or None
-    if agent_type == "revisor_agent":
-        return (getattr(settings, "slack_strategy_channel_id", "") or "").strip() or None
-    if agent_type == "tasks_agent":
-        return (getattr(settings, "slack_tasks_channel_id", "") or "").strip() or None
-    if agent_type == "planner_agent":
-        return (getattr(settings, "slack_ops_channel_id", "") or "").strip() or None
     return None
 
 
@@ -421,19 +559,131 @@ def _agent_for_channel(channel_id: str) -> str | None:
             if cid == channel_id:
                 return agent_type
     # Fallback: check env-configured specialist channel IDs (works without DB bootstrap).
-    for agent_type in ("timeboxing_agent", "revisor_agent", "tasks_agent", "planner_agent"):
+    for agent_type in (
+        "timeboxing_agent",
+        "revisor_agent",
+        "tasks_agent",
+        "planner_agent",
+    ):
         if _channel_for_agent(agent_type) == channel_id:
             return agent_type
     return None
 
 
 def _general_channel_id() -> str | None:
+    cid = (getattr(settings, "slack_general_channel_id", "") or "").strip()
+    if cid:
+        return cid
     directory = WorkspaceRegistry.get_global()
     if directory:
         cid = directory.channel_for_name("general")
         if cid:
             return cid
-    return (getattr(settings, "slack_general_channel_id", "") or "").strip() or None
+    return None
+
+
+def _plan_sessions_channel_id() -> str | None:
+    directory = WorkspaceRegistry.get_global()
+    if directory:
+        cid = directory.channel_for_name("plan-sessions")
+        if cid:
+            return cid
+    return None
+
+
+async def _handle_timebox_command(
+    *,
+    runtime,
+    focus: FocusManager,
+    default_agent: str,
+    body: dict,
+    client: AsyncWebClient,
+    respond: Callable | None,
+) -> None:
+    user_id = body.get("user_id") or ""
+    channel_id = body.get("channel_id") or ""
+    text = (body.get("text") or "").strip()
+
+    if not user_id or not channel_id:
+        if respond:
+            await respond(
+                text="Timeboxing command failed: missing user or channel.",
+                response_type="ephemeral",
+            )
+        return
+
+    if respond:
+        await respond(
+            text="Starting a timeboxing session…",
+            response_type="ephemeral",
+        )
+
+    channel_type = "im" if channel_id.startswith(("D", "G")) else "channel"
+    event = {
+        "type": "message",
+        "text": text,
+        "user": user_id,
+        "channel": channel_id,
+        "ts": f"{time.time():.6f}",
+        "channel_type": channel_type,
+    }
+
+    async def _noop_say(**_kwargs):
+        return {"channel": channel_id, "ts": "unused"}
+
+    try:
+        await route_slack_event(
+            runtime=runtime,
+            focus=focus,
+            default_agent="timeboxing_agent",
+            event=event,
+            bot_user_id=None,
+            say=_noop_say,
+            client=client,
+            get_constraint_store=_get_constraint_store,
+        )
+    except Exception as e:
+        logger.exception("Timeboxing command route_slack_event failed")
+        if respond:
+            await respond(
+                text=f":warning: Failed to start timeboxing: {type(e).__name__}",
+                response_type="ephemeral",
+            )
+
+
+def _auto_recover_timeboxing_focus_for_thread(
+    *, focus: FocusManager, event: dict, user_id: str
+) -> None:
+    """
+    If the bot restarts mid-session, FocusManager's in-memory mapping is lost.
+    For timeboxing sessions anchored in the dedicated channel, recover focus for
+    thread replies so users can keep talking in the thread without needing a new
+    handoff.
+    """
+
+    if (event.get("channel_type") or "") == "im":
+        return
+    channel_id = event.get("channel") or ""
+    ts = event.get("ts") or ""
+    thread_ts = event.get("thread_ts")
+    if not (channel_id and ts and thread_ts):
+        return
+    key = FocusManager.thread_key(channel_id, thread_ts, ts)
+    if focus.get_focus(key):
+        return
+
+    timeboxing_channel = (
+        _channel_for_agent("timeboxing_agent") or _plan_sessions_channel_id()
+    )
+    if not timeboxing_channel or channel_id != timeboxing_channel:
+        return
+
+    try:
+        focus.set_focus(
+            key, "timeboxing_agent", by_user=user_id or "unknown", note="auto-recover"
+        )
+    except ValueError:
+        return
 
 
 async def _dm_thread_link(
@@ -485,6 +735,7 @@ async def route_slack_event(
     bot_user_id: str | None,
     say: Callable,
     client: AsyncWebClient,
+    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]] | None = None,
 ) -> None:
     channel = event["channel"]
     user = event.get("user") or event.get("bot_id") or "unknown"
@@ -494,6 +745,19 @@ async def route_slack_event(
     channel_type = event.get("channel_type")
     is_dm = channel_type == "im" or str(channel).startswith("D")
 
+    async def _update_constraints(thread_key: str) -> None:
+        """Refresh timeboxing constraints in the thread root message."""
+        if not get_constraint_store:
+            return
+        store = await get_constraint_store()
+        await _maybe_update_timeboxing_thread_constraints(
+            client=client,
+            focus=focus,
+            thread_key=thread_key,
+            user_id=user,
+            store=store,
+        )
+
     # In DMs, avoid creating a new "focus thread" per message (ts changes every message).
     # Instead, keep a stable key so multi-turn conversations work without requiring threads.
     if is_dm and not thread_ts:
@@ -501,14 +765,20 @@ async def route_slack_event(
     else:
         origin_key = FocusManager.thread_key(channel, thread_ts, ts)
     binding = focus.get_focus(origin_key)
-    user_focus = focus.get_user_focus(user) if (is_dm and user and user != "unknown") else None
+    user_focus = (
+        focus.get_user_focus(user) if (is_dm and user and user != "unknown") else None
+    )
     channel_default_agent = _agent_for_channel(channel) if not is_dm else None
-    agent_type = binding.agent_type if binding else (user_focus or channel_default_agent or default_agent)
+    agent_type = (
+        binding.agent_type
+        if binding
+        else (user_focus or channel_default_agent or default_agent)
+    )
 
     cleaned_text = _strip_bot_mention(text, bot_user_id)
     # Post the "thinking" message with the active agent persona, so the eventual reply
     # (via chat.update) keeps the correct name/icon.
-    origin_thread_root_ts = (thread_ts or ts) if (thread_ts or (not is_dm)) else None
+    origin_thread_root_ts = thread_ts or None
     origin_processing_payload: dict = {
         "channel": channel,
         "text": f":hourglass_flowing_sand: *{agent_type}* is thinking...",
@@ -536,15 +806,21 @@ async def route_slack_event(
 
     async def _permalink(channel_id: str, message_ts: str) -> str | None:
         try:
-            res = await client.chat_getPermalink(channel=channel_id, message_ts=message_ts)
+            res = await client.chat_getPermalink(
+                channel=channel_id, message_ts=message_ts
+            )
             return res.get("permalink")
         except Exception:
             return None
 
-    async def _origin_link_to_thread(*, channel_id: str, thread_ts: str, agent_label: str) -> None:
+    async def _origin_link_to_thread(
+        *, channel_id: str, thread_ts: str, agent_label: str
+    ) -> None:
         link = await _permalink(channel_id, thread_ts)
         if not link:
-            await _origin_update(text=f":left_right_arrow: Continuing in <#{channel_id}>.")
+            await _origin_update(
+                text=f":left_right_arrow: Continuing in <#{channel_id}>."
+            )
             return
         blocks = open_link_blocks(
             text=f":left_right_arrow: Continuing in <#{channel_id}> (agent: *{agent_label}*).",
@@ -552,7 +828,9 @@ async def route_slack_event(
             button_text="Go to Thread",
             action_id="ff_open_thread",
         )
-        await _origin_update(text=f":left_right_arrow: Continuing in <#{channel_id}>.", blocks=blocks)
+        await _origin_update(
+            text=f":left_right_arrow: Continuing in <#{channel_id}>.", blocks=blocks
+        )
 
     redirect = focus.get_redirect(origin_key)
     if redirect and agent_type == redirect.agent_type:
@@ -607,7 +885,9 @@ async def route_slack_event(
                 ts=processing["ts"],
                 text=":warning: Something went wrong while handling that request. Check bot logs.",
             )
-            await _origin_update(text=f":warning: {type(e).__name__}: {_safe_exc_summary(e)}")
+            await _origin_update(
+                text=f":warning: {type(e).__name__}: {_safe_exc_summary(e)}"
+            )
             return
 
         payload = _slack_payload_from_result(result)
@@ -625,6 +905,8 @@ async def route_slack_event(
             thread_key=redirect.target_key,
             state=_extract_thread_state(result) or "",
         )
+        if redirect.agent_type == "timeboxing_agent":
+            await _update_constraints(redirect.target_key)
         if not is_dm:
             await _origin_link_to_thread(
                 channel_id=redirect.target_channel,
@@ -640,8 +922,20 @@ async def route_slack_event(
         channel=channel,
         thread_ts=thread_ts,
         ts=ts,
-        force_thread_root=("dm" if (is_dm and agent_type == "timeboxing_agent") else None),
-        force_reply=(True if (is_dm and agent_type == "timeboxing_agent") else None),
+        force_thread_root=(
+            "dm"
+            if (is_dm and agent_type == "timeboxing_agent")
+            else (
+                origin_processing_msg["ts"]
+                if (agent_type == "timeboxing_agent" and not thread_ts)
+                else None
+            )
+        ),
+        force_reply=(
+            True
+            if (is_dm and agent_type == "timeboxing_agent")
+            else False if (agent_type == "timeboxing_agent" and not thread_ts) else None
+        ),
     )
     try:
         result = await runtime.send_message(
@@ -656,8 +950,12 @@ async def route_slack_event(
         )
         return
     except Exception as e:
-        logger.exception("runtime.send_message failed (agent=%s key=%s)", agent_type, origin_key)
-        await _origin_update(text=f":warning: {type(e).__name__}: {_safe_exc_summary(e)}")
+        logger.exception(
+            "runtime.send_message failed (agent=%s key=%s)", agent_type, origin_key
+        )
+        await _origin_update(
+            text=f":warning: {type(e).__name__}: {_safe_exc_summary(e)}"
+        )
         return
     chat_message = getattr(result, "chat_message", result)
     handoff_target = _extract_handoff_target(chat_message)
@@ -695,9 +993,9 @@ async def route_slack_event(
                     "channel": target_channel,
                     "text": (
                         _timeboxing_thread_root_text(
-                            title=tb_title,
-                            request_excerpt=tb_excerpt,
-                            state="active",
+                            title="Timeboxing session",
+                            request_excerpt=None,
+                            state="pending",
                         )
                         if handoff_target == "timeboxing_agent"
                         else (
@@ -714,12 +1012,12 @@ async def route_slack_event(
                     root_payload["icon_url"] = persona.icon_url
                 root = await client.chat_postMessage(**root_payload)
                 target_thread_ts = root["ts"]
-                if handoff_target == "timeboxing_agent" and tb_title:
+                if handoff_target == "timeboxing_agent":
                     focus.set_thread_label(
                         f"{target_channel}:{target_thread_ts}",
-                        title=tb_title,
-                        request_excerpt=tb_excerpt,
-                        state="active",
+                        title="Timeboxing session",
+                        request_excerpt=None,
+                        state="pending",
                         by_user=user,
                     )
 
@@ -757,7 +1055,9 @@ async def route_slack_event(
                                 user_id=user,
                                 target_channel=target_channel,
                                 thread_root_ts=target_thread_ts,
-                                agent_label=(persona.username if persona else handoff_target),
+                                agent_label=(
+                                    persona.username if persona else handoff_target
+                                ),
                             )
                         except Exception:
                             pass
@@ -822,6 +1122,48 @@ async def route_slack_event(
 
                 # Timeboxing stage-0: DM the commit prompt (with a thread deep-link button).
                 if handoff_target == "timeboxing_agent" and payload.get("blocks"):
+                    # Update the thread root header to include the suggested day (no quoted user text).
+                    try:
+                        planned_date = ""
+                        for block in payload.get("blocks") or []:
+                            if block.get("type") != "actions":
+                                continue
+                            for element in block.get("elements") or []:
+                                if (
+                                    isinstance(element, dict)
+                                    and element.get("type") == "button"
+                                    and element.get("action_id")
+                                    == FF_TIMEBOX_COMMIT_START_ACTION_ID
+                                ):
+                                    meta = decode_metadata(element.get("value") or "")
+                                    planned_date = meta.get("date") or ""
+                                    tz_name = meta.get("tz") or ""
+                                    if planned_date and tz_name:
+                                        label = format_relative_day_label(
+                                            planned_date=planned_date, tz_name=tz_name
+                                        )
+                                        title = f"Timeboxing session for {label}"
+                                        focus.set_thread_label(
+                                            f"{target_channel}:{target_thread_ts}",
+                                            title=title,
+                                            request_excerpt=None,
+                                            state="pending",
+                                            by_user=user,
+                                        )
+                                        await client.chat_update(
+                                            channel=target_channel,
+                                            ts=target_thread_ts,
+                                            text=_timeboxing_thread_root_text(
+                                                title=title,
+                                                request_excerpt=None,
+                                                state="pending",
+                                            ),
+                                        )
+                                    break
+                            if planned_date:
+                                break
+                    except Exception:
+                        pass
                     try:
                         permalink = await _permalink(target_channel, target_thread_ts)
                     except Exception:
@@ -832,51 +1174,42 @@ async def route_slack_event(
                             dm = await client.conversations_open(users=[user])
                             dm_channel = (dm.get("channel") or {}).get("id") or ""
                         if dm_channel:
+                            # Update the original "thinking..." message in DM with the card.
                             dm_blocks = list(payload["blocks"])
                             if permalink:
-                                # Append the "Go to Thread" button to the first actions block if possible.
-                                appended = False
-                                for block in dm_blocks:
-                                    if block.get("type") == "actions":
-                                        elems = block.get("elements") or []
-                                        if isinstance(elems, list) and len(elems) < 5:
-                                            elems.append(
-                                                link_button(
-                                                    text="Go to Thread",
-                                                    url=permalink,
-                                                    action_id="ff_open_thread",
-                                                )
-                                            )
-                                            block["elements"] = elems
-                                            appended = True
-                                            break
-                                if not appended:
-                                    dm_blocks.append(
-                                        {
-                                            "type": "actions",
-                                            "elements": [
-                                                link_button(
-                                                    text="Go to Thread",
-                                                    url=permalink,
-                                                    action_id="ff_open_thread",
-                                                )
-                                            ],
-                                        }
+                                # Add a convenient deep-link to the durable session thread.
+                                dm_blocks.extend(
+                                    open_link_blocks(
+                                        text="Progress is tracked in the session thread:",
+                                        url=permalink,
+                                        button_text="Go to Session Thread",
+                                        action_id="ff_open_thread",
                                     )
-                            dm_payload = {
-                                "channel": dm_channel,
-                                "text": update["text"],
-                                "blocks": dm_blocks,
-                            }
-                            if persona and persona.username:
-                                dm_payload["username"] = persona.username
-                            if persona and persona.icon_emoji:
-                                dm_payload["icon_emoji"] = persona.icon_emoji
-                            if persona and persona.icon_url:
-                                dm_payload["icon_url"] = persona.icon_url
-                            await client.chat_postMessage(**dm_payload)
+                                )
+                            if is_dm:
+                                # For DM origin: update the original thinking message
+                                await _origin_update(
+                                    text=update["text"],
+                                    blocks=dm_blocks,
+                                )
+                            else:
+                                # For non-DM: post a new message to the user's DM
+                                dm_payload = {
+                                    "channel": dm_channel,
+                                    "text": update["text"],
+                                    "blocks": dm_blocks,
+                                }
+                                if persona and persona.username:
+                                    dm_payload["username"] = persona.username
+                                if persona and persona.icon_emoji:
+                                    dm_payload["icon_emoji"] = persona.icon_emoji
+                                if persona and persona.icon_url:
+                                    dm_payload["icon_url"] = persona.icon_url
+                                await client.chat_postMessage(**dm_payload)
                     except Exception:
-                        logger.debug("Failed to DM timeboxing commit prompt", exc_info=True)
+                        logger.debug(
+                            "Failed to DM timeboxing commit prompt", exc_info=True
+                        )
 
                 await _maybe_update_timeboxing_thread_header(
                     client=client,
@@ -884,13 +1217,17 @@ async def route_slack_event(
                     thread_key=redirect.target_key,
                     state=_extract_thread_state(result) or "",
                 )
+                if handoff_target == "timeboxing_agent":
+                    await _update_constraints(redirect.target_key)
                 return
             except Exception:
                 # Fall back to in-thread handling if the target channel isn't accessible.
                 pass
 
     if handoff_target:
-        await _origin_update(text=f":left_right_arrow: Handing off to *{handoff_target}*...")
+        await _origin_update(
+            text=f":left_right_arrow: Handing off to *{handoff_target}*..."
+        )
         handoff_msg = _build_agent_message(
             agent_type=handoff_target,
             cleaned_text=cleaned_text,
@@ -898,8 +1235,12 @@ async def route_slack_event(
             channel=channel,
             thread_ts=thread_ts,
             ts=ts,
-            force_thread_root=("dm" if (is_dm and handoff_target == "timeboxing_agent") else None),
-            force_reply=(True if (is_dm and handoff_target == "timeboxing_agent") else None),
+            force_thread_root=(
+                "dm" if (is_dm and handoff_target == "timeboxing_agent") else None
+            ),
+            force_reply=(
+                True if (is_dm and handoff_target == "timeboxing_agent") else None
+            ),
         )
         try:
             result = await runtime.send_message(
@@ -920,10 +1261,14 @@ async def route_slack_event(
                 text=f":warning: {type(e).__name__}: {_safe_exc_summary(e)}"
             )
             return
-        payload = _with_agent_attribution(_slack_payload_from_result(result), handoff_target)
+        payload = _with_agent_attribution(
+            _slack_payload_from_result(result), handoff_target
+        )
         # chat.update can't change username/icon, so keep the original message as a handoff marker
         # and post the actual reply as the target agent persona.
-        await _origin_update(text=f":left_right_arrow: Handed off to *{handoff_target}*.")
+        await _origin_update(
+            text=f":left_right_arrow: Handed off to *{handoff_target}*."
+        )
         reply_payload: dict = {
             "channel": channel,
             "text": payload.get("text", "") or "",
@@ -951,6 +1296,8 @@ async def route_slack_event(
         thread_key=origin_key,
         state=_extract_thread_state(result) or "",
     )
+    if agent_type == "timeboxing_agent":
+        await _update_constraints(origin_key)
 
 
 def register_handlers(
@@ -973,6 +1320,52 @@ def register_handlers(
     planning = PlanningCoordinator(runtime=runtime, focus=focus, client=app.client)
     planning.attach_reconciler_dispatch()
     timeboxing_commit = TimeboxingCommitCoordinator(runtime=runtime, client=app.client)
+    workspace_bootstrap_attempted = False
+    invited_users: set[str] = set()
+
+    async def _ensure_workspace_registry(client: AsyncWebClient) -> None:
+        nonlocal workspace_bootstrap_attempted
+        if WorkspaceRegistry.get_global() is not None:
+            return
+        if workspace_bootstrap_attempted:
+            return
+        workspace_bootstrap_attempted = True
+        try:
+            # First try a full bootstrap (requires Slack list/join scopes).
+            store = await _get_workspace_store()
+            directory = await ensure_workspace_ready(client, store=store)
+            if directory:
+                return
+        except Exception:
+            logger.debug("On-demand workspace bootstrap failed", exc_info=True)
+
+        # Fallback: reconstruct the registry from the persisted DB bindings (no Slack list scopes).
+        try:
+            store = await _get_workspace_store()
+            if not store:
+                return
+            auth = await client.auth_test()
+            team_id = auth.get("team_id") or ""
+            if not team_id:
+                return
+            bindings = await store.get_channels(team_id=team_id)
+            if not bindings:
+                return
+            channels_by_name = {name: row.channel_id for name, row in bindings.items()}
+            channels_by_agent = {
+                row.agent_type: row.channel_id
+                for row in bindings.values()
+                if row.agent_type and row.channel_id
+            }
+            directory = WorkspaceDirectory(
+                team_id=team_id,
+                channels_by_name=channels_by_name,
+                channels_by_agent=channels_by_agent,
+                personas_by_agent=dict(DEFAULT_PERSONAS),
+            )
+            WorkspaceRegistry.set_global(directory)
+        except Exception:
+            logger.debug("Failed to load workspace bindings from DB", exc_info=True)
 
     async def _get_constraint_store() -> ConstraintStore | None:
         nonlocal constraint_store
@@ -997,6 +1390,28 @@ def register_handlers(
         sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
         workspace_store = SlackWorkspaceStore(sessionmaker)
         return workspace_store
+
+    async def _ensure_user_invited(client: AsyncWebClient, *, user_id: str) -> None:
+        if not user_id or user_id in invited_users:
+            return
+        directory = WorkspaceRegistry.get_global()
+        if not directory:
+            return
+        invited_users.add(user_id)
+        try:
+            await _invite_user_to_channels_best_effort(
+                client,
+                user_id=user_id,
+                channel_ids=[
+                    directory.channels_by_name.get("plan-sessions", ""),
+                    directory.channels_by_name.get("review", ""),
+                    directory.channels_by_name.get("task-marshalling", ""),
+                    directory.channels_by_name.get("scheduling", ""),
+                    directory.channels_by_name.get("admonishments", ""),
+                ],
+            )
+        except Exception:
+            pass
 
     # --- Slash Commands ---
 
@@ -1089,6 +1504,7 @@ def register_handlers(
                     directory.channels_by_name.get("review", ""),
                     directory.channels_by_name.get("task-marshalling", ""),
                     directory.channels_by_name.get("scheduling", ""),
+                    directory.channels_by_name.get("admonishments", ""),
                 ],
             )
         except Exception:
@@ -1109,6 +1525,21 @@ def register_handlers(
         await ack()
         await _run_setup(respond, client, user_id=body.get("user_id"))
 
+    @app.command("/timebox")
+    async def cmd_timebox(ack, body, respond, client, logger):
+        await ack()
+        # Fire off in background to avoid blocking Slack's 3-second timeout
+        asyncio.create_task(
+            _handle_timebox_command(
+                runtime=runtime,
+                focus=focus,
+                default_agent=default_agent,
+                body=body,
+                client=client,
+                respond=respond,
+            )
+        )
+
     # --- Routing helpers ---
 
     # Slack sends `block_actions` even for url buttons; ack them to avoid 404s.
@@ -1124,39 +1555,104 @@ def register_handlers(
     async def on_open_google_calendar_event_action(ack, body, logger):
         await ack()
 
-    @app.action(FF_PLANNING_SCHEDULE_ACTION_ID)
-    async def on_planning_schedule_action(ack, body, client, logger):
+    @app.action("ff_open_admonishments_log")
+    async def on_open_admonishments_log_action(ack, body, logger):
+        await ack()
+
+    @app.action(FF_EVENT_ADD_DISABLED_ACTION_ID)
+    async def on_event_add_disabled_action(ack, body, logger):
+        await ack()
+
+    @app.action(FF_EVENT_START_AT_ACTION_ID)
+    async def on_event_start_at_action(ack, body, respond, logger):
         await ack()
         action = (body.get("actions") or [{}])[0]
-        value = action.get("value") or ""
         channel_id = (body.get("channel") or {}).get("id") or ""
         message_ts = (body.get("message") or {}).get("ts") or ""
-        actor_user_id = (body.get("user") or {}).get("id")
-        if channel_id and message_ts and value:
-            await planning.handle_schedule_action(
-                value=value,
+        selected = action.get("selected_date_time")
+        if channel_id and message_ts and selected is not None:
+            await planning.handle_start_at_changed(
                 channel_id=channel_id,
-                thread_ts=message_ts,
-                actor_user_id=actor_user_id,
+                message_ts=message_ts,
+                selected_date_time=int(selected),
+            )
+            await planning.refresh_card_for_message(
+                channel_id=channel_id, message_ts=message_ts, respond=respond
             )
 
-    @app.action(FF_PLANNING_PICK_TIME_ACTION_ID)
-    async def on_planning_pick_time_action(ack, body, client, logger):
+    @app.action(FF_EVENT_START_DATE_ACTION_ID)
+    async def on_event_start_date_action(ack, body, respond, logger):
         await ack()
+        action = (body.get("actions") or [{}])[0]
         channel_id = (body.get("channel") or {}).get("id") or ""
         message_ts = (body.get("message") or {}).get("ts") or ""
-        trigger_id = body.get("trigger_id") or ""
-        actor_user_id = (body.get("user") or {}).get("id")
-        action = (body.get("actions") or [{}])[0]
-        value = action.get("value") or ""
-        if channel_id and message_ts and trigger_id and value:
-            await planning.handle_pick_time_modal(
-                trigger_id=trigger_id,
-                value=value,
+        selected = action.get("selected_date")
+        if channel_id and message_ts and selected:
+            await planning.handle_start_date_changed(
                 channel_id=channel_id,
-                thread_ts=message_ts,
-                actor_user_id=actor_user_id,
+                message_ts=message_ts,
+                selected_date=str(selected),
             )
+            await planning.refresh_card_for_message(
+                channel_id=channel_id, message_ts=message_ts, respond=respond
+            )
+
+    @app.action(FF_EVENT_START_TIME_ACTION_ID)
+    async def on_event_start_time_action(ack, body, respond, logger):
+        await ack()
+        action = (body.get("actions") or [{}])[0]
+        channel_id = (body.get("channel") or {}).get("id") or ""
+        message_ts = (body.get("message") or {}).get("ts") or ""
+        selected = action.get("selected_time")
+        if channel_id and message_ts and selected:
+            await planning.handle_start_time_changed(
+                channel_id=channel_id,
+                message_ts=message_ts,
+                selected_time=str(selected),
+            )
+            await planning.refresh_card_for_message(
+                channel_id=channel_id, message_ts=message_ts, respond=respond
+            )
+
+    @app.action(FF_EVENT_DURATION_ACTION_ID)
+    async def on_event_duration_action(ack, body, respond, logger):
+        await ack()
+        action = (body.get("actions") or [{}])[0]
+        channel_id = (body.get("channel") or {}).get("id") or ""
+        message_ts = (body.get("message") or {}).get("ts") or ""
+        selected = (
+            (action.get("selected_option") or {}) if isinstance(action, dict) else {}
+        ) or {}
+        value = selected.get("value")
+        if channel_id and message_ts and value:
+            try:
+                duration_min = int(value)
+            except ValueError:
+                return
+            await planning.handle_duration_changed(
+                channel_id=channel_id,
+                message_ts=message_ts,
+                duration_min=duration_min,
+            )
+            await planning.refresh_card_for_message(
+                channel_id=channel_id, message_ts=message_ts, respond=respond
+            )
+
+    @app.action(FF_EVENT_ADD_ACTION_ID)
+    async def on_event_add_action(ack, body, respond, logger):
+        await ack()
+        action = (body.get("actions") or [{}])[0]
+        draft_id = parse_draft_id_from_value(action.get("value") or "")
+        if draft_id:
+            await planning.start_add_to_calendar(draft_id=draft_id, respond=respond)
+
+    @app.action(FF_EVENT_RETRY_ACTION_ID)
+    async def on_event_retry_action(ack, body, respond, logger):
+        await ack()
+        action = (body.get("actions") or [{}])[0]
+        draft_id = parse_draft_id_from_value(action.get("value") or "")
+        if draft_id:
+            await planning.start_add_to_calendar(draft_id=draft_id, respond=respond)
 
     @app.action(FF_TIMEBOX_COMMIT_START_ACTION_ID)
     async def on_timebox_commit_start_action(ack, body, client, logger):
@@ -1174,83 +1670,74 @@ def register_handlers(
                 actor_user_id=actor_user_id,
             )
 
-    @app.action(FF_TIMEBOX_COMMIT_PICK_DAY_ACTION_ID)
-    async def on_timebox_commit_pick_day_action(ack, body, client, logger):
+    @app.action(FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID)
+    async def on_timebox_commit_day_select_action(ack, body, client, logger):
         await ack()
         channel_id = (body.get("channel") or {}).get("id") or ""
         message_ts = (body.get("message") or {}).get("ts") or ""
-        trigger_id = body.get("trigger_id") or ""
         action = (body.get("actions") or [{}])[0]
-        value = action.get("value") or ""
-        if channel_id and message_ts and trigger_id and value:
-            await timeboxing_commit.handle_pick_day_action(
-                trigger_id=trigger_id,
-                value=value,
+        selected = (
+            (action.get("selected_option") or {}) if isinstance(action, dict) else {}
+        ) or {}
+        selected_date = selected.get("value") or ""
+        meta_value = ""
+        for block in (body.get("message") or {}).get("blocks") or []:
+            elements = block.get("elements") or []
+            if not isinstance(elements, list):
+                continue
+            for element in elements:
+                if (
+                    isinstance(element, dict)
+                    and element.get("type") == "button"
+                    and element.get("action_id") == FF_TIMEBOX_COMMIT_START_ACTION_ID
+                ):
+                    meta_value = element.get("value") or ""
+                    break
+            if meta_value:
+                break
+
+        if channel_id and message_ts and selected_date and meta_value:
+            await timeboxing_commit.handle_day_select_action(
                 prompt_channel_id=channel_id,
                 prompt_ts=message_ts,
+                selected_date=selected_date,
+                existing_meta_value=meta_value,
             )
 
-    @app.action(CONSTRAINT_REVIEW_ACTION_ID)
+    @app.action(CONSTRAINT_ROW_REVIEW_ACTION_ID)
     async def on_constraint_review_action(ack, body, client, logger):
         await ack()
         action = (body.get("actions") or [{}])[0]
         value = action.get("value") or ""
         metadata = decode_metadata(value)
-        thread_ts = metadata.get("thread_ts")
-        user_id = metadata.get("user_id")
-        if not thread_ts or not user_id:
+        constraint_id_raw = metadata.get("constraint_id") or ""
+        thread_ts = metadata.get("thread_ts") or ""
+        user_id = metadata.get("user_id") or ""
+        channel_id = body.get("channel", {}).get("id") or ""
+        if not (constraint_id_raw and user_id and channel_id):
             return
-        channel_id = body.get("channel", {}).get("id")
-        if not channel_id:
+        try:
+            constraint_id = int(constraint_id_raw)
+        except ValueError:
             return
 
         store = await _get_constraint_store()
         if not store:
             return
-        constraints = await store.list_constraints(
-            user_id=user_id,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-            status=ConstraintStatus.PROPOSED,
+        constraint = await store.get_constraint(
+            user_id=user_id, constraint_id=constraint_id
         )
-        if not constraints:
-            await client.chat_postMessage(
-                channel=channel_id,
-                text="No pending constraints to review.",
-                thread_ts=thread_ts,
-            )
+        if not constraint:
             return
-
+        if thread_ts and constraint.thread_ts and constraint.thread_ts != thread_ts:
+            return
         view = build_constraint_review_view(
-            constraints, channel_id=channel_id, thread_ts=thread_ts
+            constraint,
+            channel_id=channel_id,
+            thread_ts=thread_ts or (constraint.thread_ts or ""),
+            user_id=user_id,
         )
         await client.views_open(trigger_id=body["trigger_id"], view=view)
-
-    @app.view(FF_PLANNING_TIME_MODAL_CALLBACK_ID)
-    async def on_planning_time_modal_submit(ack, body, client, logger):
-        await ack()
-        view = body.get("view") or {}
-        state = (view.get("state") or {}).get("values") or {}
-        private_metadata = view.get("private_metadata") or ""
-        actor_user_id = (body.get("user") or {}).get("id")
-        await planning.handle_time_modal_submission(
-            private_metadata=private_metadata,
-            state_values=state,
-            actor_user_id=actor_user_id,
-        )
-
-    @app.view(FF_TIMEBOX_COMMIT_MODAL_CALLBACK_ID)
-    async def on_timebox_commit_modal_submit(ack, body, client, logger):
-        await ack()
-        view = body.get("view") or {}
-        state = (view.get("state") or {}).get("values") or {}
-        private_metadata = view.get("private_metadata") or ""
-        actor_user_id = (body.get("user") or {}).get("id")
-        await timeboxing_commit.handle_commit_modal_submission(
-            private_metadata=private_metadata,
-            state_values=state,
-            actor_user_id=actor_user_id,
-        )
 
     @app.view(CONSTRAINT_REVIEW_VIEW_CALLBACK_ID)
     async def on_constraint_review_submit(ack, body, client, logger):
@@ -1259,21 +1746,37 @@ def register_handlers(
         if not store:
             return
         state = body.get("view", {}).get("state", {}).get("values", {})
-        decisions = parse_constraint_decisions(state)
-        if decisions:
-            await store.update_constraint_statuses(
-                user_id=body.get("user", {}).get("id", ""),
-                decisions=decisions,
-            )
+        status, description = parse_constraint_review_submission(state)
         metadata = body.get("view", {}).get("private_metadata") or ""
         info = decode_metadata(metadata)
-        channel_id = info.get("channel_id")
-        thread_ts = info.get("thread_ts")
+        constraint_id_raw = info.get("constraint_id") or ""
+        user_id = info.get("user_id") or body.get("user", {}).get("id", "") or ""
+        channel_id = info.get("channel_id") or ""
+        thread_ts = info.get("thread_ts") or ""
+        if not (constraint_id_raw and user_id):
+            return
+        try:
+            constraint_id = int(constraint_id_raw)
+        except ValueError:
+            return
+        await store.update_constraint(
+            user_id=user_id,
+            constraint_id=constraint_id,
+            status=status,
+            description=description,
+        )
         if channel_id and thread_ts:
             await client.chat_postMessage(
                 channel=channel_id,
                 thread_ts=thread_ts,
-                text="Saved your constraint decisions.",
+                text="Saved your constraint update.",
+            )
+            await _maybe_update_timeboxing_thread_constraints(
+                client=client,
+                focus=focus,
+                thread_key=f"{channel_id}:{thread_ts}",
+                user_id=user_id,
+                store=store,
             )
 
     # --- App Home (Command Center) ---
@@ -1317,9 +1820,13 @@ def register_handlers(
         root = await client.chat_postMessage(**root_payload)
         thread_root_ts = root["ts"]
 
-        runtime_key = FocusManager.thread_key(channel_id, thread_ts=thread_root_ts, ts=thread_root_ts)
+        runtime_key = FocusManager.thread_key(
+            channel_id, thread_ts=thread_root_ts, ts=thread_root_ts
+        )
         try:
-            focus.set_focus(runtime_key, "revisor_agent", by_user=user_id, note="apphome")
+            focus.set_focus(
+                runtime_key, "revisor_agent", by_user=user_id, note="apphome"
+            )
         except Exception:
             pass
         focus.set_user_focus(user_id, "revisor_agent")
@@ -1365,23 +1872,31 @@ def register_handlers(
             )
             return
         payload = _slack_payload_from_result(result)
-        update = {"channel": channel_id, "ts": processing["ts"], "text": payload.get("text", "") or ""}
+        update = {
+            "channel": channel_id,
+            "ts": processing["ts"],
+            "text": payload.get("text", "") or "",
+        }
         if payload.get("blocks"):
             update["blocks"] = payload["blocks"]
         await client.chat_update(**update)
 
         # Refresh App Home view (focus updated)
-        view = _build_app_home_view(user_id=user_id, focus_agent=focus.get_user_focus(user_id))
+        view = _build_app_home_view(
+            user_id=user_id, focus_agent=focus.get_user_focus(user_id)
+        )
         await client.views_publish(user_id=user_id, view=view)
 
     # --- App mention in public channels ---
     @app.event("app_mention")
     async def on_app_mention(body, say, context, client, logger):
+        await _ensure_workspace_registry(client)
         event = body.get("event", {})
         user_id = event.get("user") or ""
         channel_id = event.get("channel") or ""
         channel_type = event.get("channel_type") or "channel"
         if user_id and channel_id:
+            await _ensure_user_invited(client, user_id=user_id)
             await planning.maybe_register_user(
                 user_id=user_id, channel_id=channel_id, channel_type=channel_type
             )
@@ -1393,11 +1908,34 @@ def register_handlers(
             bot_user_id=context.get("bot_user_id"),
             say=say,
             client=client,
+            get_constraint_store=_get_constraint_store,
         )
+
+    @app.event("reaction_added")
+    async def on_reaction_added(body, event, client, logger):
+        try:
+            item = event.get("item") or {}
+            if (item.get("type") or "").lower() != "message":
+                return
+            channel_id = item.get("channel") or ""
+            message_ts = item.get("ts") or ""
+            user_id = event.get("user") or ""
+            reaction = event.get("reaction") or ""
+            if not (channel_id and message_ts and user_id and reaction):
+                return
+            await planning.maybe_handle_reaction(
+                user_id=user_id,
+                channel_id=channel_id,
+                message_ts=message_ts,
+                reaction=reaction,
+            )
+        except Exception:
+            logger.exception("Failed to handle reaction_added event")
 
     # --- Direct messages (IM) ---
     @app.event("message")
     async def on_message_events(body, say, context, client, logger):
+        await _ensure_workspace_registry(client)
         event = body.get("event", {})
         # Ignore bot messages / non-user subtypes to avoid loops and empty "message_changed" events.
         subtype = event.get("subtype")
@@ -1414,35 +1952,34 @@ def register_handlers(
             return
         user_id = event.get("user") or ""
         if user_id:
+            await _ensure_user_invited(client, user_id=user_id)
             await planning.maybe_register_user(
                 user_id=user_id,
                 channel_id=channel_id,
                 channel_type=event.get("channel_type") or "channel",
             )
-            thread_ts = event.get("thread_ts")
-            if await planning.maybe_handle_time_reply(
-                user_id=user_id,
-                channel_id=channel_id,
-                thread_ts=thread_ts,
-                text=text,
-            ):
-                return
         thread_ts = event.get("thread_ts")
         key = FocusManager.thread_key(channel_id, thread_ts, ts)
         if event.get("channel_type") != "im":
+            _auto_recover_timeboxing_focus_for_thread(
+                focus=focus, event=event, user_id=user_id
+            )
             # Only handle non-DMs when the thread has explicit focus (e.g., timeboxing threads).
             bot_id = context.get("bot_user_id")
             if bot_id and f"<@{bot_id}>" in (event.get("text") or ""):
                 return  # app_mention handler covers this
             general_id = _general_channel_id()
             channel_agent = _agent_for_channel(channel_id)
-            allow_unfocused = channel_agent in {
-                "timeboxing_agent",
-                "tasks_agent",
-                "revisor_agent",
-                "planner_agent",
-            }
-            if channel_id != general_id and not allow_unfocused and not focus.get_focus(key):
+            allow_unfocused = channel_agent is not None
+            if (
+                channel_id != general_id
+                and not allow_unfocused
+                and not focus.get_focus(key)
+            ):
+                logger.debug(
+                    "Ignoring message in channel=%s (not general, no channel agent, no focus)",
+                    channel_id,
+                )
                 return
         await route_slack_event(
             runtime=runtime,
@@ -1452,6 +1989,7 @@ def register_handlers(
             bot_user_id=context.get("bot_user_id"),
             say=say,
             client=client,
+            get_constraint_store=_get_constraint_store,
         )
 
 
@@ -1478,6 +2016,31 @@ def _slack_payload_from_result(result) -> dict:
 
 
 def _coerce_async_database_url(database_url: str) -> str:
+    if database_url.startswith("sqlite+aiosqlite://"):
+        return database_url
+    if database_url.startswith("sqlite://"):
+        return database_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    return database_url
+    if database_url.startswith("sqlite+aiosqlite://"):
+        return database_url
+    if database_url.startswith("sqlite://"):
+        return database_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    return database_url
+    if database_url.startswith("sqlite+aiosqlite://"):
+        return database_url
+    if database_url.startswith("sqlite://"):
+        return database_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    return database_url
+    if database_url.startswith("sqlite+aiosqlite://"):
+        return database_url
+    if database_url.startswith("sqlite://"):
+        return database_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    return database_url
+    if database_url.startswith("sqlite+aiosqlite://"):
+        return database_url
+    if database_url.startswith("sqlite://"):
+        return database_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    return database_url
     if database_url.startswith("sqlite+aiosqlite://"):
         return database_url
     if database_url.startswith("sqlite://"):

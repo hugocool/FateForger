@@ -74,7 +74,9 @@ async def test_routes_root_message_to_timeboxing_start_when_focused():
     assert len(runtime.calls) == 1
     msg, recipient = runtime.calls[0]
     assert isinstance(msg, StartTimeboxing)
-    assert msg.thread_ts == "111"
+    # Root timeboxing sessions are anchored to the bot's prompt message (not the user's message),
+    # so the session thread can start cleanly under a deterministic control surface.
+    assert msg.thread_ts == "p1"
     assert recipient.type == "timeboxing_agent"
 
 

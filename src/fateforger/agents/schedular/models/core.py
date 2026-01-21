@@ -93,8 +93,12 @@ class ChoiceEnumMeta(EnumMeta):
         for n, cf in raw.items():
             # Remove the placeholder and its name from _member_names
             classdict.pop(n)
-            if n in classdict._member_names:  # type: ignore
-                classdict._member_names.remove(n)  # type: ignore
+            member_names = getattr(classdict, "_member_names", None)
+            if isinstance(member_names, dict):
+                member_names.pop(n, None)
+            elif isinstance(member_names, list):
+                if n in member_names:
+                    member_names.remove(n)
             # Insert the actual string value
             classdict[n] = cf.value
 

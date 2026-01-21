@@ -172,7 +172,7 @@ class NotionConstraintExtractor:
         if not handoff.user_utterance.strip():
             return None
 
-        payload = handoff.model_dump()
+        payload = handoff.model_dump(mode="json")
         task = json.dumps(payload, ensure_ascii=False)
         response = await with_timeout(
             "notion:constraint-extract",

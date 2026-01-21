@@ -17,16 +17,20 @@ class TimeboxingStage(str, Enum):
     REVIEW_COMMIT = "ReviewCommit"
 
 
-StageAction = Literal["provide_info", "proceed", "back", "redo", "cancel"]
+StageAction = Literal["provide_info", "proceed", "back", "redo", "cancel", "assist"]
 
 
 class StageGateOutput(BaseModel):
     stage_id: TimeboxingStage
     ready: bool
     summary: List[str] = Field(default_factory=list, description="1-4 short bullets")
-    missing: List[str] = Field(default_factory=list, description="missing items blocking readiness")
+    missing: List[str] = Field(
+        default_factory=list, description="missing items blocking readiness"
+    )
     question: Optional[str] = Field(default=None, description="single concise question")
-    facts: Dict[str, Any] = Field(default_factory=dict, description="canonical structured facts for this stage")
+    facts: Dict[str, Any] = Field(
+        default_factory=dict, description="canonical structured facts for this stage"
+    )
 
 
 class StageDecision(BaseModel):
@@ -35,7 +39,9 @@ class StageDecision(BaseModel):
     note: Optional[str] = None
 
 
-def format_stage_prompt_context(*, stage: TimeboxingStage, facts: Dict[str, Any]) -> str:
+def format_stage_prompt_context(
+    *, stage: TimeboxingStage, facts: Dict[str, Any]
+) -> str:
     payload = json.dumps(facts or {}, ensure_ascii=False, indent=2, sort_keys=True)
     return f"Current stage: {stage.value}\nKnown facts (JSON):\n{payload}\n"
 
@@ -46,14 +52,18 @@ Stage: CollectConstraints
 Goal
 - Build the day frame: work window, timezone, sleep target, immovable events, commutes, and any hard commitments.
 - Update/merge the provided Known facts JSON with any new details in the user message.
+- External data fetches are handled by the coordinator in the background (you should not request tools).
 
 Output
 - Return STRICT JSON matching StageGateOutput.
 
 Rules
+- If immovables are missing from Known facts and a date/timezone is set, call it out in missing/question so the coordinator can fetch it.
+- If the user asks about their calendar, tasks, or other related info, note the request in summary/question and keep going.
 - Be conservative: if a fact is uncertain, omit it from facts and add it to missing/question.
 - Always keep the user oriented: summary should include what you assumed/locked so far.
 - ready=true only when the frame is sufficient to draft a skeleton timebox.
+- Keep the conversation flowing naturally; don't be overly rigid about stage structure.
 
 facts keys (preferred)
 - timezone: string
@@ -84,7 +94,10 @@ facts keys (preferred)
 - tasks: [{title: string, duration_min: int|null, due: "YYYY-MM-DD"|null, importance: "high|med|low"|null}]
 - goals: [string]
 
-ready=true only when you have enough to draft a skeleton (DailyOneThing or a task list with rough durations).
+Rules
+- ready=true only when you have enough to draft a skeleton (DailyOneThing or a task list with rough durations).
+- If the user mentions wanting to check tasks, calendar, or other sources, note it in summary/question (the coordinator will fetch in background).
+- Keep the conversation natural; guide them towards providing what's needed but don't be rigid.
 """.strip()
 
 
@@ -109,9 +122,11 @@ Decision rules
 - If the user asks to revisit earlier stages, use action="back" and set target_stage.
 - If the user asks to redo the current stage, use action="redo".
 - If the user wants to stop, use action="cancel".
+- If the user asks an adjacent question (e.g. "what's on my calendar?", "show my tasks", "what did I plan yesterday?"), use action="assist" with a note describing what they need. This lets you help them with info that feeds back into timeboxing.
 
 Constraints
 - Never output prose.
+- Prefer keeping the user on track; use assist sparingly for genuinely helpful adjacent queries.
 """.strip()
 
 

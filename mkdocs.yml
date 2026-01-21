@@ -20,4 +20,21 @@ nav:
       - LLM Configuration: reference/setup/llm.md
       - Slack Events: reference/slack/events.md
       - Autogen Patterns: reference/autogen/agent_patterns.md
+  - Indexes:
+      - Tools: indices/tools.md
+      - LLM: indices/llm.md
+      - Setup Wizard: indices/setup_wizard.md
+      - Setup Wizard Templates: indices/setup_wizard_templates.md
+      - Adapters: indices/adapters.md
+      - Adapters (Notion): indices/adapters_notion.md
+      - Tools Config: indices/tools_config.md
+      - Haunt: indices/haunt.md
+      - Debug: indices/debug.md
+      - Agents (Tasks): indices/agents_tasks.md
+      - Agents (Receptionist): indices/agents_receptionist.md
+      - Agents (Timeboxing): indices/agents_timeboxing.md
+      - Agents (Revisor): indices/agents_revisor.md
+      - Agents (Strategy): indices/agents_strategy.md
+      - Schedular Models: indices/schedular_models.md
+      - TRMNL Frontend Sources: indices/trmnl_frontend_src.md
   - Change Log: change_log.md

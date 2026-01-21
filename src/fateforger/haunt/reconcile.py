@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Optional, Protocol
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-from fateforger.agents.schedular.models.calendar import EventType
+from dateutil import parser as date_parser
 
 logger = logging.getLogger(__name__)
 
@@ -25,21 +24,21 @@ class CalendarClient(Protocol):
         calendar_id: str,
         time_min: str,
         time_max: str,
-    ) -> list[dict]:
-        ...
+    ) -> list[dict]: ...
 
-    async def get_event(self, *, calendar_id: str, event_id: str) -> dict | None:
-        ...
+    async def get_event(self, *, calendar_id: str, event_id: str) -> dict | None: ...
 
 
 @dataclass(frozen=True)
 class PlanningRuleConfig:
     horizon: timedelta = timedelta(hours=24)
-    nudge_offsets: tuple[timedelta, ...] = (
-        timedelta(minutes=10),
-        timedelta(hours=2),
-        timedelta(hours=8),
-    )
+    # If set, use these explicit offsets (relative to `now`).
+    nudge_offsets: tuple[timedelta, ...] | None = None
+    # Otherwise, generate offsets using exponential backoff:
+    # base, base*2, base*4, ... capped at nudge_backoff_cap, up to nudge_max_attempts.
+    nudge_backoff_base: timedelta = timedelta(minutes=10)
+    nudge_backoff_cap: timedelta = timedelta(hours=8)
+    nudge_max_attempts: int = 5
     summary_keywords: tuple[str, ...] = ("plan", "planning", "review", "timebox")
     calendar_id: str = "primary"
 
@@ -138,6 +137,7 @@ class PlanningSessionRule:
         user_id: str | None = None,
         channel_id: str | None = None,
         planning_event_id: str | None = None,
+        first_nudge_offset: timedelta | None = None,
     ) -> list[DesiredJob]:
         start = now.astimezone(timezone.utc)
         end = start + self._config.horizon
@@ -147,7 +147,7 @@ class PlanningSessionRule:
                 calendar_id=self._config.calendar_id,
                 event_id=planning_event_id,
             )
-            if anchor:
+            if anchor and _event_within_window(anchor, start, end):
                 return []
 
         events = await self._calendar_client.list_events(
@@ -159,9 +159,16 @@ class PlanningSessionRule:
         if self._has_planning_session(events):
             return []
 
+        nudge_offsets = self._resolve_nudge_offsets(
+            first_nudge_offset=first_nudge_offset
+        )
+        if not nudge_offsets:
+            # Safety: always schedule at least one nudge, otherwise the reconcile can't work.
+            nudge_offsets = [timedelta(minutes=10)]
+
         window_start = start.date().isoformat()
         jobs: list[DesiredJob] = []
-        for idx, offset in enumerate(self._config.nudge_offsets, start=1):
+        for idx, offset in enumerate(nudge_offsets, start=1):
             jobs.append(
                 DesiredJob(
                     key=JobKey(
@@ -190,7 +197,7 @@ class PlanningSessionRule:
                 payload=PlanningReminder(
                     scope=scope,
                     kind="expire",
-                    attempt=len(self._config.nudge_offsets) + 1,
+                    attempt=len(nudge_offsets) + 1,
                     message="Still no planning session on the calendar. Want me to block time?",
                     user_id=user_id,
                     channel_id=channel_id,
@@ -200,6 +207,44 @@ class PlanningSessionRule:
 
         return jobs
 
+    def _resolve_nudge_offsets(
+        self, *, first_nudge_offset: timedelta | None
+    ) -> list[timedelta]:
+        if self._config.nudge_offsets is not None:
+            offsets = list(self._config.nudge_offsets)
+            if first_nudge_offset is not None and offsets:
+                offsets[0] = first_nudge_offset
+            return [o for o in offsets if o < self._config.horizon]
+
+        base = self._config.nudge_backoff_base
+        cap = self._config.nudge_backoff_cap
+        max_attempts = max(int(self._config.nudge_max_attempts or 0), 1)
+
+        offsets: list[timedelta] = []
+        if first_nudge_offset is not None:
+            offsets.append(first_nudge_offset)
+        else:
+            offsets.append(base)
+
+        # Fill remaining attempts with an exponential series using `base`.
+        # Ensure monotonic growth even if first_nudge_offset is 0 or custom.
+        exponent = 0
+        while len(offsets) < max_attempts:
+            candidate = base * (2**exponent)
+            if candidate > cap:
+                candidate = cap
+            if candidate <= offsets[-1]:
+                exponent += 1
+                if candidate == cap:
+                    break
+                continue
+            if candidate >= self._config.horizon:
+                break
+            offsets.append(candidate)
+            exponent += 1
+
+        return offsets
+
     def _has_planning_session(self, events: Iterable[dict]) -> bool:
         for event in events:
             if self._is_planning_event(event):
@@ -207,23 +252,24 @@ class PlanningSessionRule:
         return False
 
     def _is_planning_event(self, event: dict) -> bool:
-        color_id = event.get("colorId")
-        if color_id:
-            try:
-                if EventType.get_event_type_from_color_id(color_id) is EventType.PLAN_REVIEW:
-                    return True
-            except KeyError:
-                pass
         summary = (event.get("summary") or "").lower()
         return any(keyword in summary for keyword in self._config.summary_keywords)
 
     @staticmethod
     def _message_for_nudge(attempt: int) -> str:
-        if attempt == 1:
-            return "No planning session on the calendar yet. Want me to schedule one?"
+        attempt = max(int(attempt or 1), 1)
+        # Escalate tone over time; the card will surface this message directly.
+        if attempt <= 1:
+            return (
+                "No planning session on the calendar yet. Pick a time and I’ll book it."
+            )
         if attempt == 2:
-            return "Reminder: we still need a planning session on the calendar."
-        return "Heads-up: planning session still missing. Want to lock one in?"
+            return "Still no planning session. Choose a time now — this is your daily anchor."
+        if attempt == 3:
+            return ":warning: Still missing. Pick a slot — I’m going to keep asking until it’s booked."
+        if attempt == 4:
+            return ":rotating_light: Planning session is overdue. Pick a time or tell me when you’ll do it."
+        return ":rotating_light: Final warning: no planning session booked. Choose a time now so tomorrow isn’t chaos."
 
 
 class PlanningReconciler:
@@ -244,7 +290,17 @@ class PlanningReconciler:
     def calendar_client(self) -> CalendarClient:
         return self._calendar_client
 
-    def set_dispatcher(self, dispatcher: Callable[[PlanningReminder], Awaitable[None]]) -> None:
+    def set_dispatcher(
+        self, dispatcher: Callable[[PlanningReminder], Awaitable[None]]
+    ) -> None:
+        logger.info(
+            "PlanningReconciler: dispatcher updated to %s",
+            (
+                dispatcher.__qualname__
+                if hasattr(dispatcher, "__qualname__")
+                else dispatcher
+            ),
+        )
         self._dispatcher = dispatcher
 
     async def reconcile_missing_planning(
@@ -254,6 +310,7 @@ class PlanningReconciler:
         user_id: str | None = None,
         channel_id: str | None = None,
         planning_event_id: str | None = None,
+        first_nudge_offset: timedelta | None = None,
         now: datetime | None = None,
     ) -> list[DesiredJob]:
         now_dt = now or datetime.now(timezone.utc)
@@ -263,6 +320,7 @@ class PlanningReconciler:
             user_id=user_id,
             channel_id=channel_id,
             planning_event_id=planning_event_id,
+            first_nudge_offset=first_nudge_offset,
         )
         prefix = f"rule:{self._rule.rule_id}:{scope}:"
         current_ids = {
@@ -289,6 +347,17 @@ class PlanningReconciler:
         return desired
 
     async def _emit_reminder(self, reminder: PlanningReminder) -> None:
+        logger.info(
+            "Emitting planning reminder for %s (kind=%s, attempt=%d) via %s",
+            reminder.scope,
+            reminder.kind,
+            reminder.attempt,
+            (
+                self._dispatcher.__qualname__
+                if hasattr(self._dispatcher, "__qualname__")
+                else "dispatcher"
+            ),
+        )
         try:
             await self._dispatcher(reminder)
         except Exception:
@@ -300,20 +369,42 @@ class PlanningReconciler:
 
 
 def _extract_tool_payload(result: Any) -> Any:
+    import json
+
     if isinstance(result, dict):
         return result
-    payload = getattr(result, "content", None)
-    if payload is not None:
-        return payload
+
+    # Handle ToolResult objects from MCP
     payload = getattr(result, "result", None)
     if payload is not None:
+        # result is often a list of TextResultContent objects
+        if isinstance(payload, list) and len(payload) > 0:
+            first = payload[0]
+            # TextResultContent has a 'content' attribute with JSON string
+            content = getattr(first, "content", None)
+            if isinstance(content, str):
+                try:
+                    return json.loads(content)
+                except (json.JSONDecodeError, TypeError):
+                    pass
         return payload
+
+    payload = getattr(result, "content", None)
+    if payload is not None:
+        if isinstance(payload, str):
+            try:
+                return json.loads(payload)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return payload
+
     return {}
 
 
 def _normalize_events(payload: Any) -> list[dict]:
     if isinstance(payload, dict):
-        items = payload.get("items")
+        # MCP returns {"events": [...]} or Google API returns {"items": [...]}
+        items = payload.get("events") or payload.get("items")
         if isinstance(items, list):
             return [item for item in items if isinstance(item, dict)]
         return []
@@ -333,6 +424,50 @@ def _normalize_event(payload: Any) -> dict | None:
         if isinstance(event, dict):
             return event
     return None
+
+
+def _parse_event_dt(raw: Any, *, tz: timezone) -> datetime | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        try:
+            parsed = date_parser.isoparse(raw)
+        except Exception:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=tz)
+        return parsed
+    if isinstance(raw, dict):
+        if raw.get("dateTime"):
+            try:
+                parsed = date_parser.isoparse(raw["dateTime"])
+            except Exception:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=tz)
+            return parsed
+        if raw.get("date"):
+            try:
+                day = date_parser.isoparse(raw["date"]).date()
+            except Exception:
+                return None
+            return datetime.combine(day, time(0, 0), tz)
+    return None
+
+
+def _event_within_window(event: dict, start: datetime, end: datetime) -> bool:
+    tz = start.tzinfo or timezone.utc
+    start_dt = _parse_event_dt(event.get("start"), tz=tz)
+    end_dt = _parse_event_dt(event.get("end"), tz=tz)
+    if start_dt is None and end_dt is None:
+        return False
+    if start_dt and end_dt:
+        return not (end_dt < start or start_dt > end)
+    if start_dt:
+        return start <= start_dt <= end
+    if end_dt:
+        return start <= end_dt <= end
+    return False
 
 
 __all__ = [

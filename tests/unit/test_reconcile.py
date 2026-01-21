@@ -56,10 +56,13 @@ async def test_reconcile_adds_and_clears_jobs():
         now=now,
     )
 
-    assert len(jobs) == 4
-    assert len(scheduler.get_jobs()) == 4
+    # Default rule schedules multiple nudges (exponential backoff) + an expiry.
+    assert len(jobs) == 6
+    assert len(scheduler.get_jobs()) == 6
+    assert [j.payload.kind for j in jobs[:5]] == ["nudge1", "nudge2", "nudge3", "nudge4", "nudge5"]
+    assert jobs[-1].payload.kind == "expire"
 
-    client._events = [{"summary": "Planning session", "colorId": "10"}]
+    client._events = [{"summary": "Planning session"}]
     jobs = await reconciler.reconcile_missing_planning(
         scope="C1:1",
         user_id="U1",
@@ -72,13 +75,59 @@ async def test_reconcile_adds_and_clears_jobs():
 
 
 @pytest.mark.asyncio
+async def test_reconcile_does_not_use_color_id_to_detect_planning():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[{"summary": "Focus time", "colorId": "10"}])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="C1:1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    assert jobs
+
+
+@pytest.mark.asyncio
+async def test_reconcile_nudges_use_exponential_backoff_by_default():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="C1:1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+    nudges = [j for j in jobs if j.payload.kind.startswith("nudge")]
+    assert len(nudges) == 5
+    offsets = [n.run_at - now for n in nudges]
+    assert offsets == [
+        timedelta(minutes=10),
+        timedelta(minutes=20),
+        timedelta(minutes=40),
+        timedelta(minutes=80),
+        timedelta(minutes=160),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_reconcile_uses_anchor_event_id_when_provided():
     scheduler = FakeScheduler()
     client = DummyCalendarClient(events=[])
     reconciler = PlanningReconciler(scheduler, calendar_client=client)
 
     now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
-    client.event_lookup[("primary", "ff-planning-u1")] = {"id": "ff-planning-u1"}
+    client.event_lookup[("primary", "ff-planning-u1")] = {
+        "id": "ff-planning-u1",
+        "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
+        "end": {"dateTime": "2025-01-01T10:30:00+00:00"},
+    }
 
     jobs = await reconciler.reconcile_missing_planning(
         scope="U1",
@@ -90,3 +139,29 @@ async def test_reconcile_uses_anchor_event_id_when_provided():
 
     assert jobs == []
     assert scheduler.get_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_ignores_anchor_event_outside_window():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    client.event_lookup[("primary", "ff-planning-u1")] = {
+        "id": "ff-planning-u1",
+        "start": {"dateTime": "2024-12-30T09:00:00+00:00"},
+        "end": {"dateTime": "2024-12-30T09:30:00+00:00"},
+    }
+
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        planning_event_id="ff-planning-u1",
+        now=now,
+    )
+
+    assert len(jobs) == 6
+    assert scheduler.get_jobs()
+    assert client.calls

@@ -1,0 +1,1 @@
+../../src/fateforger/haunt/README.md

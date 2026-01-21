@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import ultimate_notion as uno
@@ -228,9 +229,7 @@ class TBConstraintType(uno.Schema, db_title="TB Constraint Types"):
     )
     suggested_topics = uno.PropType.Relation("Suggested Topics", schema=TBTopic)
     synonyms = uno.PropType.Text("Synonyms/Examples")
-    constraints = uno.PropType.Relation(
-        "Constraints", schema=TBConstraint, two_way_prop="Constraint Type"
-    )
+    constraints = uno.PropType.Relation("Constraints", schema=TBConstraint)
     active_constraint_count = uno.PropType.Rollup(
         "Active Constraint Count",
         relation=constraints,
@@ -276,21 +275,33 @@ def install_preference_dbs(notion: uno.Session, parent_page_id: str) -> NotionPr
 
     parent = notion.get_page(parent_page_id)
 
+    def get_or_create_db_under_parent(schema: type[uno.Schema]):
+        title = getattr(schema, "_db_title", None)
+        if not title:
+            raise ValueError(f"Schema {schema.__name__} is missing db_title")
+        matches = [db for db in notion.search_db(title) if db.parent == parent]
+        if not matches:
+            db = notion.create_db(parent, schema=schema)
+            while not [db for db in notion.search_db(title) if db.parent == parent]:
+                time.sleep(1)
+            return db
+        return matches[0]
+
     # Dependency order matters (relations need targets to exist).
-    topics_db = notion.get_or_create_db(parent=parent, schema=TBTopic)
-    TBTopic.bind_db(topics_db)
+    topics_db = get_or_create_db_under_parent(TBTopic)
+    TBTopic._bind_db(topics_db)
 
-    constraints_db = notion.get_or_create_db(parent=parent, schema=TBConstraint)
-    TBConstraint.bind_db(constraints_db)
+    constraints_db = get_or_create_db_under_parent(TBConstraint)
+    TBConstraint._bind_db(constraints_db)
 
-    types_db = notion.get_or_create_db(parent=parent, schema=TBConstraintType)
-    TBConstraintType.bind_db(types_db)
+    types_db = get_or_create_db_under_parent(TBConstraintType)
+    TBConstraintType._bind_db(types_db)
 
-    windows_db = notion.get_or_create_db(parent=parent, schema=TBConstraintWindow)
-    TBConstraintWindow.bind_db(windows_db)
+    windows_db = get_or_create_db_under_parent(TBConstraintWindow)
+    TBConstraintWindow._bind_db(windows_db)
 
-    events_db = notion.get_or_create_db(parent=parent, schema=TBConstraintEvent)
-    TBConstraintEvent.bind_db(events_db)
+    events_db = get_or_create_db_under_parent(TBConstraintEvent)
+    TBConstraintEvent._bind_db(events_db)
 
     return NotionPreferenceDBs(
         topics_db_id=str(topics_db.id),
@@ -328,11 +339,11 @@ class NotionConstraintStore:
         self.windows_db = notion.get_db(dbs.windows_db_id)
         self.events_db = notion.get_db(dbs.events_db_id)
 
-        TBTopic.bind_db(self.topics_db)
-        TBConstraintType.bind_db(self.types_db)
-        TBConstraint.bind_db(self.constraints_db)
-        TBConstraintWindow.bind_db(self.windows_db)
-        TBConstraintEvent.bind_db(self.events_db)
+        TBTopic._bind_db(self.topics_db)
+        TBConstraintType._bind_db(self.types_db)
+        TBConstraint._bind_db(self.constraints_db)
+        TBConstraintWindow._bind_db(self.windows_db)
+        TBConstraintEvent._bind_db(self.events_db)
 
     @classmethod
     def from_parent_page(
@@ -416,25 +427,17 @@ class NotionConstraintStore:
         cond = self._filters_to_condition(filters)
 
         if type_ids:
-            type_pages = self._resolve_types_by_id(type_ids)
-            if type_pages:
-                type_cond = None
-                for type_page in type_pages:
-                    term = uno.prop("Constraint Type").contains(type_page)
-                    type_cond = term if type_cond is None else (type_cond | term)
-                cond = cond & type_cond
-            else:
-                type_cond = None
-                for type_id in type_ids:
-                    try:
-                        rk = self._to_rule_kind(type_id)
-                    except ValueError:
-                        continue
-                    term = uno.prop("Rule Kind") == rk
-                    type_cond = term if type_cond is None else (type_cond | term)
-                if type_cond is None:
-                    return []
-                cond = cond & type_cond
+            type_cond = None
+            for type_id in type_ids:
+                try:
+                    rk = self._to_rule_kind(type_id)
+                except ValueError:
+                    continue
+                term = uno.prop("Rule Kind") == rk
+                type_cond = term if type_cond is None else (type_cond | term)
+            if type_cond is None:
+                return []
+            cond = cond & type_cond
 
         if tags:
             topic_pages = self._resolve_topics_by_name(tags)

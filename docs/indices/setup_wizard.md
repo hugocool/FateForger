@@ -1,0 +1,1 @@
+../../src/fateforger/setup_wizard/README.md

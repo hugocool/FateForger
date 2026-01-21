@@ -62,27 +62,27 @@ DEFAULT_PERSONAS: dict[str, SlackPersona] = {
     "receptionist_agent": SlackPersona(username="FateForger", icon_emoji=":crystal_ball:"),
     "timeboxing_agent": SlackPersona(
         username="The Schedular",
-        icon_emoji=":spiral_calendar_pad:",
+        icon_emoji=None,
         icon_url=_icon_url("Schedular.png"),
     ),
     "planner_agent": SlackPersona(
         username="The Schedular",
-        icon_emoji=":gear:",
+        icon_emoji=None,
         icon_url=_icon_url("Schedular.png"),
     ),
     "revisor_agent": SlackPersona(
         username="Reviewer",
-        icon_emoji=":mag:",
+        icon_emoji=None,
         icon_url=_icon_url("Revisor.png"),
     ),
     "tasks_agent": SlackPersona(
         username="TaskMarshal",
-        icon_emoji=":clipboard:",
+        icon_emoji=None,
         icon_url=_icon_url("TaskMarshal.png"),
     ),
     "admonisher_agent": SlackPersona(
         username="Admonisher",
-        icon_emoji=":warning:",
+        icon_emoji=None,
         icon_url=_icon_url("Admonisher.png"),
     ),
 }

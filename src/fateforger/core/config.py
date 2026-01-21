@@ -25,7 +25,10 @@ class Settings(BaseSettings):
     slack_tasks_channel_id: str = Field(default="", env="SLACK_TASKS_CHANNEL_ID")
     slack_ops_channel_id: str = Field(default="", env="SLACK_OPS_CHANNEL_ID")
     slack_general_channel_id: str = Field(default="", env="SLACK_GENERAL_CHANNEL_ID")
-    slack_agent_icon_base_url: str = Field(default="", env="SLACK_AGENT_ICON_BASE_URL")
+    slack_agent_icon_base_url: str = Field(
+        default="https://raw.githubusercontent.com/hugocool/FateForger/e18b991b25c7acc5fd759e94680ac8f70bc1e830/docs/agent_icons",
+        env="SLACK_AGENT_ICON_BASE_URL",
+    )
 
     openai_api_key: str = Field(default="x")
     openai_model: str = Field(default="gpt-4o-mini", env="OPENAI_MODEL")
@@ -60,13 +63,20 @@ class Settings(BaseSettings):
     llm_model_receptionist: str = Field(default="", env="LLM_MODEL_RECEPTIONIST")
     llm_model_admonisher: str = Field(default="", env="LLM_MODEL_ADMONISHER")
     llm_model_timeboxing: str = Field(default="", env="LLM_MODEL_TIMEBOXING")
-    llm_model_timeboxing_draft: str = Field(default="", env="LLM_MODEL_TIMEBOXING_DRAFT")
+    llm_model_timeboxing_draft: str = Field(
+        default="", env="LLM_MODEL_TIMEBOXING_DRAFT"
+    )
     llm_model_timebox_patcher: str = Field(default="", env="LLM_MODEL_TIMEBOX_PATCHER")
     llm_model_planner: str = Field(default="", env="LLM_MODEL_PLANNER")
     llm_model_revisor: str = Field(default="", env="LLM_MODEL_REVISOR")
     llm_model_tasks: str = Field(default="", env="LLM_MODEL_TASKS")
     llm_model_calendar_submitter: str = Field(
         default="", env="LLM_MODEL_CALENDAR_SUBMITTER"
+    )
+
+    # Per-agent temperature
+    llm_temperature_admonisher: float = Field(
+        default=1.1, env="LLM_TEMPERATURE_ADMONISHER"
     )
 
     # Per-agent reasoning effort (OpenRouter: request body `reasoning.effort`; "low"|"medium"|"high")

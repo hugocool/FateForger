@@ -59,3 +59,10 @@ Some model/providers may require a **header-based** reasoning control. If so, en
 - `OPENROUTER_SEND_REASONING_EFFORT_HEADER=true`
 - `OPENROUTER_REASONING_EFFORT_HEADER=...` (defaults to `X-Reasoning-Effort`)
 
+## Slack persona icons
+
+Agent personas support `icon_url` overrides (PNG). By default, this project uses a pinned `raw.githubusercontent.com` base URL so the links don’t change across branch merges.
+
+Override with:
+
+- `SLACK_AGENT_ICON_BASE_URL=https://.../docs/agent_icons`

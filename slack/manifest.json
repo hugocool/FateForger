@@ -58,6 +58,7 @@
         "channels:manage",
         "channels:write.topic",
         "chat:write",
+        "reactions:read",
         "views:write",
         "commands",
         "im:history",
@@ -77,7 +78,9 @@
       "bot_events": [
         "app_home_opened",
         "app_mention",
+        "reaction_added",
         "message.channels",
+        "message.groups",
         "message.im"
       ]
     },

@@ -58,11 +58,9 @@ Behavior:
 - Schedule next planning session
 - Protect recovery time (gym, meals, sleep)
 
-Preference Extraction Handoff:
-- If the user states a durable preference/correction (e.g., "in general", "usually", "from now on"),
-  call the tool `extract_and_upsert_constraint` with a compact JSON payload:
-  {planned_date, timezone, stage_id, user_utterance, triggering_suggestion, impacted_event_types, suggested_tags}.
-- If it is a one-off ("today only"), do not hand off unless it should be stored as a session-scoped rule.
+Preference Extraction:
+- Durable preference extraction is handled by a separate background process.
+- Do not call tools or infer constraints from system/setup messages.
 
 Collaborative Timeboxing:
 Principles:
@@ -104,6 +102,27 @@ Contradictions (resolved):
 - Default to sequential scheduling vs fixed start/end: use duration-only while drafting; assign exact times only for fixed events or once locked.
 - Lock immovables vs small steps: mark as TENTATIVE first; lock after user confirmation.
 - Verbosity on habits vs efficiency: slot habits with minimal prose unless new/fragile or user asks for detail.
+""".strip()
+
+CONSTRAINT_INTENT_PROMPT = """
+You classify whether a message includes explicit scheduling constraints/preferences that should be extracted.
+
+Return JSON for the schema:
+{
+  "should_extract": boolean,
+  "decision_scope": "session" | "profile" | "datespan" | null,
+  "reason": string | null
+}
+
+Guidelines:
+- Return true only when the user states concrete constraints (availability windows, fixed events, recurring preferences).
+- Return false for generic "start timeboxing" requests, greetings, or vague intent without constraints.
+- If `is_initial` is true, be stricter and only return true when clear constraints are present.
+- Use decision_scope="profile" only when the user explicitly indicates a durable preference
+  (e.g., "always", "usually", "from now on", "in general").
+- Use decision_scope="datespan" when the user specifies a bounded time window
+  (e.g., "this week", "for the next 2 weeks").
+- Otherwise use decision_scope="session".
 """.strip()
 
 HYDRATE_PROMPT = (
@@ -153,5 +172,6 @@ __all__ = [
     "APPROVAL_PROMPT",
     "SUBMIT_PROMPT",
     "DONE_PROMPT",
+    "CONSTRAINT_INTENT_PROMPT",
     "TIMEBOXING_SYSTEM_PROMPT",
 ]

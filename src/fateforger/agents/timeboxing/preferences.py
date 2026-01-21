@@ -96,6 +96,7 @@ class ConstraintBatch(PydanticBaseModel):
 
 class ConstraintStore:
     def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        """Create a constraint store backed by an async SQLAlchemy sessionmaker."""
         self._sessionmaker = sessionmaker
 
     async def add_constraints(
@@ -106,6 +107,7 @@ class ConstraintStore:
         thread_ts: Optional[str],
         constraints: List[ConstraintBase],
     ) -> List[Constraint]:
+        """Persist a batch of constraints for a user/thread."""
         if not constraints:
             return []
         rows = [
@@ -133,6 +135,7 @@ class ConstraintStore:
         status: Optional[ConstraintStatus] = None,
         scope: Optional[ConstraintScope] = None,
     ) -> List[Constraint]:
+        """List constraints for a user with optional filters."""
         async with self._sessionmaker() as session:
             stmt = select(Constraint).where(Constraint.user_id == user_id)
             if channel_id:
@@ -146,12 +149,27 @@ class ConstraintStore:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
+    async def get_constraint(
+        self,
+        *,
+        user_id: str,
+        constraint_id: int,
+    ) -> Optional[Constraint]:
+        """Fetch a single constraint by id for the given user."""
+        async with self._sessionmaker() as session:
+            stmt = select(Constraint).where(
+                Constraint.user_id == user_id, Constraint.id == constraint_id
+            )
+            result = await session.execute(stmt)
+            return result.scalars().first()
+
     async def update_constraint_statuses(
         self,
         *,
         user_id: str,
         decisions: Dict[int, ConstraintStatus],
     ) -> List[Constraint]:
+        """Bulk update constraint statuses for a user."""
         if not decisions:
             return []
         async with self._sessionmaker() as session:
@@ -169,8 +187,34 @@ class ConstraintStore:
                 await session.refresh(row)
             return rows
 
+    async def update_constraint(
+        self,
+        *,
+        user_id: str,
+        constraint_id: int,
+        status: Optional[ConstraintStatus] = None,
+        description: Optional[str] = None,
+    ) -> Optional[Constraint]:
+        """Update a single constraint's status or description."""
+        async with self._sessionmaker() as session:
+            stmt = select(Constraint).where(
+                Constraint.user_id == user_id, Constraint.id == constraint_id
+            )
+            result = await session.execute(stmt)
+            row = result.scalars().first()
+            if not row:
+                return None
+            if status is not None:
+                row.status = status
+            if description is not None:
+                row.description = description
+            await session.commit()
+            await session.refresh(row)
+            return row
+
 
 async def ensure_constraint_schema(engine: AsyncEngine) -> None:
+    """Ensure the constraint table exists in the configured database."""
     async with engine.begin() as conn:
         await conn.run_sync(
             lambda sync_conn: Constraint.__table__.create(sync_conn, checkfirst=True)
@@ -184,11 +228,14 @@ def _constraint_row(
     channel_id: Optional[str],
     thread_ts: Optional[str],
 ) -> Constraint:
+    """Convert a ConstraintBase into a persisted Constraint row."""
     payload = constraint.model_dump()
     if payload.get("status") is None:
         payload["status"] = ConstraintStatus.PROPOSED
     if payload.get("source") is None:
         payload["source"] = ConstraintSource.USER
+    if payload.get("scope") is None:
+        payload["scope"] = ConstraintScope.SESSION
     return Constraint(
         **payload,
         user_id=user_id,

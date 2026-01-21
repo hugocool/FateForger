@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from dataclasses import dataclass
 from typing import Callable
@@ -16,16 +17,20 @@ from autogen_core import (
 from autogen_core.tool_agent import ToolAgent
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+# Import agents
+from fateforger.agents.admonisher.agent import AdmonisherAgent
 from fateforger.agents.receptionist import HandoffBase, ReceptionistAgent
 from fateforger.agents.revisor.agent import RevisorAgent
-
-# Import agents
 from fateforger.agents.schedular.agent import PlannerAgent
 from fateforger.agents.tasks import TasksAgent
 from fateforger.agents.timeboxing.agent import TimeboxingFlowAgent
 from fateforger.core.config import settings
 from fateforger.haunt.agents import HauntingAgent, UserChannelAgent
 from fateforger.haunt.delivery import deliver_user_facing
+from fateforger.haunt.event_draft_store import (
+    SqlAlchemyEventDraftStore,
+    ensure_event_draft_schema,
+)
 from fateforger.haunt.intervention import HauntingInterventionHandler
 from fateforger.haunt.messages import UserFacingMessage
 from fateforger.haunt.orchestrator import HauntOrchestrator
@@ -51,19 +56,35 @@ HAUNTING_AGENT_TYPE = "haunting_agent"
 HAUNTING_AGENT_KEY = "default"
 HAUNTING_TOOL_AGENT_TYPE = "haunter_tools"
 
+logger = logging.getLogger(__name__)
 
 _runtime: SingleThreadedAgentRuntime | None = None
 _runtime_lock = asyncio.Lock()
 
 
+def _create_scheduler(database_url: str | None) -> AsyncIOScheduler:
+    """Create scheduler with in-memory jobstore.
+
+    Jobs are re-scheduled on startup via reconcile_all(), so persistence
+    is not required. This avoids pickle issues with instance methods.
+    """
+    # Note: We don't use SQLAlchemy jobstore because instance methods
+    # referencing the scheduler can't be pickled. Instead, we rely on
+    # reconcile_all() being called on every startup to re-schedule jobs.
+    scheduler = AsyncIOScheduler()
+    logger.info("Scheduler initialized (jobs re-scheduled on startup)")
+    return scheduler
+
+
 async def _create_runtime() -> SingleThreadedAgentRuntime:
     """Create and start the runtime instance."""
-    scheduler = AsyncIOScheduler()
+    scheduler = _create_scheduler(settings.database_url)
     scheduler.start()
 
     settings_store = None
     settings_engine = None
     planning_anchor_store = None
+    event_draft_store = None
     if settings.database_url:
         async_url = _coerce_async_database_url(settings.database_url)
         settings_engine = create_async_engine(async_url)
@@ -72,6 +93,8 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
         settings_store = SqlAlchemyAdmonishmentSettingsStore(sessionmaker)
         await ensure_planning_anchor_schema(settings_engine)
         planning_anchor_store = SqlAlchemyPlanningAnchorStore(sessionmaker)
+        await ensure_event_draft_schema(settings_engine)
+        event_draft_store = SqlAlchemyEventDraftStore(sessionmaker)
 
     haunting_service = HauntingService(scheduler, settings_store=settings_store)
     intervention = HauntingInterventionHandler(
@@ -134,6 +157,10 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
             scheduler, calendar_client=calendar_client, dispatcher=dispatch_planning
         )
     except Exception:
+        logger.exception(
+            "Planning reconciler disabled (failed to init Calendar MCP client). "
+            "Set MCP_CALENDAR_SERVER_URL and ensure the calendar MCP server is reachable."
+        )
         reconciler = None
 
     await PlannerAgent.register(
@@ -155,6 +182,23 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
         runtime,
         "tasks_agent",
         lambda: TasksAgent("tasks_agent"),
+    )
+    await AdmonisherAgent.register(
+        runtime,
+        "admonisher_agent",
+        lambda: AdmonisherAgent(
+            "admonisher_agent",
+            allowed_handoffs=[
+                HandoffBase(
+                    target="timeboxing_agent",
+                    description="Timeboxing day planner that proposes a concrete schedule and iterates on it.",
+                ),
+                HandoffBase(
+                    target="planner_agent",
+                    description="Calendar planning and scheduling agent.",
+                ),
+            ],
+        ),
     )
     await ReceptionistAgent.register(
         runtime,
@@ -189,6 +233,7 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     setattr(runtime, "haunting_settings_engine", settings_engine)
     setattr(runtime, "planning_reconciler", reconciler)
     setattr(runtime, "planning_anchor_store", planning_anchor_store)
+    setattr(runtime, "event_draft_store", event_draft_store)
     planning_guardian = None
     if planning_anchor_store and reconciler:
         planning_guardian = PlanningGuardian(
@@ -197,6 +242,18 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
             reconciler=reconciler,
         )
         planning_guardian.schedule_daily()
+        # Kick off reconcile on startup so nudges are scheduled immediately.
+        # This is critical since we use in-memory scheduler (jobs lost on restart).
+        try:
+            await asyncio.wait_for(planning_guardian.reconcile_all(), timeout=15)
+            logger.info("Initial planning reconcile completed successfully")
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Initial planning reconcile timed out (will retry on daily cron)"
+            )
+        except Exception:
+            logger.exception("Initial planning reconcile_all failed")
+
     setattr(runtime, "planning_guardian", planning_guardian)
     return runtime
 

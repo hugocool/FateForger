@@ -10,6 +10,9 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from fateforger.haunt.delivery import set_delivery_sink
+from fateforger.slack_bot.haunt_delivery import make_slack_delivery_sink
+
 from ..core.config import settings
 from ..core.logging_config import configure_logging
 
@@ -18,8 +21,6 @@ from ..core.runtime import initialize_runtime
 from .bootstrap import ensure_workspace_ready
 from .focus import FocusManager
 from .handlers import register_handlers
-from fateforger.haunt.delivery import set_delivery_sink
-from fateforger.slack_bot.haunt_delivery import make_slack_delivery_sink
 from .workspace_store import SlackWorkspaceStore, ensure_slack_workspace_schema
 
 configure_logging(default_level=settings.log_level)
@@ -39,7 +40,9 @@ async def build_app() -> AsyncApp:
 
     # Reuse a single aiohttp session for Slack Web API calls and close it on shutdown.
     aiohttp_session = aiohttp.ClientSession()
-    slack_client = AsyncWebClient(token=settings.slack_bot_token, session=aiohttp_session)
+    slack_client = AsyncWebClient(
+        token=settings.slack_bot_token, session=aiohttp_session
+    )
 
     app = AsyncApp(
         token=settings.slack_bot_token,
@@ -61,11 +64,13 @@ async def build_app() -> AsyncApp:
     ) -> None:
         ev = body.get("event", {})
         logger.info(
-            "INBOUND type=%s event=%s channel=%s thread_ts=%s text=%s",
+            "INBOUND type=%s event=%s subtype=%s channel=%s thread_ts=%s user=%s text=%s",
             body.get("type"),
             ev.get("type"),
+            ev.get("subtype"),
             ev.get("channel"),
             ev.get("thread_ts"),
+            ev.get("user"),
             (ev.get("text") or "")[:120],
         )
         await next()
@@ -78,6 +83,7 @@ async def build_app() -> AsyncApp:
             "timeboxing_agent",
             "revisor_agent",
             "tasks_agent",
+            "admonisher_agent",
         ],
     )
     register_handlers(
@@ -125,11 +131,17 @@ async def build_app() -> AsyncApp:
     return app
 
 
+logger = logging.getLogger(__name__)
+
+
 async def start() -> None:
     app = await build_app()
 
     if settings.slack_socket_mode and settings.slack_app_token:
-        handler = AsyncSocketModeHandler(app, settings.slack_app_token, web_client=app.client)
+        handler = AsyncSocketModeHandler(
+            app, settings.slack_app_token, web_client=app.client
+        )
+        logger.info("Starting Socket Mode handler...")
         try:
             await handler.start_async()
         finally:
@@ -151,4 +163,9 @@ async def start() -> None:
 
 
 if __name__ == "__main__":
+    asyncio.run(start())
+    asyncio.run(start())
+    asyncio.run(start())
+    asyncio.run(start())
+    asyncio.run(start())
     asyncio.run(start())

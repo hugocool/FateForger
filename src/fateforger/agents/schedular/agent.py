@@ -2,12 +2,12 @@
 # TODO: insert summary here
 """
 
+import asyncio
 import datetime as dt
 import json
 import logging
 import os
 from dataclasses import dataclass
-import asyncio
 from zoneinfo import ZoneInfo
 
 from autogen_agentchat.agents import AssistantAgent
@@ -21,20 +21,24 @@ from autogen_core import (
     message_handler,
 )
 from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
+from dateutil import parser as date_parser
 
 from fateforger.core.config import settings
 from fateforger.debug.diag import with_timeout
 from fateforger.haunt.mixins import HauntAwareAgentMixin
 from fateforger.haunt.models import FollowUpPlan, HauntTone
 from fateforger.haunt.orchestrator import HauntOrchestrator, HauntTicket
+from fateforger.llm import build_autogen_chat_client
 from fateforger.slack_bot.messages import SlackBlockMessage
 from fateforger.tools.calendar_mcp import get_calendar_mcp_tools
-from fateforger.llm import build_autogen_chat_client
 
+from .messages import (
+    SuggestedSlot,
+    SuggestNextSlot,
+    UpsertCalendarEvent,
+    UpsertCalendarEventResult,
+)
 from .models import CalendarEvent
-from .messages import UpsertCalendarEvent
-
-from dateutil import parser as date_parser
 
 # THe first planner simply handles the connection to the calendar and single event CRUD.
 # So when the user sends a CalendarEvent, it will create the event in the calendar.
@@ -129,6 +133,17 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         return None
 
     @staticmethod
+    def _normalize_events(payload: object) -> list[dict]:
+        if isinstance(payload, dict):
+            items = payload.get("items")
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+            return []
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        return []
+
+    @staticmethod
     def _parse_event_dt(raw: dict | str | None, *, tz: ZoneInfo) -> dt.datetime | None:
         if not raw:
             return None
@@ -158,7 +173,9 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         if not start or not end:
             return None
         if start.date() == end.date():
-            return f"{start.strftime('%a %d %b %H:%M')}–{end.strftime('%H:%M')} ({tz.key})"
+            return (
+                f"{start.strftime('%a %d %b %H:%M')}–{end.strftime('%H:%M')} ({tz.key})"
+            )
         return f"{start.strftime('%a %d %b %H:%M')}–{end.strftime('%a %d %b %H:%M')} ({tz.key})"
 
     @classmethod
@@ -187,7 +204,9 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             },
         ]
         if note:
-            blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": note}]})
+            blocks.append(
+                {"type": "context", "elements": [{"type": "mrkdwn", "text": note}]}
+            )
         if html_link:
             blocks.append(
                 {
@@ -216,9 +235,101 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         return SlackBlockMessage(text=f"{summary}\n{when}", blocks=blocks)
 
     @message_handler
+    async def handle_suggest_next_slot(
+        self, message: SuggestNextSlot, ctx: MessageContext
+    ) -> SuggestedSlot:
+        workbench = self._ensure_workbench()
+        try:
+            tz = ZoneInfo(message.time_zone)
+        except Exception:
+            return SuggestedSlot(
+                ok=False, error=f"Unknown time zone: {message.time_zone}"
+            )
+
+        now = dt.datetime.now(dt.timezone.utc).astimezone(tz)
+        duration = dt.timedelta(minutes=message.duration_min)
+
+        def _busy_intervals(
+            events: list[dict],
+        ) -> list[tuple[dt.datetime, dt.datetime]]:
+            intervals: list[tuple[dt.datetime, dt.datetime]] = []
+            for event in events:
+                if (event.get("status") or "").lower() == "cancelled":
+                    continue
+                start = self._parse_event_dt(event.get("start"), tz=tz)
+                end = self._parse_event_dt(event.get("end"), tz=tz)
+                if start and end and end > start:
+                    intervals.append((start, end))
+            intervals.sort(key=lambda pair: pair[0])
+            merged: list[tuple[dt.datetime, dt.datetime]] = []
+            for start, end in intervals:
+                if not merged or start > merged[-1][1]:
+                    merged.append((start, end))
+                else:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            return merged
+
+        def _first_gap(
+            window_start: dt.datetime,
+            window_end: dt.datetime,
+            busy: list[tuple[dt.datetime, dt.datetime]],
+        ) -> dt.datetime | None:
+            cursor = window_start
+            for start, end in busy:
+                if start - cursor >= duration:
+                    return cursor
+                cursor = max(cursor, end)
+                if cursor >= window_end:
+                    return None
+            if window_end - cursor >= duration:
+                return cursor
+            return None
+
+        horizon_days = max(int(message.horizon_days), 1)
+        for day_offset in range(0, horizon_days):
+            day = (now + dt.timedelta(days=day_offset)).date()
+            window_start = dt.datetime.combine(
+                day, dt.time(message.work_start_hour, 0), tz
+            )
+            window_end = dt.datetime.combine(day, dt.time(message.work_end_hour, 0), tz)
+            if day_offset == 0:
+                window_start = max(window_start, now + dt.timedelta(minutes=5))
+            if window_end <= window_start:
+                continue
+
+            result = await workbench.call_tool(
+                "list-events",
+                arguments={
+                    "calendarId": message.calendar_id,
+                    "timeMin": window_start.astimezone(dt.timezone.utc).isoformat(),
+                    "timeMax": window_end.astimezone(dt.timezone.utc).isoformat(),
+                    "singleEvents": True,
+                    "orderBy": "startTime",
+                },
+            )
+            events = self._normalize_events(self._extract_tool_payload(result))
+            start = _first_gap(window_start, window_end, _busy_intervals(events))
+            if start:
+                end = start + duration
+                return SuggestedSlot(
+                    ok=True,
+                    start_utc=start.astimezone(dt.timezone.utc).isoformat(),
+                    end_utc=end.astimezone(dt.timezone.utc).isoformat(),
+                    time_zone=tz.key,
+                )
+
+        return SuggestedSlot(ok=False, error="No free slot found")
+
+    @message_handler
     async def handle_upsert_calendar_event(
         self, message: UpsertCalendarEvent, ctx: MessageContext
-    ) -> SlackBlockMessage | TextMessage:
+    ) -> UpsertCalendarEventResult:
+        logger.info(
+            "Upserting calendar event: calendar=%s, event_id=%s, summary=%s",
+            message.calendar_id,
+            message.event_id,
+            message.summary,
+        )
         workbench = self._ensure_workbench()
         tz = ZoneInfo(message.time_zone or "UTC")
 
@@ -227,7 +338,10 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         try:
             fetched = await workbench.call_tool(
                 "get-event",
-                arguments={"calendarId": message.calendar_id, "eventId": message.event_id},
+                arguments={
+                    "calendarId": message.calendar_id,
+                    "eventId": message.event_id,
+                },
             )
             event = self._normalize_event(self._extract_tool_payload(fetched))
             exists = bool(event)
@@ -249,7 +363,6 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                         "description": message.description,
                     },
                 )
-                note = "Updated existing event."
             else:
                 await workbench.call_tool(
                     "create-event",
@@ -264,28 +377,38 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                         "description": message.description,
                     },
                 )
-                note = "Created new event."
         except Exception as e:
-            return TextMessage(
-                content=f"Failed to schedule that on Google Calendar: {e}",
-                source=self.id.type,
+            logger.error("Failed to upsert calendar event: %s", e, exc_info=True)
+            return UpsertCalendarEventResult(
+                ok=False,
+                calendar_id=message.calendar_id,
+                event_id=message.event_id,
+                error=str(e),
             )
 
         try:
             fetched = await workbench.call_tool(
                 "get-event",
-                arguments={"calendarId": message.calendar_id, "eventId": message.event_id},
+                arguments={
+                    "calendarId": message.calendar_id,
+                    "eventId": message.event_id,
+                },
             )
             event = self._normalize_event(self._extract_tool_payload(fetched)) or {}
         except Exception:
             event = {"id": message.event_id, "summary": message.summary}
 
-        return self._event_blocks(
-            title=message.summary,
-            event=event,
+        event_url = event.get("htmlLink") or event.get("html_link") or event.get("url")
+        logger.info(
+            "Calendar event upserted successfully: event_id=%s, url=%s",
+            event.get("id") or message.event_id,
+            event_url,
+        )
+        return UpsertCalendarEventResult(
+            ok=True,
             calendar_id=message.calendar_id,
-            tz=tz,
-            note=note,
+            event_id=event.get("id") or message.event_id,
+            event_url=str(event_url) if event_url else None,
         )
 
     async def _ensure_initialized(self) -> None:
@@ -339,7 +462,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                 content=(
                     "I'm still waiting on the calendar tools. "
                     "Please try again in a moment (or ask a narrower question like "
-                    "\"what's on my calendar on Sunday between 9 and 12?\")."
+                    '"what\'s on my calendar on Sunday between 9 and 12?").'
                 ),
                 source=self.id.type,
             )
@@ -361,9 +484,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                     source = "planner_agent"
             chat_message = TextMessage(
                 content=str(
-                    getattr(chat_message, "content", None)
-                    or content
-                    or "(no response)"
+                    getattr(chat_message, "content", None) or content or "(no response)"
                 ),
                 source=source,
             )

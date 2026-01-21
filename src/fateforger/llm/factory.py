@@ -179,6 +179,9 @@ def build_autogen_chat_client(
 
     _ensure_autogen_ext_allows_openai_sdk_passthrough_args()
 
+    if temperature is None and _clean(agent_type) == "admonisher_agent":
+        temperature = float(getattr(settings, "llm_temperature_admonisher", 1.1))
+
     kwargs: dict = {
         "model": resolved_model,
         "api_key": provider.api_key,
