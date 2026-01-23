@@ -599,6 +599,7 @@ async def _handle_timebox_command(
     body: dict,
     client: AsyncWebClient,
     respond: Callable | None,
+    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]],
 ) -> None:
     user_id = body.get("user_id") or ""
     channel_id = body.get("channel_id") or ""
@@ -640,7 +641,7 @@ async def _handle_timebox_command(
             bot_user_id=None,
             say=_noop_say,
             client=client,
-            get_constraint_store=_get_constraint_store,
+            get_constraint_store=get_constraint_store,
         )
     except Exception as e:
         logger.exception("Timeboxing command route_slack_event failed")
@@ -1537,6 +1538,7 @@ def register_handlers(
                 body=body,
                 client=client,
                 respond=respond,
+                get_constraint_store=_get_constraint_store,
             )
         )
 

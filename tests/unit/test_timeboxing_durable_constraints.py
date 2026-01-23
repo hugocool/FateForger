@@ -6,6 +6,7 @@ import pytest
 pytest.importorskip("autogen_agentchat")
 
 from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
+from fateforger.agents.timeboxing.stage_gating import TimeboxingStage
 from fateforger.agents.timeboxing.preferences import (
     Constraint,
     ConstraintNecessity,
@@ -25,8 +26,9 @@ async def test_durable_constraint_prefetch_populates_session(monkeypatch):
 
     done = asyncio.Event()
 
-    async def _fake_fetch(_self, _session):
-        done.set()
+    async def _fake_fetch(_self, _session, *, stage: TimeboxingStage):
+        if stage == TimeboxingStage.SKELETON:
+            done.set()
         return [
             Constraint(
                 user_id="u1",
@@ -42,11 +44,18 @@ async def test_durable_constraint_prefetch_populates_session(monkeypatch):
         ]
 
     agent._fetch_durable_constraints = types.MethodType(_fake_fetch, agent)
+    agent._collect_constraints = types.MethodType(
+        lambda _self, _session: asyncio.sleep(0, result=[]), agent
+    )
+    agent._sync_durable_constraints_to_store = types.MethodType(
+        lambda _self, _session, *, constraints: asyncio.sleep(0), agent
+    )
 
     session = Session(
         thread_ts="t1",
         channel_id="c1",
         user_id="u1",
+        planned_date="2026-01-21",
     )
 
     agent._queue_durable_constraint_prefetch(session=session, reason="test")
@@ -55,8 +64,10 @@ async def test_durable_constraint_prefetch_populates_session(monkeypatch):
     while session.pending_durable_constraints:
         await asyncio.sleep(0)
 
-    assert session.durable_constraints
-    assert session.durable_constraints_loaded is True
+    assert TimeboxingStage.COLLECT_CONSTRAINTS.value in session.durable_constraints_by_stage
+    assert TimeboxingStage.SKELETON.value in session.durable_constraints_by_stage
+    assert TimeboxingStage.COLLECT_CONSTRAINTS.value in session.durable_constraints_loaded_stages
+    assert TimeboxingStage.SKELETON.value in session.durable_constraints_loaded_stages
     assert session.pending_durable_constraints is False
 
 
@@ -98,7 +109,7 @@ async def test_collect_constraints_merges_durable_with_session():
         channel_id="c1",
         user_id="u1",
     )
-    session.durable_constraints = [durable]
+    session.durable_constraints_by_stage[TimeboxingStage.COLLECT_CONSTRAINTS.value] = [durable]
 
     combined = await agent._collect_constraints(session)
 

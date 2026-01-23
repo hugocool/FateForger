@@ -134,6 +134,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
 
     @staticmethod
     def _normalize_events(payload: object) -> list[dict]:
+        # TODO(refactor): Replace dict filtering with Pydantic CalendarEvent parsing.
         if isinstance(payload, dict):
             items = payload.get("items")
             if isinstance(items, list):
@@ -145,6 +146,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
 
     @staticmethod
     def _parse_event_dt(raw: dict | str | None, *, tz: ZoneInfo) -> dt.datetime | None:
+        # TODO(refactor): Use a Pydantic date-time field parser instead of try/except.
         if not raw:
             return None
         if isinstance(raw, str):

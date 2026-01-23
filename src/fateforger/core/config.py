@@ -53,7 +53,7 @@ class Settings(BaseSettings):
         default="X-Reasoning-Effort", env="OPENROUTER_REASONING_EFFORT_HEADER"
     )
     openrouter_default_model_flash: str = Field(
-        default="google/gemini-2.0-flash-001", env="OPENROUTER_DEFAULT_MODEL_FLASH"
+        default="google/gemini-3-flash-preview", env="OPENROUTER_DEFAULT_MODEL_FLASH"
     )
     openrouter_default_model_pro: str = Field(
         default="google/gemini-3-flash-preview", env="OPENROUTER_DEFAULT_MODEL_PRO"
@@ -146,6 +146,8 @@ class Settings(BaseSettings):
     agent_mcp_discovery_timeout_seconds: int = Field(
         default=10, env="AGENT_MCP_DISCOVERY_TIMEOUT_SECONDS"
     )
+
+    # Timeboxing feature flags
 
     class Config:
         env_file = (

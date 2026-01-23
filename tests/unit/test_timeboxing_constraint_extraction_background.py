@@ -1,11 +1,17 @@
 import asyncio
+import types
 
 import pytest
-import types
 
 pytest.importorskip("autogen_agentchat")
 
 from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
+from fateforger.agents.timeboxing.nlu import ConstraintInterpretation
+from fateforger.agents.timeboxing.preferences import (
+    ConstraintBase,
+    ConstraintNecessity,
+    ConstraintScope,
+)
 
 
 @pytest.mark.asyncio
@@ -13,21 +19,37 @@ async def test_queue_constraint_extraction_runs_in_background():
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     agent._constraint_extraction_tasks = {}
     agent._constraint_extraction_semaphore = asyncio.Semaphore(1)
-    agent._constraint_intent_agent = None
 
-    done = asyncio.Event()
+    async def _fake_interpret(_self, _session, *, text: str, is_initial: bool):
+        assert text
+        assert is_initial is False
+        return ConstraintInterpretation(
+            should_extract=True,
+            scope="session",
+            constraints=[
+                ConstraintBase(
+                    name="Deep work mornings",
+                    description="Do deep work in the mornings.",
+                    necessity=ConstraintNecessity.SHOULD,
+                    scope=ConstraintScope.SESSION,
+                )
+            ],
+        )
 
-    async def _fake_should_extract(_self, _text, *, is_initial):
-        return True
+    class _Store:
+        async def add_constraints(self, **_kwargs):
+            return []
 
-    async def _fake_extract(_session, _text):
-        done.set()
+    async def _fake_collect_constraints(_session: Session):
+        return []
+
+    agent._interpret_constraints = types.MethodType(_fake_interpret, agent)  # type: ignore[assignment]
+    async def _noop_store() -> None:
         return None
 
-    agent._should_extract_constraints = types.MethodType(
-        _fake_should_extract, agent
-    )
-    agent._extract_constraints = _fake_extract
+    agent._ensure_constraint_store = _noop_store  # type: ignore[assignment]
+    agent._constraint_store = _Store()
+    agent._collect_constraints = _fake_collect_constraints  # type: ignore[assignment]
 
     session = Session(
         thread_ts="t1",
@@ -42,8 +64,8 @@ async def test_queue_constraint_extraction_runs_in_background():
         is_initial=False,
     )
     assert task is not None
-    await asyncio.wait_for(done.wait(), timeout=1.0)
-    await asyncio.gather(task, return_exceptions=True)
+    res = await asyncio.wait_for(task, timeout=1.0)
+    assert res is not None
     assert not session.pending_constraint_extractions
 
 
@@ -52,22 +74,29 @@ async def test_queue_constraint_extraction_respects_classifier():
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     agent._constraint_extraction_tasks = {}
     agent._constraint_extraction_semaphore = asyncio.Semaphore(1)
-    agent._constraint_intent_agent = None
 
-    called = False
+    async def _fake_interpret(_self, _session, *, text: str, is_initial: bool):
+        assert text
+        return ConstraintInterpretation(
+            should_extract=False,
+            scope="session",
+            constraints=[],
+        )
 
-    async def _fake_should_extract(_self, _text, *, is_initial):
-        return False
+    class _Store:
+        async def add_constraints(self, **_kwargs):
+            return []
 
-    async def _fake_extract(_session, _text):
-        nonlocal called
-        called = True
+    async def _fake_collect_constraints(_session: Session):
         return None
 
-    agent._should_extract_constraints = types.MethodType(
-        _fake_should_extract, agent
-    )
-    agent._extract_constraints = _fake_extract
+    agent._interpret_constraints = types.MethodType(_fake_interpret, agent)  # type: ignore[assignment]
+    async def _noop_store() -> None:
+        return None
+
+    agent._ensure_constraint_store = _noop_store  # type: ignore[assignment]
+    agent._constraint_store = _Store()
+    agent._collect_constraints = _fake_collect_constraints  # type: ignore[assignment]
 
     session = Session(
         thread_ts="t1",
@@ -82,5 +111,5 @@ async def test_queue_constraint_extraction_respects_classifier():
         is_initial=True,
     )
     assert task is not None
-    await asyncio.gather(task, return_exceptions=True)
-    assert called is False
+    res = await asyncio.wait_for(task, timeout=1.0)
+    assert res is None

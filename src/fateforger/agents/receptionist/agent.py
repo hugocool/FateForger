@@ -18,6 +18,8 @@ from fateforger.llm import build_autogen_chat_client
 
 logger = logging.getLogger(__name__)
 
+# TODO(refactor): extract timeouts/constants into a small module and share across agents (avoid magic numbers like 20s).
+# TODO(refactor): share tolerant response parsing helpers (e.g. `parse_chat_content`) across agents.
 
 RECEPTIONIST_PROMPT = """
 You are the FateForger Receptionist. Your job is to understand the user's

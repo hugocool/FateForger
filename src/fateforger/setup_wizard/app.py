@@ -538,6 +538,7 @@ async def setup_google_submit(
     try:
         import json
 
+        # TODO(refactor): Validate OAuth JSON via a Pydantic schema.
         json.loads(raw.decode("utf-8"))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e

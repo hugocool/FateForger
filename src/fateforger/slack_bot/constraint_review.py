@@ -5,8 +5,10 @@ from __future__ import annotations
 from typing import Any, Iterable
 from urllib.parse import parse_qs, urlencode
 
+import ultimate_notion as uno
+from pydantic import BaseModel, ConfigDict, ValidationError
+
 from fateforger.agents.timeboxing.preferences import (
-    Constraint,
     ConstraintScope,
     ConstraintStatus,
 )
@@ -17,22 +19,97 @@ CONSTRAINT_DECISION_ACTION_ID = "constraint_decision"
 CONSTRAINT_DESCRIPTION_ACTION_ID = "constraint_description"
 
 
+def _coerce_option_value(value: object | None) -> str:
+    """Coerce UNO/Pydantic/Enum-ish values into a lowercase string label."""
+    if value is None:
+        return ""
+    name = getattr(value, "name", None)
+    if isinstance(name, str) and name:
+        return name.strip().lower()
+    enum_value = getattr(value, "value", None)
+    if isinstance(enum_value, str) and enum_value:
+        return enum_value.strip().lower()
+    return str(value).strip().lower()
+
+
+class ConstraintReviewItem(BaseModel):
+    """Pydantic DTO for rendering Slack constraint review UI from UNO or session models."""
+
+    model_config = ConfigDict(
+        extra="ignore",
+        from_attributes=True,
+        frozen=True,
+        arbitrary_types_allowed=True,
+    )
+
+    id: int | str | None = None
+    uid: str | None = None
+    name: str | None = None
+    description: str | None = None
+    necessity: object | None = None
+    status: object | None = None
+    scope: object | None = None
+
+    @classmethod
+    def coerce(cls, constraint: "ConstraintReviewItem | uno.Page | object") -> "ConstraintReviewItem":
+        """Build a review DTO from a session constraint or a UNO page-like object."""
+        if isinstance(constraint, cls):
+            return constraint
+        try:
+            return cls.model_validate(constraint, from_attributes=True)
+        except ValidationError:
+            if isinstance(constraint, dict):
+                return cls.model_validate(constraint)
+            raise
+
+    def constraint_id(self) -> str:
+        """Return the best-effort identifier for Slack metadata."""
+        raw = self.id if self.id is not None else (self.uid or "")
+        return str(raw or "")
+
+    def necessity_value(self) -> str:
+        """Return the necessity label (e.g. 'must', 'should')."""
+        return _coerce_option_value(self.necessity) or "must"
+
+    def scope_enum(self) -> ConstraintScope:
+        """Return a ConstraintScope derived from UNO/enum/string scope values."""
+        scope_value = _coerce_option_value(self.scope)
+        if scope_value == ConstraintScope.PROFILE.value:
+            return ConstraintScope.PROFILE
+        if scope_value == ConstraintScope.DATESPAN.value:
+            return ConstraintScope.DATESPAN
+        return ConstraintScope.SESSION
+
+    def status_enum(self) -> ConstraintStatus | None:
+        """Return a ConstraintStatus derived from UNO/enum/string status values."""
+        if isinstance(self.status, ConstraintStatus):
+            return self.status
+        status_value = _coerce_option_value(self.status)
+        if status_value == ConstraintStatus.LOCKED.value:
+            return ConstraintStatus.LOCKED
+        if status_value == ConstraintStatus.PROPOSED.value:
+            return ConstraintStatus.PROPOSED
+        if status_value == ConstraintStatus.DECLINED.value:
+            return ConstraintStatus.DECLINED
+        return None
+
+
 def build_constraint_row_blocks(
-    constraints: Iterable[Constraint],
+    constraints: Iterable[object],
     *,
     thread_ts: str,
     user_id: str,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     """Build single-row constraint blocks with a review button."""
-    items = list(constraints)
+    items = [ConstraintReviewItem.coerce(constraint) for constraint in constraints]
     blocks: list[dict[str, Any]] = []
     for constraint in items[:limit]:
-        if constraint.id is None:
+        if not constraint.constraint_id():
             continue
         value = encode_metadata(
             {
-                "constraint_id": str(constraint.id),
+                "constraint_id": constraint.constraint_id(),
                 "thread_ts": thread_ts,
                 "user_id": user_id,
             }
@@ -63,27 +140,26 @@ def build_constraint_row_blocks(
 
 
 def build_constraint_review_view(
-    constraint: Constraint,
+    constraint: object,
     *,
     channel_id: str,
     thread_ts: str,
     user_id: str,
 ) -> dict[str, Any]:
     """Build the Slack modal for reviewing a single constraint."""
+    item = ConstraintReviewItem.coerce(constraint)
     metadata = encode_metadata(
         {
             "channel_id": channel_id,
             "thread_ts": thread_ts,
             "user_id": user_id,
-            "constraint_id": str(constraint.id or ""),
+            "constraint_id": item.constraint_id(),
         }
     )
-    description = constraint.description or ""
-    name = _single_line(constraint.name or "Constraint")
-    scope_label = _constraint_scope_label(constraint)
-    status_option = (
-        "decline" if constraint.status == ConstraintStatus.DECLINED else "accept"
-    )
+    description = item.description or ""
+    name = _single_line(item.name or "Constraint")
+    scope_label = _constraint_scope_label(item)
+    status_option = "decline" if item.status_enum() == ConstraintStatus.DECLINED else "accept"
     return {
         "type": "modal",
         "callback_id": CONSTRAINT_REVIEW_VIEW_CALLBACK_ID,
@@ -97,7 +173,7 @@ def build_constraint_review_view(
                 "text": {
                     "type": "mrkdwn",
                     "text": (
-                        f"*{name}* ({constraint.necessity.value})\n"
+                        f"*{name}* ({item.necessity_value()})\n"
                         f"_Scope: {scope_label}_"
                     ),
                 },
@@ -109,7 +185,7 @@ def build_constraint_review_view(
                         "type": "mrkdwn",
                         "text": (
                             "Edits here apply to this session unless you say "
-                            "\"always\" or \"from now on\" in chat."
+                            '"always" or "from now on" in chat.'
                         ),
                     }
                 ],
@@ -132,21 +208,23 @@ def build_constraint_review_view(
                 "element": {
                     "type": "radio_buttons",
                     "action_id": CONSTRAINT_DECISION_ACTION_ID,
-                    "initial_option": {
-                        "text": {
-                            "type": "plain_text",
-                            "text": "Accept",
-                        },
-                        "value": "accept",
-                    }
-                    if status_option == "accept"
-                    else {
-                        "text": {
-                            "type": "plain_text",
-                            "text": "Decline",
-                        },
-                        "value": "decline",
-                    },
+                    "initial_option": (
+                        {
+                            "text": {
+                                "type": "plain_text",
+                                "text": "Accept",
+                            },
+                            "value": "accept",
+                        }
+                        if status_option == "accept"
+                        else {
+                            "text": {
+                                "type": "plain_text",
+                                "text": "Decline",
+                            },
+                            "value": "decline",
+                        }
+                    ),
                     "options": [
                         {
                             "text": {"type": "plain_text", "text": "Accept"},
@@ -164,7 +242,7 @@ def build_constraint_review_view(
 
 
 def parse_constraint_review_submission(
-    state_values: dict[str, Any]
+    state_values: dict[str, Any],
 ) -> tuple[ConstraintStatus | None, str | None]:
     """Parse decision + description from a constraint review modal submission."""
     decision = (
@@ -191,7 +269,12 @@ def _status_from_value(value: str | None) -> ConstraintStatus | None:
     return None
 
 
-def _constraint_row_text(constraint: Constraint) -> str:
+def _single_line(text: str) -> str:
+    """Collapse whitespace into a single-line string."""
+    return " ".join((text or "").split())
+
+
+def _constraint_row_text(constraint: ConstraintReviewItem) -> str:
     """Render a single-line constraint description for Slack row blocks."""
     name = _single_line(constraint.name or "Constraint")
     description = _single_line(constraint.description or "")
@@ -201,14 +284,9 @@ def _constraint_row_text(constraint: Constraint) -> str:
     return f"*{name}* _(scope: {scope_label})_"
 
 
-def _single_line(text: str) -> str:
-    """Collapse whitespace into a single-line string."""
-    return " ".join((text or "").split())
-
-
-def _constraint_scope_label(constraint: Constraint) -> str:
+def _constraint_scope_label(constraint: ConstraintReviewItem) -> str:
     """Return a human-friendly scope label for the constraint."""
-    scope = constraint.scope or ConstraintScope.SESSION
+    scope = constraint.scope_enum()
     if scope == ConstraintScope.PROFILE:
         return "profile"
     if scope == ConstraintScope.DATESPAN:

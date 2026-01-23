@@ -6,9 +6,10 @@
 - When a timeboxing response includes background status notes, deliver them verbatim.
 - Prefer explicit `/timebox` or LLM handoffs for starting sessions; avoid heuristic intent routing.
 - Surface background progress (constraint prefetch, calendar fetch) in user-friendly copy, not raw tool logs.
-- Route intent decisions via LLM-backed agents or explicit slash commands; avoid regex/keyword intent heuristics.
+- Route intent decisions and natural-language interpretation via LLM-backed agents or explicit slash commands; avoid regex/keyword intent heuristics or deterministic “NLU”.
 - Timeboxing activity suppresses planning admonishments while active; idle threads flip to `unfinished` after 10 minutes.
 
 ## Reliability
 - Avoid blocking Slack updates on long-running tools; keep processing messages concise.
 - Prefer posting incremental updates (thread link + status) over silent waits.
+- Prefer Pydantic validation for Slack payloads/metadata instead of try/except parsing.

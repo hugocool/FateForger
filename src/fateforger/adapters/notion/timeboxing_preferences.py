@@ -754,6 +754,7 @@ class NotionConstraintStore:
         self, *, superseded_pages: List[uno.Page], new_start: Optional[str]
     ) -> None:
         if new_start:
+            # TODO(refactor): Validate date inputs with a Pydantic schema.
             try:
                 end_dt = date.fromisoformat(new_start)
             except Exception:

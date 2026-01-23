@@ -34,6 +34,7 @@ def _openai_compatible_provider_config(
         api_key = _clean(settings.openrouter_api_key)
         # Back-compat / convenience: if the user put their OpenRouter key into OPENAI_API_KEY,
         # accept it as a fallback (this is common in OpenAI-compatible stacks).
+        # TODO(refactor): remove this back-compat fallback after env migration is complete.
         if not api_key:
             openai_key = _clean(settings.openai_api_key)
             if openai_key and openai_key != "x":
@@ -72,7 +73,7 @@ def _model_for_agent(agent_type: str) -> str:
 
     # Provider-specific defaults; override via `LLM_MODEL_*` env vars.
     openai_default = _clean(settings.openai_model) or "gpt-4o-mini"
-    openrouter_flash = _clean(getattr(settings, "openrouter_default_model_flash", "")) or "google/gemini-2.0-flash-001"
+    openrouter_flash = _clean(getattr(settings, "openrouter_default_model_flash", "")) or "google/gemini-3-flash-preview"
     openrouter_pro = _clean(getattr(settings, "openrouter_default_model_pro", "")) or "google/gemini-3-flash-preview"
 
     def pick(override: str, *, openai: str, openrouter: str) -> str:

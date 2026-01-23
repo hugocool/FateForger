@@ -40,6 +40,16 @@ Code:
 - `src/fateforger/agents/timeboxing/agent.py`
 - `src/fateforger/agents/timeboxing/patching.py`
 
+## Gemini policy (OpenRouter)
+
+When using Gemini models via OpenRouter, this project requires **Gemini 3.0+** (never below 3.0).
+
+Defaults are configured in:
+
+- `src/fateforger/core/config.py`
+- `src/fateforger/llm/factory.py`
+- `.env.template`
+
 ## Reasoning effort (OpenRouter)
 
 For OpenRouter, FateForger sends reasoning effort in the **request body** as:

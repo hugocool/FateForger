@@ -11,13 +11,13 @@ Use this skill when working with the timeboxing preference memory stored in Noti
 Do NOT call Notion APIs directly; use the MCP tools from the constraint-memory server.
 
 Tools
-- `constraint.get_store_info()`
-- `constraint.get_constraint(uid)`
-- `constraint.query_types(stage, event_types)`
-- `constraint.query_constraints(filters, type_ids, tags, sort, limit)`
-- `constraint.upsert_constraint(record, event)`
-- `constraint.log_event(event)`
-- `constraint.seed_types()`
+- `constraint_get_store_info()`
+- `constraint_get_constraint(uid)`
+- `constraint_query_types(stage, event_types)`
+- `constraint_query_constraints(filters, type_ids, tags, sort, limit)`
+- `constraint_upsert_constraint(record, event)`
+- `constraint_log_event(event)`
+- `constraint_seed_types()`
 
 Server
 - Script: `scripts/constraint_mcp_server.py`
@@ -28,5 +28,5 @@ Environment
 - `NOTION_TIMEBOXING_PARENT_PAGE_ID`: parent page where the DBs live.
 
 Usage notes
-- Always call `constraint.query_types` before expanding to constraint queries.
-- Use `constraint.upsert_constraint` with an event payload for audit logging when possible.
+- Always call `constraint_query_types` before expanding to constraint queries.
+- Use `constraint_upsert_constraint` with an event payload for audit logging when possible.

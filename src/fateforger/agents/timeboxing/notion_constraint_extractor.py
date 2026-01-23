@@ -9,8 +9,11 @@ from autogen_agentchat.tools import AgentTool
 from autogen_core import CancellationToken
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from pydantic import BaseModel, Field
+from pydantic import ValidationError
 
 from fateforger.debug.diag import with_timeout
+from fateforger.agents.timeboxing.constants import TIMEBOXING_TIMEOUTS
+from fateforger.agents.timeboxing.pydantic_parsing import parse_chat_content
 
 
 class ConstraintWindow(BaseModel):
@@ -106,10 +109,10 @@ Operational rules:
 - If ambiguity remains, choose conservative defaults and add a single `clarifying_question`.
 
 Tools:
-- constraint.query_types(stage, event_types)
-- constraint.query_constraints(filters, type_ids, tags, sort, limit)
-- constraint.upsert_constraint(record, event)
-- constraint.log_event(event)
+- constraint_query_types(stage, event_types)
+- constraint_query_constraints(filters, type_ids, tags, sort, limit)
+- constraint_upsert_constraint(record, event)
+- constraint_log_event(event)
 
 Allowed enums:
 - necessity: must|should
@@ -130,10 +133,10 @@ Record guidelines:
 - `uid`: leave null if unsure; the caller will derive an idempotency key.
 
 Procedure:
-1) If needed, call constraint.query_types to shortlist types for the stage/event_types.
-2) Call constraint.query_constraints to check for duplicates/supersedes.
-3) Call constraint.upsert_constraint with the constraint_record, including an event payload when possible.
-4) If not using upsert event payload, call constraint.log_event separately.
+1) If needed, call constraint_query_types to shortlist types for the stage/event_types.
+2) Call constraint_query_constraints to check for duplicates/supersedes.
+3) Call constraint_upsert_constraint with the constraint_record, including an event payload when possible.
+4) If not using upsert event payload, call constraint_log_event separately.
 """.strip()
 
 
@@ -169,6 +172,7 @@ class NotionConstraintExtractor:
         self,
         handoff: ConstraintHandoff,
     ) -> ConstraintExtractionOutput | None:
+        """Extract a durable constraint record from a user utterance and persist it via MCP tools."""
         if not handoff.user_utterance.strip():
             return None
 
@@ -177,14 +181,12 @@ class NotionConstraintExtractor:
         response = await with_timeout(
             "notion:constraint-extract",
             self._agent_tool.run_json({"task": task}, CancellationToken()),
-            timeout_s=25,
+            timeout_s=TIMEBOXING_TIMEOUTS.notion_extract_s,
         )
-
-        extracted = _extract_output(response)
-        if not extracted:
+        try:
+            return parse_chat_content(ConstraintExtractionOutput, response)
+        except ValidationError:
             return None
-
-        return extracted
 
     async def extract_and_upsert_constraint(
         self,
@@ -203,6 +205,7 @@ class NotionConstraintExtractor:
 
         if not user_utterance.strip():
             return None
+        # TODO(refactor): Validate planned_date via a Pydantic schema.
         try:
             parsed_date = date.fromisoformat(planned_date)
         except Exception:
@@ -220,22 +223,6 @@ class NotionConstraintExtractor:
         )
         extracted = await self.extract_and_upsert(handoff)
         return extracted.model_dump() if extracted else None
-
-
-def _extract_output(response: object) -> ConstraintExtractionOutput | None:
-    content = getattr(getattr(response, "chat_message", None), "content", None)
-    if isinstance(content, ConstraintExtractionOutput):
-        return content
-    if content is None and hasattr(response, "messages"):
-        messages = getattr(response, "messages", [])
-        if messages:
-            content = getattr(messages[-1], "content", None)
-    if content is None:
-        return None
-    try:
-        return ConstraintExtractionOutput.model_validate(content)
-    except Exception:
-        return None
 
 
 __all__ = [

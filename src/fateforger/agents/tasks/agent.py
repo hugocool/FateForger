@@ -15,6 +15,8 @@ from fateforger.tools.ticktick_mcp import TickTickMcpClient, get_ticktick_mcp_ur
 
 logger = logging.getLogger(__name__)
 
+# TODO(refactor): centralize MCP client/tool loading + timeouts in shared helpers (see `fateforger.agents.timeboxing.mcp_clients`)
+# TODO(refactor): replace ad-hoc response handling with a shared `parse_chat_content` helper (see `fateforger.agents.timeboxing.pydantic_parsing`)
 
 TASKS_PROMPT = """
 You are the FateForger Tasks Agent ("Task Marshal").

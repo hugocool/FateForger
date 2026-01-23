@@ -242,9 +242,9 @@ When setup is complete, you'll see:
 ## 🔗 Related Documentation
 
 - [TickTick MCP Setup Guide](./ticktick-mcp-setup.md)
-- [Docker Compose Configuration](../infra/docker-compose.yml)
-- [Test Notebook](../notebooks/ticktick_agent.ipynb)
-- [Dockerfile](../infra/Dockerfile.ticktick-mcp)
+- Docker Compose Configuration: `infra/docker-compose.yml`
+- Test Notebook: `notebooks/ticktick_agent.ipynb`
+- Dockerfile: `infra/Dockerfile.ticktick-mcp`
 
 ---
 

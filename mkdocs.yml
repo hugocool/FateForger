@@ -1,6 +1,19 @@
 site_name: FateForger Docs
+exclude_docs: |
+  README.md
+extra:
+  generator: false
 theme:
   name: material
+  logo: assets/logo.png
+  favicon: assets/logo.png
+  palette:
+    - scheme: slate
+      primary: custom
+      accent: custom
+  font: false
+extra_css:
+  - stylesheets/extra.css
 plugins:
   - search
   - mkdocstrings
@@ -10,11 +23,16 @@ nav:
       - Installation: setup/installation.md
       - Development: setup/development.md
       - Testing: setup/testing.md
+      - Setup Wizard: reference/setup/setup_wizard.md
+      - TickTick MCP Setup: setup/ticktick-mcp-setup.md
+      - TickTick Integration: setup/ticktick-integration-complete.md
   - Architecture:
       - Overview: architecture/overview.md
       - Agents: architecture/agents.md
       - Data Models: architecture/data-models.md
       - Scheduling: architecture/scheduling.md
+      - Timeboxing Refactor: architecture/timeboxing_refactor.md
+      - Calendar Haunter: calendar-haunter.md
   - Reference:
       - MCP Tools: reference/api/mcp_tools.md
       - LLM Configuration: reference/setup/llm.md

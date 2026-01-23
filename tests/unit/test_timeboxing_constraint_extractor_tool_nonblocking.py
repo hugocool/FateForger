@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 import time
+from collections.abc import Awaitable
+from typing import Any
 
 import pytest
 
@@ -9,27 +13,34 @@ from fateforger.agents.timeboxing import agent as timeboxing_agent_mod
 
 
 class _SlowExtractor:
-    def __init__(self, *, model_client, tools):
+    def __init__(self, *, model_client: Any, tools: list[Any]) -> None:
+        """Test double that simulates a slow extractor call."""
         self.model_client = model_client
         self.tools = tools
 
-    async def extract_and_upsert_constraint(self, **_kwargs):
+    async def extract_and_upsert_constraint(self, **_kwargs: Any) -> None:
+        """Simulate a long-running background upsert."""
         await asyncio.sleep(10)
         return None
 
 
 @pytest.mark.asyncio
-async def test_extract_and_upsert_constraint_tool_is_nonblocking(monkeypatch):
+async def test_extract_and_upsert_constraint_tool_is_nonblocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ensures the durable constraint upsert tool queues work without blocking the stage."""
     created_tasks: list[asyncio.Task] = []
     real_create_task = timeboxing_agent_mod.asyncio.create_task
 
-    def _create_task_and_cancel(coro):
+    def _create_task_and_cancel(coro: Awaitable[Any]) -> asyncio.Task:
+        """Capture the created task and cancel it to keep the test fast."""
         task = real_create_task(coro)
         created_tasks.append(task)
         task.cancel()
         return task
 
-    async def _fake_get_constraint_mcp_tools():
+    async def _fake_get_constraint_mcp_tools() -> list[Any]:
+        """Return an empty tool list for this test."""
         return []
 
     monkeypatch.setattr(
@@ -69,6 +80,7 @@ async def test_extract_and_upsert_constraint_tool_is_nonblocking(monkeypatch):
             triggering_suggestion="",
             impacted_event_types=["M"],
             suggested_tags=["work_window"],
+            decision_scope="",
         ),
         timeout=0.5,
     )

@@ -65,6 +65,7 @@ def _format_relative_long_day(*, day: date, today: date) -> str:
 
 
 def format_relative_day_label(*, planned_date: str, tz_name: str) -> str:
+    # TODO(refactor): Use a Pydantic schema for planned date/timezone validation.
     try:
         tz = ZoneInfo(tz_name)
     except Exception:
@@ -353,6 +354,7 @@ class TimeboxingCommitCoordinator:
         meta = TimeboxCommitMeta.from_value(existing_meta_value)
         if not meta:
             return
+        # TODO(refactor): Validate selected_date with a Pydantic schema.
         try:
             date.fromisoformat(selected_date)
         except Exception:

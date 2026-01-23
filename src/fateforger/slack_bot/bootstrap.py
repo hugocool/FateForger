@@ -89,6 +89,7 @@ async def ensure_workspace_ready(
         name = spec.name.lstrip("#")
         channel_id = existing.get(name)
         if not channel_id:
+            # TODO(refactor): Remove legacy alias support once all workspaces migrate.
             for legacy_name in _LEGACY_CHANNEL_ALIASES.get(name, []):
                 channel_id = existing.get(legacy_name)
                 if channel_id:

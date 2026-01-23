@@ -14,6 +14,7 @@
 - The Notion schemas + store wrapper live in `src/fateforger/adapters/notion/timeboxing_preferences.py`.
 - The constraint-memory MCP server wraps all Notion access: `scripts/constraint_mcp_server.py`.
 - A repo skill exists at `.codex/skills/notion-constraint-memory/SKILL.md` with tool usage rules.
+- Policy: prefer Pydantic DTOs + `ultimate-notion` (UNO) schema/page objects at boundaries (Slack/UI/agents); avoid leaking SQLModel persistence models outside storage layers.
 
 ## Timeboxing constraint extraction
 - Durable extraction: `src/fateforger/agents/timeboxing/notion_constraint_extractor.py`
@@ -22,7 +23,9 @@
 - Slack wiring: Slack events route to `timeboxing_agent` via `StartTimeboxing` / `TimeboxingUserReply` messages (see `src/fateforger/slack_bot/handlers.py`).
 - Durable constraints must be prefetched via the constraint-memory MCP server before Stage 1; this work is non-blocking.
 - Stage-gating LLMs do not call tools; tool IO happens only in background coordinator tasks.
-- **Intent classification must use LLMs (AutoGen agents) or explicit slash commands; never use regex/keyword matching.**
+- Prefer AutoGen framework features for orchestration and control-flow (GraphFlow/`DiGraphBuilder`, termination conditions, message filtering, typed outputs via `output_content_type`, `FunctionTool`) instead of reinventing bespoke state machines.
+- **Intent classification / natural-language interpretation must use LLMs (AutoGen agents) or explicit slash commands; never use regex/keyword matching.**
+- **Never add deterministic “NLU” helpers** (e.g., parsing scope/date/intent from free-form user text). Use structured LLM outputs instead (see `src/fateforger/agents/timeboxing/nlu.py`). Delete any accidental deterministic NLU code on sight.
 
 ## Planning reminders
 - Missing-planning nudges are scheduled by `PlanningReconciler` and must ignore stale anchor events outside the horizon window.
@@ -61,6 +64,13 @@
 - If an `AGENTS.md` needs extra context, it can instruct the agent to read the local `README.md`.
 - Keep docs current with the code; update the relevant `README.md` alongside implementation changes.
 
+## Docs build/serve (MkDocs)
+- Build docs: `make docs-build` (or `.venv/bin/mkdocs build --strict`)
+- Serve docs: `make docs-serve` (or `.venv/bin/mkdocs serve`)
+- Timeboxing refactor notes live in `TIMEBOXING_REFACTOR_REPORT.md`.
+
 ## Code hygiene
 - Every function and method must include type annotations (including return types).
 - Every function and method must include a docstring; update them when behavior changes.
+- Prefer Pydantic validation at boundaries (Slack payloads, MCP tool results, JSON blobs) instead of try/except parsing and dict probing.
+- Legacy/back-compat code paths must be tagged with `# TODO(refactor):` and removed once migrations land.

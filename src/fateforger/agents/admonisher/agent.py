@@ -15,6 +15,9 @@ from .prompts import ADMONISHER_PERSONA_PROMPT
 
 logger = logging.getLogger(__name__)
 
+# TODO(refactor): add `with_timeout` + structured error handling like ReceptionistAgent to improve Slack responsiveness under slow LLMs.
+# TODO(refactor): share response parsing helpers across agents (e.g. `parse_chat_content`).
+
 ADMONISHER_PROMPT = f"""
 {ADMONISHER_PERSONA_PROMPT}
 

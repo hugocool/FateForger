@@ -1,4 +1,4 @@
-.PHONY: help setup dev test lint format clean
+.PHONY: help setup dev test docs-build docs-serve lint format clean
 
 help: ## Show this help message
 	@echo "Available commands:"
@@ -15,6 +15,12 @@ app: ## Run the application
 
 test: ## Run tests
 	@poetry run pytest tests/
+
+docs-build: ## Build docs site (MkDocs)
+	@.venv/bin/mkdocs build --strict
+
+docs-serve: ## Serve docs locally (MkDocs)
+	@.venv/bin/mkdocs serve
 
 # Ticket 4 validation commands
 validate-syntax: ## Run syntax validation for Ticket 4

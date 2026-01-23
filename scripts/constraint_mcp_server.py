@@ -109,7 +109,7 @@ def _serialize_constraint(page) -> Dict[str, Any]:
     }
 
 
-@mcp.tool(name="constraint.get_store_info")
+@mcp.tool(name="constraint_get_store_info")
 def get_store_info() -> Dict[str, Any]:
     """Return parent page + DB ids/URLs for the constraint memory store."""
 
@@ -152,7 +152,7 @@ def get_store_info() -> Dict[str, Any]:
     return info
 
 
-@mcp.tool(name="constraint.get_constraint")
+@mcp.tool(name="constraint_get_constraint")
 def get_constraint(uid: str) -> Dict[str, Any] | None:
     """Get a single constraint by UID (includes page_id + url)."""
 
@@ -163,7 +163,7 @@ def get_constraint(uid: str) -> Dict[str, Any] | None:
     return _serialize_constraint(page)
 
 
-@mcp.tool(name="constraint.query_types")
+@mcp.tool(name="constraint_query_types")
 def query_types(
     stage: Optional[str] = None, event_types: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
@@ -171,7 +171,7 @@ def query_types(
     return store.query_types(stage=stage, event_types=event_types)
 
 
-@mcp.tool(name="constraint.query_constraints")
+@mcp.tool(name="constraint_query_constraints")
 def query_constraints(
     filters: Dict[str, Any],
     type_ids: Optional[List[str]] = None,
@@ -208,7 +208,7 @@ def query_constraints(
     return [_serialize_constraint(page) for page in pages]
 
 
-@mcp.tool(name="constraint.upsert_constraint")
+@mcp.tool(name="constraint_upsert_constraint")
 def upsert_constraint(
     record: Dict[str, Any], event: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
@@ -235,7 +235,7 @@ def upsert_constraint(
     return {"uid": getattr(page.props, "uid", None), "page_id": str(page.id)}
 
 
-@mcp.tool(name="constraint.log_event")
+@mcp.tool(name="constraint_log_event")
 def log_event(event: Dict[str, Any]) -> Dict[str, Any]:
     store = _get_store()
     uid = event.get("constraint_uid")
@@ -261,7 +261,7 @@ def log_event(event: Dict[str, Any]) -> Dict[str, Any]:
     return {"page_id": str(page.id)}
 
 
-@mcp.tool(name="constraint.seed_types")
+@mcp.tool(name="constraint_seed_types")
 def seed_types() -> Dict[str, Any]:
     store = _get_store()
     pages = seed_default_constraint_types(store)

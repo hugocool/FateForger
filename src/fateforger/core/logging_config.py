@@ -122,6 +122,7 @@ def _summarize_autogen_event_message(
         return msg
 
     payload: Any | None = None
+    # TODO(refactor): Parse autogen event payloads with a Pydantic schema.
     if msg[:1] == "{" and msg[-1:] == "}":
         try:
             payload = json.loads(msg)
@@ -224,6 +225,7 @@ def _summarize_autogen_message_event(event: dict[str, Any], *, max_chars: int) -
 
     payload_raw = event.get("payload")
     payload_obj: Any | None = None
+    # TODO(refactor): Validate payload with a structured Pydantic model.
     if isinstance(payload_raw, str) and payload_raw:
         try:
             payload_obj = json.loads(payload_raw)

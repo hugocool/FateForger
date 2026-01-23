@@ -368,6 +368,7 @@ class PlanningReconciler:
         logger.info("Planning reminder (%s): %s", reminder.scope, reminder.message)
 
 
+# TODO(refactor): Replace manual MCP payload normalization with Pydantic models.
 def _extract_tool_payload(result: Any) -> Any:
     import json
 
@@ -401,6 +402,7 @@ def _extract_tool_payload(result: Any) -> Any:
     return {}
 
 
+# TODO(refactor): Use a validated CalendarEvent list model instead of dict checks.
 def _normalize_events(payload: Any) -> list[dict]:
     if isinstance(payload, dict):
         # MCP returns {"events": [...]} or Google API returns {"items": [...]}
@@ -413,6 +415,7 @@ def _normalize_events(payload: Any) -> list[dict]:
     return []
 
 
+# TODO(refactor): Replace dict probing with Pydantic parsing of tool results.
 def _normalize_event(payload: Any) -> dict | None:
     if isinstance(payload, dict):
         if "id" in payload or "summary" in payload:
@@ -426,6 +429,7 @@ def _normalize_event(payload: Any) -> dict | None:
     return None
 
 
+# TODO(refactor): Use a Pydantic date-time field parser instead of try/except.
 def _parse_event_dt(raw: Any, *, tz: timezone) -> datetime | None:
     if raw is None:
         return None

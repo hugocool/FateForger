@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def _run_bot() -> None:
+    """Run the Slack bot entrypoint inside the current process."""
     from fateforger.slack_bot.bot import start
 
     try:
@@ -21,6 +22,7 @@ def _run_bot() -> None:
 
 
 def main() -> int:
+    """Start the dev bot with optional watch mode."""
     if _should_disable_watch():
         _run_bot()
         return 0
@@ -34,6 +36,7 @@ def main() -> int:
 
 
 def _should_disable_watch() -> bool:
+    """Return True when watchfiles should be disabled for the current environment."""
     if os.getenv("FF_DISABLE_WATCH", "").strip() == "1":
         return True
     # Debugpy + watchfiles causes rapid restarts; disable when running under VS Code.

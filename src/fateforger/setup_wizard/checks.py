@@ -32,6 +32,7 @@ def _safe_error(e: BaseException) -> str:
 def _json_ok(path: Path) -> tuple[bool, str | None]:
     if not path.exists():
         return False, "file-missing"
+    # TODO(refactor): Validate JSON files with a Pydantic schema.
     try:
         json.loads(path.read_text(encoding="utf-8"))
         return True, None
@@ -228,6 +229,7 @@ async def check_toggl_mcp() -> CheckResult:
             invocation["ok"] = True
 
             parsed: Any = res
+            # TODO(refactor): Parse tool responses with a Pydantic model.
             if isinstance(res, dict) and isinstance(res.get("content"), list):
                 text = next(
                     (

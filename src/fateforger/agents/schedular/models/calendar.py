@@ -223,7 +223,7 @@ class CalendarEvent(
     SQLModel,
     table=True,
     extra="forbid",
-    # validate_by_alias=True,
+    validate_by_alias=True,
     validate_by_name=True,
     json_encoders={datetime: lambda v: v.strftime("%Y-%m-%dT%H:%M:%S")},
 ):
@@ -344,6 +344,16 @@ class CalendarEvent(
             return dt.replace(tzinfo=None, microsecond=0)
         return v
 
+    @field_validator("start_time", "end_time", mode="before")
+    @classmethod
+    def _parse_time(cls, v: Union[str, time, None]) -> time | None:
+        """Parse HH:MM(/:SS) time strings into `datetime.time` objects."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return time.fromisoformat(v)
+        return v
+
     @field_validator("duration", mode="before")
     @classmethod
     def _parse_duration(cls, v) -> timedelta:
@@ -353,12 +363,26 @@ class CalendarEvent(
 
     @model_validator(mode="after")
     def _check_time_combo(self, info: ValidationInfo) -> "CalendarEvent":
-        start, end, dur = self.start, self.end, self.duration
-        given = sum(x is not None for x in (start, end, dur))
+        """
+        Validate that the event has enough timing information to be schedulable.
+
+        Notes
+        -----
+        This model is used in both scheduler flows (datetime `start`/`end`) and
+        timeboxing flows (time-of-day `start_time`/`end_time`). We treat either
+        pair as satisfying "start/end" for validation purposes.
+        """
+
+        start_like = self.start or self.start_time
+        end_like = self.end or self.end_time
+        dur = self.duration
+        given = sum(x is not None for x in (start_like, end_like, dur))
         if given < 1:
-            raise ValueError("Need at least two of start/end/duration")
+            raise ValueError(
+                "Need at least one of start/end/duration (or start_time/end_time)"
+            )
         if given == 3:
-            raise ValueError("start, end and duration cannot all be present")
+            raise ValueError("start/end and duration cannot all be present")
         return self
 
     @computed_field

@@ -8,10 +8,12 @@ from typing import Iterable, List
 from trustcall import create_extractor
 
 from fateforger.llm import build_langchain_chat_openai
+from fateforger.llm.toon import toon_encode
 
 from .actions import TimeboxAction
 from .preferences import Constraint
 from .timebox import Timebox
+from .toon_views import constraints_rows
 
 
 class TimeboxPatcher:
@@ -60,24 +62,21 @@ def _build_context(
     constraints: Iterable[Constraint],
     actions: Iterable[TimeboxAction],
 ) -> str:
-    constraints_text = _format_constraints(constraints)
+    constraints_list = list(constraints)
+    constraints_toon = toon_encode(
+        name="constraints",
+        rows=constraints_rows(constraints_list),
+        fields=["name", "necessity", "scope", "status", "source", "description"],
+    )
     actions_text = _format_actions(actions)
     return (
         "Update the existing timebox using JSON patching.\n"
+        "The following lists are in TOON format: name[N]{keys}: defines the schema, and each line below is a record with values in that exact order.\n"
         f"User message: {user_message}\n"
-        f"Active constraints:\n{constraints_text}\n"
+        f"{constraints_toon}\n"
         f"Recent actions:\n{actions_text}\n"
         "Return the updated Timebox only."
     )
-
-
-def _format_constraints(constraints: Iterable[Constraint]) -> str:
-    lines: List[str] = []
-    for constraint in constraints:
-        lines.append(
-            f"- {constraint.name}: {constraint.description} ({constraint.necessity.value})"
-        )
-    return "\n".join(lines) if lines else "- (none)"
 
 
 def _format_actions(actions: Iterable[TimeboxAction]) -> str:

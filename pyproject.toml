@@ -39,7 +39,8 @@ dependencies = [
     "gradio (>=5.49.1,<6.0.0)",
     "langchain-openai (>=1.0.0,<2.0.0)",
     "python-multipart (>=0.0.21,<0.0.22)",
-    "itsdangerous (>=2.2.0,<3.0.0)"
+    "itsdangerous (>=2.2.0,<3.0.0)",
+    "toon-format (>=0.1.0,<0.2.0)"
 ]
 
 [project.scripts]

@@ -354,6 +354,7 @@ class PlanningCoordinator:
         )
         if not draft:
             return None
+        # TODO(refactor): Validate timezone/date inputs with Pydantic models.
         try:
             tz = ZoneInfo(draft.timezone or DEFAULT_TIMEZONE)
         except Exception:
@@ -627,17 +628,11 @@ def _card_payload(
     duration_options = [duration_option(m) for m in DEFAULT_DURATION_OPTIONS]
     initial_duration = duration_option(int(draft.duration_min))
 
-    date_element = {
-        "type": "datepicker",
-        "action_id": FF_EVENT_START_DATE_ACTION_ID,
-        "initial_date": start.strftime("%Y-%m-%d"),
-        "placeholder": {"type": "plain_text", "text": "Pick date"},
-    }
-    time_element = {
-        "type": "timepicker",
-        "action_id": FF_EVENT_START_TIME_ACTION_ID,
-        "initial_time": start.strftime("%H:%M"),
-        "placeholder": {"type": "plain_text", "text": "Pick time"},
+    start_epoch = int(date_parser.isoparse(draft.start_at_utc).timestamp())
+    start_at_element = {
+        "type": "datetimepicker",
+        "action_id": FF_EVENT_START_AT_ACTION_ID,
+        "initial_date_time": start_epoch,
     }
     duration_element = {
         "type": "static_select",
@@ -674,6 +669,8 @@ def _card_payload(
             "type": "actions",
             "block_id": FF_EVENT_BLOCK_EDIT,
             "elements": [
+                start_at_element,
+                duration_element,
                 {
                     "type": "button",
                     "action_id": action_id,
@@ -700,26 +697,7 @@ def _card_payload(
     if draft.status is DraftStatus.SUCCESS and draft.event_url:
         blocks.append(actions_block)
     else:
-        blocks.extend(
-            [
-                {
-                    "type": "actions",
-                    "block_id": "edit_date",
-                    "elements": [date_element],
-                },
-                {
-                    "type": "actions",
-                    "block_id": "edit_time",
-                    "elements": [time_element],
-                },
-                {
-                    "type": "actions",
-                    "block_id": "edit_duration",
-                    "elements": [duration_element],
-                },
-                actions_block,
-            ]
-        )
+        blocks.append(actions_block)
     blocks.append(
         {
             "type": "context",
@@ -731,6 +709,7 @@ def _card_payload(
 
 
 def parse_draft_id_from_value(value: str) -> str | None:
+    # TODO(refactor): Validate the metadata payload with a Pydantic schema.
     try:
         obj = json.loads(value or "{}")
     except Exception:

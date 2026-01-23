@@ -5,11 +5,16 @@ title: Agents
 ## TimeboxingFlowAgent
 
 Primary day-planning agent that runs the GraphFlow timeboxing workflow and coordinates:
-- LLM planning (`GraphFlow`) for day schedule drafts
+- Stage-gated planning for day schedule drafts (typed JSON contexts per stage)
 - Patch-based refinement (`TimeboxPatcher`)
-- Constraint extraction + persistence
+- Constraint extraction + persistence (background, non-blocking)
 
 Code: `src/fateforger/agents/timeboxing/agent.py`
+
+Related docs:
+
+- `docs/indices/agents_timeboxing.md`
+- `docs/architecture/timeboxing_refactor.md`
 
 ## ConstraintExtractorAgent (Notion-backed)
 
@@ -25,14 +30,26 @@ Code:
 - `src/fateforger/agents/timeboxing/notion_constraint_extractor.py`
 - `src/fateforger/adapters/notion/timeboxing_preferences.py`
 
-## (Planned) ConstraintRetriever
+## ConstraintRetriever
 
-Greedy, top-down retriever that:
+Gap-driven retriever for durable constraints that:
+- derives a small query plan from stage + day context (gaps/blocks/immovables)
+- uses `constraint_query_types` to select relevant `type_id`s
+- then queries constraints via `constraint_query_constraints` with those `type_id`s
+
+Code:
+- `src/fateforger/agents/timeboxing/constraint_retriever.py`
+- `src/fateforger/agents/timeboxing/mcp_clients.py`
+- `src/fateforger/agents/timeboxing/agent.py`
+
+## (Next) ConstraintRetriever Improvements
+
+Planned improvements:
 - loads global/profile constraints first (high precedence)
-- then queries only what is needed for remaining planning gaps (“degrees of freedom”)
+- then queries only what is needed for remaining planning gaps ("degrees of freedom")
 - uses structured Notion properties (no embeddings requirement)
 
-Status: not implemented; tracked in `lattice_ticket.md`.
+Status: partially implemented; tracked in `lattice_ticket.md`.
 
 ## SlackBot Router + Review
 

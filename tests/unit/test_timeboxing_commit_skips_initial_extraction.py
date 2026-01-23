@@ -20,7 +20,7 @@ async def test_commit_does_not_trigger_initial_extraction():
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     agent._sessions = {}
 
-    async def _fake_run_stage(_session, *, user_message):
+    async def _fake_run_graph_turn(*, session, user_text):
         return TextMessage(content="ok", source="timeboxing_agent")
 
     async def _fake_publish_update(**_kwargs):
@@ -29,7 +29,7 @@ async def test_commit_does_not_trigger_initial_extraction():
     async def _fake_prefetch_calendar(_session, _date):
         return None
 
-    agent._run_stage = _fake_run_stage
+    agent._run_graph_turn = _fake_run_graph_turn
     agent._publish_update = _fake_publish_update
     agent._prefetch_calendar_immovables = _fake_prefetch_calendar
     agent._apply_prefetched_calendar_immovables = lambda _session: None
