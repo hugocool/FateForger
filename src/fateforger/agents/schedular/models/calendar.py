@@ -92,6 +92,7 @@ class ScheduleDraft(SQLModel, table=True):
                         raise ValueError(
                             f"{ev.summary}: first non-BACKGROUND event cannot be duration-only"
                         )
+                    # TODO: define/import day_start anchor (start-of-day for scheduling).
                     anchor = last_non_bg.end if last_non_bg else day_start
                     ev.start = anchor
                     ev.end = anchor + ev.duration
@@ -307,11 +308,13 @@ class CalendarEvent(
         exclude=True,
     )
 
-    calc: Optional[list[Literal["s", "e", "d"]]] = ORMField(
-        default=None,
-        description="List of fields to calculate",
-        exclude=True,
-        sa_column=Column(_JSON),
+    calc: Optional[list[Literal["s", "e", "d"]]] = (
+        ORMField(  # TODO: shouldnt this be ST, ET, DT? and do we have a validator for it in timebox?
+            default=None,
+            description="List of fields to calculate",
+            exclude=True,
+            sa_column=Column(_JSON),
+        )
     )
 
     timeZone: Optional[str] = ORMField(

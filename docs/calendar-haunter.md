@@ -166,6 +166,7 @@ async def create_calendar_haunter_agent() -> AssistantAgent:
 |----------|---------|-------------|
 | `OPENAI_API_KEY` | Required | OpenAI API key for GPT-4o-mini |
 | `MCP_CALENDAR_SERVER_URL` | `http://localhost:3000` | MCP server endpoint |
+| `MCP_CALENDAR_SERVER_URL_DOCKER` | `http://calendar-mcp:3000` | Docker Compose network endpoint (used to inject `MCP_CALENDAR_SERVER_URL` into containers) |
 
 ### MCP Server Configuration
 

@@ -50,6 +50,7 @@ services:
       WIZARD_PORT: "8080"
       WIZARD_ADMIN_TOKEN: "${WIZARD_ADMIN_TOKEN}"
       WIZARD_SESSION_SECRET: "${WIZARD_SESSION_SECRET}"
+      WIZARD_CALENDAR_MCP_URL: "${MCP_CALENDAR_SERVER_URL_DOCKER:?Set MCP_CALENDAR_SERVER_URL_DOCKER in .env}"
     volumes:
       - ./:/config
       - calendar-mcp-tokens:/config/calendar-mcp-tokens:ro
@@ -67,7 +68,9 @@ services:
       dockerfile: Dockerfile
     env_file: .env
     environment:
-      MCP_CALENDAR_SERVER_URL: "http://calendar-mcp:${PORT}"
+      # Single source of truth: define MCP_CALENDAR_SERVER_URL_DOCKER in `.env`
+      # and pass it through to the app container as MCP_CALENDAR_SERVER_URL.
+      MCP_CALENDAR_SERVER_URL: "${MCP_CALENDAR_SERVER_URL_DOCKER:?Set MCP_CALENDAR_SERVER_URL_DOCKER in .env}"
     volumes:
       - app_data:/app/data
       - poetry-cache:/root/.cache/pypoetry
@@ -163,6 +166,8 @@ services:
     networks:
       - admonish-network
 
+  # Setup Wizard reads WIZARD_* overrides for MCP checks; wire it to the same
+  # docker-network MCP endpoint used by the app.
   # notion-mcp:
   #   <<: *common-env
   #   build:

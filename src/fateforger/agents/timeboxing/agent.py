@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
+from autogen_agentchat.teams import GraphFlow
 from autogen_core import (
     CancellationToken,
     DefaultTopicId,
@@ -27,14 +28,15 @@ from dateutil import parser as date_parser
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from fateforger.agents.schedular.models.calendar import CalendarEvent, EventType
 from fateforger.agents.timeboxing.notion_constraint_extractor import (
     NotionConstraintExtractor,
 )
-from fateforger.agents.schedular.models.calendar import CalendarEvent, EventType
 from fateforger.core.config import settings
 from fateforger.debug.diag import with_timeout
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
 from fateforger.llm import build_autogen_chat_client
+from fateforger.llm.toon import toon_encode
 from fateforger.slack_bot.constraint_review import (
     build_constraint_row_blocks,
     encode_metadata,
@@ -58,12 +60,20 @@ from .contracts import (
     TaskCandidate,
     WorkWindow,
 )
+from .flow_graph import build_timeboxing_graphflow
+from .mcp_clients import ConstraintMemoryClient, McpCalendarClient
 from .messages import (
     StartTimeboxing,
     TimeboxingCommitDate,
     TimeboxingFinalResult,
     TimeboxingUpdate,
     TimeboxingUserReply,
+)
+from .nlu import (
+    ConstraintInterpretation,
+    PlannedDateResult,
+    build_constraint_interpreter,
+    build_planned_date_interpreter,
 )
 from .patching import TimeboxPatcher
 from .preferences import (
@@ -91,17 +101,12 @@ from .stage_gating import (
     TimeboxingStage,
 )
 from .timebox import Timebox
-from .mcp_clients import ConstraintMemoryClient, McpCalendarClient
-from fateforger.llm.toon import toon_encode
-from .toon_views import constraints_rows, immovables_rows, tasks_rows, timebox_events_rows
-from .nlu import (
-    ConstraintInterpretation,
-    PlannedDateResult,
-    build_constraint_interpreter,
-    build_planned_date_interpreter,
+from .toon_views import (
+    constraints_rows,
+    immovables_rows,
+    tasks_rows,
+    timebox_events_rows,
 )
-from .flow_graph import build_timeboxing_graphflow
-from autogen_agentchat.teams import GraphFlow
 
 logger = logging.getLogger(__name__)
 TEnum = TypeVar("TEnum", bound=Enum)
@@ -217,14 +222,20 @@ class TimeboxingFlowAgent(RoutedAgent):
         return getattr(settings, "planning_timezone", "") or "Europe/Amsterdam"
 
     def _default_planned_date(self, *, now: datetime, tz: ZoneInfo) -> str:
-        """Return a deterministic default planned date without parsing user language."""
+        """Return a deterministic default planned date.
+
+        This is a fallback used only when the user did not specify a date.
+        We avoid any "workday" logic here (no weekday/weekend assumptions).
+
+        Rule:
+        - Before 09:00 local time → use today.
+        - At/after 09:00 local time → use tomorrow.
+        """
         local_now = now.astimezone(tz)
-        base = next_workday(local_now.date())
-        if base != local_now.date():
-            return base.isoformat()
+        planned = local_now.date()
         if (local_now.hour, local_now.minute) >= (9, 0):
-            return tomorrow_workday(base).isoformat()
-        return base.isoformat()
+            planned = planned + timedelta(days=1)
+        return planned.isoformat()
 
     def _ensure_graphflow(self, session: Session) -> GraphFlow:
         """Return the per-session GraphFlow instance, building it if needed."""
@@ -285,9 +296,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         """Return the calendar MCP client, initializing it if needed."""
         if self._calendar_client:
             return self._calendar_client
-        server_url = os.getenv(
-            "MCP_CALENDAR_SERVER_URL", "http://localhost:3000"
-        ).strip()
+        server_url = settings.mcp_calendar_server_url.strip()
         if not server_url:
             return None
         try:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import os
 from typing import Any, List, Optional, Union
 
 from autogen_agentchat.agents import AssistantAgent
@@ -31,9 +30,7 @@ class CalendarHaunter(BaseHaunter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._agent: Optional[AssistantAgent] = None
-        self._mcp_server_url = os.getenv(
-            "MCP_CALENDAR_SERVER_URL", "http://localhost:3000"
-        )
+        self._mcp_server_url = settings.mcp_calendar_server_url
 
     async def _ensure_agent(self) -> AssistantAgent:
         """Lazy-load the AutoGen MCP calendar agent."""
@@ -190,7 +187,7 @@ async def create_calendar_haunter_agent() -> AssistantAgent:
     Returns:
         Configured AssistantAgent with Google Calendar tools
     """
-    mcp_server_url = os.getenv("MCP_CALENDAR_SERVER_URL", "http://localhost:3000")
+    mcp_server_url = settings.mcp_calendar_server_url
     if not (settings.openrouter_api_key or settings.openai_api_key):
         raise RuntimeError(
             "No LLM API key configured. Set OPENAI_API_KEY or OPENROUTER_API_KEY."

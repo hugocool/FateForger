@@ -22,6 +22,7 @@ FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID = "ff_timebox_day_select"
 
 
 def _persona_payload(agent_type: str) -> dict[str, Any]:
+    """Return Slack message persona overrides for a given agent type."""
     directory = WorkspaceRegistry.get_global()
     persona = directory.persona_for_agent(agent_type) if directory else None
     if not persona:
@@ -36,27 +37,20 @@ def _persona_payload(agent_type: str) -> dict[str, Any]:
     return payload
 
 
-def _is_workday(day: date) -> bool:
-    return day.weekday() < 5
-
-
-def _iter_workdays(start: date, *, count: int) -> list[date]:
-    days: list[date] = []
-    cursor = start
-    while len(days) < count:
-        if _is_workday(cursor):
-            days.append(cursor)
-        cursor = cursor + timedelta(days=1)
-    return days
+def _iter_days(start: date, *, count: int) -> list[date]:
+    """Return a list of consecutive calendar days starting at `start`."""
+    return [start + timedelta(days=offset) for offset in range(count)]
 
 
 def _format_long_day(day: date) -> str:
+    """Return a human-friendly full date label."""
     weekday = day.strftime("%A")
     month = day.strftime("%B")
     return f"{weekday} {day.day} {month}"
 
 
 def _format_relative_long_day(*, day: date, today: date) -> str:
+    """Return a human-friendly day label relative to `today`."""
     if day == today:
         return f"Today — {_format_long_day(day)}"
     if day == today + timedelta(days=1):
@@ -65,6 +59,7 @@ def _format_relative_long_day(*, day: date, today: date) -> str:
 
 
 def format_relative_day_label(*, planned_date: str, tz_name: str) -> str:
+    """Format `planned_date` as a relative label in the user's timezone."""
     # TODO(refactor): Use a Pydantic schema for planned date/timezone validation.
     try:
         tz = ZoneInfo(tz_name)
@@ -78,11 +73,12 @@ def format_relative_day_label(*, planned_date: str, tz_name: str) -> str:
     return _format_relative_long_day(day=day, today=today)
 
 
-def _day_options(*, tz: ZoneInfo, workdays: int = 14) -> list[dict[str, Any]]:
+def _day_options(*, tz: ZoneInfo, days: int = 14) -> list[dict[str, Any]]:
+    """Build Slack dropdown options for the next `days` calendar days."""
     now = datetime.now(timezone.utc).astimezone(tz)
     today = now.date()
     options: list[dict[str, Any]] = []
-    for day in _iter_workdays(today, count=workdays):
+    for day in _iter_days(today, count=days):
         label = _format_relative_long_day(day=day, today=today)
         options.append(
             {"text": {"type": "plain_text", "text": label}, "value": day.isoformat()}
@@ -96,6 +92,7 @@ def build_timebox_commit_prompt_message(
     tz_name: str,
     meta_value: str,
 ) -> SlackBlockMessage:
+    """Build the Stage-0 'confirm planned day' Slack message for timeboxing."""
     try:
         tz = ZoneInfo(tz_name)
     except Exception:
@@ -149,6 +146,8 @@ def build_timebox_commit_prompt_message(
 
 @dataclass(frozen=True)
 class TimeboxCommitMeta:
+    """Encoded metadata passed through Slack interactive payloads."""
+
     user_id: str
     channel_id: str
     thread_ts: str
@@ -157,6 +156,7 @@ class TimeboxCommitMeta:
 
     @classmethod
     def from_value(cls, value: str) -> "TimeboxCommitMeta | None":
+        """Parse metadata encoded into Slack action values."""
         meta = decode_metadata(value)
         channel_id = meta.get("channel_id") or ""
         thread_ts = meta.get("thread_ts") or ""
@@ -174,6 +174,7 @@ class TimeboxCommitMeta:
         )
 
     def to_private_metadata(self, *, prompt_channel_id: str, prompt_ts: str) -> str:
+        """Encode metadata for Slack modal `private_metadata` round-trips."""
         return encode_metadata(
             {
                 "user_id": self.user_id,
@@ -189,6 +190,7 @@ class TimeboxCommitMeta:
 
 class TimeboxingCommitCoordinator:
     def __init__(self, *, runtime, client: AsyncWebClient) -> None:
+        """Create the coordinator that bridges Slack actions to the timeboxing agent."""
         self._runtime = runtime
         self._client = client
 
@@ -200,6 +202,7 @@ class TimeboxingCommitCoordinator:
         prompt_ts: str,
         actor_user_id: str | None,
     ) -> None:
+        """Handle the 'Confirm' button and dispatch `TimeboxingCommitDate` to the agent."""
         meta = TimeboxCommitMeta.from_value(value)
         if not meta:
             return

@@ -5,12 +5,14 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class SuggestNextSlot:
-    calendar_id: str = "primary"
-    duration_min: int = 30
-    time_zone: str = "Europe/Amsterdam"
-    horizon_days: int = 2
-    work_start_hour: int = 9
-    work_end_hour: int = 18
+    calendar_id: str = "primary"  # TODO: this should be a setting, not hardcoded here
+    duration_min: int = 30  # TODO: this should be a setting, not hardcoded here
+    time_zone: str = (
+        "Europe/Amsterdam"  # TODO: this should be a setting, not hardcoded here
+    )
+    horizon_days: int = 2  # TODO: this should be a setting, not hardcoded here
+    work_start_hour: int = 9  # TODO: this should be a setting, not hardcoded here
+    work_end_hour: int = 18  # TODO: this should be a setting, not hardcoded here
 
 
 @dataclass(frozen=True)

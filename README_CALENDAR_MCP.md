@@ -132,6 +132,10 @@ All automatically loaded by CalendarHaunter.
 export MCP_CALENDAR_SERVER_URL=http://localhost:3000
 export OPENAI_API_KEY=sk-your-key-here
 
+# Docker Compose note:
+# - Set MCP_CALENDAR_SERVER_URL_DOCKER=http://calendar-mcp:3000 in `.env`
+# - Compose injects it into containers as MCP_CALENDAR_SERVER_URL
+
 # Run MCP server (Docker)
 docker run -it \
   -e GOOGLE_CALENDAR_CREDENTIALS_PATH=/secrets/gcal-oauth.json \

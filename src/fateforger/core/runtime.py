@@ -139,9 +139,7 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
 
     reconciler = None
     try:
-        calendar_client = McpCalendarClient(
-            server_url=os.getenv("MCP_CALENDAR_SERVER_URL", "http://localhost:3000")
-        )
+        calendar_client = McpCalendarClient(server_url=settings.mcp_calendar_server_url)
 
         async def dispatch_planning(reminder: PlanningReminder) -> None:
             await runtime.send_message(

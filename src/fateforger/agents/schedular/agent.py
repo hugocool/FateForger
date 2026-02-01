@@ -6,7 +6,6 @@ import asyncio
 import datetime as dt
 import json
 import logging
-import os
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
@@ -75,8 +74,7 @@ prompt = (
 )
 
 
-SERVER_URL = os.getenv("CALENDAR_MCP_URL", "http://localhost:3000")
-SERVER_URL = os.getenv("MCP_CALENDAR_SERVER_URL", SERVER_URL)
+SERVER_URL = settings.mcp_calendar_server_url
 
 
 @dataclass
@@ -104,7 +102,9 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         return self._workbench
 
     @staticmethod
-    def _extract_tool_payload(result: object) -> object:
+    def _extract_tool_payload(
+        result: object,
+    ) -> object:  # TODO: why is this needed? isnt this build in?
         if isinstance(result, dict):
             return result
         payload = getattr(result, "content", None)
@@ -116,7 +116,9 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         return {}
 
     @staticmethod
-    def _normalize_event(payload: object) -> dict | None:
+    def _normalize_event(
+        payload: object,
+    ) -> dict | None:  # TODO: why is this needed, what uses it?
         if isinstance(payload, dict):
             if "id" in payload or "summary" in payload:
                 return payload
@@ -194,7 +196,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         html_link = event.get("htmlLink")
         when = cls._format_event_when(event, tz=tz) or "(time unavailable)"
         event_id = event.get("id") or ""
-
+        # TODO: isnt there a nice api with object to this instead of these brittle dict accesses?
         blocks: list[dict] = [
             {"type": "header", "text": {"type": "plain_text", "text": f"📅 {summary}"}},
             {
@@ -251,6 +253,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         now = dt.datetime.now(dt.timezone.utc).astimezone(tz)
         duration = dt.timedelta(minutes=message.duration_min)
 
+        # TODO: when is this called, and doesnt the mcp tool already have a trool to see free vs busy?
         def _busy_intervals(
             events: list[dict],
         ) -> list[tuple[dt.datetime, dt.datetime]]:

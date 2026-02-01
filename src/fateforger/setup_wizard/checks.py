@@ -88,9 +88,14 @@ async def _probe_mcp_tools(
 
 
 async def check_calendar_mcp() -> CheckResult:
+    """Verify Calendar MCP is reachable and exposes tools."""
     port = os.getenv("PORT", "3000")
     # Inside docker network we can reach by service name.
-    url = os.getenv("WIZARD_CALENDAR_MCP_URL") or f"http://calendar-mcp:{port}"
+    url = (
+        os.getenv("WIZARD_CALENDAR_MCP_URL")
+        or os.getenv("MCP_CALENDAR_SERVER_URL")
+        or f"http://calendar-mcp:{port}"
+    )
 
     try:
         tools, resolved, err = await _probe_mcp_tools(
@@ -396,6 +401,7 @@ def config_snapshot() -> dict[str, Any]:
         "PORT",
         "TRANSPORT",
         "MCP_CALENDAR_SERVER_URL",
+        "MCP_CALENDAR_SERVER_URL_DOCKER",
         "MCP_HTTP_PORT",
         "SLACK_SOCKET_MODE",
         "LLM_PROVIDER",
