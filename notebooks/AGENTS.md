@@ -46,6 +46,8 @@ Read `notebooks/README.md` for the notebook index and technical context.
 - Include scaffold sections for notebook-mode tickets:
   - `Pairing Intake Record` (confirmed problem/constraints/responsibilities/selected direction/open questions)
   - `Design Options` (options, tradeoffs, risks, pseudocode, recommended path)
+  - `Implementation Walkthrough / Decision Audit` (AC-by-AC: alternatives, selected path, rationale, file/test references)
+  - `Reviewer Checklist` (questions and inspection steps to validate design choices)
   - `Acceptance Criteria Checklist`
   - `Implementation Evidence`
   - `Extraction Map (Notebook -> Artifacts)`

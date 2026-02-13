@@ -22,6 +22,8 @@
   - metadata cell
   - pairing intake record cell (from confirmed chat decisions)
   - design options cell (2+ options, tradeoffs, risks, pseudocode, recommended option)
+  - implementation walkthrough / decision audit cell
+  - reviewer checklist cell
   - acceptance criteria checklist cell
   - implementation evidence cell(s)
   - extraction map cell

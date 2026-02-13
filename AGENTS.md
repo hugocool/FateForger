@@ -193,6 +193,8 @@ After implementation:
   - first markdown cell metadata (status/owner/issue/branch/PR/AC/clean-run/cleanliness snapshot)
   - pairing intake record cell (confirmed problem, constraints, responsibilities, selected direction, unresolved questions)
   - design options cell (2+ options, tradeoffs, risks, pseudocode outlines, and recommended path)
+  - implementation walkthrough cell (AC-by-AC decisions, alternatives considered, chosen path, and code/test references)
+  - reviewer checklist cell (what to inspect to validate decisions, with concrete file pointers)
   - AC checklist cell (links each acceptance criterion to evidence cells or extracted artifacts)
   - implementation evidence cells (imports, exercised APIs, observed outputs)
   - extraction map cell (`notebook cell -> src/tests/docs/github/notion`)
