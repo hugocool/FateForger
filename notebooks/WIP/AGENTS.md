@@ -9,11 +9,21 @@
 
 ## Rules
 
+- Active ticket mapping is mandatory:
+  - notebook filename must map to one active GitHub issue (or one temporary `/tickets/*.md` fallback)
+  - first markdown cell must include issue URL/ID, branch, PR URL/ID, and current status
+  - if mapping is unclear, stop and ask user whether to create a fresh scaffold notebook or normalize an existing one
 - One active issue notebook per GitHub issue.
 - Filename should map to the issue ID and slug when practical.
 - Notion links are optional context pointers, but GitHub Issue/PR are authoritative for execution status.
 - Keep temporary/prototype cells, but move stable code to `src/` quickly.
 - Keep cells single-purpose when possible (imports, parameters, I/O, exploration, validation, decisions).
+- Minimum scaffold expected for every active WIP notebook:
+  - metadata cell
+  - acceptance criteria checklist cell
+  - implementation evidence cell(s)
+  - extraction map cell
+  - closeout checklist cell
 - Before PR closure:
   - move deterministic checks to pytest tests
   - move durable docs to `README.md`/`docs/`

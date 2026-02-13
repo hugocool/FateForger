@@ -13,6 +13,7 @@
   - acceptance criteria are satisfied in the linked issue/PR
   - required code/tests/docs extraction is complete
   - notebook reruns from a clean kernel without errors
+  - ticket/issue linkage in notebook metadata still points to the merged or merge-ready PR
 - Prefer removing duplicated production code that already exists in `src/`/`tests`.
 - If remaining code is analysis/report logic, keep it concise and documented.
 - Record product/knowledge outcomes in Notion if requested, but keep engineering completion authority in GitHub Issue/PR.

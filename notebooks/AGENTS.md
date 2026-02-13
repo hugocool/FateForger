@@ -10,6 +10,16 @@ Read `notebooks/README.md` for the notebook index and technical context.
 
 ## Required workflow for issue work
 
+- Resolve the active ticket before notebook work starts:
+  - prefer GitHub Issue linked to current issue branch
+  - fallback to one `/tickets/*.md` file only when GitHub linkage is unavailable
+  - if ambiguous, ask user to pick the active ticket first
+- Run a notebook decision gate per ticket:
+  - `notebook-mode`: this notebook is the required entrypoint for implementation/review
+  - `code-only-mode`: no notebook needed; document rationale in Issue/PR and stop notebook edits
+- If `notebook-mode` is selected and no clear notebook exists, offer to create/update one immediately.
+- Do not continue major implementation until notebook mapping is explicit and recorded in Issue/PR.
+
 - Use one primary notebook per active GitHub issue (prefer `notebooks/WIP/<issue_id>_<slug>.ipynb`).
 - Keep authority boundaries explicit:
   - Notion: product context, discovery, durable knowledge notes.
@@ -23,6 +33,11 @@ Read `notebooks/README.md` for the notebook index and technical context.
   - acceptance criteria covered in the notebook
   - last clean run date and runtime marker (`.venv`, Python version)
   - repo cleanliness snapshot (`git status --porcelain`: clean/dirty + timestamp)
+- Include scaffold sections for notebook-mode tickets:
+  - `Acceptance Criteria Checklist`
+  - `Implementation Evidence`
+  - `Extraction Map (Notebook -> Artifacts)`
+  - `Closeout / Remaining Notebook-Only Content`
 - Keep notebook progress synchronized with GitHub issue + PR.
 - If work originates from a Notion ticket/page, include the Notion link in notebook metadata and ensure it cross-links to the GitHub Issue.
 - Treat GitHub Issue/PR as the progress source users monitor in tooling (e.g., VS Code PR panel); do not rely on local ticket markdown for current status.

@@ -31,6 +31,21 @@ Before any implementation work:
   - Design/ownership notes (which module owns what; key entry points)
   - Validation plan (tests to add/run + any required end-to-end verification steps)
 
+## Active ticket + notebook engagement gate (critical)
+- Before writing or editing code, resolve the active ticket deterministically:
+  - prefer the GitHub Issue linked to the current issue branch
+  - fallback to one clear `/tickets/*.md` candidate when GitHub linkage is unavailable
+  - if multiple candidates exist, ask the user to choose before coding
+- Do not start implementation until the active ticket ID/URL is explicit in the agent reply.
+- For each ticket, run a notebook decision gate and record it in Issue/PR updates:
+  - `notebook-mode`: notebook is a required development/review entrypoint
+  - `code-only-mode`: no notebook needed for this ticket
+- If `notebook-mode` and the primary notebook mapping is missing or unclear, the agent must:
+  - offer to create a new `notebooks/WIP/<issue_id>_<slug>.ipynb` or normalize an existing notebook
+  - wait for user confirmation when instruction/config updates are required
+  - scaffold the notebook metadata + section headers before major implementation changes
+- If `code-only-mode`, document the rationale in the Issue/PR checkpoint (for example: tiny isolated patch, no exploratory surface needed).
+
 After implementation:
 - **Walk through acceptance criteria with the user:** explicitly check each criterion and record whether it is satisfied.
 - **DoD is only met when:** (a) acceptance criteria are satisfied, (b) relevant automated tests pass, and (c) docs/indices are updated to reflect the new behavior and status.
@@ -63,6 +78,9 @@ After implementation:
   - issue URL/ID (or `none`)
   - PR URL/ID (or `none`)
   - branch name
+  - active ticket source (`GitHub issue` / `/tickets/*.md`)
+  - notebook mode (`notebook-mode` / `code-only-mode`)
+  - primary notebook path (or `none`)
   - workflow status (`Roadmap`/`WIP`/`Implemented`/`Documented`/`Tested`/`User-confirmed`)
   - next deterministic step
 - **Fallback rule:** if GitHub write access is unavailable, state the blocker and provide copy-ready Issue/PR update text in the same reply.
@@ -157,6 +175,15 @@ After implementation:
   - `README.md`/`docs/` for durable documentation
   - GitHub Issue + PR for work status and validation traceability
 - For each active issue, define one primary working notebook path (typically under `notebooks/WIP/`) and record it in the Issue/PR.
+- If the primary notebook path is missing/unclear, pause implementation and offer:
+  - create a fresh issue-mapped notebook with scaffold, or
+  - adopt/update an existing notebook and normalize metadata.
+- Notebook scaffold minimum (for notebook-mode tickets):
+  - first markdown cell metadata (status/owner/issue/branch/PR/AC/clean-run/cleanliness snapshot)
+  - AC checklist cell (links each acceptance criterion to evidence cells or extracted artifacts)
+  - implementation evidence cells (imports, exercised APIs, observed outputs)
+  - extraction map cell (`notebook cell -> src/tests/docs/github/notion`)
+  - closeout cell (what remains notebook-only and why)
 - Every issue notebook should begin with a short metadata section (first markdown cell) containing:
   - status (`WIP` | `Extraction complete` | `DONE` | `Reference` | `Archived`)
   - owner
