@@ -1,10 +1,11 @@
-# Progress (Updated: 2026-02-07)
+# Progress (Updated: 2026-02-13)
 
 ## Done
 
-- Live MCP pipeline tested end-to-end: CREATE (6 events), UPDATE (4 patches), DELETE (2 removals) — all verified against real GCal
-- Fixed event ID generation: removed underscore from fftb_ prefix (GCal requires only a-v + 0-9)
-- Fixed ToolResult parsing: McpWorkbench returns ToolResult.result[].content, not CallToolResult.content
+- Phase 5 integration notebook (10/10 cells pass)
+- Phase 6 cleanup (115 sync engine tests, ticket updated)
+- Phase 7 ticket drafted (skeleton + Slack buttons + E2E)
+- MECE README/AGENTS.md update across 7 folders (timeboxing, nodes, agents, slack_bot, tests, notebooks, scripts)
 
 ## Doing
 
@@ -12,6 +13,4 @@
 
 ## Next
 
-- Wire TBPatch into LLM agent (AutoGen FunctionTool with strict schema)
-- Production extraction to src/ modules
-- Improve diff_tb_plans to use semantic matching instead of positional
+- Implement Phase 7 ticket (skeleton pre-generation, Slack confirm/undo buttons, session memory, E2E tests)

@@ -327,6 +327,7 @@ def _workspace_ready_blocks(directory) -> list[dict]:
     return blocks
 
 
+# TODO: is this needed, and if so, why? it seems hacky
 def _strip_bot_mention(text: str, bot_user_id: str | None) -> str:
     cleaned = (text or "").strip()
     if not bot_user_id:
@@ -2017,6 +2018,7 @@ def _slack_payload_from_result(result) -> dict:
     return {"text": content or "(no response)"}
 
 
+# TODO: this seems like something that shouldnt exist
 def _coerce_async_database_url(database_url: str) -> str:
     if database_url.startswith("sqlite+aiosqlite://"):
         return database_url

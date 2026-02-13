@@ -1,196 +1,167 @@
 # Timeboxing Agent
 
-Stage-gated timeboxing workflow that builds daily schedules.
+Stage-gated timeboxing workflow that builds daily schedules via conversational refinement and syncs to Google Calendar.
 
-Key files:
-- `agent.py`: orchestration and stage gating (coordinator).
-- `flow_graph.py`: AutoGen GraphFlow state machine (single source of truth for stage transitions).
-- `nodes/nodes.py`: GraphFlow node agents (Decision/Transition/Stages/Presenter).
-- `stage_gating.py`: stage schema + stage-gate prompts (LLM-only, JSON I/O).
-- `contracts.py`: typed stage context contracts (what each stage receives).
-- `skeleton_draft_system_prompt.j2`: single-purpose skeleton drafting system prompt template.
-- `prompt_rendering.py`: Jinja renderer for skeleton drafting.
-- `timebox.py`: timebox schema + `schedule_and_validate` (token-saver).
-- `patching.py`: patch-based refinement (single mutation path).
-- `mcp_clients.py`: internal MCP clients (calendar + constraint memory).
-- `constants.py`: orchestration timeouts/limits (no magic numbers).
-- `pydantic_parsing.py`: tolerant parsing helpers for LLM outputs and mixed payloads.
-- `nlu.py`: multilingual structured parsing (planned date + constraint interpretation).
-- `preferences.py`: session constraint store.
-- `notion_constraint_extractor.py`: durable constraint extraction.
+## Status
 
-See `AGENTS.md` in this folder for operational rules.
+| Subsystem | Status | Tests | Confirmed |
+|-----------|--------|-------|-----------|
+| Domain models (tb_models, tb_ops) | Implemented, Tested | 62 unit | 2025-07-22 |
+| Sync engine (sync_engine, submitter) | Implemented, Tested | 29 + 10 unit | 2025-07-22 (live MCP) |
+| Patching (schema-in-prompt) | Implemented, Tested | 14 unit | 2025-07-22 (live LLM) |
+| GraphFlow orchestration | Implemented, Documented | graphflow state machine tests | — |
+| Skeleton pre-generation (AC6) | Roadmap | — | — |
+| Slack confirm/undo buttons | Roadmap | — | — |
 
-## Architecture (Spec)
+## File Index
 
-The timeboxing implementation is organized as a coordinator + a small set of single-purpose stage agents.
+### Orchestration
 
-- **Coordinator**: owns session state, merges facts/constraints, runs background tool work (calendar, Notion), and decides which stage runs next.
-- **Stage agents**: pure functions over typed JSON input that return typed JSON output.
-- **Timebox model**: validates and fills in times so the LLM can emit minimal schedules.
-- **Patching**: updates an existing `Timebox` rather than rewriting it.
-- **GraphFlow**: runs the stage machine as a directed graph, making transitions testable and explicit.
+| File | Responsibility |
+|------|---------------|
+| `agent.py` | `PlanningCoordinator`: owns Session, routes Slack messages, runs background tasks, manages stage transitions. Entry points: `on_start()`, `on_commit_date()`, `on_user_reply()`. |
+| `flow_graph.py` | `build_timeboxing_graphflow()`: constructs the AutoGen GraphFlow DAG. Single source of truth for stage transitions and edge conditions. |
+| `stage_gating.py` | `TimeboxingStage` enum, `StageGateOutput` model, LLM prompt templates for each stage gate. |
+| `contracts.py` | Typed stage-context contracts (`SkeletonContext`, `ConstraintContext`, etc.): what each stage receives as input. |
+| `constants.py` | Orchestration timeouts, limits, and fallback values. No magic numbers. |
 
-### GraphFlow State Machine
+### Domain Models (LLM-Facing)
 
-Implementation:
+| File | Responsibility |
+|------|---------------|
+| `tb_models.py` | `ET` (event type enum), `TBEvent`, `TBPlan`, `Timing` union (`AfterPrev`, `BeforeNext`, `FixedStart`, `FixedWindow`), `_ET_COLOR_MAP`. Calendar-native, sync-friendly. |
+| `tb_ops.py` | `TBPatch`, `TBOp` union (`AddEvents`, `RemoveEvent`, `UpdateEvent`, `MoveEvent`, `ReplaceAll`), `apply_tb_ops()`. Pure-function ops engine: deterministic plan mutation. |
+| `timebox.py` | Legacy `Timebox` schema + `schedule_and_validate()`. Conversion: `timebox_to_tb_plan()`, `tb_plan_to_timebox()`. Kept for backward compat with Stage 3 drafting and Slack display. |
 
-- Graph builder: `src/fateforger/agents/timeboxing/flow_graph.py`
-- Node agents: `src/fateforger/agents/timeboxing/nodes/nodes.py`
+### Calendar Sync
 
-Design notes:
+| File | Responsibility |
+|------|---------------|
+| `sync_engine.py` | `plan_sync()`, `execute_sync()`, `undo_sync()`, `gcal_response_to_tb_plan()`. Deterministic, incremental, reversible diff-and-apply via MCP. Uses set-diff for creates/deletes, DeepDiff for updates. |
+| `submitter.py` | `CalendarSubmitter`: high-level `submit_plan()` and `undo_last()` over the sync engine. Owns `_last_transaction` for single-level undo. |
+| `mcp_clients.py` | `McpCalendarClient` (list/create/update/delete events via MCP), `McpConstraintMemoryClient` (Notion constraint MCP). Internal to coordinator. |
 
-- GraphFlow edges default to `activation_condition="all"` for multi-parent nodes. Nodes like `PresenterNode` must use `activation_condition="any"` on incoming edges, otherwise the graph can terminate early without producing output.
-- A single Slack/user turn runs the graph until `PresenterNode` emits a `TextMessage`, then stops via `TextMessageTermination(source="PresenterNode")`.
+### LLM Patching
 
-#### GraphFlow Turn Sequence
+| File | Responsibility |
+|------|---------------|
+| `patching.py` | `TimeboxPatcher`: sends `TBPlan` + user feedback to Gemini via `AssistantAgent`. Injects `TBPatch` JSON schema into system prompt (not `output_content_type`, which breaks on `oneOf`). `_extract_patch()` strips markdown fences. |
 
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant T as TurnInitNode
-  participant D as DecisionNode
-  participant X as TransitionNode
-  participant S as StageNode
-  participant P as PresenterNode
+### Prompt Engineering
 
-  U->>T: user text
-  T->>D: FlowSignal(turn_init)
-  D->>X: StageDecision
-  X->>S: stage dispatch
-  S-->>P: StageGateOutput / Timebox summary
-  P-->>U: TextMessage (terminates turn)
+| File | Responsibility |
+|------|---------------|
+| `skeleton_draft_system_prompt.j2` | Jinja2 template for skeleton drafting (consumes TOON tables). |
+| `prompt_rendering.py` | `render_skeleton_draft_system_prompt()`: Jinja renderer. |
+| `toon_views.py` | Timeboxing-specific TOON table views (minimal columns for events, constraints, tasks). |
+| `prompts.py` | Legacy prompt strings (being migrated to `stage_gating.py`). |
+
+### NLU and Constraints
+
+| File | Responsibility |
+|------|---------------|
+| `nlu.py` | `PlannedDateResult`, `ConstraintInterpretation`: structured LLM outputs for multilingual date/scope inference. No regex/keyword matching. |
+| `preferences.py` | `ConstraintStore`: SQLite-backed session constraint persistence. |
+| `constraint_retriever.py` | `ConstraintRetriever`: gap-driven durable constraint fetch from Notion MCP. |
+| `notion_constraint_extractor.py` | LLM-based constraint extraction to Notion upsert (fire-and-forget background). |
+
+### Utilities
+
+| File | Responsibility |
+|------|---------------|
+| `pydantic_parsing.py` | Tolerant parsing helpers for LLM outputs and mixed payloads. |
+| `messages.py` | `StartTimeboxing`, `TimeboxingUserReply`, `TimeboxingCommitDate`: typed Slack-to-agent routing messages. |
+| `actions.py` | Slack action/button payload models and helpers (planning cards). |
+| `state.py` | Session persistence helpers. |
+| `flow.py` | Legacy flow logic (being replaced by GraphFlow). |
+
+### Subfolders
+
+| Folder | Responsibility |
+|--------|---------------|
+| `nodes/` | GraphFlow node agents (TurnInit, Decision, Transition, Stage nodes, Presenter). See `nodes/README.md`. |
+
+## Architecture
+
+### Coordinator + Stage Agents
+
+- **Coordinator** (`agent.py`): owns Session state, merges facts/constraints, runs background tool work (calendar, Notion), and decides which stage runs next.
+- **Stage agents** (in `nodes/`): pure functions over typed JSON input returning typed JSON output. No direct tool IO.
+- **GraphFlow** (`flow_graph.py`): runs the stage machine as a directed graph; transitions are testable and explicit.
+
+### Stage Pipeline
+
+```
+Stage 0: Date Confirmation (Slack buttons)
+    background: calendar prefetch + Notion constraint retrieval
+Stage 1: CollectConstraints -> StageGateOutput (frame_facts)
+Stage 2: CaptureInputs -> StageGateOutput (input_facts)
+Stage 3: Skeleton -> Timebox -> TBPlan + base_snapshot
+Stage 4: Refine -> TBPatch -> apply_tb_ops() -> updated TBPlan
+Stage 5: ReviewCommit -> submit via sync engine -> SyncTransaction
 ```
 
-### Prompt Injection (TOON tables)
+### Session State
 
-List-shaped structured data (constraints, tasks, immovables, events) is injected into stage prompts using TOON tabular format rather than JSON arrays.
+Session dataclass lives in `agent.py`. Core fields:
 
-- Encoder: `src/fateforger/llm/toon.py` (`toon_encode`)
-- Timeboxing-specific “views” (minimal columns): `src/fateforger/agents/timeboxing/toon_views.py`
-- Skeleton prompt template consumes TOON tables: `src/fateforger/agents/timeboxing/skeleton_draft_system_prompt.j2`
+| Field | Purpose |
+|-------|---------|
+| `thread_ts`, `channel_id`, `user_id` | Slack anchors |
+| `frame_facts`, `input_facts` | Accumulated LLM outputs per stage |
+| `timebox` | Legacy Timebox (Stage 3+) |
+| `tb_plan` | Current TBPlan, sync-engine model (Stage 3+) |
+| `base_snapshot` | TBPlan snapshot at skeleton time (for diff-based sync) |
+| `event_id_map` | Dict mapping event key to GCal event ID |
+| `active_constraints` | Merged constraint state |
+| `stage` | Current TimeboxingStage enum |
+| `graphflow` | Per-session GraphFlow instance |
 
-### Session State (Coordinator-Owned)
+### Model Hierarchy
 
-`Session` lives in `src/fateforger/agents/timeboxing/agent.py` and is the single source of truth for:
-
-- `frame_facts`: day frame (date/timezone, work window, sleep target, commutes, immovables)
-- `input_facts`: block plan + goals/tasks (block-based; per-task durations optional)
-- `durable_constraints_by_stage` + `active_constraints`: merged into a `constraints_snapshot` by the coordinator
-- `timebox`: the current draft `Timebox` (Stage 3+)
-
-### Stage Contracts
-
-Stages and their typed outputs:
-
-- **Stage 1 — CollectConstraints**: returns `StageGateOutput` (frame facts + missing + question)
-- **Stage 2 — CaptureInputs**: returns `StageGateOutput` (block plan + tasks/goals + missing + question)
-- **Stage 3 — Skeleton**: returns `Timebox` (minimal schedule; immovables + blocks)
-- **Stage 4 — Refine**: applies JSON patching to update `Timebox` from user feedback + constraints
-- **Stage 5 — ReviewCommit**: returns `StageGateOutput` (final review + approval question)
-
-### Multilingual Natural Parsing (Structured LLM Output)
-
-Deterministic, English-only string parsing is intentionally avoided for:
-
-- planned date inference
-- constraint scope inference
-
-Instead, the coordinator uses structured LLM outputs (Pydantic) from:
-
-- `src/fateforger/agents/timeboxing/nlu.py`
-
-This keeps the behavior consistent across languages and reduces brittle keyword/regex parsing.
-
-### Calendar Meetings (Immovables)
-
-Calendar events are fetched via the MCP calendar server and normalized into `immovables` records:
-
-- Each immovable has a fixed `start` and `end` and must be treated as non-overridable unless the user explicitly changes it.
-- Skeleton drafting must include immovables first (as anchors), then fill gaps with deep/shallow work blocks.
-
-Implementation:
-
-- Prefetch: `src/fateforger/agents/timeboxing/agent.py` (`_prefetch_calendar_immovables`)
-- Normalization: `src/fateforger/agents/timeboxing/mcp_clients.py` (`McpCalendarClient.list_day_immovables`)
-- Session merge: `src/fateforger/agents/timeboxing/agent.py` (`_apply_prefetched_calendar_immovables`)
-
-### Token-Saving Scheduling Semantics
-
-The `Timebox` model supports “minimal” event specs:
-
-- duration-only or partial-time events can be scheduled using anchoring rules
-- missing start/end times are filled deterministically
-- overlaps are rejected
-
-Implementation: `src/fateforger/agents/timeboxing/timebox.py` (`Timebox.schedule_and_validate`).
-
-### Patching (Single Mutation Path)
-
-User feedback should update the schedule via the patcher rather than re-drafting:
-
-- `TimeboxPatcher` takes the existing `Timebox` plus a user message + constraints and returns an updated `Timebox`.
-
-Implementation: `src/fateforger/agents/timeboxing/patching.py`.
-
-## Diagrams (Mermaid)
-
-### State Machine
-
-```mermaid
-stateDiagram-v2
-  [*] --> CollectConstraints
-  CollectConstraints --> CaptureInputs: proceed
-  CaptureInputs --> Skeleton: proceed
-  Skeleton --> Refine: proceed
-  Refine --> ReviewCommit: proceed
-  ReviewCommit --> Refine: back
-  ReviewCommit --> [*]: commit
+```
+LLM-facing:      TBEvent -> TBPlan -> TBPatch -> apply_tb_ops()
+Sync engine:     TBPlan -> plan_sync() -> SyncOp[] -> execute_sync()
+Calendar MCP:    SyncOp -> create-event / update-event / delete-event
+Persistence:     CalendarEvent (SQLModel) for DB + Slack display
+Conversion:      timebox_to_tb_plan() / tb_plan_to_timebox()
 ```
 
-### Dataflow (Context → Typed Output)
+### Event Identity
 
-```mermaid
-flowchart TD
-  subgraph SessionState[Coordinator Session State]
-    FF[frame_facts]
-    IF[input_facts]
-    CS[constraints_snapshot]
-    IM[immovables]
-    TB[timebox]
-  end
+- Agent-created events get deterministic base32hex IDs: `fftb` + SHA1(date|name|start|index).
+- `fftb*` prefix = owned, eligible for update/delete.
+- No prefix = foreign (user calendar), read-only FixedWindow constraints.
 
-  S1[Stage 1: CollectConstraints] -->|StageGateOutput.facts| FF
-  S2[Stage 2: CaptureInputs] -->|StageGateOutput.facts| IF
+### Patching (Schema-in-Prompt)
 
-  FF --> C1[Build SkeletonContext]
-  IF --> C1
-  CS --> C1
-  IM --> C1
+`output_content_type=TBPatch` is intentionally NOT used because OpenAI `response_format` rejects `oneOf` from Pydantic discriminated unions and OpenRouter/Gemini hangs with structured output on complex schemas. Instead: inject `TBPatch.model_json_schema()` into the system prompt and parse the raw JSON text response.
 
-  C1 --> S3[Stage 3: Draft Skeleton]
-  S3 -->|Timebox| TB
-  TB --> V1[schedule_and_validate]
+### TOON Prompt Injection
 
-  V1 --> S4[Stage 4: Refine via Patching]
-  CS --> S4
-  S4 --> P1[TimeboxPatcher]
-  P1 --> TB
-  TB --> V2[schedule_and_validate]
-```
+List-shaped data (constraints, tasks, immovables, events) uses TOON tabular format, not JSON arrays. Encoder: `src/fateforger/llm/toon.py`.
 
-### Patch Loop
+## Related Files (Outside This Folder)
 
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant C as Coordinator
-  participant P as TimeboxPatcher
+| File | Role |
+|------|------|
+| `src/fateforger/slack_bot/handlers.py` | Routes Slack events to coordinator |
+| `src/fateforger/slack_bot/timeboxing_commit.py` | Stage 0 Slack UI (day picker + confirm button) |
+| `src/fateforger/llm/toon.py` | TOON tabular encoder |
+| `TICKET_SYNC_ENGINE.md` | Implementation ticket (repo root) |
+| `notebooks/phase5_integration_test.ipynb` | Live MCP + LLM integration tests |
 
-  U->>C: Feedback (free text)
-  C->>C: Merge constraints_snapshot
-  C->>P: apply_patch(timebox, feedback, constraints)
-  P-->>C: Updated Timebox
-  C->>C: schedule_and_validate
-  C-->>U: Updated summary + next question
+## How to Run Tests
+
+```bash
+# Sync engine suite (115 tests)
+poetry run pytest tests/unit/test_tb_models.py tests/unit/test_tb_ops.py \
+  tests/unit/test_sync_engine.py tests/unit/test_phase4_rewiring.py \
+  tests/unit/test_patching.py -v
+
+# GraphFlow state machine
+poetry run pytest tests/unit/test_timeboxing_graphflow_state_machine.py -v
+
+# All timeboxing-related tests
+poetry run pytest tests/unit/ -k timeboxing -v
 ```
