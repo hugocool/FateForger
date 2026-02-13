@@ -25,6 +25,7 @@
   - implementation walkthrough / decision audit cell
   - executable walkthrough code cell(s) that import and inspect implemented code paths
   - reviewer checklist cell
+  - open items cell (To decide / To do / Blocked by; explicit `none` values allowed)
   - acceptance criteria checklist cell
   - implementation evidence cell(s)
   - extraction map cell
@@ -36,6 +37,7 @@
   - move durable docs to `README.md`/`docs/`
   - ensure first markdown cell metadata is complete and current
   - ensure latest checkpoint is reflected in GitHub PR comment or PR description
+  - ensure notebook `Open Items` section is current and mirrored in the latest GitHub checkpoint
   - move notebook to `notebooks/DONE/` when DoD is met, or reduce it to a short extraction record
 
 ## Keep / remove guidance

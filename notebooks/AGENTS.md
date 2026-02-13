@@ -49,6 +49,7 @@ Read `notebooks/README.md` for the notebook index and technical context.
   - `Implementation Walkthrough / Decision Audit` (AC-by-AC: alternatives, selected path, rationale, file/test references)
   - `Executable Walkthrough` code cells (imports + lightweight checks/source inspection against implemented code)
   - `Reviewer Checklist` (questions and inspection steps to validate design choices)
+  - `Open Items` (To decide / To do / Blocked by; use `none` when empty)
   - `Acceptance Criteria Checklist`
   - `Implementation Evidence`
   - `Extraction Map (Notebook -> Artifacts)`
@@ -81,6 +82,11 @@ Read `notebooks/README.md` for the notebook index and technical context.
   - extraction handshake before moving notebook logic into `src/`/`tests/`/docs
   - verification handshake before PR/merge
 - Each user-facing progress reply should end with an `Issue/PR Sync` footer that matches the latest GitHub update.
+- Each substantial checkpoint should include an explicit `Open Items` block:
+  - `To decide`
+  - `To do`
+  - `Blocked by`
+  - write `none` explicitly for empty categories.
 - When updating external systems:
   - update GitHub first for execution checkpoints
   - then mirror product-facing summary updates into Notion as needed

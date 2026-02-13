@@ -81,6 +81,11 @@ After implementation:
   - each substantial implementation checkpoint
   - pre-close (tests run, cleanliness check result, remaining human actions)
 - **Update mechanism:** either post a PR comment or update the PR description; status must stay current without requiring users to open `/tickets/`.
+- **Open Items block (mandatory):** every substantial checkpoint (chat reply + Issue/PR update + notebook closeout) must include an explicit `Open Items` section with:
+  - `To decide` (decisions needed from human/owner)
+  - `To do` (remaining implementation/verification tasks)
+  - `Blocked by` (external blockers/dependencies)
+  - if a category is empty, write `none` explicitly (do not omit)
 - **Issue linkage rule:** if an Issue exists, keep it synchronized with the PR (or link to the latest PR checkpoint comment).
 - **Notion linkage rule:** if a Notion product ticket/page exists for the work item, keep cross-links current:
   - GitHub Issue/PR should link back to the Notion item
@@ -94,6 +99,7 @@ After implementation:
   - primary notebook path (or `none`)
   - workflow status (`Roadmap`/`WIP`/`Implemented`/`Documented`/`Tested`/`User-confirmed`)
   - next deterministic step
+  - open items summary (`to decide` / `to do` / `blocked by`)
 - **Fallback rule:** if GitHub write access is unavailable, state the blocker and provide copy-ready Issue/PR update text in the same reply.
 
 ## GitHub skills usage (stage-mapped workflow)
