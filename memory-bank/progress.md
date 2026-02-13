@@ -1,18 +1,10 @@
-# Progress (Updated: 2026-01-19)
+# Progress (Updated: 2026-02-07)
 
 ## Done
 
-- Fixed maybe_handle_time_reply AttributeError
-- Fixed tool schema strict mode error
-- Fixed invalid Slack blocks (placeholder property)
-- Fixed invalid thread_ts handling
-- Fixed false positive constraint extraction
-- Fixed state machine loop after constraint review
-- Removed redundant Go to session button from initial commit prompt
-- Added loading state when clicking Confirm
-- Fixed PlanningGuardian scheduler pickling issue (use in-memory scheduler)
-- Made reconcile_all run synchronously on startup for reliable job scheduling
-- Updated planning reminders to post to admonishments channel with admonisher persona
+- Live MCP pipeline tested end-to-end: CREATE (6 events), UPDATE (4 patches), DELETE (2 removals) — all verified against real GCal
+- Fixed event ID generation: removed underscore from fftb_ prefix (GCal requires only a-v + 0-9)
+- Fixed ToolResult parsing: McpWorkbench returns ToolResult.result[].content, not CallToolResult.content
 
 ## Doing
 
@@ -20,4 +12,6 @@
 
 ## Next
 
-- Test the planning nudge system end-to-end
+- Wire TBPatch into LLM agent (AutoGen FunctionTool with strict schema)
+- Production extraction to src/ modules
+- Improve diff_tb_plans to use semantic matching instead of positional
