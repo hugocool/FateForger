@@ -19,6 +19,12 @@ Read `notebooks/README.md` for the notebook index and technical context.
   - `code-only-mode`: no notebook needed; document rationale in Issue/PR and stop notebook edits
 - If `notebook-mode` is selected and no clear notebook exists, offer to create/update one immediately.
 - Do not continue major implementation until notebook mapping is explicit and recorded in Issue/PR.
+- Before major implementation in notebook-mode, add a `Design Options` section and get user sign-off:
+  - at least 2 plausible implementation approaches
+  - tradeoffs, risks, and key design decisions per option
+  - lightweight pseudocode/flow outlines (no full production code)
+  - one recommended option with rationale
+  - explicit user selection before coding starts
 
 - Use one primary notebook per active GitHub issue (prefer `notebooks/WIP/<issue_id>_<slug>.ipynb`).
 - Keep authority boundaries explicit:
@@ -34,6 +40,7 @@ Read `notebooks/README.md` for the notebook index and technical context.
   - last clean run date and runtime marker (`.venv`, Python version)
   - repo cleanliness snapshot (`git status --porcelain`: clean/dirty + timestamp)
 - Include scaffold sections for notebook-mode tickets:
+  - `Design Options` (options, tradeoffs, risks, pseudocode, recommended path)
   - `Acceptance Criteria Checklist`
   - `Implementation Evidence`
   - `Extraction Map (Notebook -> Artifacts)`

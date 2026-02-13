@@ -44,6 +44,11 @@ Before any implementation work:
   - offer to create a new `notebooks/WIP/<issue_id>_<slug>.ipynb` or normalize an existing notebook
   - wait for user confirmation when instruction/config updates are required
   - scaffold the notebook metadata + section headers before major implementation changes
+- If `notebook-mode`, run a mandatory design-options handshake before major coding:
+  - propose at least 2 implementation options in notebook markdown (not production code)
+  - include tradeoffs, risks, key design decisions, and short pseudocode/flow outlines
+  - mark one recommended option and why
+  - wait for explicit user selection/approval before implementing
 - If `code-only-mode`, document the rationale in the Issue/PR checkpoint (for example: tiny isolated patch, no exploratory surface needed).
 
 After implementation:
@@ -180,6 +185,7 @@ After implementation:
   - adopt/update an existing notebook and normalize metadata.
 - Notebook scaffold minimum (for notebook-mode tickets):
   - first markdown cell metadata (status/owner/issue/branch/PR/AC/clean-run/cleanliness snapshot)
+  - design options cell (2+ options, tradeoffs, risks, pseudocode outlines, and recommended path)
   - AC checklist cell (links each acceptance criterion to evidence cells or extracted artifacts)
   - implementation evidence cells (imports, exercised APIs, observed outputs)
   - extraction map cell (`notebook cell -> src/tests/docs/github/notion`)

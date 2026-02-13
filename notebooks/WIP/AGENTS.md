@@ -20,10 +20,12 @@
 - Keep cells single-purpose when possible (imports, parameters, I/O, exploration, validation, decisions).
 - Minimum scaffold expected for every active WIP notebook:
   - metadata cell
+  - design options cell (2+ options, tradeoffs, risks, pseudocode, recommended option)
   - acceptance criteria checklist cell
   - implementation evidence cell(s)
   - extraction map cell
   - closeout checklist cell
+- Major coding should only start after user approval of the `Design Options` cell.
 - Before PR closure:
   - move deterministic checks to pytest tests
   - move durable docs to `README.md`/`docs/`
