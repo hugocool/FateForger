@@ -1,0 +1,59 @@
+name: Notebook Workflow Checks
+
+on:
+  pull_request:
+    paths:
+      - "notebooks/WIP/**"
+      - "notebooks/DONE/**"
+      - "scripts/dev/notebook_workflow_checks.py"
+      - ".gitattributes"
+      - "workflow_config/workflow_preferences.yaml"
+  workflow_dispatch:
+
+jobs:
+  notebook-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install poetry
+
+      - name: Install dependencies
+        run: poetry install --with dev --no-interaction
+
+      - name: Resolve changed notebooks
+        id: changed_notebooks
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" -- notebooks/WIP notebooks/DONE | grep -E '\.ipynb$' || true)
+          else
+            changed=""
+          fi
+          echo "changed_paths<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$changed" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Run notebook workflow checks
+        shell: bash
+        run: |
+          changed_paths="${{ steps.changed_notebooks.outputs.changed_paths }}"
+          if [[ -n "$(echo "$changed_paths" | tr -d '[:space:]')" ]]; then
+            poetry run python scripts/dev/notebook_workflow_checks.py \
+              --enforce-git-hygiene \
+              --execute-done \
+              --paths $changed_paths
+          else
+            poetry run python scripts/dev/notebook_workflow_checks.py --enforce-git-hygiene
+          fi

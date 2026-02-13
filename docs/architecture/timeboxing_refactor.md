@@ -39,6 +39,6 @@ For the detailed repo-level report, see `TIMEBOXING_REFACTOR_REPORT.md`.
 ## Docs build
 
 ```bash
-.venv/bin/mkdocs build --strict
-.venv/bin/mkdocs serve
+make docs-build
+make docs-serve
 ```

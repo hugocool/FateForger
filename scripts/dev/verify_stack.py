@@ -32,7 +32,9 @@ def _check_url(url: str, *, timeout_s: float = 5.0) -> bool:
 
 
 def _check_calendar_mcp(port: str) -> bool:
-    url = f"http://localhost:{port}/healthz"
+    """Return True if the Calendar MCP server health endpoint responds successfully."""
+    server_url = os.getenv("MCP_CALENDAR_SERVER_URL") or f"http://localhost:{port}"
+    url = server_url.rstrip("/") + "/healthz"
     headers = {"Accept": "text/event-stream"}
     try:
         with httpx.stream("GET", url, headers=headers, timeout=5.0) as r:
@@ -100,8 +102,12 @@ def main() -> int:
     port = os.getenv("PORT") or "3000"
     calendar_ok = _check_calendar_mcp(port)
     if not calendar_ok:
-        print(f"Calendar MCP not healthy at http://localhost:{port}/healthz")
-        print("Tip: ensure `calendar-mcp` is running and PORT matches the compose config.")
+        server_url = os.getenv("MCP_CALENDAR_SERVER_URL") or f"http://localhost:{port}"
+        print(f"Calendar MCP not healthy at {server_url.rstrip('/')}/healthz")
+        print(
+            "Tip: ensure `calendar-mcp` is running and MCP_CALENDAR_SERVER_URL/PORT "
+            "match the compose config."
+        )
         return 5
 
     print("OK: required env vars present, docker compose reachable, calendar-mcp healthy.")

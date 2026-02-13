@@ -1,5 +1,7 @@
 .PHONY: help setup dev test docs-build docs-serve lint format clean
 
+MKDOCS_DEV_ADDR ?= 127.0.0.1:8000
+
 help: ## Show this help message
 	@echo "Available commands:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -20,7 +22,7 @@ docs-build: ## Build docs site (MkDocs)
 	@.venv/bin/mkdocs build --strict
 
 docs-serve: ## Serve docs locally (MkDocs)
-	@.venv/bin/mkdocs serve
+	@.venv/bin/mkdocs serve -a $(MKDOCS_DEV_ADDR)
 
 # Ticket 4 validation commands
 validate-syntax: ## Run syntax validation for Ticket 4

@@ -204,8 +204,8 @@ Tests:
 Docs:
 
 ```bash
-.venv/bin/mkdocs build --strict
-.venv/bin/mkdocs serve
+make docs-build
+make docs-serve
 ```
 
 ## Remaining TODOs (if you want to push further)

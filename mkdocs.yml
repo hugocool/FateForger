@@ -19,6 +19,7 @@ extra_javascript:
 plugins:
   - search
   - mkdocstrings
+  - mermaid2
 nav:
   - Home: index.md
   - Setup:

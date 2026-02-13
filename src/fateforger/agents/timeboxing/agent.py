@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
+from autogen_agentchat.teams import GraphFlow
 from autogen_core import (
     CancellationToken,
     DefaultTopicId,
@@ -27,14 +28,15 @@ from dateutil import parser as date_parser
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from fateforger.agents.schedular.models.calendar import CalendarEvent, EventType
 from fateforger.agents.timeboxing.notion_constraint_extractor import (
     NotionConstraintExtractor,
 )
-from fateforger.agents.schedular.models.calendar import CalendarEvent, EventType
 from fateforger.core.config import settings
 from fateforger.debug.diag import with_timeout
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
 from fateforger.llm import build_autogen_chat_client
+from fateforger.llm.toon import toon_encode
 from fateforger.slack_bot.constraint_review import (
     build_constraint_row_blocks,
     encode_metadata,
@@ -58,12 +60,20 @@ from .contracts import (
     TaskCandidate,
     WorkWindow,
 )
+from .flow_graph import build_timeboxing_graphflow
+from .mcp_clients import ConstraintMemoryClient, McpCalendarClient
 from .messages import (
     StartTimeboxing,
     TimeboxingCommitDate,
     TimeboxingFinalResult,
     TimeboxingUpdate,
     TimeboxingUserReply,
+)
+from .nlu import (
+    ConstraintInterpretation,
+    PlannedDateResult,
+    build_constraint_interpreter,
+    build_planned_date_interpreter,
 )
 from .patching import TimeboxPatcher
 from .preferences import (
@@ -90,21 +100,19 @@ from .stage_gating import (
     StageGateOutput,
     TimeboxingStage,
 )
+from .submitter import CalendarSubmitter
+from .tb_models import TBPlan
 from .timebox import Timebox
-from .mcp_clients import ConstraintMemoryClient, McpCalendarClient
-from fateforger.llm.toon import toon_encode
-from .toon_views import constraints_rows, immovables_rows, tasks_rows, timebox_events_rows
-from .nlu import (
-    ConstraintInterpretation,
-    PlannedDateResult,
-    build_constraint_interpreter,
-    build_planned_date_interpreter,
+from .toon_views import (
+    constraints_rows,
+    immovables_rows,
+    tasks_rows,
+    timebox_events_rows,
 )
-from .flow_graph import build_timeboxing_graphflow
-from autogen_agentchat.teams import GraphFlow
 
 logger = logging.getLogger(__name__)
 TEnum = TypeVar("TEnum", bound=Enum)
+
 
 class _ConstraintInterpretationPayload(BaseModel):
     """Input payload for constraint interpretation (multilingual, structured output)."""
@@ -134,13 +142,18 @@ class Session:
         default_factory=dict
     )
     active_constraints: List[Constraint] = field(default_factory=list)
-    durable_constraints_by_stage: Dict[str, List[Constraint]] = field(default_factory=dict)
+    durable_constraints_by_stage: Dict[str, List[Constraint]] = field(
+        default_factory=dict
+    )
     durable_constraints_loaded_stages: set[str] = field(default_factory=set)
     durable_constraints_date: str | None = None
     pending_durable_constraints: bool = False
     pending_calendar_prefetch: bool = False
     background_updates: List[str] = field(default_factory=list)
     timebox: Timebox | None = None
+    tb_plan: TBPlan | None = None
+    base_snapshot: TBPlan | None = None
+    event_id_map: Dict[str, str] = field(default_factory=dict)
     stage: TimeboxingStage = TimeboxingStage.COLLECT_CONSTRAINTS
     frame_facts: Dict[str, Any] = field(default_factory=dict)
     input_facts: Dict[str, Any] = field(default_factory=dict)
@@ -178,6 +191,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         self._constraint_agent = self._build_constraint_agent()
         self._constraint_retriever = ConstraintRetriever()
         self._timebox_patcher = TimeboxPatcher()
+        self._calendar_submitter = CalendarSubmitter()
         self._constraint_mcp_tools: list | None = None
         self._notion_extractor: NotionConstraintExtractor | None = None
         self._constraint_extractor_tool = None
@@ -217,30 +231,44 @@ class TimeboxingFlowAgent(RoutedAgent):
         return getattr(settings, "planning_timezone", "") or "Europe/Amsterdam"
 
     def _default_planned_date(self, *, now: datetime, tz: ZoneInfo) -> str:
-        """Return a deterministic default planned date without parsing user language."""
+        """Return a deterministic default planned date.
+
+        This is a fallback used only when the user did not specify a date.
+        We avoid any "workday" logic here (no weekday/weekend assumptions).
+
+        Rule:
+        - Before 09:00 local time → use today.
+        - At/after 09:00 local time → use tomorrow.
+        """
         local_now = now.astimezone(tz)
-        base = next_workday(local_now.date())
-        if base != local_now.date():
-            return base.isoformat()
+        planned = local_now.date()
         if (local_now.hour, local_now.minute) >= (9, 0):
-            return tomorrow_workday(base).isoformat()
-        return base.isoformat()
+            planned = planned + timedelta(days=1)
+        return planned.isoformat()
 
     def _ensure_graphflow(self, session: Session) -> GraphFlow:
         """Return the per-session GraphFlow instance, building it if needed."""
         if session.graphflow is not None:
             return session.graphflow
-        session.graphflow = build_timeboxing_graphflow(orchestrator=self, session=session)
+        session.graphflow = build_timeboxing_graphflow(
+            orchestrator=self, session=session
+        )
         return session.graphflow
 
     async def _run_graph_turn(self, *, session: Session, user_text: str) -> TextMessage:
         """Run one GraphFlow turn and return the presenter text message."""
         flow = self._ensure_graphflow(session)
         presenter: TextMessage | None = None
-        async for item in flow.run_stream(task=TextMessage(content=user_text, source="user")):
+        async for item in flow.run_stream(
+            task=TextMessage(content=user_text, source="user")
+        ):
             if isinstance(item, TextMessage) and item.source == "PresenterNode":
                 presenter = item
-        content = presenter.content if presenter else "Timed out waiting for tools/LLM. Please try again in a moment."
+        content = (
+            presenter.content
+            if presenter
+            else "Timed out waiting for tools/LLM. Please try again in a moment."
+        )
         return TextMessage(content=content, source=self.id.type)
 
     async def _ensure_planning_date_interpreter_agent(self) -> None:
@@ -269,7 +297,12 @@ class TimeboxingFlowAgent(RoutedAgent):
             response = await with_timeout(
                 "timeboxing:planning-date",
                 self._planning_date_interpreter_agent.on_messages(
-                    [TextMessage(content=json.dumps(payload, ensure_ascii=False), source="user")],
+                    [
+                        TextMessage(
+                            content=json.dumps(payload, ensure_ascii=False),
+                            source="user",
+                        )
+                    ],
                     CancellationToken(),
                 ),
                 timeout_s=TIMEBOXING_TIMEOUTS.planning_date_interpret_s,
@@ -278,16 +311,16 @@ class TimeboxingFlowAgent(RoutedAgent):
             if result.planned_date:
                 return result.planned_date
         except Exception:
-            logger.debug("Planned date interpretation failed; using default.", exc_info=True)
+            logger.debug(
+                "Planned date interpretation failed; using default.", exc_info=True
+            )
         return self._default_planned_date(now=now, tz=tz)
 
     def _ensure_calendar_client(self) -> McpCalendarClient | None:
         """Return the calendar MCP client, initializing it if needed."""
         if self._calendar_client:
             return self._calendar_client
-        server_url = os.getenv(
-            "MCP_CALENDAR_SERVER_URL", "http://localhost:3000"
-        ).strip()
+        server_url = settings.mcp_calendar_server_url.strip()
         if not server_url:
             return None
         try:
@@ -353,10 +386,16 @@ class TimeboxingFlowAgent(RoutedAgent):
         except Exception:
             planned_day = datetime.utcnow().date()
 
-        work_window = parse_model_optional(WorkWindow, session.frame_facts.get("work_window"))
-        sleep_target = parse_model_optional(SleepTarget, session.frame_facts.get("sleep_target"))
+        work_window = parse_model_optional(
+            WorkWindow, session.frame_facts.get("work_window")
+        )
+        sleep_target = parse_model_optional(
+            SleepTarget, session.frame_facts.get("sleep_target")
+        )
         immovables = parse_model_list(Immovable, session.frame_facts.get("immovables"))
-        block_plan = parse_model_optional(BlockPlan, session.input_facts.get("block_plan"))
+        block_plan = parse_model_optional(
+            BlockPlan, session.input_facts.get("block_plan")
+        )
 
         try:
             _plan, records = await self._constraint_retriever.retrieve(
@@ -415,7 +454,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
-        ).hexdigest()[:TIMEBOXING_LIMITS.durable_task_key_len]
+        ).hexdigest()[: TIMEBOXING_LIMITS.durable_task_key_len]
 
     def _durable_prefetch_key(self, session: Session) -> str:
         """Return a stable key for deduping durable constraint prefetch tasks."""
@@ -481,7 +520,9 @@ class TimeboxingFlowAgent(RoutedAgent):
                 for stage in prefetch_stages:
                     if stage.value in session.durable_constraints_loaded_stages:
                         continue
-                    constraints = await self._fetch_durable_constraints(session, stage=stage)
+                    constraints = await self._fetch_durable_constraints(
+                        session, stage=stage
+                    )
                     session.durable_constraints_by_stage[stage.value] = constraints
                     session.durable_constraints_loaded_stages.add(stage.value)
                 session.durable_constraints_date = planned_date
@@ -560,7 +601,10 @@ class TimeboxingFlowAgent(RoutedAgent):
                         if constraint.scope is None:
                             constraint.scope = scope
                         if scope == ConstraintScope.DATESPAN:
-                            if interpretation.start_date and constraint.start_date is None:
+                            if (
+                                interpretation.start_date
+                                and constraint.start_date is None
+                            ):
                                 # TODO(refactor): Parse dates via a Pydantic schema.
                                 try:
                                     constraint.start_date = date.fromisoformat(
@@ -631,7 +675,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         }
         task_key = hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
-        ).hexdigest()[:TIMEBOXING_LIMITS.durable_task_key_len]
+        ).hexdigest()[: TIMEBOXING_LIMITS.durable_task_key_len]
         if task_key in self._durable_constraint_task_keys:
             return
         if (
@@ -843,7 +887,9 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         return parse_chat_content(StageGateOutput, response)
 
-    def _format_stage_gate_input(self, *, stage: TimeboxingStage, context: dict[str, Any]) -> str:
+    def _format_stage_gate_input(
+        self, *, stage: TimeboxingStage, context: dict[str, Any]
+    ) -> str:
         """Format stage-gate input with TOON tables for list data."""
         user_message = str(context.get("user_message") or "")
         if stage == TimeboxingStage.COLLECT_CONSTRAINTS:
@@ -859,7 +905,14 @@ class TimeboxingFlowAgent(RoutedAgent):
             durable_toon = toon_encode(
                 name="durable_constraints",
                 rows=constraints_rows(durable_constraints),
-                fields=["name", "necessity", "scope", "status", "source", "description"],
+                fields=[
+                    "name",
+                    "necessity",
+                    "scope",
+                    "status",
+                    "source",
+                    "description",
+                ],
             )
             return (
                 "The following lists are in TOON format: name[N]{keys}: defines the schema, and each line below is a record with values in that exact order.\n"
@@ -873,12 +926,18 @@ class TimeboxingFlowAgent(RoutedAgent):
             frame_facts = dict(context.get("frame_facts") or {})
             input_facts = dict(context.get("input_facts") or {})
             tasks = parse_model_list(TaskCandidate, input_facts.get("tasks"))
-            daily_one_thing = parse_model_optional(DailyOneThing, input_facts.get("daily_one_thing"))
-            frame_facts_json = json.dumps(frame_facts, ensure_ascii=False, sort_keys=True)
+            daily_one_thing = parse_model_optional(
+                DailyOneThing, input_facts.get("daily_one_thing")
+            )
+            frame_facts_json = json.dumps(
+                frame_facts, ensure_ascii=False, sort_keys=True
+            )
             scrubbed_input = dict(input_facts)
             scrubbed_input.pop("tasks", None)
             scrubbed_input.pop("daily_one_thing", None)
-            input_facts_json = json.dumps(scrubbed_input, ensure_ascii=False, sort_keys=True)
+            input_facts_json = json.dumps(
+                scrubbed_input, ensure_ascii=False, sort_keys=True
+            )
             tasks_toon = toon_encode(
                 name="tasks",
                 rows=tasks_rows(tasks),
@@ -886,9 +945,17 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
             daily_toon = toon_encode(
                 name="daily_one_thing",
-                rows=[{"title": daily_one_thing.title, "block_count": daily_one_thing.block_count or "", "duration_min": daily_one_thing.duration_min or ""}]
-                if daily_one_thing
-                else [],
+                rows=(
+                    [
+                        {
+                            "title": daily_one_thing.title,
+                            "block_count": daily_one_thing.block_count or "",
+                            "duration_min": daily_one_thing.duration_min or "",
+                        }
+                    ]
+                    if daily_one_thing
+                    else []
+                ),
                 fields=["title", "block_count", "duration_min"],
             )
             return (
@@ -942,11 +1009,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         response = await with_timeout(
             f"timeboxing:summary:{stage.value}",
             self._summary_agent.on_messages(
-                [
-                    TextMessage(
-                        content=payload, source="user"
-                    )
-                ],
+                [TextMessage(content=payload, source="user")],
                 CancellationToken(),
             ),
             timeout_s=TIMEBOXING_TIMEOUTS.summary_s,
@@ -966,11 +1029,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         response = await with_timeout(
             "timeboxing:review-commit",
             self._review_commit_agent.on_messages(
-                [
-                    TextMessage(
-                        content=payload, source="user"
-                    )
-                ],
+                [TextMessage(content=payload, source="user")],
                 CancellationToken(),
             ),
             timeout_s=TIMEBOXING_TIMEOUTS.review_commit_s,
@@ -1077,16 +1136,12 @@ class TimeboxingFlowAgent(RoutedAgent):
                 )
         return date.today()
 
-    def _normalize_calendar_events(
-        self, immovables: Any | None
-    ) -> list[CalendarEvent]:
+    def _normalize_calendar_events(self, immovables: Any | None) -> list[CalendarEvent]:
         """Normalize immovable payloads into CalendarEvent instances."""
         events = parse_model_list(CalendarEvent, immovables)
         return self._sort_calendar_events(events)
 
-    def _sort_calendar_events(
-        self, events: list[CalendarEvent]
-    ) -> list[CalendarEvent]:
+    def _sort_calendar_events(self, events: list[CalendarEvent]) -> list[CalendarEvent]:
         """Sort events by their scheduled times for deterministic ordering."""
         return sorted(events, key=self._calendar_event_sort_key)
 
@@ -1136,11 +1191,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         response = await with_timeout(
             "timeboxing:stage-decision",
             self._decision_agent.on_messages(
-                [
-                    TextMessage(
-                        content=payload, source="user"
-                    )
-                ],
+                [TextMessage(content=payload, source="user")],
                 CancellationToken(),
             ),
             timeout_s=TIMEBOXING_TIMEOUTS.stage_decision_s,
@@ -1387,7 +1438,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                     json.dumps(payload, sort_keys=True, ensure_ascii=False).encode(
                         "utf-8"
                     )
-                ).hexdigest()[:TIMEBOXING_LIMITS.durable_task_key_len]
+                ).hexdigest()[: TIMEBOXING_LIMITS.durable_task_key_len]
 
                 if task_key in self._durable_constraint_task_keys:
                     return {"queued": False, "deduped": True, "task_key": task_key}
@@ -1420,7 +1471,9 @@ class TimeboxingFlowAgent(RoutedAgent):
                                 ),
                                 impacted_event_types=impacted_event_types,
                                 suggested_tags=suggested_tags,
-                                decision_scope=decision_scope if decision_scope else None,
+                                decision_scope=(
+                                    decision_scope if decision_scope else None
+                                ),
                             ),
                             timeout_s=TIMEBOXING_TIMEOUTS.notion_upsert_s,
                         )
@@ -1496,15 +1549,31 @@ class TimeboxingFlowAgent(RoutedAgent):
         before = session.timebox
         await self._await_pending_constraint_extractions(session)
         constraints = await self._collect_constraints(session)
-        patched = await self._timebox_patcher.apply_patch(
-            current=session.timebox,
-            user_message=text,
-            constraints=constraints,
-            actions=[],
-        )
-        session.timebox = patched
+
+        # Use TBPlan path if available, fall back to legacy Timebox path
+        if session.tb_plan is not None:
+            patched_plan, _patch = await self._timebox_patcher.apply_patch(
+                current=session.tb_plan,
+                user_message=text,
+                constraints=constraints,
+                actions=[],
+            )
+            session.tb_plan = patched_plan
+            from .timebox import tb_plan_to_timebox
+
+            session.timebox = tb_plan_to_timebox(patched_plan)
+        else:
+            session.timebox = await self._timebox_patcher.apply_patch_legacy(
+                current=session.timebox,
+                user_message=text,
+                constraints=constraints,
+                actions=[],
+            )
+
         session.last_user_message = text
-        actions = _build_actions(before, patched, reason=text, constraints=constraints)
+        actions = _build_actions(
+            before, session.timebox, reason=text, constraints=constraints
+        )
         return actions
 
     async def _collect_constraints(self, session: Session) -> list[Constraint]:
@@ -1614,7 +1683,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
         if not constraints:
             return reply
-        return _wrap_with_constraint_review(reply, constraints=constraints, session=session)
+        return _wrap_with_constraint_review(
+            reply, constraints=constraints, session=session
+        )
 
     # endregion
 
@@ -1690,7 +1761,9 @@ class TimeboxingFlowAgent(RoutedAgent):
         session.last_extraction_task = None
         user_message = ""
         response = await self._run_graph_turn(session=session, user_text=user_message)
-        wrapped = await self._maybe_wrap_constraint_review(reply=response, session=session)
+        wrapped = await self._maybe_wrap_constraint_review(
+            reply=response, session=session
+        )
         await self._publish_update(
             session=session,
             user_message=(

@@ -103,6 +103,12 @@ class Settings(BaseSettings):
     google_oauth_credentials: str = Field(default="/app/gcp-oauth.keys.json")
     mcp_http_port: str = Field(default="3001")
     mcp_http_auth_token: str = Field(default="change_me_to_a_long_random_secret")
+    mcp_calendar_server_url: str = Field(
+        default="http://localhost:3000", env="MCP_CALENDAR_SERVER_URL"
+    )
+    mcp_calendar_server_url_docker: str = Field(
+        default="http://calendar-mcp:3000", env="MCP_CALENDAR_SERVER_URL_DOCKER"
+    )
 
     # TickTick Configuration
     ticktick_mcp_version: str = Field(default="main")

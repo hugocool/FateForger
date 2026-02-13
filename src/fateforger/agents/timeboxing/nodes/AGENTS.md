@@ -1,37 +1,32 @@
-# Timeboxing GraphFlow Nodes — Agent Notes
+# Timeboxing Nodes — Agent Notes
 
-This folder contains the **GraphFlow** node agents that implement the timeboxing stage machine.
+**Scope:** Operational rules for `nodes/`. For file index and data flow, see `README.md` in this folder.
 
-## Design Rules (Critical)
+## Design Rules
 
-- **No regex/keyword intent parsing.** Intent classification and natural-language interpretation must use LLMs (AutoGen agents) or explicit Slack slash commands.
-- **Nodes are orchestration-only.** Graph nodes should be deterministic and lightweight; they should not perform business logic that belongs in `TimeboxingFlowAgent`.
-- **No tool IO from stage-gating LLMs.** Stage gates are LLM-only and must not call tools. Tool IO (calendar, constraint-memory, durable upserts) remains in the coordinator via background tasks.
-- **One user-facing message per turn.** The graph must run until `PresenterNode` emits a single `TextMessage`, then terminate.
-- Prefer AutoGen GraphFlow primitives (edges + conditions + activation groups/conditions + termination) instead of bespoke routing/state machines inside node logic.
+- Each node is a `BaseChatAgent` with `on_messages()` / `on_messages_stream()`.
+- Nodes are **stateless between turns**; all mutable state lives on the shared `Session` object passed at construction.
+- Nodes must not import or call MCP clients, Slack SDK, or database layers. Tool IO is the coordinator's job.
+- Nodes should not catch and swallow exceptions; let them propagate so the coordinator can handle them.
+- One user-facing message per Slack turn; `PresenterNode` is the only node that produces user-visible output.
 
-## GraphFlow Safety (Activation Semantics)
+## GraphFlow Safety
 
-`DiGraphBuilder.add_edge(...)` defaults to:
+- Every node must be registered in `flow_graph.py` via `DiGraphBuilder`; do not instantiate nodes outside the graph.
+- Edge conditions in `flow_graph.py` are the single source of truth for stage transitions; do not hard-code transitions in nodes.
+- If a node needs to signal "stay in current stage" vs "advance", it must do so via its return value (e.g., `StageGateOutput.advance`), not by mutating `session.stage` directly.
 
-- `activation_group = <target node name>`
-- `activation_condition = "all"`
+## Sync Engine Awareness
 
-If a node has **multiple parents** (e.g., `PresenterNode`), you must set `activation_condition="any"` on its incoming edges, otherwise GraphFlow may terminate early without scheduling the node.
+- `StageReviewCommitNode` calls `CalendarSubmitter.submit_plan()` which uses the sync engine internally.
+- `StageRefineNode` calls `TimeboxPatcher` then `apply_tb_ops()` — it updates `session.tb_plan` but does NOT sync to calendar (sync only happens at Stage 5).
+- `StageSkeletonNode` produces the initial `TBPlan` and saves `session.base_snapshot` — this is the reference for later diff-based sync.
+- Nodes must never call `sync_engine.py` functions directly; always go through `CalendarSubmitter`.
 
-Reference:
-- Graph builder: `src/fateforger/agents/timeboxing/flow_graph.py`
+## Adding a New Node
 
-## Message Types
-
-- Use `StructuredMessage` only for small routing/state signals (`FlowSignal`, `StageDecision`).
-- Avoid emitting large, deeply-nested objects in `StructuredMessage` unless necessary; it can cause noisy serialization warnings in GraphFlow logs.
-- Only `PresenterNode` should emit user-facing `TextMessage` content.
-
-## Editing Checklist
-
-When adding/changing nodes or edges:
-
-- Ensure edges into multi-parent nodes use `activation_condition="any"`.
-- Ensure the graph still terminates via `TextMessageTermination(source="PresenterNode")`.
-- Add/adjust unit tests in `tests/unit/test_timeboxing_graphflow_state_machine.py`.
+1. Create the class extending `_StageNodeBase` (for stage nodes) or `BaseChatAgent` (for infra nodes).
+2. Register in `flow_graph.py` with `DiGraphBuilder`.
+3. Add edge conditions for entry/exit.
+4. Add unit tests in `tests/unit/` following existing `test_timeboxing_graphflow_state_machine.py` patterns.
+5. Update this folder's `README.md` with the new node.

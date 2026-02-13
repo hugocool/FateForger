@@ -1,18 +1,11 @@
-# Progress (Updated: 2026-01-19)
+# Progress (Updated: 2026-02-13)
 
 ## Done
 
-- Fixed maybe_handle_time_reply AttributeError
-- Fixed tool schema strict mode error
-- Fixed invalid Slack blocks (placeholder property)
-- Fixed invalid thread_ts handling
-- Fixed false positive constraint extraction
-- Fixed state machine loop after constraint review
-- Removed redundant Go to session button from initial commit prompt
-- Added loading state when clicking Confirm
-- Fixed PlanningGuardian scheduler pickling issue (use in-memory scheduler)
-- Made reconcile_all run synchronously on startup for reliable job scheduling
-- Updated planning reminders to post to admonishments channel with admonisher persona
+- Phase 5 integration notebook (10/10 cells pass)
+- Phase 6 cleanup (115 sync engine tests, ticket updated)
+- Phase 7 ticket drafted (skeleton + Slack buttons + E2E)
+- MECE README/AGENTS.md update across 7 folders (timeboxing, nodes, agents, slack_bot, tests, notebooks, scripts)
 
 ## Doing
 
@@ -20,4 +13,4 @@
 
 ## Next
 
-- Test the planning nudge system end-to-end
+- Implement Phase 7 ticket (skeleton pre-generation, Slack confirm/undo buttons, session memory, E2E tests)

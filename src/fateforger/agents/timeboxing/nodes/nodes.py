@@ -10,8 +10,9 @@ The graph itself is built in `src/fateforger/agents/timeboxing/flow_graph.py`.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from autogen_agentchat.agents._base_chat_agent import BaseChatAgent
 from autogen_agentchat.base._chat_agent import Response
@@ -20,9 +21,12 @@ from autogen_core import CancellationToken
 from pydantic import BaseModel
 
 from fateforger.agents.timeboxing.stage_gating import StageDecision, TimeboxingStage
+from fateforger.agents.timeboxing.timebox import timebox_to_tb_plan
 
 if TYPE_CHECKING:  # pragma: no cover
     from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
+
+logger = logging.getLogger(__name__)
 
 
 class FlowSignal(BaseModel):
@@ -56,7 +60,9 @@ class TurnContext:
 class TurnInitNode(BaseChatAgent):
     """Initialize per-turn context and kick off background work."""
 
-    def __init__(self, *, orchestrator: "TimeboxingFlowAgent", session: "Session") -> None:
+    def __init__(
+        self, *, orchestrator: "TimeboxingFlowAgent", session: "Session"
+    ) -> None:
         super().__init__(name="TurnInitNode", description="Timeboxing turn initializer")
         self._orchestrator = orchestrator
         self._session = session
@@ -73,12 +79,16 @@ class TurnInitNode(BaseChatAgent):
         self.turn = TurnContext(user_text=user_text)
         self._session.last_user_message = user_text
 
-        await self._orchestrator._ensure_calendar_immovables(self._session)  # noqa: SLF001
-        self.turn.extraction_task = self._orchestrator._queue_constraint_extraction(  # noqa: SLF001
-            session=self._session,
-            text=user_text,
-            reason="graphflow_turn",
-            is_initial=False,
+        await self._orchestrator._ensure_calendar_immovables(
+            self._session
+        )  # noqa: SLF001
+        self.turn.extraction_task = (
+            self._orchestrator._queue_constraint_extraction(  # noqa: SLF001
+                session=self._session,
+                text=user_text,
+                reason="graphflow_turn",
+                is_initial=False,
+            )
         )
         self._session.last_extraction_task = self.turn.extraction_task
         return Response(
@@ -165,7 +175,8 @@ class TransitionNode(BaseChatAgent):
         if decision is None:
             return Response(
                 chat_message=StructuredMessage(
-                    source=self.name, content=FlowSignal(kind="transition", note="no-decision")
+                    source=self.name,
+                    content=FlowSignal(kind="transition", note="no-decision"),
                 )
             )
 
@@ -175,15 +186,21 @@ class TransitionNode(BaseChatAgent):
             self._session.last_response = "Okay—stopping this timeboxing session."
             return Response(
                 chat_message=StructuredMessage(
-                    source=self.name, content=FlowSignal(kind="transition", note="canceled")
+                    source=self.name,
+                    content=FlowSignal(kind="transition", note="canceled"),
                 )
             )
 
         if decision.action == "back":
-            target = decision.target_stage or self._orchestrator._previous_stage(  # noqa: SLF001
-                self._session.stage
+            target = (
+                decision.target_stage
+                or self._orchestrator._previous_stage(  # noqa: SLF001
+                    self._session.stage
+                )
             )
-            await self._orchestrator._advance_stage(self._session, next_stage=target)  # noqa: SLF001
+            await self._orchestrator._advance_stage(
+                self._session, next_stage=target
+            )  # noqa: SLF001
             self.stage_user_message = user_text
             return Response(
                 chat_message=StructuredMessage(
@@ -195,19 +212,19 @@ class TransitionNode(BaseChatAgent):
             if self._session.stage == TimeboxingStage.REVIEW_COMMIT:
                 self._session.completed = True
                 self._session.thread_state = "done"
-                self._session.last_response = (
-                    "Finalized. If you want changes, say so and I can go back to Refine."
-                )
+                self._session.last_response = "Finalized. If you want changes, say so and I can go back to Refine."
                 return Response(
                     chat_message=StructuredMessage(
-                        source=self.name, content=FlowSignal(kind="transition", note="done")
+                        source=self.name,
+                        content=FlowSignal(kind="transition", note="done"),
                     )
                 )
             await self._orchestrator._proceed(self._session)  # noqa: SLF001
             self.stage_user_message = ""
             return Response(
                 chat_message=StructuredMessage(
-                    source=self.name, content=FlowSignal(kind="transition", note="proceed")
+                    source=self.name,
+                    content=FlowSignal(kind="transition", note="proceed"),
                 )
             )
 
@@ -341,16 +358,21 @@ class StageSkeletonNode(_StageNodeBase):
         self, messages: Sequence[BaseChatMessage], cancellation_token: CancellationToken
     ) -> Response:
         if not self._session.frame_facts and not self._session.input_facts:
-            self._session.last_response = (
-                "Stage 3/5 (Skeleton)\nMissing prior inputs. Please go back to earlier stages."
-            )
+            self._session.last_response = "Stage 3/5 (Skeleton)\nMissing prior inputs. Please go back to earlier stages."
             self.last_gate = None
             return Response(
                 chat_message=StructuredMessage(
-                    source=self.name, content=FlowSignal(kind="stage", note="missing-priors")
+                    source=self.name,
+                    content=FlowSignal(kind="stage", note="missing-priors"),
                 )
             )
-        self._session.timebox = await self._orchestrator._run_skeleton_draft(self._session)  # noqa: SLF001
+        self._session.timebox = await self._orchestrator._run_skeleton_draft(
+            self._session
+        )  # noqa: SLF001
+        # Populate the lightweight TBPlan for sync engine / patcher path
+        if self._session.timebox is not None:
+            self._session.tb_plan = timebox_to_tb_plan(self._session.timebox)
+            self._session.base_snapshot = timebox_to_tb_plan(self._session.timebox)
         gate = await self._orchestrator._run_timebox_summary(  # noqa: SLF001
             stage=TimeboxingStage.SKELETON, timebox=self._session.timebox
         )
@@ -388,19 +410,39 @@ class StageRefineNode(_StageNodeBase):
             self.last_gate = None
             return Response(
                 chat_message=StructuredMessage(
-                    source=self.name, content=FlowSignal(kind="stage", note="missing-timebox")
+                    source=self.name,
+                    content=FlowSignal(kind="stage", note="missing-timebox"),
                 )
             )
         user_message = self._transition.stage_user_message
         if user_message.strip():
-            await self._orchestrator._await_pending_constraint_extractions(self._session)  # noqa: SLF001
-            constraints = await self._orchestrator._collect_constraints(self._session)  # noqa: SLF001
-            self._session.timebox = await self._orchestrator._timebox_patcher.apply_patch(  # noqa: SLF001
-                current=self._session.timebox,
-                user_message=user_message,
-                constraints=constraints,
-                actions=[],
-            )
+            await self._orchestrator._await_pending_constraint_extractions(
+                self._session
+            )  # noqa: SLF001
+            constraints = await self._orchestrator._collect_constraints(
+                self._session
+            )  # noqa: SLF001
+            # Patch via TBPlan if available, fall back to legacy Timebox path
+            if self._session.tb_plan is not None:
+                from fateforger.agents.timeboxing.timebox import tb_plan_to_timebox
+
+                patched_plan, _patch = (
+                    await self._orchestrator._timebox_patcher.apply_patch(  # noqa: SLF001
+                        current=self._session.tb_plan,
+                        user_message=user_message,
+                        constraints=constraints,
+                        actions=[],
+                    )
+                )
+                self._session.tb_plan = patched_plan
+                self._session.timebox = tb_plan_to_timebox(patched_plan)
+            else:
+                self._session.timebox = await self._orchestrator._timebox_patcher.apply_patch_legacy(  # noqa: SLF001
+                    current=self._session.timebox,
+                    user_message=user_message,
+                    constraints=constraints,
+                    actions=[],
+                )
         gate = await self._orchestrator._run_timebox_summary(  # noqa: SLF001
             stage=TimeboxingStage.REFINE, timebox=self._session.timebox
         )
@@ -438,10 +480,35 @@ class StageReviewCommitNode(_StageNodeBase):
             self.last_gate = None
             return Response(
                 chat_message=StructuredMessage(
-                    source=self.name, content=FlowSignal(kind="stage", note="missing-timebox")
+                    source=self.name,
+                    content=FlowSignal(kind="stage", note="missing-timebox"),
                 )
             )
-        gate = await self._orchestrator._run_review_commit(timebox=self._session.timebox)  # noqa: SLF001
+        # Submit to calendar via sync engine if TBPlan + base snapshot are available
+        if (
+            self._session.tb_plan is not None
+            and self._session.base_snapshot is not None
+            and hasattr(self._orchestrator, "_calendar_submitter")
+        ):
+            try:
+                tx = await self._orchestrator._calendar_submitter.submit_plan(  # noqa: SLF001
+                    desired=self._session.tb_plan,
+                    remote=self._session.base_snapshot,
+                    event_id_map=self._session.event_id_map,
+                )
+                if tx.status == "committed":
+                    self._session.committed = True
+                    logger.info("Calendar sync committed: %d ops", len(tx.ops))
+                else:
+                    logger.warning("Calendar sync partial: %s", tx.status)
+            except Exception:
+                logger.exception(
+                    "Calendar sync failed; review continues without submission"
+                )
+
+        gate = await self._orchestrator._run_review_commit(
+            timebox=self._session.timebox
+        )  # noqa: SLF001
         self._session.stage_ready = True
         self._session.stage_missing = []
         self._session.stage_question = gate.question
@@ -476,12 +543,18 @@ class PresenterNode(BaseChatAgent):
             self._session.last_response = None
             return Response(chat_message=TextMessage(content=content, source=self.name))
 
-        background_notes = self._orchestrator._collect_background_notes(self._session)  # noqa: SLF001
+        background_notes = self._orchestrator._collect_background_notes(
+            self._session
+        )  # noqa: SLF001
         stage_node = self._stages.get(self._session.stage)
         gate = getattr(stage_node, "last_gate", None) if stage_node else None
         if gate is None:
-            fallback = f"Stage {self._session.stage.value}: ready={self._session.stage_ready}"
-            return Response(chat_message=TextMessage(content=fallback, source=self.name))
+            fallback = (
+                f"Stage {self._session.stage.value}: ready={self._session.stage_ready}"
+            )
+            return Response(
+                chat_message=TextMessage(content=fallback, source=self.name)
+            )
 
         text = self._orchestrator._format_stage_message(  # noqa: SLF001
             gate,
