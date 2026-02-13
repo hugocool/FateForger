@@ -49,6 +49,12 @@ Before any implementation work:
   - include tradeoffs, risks, key design decisions, and short pseudocode/flow outlines
   - mark one recommended option and why
   - wait for explicit user selection/approval before implementing
+- Chat-first pairing protocol (mandatory for notebook-mode):
+  - in chat, extract and restate: problem definition, constraints, ownership split, and acceptance criteria
+  - propose 2-3 implementation directions with recommendation and open questions
+  - ask for explicit user confirmation of selected direction
+  - only after confirmation, write the agreed direction into the issue notebook
+  - then proceed from notebook to modular extraction and implementation
 - If `code-only-mode`, document the rationale in the Issue/PR checkpoint (for example: tiny isolated patch, no exploratory surface needed).
 
 After implementation:
@@ -185,6 +191,7 @@ After implementation:
   - adopt/update an existing notebook and normalize metadata.
 - Notebook scaffold minimum (for notebook-mode tickets):
   - first markdown cell metadata (status/owner/issue/branch/PR/AC/clean-run/cleanliness snapshot)
+  - pairing intake record cell (confirmed problem, constraints, responsibilities, selected direction, unresolved questions)
   - design options cell (2+ options, tradeoffs, risks, pseudocode outlines, and recommended path)
   - AC checklist cell (links each acceptance criterion to evidence cells or extracted artifacts)
   - implementation evidence cells (imports, exercised APIs, observed outputs)

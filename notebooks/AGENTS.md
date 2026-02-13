@@ -25,6 +25,10 @@ Read `notebooks/README.md` for the notebook index and technical context.
   - lightweight pseudocode/flow outlines (no full production code)
   - one recommended option with rationale
   - explicit user selection before coding starts
+- Chat-first before notebook edits (mandatory):
+  - first capture in chat: problem statement, constraints, responsibilities, acceptance criteria, and unresolved questions
+  - propose directions in chat and get explicit user confirmation
+  - then persist the confirmed decisions into notebook sections before coding
 
 - Use one primary notebook per active GitHub issue (prefer `notebooks/WIP/<issue_id>_<slug>.ipynb`).
 - Keep authority boundaries explicit:
@@ -40,6 +44,7 @@ Read `notebooks/README.md` for the notebook index and technical context.
   - last clean run date and runtime marker (`.venv`, Python version)
   - repo cleanliness snapshot (`git status --porcelain`: clean/dirty + timestamp)
 - Include scaffold sections for notebook-mode tickets:
+  - `Pairing Intake Record` (confirmed problem/constraints/responsibilities/selected direction/open questions)
   - `Design Options` (options, tradeoffs, risks, pseudocode, recommended path)
   - `Acceptance Criteria Checklist`
   - `Implementation Evidence`
