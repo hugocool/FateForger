@@ -80,6 +80,30 @@ After implementation:
     - if temporary `/tickets/` markdown is slated for deletion, ask for explicit user confirmation first, then record action in PR/Issue
 - These skills support the PR/Issue sync protocol; they do not replace acceptance-criteria verification or human sign-off.
 
+## Notion sprint DB skill usage (stage-mapped workflow)
+- Use `notion-sprint-db-manager` when work requires creating/updating a Notion Sprint database entry that mirrors GitHub Issue/PR state.
+- Primary triggers:
+  - user asks to update sprint DB/board/status in Notion
+  - kickoff of an issue-linked branch where sprint records need initialization
+  - implementation checkpoint where sprint status, blockers, or validation evidence changed
+  - pre-close reconciliation of acceptance criteria, tests, docs, and remaining human verification
+- Skill path (local install): `~/.codex/skills/notion-sprint-db-manager/SKILL.md`.
+- Stage mapping (required):
+  - **Stage A (Kickoff):**
+    - after issue/branch/PR context is established, run the skill `kickoff` checkpoint update in Notion
+    - include issue link, branch, acceptance criteria snapshot, owner, and initial status (`Roadmap`/`WIP`)
+  - **Stage B (Implementation checkpoints):**
+    - after each substantial change and GitHub checkpoint, mirror status + blockers + test/doc evidence to Notion
+    - keep updates idempotent; avoid overwriting unrelated sprint fields
+  - **Stage E (Pre-close):**
+    - reconcile acceptance criteria and validation evidence in Notion before merge readiness
+    - record remaining human actions explicitly if any criterion is not met
+- Guardrails:
+  - GitHub Issue/PR remain the system of record; Notion is an execution mirror.
+  - Ask before changing Notion database schema/properties.
+  - Never set `User-confirmed working` without explicit human confirmation and date.
+  - For free-form progress text, use LLM reasoning; do not add deterministic regex/keyword NLU.
+
 ## Workflow evolution protocol (critical)
 - This workflow is intentionally adaptable. Changes are allowed through a controlled trial loop.
 - **Canonical change channel:** open a GitHub issue for workflow changes (recommended prefix: `workflow/`).
