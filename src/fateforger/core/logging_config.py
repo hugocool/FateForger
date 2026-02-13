@@ -71,11 +71,13 @@ class _AutogenEventsFilter(logging.Filter):
         mode = self._mode
         if mode in ("off", "false", "0", "none"):
             return False
+        msg = _safe_get_record_message(record)
+        record.msg = msg
+        record.args = ()
         if mode in ("full", "on", "true", "1"):
             return True
 
         # "summary" (default)
-        msg = record.getMessage()
         summarized = _summarize_autogen_event_message(
             msg, max_chars=self._max_chars, max_tools=self._max_tools
         )
@@ -98,7 +100,9 @@ class _AutogenCoreFilter(logging.Filter):
         if record.name != "autogen_core":
             return True
 
-        msg = record.getMessage()
+        msg = _safe_get_record_message(record)
+        record.msg = msg
+        record.args = ()
         m = self._resolve_re.match(msg)
         if not m:
             return True
@@ -110,6 +114,25 @@ class _AutogenCoreFilter(logging.Filter):
         record.msg = _truncate(out, max_chars=self._max_chars)
         record.args = ()
         return True
+
+
+def _safe_get_record_message(record: logging.LogRecord) -> str:
+    """Return a log message string without raising on unserializable payloads."""
+    try:
+        return record.getMessage()
+    except Exception as exc:
+        msg_obj = record.msg
+        kwargs = getattr(msg_obj, "kwargs", None)
+        if kwargs is not None:
+            try:
+                coerced = json.dumps(kwargs, default=str, ensure_ascii=False)
+                return f"[coerced-log-payload:{type(exc).__name__}] {coerced}"
+            except Exception:
+                pass
+        return (
+            f"[coerced-log-payload:{type(exc).__name__}] "
+            f"{type(msg_obj).__name__}: {repr(msg_obj)}"
+        )
 
 
 def _summarize_autogen_event_message(

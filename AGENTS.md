@@ -12,6 +12,15 @@
 - Avoid editing generated/artifact outputs and local state (e.g. `site/`, `*.db`, `logs/`, token/secret folders) unless explicitly requested.
 - Ask before adding dependencies or changing schemas/DB models; deliver schema changes via Alembic migrations (no runtime “ensure_*” table/column creation in live paths).
 
+## Git write authority (critical)
+- The agent must not run `git commit` or `git push` unless the user explicitly asks for it in the current turn.
+- Default behavior: implement changes, run validation, and stop at a review-ready working tree.
+- Before any commit/push, present:
+  - files changed
+  - tests/commands run
+  - proposed commit message(s)
+- If commit/push is not explicitly requested, leave changes unstaged or staged locally and wait for user instruction.
+
 ## Issue/PR tracking & acceptance criteria (critical)
 Before any implementation work:
 - **System-of-record split (authoritative boundaries):**
