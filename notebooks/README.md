@@ -2,12 +2,79 @@
 
 ## Status
 
+- **Documented** (2025-07-22): Phase 5 integration test notebook added (sync engine + patching live tests).
 - **Documented** (2026-01-26): Calendar MCP tool discovery + `fields` allowlist probing notes added.
+- **Documented** (2026-02-13): Notebook workflow now uses `WIP/` (active issue work) and `DONE/` (DoD-complete notebooks).
+- **Implemented** (2026-02-13): Notebook git hygiene/checkpoint automation added (`.gitattributes`, PR template sections, notebook CI policy checks).
 
 ## Purpose
 
 This folder contains exploratory and development notebooks that should import application code from `src/`
 without `sys.path` hacks. Ensure VS Code/Jupyter uses the Poetry virtualenv at `.venv/`.
+
+## README vs AGENTS
+
+- `README.md` (this file) is the human-readable index, context, and runbook.
+- `AGENTS.md` files contain agent operating rules, lifecycle constraints, and extraction protocol.
+- Keep these concerns separate: architecture/how-to here, agent behavior rules in `AGENTS.md`.
+
+## Notebook lifecycle and folder model
+
+- `notebooks/WIP/`: active issue notebooks (work in progress).
+- `notebooks/DONE/`: completed notebooks where DoD is met and reruns are expected to pass.
+- `notebooks/features/`: retained reference notebooks for feature/design explanation.
+- Root-level notebooks may exist as legacy/reference material; migrate active work into `WIP/`.
+
+## Git hygiene baseline (notebook workflow)
+
+- Notebook git attributes are enforced via `.gitattributes`:
+  - `filter=nbstripout`
+  - `diff=jupyternotebook`
+  - `merge=jupyternotebook`
+- CI policy checks run via `.github/workflows/notebook-workflow-checks.yml` using `scripts/dev/notebook_workflow_checks.py`.
+- Optional per-issue choice: pair notebooks with Jupytext text representation when it improves review quality.
+- Local setup helpers (run once per machine):
+
+```bash
+poetry run nbstripout --install
+poetry run nbdime config-git --enable
+```
+
+### Notebook DoD expectations
+
+- Linked issue/PR acceptance criteria are satisfied.
+- Durable logic extracted to `src/`, `tests/`, and docs where appropriate.
+- Notebook metadata header is complete and current.
+- Notebook reruns from a clean kernel without errors.
+
+## Notebook Index
+
+| Notebook | Purpose | Status |
+|----------|---------|--------|
+| `phase5_integration_test.ipynb` | Live MCP + LLM integration tests for sync engine, patching, submitter. 10 sections. | Passing (2025-07-22) |
+| `making_timebox_session_stage_4_work.ipynb` | Stage 4 refine flow with JSON constraint patterns. Reference for patching approach. | Reference |
+| `submit_timebox_to_cal.ipynb` | Calendar submission flow exploration. | Exploratory |
+| `test_calendar_agent.ipynb` | Calendar agent MCP integration testing. | Exploratory |
+| `test_constraint_extractor.ipynb` | Constraint extractor agent testing. | Exploratory |
+| `test_timebox_storage.ipynb` | Timebox storage/persistence testing. | Exploratory |
+| `caniconal_agent.ipynb` | Canonical agent pattern exploration. | Exploratory |
+| `clean_working_mcp.ipynb` | Clean MCP client setup reference. | Reference |
+| `minimal_working_mcp.ipynb` | Minimal MCP connectivity test. | Reference |
+| `getting_it_working.ipynb` | General development scratchpad. | Exploratory |
+| `notion_mcp.ipynb` | Notion MCP integration testing. | Exploratory |
+| `openrouter_request_shape.ipynb` | OpenRouter API request shape exploration. | Exploratory |
+| `patching_json.ipynb` | JSON patching exploration (pre-schema-in-prompt). | Archived |
+| `ticktick_agent.ipynb` | TickTick agent MCP integration. | Exploratory |
+| `todo_agent_ticktick.ipynb` | TickTick todo agent exploration. | Exploratory |
+| `features/gradio_chat.ipynb` | Gradio chat integration reference notebook. | Reference |
+
+### Subfolders
+
+| Folder | Contents |
+|--------|----------|
+| `DONE/` | Completed notebooks with DoD met and clean rerun expectation. |
+| `features/` | Feature-specific notebooks (ad hoc exploration). |
+| `WIP/` | Work-in-progress notebooks linked to active GitHub issues/PRs. |
 
 ## Google Calendar MCP: tool args + allowed `fields`
 
