@@ -1,5 +1,13 @@
 # 📋 Ticket: Skeleton Pre-Generation + Slack Confirm/Undo Buttons + E2E Tests
 
+## Tracking
+
+- Status: WIP
+- System of record issue: https://github.com/hugocool/FateForger/issues/7
+- Issue branch: `issue/7-skeleton-pre-generation`
+- PR: TBD
+- Working notebook: `notebooks/WIP/7_skeleton_pre_generation.ipynb`
+
 ## Goal
 Three interconnected features for the timeboxing flow:
 
