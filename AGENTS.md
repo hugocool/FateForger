@@ -208,10 +208,14 @@ After implementation:
 - **Per-interaction status reporting:** when you finish a change, explicitly state (1) current status (Roadmap/WIP/Implemented/Documented/Tested/User-confirmed), (2) which tests/commands you ran, and (3) what still needs human verification (with concrete steps + where to record the confirmation date in docs).
 
 ### In-code status markers
-- Use `# WIP:` for behavior that is intentionally incomplete and should not be treated as done.
-- Use `# TODO:` for concrete follow-ups tied to acceptance criteria or missing validation.
-- Use `# TODO(refactor):` for legacy/back-compat/cleanup work that should be removed once migrations land.
-- When a `# WIP:`/`# TODO:` is resolved, delete it (do not let stale markers accumulate).
+- Use `# WIP:` only for work that is in scope for the current ticket and actively being finished in this ticket.
+- `# WIP:` may be functional but still incomplete; treat it as \"not done yet\" for this ticket.
+- Use `# TODO:` only for work that is explicitly out of scope for the current ticket.
+- `# TODO(refactor):` is also out-of-scope follow-up work (legacy/back-compat/cleanup) unless the current ticket explicitly includes that refactor.
+- Marker resolution policy:
+  - if a `# WIP:` item is in current ticket scope, resolve it before closing the ticket/PR and remove the marker.
+  - if a `# TODO:` item becomes in-scope during the ticket, convert it to active work, resolve it, and remove the marker.
+  - do not leave stale `# WIP:`/`# TODO:` markers after their tracked work is completed.
 
 ## Setup & Diagnostics wizard
 - A small FastAPI web UI is available for production deployments to guide setup and verify health of:
