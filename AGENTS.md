@@ -14,7 +14,12 @@
 
 ## Issue/PR tracking & acceptance criteria (critical)
 Before any implementation work:
-- **GitHub is the system of record:** use a GitHub Issue for task state and a GitHub PR for implementation/validation state.
+- **System-of-record split (authoritative boundaries):**
+  - Notion is authoritative for product context: initiative goals, research, discovery notes, meeting outcomes, and durable knowledge.
+  - GitHub is authoritative for engineering execution: code-ready issue scope, branch/PR state, review outcomes, and merge readiness.
+  - `/tickets/` markdown is local scaffolding only and never authoritative.
+- **Engineering execution requires GitHub artifacts:** use a GitHub Issue for execution state and a GitHub PR for implementation/validation state.
+- **Notion-to-GitHub bridge rule:** when coding work starts from a Notion ticket, create/link a GitHub Issue and keep bi-directional references current.
 - **`/tickets/` is optional and temporary:** markdown ticket files may be used as local drafting aids, but they must mirror the GitHub Issue and are not authoritative.
 - **Inventory the current state:** identify what already exists, where responsibilities live, and what should be reused vs created (avoid duplicating behavior; stay DRY).
 - **Issue branching:** use issue-linked branches (e.g. `issue/<id>-<slug>`); keep issue, branch, notebook, and PR linked.
@@ -31,6 +36,10 @@ After implementation:
 - **DoD is only met when:** (a) acceptance criteria are satisfied, (b) relevant automated tests pass, and (c) docs/indices are updated to reflect the new behavior and status.
 - **Docs must reflect reality:** update the nearest folder `README.md` (and any relevant `docs/` pages) to reflect the current status (Roadmap/WIP/Implemented/Documented/Tested/User-confirmed working).
 - **Keep GitHub current:** reflect progress and outcomes in the Issue + PR; do not rely on repo-local markdown as long-term status tracking.
+- **Keep Notion and GitHub linked with clear ownership:**
+  - update Notion with product/knowledge outcomes and decision summaries
+  - update GitHub with engineering execution checkpoints, test evidence, and merge readiness
+  - do not move execution status authority from GitHub into Notion fields
 - **Repo cleanliness before merge:** remove temporary ticket markdown/scratch artifacts unless explicitly retained as durable docs.
 
 ## Repo cleanliness gates (critical)
@@ -47,6 +56,9 @@ After implementation:
   - pre-close (tests run, cleanliness check result, remaining human actions)
 - **Update mechanism:** either post a PR comment or update the PR description; status must stay current without requiring users to open `/tickets/`.
 - **Issue linkage rule:** if an Issue exists, keep it synchronized with the PR (or link to the latest PR checkpoint comment).
+- **Notion linkage rule:** if a Notion product ticket/page exists for the work item, keep cross-links current:
+  - GitHub Issue/PR should link back to the Notion item
+  - Notion item should link to the GitHub Issue and active PR
 - **End-of-reply status footer (mandatory):** every agent reply during active implementation must end with a short `Issue/PR Sync` block containing:
   - issue URL/ID (or `none`)
   - PR URL/ID (or `none`)
@@ -80,29 +92,28 @@ After implementation:
     - if temporary `/tickets/` markdown is slated for deletion, ask for explicit user confirmation first, then record action in PR/Issue
 - These skills support the PR/Issue sync protocol; they do not replace acceptance-criteria verification or human sign-off.
 
-## Notion sprint DB skill usage (stage-mapped workflow)
-- Use `notion-sprint-db-manager` when work requires creating/updating a Notion Sprint database entry that mirrors GitHub Issue/PR state.
-- Primary triggers:
-  - user asks to update sprint DB/board/status in Notion
-  - kickoff of an issue-linked branch where sprint records need initialization
-  - implementation checkpoint where sprint status, blockers, or validation evidence changed
-  - pre-close reconciliation of acceptance criteria, tests, docs, and remaining human verification
-- Skill path (local install): `~/.codex/skills/notion-sprint-db-manager/SKILL.md`.
+## Notion skill usage (product/knowledge scope)
+- Use Notion skills for product context and knowledge management, not as the source of truth for engineering execution state.
 - Stage mapping (required):
   - **Stage A (Kickoff):**
-    - after issue/branch/PR context is established, run the skill `kickoff` checkpoint update in Notion
-    - include issue link, branch, acceptance criteria snapshot, owner, and initial status (`Roadmap`/`WIP`)
+    - if work originates from Notion, ensure the Notion ticket/page links to the GitHub Issue once created
+    - use `notion-sprint-db-manager` only to reflect planning context (owner, intent, priority), not to replace GitHub execution state
   - **Stage B (Implementation checkpoints):**
-    - after each substantial change and GitHub checkpoint, mirror status + blockers + test/doc evidence to Notion
-    - keep updates idempotent; avoid overwriting unrelated sprint fields
+    - keep GitHub as the authoritative progress stream
+    - optionally mirror key execution highlights to Notion as product-facing summaries (milestones, risks, decisions)
   - **Stage E (Pre-close):**
-    - reconcile acceptance criteria and validation evidence in Notion before merge readiness
-    - record remaining human actions explicitly if any criterion is not met
+    - update Notion with product-level outcome summary, decision record, and links to merged PR/tests/docs
+    - keep merge readiness, CI state, and review-thread resolution authoritative in GitHub
+- Skill intent boundaries:
+  - `notion-sprint-db-manager`: planning/sprint knowledge mirror and prioritization context.
+  - `notion-knowledge-capture` / `notion-research-documentation` / `notion-meeting-intelligence` / `notion-spec-to-implementation`:
+    capture durable product knowledge, research, meeting outputs, and spec lineage.
+  - `.codex/skills/notion-constraint-memory`: only for timeboxing preference memory workflows in this repo.
 - Guardrails:
-  - GitHub Issue/PR remain the system of record; Notion is an execution mirror.
   - Ask before changing Notion database schema/properties.
   - Never set `User-confirmed working` without explicit human confirmation and date.
   - For free-form progress text, use LLM reasoning; do not add deterministic regex/keyword NLU.
+  - If Notion and GitHub diverge, GitHub is authoritative for engineering execution and Notion must be reconciled to match.
 
 ## Workflow evolution protocol (critical)
 - This workflow is intentionally adaptable. Changes are allowed through a controlled trial loop.
@@ -178,7 +189,8 @@ After implementation:
   - coding agent owns implementation mechanics: drafting/refactors, extraction to modules, test/doc scaffolding
   - handshakes are mandatory at ambiguity, extraction boundary, and final verification
 - Ticket/branch/issue alignment is mandatory:
-  - GitHub Issue is canonical for status; GitHub PR is canonical for implementation/validation evidence
+  - GitHub Issue is canonical for engineering status; GitHub PR is canonical for implementation/validation evidence
+  - Notion is canonical for product context/knowledge; link it to GitHub but do not replace GitHub execution tracking
   - notebook header must match current issue/branch/PR linkage
   - `/tickets/` markdown (if used) must mirror GitHub and stay temporary
   - PR description must summarize notebook-derived changes and remaining notebook artifacts

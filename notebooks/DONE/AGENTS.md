@@ -15,4 +15,5 @@
   - notebook reruns from a clean kernel without errors
 - Prefer removing duplicated production code that already exists in `src/`/`tests`.
 - If remaining code is analysis/report logic, keep it concise and documented.
+- Record product/knowledge outcomes in Notion if requested, but keep engineering completion authority in GitHub Issue/PR.
 - If a notebook becomes obsolete, move it to `Archived` (or mark archived in metadata).

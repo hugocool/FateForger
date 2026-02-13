@@ -1,9 +1,26 @@
 version: 1
 
 system_of_record:
-  issue_tracker: github_issues
-  pr_tracker: github_pull_requests
+  product_context: notion
+  knowledge_base: notion
+  engineering_issue_tracker: github_issues
+  engineering_pr_tracker: github_pull_requests
   local_ticket_markdown: temporary_mirror_only
+  notion_to_github_link_required_for_codework: true
+  github_to_notion_link_required_when_notion_exists: true
+
+authority_split:
+  github_authoritative_for:
+    - scope_ready_for_implementation
+    - acceptance_criteria_for_codework
+    - branch_and_pr_status
+    - ci_and_review_state
+    - merge_readiness
+  notion_authoritative_for:
+    - product_intent_and_roadmap
+    - discovery_and_research_notes
+    - meeting_decisions
+    - durable_knowledge_base
 
 instruction_change_control:
   require_explicit_user_confirmation: true
@@ -47,6 +64,7 @@ workflow_change_process:
 progress_sync:
   primary_surface: github_pr_panel
   require_pr_or_issue_update_per_checkpoint: true
+  sync_order: github_first_then_notion_summary
   checkpoint_events:
     - kickoff
     - substantial_change_batch

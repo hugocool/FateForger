@@ -11,6 +11,7 @@
 
 - One active issue notebook per GitHub issue.
 - Filename should map to the issue ID and slug when practical.
+- Notion links are optional context pointers, but GitHub Issue/PR are authoritative for execution status.
 - Keep temporary/prototype cells, but move stable code to `src/` quickly.
 - Keep cells single-purpose when possible (imports, parameters, I/O, exploration, validation, decisions).
 - Before PR closure:

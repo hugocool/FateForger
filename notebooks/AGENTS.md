@@ -11,6 +11,9 @@ Read `notebooks/README.md` for the notebook index and technical context.
 ## Required workflow for issue work
 
 - Use one primary notebook per active GitHub issue (prefer `notebooks/WIP/<issue_id>_<slug>.ipynb`).
+- Keep authority boundaries explicit:
+  - Notion: product context, discovery, durable knowledge notes.
+  - GitHub: engineering execution status, implementation checkpoints, validation evidence.
 - In the first markdown cell, record:
   - status (`WIP`, `Extraction complete`, `DONE`, `Reference`, `Archived`)
   - owner
@@ -21,6 +24,7 @@ Read `notebooks/README.md` for the notebook index and technical context.
   - last clean run date and runtime marker (`.venv`, Python version)
   - repo cleanliness snapshot (`git status --porcelain`: clean/dirty + timestamp)
 - Keep notebook progress synchronized with GitHub issue + PR.
+- If work originates from a Notion ticket/page, include the Notion link in notebook metadata and ensure it cross-links to the GitHub Issue.
 - Treat GitHub Issue/PR as the progress source users monitor in tooling (e.g., VS Code PR panel); do not rely on local ticket markdown for current status.
 - `/tickets/` markdown can be used as temporary drafting notes only; it is not the system of record.
 
@@ -47,6 +51,10 @@ Read `notebooks/README.md` for the notebook index and technical context.
   - extraction handshake before moving notebook logic into `src/`/`tests/`/docs
   - verification handshake before PR/merge
 - Each user-facing progress reply should end with an `Issue/PR Sync` footer that matches the latest GitHub update.
+- When updating external systems:
+  - update GitHub first for execution checkpoints
+  - then mirror product-facing summary updates into Notion as needed
+  - if systems conflict, reconcile Notion to GitHub for execution facts
 
 ## Workflow adaptation (notebook scope)
 
