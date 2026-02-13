@@ -194,6 +194,7 @@ After implementation:
   - pairing intake record cell (confirmed problem, constraints, responsibilities, selected direction, unresolved questions)
   - design options cell (2+ options, tradeoffs, risks, pseudocode outlines, and recommended path)
   - implementation walkthrough cell (AC-by-AC decisions, alternatives considered, chosen path, and code/test references)
+  - executable walkthrough code cells (import implemented modules/tests and surface behavior/source for human review)
   - reviewer checklist cell (what to inspect to validate decisions, with concrete file pointers)
   - AC checklist cell (links each acceptance criterion to evidence cells or extracted artifacts)
   - implementation evidence cells (imports, exercised APIs, observed outputs)
