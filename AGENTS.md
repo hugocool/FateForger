@@ -55,6 +55,31 @@ After implementation:
   - next deterministic step
 - **Fallback rule:** if GitHub write access is unavailable, state the blocker and provide copy-ready Issue/PR update text in the same reply.
 
+## GitHub skills usage (stage-mapped workflow)
+- Use the GitHub skills as workflow operators; keep all outputs visible in Issue/PR.
+- Skill inventory for this workflow:
+  - `gh-workflow-sync`: deterministic Issue/PR lifecycle sync (bootstrap + checkpoint updates).
+  - `gh-address-comments`: address reviewer comments and review threads.
+  - `gh-fix-ci`: inspect and resolve failing GitHub Actions checks.
+- Stage mapping (required):
+  - **Stage A (Kickoff / ticket activation):**
+    - use `gh-workflow-sync` `bootstrap` to align Issue + issue branch + draft PR when starting a work item
+    - use `gh-workflow-sync` `checkpoint --stage kickoff` after setup so the PR panel reflects current state
+  - **Stage B (Implementation checkpoints):**
+    - use `gh-workflow-sync` `checkpoint --stage progress` at each substantial change batch
+    - optionally update bounded PR body sync block via `--update-pr-body`
+  - **Stage C (Review comments):**
+    - use `gh-address-comments` when review threads/comments are actionable
+    - after fixes land, post a `gh-workflow-sync` progress checkpoint
+  - **Stage D (CI failures):**
+    - use `gh-fix-ci` when GitHub Actions checks fail
+    - after remediation, post a `gh-workflow-sync` progress checkpoint
+  - **Stage E (Pre-close / merge readiness):**
+    - run required tests and cleanliness checks
+    - use `gh-workflow-sync` `checkpoint --stage pre-close` with final status + remaining human actions
+    - if temporary `/tickets/` markdown is slated for deletion, ask for explicit user confirmation first, then record action in PR/Issue
+- These skills support the PR/Issue sync protocol; they do not replace acceptance-criteria verification or human sign-off.
+
 ## Workflow evolution protocol (critical)
 - This workflow is intentionally adaptable. Changes are allowed through a controlled trial loop.
 - **Canonical change channel:** open a GitHub issue for workflow changes (recommended prefix: `workflow/`).
