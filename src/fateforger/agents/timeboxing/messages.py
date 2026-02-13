@@ -45,6 +45,33 @@ class TimeboxingUserReply:
 
 
 @dataclass
+class TimeboxingConfirmSubmit:
+    """User confirmed calendar submission via Slack action button."""
+
+    channel_id: str
+    thread_ts: str
+    user_id: str
+
+
+@dataclass
+class TimeboxingCancelSubmit:
+    """User canceled pending calendar submission via Slack action button."""
+
+    channel_id: str
+    thread_ts: str
+    user_id: str
+
+
+@dataclass
+class TimeboxingUndoSubmit:
+    """User requested undo of the latest calendar sync via Slack action button."""
+
+    channel_id: str
+    thread_ts: str
+    user_id: str
+
+
+@dataclass
 class TimeboxingFinalResult:
     """Final result emitted when a session completes or aborts."""
 
@@ -83,6 +110,9 @@ __all__ = [
     "StartTimeboxing",
     "TimeboxingCommitDate",
     "TimeboxingUserReply",
+    "TimeboxingConfirmSubmit",
+    "TimeboxingCancelSubmit",
+    "TimeboxingUndoSubmit",
     "TimeboxingFinalResult",
     "TimeboxPatchRecord",
     "TimeboxingUpdate",

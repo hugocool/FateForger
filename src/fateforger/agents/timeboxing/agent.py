@@ -43,6 +43,11 @@ from fateforger.slack_bot.constraint_review import (
 )
 from fateforger.slack_bot.messages import SlackBlockMessage, SlackThreadStateMessage
 from fateforger.slack_bot.timeboxing_commit import build_timebox_commit_prompt_message
+from fateforger.slack_bot.timeboxing_submit import (
+    build_review_submit_actions_block,
+    build_text_section_block,
+    build_undo_submit_actions_block,
+)
 from fateforger.tools.constraint_mcp import get_constraint_mcp_tools
 from fateforger.tools.ticktick_mcp import TickTickMcpClient, get_ticktick_mcp_url
 
@@ -64,8 +69,11 @@ from .flow_graph import build_timeboxing_graphflow
 from .mcp_clients import ConstraintMemoryClient, McpCalendarClient
 from .messages import (
     StartTimeboxing,
+    TimeboxingCancelSubmit,
     TimeboxingCommitDate,
+    TimeboxingConfirmSubmit,
     TimeboxingFinalResult,
+    TimeboxingUndoSubmit,
     TimeboxingUpdate,
     TimeboxingUserReply,
 )
@@ -101,6 +109,7 @@ from .stage_gating import (
     TimeboxingStage,
 )
 from .submitter import CalendarSubmitter
+from .sync_engine import FFTB_PREFIX, SyncTransaction
 from .tb_models import TBPlan
 from .timebox import Timebox
 from .toon_views import (
@@ -151,9 +160,17 @@ class Session:
     pending_calendar_prefetch: bool = False
     background_updates: List[str] = field(default_factory=list)
     timebox: Timebox | None = None
+    pre_generated_skeleton: Timebox | None = None
+    pre_generated_skeleton_fingerprint: str | None = None
+    pre_generated_skeleton_task: asyncio.Task | None = None
+    pending_skeleton_pre_generation: bool = False
     tb_plan: TBPlan | None = None
     base_snapshot: TBPlan | None = None
     event_id_map: Dict[str, str] = field(default_factory=dict)
+    pending_submit: bool = False
+    last_sync_transaction: SyncTransaction | None = None
+    last_sync_event_id_map: Dict[str, str] | None = None
+    pending_presenter_blocks: List[dict[str, Any]] | None = None
     stage: TimeboxingStage = TimeboxingStage.COLLECT_CONSTRAINTS
     frame_facts: Dict[str, Any] = field(default_factory=dict)
     input_facts: Dict[str, Any] = field(default_factory=dict)
@@ -225,6 +242,13 @@ class TimeboxingFlowAgent(RoutedAgent):
             return fallback
         agent = ctx.sender if ctx.sender else None
         return agent.key if agent else "default"
+
+    def _agent_source(self) -> str:
+        """Return a safe message source identifier for TextMessage outputs."""
+        try:
+            return self.id.type
+        except Exception:
+            return "timeboxing_agent"
 
     def _default_tz_name(self) -> str:
         """Return the default timezone name for planning."""
@@ -1072,6 +1096,176 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
             return self._build_fallback_skeleton_timebox(session)
 
+    def _skeleton_pregeneration_fingerprint(self, session: Session) -> str:
+        """Build a deterministic fingerprint for current skeleton draft inputs."""
+        payload = {
+            "planned_date": session.planned_date or "",
+            "tz_name": session.tz_name or "UTC",
+            "frame_facts": session.frame_facts or {},
+            "input_facts": session.input_facts or {},
+            "constraints": [
+                c.model_dump(mode="json")
+                for c in (
+                    session.durable_constraints_by_stage.get(
+                        TimeboxingStage.SKELETON.value, []
+                    )
+                    or []
+                )
+            ],
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _can_pre_generate_skeleton(self, session: Session) -> bool:
+        """Return whether Stage 2 has enough context to pre-generate skeleton."""
+        immovables = parse_model_list(Immovable, session.frame_facts.get("immovables"))
+        has_immovables = bool(immovables)
+        durable = session.durable_constraints_by_stage.get(
+            TimeboxingStage.SKELETON.value, []
+        )
+        has_constraints = bool(durable or session.active_constraints)
+        return has_immovables and has_constraints
+
+    def _queue_skeleton_pre_generation(self, session: Session) -> None:
+        """Queue a background skeleton draft during Stage 2."""
+        if not self._can_pre_generate_skeleton(session):
+            return
+        fingerprint = self._skeleton_pregeneration_fingerprint(session)
+        if (
+            session.pre_generated_skeleton is not None
+            and session.pre_generated_skeleton_fingerprint == fingerprint
+        ):
+            return
+        active_task = session.pre_generated_skeleton_task
+        if active_task and not active_task.done():
+            if session.pre_generated_skeleton_fingerprint == fingerprint:
+                return
+            active_task.cancel()
+        session.pre_generated_skeleton = None
+        session.pre_generated_skeleton_fingerprint = fingerprint
+        session.pending_skeleton_pre_generation = True
+
+        async def _background() -> None:
+            """Run skeleton pre-generation without blocking user responses."""
+            try:
+                draft = await self._run_skeleton_draft(session)
+                if (
+                    session.pre_generated_skeleton_fingerprint == fingerprint
+                    and draft is not None
+                ):
+                    session.pre_generated_skeleton = draft
+                    session.background_updates.append(
+                        "Prepared a skeleton draft in the background."
+                    )
+            except asyncio.CancelledError:
+                logger.debug("Skeleton pre-generation task canceled.")
+            except Exception:
+                logger.debug("Skeleton pre-generation failed.", exc_info=True)
+            finally:
+                if session.pre_generated_skeleton_fingerprint == fingerprint:
+                    session.pending_skeleton_pre_generation = False
+                    session.pre_generated_skeleton_task = None
+
+        session.pre_generated_skeleton_task = asyncio.create_task(_background())
+
+    async def _consume_pre_generated_skeleton(self, session: Session) -> Timebox:
+        """Return a pre-generated skeleton when valid, else draft synchronously."""
+        fingerprint = self._skeleton_pregeneration_fingerprint(session)
+        if (
+            session.pre_generated_skeleton is not None
+            and session.pre_generated_skeleton_fingerprint == fingerprint
+        ):
+            draft = session.pre_generated_skeleton
+            session.pre_generated_skeleton = None
+            session.pre_generated_skeleton_task = None
+            session.pending_skeleton_pre_generation = False
+            return draft
+        return await self._run_skeleton_draft(session)
+
+    def _build_timeboxing_action_value(self, session: Session) -> str:
+        """Encode Slack metadata for timeboxing submit/undo buttons."""
+        return encode_metadata(
+            {
+                "channel_id": session.channel_id,
+                "thread_ts": session.thread_ts,
+                "user_id": session.user_id,
+            }
+        )
+
+    def _event_key_from_summary_and_start(
+        self, *, summary: str, start: str, tz_name: str
+    ) -> str | None:
+        """Build the canonical ``summary|start_time`` key used by sync mapping."""
+        try:
+            tz = ZoneInfo(tz_name or "UTC")
+            parsed = date_parser.isoparse(start)
+            if parsed.tzinfo:
+                start_time = parsed.astimezone(tz).time().replace(tzinfo=None)
+            else:
+                start_time = parsed.time()
+        except Exception:
+            return None
+        return f"{summary}|{start_time.isoformat()}"
+
+    def _update_event_id_map_after_submit(
+        self,
+        *,
+        session: Session,
+        transaction: SyncTransaction,
+    ) -> Dict[str, str]:
+        """Update ``session.event_id_map`` after a submit transaction."""
+        previous = dict(session.event_id_map)
+        op_key_to_id: Dict[str, str] = {}
+        for index, op in enumerate(transaction.ops):
+            if transaction.results:
+                result = transaction.results[index] if index < len(transaction.results) else {}
+                if not bool(result.get("ok", False)):
+                    continue
+            payload = op.after_payload or {}
+            summary = str(payload.get("summary") or "").strip()
+            start = str(payload.get("start") or "").strip()
+            event_id = str(payload.get("eventId") or op.gcal_event_id or "").strip()
+            if not (summary and start and event_id):
+                continue
+            key = self._event_key_from_summary_and_start(
+                summary=summary,
+                start=start,
+                tz_name=session.tz_name,
+            )
+            if key:
+                op_key_to_id[key] = event_id
+        updated: Dict[str, str] = {
+            key: value
+            for key, value in previous.items()
+            if not value.startswith(FFTB_PREFIX)
+        }
+        if session.tb_plan is None:
+            return updated
+        for resolved in session.tb_plan.resolve_times():
+            key = f"{resolved['n']}|{resolved['start_time'].isoformat()}"
+            event_id = op_key_to_id.get(key) or previous.get(key)
+            if event_id:
+                updated[key] = event_id
+        return updated
+
+    def _render_submit_prompt_blocks(
+        self, *, session: Session, text: str
+    ) -> list[dict[str, Any]]:
+        """Render Slack blocks for Stage 5 confirm/cancel flow."""
+        _ = text
+        action_value = self._build_timeboxing_action_value(session)
+        return [build_review_submit_actions_block(meta_value=action_value)]
+
+    def _render_submit_result_blocks(
+        self, *, session: Session, text: str, include_undo: bool
+    ) -> list[dict[str, Any]]:
+        """Render Slack blocks for post-submit result messages."""
+        blocks: list[dict[str, Any]] = [build_text_section_block(text=text)]
+        if include_undo:
+            action_value = self._build_timeboxing_action_value(session)
+            blocks.append(build_undo_submit_actions_block(meta_value=action_value))
+        return blocks
+
     async def _build_skeleton_context(self, session: Session) -> SkeletonContext:
         """Assemble the injected context for the skeleton drafter."""
         await self._ensure_calendar_immovables(
@@ -1295,6 +1489,8 @@ class TimeboxingFlowAgent(RoutedAgent):
             notes.append(
                 "Syncing your preferences in the background so we can keep moving."
             )
+        if session.pending_skeleton_pre_generation:
+            notes.append("Pre-drafting your skeleton in the background.")
         if session.background_updates:
             notes.extend(session.background_updates)
             session.background_updates.clear()
@@ -1308,11 +1504,21 @@ class TimeboxingFlowAgent(RoutedAgent):
         session.stage_ready = False
         session.stage_missing = []
         session.stage_question = None
+        if next_stage != TimeboxingStage.REVIEW_COMMIT:
+            session.pending_submit = False
+            session.pending_presenter_blocks = None
         if next_stage in (
             TimeboxingStage.COLLECT_CONSTRAINTS,
             TimeboxingStage.CAPTURE_INPUTS,
         ):
             session.timebox = None
+            task = session.pre_generated_skeleton_task
+            if task and not task.done():
+                task.cancel()
+            session.pre_generated_skeleton = None
+            session.pre_generated_skeleton_fingerprint = None
+            session.pre_generated_skeleton_task = None
+            session.pending_skeleton_pre_generation = False
 
     @staticmethod
     def _previous_stage(stage: TimeboxingStage) -> TimeboxingStage:
@@ -1687,6 +1893,27 @@ class TimeboxingFlowAgent(RoutedAgent):
             reply, constraints=constraints, session=session
         )
 
+    def _attach_presenter_blocks(
+        self,
+        *,
+        reply: TextMessage | SlackBlockMessage,
+        session: Session,
+    ) -> TextMessage | SlackBlockMessage:
+        """Attach pending presenter blocks to the outgoing Slack payload."""
+        presenter_blocks = session.pending_presenter_blocks
+        session.pending_presenter_blocks = None
+        if not presenter_blocks:
+            return reply
+        if isinstance(reply, SlackBlockMessage):
+            return SlackBlockMessage(
+                text=reply.text,
+                blocks=list(reply.blocks) + list(presenter_blocks),
+            )
+        return SlackBlockMessage(
+            text=reply.content,
+            blocks=[build_text_section_block(text=reply.content), *presenter_blocks],
+        )
+
     # endregion
 
     @message_handler
@@ -1764,16 +1991,17 @@ class TimeboxingFlowAgent(RoutedAgent):
         wrapped = await self._maybe_wrap_constraint_review(
             reply=response, session=session
         )
+        outgoing = self._attach_presenter_blocks(reply=wrapped, session=session)
         await self._publish_update(
             session=session,
             user_message=(
-                wrapped.content
-                if isinstance(wrapped, TextMessage)
-                else getattr(wrapped, "text", "")
+                outgoing.content
+                if isinstance(outgoing, TextMessage)
+                else getattr(outgoing, "text", "")
             ),
             actions=[],
         )
-        return wrapped
+        return outgoing
 
     @message_handler
     async def on_user_reply(
@@ -1850,12 +2078,13 @@ class TimeboxingFlowAgent(RoutedAgent):
         session.thread_state = None
         reply = await self._run_graph_turn(session=session, user_text=message.text)
         wrapped = await self._maybe_wrap_constraint_review(reply=reply, session=session)
+        outgoing = self._attach_presenter_blocks(reply=wrapped, session=session)
         await self._publish_update(
             session=session,
             user_message=(
-                wrapped.content
-                if isinstance(wrapped, TextMessage)
-                else getattr(wrapped, "text", "")
+                outgoing.content
+                if isinstance(outgoing, TextMessage)
+                else getattr(outgoing, "text", "")
             ),
             actions=[],
         )
@@ -1865,7 +2094,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 text=reply.content,
                 thread_state=session.thread_state,
             )
-        return wrapped
+        return outgoing
 
     @message_handler
     async def on_user_text(
@@ -1915,12 +2144,13 @@ class TimeboxingFlowAgent(RoutedAgent):
         session.thread_state = None
         reply = await self._run_graph_turn(session=session, user_text=message.content)
         wrapped = await self._maybe_wrap_constraint_review(reply=reply, session=session)
+        outgoing = self._attach_presenter_blocks(reply=wrapped, session=session)
         await self._publish_update(
             session=session,
             user_message=(
-                wrapped.content
-                if isinstance(wrapped, TextMessage)
-                else getattr(wrapped, "text", "")
+                outgoing.content
+                if isinstance(outgoing, TextMessage)
+                else getattr(outgoing, "text", "")
             ),
             actions=[],
         )
@@ -1930,7 +2160,169 @@ class TimeboxingFlowAgent(RoutedAgent):
                 text=reply.content,
                 thread_state=session.thread_state,
             )
-        return wrapped
+        return outgoing
+
+    @message_handler
+    async def on_confirm_submit(
+        self, message: TimeboxingConfirmSubmit, ctx: MessageContext
+    ) -> TextMessage | SlackBlockMessage:
+        """Handle explicit Stage 5 confirm-submit action."""
+        key = self._session_key(ctx, fallback=message.thread_ts)
+        session = self._sessions.get(key)
+        if not session:
+            return TextMessage(
+                content="That timeboxing session is no longer active.",
+                source=self._agent_source(),
+            )
+        if session.completed or session.thread_state in {"done", "canceled"}:
+            return TextMessage(
+                content="This session has already ended; submission is no longer available.",
+                source=self._agent_source(),
+            )
+        if not session.pending_submit:
+            return TextMessage(
+                content="There is no pending plan submission right now.",
+                source=self._agent_source(),
+            )
+        if session.tb_plan is None or session.base_snapshot is None:
+            session.pending_submit = False
+            return TextMessage(
+                content="Cannot submit yet because the plan is incomplete. Please refine first.",
+                source=self._agent_source(),
+            )
+
+        previous_map = dict(session.event_id_map)
+        try:
+            tx = await self._calendar_submitter.submit_plan(
+                desired=session.tb_plan,
+                remote=session.base_snapshot,
+                event_id_map=session.event_id_map,
+            )
+        except Exception:
+            logger.exception("Calendar submission failed.")
+            return TextMessage(
+                content="Calendar submission failed. Please try again.",
+                source=self._agent_source(),
+            )
+
+        session.pending_submit = False
+        session.committed = True
+        session.last_sync_transaction = tx
+        session.last_sync_event_id_map = previous_map
+        session.event_id_map = self._update_event_id_map_after_submit(
+            session=session,
+            transaction=tx,
+        )
+
+        if tx.status == "committed":
+            text = "Submitted to Google Calendar. You can undo this submission."
+        elif tx.status == "partial":
+            text = "Submission completed with partial failures. You can undo attempted changes."
+        else:
+            text = f"Submission finished with status `{tx.status}`."
+        return SlackBlockMessage(
+            text=text,
+            blocks=self._render_submit_result_blocks(
+                session=session,
+                text=text,
+                include_undo=True,
+            ),
+        )
+
+    @message_handler
+    async def on_cancel_submit(
+        self, message: TimeboxingCancelSubmit, ctx: MessageContext
+    ) -> TextMessage:
+        """Handle Stage 5 cancel-submit action and return to refine stage."""
+        key = self._session_key(ctx, fallback=message.thread_ts)
+        session = self._sessions.get(key)
+        if not session:
+            return TextMessage(
+                content="That timeboxing session is no longer active.",
+                source=self._agent_source(),
+            )
+        session.pending_submit = False
+        await self._advance_stage(session, next_stage=TimeboxingStage.REFINE)
+        return TextMessage(
+            content=(
+                "Submission canceled. Returned to Stage 4/5 (Refine). "
+                "Share what to adjust next."
+            ),
+            source=self._agent_source(),
+        )
+
+    @message_handler
+    async def on_undo_submit(
+        self, message: TimeboxingUndoSubmit, ctx: MessageContext
+    ) -> TextMessage | SlackBlockMessage:
+        """Handle Stage 5 undo-submit action using session-backed transaction state."""
+        key = self._session_key(ctx, fallback=message.thread_ts)
+        session = self._sessions.get(key)
+        if not session:
+            return TextMessage(
+                content="That timeboxing session is no longer active.",
+                source=self._agent_source(),
+            )
+        if session.completed or session.thread_state in {"done", "canceled"}:
+            return TextMessage(
+                content="Undo is unavailable because this session has already ended.",
+                source=self._agent_source(),
+            )
+        transaction = session.last_sync_transaction
+        if transaction is None:
+            return TextMessage(
+                content="There is no submission to undo.",
+                source=self._agent_source(),
+            )
+
+        try:
+            undo_tx = await self._calendar_submitter.undo_transaction(transaction)
+        except Exception:
+            logger.exception("Undo submission failed.")
+            return TextMessage(
+                content="Undo failed. Please try again.",
+                source=self._agent_source(),
+            )
+        if undo_tx is None:
+            return TextMessage(
+                content="Undo is not available for the latest transaction.",
+                source=self._agent_source(),
+            )
+
+        session.pending_submit = False
+        session.last_sync_transaction = None
+        if session.last_sync_event_id_map is not None:
+            session.event_id_map = dict(session.last_sync_event_id_map)
+        session.last_sync_event_id_map = None
+
+        await self._advance_stage(session, next_stage=TimeboxingStage.REFINE)
+        if session.base_snapshot is not None:
+            from .timebox import tb_plan_to_timebox
+
+            session.tb_plan = session.base_snapshot.model_copy(deep=True)
+            try:
+                session.timebox = tb_plan_to_timebox(session.tb_plan)
+            except Exception:
+                logger.debug(
+                    "Failed to convert restored TBPlan to Timebox after undo.",
+                    exc_info=True,
+                )
+
+        if undo_tx.status == "undone":
+            text = "Undo successful. Restored your plan and returned to Refine."
+        else:
+            text = (
+                f"Undo completed with status `{undo_tx.status}`. "
+                "Please review the plan in Refine."
+            )
+        return SlackBlockMessage(
+            text=text,
+            blocks=self._render_submit_result_blocks(
+                session=session,
+                text=text,
+                include_undo=False,
+            ),
+        )
 
     @message_handler
     async def on_finalise(

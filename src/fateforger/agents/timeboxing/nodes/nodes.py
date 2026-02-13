@@ -10,7 +10,6 @@ The graph itself is built in `src/fateforger/agents/timeboxing/flow_graph.py`.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
@@ -25,9 +24,6 @@ from fateforger.agents.timeboxing.timebox import timebox_to_tb_plan
 
 if TYPE_CHECKING:  # pragma: no cover
     from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
-
-logger = logging.getLogger(__name__)
-
 
 class FlowSignal(BaseModel):
     """Internal routing signal for GraphFlow nodes."""
@@ -209,16 +205,6 @@ class TransitionNode(BaseChatAgent):
             )
 
         if decision.action == "proceed":
-            if self._session.stage == TimeboxingStage.REVIEW_COMMIT:
-                self._session.completed = True
-                self._session.thread_state = "done"
-                self._session.last_response = "Finalized. If you want changes, say so and I can go back to Refine."
-                return Response(
-                    chat_message=StructuredMessage(
-                        source=self.name,
-                        content=FlowSignal(kind="transition", note="done"),
-                    )
-                )
             await self._orchestrator._proceed(self._session)  # noqa: SLF001
             self.stage_user_message = ""
             return Response(
@@ -333,6 +319,7 @@ class StageCaptureInputsNode(_StageNodeBase):
         self._session.stage_missing = list(gate.missing or [])
         self._session.stage_question = gate.question
         self._session.input_facts.update(gate.facts or {})
+        self._orchestrator._queue_skeleton_pre_generation(self._session)  # noqa: SLF001
         self.last_gate = gate
         return Response(chat_message=StructuredMessage(source=self.name, content=gate))
 
@@ -366,7 +353,7 @@ class StageSkeletonNode(_StageNodeBase):
                     content=FlowSignal(kind="stage", note="missing-priors"),
                 )
             )
-        self._session.timebox = await self._orchestrator._run_skeleton_draft(
+        self._session.timebox = await self._orchestrator._consume_pre_generated_skeleton(
             self._session
         )  # noqa: SLF001
         # Populate the lightweight TBPlan for sync engine / patcher path
@@ -484,31 +471,10 @@ class StageReviewCommitNode(_StageNodeBase):
                     content=FlowSignal(kind="stage", note="missing-timebox"),
                 )
             )
-        # Submit to calendar via sync engine if TBPlan + base snapshot are available
-        if (
-            self._session.tb_plan is not None
-            and self._session.base_snapshot is not None
-            and hasattr(self._orchestrator, "_calendar_submitter")
-        ):
-            try:
-                tx = await self._orchestrator._calendar_submitter.submit_plan(  # noqa: SLF001
-                    desired=self._session.tb_plan,
-                    remote=self._session.base_snapshot,
-                    event_id_map=self._session.event_id_map,
-                )
-                if tx.status == "committed":
-                    self._session.committed = True
-                    logger.info("Calendar sync committed: %d ops", len(tx.ops))
-                else:
-                    logger.warning("Calendar sync partial: %s", tx.status)
-            except Exception:
-                logger.exception(
-                    "Calendar sync failed; review continues without submission"
-                )
-
         gate = await self._orchestrator._run_review_commit(
             timebox=self._session.timebox
         )  # noqa: SLF001
+        self._session.pending_submit = True
         self._session.stage_ready = True
         self._session.stage_missing = []
         self._session.stage_question = gate.question
@@ -562,6 +528,13 @@ class PresenterNode(BaseChatAgent):
             constraints=self._session.active_constraints,
             immovables=self._session.frame_facts.get("immovables"),
         )
+        if self._session.pending_submit:
+            self._session.pending_presenter_blocks = (
+                self._orchestrator._render_submit_prompt_blocks(
+                    session=self._session,
+                    text=text,
+                )
+            )
         return Response(chat_message=TextMessage(content=text, source=self.name))
 
     async def on_reset(self, cancellation_token: CancellationToken) -> None:

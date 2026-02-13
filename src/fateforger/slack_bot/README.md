@@ -12,7 +12,7 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | Constraint review modals | Implemented |
 | Planning/scheduling UI | Implemented |
 | Haunt delivery (nudges) | Implemented |
-| Sync engine confirm/undo buttons | Roadmap |
+| Sync engine confirm/cancel/undo buttons | Implemented, Tested |
 
 ## File Index
 
@@ -37,6 +37,7 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | File | Responsibility |
 |------|---------------|
 | `timeboxing_commit.py` | Stage 0 "commit day" Slack UI: day picker + start button. Handles user day-selection before a timeboxing session begins. Action IDs: `FF_TIMEBOX_COMMIT_*`. |
+| `timeboxing_submit.py` | Stage 5 submit/cancel/undo Slack action bridge. Parses button metadata and dispatches typed submit/undo messages to `timeboxing_agent`. |
 | `constraint_review.py` | Block Kit modals and action payloads for reviewing/editing timeboxing constraints extracted from conversations. |
 
 ### Planning/Scheduling UI
@@ -89,8 +90,9 @@ Button/action callbacks registered in `handlers.py`:
 | `FF_TIMEBOX_COMMIT_*` | `timeboxing_commit.py` | Stage 0 day selection |
 | `FF_EVENT_*` | `planning.py` | Calendar slot editing |
 | `ff_constraint_*` | `constraint_review.py` | Constraint review modals |
-| `ff_timebox_confirm_submit` | — | **Roadmap:** sync engine confirm |
-| `ff_timebox_undo_submit` | — | **Roadmap:** sync engine undo |
+| `ff_timebox_confirm_submit` | `timeboxing_submit.py` | Submit Stage 5 plan to calendar |
+| `ff_timebox_cancel_submit` | `timeboxing_submit.py` | Cancel pending Stage 5 submit and return to refine |
+| `ff_timebox_undo_submit` | `timeboxing_submit.py` | Undo latest Stage 5 submission |
 
 ## How to Run
 

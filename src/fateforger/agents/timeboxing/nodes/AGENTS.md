@@ -18,7 +18,8 @@
 
 ## Sync Engine Awareness
 
-- `StageReviewCommitNode` calls `CalendarSubmitter.submit_plan()` which uses the sync engine internally.
+- `StageReviewCommitNode` must not auto-submit; it sets `session.pending_submit=True` and returns review output for Presenter.
+- Actual submission/undo are triggered by Slack action handlers (`ff_timebox_confirm_submit`, `ff_timebox_undo_submit`) via orchestrator message handlers.
 - `StageRefineNode` calls `TimeboxPatcher` then `apply_tb_ops()` — it updates `session.tb_plan` but does NOT sync to calendar (sync only happens at Stage 5).
 - `StageSkeletonNode` produces the initial `TBPlan` and saves `session.base_snapshot` — this is the reference for later diff-based sync.
 - Nodes must never call `sync_engine.py` functions directly; always go through `CalendarSubmitter`.

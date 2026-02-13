@@ -2,10 +2,10 @@
 
 ## Tracking
 
-- Status: WIP
+- Status: Implemented, Tested (2026-02-13)
 - System of record issue: https://github.com/hugocool/FateForger/issues/7
 - Issue branch: `issue/7-skeleton-pre-generation`
-- PR: TBD
+- PR: https://github.com/hugocool/FateForger/pull/8
 - Working notebook: `notebooks/WIP/7_skeleton_pre_generation.ipynb`
 
 ## Goal
@@ -120,3 +120,23 @@ Matches existing codebase:
 3. Slack action handlers (confirm, undo, cancel).
 4. Skeleton pre-generation (background task during Stage 2).
 5. E2E tests.
+
+## Acceptance Criteria Check
+
+- [x] AC1: Skeleton pre-generation in Stage 2 + Stage 3 consume/fallback.
+- [x] AC2: Confirm-before-submit Stage 5 flow with confirm/cancel buttons.
+- [x] AC3: Undo button flow with session-backed transaction.
+- [x] AC4: Session memory determinism (`pending_submit`, `last_sync_transaction`, undo restore path).
+- [x] AC5: Integration tests for Slack button flows.
+
+## Validation Executed
+
+- `poetry run pytest tests/unit/test_timeboxing_skeleton_pre_generation.py tests/unit/test_timeboxing_submit_flow.py tests/unit/test_timeboxing_review_submit_prompt.py tests/integration/test_slack_timebox_buttons.py -q`
+- `poetry run pytest tests/unit/test_timeboxing_graphflow_state_machine.py tests/unit/test_phase4_rewiring.py tests/unit/test_slack_timeboxing_routing.py tests/unit/test_timeboxing_commit_skips_initial_extraction.py -q`
+
+## Notes / Remaining Human Verification
+
+- Manual Slack verification still required for **User-confirmed working**:
+  - run Stage 5 in Slack, click Confirm, verify calendar submission + Undo button
+  - click Undo, verify calendar rollback + return to Refine state
+  - click Keep Editing, verify return to Refine without submission

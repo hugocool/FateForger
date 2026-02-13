@@ -114,6 +114,24 @@ class CalendarSubmitter:
         self._last_tx = None  # Clear after undo
         return undo_tx
 
+    async def undo_transaction(self, tx: SyncTransaction) -> SyncTransaction | None:
+        """Undo a specific submitted transaction.
+
+        Args:
+            tx: The transaction to undo.
+
+        Returns:
+            The undo transaction when undo is possible, else ``None``.
+        """
+        if tx.status not in ("committed", "partial"):
+            logger.warning("Transaction is not undoable (status=%s).", tx.status)
+            return None
+        wb = self._get_workbench()
+        undo_tx = await undo_sync(tx, wb)
+        if self._last_tx is tx:
+            self._last_tx = None
+        return undo_tx
+
     @property
     def last_transaction(self) -> SyncTransaction | None:
         """Return the last sync transaction (for inspection / logging)."""

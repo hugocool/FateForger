@@ -10,8 +10,8 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | Sync engine (sync_engine, submitter) | Implemented, Tested | 29 + 10 unit | 2025-07-22 (live MCP) |
 | Patching (schema-in-prompt) | Implemented, Tested | 14 unit | 2025-07-22 (live LLM) |
 | GraphFlow orchestration | Implemented, Documented | graphflow state machine tests | — |
-| Skeleton pre-generation (AC6) | Roadmap | — | — |
-| Slack confirm/undo buttons | Roadmap | — | — |
+| Skeleton pre-generation (AC1) | Implemented, Tested | `test_timeboxing_skeleton_pre_generation.py` | — |
+| Slack confirm/undo buttons (AC2-AC4) | Implemented, Tested | `test_timeboxing_submit_flow.py`, `test_slack_timebox_buttons.py` | — |
 
 ## File Index
 
@@ -38,7 +38,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | File | Responsibility |
 |------|---------------|
 | `sync_engine.py` | `plan_sync()`, `execute_sync()`, `undo_sync()`, `gcal_response_to_tb_plan()`. Deterministic, incremental, reversible diff-and-apply via MCP. Uses set-diff for creates/deletes, DeepDiff for updates. |
-| `submitter.py` | `CalendarSubmitter`: high-level `submit_plan()` and `undo_last()` over the sync engine. Owns `_last_transaction` for single-level undo. |
+| `submitter.py` | `CalendarSubmitter`: high-level `submit_plan()`, `undo_last()`, and `undo_transaction()` over the sync engine. |
 | `mcp_clients.py` | `McpCalendarClient` (list/create/update/delete events via MCP), `McpConstraintMemoryClient` (Notion constraint MCP). Internal to coordinator. |
 
 ### LLM Patching
@@ -96,9 +96,11 @@ Stage 0: Date Confirmation (Slack buttons)
     background: calendar prefetch + Notion constraint retrieval
 Stage 1: CollectConstraints -> StageGateOutput (frame_facts)
 Stage 2: CaptureInputs -> StageGateOutput (input_facts)
-Stage 3: Skeleton -> Timebox -> TBPlan + base_snapshot
+Stage 3: Skeleton -> pre-generated draft if available, else synchronous draft -> Timebox -> TBPlan + base_snapshot
 Stage 4: Refine -> TBPatch -> apply_tb_ops() -> updated TBPlan
-Stage 5: ReviewCommit -> submit via sync engine -> SyncTransaction
+Stage 5: ReviewCommit -> pending_submit + Slack confirm/cancel buttons
+Button confirm: submit via sync engine -> SyncTransaction + Undo button
+Button undo: undo transaction via session-backed state -> return to Refine
 ```
 
 ### Session State
@@ -113,6 +115,9 @@ Session dataclass lives in `agent.py`. Core fields:
 | `tb_plan` | Current TBPlan, sync-engine model (Stage 3+) |
 | `base_snapshot` | TBPlan snapshot at skeleton time (for diff-based sync) |
 | `event_id_map` | Dict mapping event key to GCal event ID |
+| `pre_generated_skeleton` | Background Stage 2 draft consumed by Stage 3 when fresh |
+| `pending_submit` | Stage 5 submit confirmation gate flag |
+| `last_sync_transaction` | Session-backed transaction used for deterministic undo |
 | `active_constraints` | Merged constraint state |
 | `stage` | Current TimeboxingStage enum |
 | `graphflow` | Per-session GraphFlow instance |

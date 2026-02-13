@@ -23,15 +23,17 @@
 - Use Pydantic models for action payloads; avoid manual dict parsing of `body["actions"]`.
 - Modal submissions route through `handlers.py` view submission listeners.
 
-## Sync Engine Integration (Roadmap)
+## Sync Engine Integration
 
-When the sync engine confirm/undo buttons are implemented:
-- `StageReviewCommitNode` should stop auto-submitting; instead produce a `pending_submit` payload.
-- `PresenterNode` formats the plan summary with confirm/undo Block Kit buttons.
-- New action handlers in `handlers.py`: `ff_timebox_confirm_submit`, `ff_timebox_undo_submit`, `ff_timebox_cancel_submit`.
+- `StageReviewCommitNode` emits a `pending_submit` state; no auto-submit in the node path.
+- `PresenterNode` attaches review action blocks (confirm/cancel).
+- Slack action handlers in `handlers.py`:
+  - `ff_timebox_confirm_submit`
+  - `ff_timebox_cancel_submit`
+  - `ff_timebox_undo_submit`
+- Action bridge lives in `timeboxing_submit.py` and dispatches typed messages to `timeboxing_agent`.
 - On confirm: call `CalendarSubmitter.submit_plan()`.
-- On undo: call `CalendarSubmitter.undo_last()`.
-- See `TICKET_SYNC_ENGINE.md` (repo root), Phase 7 ticket.
+- On undo: call `CalendarSubmitter.undo_transaction()` using session-backed transaction state.
 
 ## Testing
 

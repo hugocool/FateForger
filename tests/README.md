@@ -62,11 +62,14 @@ tests/
 | `test_timeboxing_constraint_memory_client_tool_name.py` | MCP tool name sanitization |
 | `test_timeboxing_durable_constraints.py` | Durable Notion constraint persistence |
 | `test_timeboxing_prompt_rendering.py` | Jinja prompt rendering |
+| `test_timeboxing_review_submit_prompt.py` | Stage 2 pre-gen trigger and Stage 5 pending-submit state |
 | `test_timeboxing_skeleton_context_injection.py` | Skeleton context assembly |
 | `test_timeboxing_skeleton_fallback.py` | Skeleton timeout fallback |
+| `test_timeboxing_skeleton_pre_generation.py` | Stage 3 uses pre-generated skeleton when available |
 | `test_timeboxing_stage_gate_json_context.py` | Stage gate JSON context building |
 | `test_timeboxing_stage_prompts_block_based.py` | Stage prompts use block-based terms |
 | `test_timeboxing_stage_prompts_no_tools.py` | Stage LLMs do not have tools registered |
+| `test_timeboxing_submit_flow.py` | Confirm/cancel/undo session transitions + deterministic undo state |
 | `test_timebox_schedule_and_validate.py` | Legacy Timebox validation |
 | `test_contracts.py` | Typed stage context contracts |
 
@@ -128,6 +131,7 @@ tests/
 | `test_calendar_haunter_integration.py` | Calendar haunter with real MCP |
 | `test_haunting_service.py` | Haunting service lifecycle |
 | `test_notion_constraint_store.py` | Notion constraint store |
+| `test_slack_timebox_buttons.py` | Stage 5 Slack confirm/cancel/undo button wiring |
 | `test_timeboxing_durable_constraint_retriever_wiring.py` | Durable constraint retriever wiring |
 
 ### E2E Tests

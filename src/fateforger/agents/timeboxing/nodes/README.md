@@ -25,10 +25,10 @@ GraphFlow node agents that implement the timeboxing stage machine. Each node is 
 | Node | Stage | Responsibility |
 |------|-------|---------------|
 | `StageCollectConstraintsNode` | 1 | Builds constraint context (immovables + Notion + session constraints), calls the Stage 1 LLM via `stage_gating.py`, updates `session.frame_facts`. |
-| `StageCaptureInputsNode` | 2 | Builds input context (frame_facts + user tasks/priorities), calls the Stage 2 LLM, updates `session.input_facts`. |
-| `StageSkeletonNode` | 3 | Drafts the initial schedule. Produces a `Timebox`, converts to `TBPlan`, saves `base_snapshot`. |
+| `StageCaptureInputsNode` | 2 | Builds input context (frame_facts + user tasks/priorities), calls the Stage 2 LLM, updates `session.input_facts`, and queues skeleton pre-generation when context is sufficient. |
+| `StageSkeletonNode` | 3 | Uses pre-generated skeleton when available; otherwise drafts synchronously. Produces a `Timebox`, converts to `TBPlan`, saves `base_snapshot`. |
 | `StageRefineNode` | 4 | Sends `TBPlan` + user feedback to `TimeboxPatcher`. Applies returned `TBPatch` via `apply_tb_ops()`. Loops until user is satisfied. |
-| `StageReviewCommitNode` | 5 | Presents final plan summary. On confirm: calls `CalendarSubmitter.submit_plan()` to sync to GCal. Logs `SyncTransaction`. |
+| `StageReviewCommitNode` | 5 | Presents final plan summary and sets `pending_submit`. Actual submit/undo happen via Slack actions (`ff_timebox_confirm_submit`, `ff_timebox_cancel_submit`, `ff_timebox_undo_submit`). |
 
 ### Base Class
 

@@ -47,6 +47,13 @@ from fateforger.slack_bot.timeboxing_commit import (
     TimeboxingCommitCoordinator,
     format_relative_day_label,
 )
+from fateforger.slack_bot.timeboxing_submit import (
+    FF_TIMEBOX_CANCEL_SUBMIT_ACTION_ID,
+    FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID,
+    FF_TIMEBOX_UNDO_SUBMIT_ACTION_ID,
+    TimeboxSubmitActionPayload,
+    TimeboxingSubmitCoordinator,
+)
 
 from .focus import FocusManager
 from .ui import link_button, open_link_blocks
@@ -1322,6 +1329,7 @@ def register_handlers(
     planning = PlanningCoordinator(runtime=runtime, focus=focus, client=app.client)
     planning.attach_reconciler_dispatch()
     timeboxing_commit = TimeboxingCommitCoordinator(runtime=runtime, client=app.client)
+    timeboxing_submit = TimeboxingSubmitCoordinator(runtime=runtime, client=app.client)
     workspace_bootstrap_attempted = False
     invited_users: set[str] = set()
 
@@ -1706,6 +1714,33 @@ def register_handlers(
                 selected_date=selected_date,
                 existing_meta_value=meta_value,
             )
+
+    @app.action(FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID)
+    async def on_timebox_confirm_submit_action(ack, body, client, logger):
+        """Handle Stage 5 confirm-submit button clicks."""
+        await ack()
+        payload = TimeboxSubmitActionPayload.from_action_body(body)
+        if not payload:
+            return
+        await timeboxing_submit.handle_confirm_action(payload=payload)
+
+    @app.action(FF_TIMEBOX_CANCEL_SUBMIT_ACTION_ID)
+    async def on_timebox_cancel_submit_action(ack, body, client, logger):
+        """Handle Stage 5 cancel-submit button clicks."""
+        await ack()
+        payload = TimeboxSubmitActionPayload.from_action_body(body)
+        if not payload:
+            return
+        await timeboxing_submit.handle_cancel_action(payload=payload)
+
+    @app.action(FF_TIMEBOX_UNDO_SUBMIT_ACTION_ID)
+    async def on_timebox_undo_submit_action(ack, body, client, logger):
+        """Handle Stage 5 undo-submit button clicks."""
+        await ack()
+        payload = TimeboxSubmitActionPayload.from_action_body(body)
+        if not payload:
+            return
+        await timeboxing_submit.handle_undo_action(payload=payload)
 
     @app.action(CONSTRAINT_ROW_REVIEW_ACTION_ID)
     async def on_constraint_review_action(ack, body, client, logger):

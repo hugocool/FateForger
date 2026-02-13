@@ -87,7 +87,7 @@ For file index, architecture, and status, see `README.md` in this folder.
 - Stage 2: **pre-generate skeleton** in background (assumes user proceeds) using immovables + constraints + inputs-so-far.
 - Stage 3: use pre-generated skeleton if available; else draft synchronously.
 - Stage 4: LLM -> `TBPatch` -> `apply_tb_ops()`.
-- Stage 5: `plan_sync()` -> `execute_sync()` -> `SyncTransaction` logged.
+- Stage 5: review gate + explicit submit intent (`pending_submit`) first; sync execution happens only on Slack confirm action.
 
 ## UX Status
 
