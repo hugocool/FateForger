@@ -89,8 +89,8 @@ async def test_stage_capture_inputs_queues_skeleton_pre_generation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stage_review_sets_pending_submit_without_auto_submit() -> None:
-    """Stage 5 should not auto-submit, and should set pending submit state."""
+async def test_stage_review_does_not_enable_submit_prompt() -> None:
+    """Stage 5 should summarize review without enabling submit-button state."""
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
 
     async def _run_review_commit(*, timebox) -> StageGateOutput:
@@ -134,5 +134,5 @@ async def test_stage_review_sets_pending_submit_without_auto_submit() -> None:
         CancellationToken(),
     )
 
-    assert session.pending_submit is True
+    assert session.pending_submit is False
     submitter.assert_not_called()

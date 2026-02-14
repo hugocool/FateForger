@@ -522,6 +522,8 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
 
     @staticmethod
     def _follow_up_plan(content: str) -> FollowUpPlan:
+        # TODO(refactor,typed-contracts): Remove punctuation-based heuristic.
+        # Follow-up requirements should come from structured agent output/metadata.
         if "?" in content:
             return FollowUpPlan(required=True, delay_minutes=10)
         return FollowUpPlan(required=False)

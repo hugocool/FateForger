@@ -54,6 +54,14 @@ from fateforger.slack_bot.timeboxing_submit import (
     TimeboxSubmitActionPayload,
     TimeboxingSubmitCoordinator,
 )
+from fateforger.slack_bot.timeboxing_stage_actions import (
+    FF_TIMEBOX_STAGE_BACK_ACTION_ID,
+    FF_TIMEBOX_STAGE_CANCEL_ACTION_ID,
+    FF_TIMEBOX_STAGE_PROCEED_ACTION_ID,
+    FF_TIMEBOX_STAGE_REDO_ACTION_ID,
+    TimeboxingStageActionCoordinator,
+    TimeboxingStageActionPayload,
+)
 
 from .focus import FocusManager
 from .ui import link_button, open_link_blocks
@@ -449,6 +457,8 @@ def _safe_exc_summary(exc: Exception) -> str:
     if not msg:
         return type(exc).__name__
     # Avoid leaking tokens via headers/URLs etc.
+    # TODO(refactor,typed-errors): Replace token-prefix substring redaction with
+    # structured error payload redaction at source.
     for needle in ("sk-", "or-", "xoxb-", "xapp-"):
         if needle in msg:
             msg = msg.replace(needle, f"{needle}***")
@@ -1330,6 +1340,9 @@ def register_handlers(
     planning.attach_reconciler_dispatch()
     timeboxing_commit = TimeboxingCommitCoordinator(runtime=runtime, client=app.client)
     timeboxing_submit = TimeboxingSubmitCoordinator(runtime=runtime, client=app.client)
+    timeboxing_stage_actions = TimeboxingStageActionCoordinator(
+        runtime=runtime, client=app.client
+    )
     workspace_bootstrap_attempted = False
     invited_users: set[str] = set()
 
@@ -1741,6 +1754,54 @@ def register_handlers(
         if not payload:
             return
         await timeboxing_submit.handle_undo_action(payload=payload)
+
+    @app.action(FF_TIMEBOX_STAGE_PROCEED_ACTION_ID)
+    async def on_timebox_stage_proceed_action(ack, body, client, logger):
+        """Handle deterministic stage proceed button clicks."""
+        await ack()
+        payload = TimeboxingStageActionPayload.from_action_body(body)
+        if not payload:
+            return
+        await timeboxing_stage_actions.handle_action(
+            payload=payload,
+            action="proceed",
+        )
+
+    @app.action(FF_TIMEBOX_STAGE_BACK_ACTION_ID)
+    async def on_timebox_stage_back_action(ack, body, client, logger):
+        """Handle deterministic stage back button clicks."""
+        await ack()
+        payload = TimeboxingStageActionPayload.from_action_body(body)
+        if not payload:
+            return
+        await timeboxing_stage_actions.handle_action(
+            payload=payload,
+            action="back",
+        )
+
+    @app.action(FF_TIMEBOX_STAGE_REDO_ACTION_ID)
+    async def on_timebox_stage_redo_action(ack, body, client, logger):
+        """Handle deterministic stage redo button clicks."""
+        await ack()
+        payload = TimeboxingStageActionPayload.from_action_body(body)
+        if not payload:
+            return
+        await timeboxing_stage_actions.handle_action(
+            payload=payload,
+            action="redo",
+        )
+
+    @app.action(FF_TIMEBOX_STAGE_CANCEL_ACTION_ID)
+    async def on_timebox_stage_cancel_action(ack, body, client, logger):
+        """Handle deterministic stage cancel button clicks."""
+        await ack()
+        payload = TimeboxingStageActionPayload.from_action_body(body)
+        if not payload:
+            return
+        await timeboxing_stage_actions.handle_action(
+            payload=payload,
+            action="cancel",
+        )
 
     @app.action(CONSTRAINT_ROW_REVIEW_ACTION_ID)
     async def on_constraint_review_action(ack, body, client, logger):

@@ -141,16 +141,72 @@ class McpCalendarClient:
         return self._workbench.get_tools()
 
     @staticmethod
-    def _extract_tool_payload(result: Any) -> Any:
+    def _parse_json_text(raw: Any) -> Any | None:
+        """Parse a JSON payload from text when possible."""
+        # TODO(refactor,typed-contracts): Remove text/fence parsing fallback and
+        # require typed MCP payloads (Pydantic-validated envelopes).
+        if not isinstance(raw, str):
+            return None
+        text = raw.strip()
+        if not text:
+            return None
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    @classmethod
+    def _extract_tool_payload(cls, result: Any) -> Any:
         """Normalize tool results into a raw payload."""
         # TODO(refactor): Replace dict probing with Pydantic parsing of tool results.
-        if isinstance(result, dict):
+        if isinstance(result, (dict, list)):
             return result
+        to_text = getattr(result, "to_text", None)
+        if callable(to_text):
+            try:
+                parsed = cls._parse_json_text(to_text())
+                if parsed is not None:
+                    return parsed
+            except Exception:
+                pass
         payload = getattr(result, "content", None)
         if payload is not None:
+            if isinstance(payload, list):
+                for item in payload:
+                    if isinstance(item, (dict, list)):
+                        return item
+                    parsed = cls._parse_json_text(getattr(item, "content", None))
+                    if parsed is not None:
+                        return parsed
+                    parsed = cls._parse_json_text(getattr(item, "text", None))
+                    if parsed is not None:
+                        return parsed
+            parsed = cls._parse_json_text(payload)
+            if parsed is not None:
+                return parsed
             return payload
         payload = getattr(result, "result", None)
         if payload is not None:
+            if isinstance(payload, list):
+                for item in payload:
+                    if isinstance(item, (dict, list)):
+                        return item
+                    parsed = cls._parse_json_text(getattr(item, "content", None))
+                    if parsed is not None:
+                        return parsed
+                    parsed = cls._parse_json_text(getattr(item, "text", None))
+                    if parsed is not None:
+                        return parsed
+            parsed = cls._parse_json_text(payload)
+            if parsed is not None:
+                return parsed
             return payload
         return {}
 
@@ -159,12 +215,30 @@ class McpCalendarClient:
         """Coerce raw MCP payloads into a list of event dicts."""
         # TODO(refactor): Replace dict filtering with Pydantic CalendarEvent parsing.
         if isinstance(payload, dict):
-            items = payload.get("items")
+            items = payload.get("events") or payload.get("items")
             if isinstance(items, list):
                 return [item for item in items if isinstance(item, dict)]
+            event = payload.get("event")
+            if isinstance(event, dict):
+                return [event]
             return []
         if isinstance(payload, list):
-            return [item for item in payload if isinstance(item, dict)]
+            dict_items = [item for item in payload if isinstance(item, dict)]
+            if not dict_items:
+                return []
+            direct_events = [
+                item
+                for item in dict_items
+                if "start" in item and "end" in item
+            ]
+            if direct_events:
+                return direct_events
+            nested: list[dict[str, Any]] = []
+            for item in dict_items:
+                nested.extend(McpCalendarClient._normalize_events(item))
+            if nested:
+                return nested
+            return dict_items
         return []
 
     @staticmethod
@@ -189,7 +263,12 @@ class McpCalendarClient:
         return dt_val.astimezone(tz).strftime("%H:%M")
 
     async def list_day_immovables(
-        self, *, calendar_id: str, day: date, tz: ZoneInfo
+        self,
+        *,
+        calendar_id: str,
+        day: date,
+        tz: ZoneInfo,
+        diagnostics: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         """Fetch a day's immovables from the MCP calendar server."""
         start = (
@@ -209,9 +288,19 @@ class McpCalendarClient:
             "singleEvents": True,
             "orderBy": "startTime",
         }
+        if diagnostics is not None:
+            diagnostics["request"] = args
         result = await self._workbench.call_tool("list-events", arguments=args)
+        if diagnostics is not None:
+            diagnostics["result_type"] = type(result).__name__
         payload = self._extract_tool_payload(result)
+        if diagnostics is not None:
+            diagnostics["payload_type"] = type(payload).__name__
+            if isinstance(payload, dict):
+                diagnostics["payload_keys"] = sorted(payload.keys())
         events = self._normalize_events(payload)
+        if diagnostics is not None:
+            diagnostics["raw_event_count"] = len(events)
 
         immovables: list[dict[str, str]] = []
         for event in events:
@@ -227,4 +316,6 @@ class McpCalendarClient:
             if not start_str or not end_str:
                 continue
             immovables.append({"title": summary, "start": start_str, "end": end_str})
+        if diagnostics is not None:
+            diagnostics["immovable_count"] = len(immovables)
         return immovables

@@ -14,6 +14,7 @@ from pydantic import TypeAdapter, ValidationError
 T = TypeVar("T")
 
 
+# TODO: this should not be neccesary, we should leverage the agents message type to get this to work
 def parse_chat_content(model: type[T], response: Any) -> T:
     """Parse `response.chat_message.content` into `model`.
 
@@ -33,6 +34,7 @@ def parse_chat_content(model: type[T], response: Any) -> T:
     return TypeAdapter(model).validate_python(content)
 
 
+# TODO: this should not be neccesary, we should leverage the agents message type to get this to work
 def parse_model_optional(model: type[T], value: Any) -> T | None:
     """Parse a single object into `model`, returning None on invalid/empty input.
 
@@ -48,6 +50,7 @@ def parse_model_optional(model: type[T], value: Any) -> T | None:
         return None
 
 
+# TODO: this should not be neccesary, we should leverage the agents message type to get this to work
 def parse_model_list(model: type[T], value: Any) -> list[T]:
     """Parse a list of objects into a list of `model`, skipping invalid items."""
     if not isinstance(value, list):

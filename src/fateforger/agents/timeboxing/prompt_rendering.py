@@ -8,13 +8,18 @@ from pathlib import Path
 from jinja2 import Template
 
 from fateforger.agents.timeboxing.contracts import SkeletonContext
+from fateforger.agents.timeboxing.planning_policy import (
+    PLANNING_POLICY_VERSION,
+    SHARED_PLANNING_POLICY_PROMPT,
+    STAGE3_OUTLINE_PROMPT,
+)
 from fateforger.llm.toon import toon_encode
 
 from fateforger.agents.timeboxing.toon_views import (
     constraints_rows,
     immovables_rows,
     tasks_rows,
- )
+)
 
 
 @lru_cache(maxsize=4)
@@ -99,6 +104,9 @@ def render_skeleton_draft_system_prompt(*, context: SkeletonContext) -> str:
     )
     return (
         tpl.render(
+            shared_policy_version=PLANNING_POLICY_VERSION,
+            shared_planning_policy=SHARED_PLANNING_POLICY_PROMPT,
+            stage3_outline_policy=STAGE3_OUTLINE_PROMPT,
             frame_toon=frame_toon,
             block_plan_toon=block_plan_toon,
             daily_one_thing_toon=daily_one_thing_toon,

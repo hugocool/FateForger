@@ -15,6 +15,7 @@
 ## Git write authority (critical)
 - The agent must not run `git commit` or `git push` unless the user explicitly asks for it in the current turn.
 - Default behavior: implement changes, run validation, and stop at a review-ready working tree.
+- Even when commit/push is not requested, the agent should still post GitHub Issue progress checkpoints automatically during active implementation (see PR/Issue sync protocol).
 - Before any commit/push, present:
   - files changed
   - tests/commands run
@@ -49,22 +50,39 @@ Before any implementation work:
 - For each ticket, run a notebook decision gate and record it in Issue/PR updates:
   - `notebook-mode`: notebook is a required development/review entrypoint
   - `code-only-mode`: no notebook needed for this ticket
+- Pairing-first design handshake (mandatory for non-trivial behavior/code changes in all modes) [trial: owner=Hugo+Agent, date=2026-02-13]:
+  - in chat, restate: problem definition, constraints, ownership split, and acceptance criteria
+  - propose 2-3 implementation directions with tradeoffs/risks and one recommended option
+  - ask for explicit user selection/approval before writing or editing production code
+  - if the user explicitly waives options and asks to implement directly, record that waiver in the next Issue/PR checkpoint
+- Validation-first pairing loop (mandatory for behavior/debug tickets) [trial: owner=Hugo+Agent, date=2026-02-14]:
+  - before code edits, propose the fastest user-visible validation workflow (prefer notebook-mode when applicable)
+  - include explicit runnable steps/cells for: importing target agent/module, seeding current state payload (for example current timebox/TBPlan JSON), executing the behavior under test, forcing/observing failure paths, and verifying retry/error-injection behavior
+  - ask for explicit user approval/adjustment of this validation workflow before implementing
+  - run the agreed validation workflow at checkpoints and compare observed vs expected behavior in chat
+  - if behavior still mismatches AC, iterate on validation+design with the user before broad refactors
 - If `notebook-mode` and the primary notebook mapping is missing or unclear, the agent must:
   - offer to create a new `notebooks/WIP/<issue_id>_<slug>.ipynb` or normalize an existing notebook
   - wait for user confirmation when instruction/config updates are required
   - scaffold the notebook metadata + section headers before major implementation changes
-- If `notebook-mode`, run a mandatory design-options handshake before major coding:
+- If `notebook-mode`, mirror the approved design options in notebook markdown before major coding:
   - propose at least 2 implementation options in notebook markdown (not production code)
   - include tradeoffs, risks, key design decisions, and short pseudocode/flow outlines
   - mark one recommended option and why
-  - wait for explicit user selection/approval before implementing
-- Chat-first pairing protocol (mandatory for notebook-mode):
-  - in chat, extract and restate: problem definition, constraints, ownership split, and acceptance criteria
-  - propose 2-3 implementation directions with recommendation and open questions
-  - ask for explicit user confirmation of selected direction
-  - only after confirmation, write the agreed direction into the issue notebook
-  - then proceed from notebook to modular extraction and implementation
-- If `code-only-mode`, document the rationale in the Issue/PR checkpoint (for example: tiny isolated patch, no exploratory surface needed).
+  - write the user-approved direction into the issue notebook before implementation
+- Chat-first pairing protocol details (mandatory for non-trivial tickets):
+  - only after explicit user confirmation, begin implementation
+  - in `notebook-mode`: write the agreed direction into the notebook, then proceed to extraction/implementation
+  - in `code-only-mode`: record the selected option + rationale in the Issue/PR kickoff checkpoint
+- Plan-to-Notebook implementation handoff (mandatory in notebook-mode) [trial: owner=Hugo+Agent, date=2026-02-14]:
+  - if a ticket started in Plan mode and the user says to implement (for example "implement this plan"), treat that as permission to start notebook-first pairing execution, not permission to skip notebook pairing
+  - before editing production code (`src/`, `tests/`, `docs/`), first update the issue notebook with:
+    - confirmed selected direction
+    - where new functionality will live
+    - AC-to-artifact mapping for the upcoming checkpoint
+  - post the notebook checkpoint in chat and wait for explicit user acknowledgment before first production-code edits
+  - implement in small extraction checkpoints (AC-by-AC or similarly bounded slices) and pause for user steering at each substantial checkpoint
+- If `code-only-mode`, document the rationale for code-only and the approved implementation direction in the Issue/PR checkpoint.
 
 After implementation:
 - **Walk through acceptance criteria with the user:** explicitly check each criterion and record whether it is satisfied.
@@ -83,13 +101,41 @@ After implementation:
 - **Pre-PR-close cleanliness check:** run `git status --porcelain` again; only intended files for the issue should remain in scope.
 - **Sprawl prevention:** before merge, remove temporary scratch files and notebook-local duplicates that were already extracted to durable artifacts.
 
+## Debug logging protocol (critical)
+- During manual user testing via Slack/Run+Debug, keep deterministic file logs enabled for debugging surfaces:
+  - session flow logs: `TIMEBOX_SESSION_DEBUG_LOG=1` (or debugger-attached auto-enable), directory `TIMEBOX_SESSION_LOG_DIR` (default `logs/`)
+  - patcher logs: `TIMEBOX_PATCHER_DEBUG_LOG=1`, directory `TIMEBOX_PATCHER_LOG_DIR` (default `logs/`)
+- Per-session logs are the primary source for reproducing runtime behavior; terminal stdout is secondary and may be truncated/noisy.
+- When the user reports a failure, identify the specific session/timestamp, read the matching `logs/` file(s), and cite concrete log evidence in the next Issue checkpoint.
+- Include log-file references in GitHub Issue progress comments whenever a fix was derived from user-test logs.
+- Log scope must be goal-driven and adjustable per investigation:
+  - `baseline`: stage transitions, inputs/outputs summaries, external call counts/status, deterministic action events.
+  - `integration-debug`: include sanitized request/response shape metadata (keys/types/counts) for MCP/API boundaries.
+  - `deep-debug`: temporarily add targeted payload excerpts for one component under investigation; remove/reduce after root cause is found.
+- Exception logging must be efficient by default:
+  - always log concise exception records (`error_type`, short `error`, `stage`, `session_key`, operation name).
+  - do not dump full tracebacks by default in high-volume session logs.
+  - enable tracebacks only when needed for unresolved failures, and keep them scoped to the failing component.
+- Every log event should be correlation-friendly:
+  - include `session_key`/`thread_ts` + stage + operation/event name.
+  - use structured JSON log lines where possible to support grep/filter workflows.
+- Noise budget and cleanup:
+  - prioritize signal over volume; avoid repetitive low-value events.
+  - once an incident is resolved, downgrade temporary deep-debug logs back to baseline.
+  - keep debug-log changes scoped to the active ticket and document any temporary toggles in Issue checkpoints.
+
 ## PR/Issue sync protocol (critical)
 - **Primary operator surface:** progress must be visible in GitHub Issue/PR (including VS Code GitHub Pull Requests panel), not hidden in local ticket markdown.
-- **Deterministic sync checkpoints:** when a PR exists, update GitHub at:
+- **Deterministic sync checkpoints:** when an Issue exists (with or without a PR), update GitHub at:
   - kickoff (scope + acceptance criteria + planned validation)
   - each substantial implementation checkpoint
   - pre-close (tests run, cleanliness check result, remaining human actions)
-- **Update mechanism:** either post a PR comment or update the PR description; status must stay current without requiring users to open `/tickets/`.
+- **Update mechanism:** post an Issue comment by default; when a PR exists, also post a PR comment so both remain in sync (PR description updates are optional and additive, not a substitute for checkpoint comments).
+- **PR mirror rule (mandatory):** for every substantial checkpoint, if an open PR exists for the active issue branch, mirror the checkpoint to both:
+  - Issue comment
+  - PR comment
+  - do this in the same work cycle before sending the final user reply.
+- **Checkpoint evidence links (mandatory):** include links to the latest Issue comment and PR comment in the final user reply whenever both exist.
 - **Open Items block (mandatory):** every substantial checkpoint (chat reply + Issue/PR update + notebook closeout) must include an explicit `Open Items` section with:
   - `To decide` (decisions needed from human/owner)
   - `To do` (remaining implementation/verification tasks)
@@ -258,6 +304,12 @@ After implementation:
   - keep issue/PR/ticket status aligned during the ticket
   - when requested, help draft GitHub issues/PR text and apply updates on user confirmation
 - Collaboration rule: when working from a notebook, do extraction in small checkpoints so the user can review and steer before large code moves.
+- Notebook debugging rule: for patcher/retry/sync issues, maintain a minimal reproducible notebook cell flow that demonstrates:
+  - current state input
+  - LLM patch request
+  - failure payload returned to the model
+  - retry attempt outcome
+  - final pass/fail assertion against acceptance criteria
 - Anti-patterns (forbidden):
   - do not leave critical logic only in notebooks once marked `Extraction complete`
   - do not let agents open/prepare notebook-heavy PRs without a linked ticket + deterministic run check

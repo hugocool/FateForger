@@ -18,7 +18,7 @@ GraphFlow node agents that implement the timeboxing stage machine. Each node is 
 | `TurnInitNode` | all | Receives the latest user message, stashes it on Session, produces the routing input for DecisionNode. |
 | `DecisionNode` | all | Reads current `session.stage` and decides whether to advance, stay, or branch. Emits the stage label consumed by `TransitionNode`. |
 | `TransitionNode` | all | Pure router: maps the decision label to the correct stage node. No LLM call. |
-| `PresenterNode` | all | Formats the stage agent output into Slack Block Kit. One user-facing message per Slack turn. |
+| `PresenterNode` | all | Formats stage output into Slack Block Kit and surfaces deterministic stage controls (Proceed/Back/Redo/Cancel) via orchestrator block attachment. One user-facing message per Slack turn. |
 
 ### Stage Nodes (all extend `_StageNodeBase`)
 
@@ -26,9 +26,9 @@ GraphFlow node agents that implement the timeboxing stage machine. Each node is 
 |------|-------|---------------|
 | `StageCollectConstraintsNode` | 1 | Builds constraint context (immovables + Notion + session constraints), calls the Stage 1 LLM via `stage_gating.py`, updates `session.frame_facts`. |
 | `StageCaptureInputsNode` | 2 | Builds input context (frame_facts + user tasks/priorities), calls the Stage 2 LLM, updates `session.input_facts`, and queues skeleton pre-generation when context is sufficient. |
-| `StageSkeletonNode` | 3 | Uses pre-generated skeleton when available; otherwise drafts synchronously. Produces a `Timebox`, converts to `TBPlan`, saves `base_snapshot`. |
-| `StageRefineNode` | 4 | Sends `TBPlan` + user feedback to `TimeboxPatcher`. Applies returned `TBPatch` via `apply_tb_ops()`. Loops until user is satisfied. |
-| `StageReviewCommitNode` | 5 | Presents final plan summary and sets `pending_submit`. Actual submit/undo happen via Slack actions (`ff_timebox_confirm_submit`, `ff_timebox_cancel_submit`, `ff_timebox_undo_submit`). |
+| `StageSkeletonNode` | 3 | Uses pre-generated skeleton when available; otherwise drafts synchronously. Produces markdown overview rendered via Slack `markdown` block and carries the prepared draft plan forward, but does not build sync baselines. |
+| `StageRefineNode` | 4 | Prepares `TBPlan` + remote baseline if missing, sends `TBPlan` + user feedback to `TimeboxPatcher`, applies `TBPatch` via `apply_tb_ops()`, then syncs current plan to Google Calendar. |
+| `StageReviewCommitNode` | 5 | Presents final plan summary. Undo remains available through Slack action routing (`ff_timebox_undo_submit`). |
 
 ### Base Class
 

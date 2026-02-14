@@ -2,6 +2,9 @@ import json
 import logging
 import os
 import re
+import sys
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 
@@ -39,6 +42,44 @@ def configure_logging(*, default_level: str | int = "INFO") -> None:
     logging.getLogger("apscheduler").setLevel(
         _coerce_level(os.getenv("APSCHEDULER_LOG_LEVEL", "WARNING"))
     )
+    _configure_timebox_patcher_debug_file_logging()
+
+
+def _configure_timebox_patcher_debug_file_logging() -> None:
+    """Enable a dedicated patcher file logger when debug mode is enabled."""
+    explicit = os.getenv("TIMEBOX_PATCHER_DEBUG_LOG")
+    if explicit is None:
+        enabled = _is_truthy(
+            os.getenv("DEBUG") or os.getenv("FATEFORGER_DEBUG")
+        ) or _debugger_attached()
+    else:
+        enabled = _is_truthy(explicit)
+    if not enabled:
+        return
+
+    patcher_logger = logging.getLogger("fateforger.agents.timeboxing.patching")
+    if any(getattr(h, "_fftb_patcher_file", False) for h in patcher_logger.handlers):
+        return
+
+    log_dir = Path(os.getenv("TIMEBOX_PATCHER_LOG_DIR", "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_path = log_dir / f"timebox_patcher_{ts}_{os.getpid()}.log"
+
+    handler = logging.FileHandler(file_path, encoding="utf-8")
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
+    setattr(handler, "_fftb_patcher_file", True)
+
+    patcher_logger.addHandler(handler)
+    # Keep patcher debug logs out of stdout noise; diagnostics go to file.
+    patcher_logger.setLevel(logging.DEBUG)
+    patcher_logger.propagate = False
+    logging.getLogger(__name__).info(
+        "Timebox patcher debug logging enabled: %s", file_path
+    )
 
 
 def _coerce_level(value: str | int) -> int:
@@ -46,6 +87,21 @@ def _coerce_level(value: str | int) -> int:
         return value
     name = (value or "").strip().upper()
     return getattr(logging, name, logging.INFO)
+
+
+def _is_truthy(value: str | None) -> bool:
+    """Interpret common truthy strings from environment variables."""
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on", "debug"}
+
+
+def _debugger_attached() -> bool:
+    """Return whether a debugger trace hook is attached."""
+    try:
+        return sys.gettrace() is not None
+    except Exception:
+        return False
 
 
 def _coerce_int(value: str | None, *, default: int) -> int:
@@ -87,6 +143,8 @@ class _AutogenEventsFilter(logging.Filter):
 
 
 class _AutogenCoreFilter(logging.Filter):
+    # TODO(refactor,typed-events): Stop parsing plain-text log lines with regex.
+    # Prefer structured logging payloads emitted by source logger adapters.
     _resolve_re = re.compile(
         r"^Resolving response with message type (?P<type>\w+)"
         r" for recipient (?P<recipient>.+?) from (?P<sender>[^:]+):"
@@ -141,6 +199,8 @@ def _summarize_autogen_event_message(
     if not msg:
         return msg
 
+    # TODO(refactor,typed-events): Remove substring probes for "tools"/"payload"
+    # by relying on structured event objects instead of raw message text.
     if len(msg) <= max_chars and "\"tools\"" not in msg and "\"payload\"" not in msg:
         return msg
 

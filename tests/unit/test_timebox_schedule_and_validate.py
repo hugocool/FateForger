@@ -148,3 +148,67 @@ def test_timebox_rejects_overlaps() -> None:
             }
         )
 
+
+def test_timebox_uses_datetime_start_end_when_time_fields_missing() -> None:
+    """Derive start_time/end_time from datetime start/end anchors."""
+    tb = Timebox.model_validate(
+        {
+            "date": "2026-01-21",
+            "timezone": "Europe/Amsterdam",
+            "events": [
+                {
+                    "summary": "Anchored Meeting",
+                    "event_type": "M",
+                    "start": "2026-01-21T09:00:00",
+                    "end": "2026-01-21T10:00:00",
+                    "calendarId": "primary",
+                    "timeZone": "Europe/Amsterdam",
+                }
+            ],
+        }
+    )
+    assert tb.events[0].start_time == time(9, 0)
+    assert tb.events[0].end_time == time(10, 0)
+
+
+def test_timebox_missing_anchor_error_uses_summary_label() -> None:
+    """Raise ValueError with summary label instead of crashing on missing `uid`."""
+    with pytest.raises(ValueError, match="Unscheduled Event: needs start or duration"):
+        Timebox.model_validate(
+            {
+                "date": "2026-01-21",
+                "timezone": "Europe/Amsterdam",
+                "events": [
+                    {
+                        "summary": "Unscheduled Event",
+                        "event_type": "DW",
+                        "duration": "PT30M",
+                        "anchor_prev": True,
+                        "calendarId": "primary",
+                        "timeZone": "Europe/Amsterdam",
+                    }
+                ],
+            }
+        )
+
+
+def test_timebox_missing_anchor_error_prefers_event_id_label() -> None:
+    """Raise ValueError using eventId/uid-compatible label when present."""
+    with pytest.raises(ValueError, match="evt-123: needs start or duration"):
+        Timebox.model_validate(
+            {
+                "date": "2026-01-21",
+                "timezone": "Europe/Amsterdam",
+                "events": [
+                    {
+                        "eventId": "evt-123",
+                        "summary": "Ignored Label",
+                        "event_type": "DW",
+                        "duration": "PT30M",
+                        "anchor_prev": True,
+                        "calendarId": "primary",
+                        "timeZone": "Europe/Amsterdam",
+                    }
+                ],
+            }
+        )

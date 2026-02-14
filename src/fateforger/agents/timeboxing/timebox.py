@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date as date_type
 from datetime import datetime, time, timedelta
+import logging
 from typing import List, Optional
 
 from isodate import parse_duration
@@ -20,12 +21,15 @@ from .tb_models import (
     ET,
     ET_COLOR_MAP,
     AfterPrev,
+    BeforeNext,
     FixedStart,
     FixedWindow,
     TBEvent,
     TBPlan,
     gcal_color_to_et,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Timebox(BaseModel):
@@ -41,6 +45,19 @@ class Timebox(BaseModel):
         """Fill missing start/end/duration fields and reject overlaps."""
         planning_date = self.date or date_type.today()
         events = list(self.events or [])
+
+        def _event_label(event: CalendarEvent) -> str:
+            """Return a stable human-readable event identifier for errors."""
+            uid = getattr(event, "uid", None)
+            if isinstance(uid, str) and uid.strip():
+                return uid.strip()
+            event_id = getattr(event, "eventId", None)
+            if isinstance(event_id, str) and event_id.strip():
+                return event_id.strip()
+            summary = getattr(event, "summary", None)
+            if isinstance(summary, str) and summary.strip():
+                return summary.strip()
+            return "event"
 
         def _ensure_time(value: time | str | None) -> time | None:
             """Coerce HH:MM(/:SS) strings into `datetime.time`."""
@@ -58,8 +75,34 @@ class Timebox(BaseModel):
                 return value
             return parse_duration(value)
 
+        def _time_from_datetime_like(value: object | None) -> time | None:
+            """Extract time-of-day from datetime/date/string anchors."""
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                return value.time()
+            if isinstance(value, date_type):
+                return time.min
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return None
+                try:
+                    if "T" in text:
+                        return datetime.fromisoformat(text).time()
+                    date_type.fromisoformat(text)
+                    return time.min
+                except Exception:
+                    return None
+            return None
+
         last_dt: datetime | None = None
         for ev in events:
+            # Accept scheduler-style datetime anchors when time-only fields are absent.
+            if ev.start_time is None and ev.start is not None:
+                ev.start_time = _time_from_datetime_like(ev.start)
+            if ev.end_time is None and ev.end is not None:
+                ev.end_time = _time_from_datetime_like(ev.end)
             ev.start_time = _ensure_time(ev.start_time)
             ev.end_time = _ensure_time(ev.end_time)
             ev.duration = _ensure_duration(ev.duration)
@@ -78,9 +121,9 @@ class Timebox(BaseModel):
 
             if ev.start_time is None and ev.end_time is None and ev.anchor_prev:
                 if last_dt is None:
-                    raise ValueError(f"{ev.uid or ev.summary}: needs start or duration")
+                    raise ValueError(f"{_event_label(ev)}: needs start or duration")
                 if ev.duration is None:
-                    raise ValueError(f"{ev.uid or ev.summary}: needs duration")
+                    raise ValueError(f"{_event_label(ev)}: needs duration")
                 ev.start_time = last_dt.time()
                 ev.end_time = (last_dt + ev.duration).time()
 
@@ -91,9 +134,9 @@ class Timebox(BaseModel):
         for ev in reversed(events):
             if (not ev.anchor_prev) and ev.start_time is None and ev.end_time is None:
                 if next_dt is None:
-                    raise ValueError(f"{ev.uid or ev.summary}: needs end or duration")
+                    raise ValueError(f"{_event_label(ev)}: needs end or duration")
                 if ev.duration is None:
-                    raise ValueError(f"{ev.uid or ev.summary}: needs duration")
+                    raise ValueError(f"{_event_label(ev)}: needs duration")
                 ev.end_time = next_dt.time()
                 ev.start_time = (next_dt - ev.duration).time()
             if ev.start_time:
@@ -115,7 +158,7 @@ class Timebox(BaseModel):
                 dt_last_start = datetime.combine(planning_date, last_event.start_time)
                 if dt_last_start.date() != planning_date:
                     raise ValueError(
-                        f"{last_event.uid or last_event.summary}: start {dt_last_start} is not on {planning_date}"
+                        f"{_event_label(last_event)}: start {dt_last_start} is not on {planning_date}"
                     )
 
         self.events = events
@@ -166,7 +209,6 @@ def tb_plan_to_timebox(plan: TBPlan) -> Timebox:
                 event_type=event_type,
                 start_time=r["start_time"],
                 end_time=r["end_time"],
-                duration=r.get("duration"),
                 timeZone=plan.tz,
             )
         )
@@ -174,7 +216,7 @@ def tb_plan_to_timebox(plan: TBPlan) -> Timebox:
     return Timebox(events=events, date=plan.date, timezone=plan.tz)
 
 
-def timebox_to_tb_plan(timebox: Timebox) -> TBPlan:
+def timebox_to_tb_plan(timebox: Timebox, *, validate: bool = True) -> TBPlan:
     """Convert a heavy ``Timebox`` to a lightweight ``TBPlan``.
 
     Each ``CalendarEvent`` becomes a ``TBEvent`` with ``FixedWindow``
@@ -182,42 +224,118 @@ def timebox_to_tb_plan(timebox: Timebox) -> TBPlan:
 
     Args:
         timebox: The heavy timebox.
+        validate: When ``True`` (default), enforce full ``TBPlan`` validation.
+            When ``False``, return a model-constructed plan that may still need
+            repair by the Stage 4 patch loop.
 
     Returns:
         A ``TBPlan`` with ``FixedWindow`` events.
     """
     tb_events: list[TBEvent] = []
 
+    def _time_from_datetime_like(value: object | None) -> time | None:
+        """Extract time-of-day from datetime/date/string anchors."""
+        if value is None:
+            return None
+        if isinstance(value, time):
+            return value
+        if isinstance(value, datetime):
+            return value.time().replace(tzinfo=None)
+        if isinstance(value, date_type):
+            return time.min
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                if "T" in text:
+                    return datetime.fromisoformat(text).time().replace(tzinfo=None)
+                date_type.fromisoformat(text)
+                return time.min
+            except Exception:
+                return None
+        return None
+
     for ev in timebox.events:
+        summary_value = getattr(ev, "summary", None)
+        if isinstance(summary_value, str):
+            name = summary_value.strip()
+        else:
+            name = ""
+        if not name:
+            event_id = getattr(ev, "eventId", None)
+            fallback = (
+                event_id.strip()
+                if isinstance(event_id, str) and event_id.strip()
+                else "Busy"
+            )
+            logger.warning(
+                "timebox_to_tb_plan missing summary; using fallback name='%s' event_id='%s'",
+                fallback,
+                event_id,
+            )
+            name = fallback
+
+        start_time = ev.start_time or _time_from_datetime_like(getattr(ev, "start", None))
+        end_time = ev.end_time or _time_from_datetime_like(getattr(ev, "end", None))
+        duration = ev.duration
+        start_dt = getattr(ev, "start", None)
+        end_dt = getattr(ev, "end", None)
+        if (
+            duration is None
+            and isinstance(start_dt, datetime)
+            and isinstance(end_dt, datetime)
+            and end_dt > start_dt
+        ):
+            duration = end_dt - start_dt
+
         # Map EventType → ET code
-        et_code_str = _EVENT_TYPE_TO_ET.get(ev.event_type.value, "M")
+        event_type = ev.event_type
+        if not isinstance(event_type, EventType):
+            try:
+                event_type = EventType(event_type)
+            except Exception:
+                event_type = EventType.MEETING
+        et_code_str = _EVENT_TYPE_TO_ET.get(event_type.value, "M")
         et = ET(et_code_str)
 
         # Use concrete times if available
-        if ev.start_time and ev.end_time:
-            timing = FixedWindow(st=ev.start_time, et=ev.end_time)
-        elif ev.start_time and ev.duration:
-            timing = FixedStart(st=ev.start_time, dur=ev.duration)
-        elif ev.duration:
-            timing = AfterPrev(dur=ev.duration)
+        if start_time and end_time:
+            if duration and end_time <= start_time:
+                # Cross-midnight windows cannot be represented as same-day FW;
+                # represent as fixed-start + duration.
+                timing = FixedStart(st=start_time, dur=duration)
+            else:
+                timing = FixedWindow(st=start_time, et=end_time)
+        elif start_time and duration:
+            timing = FixedStart(st=start_time, dur=duration)
+        elif end_time and duration and getattr(ev, "anchor_prev", True) is False:
+            timing = BeforeNext(dur=duration)
+        elif duration:
+            timing = AfterPrev(dur=duration)
         else:
-            # Fallback: 1-hour after_prev
-            timing = AfterPrev(dur=timedelta(hours=1))
+            raise ValueError(
+                "timebox_to_tb_plan: event cannot be mapped to TB timing "
+                f"(summary={name!r})"
+            )
 
         tb_events.append(
             TBEvent(
-                n=ev.summary,
+                n=name,
                 d=ev.description or "",
                 t=et,
                 p=timing,
             )
         )
 
-    return TBPlan(
-        events=tb_events,
-        date=timebox.date,
-        tz=timebox.timezone,
-    )
+    payload = {
+        "events": tb_events,
+        "date": timebox.date,
+        "tz": timebox.timezone,
+    }
+    if validate:
+        return TBPlan(**payload)
+    return TBPlan.model_construct(**payload)
 
 
 __all__ = ["CalendarEvent", "Timebox", "tb_plan_to_timebox", "timebox_to_tb_plan"]

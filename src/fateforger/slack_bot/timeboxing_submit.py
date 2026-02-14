@@ -124,6 +124,14 @@ def build_text_section_block(*, text: str) -> dict[str, Any]:
     }
 
 
+def build_markdown_block(*, text: str) -> dict[str, Any]:
+    """Render content using Slack's native markdown block type."""
+    return {
+        "type": "markdown",
+        "text": text or "(no response)",
+    }
+
+
 class TimeboxingSubmitCoordinator:
     """Bridge submit/undo Slack button actions to timeboxing agent messages."""
 
@@ -260,4 +268,5 @@ __all__ = [
     "build_review_submit_actions_block",
     "build_undo_submit_actions_block",
     "build_text_section_block",
+    "build_markdown_block",
 ]

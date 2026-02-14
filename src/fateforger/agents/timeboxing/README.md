@@ -11,7 +11,11 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | Patching (schema-in-prompt) | Implemented, Tested | 14 unit | 2025-07-22 (live LLM) |
 | GraphFlow orchestration | Implemented, Documented | graphflow state machine tests | — |
 | Skeleton pre-generation (AC1) | Implemented, Tested | `test_timeboxing_skeleton_pre_generation.py` | — |
-| Slack confirm/undo buttons (AC2-AC4) | Implemented, Tested | `test_timeboxing_submit_flow.py`, `test_slack_timebox_buttons.py` | — |
+| Calendar sync + undo controls | Implemented, Tested | `test_timeboxing_submit_flow.py`, `test_slack_timebox_buttons.py` | — |
+| Stage 1 constraint-template coverage UX | Implemented, Tested | `test_timeboxing_stage_message_template_coverage.py` | — |
+| Stage 3 markdown-first skeleton overview | Implemented, Tested | `test_timeboxing_skeleton_draft_contract.py` | — |
+| Stage 4 advisory quality facts (0-4) | Implemented, Tested | `test_phase4_rewiring.py` | — |
+| Deterministic stage action buttons | Implemented, Tested | `test_timeboxing_stage_actions.py`, `test_slack_timebox_stage_buttons.py` | — |
 
 ## File Index
 
@@ -53,6 +57,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 |------|---------------|
 | `skeleton_draft_system_prompt.j2` | Jinja2 template for skeleton drafting (consumes TOON tables). |
 | `prompt_rendering.py` | `render_skeleton_draft_system_prompt()`: Jinja renderer. |
+| `planning_policy.py` | Shared Stage 3/4 planning policy text + quality rubric constants. |
 | `toon_views.py` | Timeboxing-specific TOON table views (minimal columns for events, constraints, tasks). |
 | `prompts.py` | Legacy prompt strings (being migrated to `stage_gating.py`). |
 
@@ -63,7 +68,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | `nlu.py` | `PlannedDateResult`, `ConstraintInterpretation`: structured LLM outputs for multilingual date/scope inference. No regex/keyword matching. |
 | `preferences.py` | `ConstraintStore`: SQLite-backed session constraint persistence. |
 | `constraint_retriever.py` | `ConstraintRetriever`: gap-driven durable constraint fetch from Notion MCP. |
-| `notion_constraint_extractor.py` | LLM-based constraint extraction to Notion upsert (fire-and-forget background). |
+| `notion_constraint_extractor.py` | LLM-based constraint extraction to Notion upsert (fire-and-forget background); parses schema-shaped JSON text explicitly (no `output_content_type`) to stay compatible with non-strict MCP tools. |
 
 ### Utilities
 
@@ -96,11 +101,11 @@ Stage 0: Date Confirmation (Slack buttons)
     background: calendar prefetch + Notion constraint retrieval
 Stage 1: CollectConstraints -> StageGateOutput (frame_facts)
 Stage 2: CaptureInputs -> StageGateOutput (input_facts)
-Stage 3: Skeleton -> pre-generated draft if available, else synchronous draft -> Timebox -> TBPlan + base_snapshot
-Stage 4: Refine -> TBPatch -> apply_tb_ops() -> updated TBPlan
-Stage 5: ReviewCommit -> pending_submit + Slack confirm/cancel buttons
-Button confirm: submit via sync engine -> SyncTransaction + Undo button
-Button undo: undo transaction via session-backed state -> return to Refine
+Stage 3: Skeleton -> pre-generated draft if available, else synchronous draft -> markdown overview (presentation-first) + carry-forward draft state
+Stage 4: Refine -> ensure TBPlan+baseline -> TBPatch -> apply_tb_ops() -> updated TBPlan -> advisory quality facts (0-4) -> sync to Google Calendar
+Stage 5: ReviewCommit -> final summary (no extra submit gate)
+Undo action: undo latest sync transaction via session-backed state -> return to Refine
+Each stage response also includes deterministic Slack actions (Proceed when ready, plus Back/Redo/Cancel) that replace the same message when clicked.
 ```
 
 ### Session State
@@ -112,11 +117,12 @@ Session dataclass lives in `agent.py`. Core fields:
 | `thread_ts`, `channel_id`, `user_id` | Slack anchors |
 | `frame_facts`, `input_facts` | Accumulated LLM outputs per stage |
 | `timebox` | Legacy Timebox (Stage 3+) |
-| `tb_plan` | Current TBPlan, sync-engine model (Stage 3+) |
-| `base_snapshot` | TBPlan snapshot at skeleton time (for diff-based sync) |
+| `tb_plan` | Current TBPlan, sync-engine model (prepared by Stage 2 draft and/or Stage 4 preflight) |
+| `base_snapshot` | Remote-baseline snapshot for diff-based sync (prepared in Stage 4 preflight) |
 | `event_id_map` | Dict mapping event key to GCal event ID |
 | `pre_generated_skeleton` | Background Stage 2 draft consumed by Stage 3 when fresh |
-| `pending_submit` | Stage 5 submit confirmation gate flag |
+| `skeleton_overview_markdown` | Stage 3 markdown summary rendered to Slack |
+| `last_quality_level`, `last_quality_label`, `last_quality_next_step` | Latest Refine quality snapshot carried into next patch context |
 | `last_sync_transaction` | Session-backed transaction used for deterministic undo |
 | `active_constraints` | Merged constraint state |
 | `stage` | Current TimeboxingStage enum |

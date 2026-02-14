@@ -41,6 +41,8 @@ def _json_ok(path: Path) -> tuple[bool, str | None]:
 
 
 def _looks_like_not_running(error: str | None) -> bool:
+    # TODO(refactor,typed-errors): Replace substring-based connectivity detection
+    # with typed transport error classes / status categories.
     if not error:
         return False
     lowered = error.lower()

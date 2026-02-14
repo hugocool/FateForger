@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import types
-from datetime import date, time, timedelta
+from datetime import date
 from typing import Any
 
 import pytest
 
 pytest.importorskip("autogen_agentchat")
 
-from fateforger.agents.schedular.models.calendar import EventType
 from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
@@ -67,14 +66,12 @@ async def test_skeleton_draft_timeout_fallback(monkeypatch) -> None:
         tz_name="Europe/Amsterdam",
     )
 
-    timebox = await agent._run_skeleton_draft(session)
+    timebox, markdown, plan = await agent._run_skeleton_draft(session)
 
-    assert timebox.date == date(2026, 1, 21)
-    assert timebox.timezone == "Europe/Amsterdam"
-    assert len(timebox.events) == 1
-    event = timebox.events[0]
-    assert event.summary == "Focus Block"
-    assert event.event_type == EventType.DEEP_WORK
-    assert event.start_time == time(9, 0)
-    assert event.duration == timedelta(minutes=90)
-    assert any("minimal skeleton" in msg.lower() for msg in session.background_updates)
+    assert timebox is None
+    assert plan is not None
+    assert plan.date == date(2026, 1, 21)
+    assert plan.tz == "Europe/Amsterdam"
+    assert len(plan.events) >= 1
+    assert markdown.startswith("## Day Overview")
+    assert any("recovery patch" in msg.lower() for msg in session.background_updates)

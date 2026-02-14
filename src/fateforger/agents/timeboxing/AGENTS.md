@@ -40,6 +40,7 @@ For file index, architecture, and status, see `README.md` in this folder.
 - Use multilingual structured LLM outputs instead:
   - `nlu.py` (`PlannedDateResult`, `ConstraintInterpretation`).
 - Deterministic parsing is only acceptable for explicitly structured values (ISO timestamps, Slack IDs, known schema fields).
+- Never post-process LLM prose with phrase/substring/regex filters to drive behavior or suppress content. If behavior needs control, put it in typed schema fields and state transitions.
 
 ## LLM-Facing Models (tb_models.py, tb_ops.py)
 
@@ -85,9 +86,22 @@ For file index, architecture, and status, see `README.md` in this folder.
 
 - Stage 0: background-kick calendar prefetch + constraint retrieval (existing).
 - Stage 2: **pre-generate skeleton** in background (assumes user proceeds) using immovables + constraints + inputs-so-far.
-- Stage 3: use pre-generated skeleton if available; else draft synchronously.
-- Stage 4: LLM -> `TBPatch` -> `apply_tb_ops()`.
-- Stage 5: review gate + explicit submit intent (`pending_submit`) first; sync execution happens only on Slack confirm action.
+- Stage 3: use pre-generated skeleton if available; else draft synchronously and present a markdown overview.
+- Stage 4: LLM -> `TBPatch` -> `apply_tb_ops()` -> sync current `TBPlan` to calendar.
+- Stage 5: review summary + optional undo follow-up (no additional submit-confirm gate).
+- Slack stage controls are deterministic and click-driven: always render `Proceed` (except final review/submit stage), plus `Back`/`Redo`/`Cancel`; readiness is enforced server-side when `Proceed` is clicked.
+
+## Stage 3/4 Contract (Hard Constraint)
+
+- Stage 3 is **presentation-only** for users:
+  - Output must be markdown overview text (rendered through Slack `markdown` block).
+  - Stage 3 must not fail on `Timebox` materialization/validation.
+  - Stage 3 may prepare/carry a draft `TBPlan` for Stage 4, but it must not require a fully validated `Timebox`.
+- Stage 4 is the first stage allowed to materialize/validate `Timebox`:
+  - `Timebox` objects must come from the patch loop validator path (not one-off conversion outside retry loop).
+  - Validation failures must be fed back into patch retry context so the LLM can repair.
+  - Keep retry-driven repair bounded but robust (default max attempts is 5 unless explicitly overridden).
+- Do not add hardcoded event-shape "fixup" shortcuts that bypass patch-loop repair logic.
 
 ## UX Status
 

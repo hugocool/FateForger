@@ -9,15 +9,21 @@ from __future__ import annotations
 import json
 from datetime import date, time, timedelta
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
+from fateforger.agents.timeboxing import patching as patching_module
+from fateforger.agents.timeboxing.planning_policy import (
+    PLANNING_POLICY_VERSION,
+    SHARED_PLANNING_POLICY_PROMPT,
+    STAGE4_REFINEMENT_PROMPT,
+)
 from fateforger.agents.timeboxing.patching import (
     _PATCHER_SYSTEM_PROMPT,
     _build_context,
     _extract_patch,
     _patcher_system_prompt_with_schema,
+    TimeboxPatcher,
 )
 from fateforger.agents.timeboxing.tb_models import (
     ET,
@@ -173,3 +179,97 @@ class TestPatcherSystemPrompt:
         """The augmented prompt tells the LLM not to use fences."""
         full = _patcher_system_prompt_with_schema()
         assert "no markdown fences" in full
+
+    def test_includes_shared_planning_policy(self) -> None:
+        """Patcher prompt should include the shared policy version + content."""
+        full = _patcher_system_prompt_with_schema()
+        assert PLANNING_POLICY_VERSION in full
+        assert SHARED_PLANNING_POLICY_PROMPT.splitlines()[0] in full
+        assert STAGE4_REFINEMENT_PROMPT.splitlines()[0] in full
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_retries_on_validator_failure(
+    simple_plan: TBPlan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retry should include validator errors in the second patch attempt context."""
+    contexts: list[str] = []
+    attempts = {"validator": 0}
+    raw_patch = json.dumps({"ops": [{"op": "ue", "i": 1, "n": "Deep work (updated)"}]})
+
+    class _FakeAssistant:
+        def __init__(self, **kwargs: object) -> None:
+            _ = kwargs
+
+        async def on_messages(self, messages: list[object], cancellation_token: object) -> object:
+            _ = cancellation_token
+            contexts.append(getattr(messages[0], "content", ""))
+            return _make_response(raw_patch)
+
+    async def _passthrough_timeout(
+        label: str, awaitable: object, *, timeout_s: float
+    ) -> object:
+        _ = (label, timeout_s)
+        return await awaitable  # type: ignore[misc]
+
+    def _validator(_plan: TBPlan) -> None:
+        attempts["validator"] += 1
+        if attempts["validator"] == 1:
+            raise ValueError("Overlap detected between events.")
+
+    monkeypatch.setattr(patching_module, "AssistantAgent", _FakeAssistant)
+    monkeypatch.setattr(patching_module, "with_timeout", _passthrough_timeout)
+    patcher = TimeboxPatcher(model_client=object(), max_attempts=2)
+
+    patched, patch = await patcher.apply_patch(
+        current=simple_plan,
+        user_message="adjust deep work",
+        constraints=[],
+        actions=[],
+        plan_validator=_validator,
+    )
+
+    assert patch.ops[0].op == "ue"
+    assert patched.events[1].n == "Deep work (updated)"
+    assert attempts["validator"] == 2
+    assert len(contexts) == 2
+    assert "Previous patch attempt failed." in contexts[1]
+    assert "Overlap detected between events." in contexts[1]
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_raises_after_max_attempts(
+    simple_plan: TBPlan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Patcher should raise a bounded error after exhausting retries."""
+    raw_patch = json.dumps({"ops": [{"op": "ue", "i": 1, "n": "Deep work (updated)"}]})
+
+    class _FakeAssistant:
+        def __init__(self, **kwargs: object) -> None:
+            _ = kwargs
+
+        async def on_messages(self, messages: list[object], cancellation_token: object) -> object:
+            _ = (messages, cancellation_token)
+            return _make_response(raw_patch)
+
+    async def _passthrough_timeout(
+        label: str, awaitable: object, *, timeout_s: float
+    ) -> object:
+        _ = (label, timeout_s)
+        return await awaitable  # type: ignore[misc]
+
+    def _validator(_plan: TBPlan) -> None:
+        raise ValueError("Still invalid: overlap remains.")
+
+    monkeypatch.setattr(patching_module, "AssistantAgent", _FakeAssistant)
+    monkeypatch.setattr(patching_module, "with_timeout", _passthrough_timeout)
+    patcher = TimeboxPatcher(model_client=object(), max_attempts=2)
+
+    with pytest.raises(ValueError, match="failed after 2 attempts"):
+        await patcher.apply_patch(
+            current=simple_plan,
+            user_message="adjust deep work",
+            constraints=[],
+            actions=[],
+            plan_validator=_validator,
+        )

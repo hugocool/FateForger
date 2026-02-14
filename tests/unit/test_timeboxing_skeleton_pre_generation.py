@@ -15,7 +15,7 @@ from autogen_core import CancellationToken
 from fateforger.agents.schedular.models.calendar import CalendarEvent, EventType
 from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
 from fateforger.agents.timeboxing.nodes.nodes import StageSkeletonNode, TransitionNode
-from fateforger.agents.timeboxing.stage_gating import StageGateOutput, TimeboxingStage
+from fateforger.agents.timeboxing.tb_models import ET, FixedWindow, TBEvent, TBPlan
 from fateforger.agents.timeboxing.timebox import Timebox
 
 
@@ -37,21 +37,14 @@ async def test_stage_skeleton_uses_pre_generated_draft_without_llm() -> None:
         timezone="Europe/Amsterdam",
     )
 
-    async def _run_review_summary(*, stage, timebox) -> StageGateOutput:
-        return StageGateOutput(
-            stage_id=stage,
-            ready=True,
-            summary=["Summary ready"],
-            missing=[],
-            question=None,
-            facts={},
-        )
-
-    async def _should_not_run_draft(_session: Session) -> Timebox:
+    async def _should_not_run_draft(_session: Session) -> tuple[None, str, TBPlan | None]:
         raise AssertionError("Synchronous skeleton draft should not run.")
-
-    agent._run_timebox_summary = types.MethodType(  # type: ignore[attr-defined]
-        lambda self, **kwargs: _run_review_summary(**kwargs),
+    agent._build_remote_snapshot_plan = types.MethodType(  # type: ignore[attr-defined]
+        lambda self, _session: None,
+        agent,
+    )
+    agent._render_markdown_summary_blocks = types.MethodType(  # type: ignore[attr-defined]
+        lambda self, text: [],
         agent,
     )
     agent._run_skeleton_draft = types.MethodType(  # type: ignore[attr-defined]
@@ -69,6 +62,18 @@ async def test_stage_skeleton_uses_pre_generated_draft_without_llm() -> None:
         input_facts={"block_plan": {"deep_blocks": 2}},
     )
     session.pre_generated_skeleton = pre_generated
+    session.pre_generated_skeleton_plan = TBPlan(
+        date=date(2026, 2, 13),
+        tz="Europe/Amsterdam",
+        events=[
+            TBEvent(
+                n="Focus Block",
+                t=ET.DW,
+                p=FixedWindow(st=time(9, 0), et=time(10, 30)),
+            )
+        ],
+    )
+    session.pre_generated_skeleton_markdown = "## Day Overview\n- Focus Block"
     session.pre_generated_skeleton_fingerprint = (
         agent._skeleton_pregeneration_fingerprint(session)  # type: ignore[attr-defined]
     )
@@ -87,9 +92,12 @@ async def test_stage_skeleton_uses_pre_generated_draft_without_llm() -> None:
         CancellationToken(),
     )
 
-    assert session.timebox is not None
-    assert session.timebox.events[0].summary == "Focus Block"
+    assert session.timebox is None
     assert session.tb_plan is not None
-    assert session.base_snapshot is not None
+    assert session.base_snapshot is None
+    assert session.skeleton_overview_markdown == "## Day Overview\n- Focus Block"
     assert session.stage_ready is True
+    assert session.last_response == "Stage 3/5 (Skeleton)\nOverview ready below."
     assert session.pre_generated_skeleton is None
+    assert session.pre_generated_skeleton_plan is None
+    assert session.pre_generated_skeleton_markdown is None

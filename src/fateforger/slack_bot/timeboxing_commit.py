@@ -322,20 +322,6 @@ class TimeboxingCommitCoordinator:
                     ],
                 }
             )
-        latest_text = (payload.get("text") or "").strip()
-        if latest_text:
-            blocks.extend(
-                [
-                    {"type": "divider"},
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": f"*Latest update:*\n{latest_text}",
-                        },
-                    },
-                ]
-            )
         try:
             await self._client.chat_update(
                 channel=prompt_channel_id,

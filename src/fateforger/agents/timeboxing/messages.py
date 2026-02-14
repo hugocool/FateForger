@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from .actions import TimeboxAction
 from .preferences import Constraint
@@ -72,6 +72,16 @@ class TimeboxingUndoSubmit:
 
 
 @dataclass
+class TimeboxingStageAction:
+    """User clicked a deterministic stage-control button in Slack."""
+
+    channel_id: str
+    thread_ts: str
+    user_id: str
+    action: Literal["proceed", "back", "redo", "cancel"]
+
+
+@dataclass
 class TimeboxingFinalResult:
     """Final result emitted when a session completes or aborts."""
 
@@ -113,6 +123,7 @@ __all__ = [
     "TimeboxingConfirmSubmit",
     "TimeboxingCancelSubmit",
     "TimeboxingUndoSubmit",
+    "TimeboxingStageAction",
     "TimeboxingFinalResult",
     "TimeboxPatchRecord",
     "TimeboxingUpdate",

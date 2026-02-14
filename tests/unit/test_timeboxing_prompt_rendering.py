@@ -11,6 +11,10 @@ import pytest
 pytest.importorskip("autogen_agentchat")
 
 from fateforger.agents.timeboxing.contracts import Immovable, SkeletonContext
+from fateforger.agents.timeboxing.planning_policy import (
+    PLANNING_POLICY_VERSION,
+    SHARED_PLANNING_POLICY_PROMPT,
+)
 from fateforger.agents.timeboxing.prompt_rendering import render_skeleton_draft_system_prompt
 from fateforger.agents.timeboxing.preferences import (
     Constraint,
@@ -39,12 +43,16 @@ def test_skeleton_prompt_is_single_purpose() -> None:
     )
     prompt = render_skeleton_draft_system_prompt(context=context)
 
-    assert "Timeboxing Skeleton Drafter" in prompt
+    assert "Timeboxing Skeleton Overview Drafter" in prompt
     assert "Do not ask questions" in prompt
     assert "Data (TOON format):" in prompt
     assert "constraints[" in prompt
     assert "immovables[" in prompt
     assert "frame[1]{date,timezone" in prompt
+    assert PLANNING_POLICY_VERSION in prompt
+    assert SHARED_PLANNING_POLICY_PROMPT.splitlines()[0] in prompt
+    assert "Stage 3 output policy:" in prompt
+    assert "one bullet line per major block" in prompt
 
     # Avoid leaking generic multi-stage instructions into the skeleton drafter.
     forbidden = [

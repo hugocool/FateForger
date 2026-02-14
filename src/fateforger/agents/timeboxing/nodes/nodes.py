@@ -11,6 +11,7 @@ The graph itself is built in `src/fateforger/agents/timeboxing/flow_graph.py`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from autogen_agentchat.agents._base_chat_agent import BaseChatAgent
@@ -19,11 +20,17 @@ from autogen_agentchat.messages import BaseChatMessage, StructuredMessage, TextM
 from autogen_core import CancellationToken
 from pydantic import BaseModel
 
-from fateforger.agents.timeboxing.stage_gating import StageDecision, TimeboxingStage
-from fateforger.agents.timeboxing.timebox import timebox_to_tb_plan
+from fateforger.agents.timeboxing.stage_gating import (
+    StageDecision,
+    StageGateOutput,
+    TimeboxingStage,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
+
+logger = logging.getLogger(__name__)
+
 
 class FlowSignal(BaseModel):
     """Internal routing signal for GraphFlow nodes."""
@@ -353,21 +360,54 @@ class StageSkeletonNode(_StageNodeBase):
                     content=FlowSignal(kind="stage", note="missing-priors"),
                 )
             )
-        self._session.timebox = await self._orchestrator._consume_pre_generated_skeleton(
-            self._session
-        )  # noqa: SLF001
-        # Populate the lightweight TBPlan for sync engine / patcher path
-        if self._session.timebox is not None:
-            self._session.tb_plan = timebox_to_tb_plan(self._session.timebox)
-            self._session.base_snapshot = timebox_to_tb_plan(self._session.timebox)
-        gate = await self._orchestrator._run_timebox_summary(  # noqa: SLF001
-            stage=TimeboxingStage.SKELETON, timebox=self._session.timebox
+        try:
+            (
+                self._session.timebox,
+                self._session.skeleton_overview_markdown,
+                self._session.tb_plan,
+            ) = await self._orchestrator._consume_pre_generated_skeleton(
+                self._session
+            )  # noqa: SLF001
+        except Exception as exc:
+            logger.warning("Skeleton drafting failed: %s", exc, exc_info=True)
+            gate = StageGateOutput(
+                stage_id=TimeboxingStage.SKELETON,
+                ready=False,
+                summary=[
+                    "I couldn't draft the Stage 3 overview yet.",
+                    f"Drafting error: {str(exc) or type(exc).__name__}",
+                ],
+                missing=["A valid draft plan from current inputs/constraints"],
+                question="Please click Redo to retry Stage 3 drafting.",
+                facts={},
+            )
+            self._session.stage_ready = False
+            self._session.stage_missing = list(gate.missing or [])
+            self._session.stage_question = gate.question
+            self.last_gate = gate
+            return Response(chat_message=StructuredMessage(source=self.name, content=gate))
+        # Stage 3 is presentation-only. Keep Timebox materialization for Stage 4.
+        self._session.timebox = None
+        # Stage 3 defers sync baseline preparation to Stage 4.
+        self._session.base_snapshot = None
+        markdown = (
+            self._session.skeleton_overview_markdown
+            or "## Day Overview\n- No skeleton overview was generated."
         )
-        self._session.stage_ready = gate.ready
-        self._session.stage_missing = list(gate.missing or [])
-        self._session.stage_question = gate.question
-        self.last_gate = gate
-        return Response(chat_message=StructuredMessage(source=self.name, content=gate))
+        self._session.stage_ready = True
+        self._session.stage_missing = []
+        self._session.stage_question = "Reply with adjustments, or tell me to proceed."
+        self._session.last_response = "Stage 3/5 (Skeleton)\nOverview ready below."
+        self._session.pending_presenter_blocks = (
+            self._orchestrator._render_markdown_summary_blocks(text=markdown)  # noqa: SLF001
+        )
+        self.last_gate = None
+        return Response(
+            chat_message=StructuredMessage(
+                source=self.name,
+                content=FlowSignal(kind="stage", note="skeleton-overview"),
+            )
+        )
 
 
 class StageRefineNode(_StageNodeBase):
@@ -390,7 +430,7 @@ class StageRefineNode(_StageNodeBase):
     async def on_messages(
         self, messages: Sequence[BaseChatMessage], cancellation_token: CancellationToken
     ) -> Response:
-        if not self._session.timebox:
+        if self._session.timebox is None and self._session.tb_plan is None:
             self._session.last_response = (
                 "Stage 4/5 (Refine)\nNo draft timebox yet. Proceed from Skeleton first."
             )
@@ -401,38 +441,139 @@ class StageRefineNode(_StageNodeBase):
                     content=FlowSignal(kind="stage", note="missing-timebox"),
                 )
             )
-        user_message = self._transition.stage_user_message
-        if user_message.strip():
-            await self._orchestrator._await_pending_constraint_extractions(
+        try:
+            preflight = self._orchestrator._ensure_refine_plan_state(  # noqa: SLF001
                 self._session
-            )  # noqa: SLF001
-            constraints = await self._orchestrator._collect_constraints(
-                self._session
-            )  # noqa: SLF001
-            # Patch via TBPlan if available, fall back to legacy Timebox path
-            if self._session.tb_plan is not None:
-                from fateforger.agents.timeboxing.timebox import tb_plan_to_timebox
+            )
+        except Exception as exc:
+            logger.warning("Refine preflight failed: %s", exc, exc_info=True)
+            gate = StageGateOutput(
+                stage_id=TimeboxingStage.REFINE,
+                ready=False,
+                summary=[
+                    "I couldn't prepare the editable Stage 4 plan yet.",
+                    f"Preparation error: {str(exc) or type(exc).__name__}",
+                ],
+                missing=["A valid baseline plan and calendar snapshot"],
+                question=(
+                    "Please click Redo to retry Stage 4 preparation, or share a simpler "
+                    "adjustment request."
+                ),
+                facts={},
+            )
+            self._session.stage_ready = False
+            self._session.stage_missing = list(gate.missing or [])
+            self._session.stage_question = gate.question
+            self.last_gate = gate
+            return Response(chat_message=StructuredMessage(source=self.name, content=gate))
+        user_message = self._transition.stage_user_message.strip()
+        if not user_message:
+            user_message = (
+                "Prepare the editable Stage 4 plan from the current draft. "
+                "Preserve intent and ordering, and repair only what is needed "
+                "for plan validity."
+            )
+        if preflight.has_plan_issues:
+            issues = "\n".join(f"- {issue}" for issue in preflight.plan_issues)
+            repair_instruction = (
+                "Repair the current plan first so it passes validation, then apply the "
+                "user refinement while preserving intent/order as much as possible.\n"
+                f"Preflight validation issues:\n{issues}"
+            )
+            user_message = (
+                f"{user_message}\n\n{repair_instruction}"
+                if user_message
+                else repair_instruction
+            )
+        user_message = self._orchestrator._compose_patcher_message(  # noqa: SLF001
+            base_message=user_message,
+            session=self._session,
+            stage=TimeboxingStage.REFINE.value,
+            extra={
+                "preflight_plan_issues": list(preflight.plan_issues),
+                "preflight_snapshot_issues": list(preflight.snapshot_issues),
+                "quality_snapshot": self._orchestrator._quality_snapshot_for_prompt(  # noqa: SLF001
+                    self._session
+                ),
+            },
+        )
+        await self._orchestrator._await_pending_constraint_extractions(
+            self._session
+        )  # noqa: SLF001
+        constraints = await self._orchestrator._collect_constraints(
+            self._session
+        )  # noqa: SLF001
+        if self._session.tb_plan is None:
+            gate = StageGateOutput(
+                stage_id=TimeboxingStage.REFINE,
+                ready=False,
+                summary=[
+                    "I couldn't prepare the Stage 4 plan state.",
+                    "Editable TBPlan is missing after preflight.",
+                ],
+                missing=["A TBPlan seed for Stage 4 patching"],
+                question="Please click Redo to retry Stage 4 preparation.",
+                facts={},
+            )
+            self._session.stage_ready = False
+            self._session.stage_missing = list(gate.missing or [])
+            self._session.stage_question = gate.question
+            self.last_gate = gate
+            return Response(chat_message=StructuredMessage(source=self.name, content=gate))
+        from fateforger.agents.timeboxing.timebox import tb_plan_to_timebox
 
-                patched_plan, _patch = (
-                    await self._orchestrator._timebox_patcher.apply_patch(  # noqa: SLF001
-                        current=self._session.tb_plan,
-                        user_message=user_message,
-                        constraints=constraints,
-                        actions=[],
-                    )
-                )
-                self._session.tb_plan = patched_plan
-                self._session.timebox = tb_plan_to_timebox(patched_plan)
-            else:
-                self._session.timebox = await self._orchestrator._timebox_patcher.apply_patch_legacy(  # noqa: SLF001
-                    current=self._session.timebox,
+        validated_timebox = None
+
+        def _materialize_timebox(plan):
+            nonlocal validated_timebox
+            validated_timebox = tb_plan_to_timebox(plan)
+            return validated_timebox
+
+        try:
+            patched_plan, _patch = (
+                await self._orchestrator._timebox_patcher.apply_patch(  # noqa: SLF001
+                    current=self._session.tb_plan,
                     user_message=user_message,
                     constraints=constraints,
                     actions=[],
+                    plan_validator=_materialize_timebox,
                 )
+            )
+            self._session.tb_plan = patched_plan
+            if validated_timebox is None:
+                raise ValueError(
+                    "Patch completed without producing a validated Timebox."
+                )
+            self._session.timebox = validated_timebox
+        except Exception as exc:
+            logger.warning("Refine patch failed: %s", exc, exc_info=True)
+            gate = StageGateOutput(
+                stage_id=TimeboxingStage.REFINE,
+                ready=False,
+                summary=[
+                    "I couldn't apply that refinement yet.",
+                    f"Latest patch error: {str(exc) or type(exc).__name__}",
+                ],
+                missing=["A valid non-overlapping event sequence"],
+                question=(
+                    "Please adjust the request (or simplify it) and click Redo "
+                    "to try again."
+                ),
+                facts={},
+            )
+            self._session.stage_ready = False
+            self._session.stage_missing = list(gate.missing or [])
+            self._session.stage_question = gate.question
+            self.last_gate = gate
+            return Response(chat_message=StructuredMessage(source=self.name, content=gate))
+        sync_note = await self._orchestrator._submit_current_plan(self._session)  # noqa: SLF001
         gate = await self._orchestrator._run_timebox_summary(  # noqa: SLF001
-            stage=TimeboxingStage.REFINE, timebox=self._session.timebox
+            stage=TimeboxingStage.REFINE,
+            timebox=self._session.timebox,
+            session=self._session,
         )
+        if sync_note:
+            gate.summary.append(sync_note)
         self._session.stage_ready = True
         self._session.stage_missing = []
         self._session.stage_question = gate.question
@@ -474,7 +615,7 @@ class StageReviewCommitNode(_StageNodeBase):
         gate = await self._orchestrator._run_review_commit(
             timebox=self._session.timebox
         )  # noqa: SLF001
-        self._session.pending_submit = True
+        self._session.pending_submit = False
         self._session.stage_ready = True
         self._session.stage_missing = []
         self._session.stage_question = gate.question

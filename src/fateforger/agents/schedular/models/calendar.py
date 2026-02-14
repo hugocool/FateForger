@@ -240,6 +240,11 @@ class CalendarEvent(
         description="Google Calendar event ID",
         include_in_schema=False,
     )
+    @property
+    def uid(self) -> Optional[str]:
+        """Backward-compatible alias for legacy code paths expecting ``uid``."""
+        return self.eventId
+
     event_type: EventType = ORMField(
         sa_column=Column(
             SQLEnum(EventType, name="event_type_enum", native_enum=False),
@@ -339,6 +344,14 @@ class CalendarEvent(
         None, description="Recurrence rules in RFC5545 format", sa_column=Column(_JSON)
     )
 
+    @field_validator("event_type", mode="before")
+    @classmethod
+    def _parse_event_type(cls, v: EventType | str) -> EventType:
+        """Coerce string event types into ``EventType`` enum values."""
+        if isinstance(v, EventType):
+            return v
+        return EventType(v)
+
     @field_validator("start", "end", mode="before")
     @classmethod
     def _parse_datetime(cls, v: Union[str, datetime]) -> datetime:
@@ -391,6 +404,8 @@ class CalendarEvent(
     @computed_field
     @property
     def colorId(self) -> str:  # should not be part of the json schema
-        # uses the dynamic .color_id property on EventType
+        """Return the Google Calendar color ID for this event."""
         et = self.event_type
-        return getattr(et, "color_id")
+        if not isinstance(et, EventType):
+            et = EventType(et)
+        return et.color_id

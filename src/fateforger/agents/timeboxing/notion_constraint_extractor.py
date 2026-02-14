@@ -13,7 +13,6 @@ from pydantic import ValidationError
 
 from fateforger.debug.diag import with_timeout
 from fateforger.agents.timeboxing.constants import TIMEBOXING_TIMEOUTS
-from fateforger.agents.timeboxing.pydantic_parsing import parse_chat_content
 
 
 class ConstraintWindow(BaseModel):
@@ -143,15 +142,55 @@ Procedure:
 def build_constraint_extractor_agent(
     *, model_client: OpenAIChatCompletionClient, tools: Optional[List[Any]] = None
 ) -> AssistantAgent:
+    """Build the durable-constraint extractor agent.
+
+    Structured `output_content_type` parsing is intentionally disabled here because
+    MCP tool adapters are non-strict by default; OpenAI parse mode rejects non-strict
+    tools before execution.
+    """
     return AssistantAgent(
         name="ConstraintExtractorAgent",
         model_client=model_client,
         tools=tools,
-        output_content_type=ConstraintExtractionOutput,
         system_message=CONSTRAINT_EXTRACTOR_SYSTEM_PROMPT,
         reflect_on_tool_use=False,
         max_tool_iterations=3,
     )
+
+
+def _strip_markdown_json_fence(payload: str) -> str:
+    """Return JSON payload text without optional markdown code fences."""
+    # TODO(refactor,typed-contracts): Remove markdown-fence normalization by
+    # requiring strict structured output from extractor responses.
+    text = payload.strip()
+    if not text.startswith("```"):
+        return text
+    lines = text.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _parse_constraint_extraction_response(response: Any) -> ConstraintExtractionOutput:
+    """Parse an AutoGen response into `ConstraintExtractionOutput`.
+
+    The extractor prompt enforces JSON output, so this parser accepts either:
+    - an already validated `ConstraintExtractionOutput`,
+    - a dict payload,
+    - raw JSON text (optionally in markdown fences).
+
+    # TODO(refactor,typed-contracts): Remove raw string parsing path and depend
+    # only on typed model payloads.
+    """
+    content = getattr(getattr(response, "chat_message", None), "content", None)
+    if isinstance(content, ConstraintExtractionOutput):
+        return content
+    if isinstance(content, str):
+        cleaned = _strip_markdown_json_fence(content)
+        return ConstraintExtractionOutput.model_validate_json(cleaned)
+    return ConstraintExtractionOutput.model_validate(content)
 
 
 class NotionConstraintExtractor:
@@ -184,7 +223,7 @@ class NotionConstraintExtractor:
             timeout_s=TIMEBOXING_TIMEOUTS.notion_extract_s,
         )
         try:
-            return parse_chat_content(ConstraintExtractionOutput, response)
+            return _parse_constraint_extraction_response(response)
         except ValidationError:
             return None
 

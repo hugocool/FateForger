@@ -156,6 +156,9 @@ class ReceptionistAgent(HauntAwareAgentMixin, RoutedAgent):
 
     @staticmethod
     def _follow_up_plan(message: TextMessage) -> FollowUpPlan:
+        # TODO(refactor,typed-contracts): Remove punctuation-based heuristic.
+        # Produce FollowUpPlan as explicit structured output (or metadata) from
+        # the assistant/runtime instead of inspecting free-form message text.
         if "?" in message.content:
             return FollowUpPlan(required=True, delay_minutes=5)
         return FollowUpPlan(required=True, delay_minutes=15)
@@ -175,6 +178,8 @@ def _format_llm_failure(exc: Exception) -> str:
     name = type(exc).__name__
     msg = str(exc)
     low = msg.lower()
+    # TODO(refactor,typed-errors): Replace substring-based provider error mapping
+    # with typed exception classes / structured error envelopes from model clients.
     if "openrouter" in low and "api_key" in low:
         return "LLM config error: OpenRouter API key is missing. Set `OPENROUTER_API_KEY` and restart."
     if "error code: 401" in low or " 401 " in low or "user not found" in low:

@@ -2,7 +2,7 @@
 
 Verifies that:
 - Session has new fields (tb_plan, base_snapshot, event_id_map)
-- StageSkeletonNode populates tb_plan + base_snapshot after drafting
+- StageSkeletonNode keeps Stage 3 markdown-focused and defers baseline to Stage 4
 - StageRefineNode patches via TBPlan and keeps Timebox in sync
 - StageReviewCommitNode calls CalendarSubmitter when tb_plan is present
 - _update_timebox_with_feedback uses TBPlan when available
@@ -21,8 +21,13 @@ import pytest
 pytest.importorskip("autogen_agentchat")
 
 from fateforger.agents.schedular.models.calendar import CalendarEvent, EventType
-from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
-from fateforger.agents.timeboxing.stage_gating import TimeboxingStage
+from fateforger.agents.timeboxing.agent import (
+    RefinePreflight,
+    RefineQualityFacts,
+    Session,
+    TimeboxingFlowAgent,
+)
+from fateforger.agents.timeboxing.stage_gating import StageGateOutput, TimeboxingStage
 from fateforger.agents.timeboxing.tb_models import (
     ET,
     AfterPrev,
@@ -150,15 +155,15 @@ class TestCalendarSubmitterOnAgent:
         assert hasattr(agent, "_calendar_submitter")
 
 
-# ── StageSkeletonNode populates tb_plan ──────────────────────────────────
+# ── StageSkeletonNode keeps Stage 3 markdown-only ────────────────────────
 
 
-class TestSkeletonNodePopulatesTBPlan:
-    """Verify StageSkeletonNode populates session.tb_plan."""
+class TestSkeletonNodeMarkdownOnly:
+    """Verify StageSkeletonNode defers Stage 4 plan/snapshot preparation."""
 
     @pytest.mark.asyncio
-    async def test_skeleton_draft_populates_tb_plan(self, monkeypatch) -> None:
-        """After skeleton draft, session should have both timebox and tb_plan."""
+    async def test_skeleton_draft_defers_snapshot_to_stage4(self, monkeypatch) -> None:
+        """After skeleton draft, Stage 3 should not build a baseline snapshot."""
         from autogen_ext.models.openai import OpenAIChatCompletionClient
 
         agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
@@ -167,43 +172,35 @@ class TestSkeletonNodePopulatesTBPlan:
         )
         agent._constraint_store = None
 
-        # Create a timebox that _run_skeleton_draft would return
-        skeleton_timebox = Timebox(
-            events=[
-                CalendarEvent(
-                    summary="Focus Block",
-                    event_type=EventType.DEEP_WORK,
-                    start_time=time(9, 0),
-                    duration=timedelta(minutes=90),
-                ),
-            ],
-            date=date(2026, 2, 13),
-            timezone="Europe/Amsterdam",
-        )
-
-        # Mock _run_skeleton_draft to return our timebox
-        async def mock_skeleton_draft(session: Session) -> Timebox:
-            return skeleton_timebox
+        # Mock _run_skeleton_draft to return our timebox + markdown overview
+        async def mock_skeleton_draft(session: Session) -> tuple[None, str, TBPlan]:
+            _ = session
+            drafted_plan = TBPlan(
+                date=date(2026, 2, 13),
+                tz="Europe/Amsterdam",
+                events=[
+                    TBEvent(
+                        n="Focus Block",
+                        t=ET.DW,
+                        p=FixedWindow(st=time(9, 0), et=time(10, 30)),
+                    )
+                ],
+            )
+            return None, "## Day Overview\n- Focus Block", drafted_plan
 
         agent._run_skeleton_draft = types.MethodType(
             lambda self, s: mock_skeleton_draft(s), agent
         )
 
-        # Mock _run_timebox_summary
-        from fateforger.agents.timeboxing.stage_gating import StageGateOutput
-
-        async def mock_summary(*, stage, timebox) -> StageGateOutput:
-            return StageGateOutput(
-                stage_id=stage,
-                ready=True,
-                missing=[],
-                question=None,
-                facts={},
-                summary=["OK"],
-            )
-
-        agent._run_timebox_summary = types.MethodType(
-            lambda self, **kw: mock_summary(**kw), agent
+        agent._build_remote_snapshot_plan = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, _session: (_ for _ in ()).throw(
+                AssertionError("Stage 3 should not build remote snapshot.")
+            ),
+            agent,
+        )
+        agent._render_markdown_summary_blocks = types.MethodType(
+            lambda self, text: [],
+            agent,
         )
 
         session = Session(
@@ -238,14 +235,13 @@ class TestSkeletonNodePopulatesTBPlan:
             CancellationToken(),
         )
 
-        # Verify both timebox and tb_plan are populated
-        assert session.timebox is not None
+        # Verify Stage 3 keeps markdown + draft plan, and defers snapshot to Stage 4.
+        assert session.timebox is None
         assert session.tb_plan is not None
-        assert session.base_snapshot is not None
+        assert session.base_snapshot is None
+        assert session.skeleton_overview_markdown == "## Day Overview\n- Focus Block"
         assert len(session.tb_plan.events) == 1
         assert session.tb_plan.events[0].n == "Focus Block"
-        # base_snapshot should be a separate copy
-        assert session.base_snapshot.events[0].n == "Focus Block"
 
 
 # ── StageRefineNode uses TBPlan ──────────────────────────────────────────
@@ -264,6 +260,365 @@ class TestRefineNodeUsesTBPlan:
         source = inspect.getsource(StageRefineNode.on_messages)
         # Should reference tb_plan in the patching logic
         assert "tb_plan" in source
-        # Should have both the TBPlan path and the legacy fallback
-        assert "apply_patch_legacy" in source
+        # Stage 4 should patch through TBPlan path only.
+        assert "apply_patch_legacy" not in source
         assert "apply_patch(" in source
+
+    @pytest.mark.asyncio
+    async def test_refine_node_runs_repair_patch_when_preflight_reports_issue(self) -> None:
+        """Preflight issues should be injected into patch-loop context."""
+        from autogen_agentchat.messages import TextMessage
+        from autogen_core import CancellationToken
+
+        from fateforger.agents.timeboxing.nodes.nodes import StageRefineNode, TransitionNode
+
+        agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+        seeded_plan = TBPlan(
+            date=date(2026, 2, 13),
+            tz="Europe/Amsterdam",
+            events=[
+                TBEvent(
+                    n="Wake Up",
+                    t=ET.H,
+                    p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)),
+                )
+            ],
+        )
+
+        patch_messages: list[str] = []
+
+        def _ensure_refine(_self, session: Session) -> RefinePreflight:
+            session.tb_plan = seeded_plan
+            session.base_snapshot = seeded_plan.model_copy(deep=True)
+            return RefinePreflight(
+                plan_issues=[
+                    "timebox_to_tb_plan: Event chain needs at least one fixed_start or fixed_window anchor"
+                ]
+            )
+
+        async def _apply_patch(**kwargs: Any) -> tuple[TBPlan, Any]:
+            patch_messages.append(str(kwargs["user_message"]))
+            validator = kwargs.get("plan_validator")
+            if validator is not None:
+                validator(seeded_plan)
+            return seeded_plan, {"ops": []}
+
+        async def _collect_constraints(_session: Session) -> list[Any]:
+            return []
+
+        async def _run_summary(*, stage, timebox, session=None) -> StageGateOutput:
+            _ = (timebox, session)
+            return StageGateOutput(
+                stage_id=stage,
+                ready=True,
+                summary=["Updated schedule."],
+                missing=[],
+                question="Proceed?",
+                facts={},
+            )
+
+        async def _submit(_session: Session) -> str | None:
+            return None
+
+        agent._ensure_refine_plan_state = types.MethodType(  # type: ignore[attr-defined]
+            _ensure_refine,
+            agent,
+        )
+        agent._timebox_patcher = types.SimpleNamespace(
+            apply_patch=_apply_patch,
+        )
+        agent._collect_constraints = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, session: _collect_constraints(session),
+            agent,
+        )
+        agent._await_pending_constraint_extractions = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, _session: asyncio.sleep(0),
+            agent,
+        )
+        agent._run_timebox_summary = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: _run_summary(**kwargs),
+            agent,
+        )
+        agent._submit_current_plan = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, session: _submit(session),
+            agent,
+        )
+
+        session = Session(
+            thread_ts="t1",
+            channel_id="c1",
+            user_id="u1",
+            stage=TimeboxingStage.REFINE,
+        )
+        session.timebox = Timebox(
+            events=[
+                CalendarEvent(
+                    summary="Wake Up",
+                    event_type=EventType.HABIT,
+                    start_time=time(9, 0),
+                    duration=timedelta(minutes=30),
+                )
+            ],
+            date=date(2026, 2, 13),
+            timezone="Europe/Amsterdam",
+        )
+
+        transition = TransitionNode.__new__(TransitionNode)
+        transition.stage_user_message = ""
+        transition.decision = None
+
+        node = StageRefineNode(
+            orchestrator=agent,
+            session=session,
+            transition=transition,
+        )
+
+        await node.on_messages(
+            [TextMessage(content="proceed", source="user")],
+            CancellationToken(),
+        )
+
+        assert patch_messages
+        assert "Repair the current plan first" in patch_messages[0]
+        assert "Preflight validation issues:" in patch_messages[0]
+
+    @pytest.mark.asyncio
+    async def test_refine_node_appends_calendar_sync_note(self) -> None:
+        """Refine stage should include calendar sync feedback in the summary."""
+        from autogen_agentchat.messages import TextMessage
+        from autogen_core import CancellationToken
+
+        from fateforger.agents.timeboxing.nodes.nodes import StageRefineNode, TransitionNode
+
+        agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+
+        async def _run_summary(*, stage, timebox, session=None) -> StageGateOutput:
+            _ = (timebox, session)
+            return StageGateOutput(
+                stage_id=stage,
+                ready=True,
+                summary=["Updated schedule."],
+                missing=[],
+                question="Proceed?",
+                facts={},
+            )
+
+        async def _submit(_session: Session) -> str | None:
+            return "Synced to Google Calendar."
+
+        async def _apply_patch(**kwargs: Any) -> tuple[TBPlan, Any]:
+            validator = kwargs.get("plan_validator")
+            if validator is not None:
+                validator(session.tb_plan)
+            return session.tb_plan, {"ops": []}
+
+        agent._run_timebox_summary = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: _run_summary(**kwargs),
+            agent,
+        )
+        agent._submit_current_plan = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, session: _submit(session),
+            agent,
+        )
+        agent._collect_constraints = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, _session: asyncio.sleep(0, result=[]),
+            agent,
+        )
+        agent._await_pending_constraint_extractions = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, _session: asyncio.sleep(0),
+            agent,
+        )
+        agent._compose_patcher_message = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: str(kwargs.get("base_message") or ""),
+            agent,
+        )
+        agent._timebox_patcher = types.SimpleNamespace(apply_patch=_apply_patch)
+
+        session = Session(
+            thread_ts="t1",
+            channel_id="c1",
+            user_id="u1",
+            stage=TimeboxingStage.REFINE,
+        )
+        session.timebox = Timebox(
+            events=[
+                CalendarEvent(
+                    summary="Focus",
+                    event_type=EventType.DEEP_WORK,
+                    start_time=time(9, 0),
+                    duration=timedelta(minutes=90),
+                )
+            ],
+            date=date(2026, 2, 13),
+            timezone="Europe/Amsterdam",
+        )
+        session.tb_plan = timebox_to_tb_plan(session.timebox)
+        session.base_snapshot = session.tb_plan.model_copy(deep=True)
+
+        transition = TransitionNode.__new__(TransitionNode)
+        transition.stage_user_message = ""
+        transition.decision = None
+
+        node = StageRefineNode(
+            orchestrator=agent,
+            session=session,
+            transition=transition,
+        )
+
+        await node.on_messages(
+            [TextMessage(content="proceed", source="user")],
+            CancellationToken(),
+        )
+
+        assert node.last_gate is not None
+        assert "Synced to Google Calendar." in node.last_gate.summary
+
+
+class TestRefineQualityFacts:
+    """Verify Refine stage quality facts are typed and persisted on Session."""
+
+    @pytest.mark.asyncio
+    async def test_enrich_refine_quality_feedback_uses_typed_llm_facts(self) -> None:
+        """When quality facts are absent, the LLM assessor should populate them."""
+        agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+        session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+        timebox = Timebox(
+            events=[
+                CalendarEvent(
+                    summary="Focus",
+                    event_type=EventType.DEEP_WORK,
+                    start_time=time(9, 0),
+                    end_time=time(10, 30),
+                )
+            ],
+            date=date(2026, 2, 13),
+            timezone="Europe/Amsterdam",
+        )
+        gate = StageGateOutput(
+            stage_id=TimeboxingStage.REFINE,
+            ready=True,
+            summary=["Updated schedule."],
+            missing=[],
+            question="Proceed?",
+            facts={},
+        )
+
+        async def _quality_assess(*, timebox: Timebox) -> RefineQualityFacts:
+            _ = timebox
+            return RefineQualityFacts(
+                quality_level=2,
+                quality_label="Okay",
+                missing_for_next=["more buffers"],
+                next_suggestion="Add a short recovery block after deep work.",
+            )
+
+        agent._run_refine_quality_assessment = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: _quality_assess(**kwargs),
+            agent,
+        )
+
+        enriched = await TimeboxingFlowAgent._enrich_refine_quality_feedback(
+            agent,
+            session=session,
+            gate=gate,
+            timebox=timebox,
+        )
+
+        assert enriched.ready is True
+        assert enriched.facts["quality_level"] == 2
+        assert enriched.facts["quality_label"] == "Okay"
+        assert enriched.facts["next_suggestion"] == "Add a short recovery block after deep work."
+        assert session.last_quality_level == 2
+        assert session.last_quality_label == "Okay"
+        assert session.last_quality_next_step == "Add a short recovery block after deep work."
+
+
+class TestRefinePreparation:
+    """Verify Stage 4 preflight preparation when Stage 3 is markdown-only."""
+
+    def test_ensure_refine_plan_state_builds_plan_and_snapshot(self) -> None:
+        """When missing, Stage 4 should derive TBPlan and baseline snapshot."""
+        agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+        session = Session(
+            thread_ts="t1",
+            channel_id="c1",
+            user_id="u1",
+            planned_date="2026-02-13",
+            tz_name="Europe/Amsterdam",
+            timebox=Timebox(
+                events=[
+                    CalendarEvent(
+                        summary="Focus Block",
+                        event_type=EventType.DEEP_WORK,
+                        start_time=time(9, 0),
+                        end_time=time(10, 30),
+                    )
+                ],
+                date=date(2026, 2, 13),
+                timezone="Europe/Amsterdam",
+            ),
+        )
+
+        agent._session_debug = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, *_args, **_kwargs: None,
+            agent,
+        )
+        agent._build_remote_snapshot_plan = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, _session: TBPlan(
+                date=date(2026, 2, 13),
+                tz="Europe/Amsterdam",
+                events=[],
+            ),
+            agent,
+        )
+
+        TimeboxingFlowAgent._ensure_refine_plan_state(agent, session)
+
+        assert session.tb_plan is not None
+        assert len(session.tb_plan.events) == 1
+        assert session.base_snapshot is not None
+        assert session.base_snapshot.events == []
+
+    def test_ensure_refine_plan_state_returns_issue_for_unanchored_seed(self) -> None:
+        """Stage 4 preflight should keep an editable seed and surface repair issue."""
+        agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+        session = Session(
+            thread_ts="t1",
+            channel_id="c1",
+            user_id="u1",
+            planned_date="2026-02-13",
+            tz_name="Europe/Amsterdam",
+            timebox=Timebox.model_construct(
+                events=[
+                    CalendarEvent.model_construct(
+                        summary="Busy",
+                        event_type=EventType.MEETING,
+                        start_time=None,
+                        end_time=None,
+                        duration=timedelta(minutes=45),
+                    )
+                ],
+                date=date(2026, 2, 13),
+                timezone="Europe/Amsterdam",
+            ),
+        )
+
+        agent._session_debug = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, *_args, **_kwargs: None,
+            agent,
+        )
+        agent._build_remote_snapshot_plan = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, _session: TBPlan(
+                date=date(2026, 2, 13),
+                tz="Europe/Amsterdam",
+                events=[],
+            ),
+            agent,
+        )
+
+        preflight = TimeboxingFlowAgent._ensure_refine_plan_state(agent, session)
+
+        assert preflight.has_plan_issues
+        assert "timebox_to_tb_plan" in preflight.plan_issues[0]
+        assert session.tb_plan is not None
+        assert len(session.tb_plan.events) == 1

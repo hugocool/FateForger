@@ -39,6 +39,8 @@ class PlanningRuleConfig:
     nudge_backoff_base: timedelta = timedelta(minutes=10)
     nudge_backoff_cap: timedelta = timedelta(hours=8)
     nudge_max_attempts: int = 5
+    # TODO(refactor,typed-contracts): Remove summary keyword list and use a typed
+    # event marker/label schema for planning-session detection.
     summary_keywords: tuple[str, ...] = ("plan", "planning", "review", "timebox")
     calendar_id: str = "primary"
 
@@ -252,6 +254,8 @@ class PlanningSessionRule:
         return False
 
     def _is_planning_event(self, event: dict) -> bool:
+        # TODO(refactor,typed-contracts): Replace summary substring matching with
+        # typed event classification (label/type metadata).
         summary = (event.get("summary") or "").lower()
         return any(keyword in summary for keyword in self._config.summary_keywords)
 

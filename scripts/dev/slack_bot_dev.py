@@ -27,7 +27,7 @@ def main() -> int:
         _run_bot()
         return 0
     return run_process(
-        "src",
+        "src/fateforger",
         target=_run_bot,
         target_type="function",
         watch_filter=PythonFilter(),
@@ -39,8 +39,7 @@ def _should_disable_watch() -> bool:
     """Return True when watchfiles should be disabled for the current environment."""
     if os.getenv("FF_DISABLE_WATCH", "").strip() == "1":
         return True
-    # Debugpy + watchfiles causes rapid restarts; disable when running under VS Code.
-    return bool(os.getenv("DEBUGPY_LAUNCHER_PORT") or os.getenv("VSCODE_PID"))
+    return False
 
 
 if __name__ == "__main__":
