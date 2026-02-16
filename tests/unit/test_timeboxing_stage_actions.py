@@ -54,8 +54,8 @@ def test_render_stage_action_blocks_ready_includes_proceed() -> None:
     assert FF_TIMEBOX_STAGE_CANCEL_ACTION_ID in action_ids
 
 
-def test_render_stage_action_blocks_not_ready_still_shows_proceed() -> None:
-    """Proceed should always be visible; readiness is checked on click."""
+def test_render_stage_action_blocks_not_ready_hides_proceed() -> None:
+    """Proceed should be hidden until stage criteria are met."""
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
     session.stage = TimeboxingStage.CAPTURE_INPUTS
@@ -63,7 +63,7 @@ def test_render_stage_action_blocks_not_ready_still_shows_proceed() -> None:
 
     blocks = agent._render_stage_action_blocks(session=session)
     action_ids = _collect_action_ids(blocks)
-    assert FF_TIMEBOX_STAGE_PROCEED_ACTION_ID in action_ids
+    assert FF_TIMEBOX_STAGE_PROCEED_ACTION_ID not in action_ids
     assert FF_TIMEBOX_STAGE_BACK_ACTION_ID in action_ids
     assert FF_TIMEBOX_STAGE_REDO_ACTION_ID in action_ids
     assert FF_TIMEBOX_STAGE_CANCEL_ACTION_ID in action_ids
@@ -100,7 +100,7 @@ async def test_stage_action_proceed_requires_stage_ready() -> None:
     assert "Cannot proceed yet" in response.text
     assert "timezone" in response.text
     action_ids = _collect_action_ids(response.blocks)
-    assert FF_TIMEBOX_STAGE_PROCEED_ACTION_ID in action_ids
+    assert FF_TIMEBOX_STAGE_PROCEED_ACTION_ID not in action_ids
     assert session.stage == TimeboxingStage.COLLECT_CONSTRAINTS
 
 

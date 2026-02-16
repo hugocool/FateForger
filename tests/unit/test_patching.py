@@ -189,6 +189,22 @@ class TestPatcherSystemPrompt:
 
 
 @pytest.mark.asyncio
+async def test_apply_patch_rejects_non_refine_stage(
+    simple_plan: TBPlan,
+) -> None:
+    """Patcher API should hard-fail if called for a non-Refine stage."""
+    patcher = TimeboxPatcher(model_client=object(), max_attempts=1)
+    with pytest.raises(ValueError, match="only supports stage='Refine'"):
+        await patcher.apply_patch(  # type: ignore[arg-type]
+            stage="Skeleton",
+            current=simple_plan,
+            user_message="anything",
+            constraints=[],
+            actions=[],
+        )
+
+
+@pytest.mark.asyncio
 async def test_apply_patch_retries_on_validator_failure(
     simple_plan: TBPlan, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -222,6 +238,7 @@ async def test_apply_patch_retries_on_validator_failure(
     patcher = TimeboxPatcher(model_client=object(), max_attempts=2)
 
     patched, patch = await patcher.apply_patch(
+        stage="Refine",
         current=simple_plan,
         user_message="adjust deep work",
         constraints=[],
@@ -267,6 +284,7 @@ async def test_apply_patch_raises_after_max_attempts(
 
     with pytest.raises(ValueError, match="failed after 2 attempts"):
         await patcher.apply_patch(
+            stage="Refine",
             current=simple_plan,
             user_message="adjust deep work",
             constraints=[],

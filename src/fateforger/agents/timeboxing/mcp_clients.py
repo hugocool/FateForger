@@ -120,6 +120,33 @@ class ConstraintMemoryClient:
             return []
         return data if isinstance(data, list) else []
 
+    async def upsert_constraint(
+        self,
+        *,
+        record: dict[str, Any],
+        event: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Upsert a durable constraint record in the MCP constraint store.
+
+        Args:
+            record: Notion-compatible constraint record payload.
+            event: Optional extraction event metadata to log with the upsert.
+
+        Returns:
+            Tool payload as a dict when available; otherwise an empty dict.
+        """
+        payload = {"record": record, "event": event or None}
+        result = await self._workbench.call_tool(
+            "constraint_upsert_constraint", arguments=payload
+        )
+        # TODO(refactor): Validate MCP responses with a Pydantic schema.
+        try:
+            text = result.to_text()
+            data = json.loads(text)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
 
 class McpCalendarClient:
     """Client for Google Calendar MCP server (streamable HTTP workbench)."""

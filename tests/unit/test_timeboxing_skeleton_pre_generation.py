@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import types
 from datetime import date, time, timedelta
 
@@ -101,3 +102,60 @@ async def test_stage_skeleton_uses_pre_generated_draft_without_llm() -> None:
     assert session.pre_generated_skeleton is None
     assert session.pre_generated_skeleton_plan is None
     assert session.pre_generated_skeleton_markdown is None
+
+
+@pytest.mark.asyncio
+async def test_consume_pre_generated_skeleton_waits_for_inflight_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Consume should await matching in-flight pre-generation before drafting sync."""
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(
+        thread_ts="t2",
+        channel_id="c1",
+        user_id="u1",
+        planned_date="2026-02-14",
+        tz_name="Europe/Amsterdam",
+        frame_facts={"immovables": [{"title": "Meeting", "start": "10:00", "end": "11:00"}]},
+        input_facts={"block_plan": {"deep_blocks": 2}},
+    )
+    expected_plan = TBPlan(
+        date=date(2026, 2, 14),
+        tz="Europe/Amsterdam",
+        events=[
+            TBEvent(
+                n="Focus Block",
+                t=ET.DW,
+                p=FixedWindow(st=time(9, 0), et=time(10, 30)),
+            )
+        ],
+    )
+    session.pre_generated_skeleton_fingerprint = (
+        agent._skeleton_pregeneration_fingerprint(session)  # type: ignore[attr-defined]
+    )
+
+    async def _background_complete() -> None:
+        await asyncio.sleep(0.01)
+        session.pre_generated_skeleton_plan = expected_plan
+        session.pre_generated_skeleton_markdown = "## Day Overview\n- Focus Block"
+
+    session.pre_generated_skeleton_task = asyncio.create_task(_background_complete())
+
+    async def _should_not_run_sync_draft(
+        self: TimeboxingFlowAgent, current: Session
+    ) -> tuple[None, str, TBPlan | None]:
+        _ = (self, current)
+        raise AssertionError("Synchronous skeleton draft should not run.")
+
+    monkeypatch.setattr(
+        TimeboxingFlowAgent,
+        "_run_skeleton_draft",
+        _should_not_run_sync_draft,
+    )
+
+    _timebox, markdown, drafted_plan = await TimeboxingFlowAgent._consume_pre_generated_skeleton(
+        agent, session
+    )
+
+    assert drafted_plan is expected_plan
+    assert markdown == "## Day Overview\n- Focus Block"

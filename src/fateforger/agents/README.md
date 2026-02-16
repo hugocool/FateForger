@@ -10,7 +10,7 @@ Top-level agent registry. Each subfolder owns one specialist agent (AutoGen `Rou
 | `timeboxing/` | PlanningCoordinator | Implemented, Tested | Stage-gated daily schedule builder with calendar sync. See `timeboxing/README.md`. |
 | `admonisher/` | HauntRouter | Implemented | Accountability nudge system ("haunters"): persistent follow-ups on commitments via calendar MCP. |
 | `schedular/` | SchedularAgent | Implemented | Calendar scheduling: slot finding, event upsert, plan-vs-calendar diffing via Google Calendar MCP. |
-| `tasks/` | TaskMarshal | Implemented | Task capture, prioritization (now/next/later), optional TickTick MCP integration. |
+| `tasks/` | TaskMarshal | Implemented, Documented, Tested | Task capture, prioritization (now/next/later), dedicated TickTick list-management tool for Slack-routed requests. |
 | `revisor/` | RevisorAgent | Implemented | Weekly retros, long-term project review, quarterly goal alignment, Notion Projects integration. |
 | `strategy/` | — | Roadmap | Placeholder for future strategy workflows. No code yet. |
 | `task_marshal/` | — | Roadmap (stub) | Stub with bare imports only. May be superseded by `tasks/`. |
@@ -44,4 +44,5 @@ Each implemented agent folder should have:
 Currently documented:
 - `timeboxing/`: full README + AGENTS.
 - `admonisher/`: AGENTS.md with intent/handoff rules.
+- `tasks/`: README + AGENTS (TickTick list-management tool contract).
 - Others: minimal READMEs, no AGENTS.md.

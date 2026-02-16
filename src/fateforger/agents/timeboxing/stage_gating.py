@@ -99,6 +99,8 @@ Rules
 - Always write extraction progress into `facts.constraint_template` so the user can see coverage.
 - Keep the conversation flowing naturally; don't be overly rigid about stage structure.
 - Ask one concise question; avoid asking multiple “how long” questions at once.
+- If `ready=false`, lead summary with what is still missing before any progress recap.
+- If `ready=false`, `question` must directly ask for the highest-priority missing answer.
 
 facts keys (preferred)
 - timezone: string
@@ -160,6 +162,8 @@ Rules
 - If block_count is missing, ask for block_count/scoping (e.g., “How many deep-work blocks do you want to spend on X?”), not minutes.
 - If the user mentions wanting to check tasks, calendar, or other sources, note it in summary/question (the coordinator will fetch in background).
 - Keep the conversation natural; guide them towards providing what's needed but don't be rigid.
+- If `ready=false`, lead summary with what is still missing before any progress recap.
+- If `ready=false`, `question` must directly ask for the highest-priority missing answer.
 """.strip()
 
 

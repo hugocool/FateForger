@@ -622,3 +622,66 @@ class TestRefinePreparation:
         assert "timebox_to_tb_plan" in preflight.plan_issues[0]
         assert session.tb_plan is not None
         assert len(session.tb_plan.events) == 1
+
+
+class TestRefineStageGuards:
+    """Verify patching is guarded to Stage 4 Refine only."""
+
+    def test_compose_patcher_message_rejects_non_refine_stage(self) -> None:
+        """Coordinator should reject patcher payloads outside Refine stage."""
+        agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+        session = Session(
+            thread_ts="t1",
+            channel_id="c1",
+            user_id="u1",
+            planned_date="2026-02-13",
+            tz_name="Europe/Amsterdam",
+        )
+
+        with pytest.raises(ValueError, match="restricted to Stage 4 Refine"):
+            TimeboxingFlowAgent._compose_patcher_message(
+                agent,
+                base_message="test",
+                session=session,
+                stage=TimeboxingStage.SKELETON.value,
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_timebox_with_feedback_noops_outside_refine(self) -> None:
+        """Legacy feedback updater should not patch unless stage is Refine."""
+        agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+        session = Session(
+            thread_ts="t1",
+            channel_id="c1",
+            user_id="u1",
+            planned_date="2026-02-13",
+            tz_name="Europe/Amsterdam",
+            stage=TimeboxingStage.SKELETON,
+            tb_plan=TBPlan(
+                date=date(2026, 2, 13),
+                tz="Europe/Amsterdam",
+                events=[
+                    TBEvent(
+                        n="Anchor",
+                        t=ET.M,
+                        p=FixedWindow(st=time(9, 0), et=time(10, 0)),
+                    )
+                ],
+            ),
+        )
+        agent._timebox_patcher = types.SimpleNamespace(
+            apply_patch=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("Patcher must not run outside Refine.")
+            ),
+            apply_patch_legacy=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("Legacy patcher must not run outside Refine.")
+            ),
+        )
+
+        actions = await TimeboxingFlowAgent._update_timebox_with_feedback(
+            agent,
+            session,
+            "move things around",
+        )
+
+        assert actions == []

@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Callable, Iterable, List
+from typing import Any, Callable, Iterable, List, Literal
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
@@ -135,6 +135,7 @@ class TimeboxPatcher:
     async def apply_patch(
         self,
         *,
+        stage: Literal["Refine"],
         current: TBPlan,
         user_message: str,
         constraints: Iterable[Constraint] | None = None,
@@ -158,6 +159,10 @@ class TimeboxPatcher:
         Raises:
             ValueError: If the LLM output cannot be parsed as ``TBPatch``.
         """
+        if stage != "Refine":
+            raise ValueError(
+                f"TimeboxPatcher.apply_patch only supports stage='Refine'. Got {stage!r}."
+            )
         constraints_list = list(constraints or [])
         actions_list = list(actions or [])
         request_id = f"patch-{int(time.time() * 1000)}"
@@ -247,6 +252,7 @@ class TimeboxPatcher:
     async def apply_patch_legacy(
         self,
         *,
+        stage: Literal["Refine"],
         current: Timebox,
         user_message: str,
         constraints: Iterable[Constraint] | None = None,
@@ -270,6 +276,7 @@ class TimeboxPatcher:
 
         tb_plan = timebox_to_tb_plan(current)
         patched_plan, _ = await self.apply_patch(
+            stage=stage,
             current=tb_plan,
             user_message=user_message,
             constraints=constraints,

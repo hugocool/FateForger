@@ -98,3 +98,22 @@ def test_collect_constraints_message_deduplicates_only() -> None:
     assert "Timezone set to Europe/Amsterdam." in message
     assert "No fixed anchors or windows are currently defined." in message
     assert message.count("Anchored brunch at 11:30.") == 1
+
+
+def test_not_ready_stage_message_leads_with_missing_before_summary() -> None:
+    """Not-ready stage output should prioritize unanswered required inputs first."""
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    gate = StageGateOutput(
+        stage_id=TimeboxingStage.CAPTURE_INPUTS,
+        ready=False,
+        summary=["Captured Daily One Thing and two tasks."],
+        missing=["deep-work block count"],
+        question="How many deep-work blocks should I reserve?",
+        facts={},
+    )
+
+    message = agent._format_stage_message(gate, constraints=[], immovables=[])
+
+    assert "Need Before Proceeding:" in message
+    assert "What I Have So Far:" in message
+    assert message.index("Need Before Proceeding:") < message.index("What I Have So Far:")

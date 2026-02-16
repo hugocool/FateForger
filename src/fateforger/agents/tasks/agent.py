@@ -7,10 +7,14 @@ import logging
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
 from autogen_core import MessageContext, RoutedAgent, message_handler
+from autogen_core.tools import FunctionTool
 
+from fateforger.core.config import settings
 from fateforger.debug.diag import with_timeout
 from fateforger.llm import build_autogen_chat_client
-from fateforger.tools.ticktick_mcp import TickTickMcpClient, get_ticktick_mcp_url
+from fateforger.tools.ticktick_mcp import get_ticktick_mcp_url
+
+from .list_tools import TickTickListManager
 
 
 logger = logging.getLogger(__name__)
@@ -26,24 +30,34 @@ Your job is to help with task triage and execution:
 - define next actions
 - break down work into small steps
 
+For TickTick list management requests, always call the `manage_ticktick_lists` tool.
+Use model="project" by default. Use model="subtask" only when the user provides
+explicit parent-task context.
+
 Be direct and concrete. If needed, ask 1-2 clarifying questions then propose a plan.
-If TickTick MCP tools are available, use them to list, update, or complete tasks.
+Never invent IDs. If the tool reports ambiguity, ask a focused follow-up question.
 """.strip()
 
 
 class TasksAgent(RoutedAgent):
     def __init__(self, name: str) -> None:
         super().__init__(description=name)
-        self._ticktick_client: TickTickMcpClient | None = None
-        tools = None
         server_url = get_ticktick_mcp_url()
-        if server_url:
-            try:
-                self._ticktick_client = TickTickMcpClient(server_url=server_url)
-                ticktick_tools = self._ticktick_client.get_tools()
-                tools = ticktick_tools if ticktick_tools else None
-            except Exception:
-                logger.debug("Failed to load TickTick MCP tools", exc_info=True)
+        self._list_manager = TickTickListManager(
+            server_url=server_url,
+            timeout=float(getattr(settings, "agent_mcp_discovery_timeout_seconds", 10)),
+        )
+        tools = [
+            FunctionTool(
+                self._list_manager.manage_ticktick_lists,
+                name="manage_ticktick_lists",
+                description=(
+                    "Manage TickTick lists and items. "
+                    "Supports project-mode and explicit subtask-mode operations."
+                ),
+                strict=True,
+            )
+        ]
         self._assistant = AssistantAgent(
             name=f"{name}_assistant",
             system_message=TASKS_PROMPT,

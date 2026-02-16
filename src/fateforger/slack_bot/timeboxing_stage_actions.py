@@ -147,6 +147,13 @@ class TimeboxingStageActionCoordinator:
         meta = TimeboxingStageActionMeta.from_value(payload.value)
         if not meta:
             return
+        in_progress_text = _stage_action_in_progress_text(action)
+        await self._client.chat_update(
+            channel=payload.prompt_channel_id,
+            ts=payload.prompt_ts,
+            text=in_progress_text,
+            blocks=[build_text_section_block(text=in_progress_text)],
+        )
         msg = TimeboxingStageAction(
             channel_id=meta.channel_id,
             thread_ts=meta.thread_ts,
@@ -207,6 +214,19 @@ def _slack_payload_from_result(result: Any) -> dict[str, Any]:
     if content is None and isinstance(result, TextMessage):
         content = result.content
     return {"text": content or "(no response)"}
+
+
+def _stage_action_in_progress_text(
+    action: Literal["proceed", "back", "redo", "cancel"],
+) -> str:
+    """Return short status text while a stage action is being processed."""
+    labels = {
+        "proceed": "Proceeding to the next stage...",
+        "back": "Going back to the previous stage...",
+        "redo": "Re-running this stage...",
+        "cancel": "Stopping this timeboxing session...",
+    }
+    return labels.get(action, "Working on that...")
 
 
 __all__ = [

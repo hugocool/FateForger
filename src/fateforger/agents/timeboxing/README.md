@@ -13,6 +13,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | Skeleton pre-generation (AC1) | Implemented, Tested | `test_timeboxing_skeleton_pre_generation.py` | — |
 | Calendar sync + undo controls | Implemented, Tested | `test_timeboxing_submit_flow.py`, `test_slack_timebox_buttons.py` | — |
 | Stage 1 constraint-template coverage UX | Implemented, Tested | `test_timeboxing_stage_message_template_coverage.py` | — |
+| Durable profile/date-span constraint auto-upsert + Stage 1 prefetch wait | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_constraint_memory_client_tool_name.py` | — |
 | Stage 3 markdown-first skeleton overview | Implemented, Tested | `test_timeboxing_skeleton_draft_contract.py` | — |
 | Stage 4 advisory quality facts (0-4) | Implemented, Tested | `test_phase4_rewiring.py` | — |
 | Deterministic stage action buttons | Implemented, Tested | `test_timeboxing_stage_actions.py`, `test_slack_timebox_stage_buttons.py` | — |
@@ -68,7 +69,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | `nlu.py` | `PlannedDateResult`, `ConstraintInterpretation`: structured LLM outputs for multilingual date/scope inference. No regex/keyword matching. |
 | `preferences.py` | `ConstraintStore`: SQLite-backed session constraint persistence. |
 | `constraint_retriever.py` | `ConstraintRetriever`: gap-driven durable constraint fetch from Notion MCP. |
-| `notion_constraint_extractor.py` | LLM-based constraint extraction to Notion upsert (fire-and-forget background); parses schema-shaped JSON text explicitly (no `output_content_type`) to stay compatible with non-strict MCP tools. |
+| `notion_constraint_extractor.py` | LLM fallback path for durable Notion upserts when deterministic MCP upsert mapping is unavailable. |
 
 ### Utilities
 
@@ -98,10 +99,10 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 
 ```
 Stage 0: Date Confirmation (Slack buttons)
-    background: calendar prefetch + Notion constraint retrieval
+    background: calendar prefetch + Notion constraint retrieval (with short await before first Stage 1 render)
 Stage 1: CollectConstraints -> StageGateOutput (frame_facts)
 Stage 2: CaptureInputs -> StageGateOutput (input_facts)
-Stage 3: Skeleton -> pre-generated draft if available, else synchronous draft -> markdown overview (presentation-first) + carry-forward draft state
+Stage 3: Skeleton -> pre-generated draft if available, else synchronous draft -> markdown overview (presentation-first) + carry-forward seed `TBPlan` (no Stage 3 patch loop)
 Stage 4: Refine -> ensure TBPlan+baseline -> TBPatch -> apply_tb_ops() -> updated TBPlan -> advisory quality facts (0-4) -> sync to Google Calendar
 Stage 5: ReviewCommit -> final summary (no extra submit gate)
 Undo action: undo latest sync transaction via session-backed state -> return to Refine
@@ -147,6 +148,8 @@ Conversion:      timebox_to_tb_plan() / tb_plan_to_timebox()
 ### Patching (Schema-in-Prompt)
 
 `output_content_type=TBPatch` is intentionally NOT used because OpenAI `response_format` rejects `oneOf` from Pydantic discriminated unions and OpenRouter/Gemini hangs with structured output on complex schemas. Instead: inject `TBPatch.model_json_schema()` into the system prompt and parse the raw JSON text response.
+
+Runtime guard: `TimeboxPatcher.apply_patch(...)` is Refine-only (`stage='Refine'`) and rejects any non-Refine invocation.
 
 ### TOON Prompt Injection
 

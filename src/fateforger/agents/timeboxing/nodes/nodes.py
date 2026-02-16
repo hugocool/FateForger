@@ -532,6 +532,7 @@ class StageRefineNode(_StageNodeBase):
         try:
             patched_plan, _patch = (
                 await self._orchestrator._timebox_patcher.apply_patch(  # noqa: SLF001
+                    stage=TimeboxingStage.REFINE.value,
                     current=self._session.tb_plan,
                     user_message=user_message,
                     constraints=constraints,

@@ -79,4 +79,5 @@ async def test_stage_proceed_button_dispatches_and_replaces_message() -> None:
     assert isinstance(dispatched, TimeboxingStageAction)
     assert dispatched.action == "proceed"
     assert client.updates
+    assert "Proceeding to the next stage" in (client.updates[0].get("text") or "")
     assert "CaptureInputs" in (client.updates[-1].get("text") or "")
