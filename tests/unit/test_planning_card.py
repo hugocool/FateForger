@@ -66,4 +66,9 @@ def test_card_success_has_open_url():
     actions = next(b for b in payload["blocks"] if b["type"] == "actions")
     button = actions["elements"][0]
     assert button.get("url") == "https://example.com"
-
+    status_context = next(
+        b for b in payload["blocks"] if b.get("block_id") == "status"
+    )
+    text = status_context["elements"][0]["text"]
+    assert "Open in Google Calendar" in text
+    assert "https://example.com" in text

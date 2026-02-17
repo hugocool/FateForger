@@ -12,6 +12,8 @@ from autogen_agentchat.teams import DiGraphBuilder, GraphFlow
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from pydantic import BaseModel
 
+from fateforger.llm import assert_strict_tools_for_structured_output
+
 from .timebox import Timebox
 from .prompts import (
     ASSESS_PROMPT,
@@ -95,6 +97,11 @@ def _build_node(
     tools: Optional[List] = None,
 ) -> AssistantAgent:
     """Create an AssistantAgent configured for a specific phase."""
+    assert_strict_tools_for_structured_output(
+        tools=tools,
+        output_content_type=output_content_type,
+        agent_name=name,
+    )
 
     return AssistantAgent(
         name=name,

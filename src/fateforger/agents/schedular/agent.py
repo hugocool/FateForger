@@ -105,15 +105,56 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
     def _extract_tool_payload(
         result: object,
     ) -> object:  # TODO: why is this needed? isnt this build in?
-        if isinstance(result, dict):
+        if isinstance(result, (dict, list)):
             return result
-        payload = getattr(result, "content", None)
-        if payload is not None:
-            return payload
         payload = getattr(result, "result", None)
         if payload is not None:
+            return PlannerAgent._decode_tool_payload(payload, source="tool.result")
+        payload = getattr(result, "content", None)
+        if payload is not None:
+            return PlannerAgent._decode_tool_payload(payload, source="tool.content")
+        raise RuntimeError(
+            "calendar MCP tool returned unsupported payload; expected result/content JSON payload"
+        )
+
+    @staticmethod
+    def _decode_tool_payload(payload: object, *, source: str) -> object:
+        if isinstance(payload, (dict, list)):
+            if isinstance(payload, list):
+                if not payload:
+                    return payload
+                if all(isinstance(item, dict) for item in payload):
+                    return payload
+                first = payload[0]
+                if isinstance(first, (dict, list)):
+                    return first
+                content = getattr(first, "content", None)
+                if isinstance(content, str):
+                    try:
+                        return json.loads(content)
+                    except (TypeError, json.JSONDecodeError) as exc:
+                        raise RuntimeError(
+                            f"calendar MCP payload from {source}[].content is not valid JSON: {content}"
+                        ) from exc
+                text = getattr(first, "text", None)
+                if isinstance(text, str):
+                    try:
+                        return json.loads(text)
+                    except (TypeError, json.JSONDecodeError) as exc:
+                        raise RuntimeError(
+                            f"calendar MCP payload from {source}[].text is not valid JSON: {text}"
+                        ) from exc
             return payload
-        return {}
+        if isinstance(payload, str):
+            try:
+                return json.loads(payload)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"calendar MCP payload from {source} is not valid JSON: {payload}"
+                ) from exc
+        raise RuntimeError(
+            f"calendar MCP payload from {source} has unsupported type: {type(payload).__name__}"
+        )
 
     @staticmethod
     def _normalize_event(
@@ -128,6 +169,11 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             event = payload.get("event")
             if isinstance(event, dict):
                 return event
+            items = payload.get("items")
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        return item
         if isinstance(payload, list):
             for item in payload:
                 if isinstance(item, dict):
@@ -138,13 +184,54 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
     def _normalize_events(payload: object) -> list[dict]:
         # TODO(refactor): Replace dict filtering with Pydantic CalendarEvent parsing.
         if isinstance(payload, dict):
-            items = payload.get("items")
+            items = payload.get("items") or payload.get("events")
             if isinstance(items, list):
                 return [item for item in items if isinstance(item, dict)]
             return []
         if isinstance(payload, list):
             return [item for item in payload if isinstance(item, dict)]
         return []
+
+    @staticmethod
+    def _extract_tool_error(payload: object) -> str | None:
+        if isinstance(payload, dict):
+            if payload.get("success") is False or payload.get("ok") is False:
+                return str(
+                    payload.get("error")
+                    or payload.get("message")
+                    or payload.get("detail")
+                    or "Tool reported failure"
+                )
+            if payload.get("error"):
+                return str(payload["error"])
+        return None
+
+    @classmethod
+    def _event_matches_upsert_request(
+        cls,
+        *,
+        event: dict,
+        message: UpsertCalendarEvent,
+        tz: ZoneInfo,
+    ) -> tuple[bool, str | None]:
+        expected_summary = (message.summary or "").strip()
+        actual_summary = (event.get("summary") or "").strip()
+        if expected_summary and actual_summary and actual_summary != expected_summary:
+            return False, "summary mismatch after upsert verification"
+
+        expected_start = cls._parse_event_dt(message.start, tz=tz)
+        expected_end = cls._parse_event_dt(message.end, tz=tz)
+        actual_start = cls._parse_event_dt(event.get("start"), tz=tz)
+        actual_end = cls._parse_event_dt(event.get("end"), tz=tz)
+
+        tolerance_s = 60.0
+        if expected_start and actual_start:
+            if abs((expected_start - actual_start).total_seconds()) > tolerance_s:
+                return False, "start mismatch after upsert verification"
+        if expected_end and actual_end:
+            if abs((expected_end - actual_end).total_seconds()) > tolerance_s:
+                return False, "end mismatch after upsert verification"
+        return True, None
 
     @staticmethod
     def _parse_event_dt(raw: dict | str | None, *, tz: ZoneInfo) -> dt.datetime | None:
@@ -350,12 +437,17 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             )
             event = self._normalize_event(self._extract_tool_payload(fetched))
             exists = bool(event)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Calendar pre-upsert get-event failed; assuming create path: event_id=%s error=%s",
+                message.event_id,
+                exc,
+            )
             exists = False
 
         try:
             if exists:
-                await workbench.call_tool(
+                upsert_result = await workbench.call_tool(
                     "update-event",
                     arguments={
                         "calendarId": message.calendar_id,
@@ -369,7 +461,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                     },
                 )
             else:
-                await workbench.call_tool(
+                upsert_result = await workbench.call_tool(
                     "create-event",
                     arguments={
                         "calendarId": message.calendar_id,
@@ -391,6 +483,22 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                 error=str(e),
             )
 
+        upsert_payload = self._extract_tool_payload(upsert_result)
+        upsert_error = self._extract_tool_error(upsert_payload)
+        if upsert_error:
+            logger.warning(
+                "Calendar upsert tool reported failure without exception: event_id=%s error=%s payload=%s",
+                message.event_id,
+                upsert_error,
+                upsert_payload,
+            )
+            return UpsertCalendarEventResult(
+                ok=False,
+                calendar_id=message.calendar_id,
+                event_id=message.event_id,
+                error=upsert_error,
+            )
+
         try:
             fetched = await workbench.call_tool(
                 "get-event",
@@ -400,10 +508,52 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                 },
             )
             event = self._normalize_event(self._extract_tool_payload(fetched)) or {}
-        except Exception:
-            event = {"id": message.event_id, "summary": message.summary}
+        except Exception as exc:
+            logger.warning(
+                "Calendar upsert verification fetch failed: event_id=%s error=%s",
+                message.event_id,
+                exc,
+            )
+            return UpsertCalendarEventResult(
+                ok=False,
+                calendar_id=message.calendar_id,
+                event_id=message.event_id,
+                error=f"calendar verification fetch failed: {exc}",
+            )
+
+        if not event:
+            return UpsertCalendarEventResult(
+                ok=False,
+                calendar_id=message.calendar_id,
+                event_id=message.event_id,
+                error="calendar verification returned no event payload",
+            )
+
+        matches, mismatch_reason = self._event_matches_upsert_request(
+            event=event, message=message, tz=tz
+        )
+        if not matches:
+            logger.warning(
+                "Calendar upsert verification mismatch: event_id=%s reason=%s event=%s",
+                message.event_id,
+                mismatch_reason,
+                event,
+            )
+            return UpsertCalendarEventResult(
+                ok=False,
+                calendar_id=message.calendar_id,
+                event_id=event.get("id") or message.event_id,
+                error=mismatch_reason or "calendar verification mismatch",
+            )
 
         event_url = event.get("htmlLink") or event.get("html_link") or event.get("url")
+        if not event_url:
+            return UpsertCalendarEventResult(
+                ok=False,
+                calendar_id=message.calendar_id,
+                event_id=event.get("id") or message.event_id,
+                error="calendar upsert verification succeeded but no event URL was returned",
+            )
         logger.info(
             "Calendar event upserted successfully: event_id=%s, url=%s",
             event.get("id") or message.event_id,

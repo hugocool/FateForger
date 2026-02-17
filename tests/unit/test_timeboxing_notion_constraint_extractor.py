@@ -69,3 +69,30 @@ def test_parse_constraint_extraction_response_accepts_fenced_json() -> None:
 
     assert parsed.constraint_record.name == "No meetings before 10"
     assert parsed.constraint_record.payload.rule_kind == "avoid_window"
+
+
+@pytest.mark.asyncio
+async def test_extract_and_upsert_raises_on_invalid_payload() -> None:
+    class _BadAgentTool:
+        async def run_json(self, *_args: Any, **_kwargs: Any):
+            return SimpleNamespace(chat_message=SimpleNamespace(content="not-json"))
+
+    extractor = extractor_mod.NotionConstraintExtractor.__new__(
+        extractor_mod.NotionConstraintExtractor
+    )
+    extractor._agent_tool = _BadAgentTool()
+
+    handoff = extractor_mod.ConstraintHandoff(
+        planned_date=extractor_mod.date(2026, 2, 17),
+        timezone="Europe/Amsterdam",
+        stage_id="CollectConstraints",
+        user_utterance="No meetings before 10",
+        triggering_suggestion=None,
+        impacted_event_types=["M"],
+        suggested_tags=["meetings"],
+        session_id="s1",
+        decision_scope="profile",
+    )
+
+    with pytest.raises(RuntimeError, match="Constraint extractor returned invalid output"):
+        await extractor.extract_and_upsert(handoff)

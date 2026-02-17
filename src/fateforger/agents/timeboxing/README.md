@@ -17,6 +17,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | Stage 3 markdown-first skeleton overview | Implemented, Tested | `test_timeboxing_skeleton_draft_contract.py` | — |
 | Stage 4 advisory quality facts (0-4) | Implemented, Tested | `test_phase4_rewiring.py` | — |
 | Deterministic stage action buttons | Implemented, Tested | `test_timeboxing_stage_actions.py`, `test_slack_timebox_stage_buttons.py` | — |
+| Structured-output strict tool contract | Implemented, Tested | `test_timeboxing_constraint_search_tool_strict.py`, `test_timeboxing_flow.py` | — |
 
 ## File Index
 
@@ -69,6 +70,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | `nlu.py` | `PlannedDateResult`, `ConstraintInterpretation`: structured LLM outputs for multilingual date/scope inference. No regex/keyword matching. |
 | `preferences.py` | `ConstraintStore`: SQLite-backed session constraint persistence. |
 | `constraint_retriever.py` | `ConstraintRetriever`: gap-driven durable constraint fetch from Notion MCP. |
+| `constraint_search_tool.py` | Stage-gating Notion search tool (`search_constraints`) with strict FunctionTool schema for structured-output compatibility. |
 | `notion_constraint_extractor.py` | LLM fallback path for durable Notion upserts when deterministic MCP upsert mapping is unavailable. |
 
 ### Utilities

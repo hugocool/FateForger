@@ -13,11 +13,15 @@ from dotenv import load_dotenv
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
 from autogen_core import CancellationToken
+from autogen_core.tools import FunctionTool
 from autogen_ext.tools.mcp import mcp_server_tools
 
 from fateforger.contracts import CalendarEvent, CalendarOp, OpType, PlanDiff
 from fateforger.core.config import settings
-from fateforger.llm import build_autogen_chat_client
+from fateforger.llm import (
+    assert_strict_tools_for_structured_output,
+    build_autogen_chat_client,
+)
 from ...tools_config import get_calendar_mcp_params
 
 load_dotenv()
@@ -45,7 +49,7 @@ class PlannerAgentFactory:
         tools = await mcp_server_tools(params)
 
         # Find the list-events tool
-        list_events_tool = next(
+        raw_list_events_tool = next(
             (
                 tool
                 for tool in tools
@@ -53,23 +57,85 @@ class PlannerAgentFactory:
             ),
             None,
         )
-        if not list_events_tool:
+        if not raw_list_events_tool:
             raise RuntimeError("list-events tool not found in MCP server tools")
 
+        async def list_events(
+            calendarId: str,
+            timeMin: str,
+            timeMax: str,
+            singleEvents: bool,
+            orderBy: str,
+        ) -> dict[str, Any]:
+            """Strict wrapper around MCP `list-events` with explicit JSON parsing."""
+            result = await raw_list_events_tool.run_json(
+                {
+                    "calendarId": calendarId,
+                    "timeMin": timeMin,
+                    "timeMax": timeMax,
+                    "singleEvents": singleEvents,
+                    "orderBy": orderBy,
+                },
+                CancellationToken(),
+            )
+            if isinstance(result, dict):
+                return result
+            text_payload = raw_list_events_tool.return_value_as_string(result)
+            if not text_payload:
+                raise RuntimeError("list-events returned empty payload")
+            try:
+                decoded = json.loads(text_payload)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"list-events returned non-JSON payload: {text_payload}"
+                ) from exc
+            if isinstance(decoded, list) and decoded:
+                first = decoded[0]
+                if isinstance(first, dict) and first.get("type") == "text":
+                    text = first.get("text")
+                    if isinstance(text, str):
+                        try:
+                            parsed = json.loads(text)
+                        except Exception as exc:
+                            raise RuntimeError(
+                                f"list-events text payload is non-JSON: {text}"
+                            ) from exc
+                        if isinstance(parsed, dict):
+                            return parsed
+            if isinstance(decoded, dict):
+                return decoded
+            raise RuntimeError(
+                f"list-events returned unexpected payload shape: {type(decoded).__name__}"
+            )
+
+        strict_list_events_tool = FunctionTool(
+            list_events,
+            name="list_events",
+            description=(
+                "List calendar events in a time range. Returns JSON with events/items."
+            ),
+            strict=True,
+        )
+
         # Create agent with structured output
+        assert_strict_tools_for_structured_output(
+            tools=[strict_list_events_tool],
+            output_content_type=PlanDiff,
+            agent_name="PlannerAgent",
+        )
         agent = AssistantAgent(
             name="PlannerAgent",
             model_client=build_autogen_chat_client(
                 "planner_agent", parallel_tool_calls=False
             ),
-            tools=[list_events_tool],
+            tools=[strict_list_events_tool],
             output_content_type=PlanDiff,  # Structured output into PlanDiff
             system_message="""
 You are PlannerAgent for calendar planning with structured JSON output.
 
 WORKFLOW:
 1. You receive desired_slots as JSON: a list of CalendarEvent objects the user wants on their calendar
-2. FIRST: Call the list-events tool to fetch current calendar events (use calendarId="primary")
+2. FIRST: Call the list_events tool to fetch current calendar events (use calendarId="primary")
 3. THEN: Compute a PlanDiff by comparing desired_slots to current events
 4. RETURN: Only the PlanDiff JSON structure - no extra text or explanation
 

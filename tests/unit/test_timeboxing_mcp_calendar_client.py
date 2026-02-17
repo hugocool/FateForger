@@ -10,6 +10,8 @@ import pytest
 
 from fateforger.agents.timeboxing.mcp_clients import McpCalendarClient
 
+pytest.importorskip("autogen_ext.tools.mcp")
+
 
 class _FakeToolResult:
     """Minimal MCP tool result with ``to_text`` for JSON payload parsing."""
@@ -65,6 +67,17 @@ def test_extract_tool_payload_parses_wrapped_result_content() -> None:
     assert payload.get("events")[0]["summary"] == "Deep work"
 
 
+def test_extract_tool_payload_raises_on_non_json_text() -> None:
+    """Tool payload extraction must fail loudly on invalid JSON text."""
+
+    class _InvalidTextResult:
+        def to_text(self) -> str:
+            return "not-json"
+
+    with pytest.raises(RuntimeError):
+        McpCalendarClient._extract_tool_payload(_InvalidTextResult())
+
+
 @pytest.mark.asyncio
 async def test_list_day_immovables_reads_events_payload_shape() -> None:
     """list_day_immovables should return anchors from MCP ``events`` payloads."""
@@ -94,3 +107,20 @@ async def test_list_day_immovables_reads_events_payload_shape() -> None:
     assert events == [{"title": "Brunch", "start": "11:30", "end": "13:00"}]
     assert diagnostics.get("raw_event_count") == 1
     assert diagnostics.get("immovable_count") == 1
+
+
+@pytest.mark.asyncio
+async def test_get_tools_raises_when_loader_returns_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import autogen_ext.tools.mcp as mcp_mod
+
+    async def _empty_loader(_params):
+        return []
+
+    monkeypatch.setattr(mcp_mod, "mcp_server_tools", _empty_loader)
+    client = McpCalendarClient.__new__(McpCalendarClient)
+    client._params = object()
+
+    with pytest.raises(RuntimeError, match="calendar MCP server returned no tools"):
+        await client.get_tools()

@@ -44,10 +44,10 @@ async def test_constraint_memory_client_upsert_uses_openai_safe_tool_name() -> N
     client = ConstraintMemoryClient.__new__(ConstraintMemoryClient)
     client._workbench = _DummyWorkbench()
 
-    out = await ConstraintMemoryClient.upsert_constraint(
-        client,
-        record={"constraint_record": {"name": "x"}},
-        event={"action": "upsert"},
-    )
-    assert out == {}
+    with pytest.raises(RuntimeError):
+        await ConstraintMemoryClient.upsert_constraint(
+            client,
+            record={"constraint_record": {"name": "x"}},
+            event={"action": "upsert"},
+        )
     assert client._workbench.calls[0][0] == "constraint_upsert_constraint"

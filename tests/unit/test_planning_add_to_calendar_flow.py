@@ -126,3 +126,48 @@ async def test_add_to_calendar_failure_sets_failure_status():
     assert store.status_updates[-1][0] == DraftStatus.FAILURE
     assert updates
 
+
+@pytest.mark.asyncio
+async def test_add_to_calendar_ok_without_url_treated_as_failure():
+    draft = EventDraftPayload(
+        draft_id="draft_abc123",
+        user_id="U1",
+        channel_id="D1",
+        message_ts="123.456",
+        calendar_id="primary",
+        event_id="ffplanningxyz",
+        title="Daily planning session",
+        description="Plan tomorrow.",
+        timezone="Europe/Amsterdam",
+        start_at_utc=datetime(2026, 1, 18, 9, 0, tzinfo=timezone.utc).isoformat(),
+        duration_min=30,
+        status=DraftStatus.PENDING,
+        event_url=None,
+        last_error=None,
+    )
+    store = _FakeDraftStore(draft)
+    runtime = _DummyRuntime(
+        UpsertCalendarEventResult(
+            ok=True,
+            calendar_id="primary",
+            event_id="ffplanningxyz",
+            event_url=None,
+        )
+    )
+
+    coordinator = PlanningCoordinator(runtime=runtime, focus=object(), client=object())  # type: ignore[arg-type]
+    coordinator._draft_store = store  # type: ignore[attr-defined]
+    coordinator._guardian = None  # type: ignore[attr-defined]
+
+    updates = []
+
+    async def respond(*, text, blocks, replace_original):
+        updates.append({"text": text, "blocks": blocks, "replace_original": replace_original})
+
+    await coordinator._add_to_calendar_async(draft_id=draft.draft_id, respond=respond)
+
+    assert store.status_updates
+    status, _event_url, last_error = store.status_updates[-1]
+    assert status == DraftStatus.FAILURE
+    assert "no event url" in (last_error or "").lower()
+    assert updates

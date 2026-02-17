@@ -434,13 +434,35 @@ class PlanningCoordinator:
         respond,
     ) -> None:
         if not self._draft_store:
+            logger.warning(
+                "start_add_to_calendar skipped: event_draft_store missing (draft_id=%s)",
+                draft_id,
+            )
             return
         draft = await self._draft_store.get_by_draft_id(draft_id=draft_id)
         if not draft:
+            logger.warning(
+                "start_add_to_calendar skipped: draft not found (draft_id=%s)", draft_id
+            )
             return
         if draft.status in {DraftStatus.PENDING, DraftStatus.SUCCESS}:
+            logger.info(
+                "start_add_to_calendar no-op: draft already %s (draft_id=%s user_id=%s)",
+                draft.status.value,
+                draft.draft_id,
+                draft.user_id,
+            )
             return
 
+        logger.info(
+            "start_add_to_calendar: queueing add request (draft_id=%s user_id=%s calendar_id=%s event_id=%s start=%s duration_min=%s)",
+            draft.draft_id,
+            draft.user_id,
+            draft.calendar_id,
+            draft.event_id,
+            draft.start_at_utc,
+            draft.duration_min,
+        )
         await self._draft_store.update_status(
             draft_id=draft.draft_id, status=DraftStatus.PENDING, last_error=None
         )
@@ -457,9 +479,14 @@ class PlanningCoordinator:
 
     async def _add_to_calendar_async(self, *, draft_id: str, respond) -> None:
         if not self._draft_store:
+            logger.warning(
+                "_add_to_calendar_async skipped: event_draft_store missing (draft_id=%s)",
+                draft_id,
+            )
             return
         draft = await self._draft_store.get_by_draft_id(draft_id=draft_id)
         if not draft:
+            logger.warning("_add_to_calendar_async skipped: draft not found (%s)", draft_id)
             return
 
         try:
@@ -469,6 +496,16 @@ class PlanningCoordinator:
 
         start = date_parser.isoparse(draft.start_at_utc).astimezone(timezone.utc)
         end = start + timedelta(minutes=int(draft.duration_min))
+        logger.info(
+            "_add_to_calendar_async: dispatching upsert (draft_id=%s user_id=%s calendar_id=%s event_id=%s start=%s end=%s tz=%s)",
+            draft.draft_id,
+            draft.user_id,
+            draft.calendar_id,
+            draft.event_id,
+            start.isoformat(),
+            end.isoformat(),
+            tz.key,
+        )
 
         runtime_key = FocusManager.thread_key(
             draft.channel_id, thread_ts=draft.message_ts, ts=draft.message_ts or "root"
@@ -487,22 +524,46 @@ class PlanningCoordinator:
             recipient=AgentId("planner_agent", key=runtime_key),
         )
 
+        result_ok = isinstance(result, UpsertCalendarEventResult) and bool(result.ok)
+        result_event_id = (
+            (result.event_id or "").strip()
+            if isinstance(result, UpsertCalendarEventResult)
+            else ""
+        )
+        result_event_url = (
+            (result.event_url or "").strip()
+            if isinstance(result, UpsertCalendarEventResult)
+            else ""
+        )
+        result_error = (
+            (result.error or "").strip()
+            if isinstance(result, UpsertCalendarEventResult)
+            else ""
+        )
         logger.info(
-            "UpsertCalendarEvent result: type=%s, ok=%s",
+            "_add_to_calendar_async result: draft_id=%s type=%s ok=%s event_id=%s event_url_present=%s error=%s",
+            draft.draft_id,
             type(result).__name__,
-            getattr(result, "ok", None),
+            result_ok,
+            result_event_id,
+            bool(result_event_url),
+            result_error or None,
         )
 
-        if isinstance(result, UpsertCalendarEventResult) and result.ok:
+        if (
+            isinstance(result, UpsertCalendarEventResult)
+            and result_ok
+            and bool(result_event_url)
+        ):
             await self._draft_store.update_status(
                 draft_id=draft.draft_id,
                 status=DraftStatus.SUCCESS,
-                event_url=result.event_url,
+                event_url=result_event_url,
                 last_error=None,
             )
             updated = await self._draft_store.get_by_draft_id(draft_id=draft.draft_id)
             if updated:
-                payload = _card_payload(updated, status_override="✅ Added to calendar")
+                payload = _card_payload(updated)
                 await respond(
                     text=payload["text"],
                     blocks=payload["blocks"],
@@ -517,11 +578,16 @@ class PlanningCoordinator:
                     )
             return
 
-        error = (
-            getattr(result, "error", None)
-            if isinstance(result, UpsertCalendarEventResult)
-            else None
-        )
+        error = result_error if result_error else None
+        if result_ok and not result_event_url:
+            error = (
+                "Calendar upsert returned no event URL; insertion not confirmed. Please retry."
+            )
+            logger.warning(
+                "_add_to_calendar_async strict-success failure: missing event URL despite ok=true (draft_id=%s event_id=%s)",
+                draft.draft_id,
+                result_event_id or draft.event_id,
+            )
         if not error:
             error = "Calendar operation failed"
         await self._draft_store.update_status(
@@ -594,6 +660,11 @@ class PlanningCoordinator:
 
 def _status_text(draft: EventDraftPayload) -> str:
     if draft.status is DraftStatus.SUCCESS:
+        if draft.event_url:
+            return (
+                "✅ Added to calendar\n"
+                f"<{draft.event_url}|Open in Google Calendar>"
+            )
         return "✅ Added to calendar"
     if draft.status is DraftStatus.FAILURE:
         reason = (draft.last_error or "unknown error").strip()

@@ -10,7 +10,7 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | Timeboxing slash command + Stage 0 UI | Implemented |
 | Thread-scoped focus routing | Implemented |
 | Constraint review modals | Implemented |
-| Planning/scheduling UI | Implemented |
+| Planning/scheduling UI | Implemented, Tested (strict add-to-calendar success verification + explicit link surfacing) |
 | Haunt delivery (nudges) | Implemented |
 | Sync engine confirm/cancel/undo buttons | Implemented, Tested |
 

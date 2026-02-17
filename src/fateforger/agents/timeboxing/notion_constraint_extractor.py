@@ -9,7 +9,6 @@ from autogen_agentchat.tools import AgentTool
 from autogen_core import CancellationToken
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from pydantic import BaseModel, Field
-from pydantic import ValidationError
 
 from fateforger.debug.diag import with_timeout
 from fateforger.agents.timeboxing.constants import TIMEBOXING_TIMEOUTS
@@ -224,8 +223,10 @@ class NotionConstraintExtractor:
         )
         try:
             return _parse_constraint_extraction_response(response)
-        except ValidationError:
-            return None
+        except Exception as exc:
+            raise RuntimeError(
+                "Constraint extractor returned invalid output payload"
+            ) from exc
 
     async def extract_and_upsert_constraint(
         self,

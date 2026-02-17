@@ -331,8 +331,8 @@ async def execute_search_plan(
 
 async def search_constraints(
     queries: list[dict[str, Any]],
-    planned_date: str = "",
-    stage: str = "",
+    planned_date: str | None = None,
+    stage: str | None = None,
     _client: ConstraintMemoryClient | None = None,
 ) -> str:
     """Search the durable constraint store with one or more query facets.
@@ -351,8 +351,8 @@ async def search_constraints(
             - necessities (list[str]): 'must' and/or 'should'.
             - limit (int): Max results per facet (default 20).
         planned_date: ISO date string (YYYY-MM-DD) for active-window filtering.
-            Empty string means today.
-        stage: Current timeboxing stage (e.g. 'Skeleton'). Empty string means unfiltered.
+            Null means today.
+        stage: Current timeboxing stage (e.g. 'Skeleton'). Null means unfiltered.
         _client: Internal — injected by the agent. Do not set.
 
     Returns:

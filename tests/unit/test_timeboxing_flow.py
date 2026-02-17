@@ -2,9 +2,14 @@ import pytest
 
 pytest.importorskip("autogen_agentchat")
 
+from autogen_core.tools import FunctionTool
 from fateforger.agents.timeboxing.flow import build_timeboxing_flow
 from fateforger.agents.timeboxing.timebox import Timebox
 from autogen_ext.models.openai import OpenAIChatCompletionClient
+
+
+def _dummy_tool(arg: str) -> str:
+    return arg
 
 
 def test_draft_node_is_structured():
@@ -26,3 +31,15 @@ def test_system_prompt_included():
     assert system_messages, "Expected system messages to be configured"
     content = system_messages[0].content
     assert "Professional Time-Boxing Agent" in content
+
+
+def test_flow_rejects_non_strict_tools_with_structured_output() -> None:
+    model_client = OpenAIChatCompletionClient(model="gpt-4o-mini", api_key="test")
+    tool = FunctionTool(
+        _dummy_tool,
+        name="non_strict_tool",
+        description="dummy",
+        strict=False,
+    )
+    with pytest.raises(RuntimeError):
+        build_timeboxing_flow(model_client, tools=[tool])

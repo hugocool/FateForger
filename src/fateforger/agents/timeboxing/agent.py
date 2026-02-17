@@ -42,6 +42,7 @@ from fateforger.core.config import settings
 from fateforger.debug.diag import with_timeout
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
 from fateforger.llm import build_autogen_chat_client
+from fateforger.llm import assert_strict_tools_for_structured_output
 from fateforger.llm.toon import toon_encode
 from fateforger.slack_bot.constraint_review import (
     build_constraint_row_blocks,
@@ -543,7 +544,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 ),
             )
         except Exception:
-            logger.debug("Failed to initialize MCP calendar client", exc_info=True)
+            logger.error("Failed to initialize MCP calendar client", exc_info=True)
             return None
         return self._calendar_client
 
@@ -563,7 +564,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 ),
             )
         except Exception:
-            logger.debug("Failed to initialize TickTick MCP client", exc_info=True)
+            logger.error("Failed to initialize TickTick MCP client", exc_info=True)
             return None
         return self._ticktick_client
 
@@ -580,7 +581,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
             self._constraint_memory_client = ConstraintMemoryClient(timeout=timeout)
         except Exception:
-            logger.debug(
+            logger.error(
                 "Failed to initialize constraint memory MCP client", exc_info=True
             )
             return None
@@ -1433,6 +1434,11 @@ class TimeboxingFlowAgent(RoutedAgent):
             max_tool_iterations: int = 2,
         ) -> AssistantAgent:
             """Construct a stage helper agent with shared configuration."""
+            assert_strict_tools_for_structured_output(
+                tools=tools,
+                output_content_type=out_type,
+                agent_name=name,
+            )
             return AssistantAgent(
                 name=name,
                 model_client=self._model_client,
@@ -2695,8 +2701,8 @@ class TimeboxingFlowAgent(RoutedAgent):
 
         async def _search_constraints_wrapper(
             queries: list[dict[str, Any]],
-            planned_date: str = "",
-            stage: str = "",
+            planned_date: str | None,
+            stage: str | None,
         ) -> str:
             """Search the durable constraint store with one or more query facets.
 
@@ -2719,8 +2725,8 @@ class TimeboxingFlowAgent(RoutedAgent):
                     - scopes (list[str]): 'session', 'profile', 'datespan'.
                     - necessities (list[str]): 'must' and/or 'should'.
                     - limit (int): Max results per facet (default 20).
-                planned_date: ISO date (YYYY-MM-DD). Empty = today.
-                stage: Current timeboxing stage. Empty = unfiltered.
+                planned_date: ISO date (YYYY-MM-DD), or null to use today.
+                stage: Current timeboxing stage, or null for no stage filter.
 
             Returns:
                 Formatted summary of matching constraints.
@@ -2743,6 +2749,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 "matching constraints. Use this to find the user's saved "
                 "scheduling preferences before making planning decisions."
             ),
+            strict=True,
         )
 
     async def _ensure_constraint_store(self) -> None:
@@ -2768,7 +2775,141 @@ class TimeboxingFlowAgent(RoutedAgent):
         if model_client is None:
             return
         try:
-            self._constraint_mcp_tools = await get_constraint_mcp_tools()
+            raw_tools = await get_constraint_mcp_tools()
+            raw_by_name = {
+                str(getattr(tool, "name", "")).strip(): tool for tool in raw_tools
+            }
+            required_tool_names = (
+                "constraint_query_types",
+                "constraint_query_constraints",
+                "constraint_upsert_constraint",
+                "constraint_log_event",
+            )
+            missing = [name for name in required_tool_names if name not in raw_by_name]
+            if missing:
+                raise RuntimeError(
+                    f"Constraint MCP server missing required tools: {', '.join(missing)}"
+                )
+
+            async def _run_constraint_tool_json(
+                tool_name: str, arguments: dict[str, Any]
+            ) -> Any:
+                tool = raw_by_name[tool_name]
+                result = await tool.run_json(arguments, CancellationToken())
+                if isinstance(result, (dict, list)):
+                    return result
+                render = getattr(tool, "return_value_as_string", None)
+                text = render(result) if callable(render) else str(result)
+                if not isinstance(text, str) or not text.strip():
+                    raise RuntimeError(
+                        f"constraint-memory tool {tool_name} returned empty payload"
+                    )
+                text = text.strip()
+                if text.startswith("Error executing tool "):
+                    raise RuntimeError(f"constraint-memory tool {tool_name} failed: {text}")
+                try:
+                    return json.loads(text)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"constraint-memory tool {tool_name} returned non-JSON payload: {text}"
+                    ) from exc
+
+            async def constraint_query_types(
+                stage: str | None,
+                event_types: list[str] | None,
+            ) -> list[dict[str, Any]]:
+                payload = await _run_constraint_tool_json(
+                    "constraint_query_types",
+                    {
+                        "stage": stage,
+                        "event_types": event_types,
+                    },
+                )
+                if not isinstance(payload, list):
+                    raise RuntimeError(
+                        "constraint_query_types returned non-list JSON payload"
+                    )
+                return [item for item in payload if isinstance(item, dict)]
+
+            async def constraint_query_constraints(
+                filters: dict[str, Any],
+                type_ids: list[str] | None,
+                tags: list[str] | None,
+                sort: list[list[str]] | None,
+                limit: int,
+            ) -> list[dict[str, Any]]:
+                payload = await _run_constraint_tool_json(
+                    "constraint_query_constraints",
+                    {
+                        "filters": filters,
+                        "type_ids": type_ids,
+                        "tags": tags,
+                        "sort": sort,
+                        "limit": limit,
+                    },
+                )
+                if not isinstance(payload, list):
+                    raise RuntimeError(
+                        "constraint_query_constraints returned non-list JSON payload"
+                    )
+                return [item for item in payload if isinstance(item, dict)]
+
+            async def constraint_upsert_constraint(
+                record: dict[str, Any],
+                event: dict[str, Any] | None,
+            ) -> dict[str, Any]:
+                payload = await _run_constraint_tool_json(
+                    "constraint_upsert_constraint",
+                    {
+                        "record": record,
+                        "event": event,
+                    },
+                )
+                if not isinstance(payload, dict):
+                    raise RuntimeError(
+                        "constraint_upsert_constraint returned non-dict JSON payload"
+                    )
+                if not payload.get("uid"):
+                    raise RuntimeError(
+                        "constraint_upsert_constraint returned missing uid"
+                    )
+                return payload
+
+            async def constraint_log_event(event: dict[str, Any]) -> dict[str, Any]:
+                payload = await _run_constraint_tool_json(
+                    "constraint_log_event",
+                    {"event": event},
+                )
+                if not isinstance(payload, dict):
+                    raise RuntimeError("constraint_log_event returned non-dict JSON payload")
+                return payload
+
+            self._constraint_mcp_tools = [
+                FunctionTool(
+                    constraint_query_types,
+                    name="constraint_query_types",
+                    description="Query ranked constraint types from durable memory.",
+                    strict=True,
+                ),
+                FunctionTool(
+                    constraint_query_constraints,
+                    name="constraint_query_constraints",
+                    description="Query durable constraints using filters, tags, and type ids.",
+                    strict=True,
+                ),
+                FunctionTool(
+                    constraint_upsert_constraint,
+                    name="constraint_upsert_constraint",
+                    description="Create or update one durable constraint record.",
+                    strict=True,
+                ),
+                FunctionTool(
+                    constraint_log_event,
+                    name="constraint_log_event",
+                    description="Log a durable-memory extraction/upsert event.",
+                    strict=True,
+                ),
+            ]
             self._notion_extractor = NotionConstraintExtractor(
                 model_client=model_client,
                 tools=self._constraint_mcp_tools,
@@ -2852,7 +2993,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                             timeout_s=TIMEBOXING_TIMEOUTS.notion_upsert_s,
                         )
                     except Exception:
-                        logger.debug(
+                        logger.error(
                             "Durable constraint upsert failed (task_key=%s)",
                             task_key,
                             exc_info=True,

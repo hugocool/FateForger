@@ -16,8 +16,24 @@ class _DummyExtractor:
 
 @pytest.mark.asyncio
 async def test_extract_and_upsert_constraint_tool_is_strict(monkeypatch):
+    class _FakeMcpTool:
+        def __init__(self, *, name: str, payload):
+            self.name = name
+            self._payload = payload
+
+        async def run_json(self, _args, _cancellation_token):
+            return self._payload
+
     async def _fake_get_constraint_mcp_tools():
-        return []
+        return [
+            _FakeMcpTool(name="constraint_query_types", payload=[]),
+            _FakeMcpTool(name="constraint_query_constraints", payload=[]),
+            _FakeMcpTool(
+                name="constraint_upsert_constraint",
+                payload={"uid": "constraint-1"},
+            ),
+            _FakeMcpTool(name="constraint_log_event", payload={"ok": True}),
+        ]
 
     monkeypatch.setattr(
         timeboxing_agent_mod, "get_constraint_mcp_tools", _fake_get_constraint_mcp_tools
@@ -41,4 +57,3 @@ async def test_extract_and_upsert_constraint_tool_is_strict(monkeypatch):
 
     assert agent._constraint_extractor_tool is not None
     assert agent._constraint_extractor_tool.schema.get("strict") is True
-

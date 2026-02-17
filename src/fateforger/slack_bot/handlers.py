@@ -1669,6 +1669,13 @@ def register_handlers(
         draft_id = parse_draft_id_from_value(action.get("value") or "")
         if draft_id:
             await planning.start_add_to_calendar(draft_id=draft_id, respond=respond)
+            return
+        logger.warning(
+            "on_event_add_action missing draft_id: channel=%s message_ts=%s action_value=%r",
+            (body.get("channel") or {}).get("id"),
+            (body.get("message") or {}).get("ts"),
+            action.get("value"),
+        )
 
     @app.action(FF_EVENT_RETRY_ACTION_ID)
     async def on_event_retry_action(ack, body, respond, logger):
@@ -1677,6 +1684,13 @@ def register_handlers(
         draft_id = parse_draft_id_from_value(action.get("value") or "")
         if draft_id:
             await planning.start_add_to_calendar(draft_id=draft_id, respond=respond)
+            return
+        logger.warning(
+            "on_event_retry_action missing draft_id: channel=%s message_ts=%s action_value=%r",
+            (body.get("channel") or {}).get("id"),
+            (body.get("message") or {}).get("ts"),
+            action.get("value"),
+        )
 
     @app.action(FF_TIMEBOX_COMMIT_START_ACTION_ID)
     async def on_timebox_commit_start_action(ack, body, client, logger):

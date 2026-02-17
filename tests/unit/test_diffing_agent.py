@@ -115,7 +115,11 @@ class TestPlannerAgent:
         assert agent.name == "PlannerAgent"
         call_args = mock_assistant.call_args.kwargs
         assert call_args["output_content_type"] is PlanDiff
-        assert call_args["tools"] == [mock_list_events_tool]
+        tools = call_args["tools"]
+        assert isinstance(tools, list)
+        assert len(tools) == 1
+        assert tools[0].name == "list_events"
+        assert tools[0].schema.get("strict") is True
 
     def test_compute_time_range(self):
         """Test time range computation from desired slots."""
@@ -200,7 +204,10 @@ class TestPlannerAgent:
         await PlannerAgentFactory.create()
 
         call_args = mock_assistant.call_args.kwargs
-        assert call_args["tools"] == [mock_list_events_tool]
+        tools = call_args["tools"]
+        assert isinstance(tools, list)
+        assert len(tools) == 1
+        assert tools[0].name == "list_events"
 
     def test_plan_diff_json_compatibility(self, sample_desired_slots):
         """Test that PlanDiff works with JSON serialization for LLM output."""

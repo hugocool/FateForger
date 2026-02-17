@@ -39,9 +39,24 @@ async def test_extract_and_upsert_constraint_tool_is_nonblocking(
         task.cancel()
         return task
 
+    class _FakeMcpTool:
+        def __init__(self, *, name: str, payload: Any) -> None:
+            self.name = name
+            self._payload = payload
+
+        async def run_json(self, _args: Any, _cancellation_token: Any) -> Any:
+            return self._payload
+
     async def _fake_get_constraint_mcp_tools() -> list[Any]:
-        """Return an empty tool list for this test."""
-        return []
+        return [
+            _FakeMcpTool(name="constraint_query_types", payload=[]),
+            _FakeMcpTool(name="constraint_query_constraints", payload=[]),
+            _FakeMcpTool(
+                name="constraint_upsert_constraint",
+                payload={"uid": "constraint-1"},
+            ),
+            _FakeMcpTool(name="constraint_log_event", payload={"ok": True}),
+        ]
 
     monkeypatch.setattr(
         timeboxing_agent_mod, "get_constraint_mcp_tools", _fake_get_constraint_mcp_tools

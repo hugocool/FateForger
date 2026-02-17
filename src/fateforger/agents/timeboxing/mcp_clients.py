@@ -182,23 +182,30 @@ class McpCalendarClient:
         """
         from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
 
-        params = StreamableHttpServerParams(url=server_url, timeout=timeout)
-        self._workbench = McpWorkbench(params)
+        self._params = StreamableHttpServerParams(url=server_url, timeout=timeout)
+        self._workbench = McpWorkbench(self._params)
 
-    def get_tools(self) -> list:
+    async def get_tools(self) -> list:
         """Return MCP tool definitions for AutoGen tool wiring."""
-        return self._workbench.get_tools()
+        from autogen_ext.tools.mcp import mcp_server_tools
+
+        tools = await mcp_server_tools(self._params)
+        if not tools:
+            raise RuntimeError("calendar MCP server returned no tools")
+        return tools
 
     @staticmethod
-    def _parse_json_text(raw: Any) -> Any | None:
-        """Parse a JSON payload from text when possible."""
-        # TODO(refactor,typed-contracts): Remove text/fence parsing fallback and
-        # require typed MCP payloads (Pydantic-validated envelopes).
+    def _parse_json_text(raw: Any, *, source: str) -> Any:
+        """Parse a JSON payload from text, raising on invalid content."""
         if not isinstance(raw, str):
-            return None
+            raise RuntimeError(
+                f"calendar MCP payload from {source} is not text: {type(raw).__name__}"
+            )
         text = raw.strip()
         if not text:
-            return None
+            raise RuntimeError(f"calendar MCP payload from {source} is empty")
+        if text.startswith("Error executing tool "):
+            raise RuntimeError(f"calendar MCP tool failed: {text}")
         if text.startswith("```"):
             lines = text.splitlines()
             if lines and lines[0].startswith("```"):
@@ -208,56 +215,62 @@ class McpCalendarClient:
             text = "\n".join(lines).strip()
         try:
             return json.loads(text)
-        except Exception:
-            return None
+        except Exception as exc:
+            raise RuntimeError(
+                f"calendar MCP payload from {source} is not valid JSON: {text}"
+            ) from exc
 
     @classmethod
     def _extract_tool_payload(cls, result: Any) -> Any:
-        """Normalize tool results into a raw payload."""
-        # TODO(refactor): Replace dict probing with Pydantic parsing of tool results.
+        """Normalize tool results into a raw payload.
+
+        Raises:
+            RuntimeError: if no supported payload shape can be decoded.
+        """
         if isinstance(result, (dict, list)):
             return result
         to_text = getattr(result, "to_text", None)
         if callable(to_text):
-            try:
-                parsed = cls._parse_json_text(to_text())
-                if parsed is not None:
-                    return parsed
-            except Exception:
-                pass
+            return cls._parse_json_text(to_text(), source="tool.to_text")
         payload = getattr(result, "content", None)
         if payload is not None:
             if isinstance(payload, list):
                 for item in payload:
                     if isinstance(item, (dict, list)):
                         return item
-                    parsed = cls._parse_json_text(getattr(item, "content", None))
-                    if parsed is not None:
-                        return parsed
-                    parsed = cls._parse_json_text(getattr(item, "text", None))
-                    if parsed is not None:
-                        return parsed
-            parsed = cls._parse_json_text(payload)
-            if parsed is not None:
-                return parsed
-            return payload
+                    item_content = getattr(item, "content", None)
+                    if item_content is not None:
+                        return cls._parse_json_text(
+                            item_content, source="tool.content[].content"
+                        )
+                    item_text = getattr(item, "text", None)
+                    if item_text is not None:
+                        return cls._parse_json_text(
+                            item_text, source="tool.content[].text"
+                        )
+            else:
+                return cls._parse_json_text(payload, source="tool.content")
         payload = getattr(result, "result", None)
         if payload is not None:
             if isinstance(payload, list):
                 for item in payload:
                     if isinstance(item, (dict, list)):
                         return item
-                    parsed = cls._parse_json_text(getattr(item, "content", None))
-                    if parsed is not None:
-                        return parsed
-                    parsed = cls._parse_json_text(getattr(item, "text", None))
-                    if parsed is not None:
-                        return parsed
-            parsed = cls._parse_json_text(payload)
-            if parsed is not None:
-                return parsed
-            return payload
-        return {}
+                    item_content = getattr(item, "content", None)
+                    if item_content is not None:
+                        return cls._parse_json_text(
+                            item_content, source="tool.result[].content"
+                        )
+                    item_text = getattr(item, "text", None)
+                    if item_text is not None:
+                        return cls._parse_json_text(
+                            item_text, source="tool.result[].text"
+                        )
+            else:
+                return cls._parse_json_text(payload, source="tool.result")
+        raise RuntimeError(
+            "calendar MCP tool returned unsupported payload; expected dict/list/JSON text"
+        )
 
     @staticmethod
     def _normalize_events(payload: Any) -> list[dict[str, Any]]:

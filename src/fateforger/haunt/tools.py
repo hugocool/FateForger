@@ -148,22 +148,27 @@ def build_haunting_tools(service: HauntingService) -> list[FunctionTool]:
                 " specify the delay. Settings from the database apply when fields"
                 " are omitted."
             ),
+            strict=True,
         ),
         FunctionTool(
             toolbox.cancel_followups,
             description="Cancel pending follow-ups by message, topic, or task.",
+            strict=True,
         ),
         FunctionTool(
             toolbox.record_user_activity,
             description="Record user activity and cancel matching follow-ups.",
+            strict=True,
         ),
         FunctionTool(
             toolbox.get_admonishment_settings,
             description="Fetch stored admonishment settings for a user.",
+            strict=True,
         ),
         FunctionTool(
             toolbox.set_admonishment_settings,
             description="Create or update stored admonishment settings for a user.",
+            strict=True,
         ),
     ]
 
