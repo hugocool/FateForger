@@ -7,7 +7,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | Subsystem | Status | Tests | Confirmed |
 |-----------|--------|-------|-----------|
 | Domain models (tb_models, tb_ops) | Implemented, Tested | 62 unit | 2025-07-22 |
-| Sync engine (sync_engine, submitter) | Implemented, Tested | 29 + 10 unit | 2025-07-22 (live MCP) |
+| Sync engine (sync_engine, submitter, calendar_reconciliation) | Implemented, Tested | 37 + 10 unit | 2026-02-14 (duplicate-prevention reconciliation) |
 | Patching (schema-in-prompt) | Implemented, Tested | 14 unit | 2025-07-22 (live LLM) |
 | GraphFlow orchestration | Implemented, Documented | graphflow state machine tests | — |
 | Skeleton pre-generation (AC1) | Implemented, Tested | `test_timeboxing_skeleton_pre_generation.py` | — |
@@ -41,7 +41,8 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 
 | File | Responsibility |
 |------|---------------|
-| `sync_engine.py` | `plan_sync()`, `execute_sync()`, `undo_sync()`, `gcal_response_to_tb_plan()`. Deterministic, incremental, reversible diff-and-apply via MCP. Uses set-diff for creates/deletes, DeepDiff for updates. |
+| `sync_engine.py` | `plan_sync()`, `execute_sync()`, `undo_sync()`, `gcal_response_to_tb_plan()`. Deterministic, incremental, reversible diff-and-apply via MCP. Uses reconciliation-first matching and DeepDiff only for matched update decisions. |
+| `calendar_reconciliation.py` | Deterministic desired-vs-remote matching (`id -> canonical -> fuzzy`) and op-bucket planning (`create/update/delete/noop/skip`). |
 | `submitter.py` | `CalendarSubmitter`: high-level `submit_plan()`, `undo_last()`, and `undo_transaction()` over the sync engine. |
 | `mcp_clients.py` | `McpCalendarClient` (list/create/update/delete events via MCP), `McpConstraintMemoryClient` (Notion constraint MCP). Internal to coordinator. |
 
@@ -120,6 +121,8 @@ Session dataclass lives in `agent.py`. Core fields:
 | `tb_plan` | Current TBPlan, sync-engine model (prepared by Stage 2 draft and/or Stage 4 preflight) |
 | `base_snapshot` | Remote-baseline snapshot for diff-based sync (prepared in Stage 4 preflight) |
 | `event_id_map` | Dict mapping event key to GCal event ID |
+| `prefetched_remote_snapshots_by_date` | Rich remote baseline snapshots (from list-events) keyed by date |
+| `remote_event_ids_by_index` | Ordered remote event IDs aligned with `base_snapshot.resolve_times()` |
 | `pre_generated_skeleton` | Background Stage 2 draft consumed by Stage 3 when fresh |
 | `skeleton_overview_markdown` | Stage 3 markdown summary rendered to Slack |
 | `last_quality_level`, `last_quality_label`, `last_quality_next_step` | Latest Refine quality snapshot carried into next patch context |

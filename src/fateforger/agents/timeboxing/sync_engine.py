@@ -31,6 +31,7 @@ from deepdiff import DeepDiff
 
 from fateforger.adapters.calendar.models import GCalEventsResponse
 
+from .calendar_reconciliation import reconcile_calendar_ops
 from .tb_models import ET_COLOR_MAP, FixedWindow, TBEvent, TBPlan, gcal_color_to_et
 
 logger = logging.getLogger(__name__)
@@ -117,48 +118,62 @@ def gcal_response_to_tb_plan(
         Tuple of ``(plan, event_id_map)`` where ``event_id_map`` maps
         ``(summary, start_iso)`` → ``gcal_event_id``.
     """
+    plan, event_id_map, _event_ids_by_index = gcal_response_to_tb_plan_with_identity(
+        resp,
+        plan_date=plan_date,
+        tz_name=tz_name,
+    )
+    return plan, event_id_map
+
+
+def gcal_response_to_tb_plan_with_identity(
+    resp: GCalEventsResponse,
+    *,
+    plan_date: date_type,
+    tz_name: str = "Europe/Amsterdam",
+) -> tuple[TBPlan, dict[str, str], list[str]]:
+    """Convert list-events response into a TBPlan and ordered remote IDs.
+
+    Returns:
+        ``(plan, event_id_map, event_ids_by_index)`` where:
+        - ``event_id_map`` preserves legacy ``summary|start`` lookups.
+        - ``event_ids_by_index`` aligns with ``plan.resolve_times()`` ordering.
+    """
     tz = ZoneInfo(tz_name)
-    events: list[TBEvent] = []
+    event_pairs: list[tuple[TBEvent, str]] = []
     event_id_map: dict[str, str] = {}
 
     for ge in resp.events:
-        # Skip all-day events (no dateTime)
         if not ge.start.date_time or not ge.end.date_time:
             continue
-
-        # Skip cancelled
         if ge.status and ge.status.lower() == "cancelled":
             continue
 
         start_dt = date_parser.isoparse(ge.start.date_time).astimezone(tz)
         end_dt = date_parser.isoparse(ge.end.date_time).astimezone(tz)
-
-        # Skip events not on our planning date
         if start_dt.date() != plan_date:
             continue
+        if end_dt <= start_dt:
+            continue
 
-        # Detect event type from colorId if available
         color_id = getattr(ge, "colorId", None) or getattr(ge, "color_id", None)
         et = gcal_color_to_et(color_id)
-
         summary = ge.summary or "Busy"
         tb_event = TBEvent(
             n=summary,
-            d="",  # GCal descriptions are often long HTML; skip for LLM
+            d="",
             t=et,
             p=FixedWindow(st=start_dt.time(), et=end_dt.time()),
         )
-        events.append(tb_event)
-
-        # Map by (summary, start_iso) for stable identity
+        event_pairs.append((tb_event, ge.id))
         key = f"{summary}|{start_dt.time().isoformat()}"
-        event_id_map[key] = ge.id
+        event_id_map.setdefault(key, ge.id)
 
-    # Sort by start time
-    events.sort(key=lambda e: e.p.st if hasattr(e.p, "st") else time(0, 0))
-
+    event_pairs.sort(key=lambda pair: pair[0].p.st if hasattr(pair[0].p, "st") else time(0, 0))
+    events = [pair[0] for pair in event_pairs]
+    event_ids_by_index = [pair[1] for pair in event_pairs]
     plan = TBPlan(events=events, date=plan_date, tz=tz_name)
-    return plan, event_id_map
+    return plan, event_id_map, event_ids_by_index
 
 
 # ── SyncOp / SyncTransaction ────────────────────────────────────────────
@@ -223,71 +238,30 @@ def plan_sync(
     desired: TBPlan,
     event_id_map: dict[str, str],
     *,
+    remote_event_ids_by_index: list[str] | None = None,
     calendar_id: str = "primary",
 ) -> list[SyncOp]:
-    """Compute minimal create / update / delete ops via DeepDiff.
-
-    Compares canonical event representations (summary, start, end,
-    description, colorId) and ignores GCal noise fields.
-
-    Args:
-        remote: Current state from GCal (converted via ``gcal_response_to_tb_plan``).
-        desired: Target state (the patched ``TBPlan``).
-        event_id_map: Maps ``(summary|start_iso)`` → ``gcal_event_id``.
-        calendar_id: Target GCal calendar ID.
-
-    Returns:
-        Ordered list of ``SyncOp`` (creates first, then updates, then deletes).
-    """
+    """Compute minimal create/update/delete ops with explicit reconciliation."""
     tz = ZoneInfo(desired.tz)
     ops: list[SyncOp] = []
-
-    # Resolve both plans to concrete times
-    remote_resolved = remote.resolve_times()
-    desired_resolved = desired.resolve_times()
-
-    # Build keyed dicts for diffing: key = (summary, start_time_iso)
-    remote_by_key: dict[str, dict] = {}
-    for r in remote_resolved:
-        key = f"{r['n']}|{r['start_time'].isoformat()}"
-        remote_by_key[key] = r
-
-    desired_by_key: dict[str, dict] = {}
-    for d in desired_resolved:
-        key = f"{d['n']}|{d['start_time'].isoformat()}"
-        desired_by_key[key] = d
-
-    # ── Set-based create / delete detection ──
-    # Direct set diff is more reliable than DeepDiff for add/remove,
-    # especially when one side is empty (DeepDiff reports root-level
-    # values_changed instead of dictionary_item_added).
-    remote_keys = set(remote_by_key.keys())
-    desired_keys = set(desired_by_key.keys())
-    added_keys = desired_keys - remote_keys
-    removed_keys = remote_keys - desired_keys
-    common_keys = remote_keys & desired_keys
-
-    # DeepDiff only for updates on common (shared) keys
-    remote_canonical = {k: _canonical(remote_by_key[k]) for k in common_keys}
-    desired_canonical = {k: _canonical(desired_by_key[k]) for k in common_keys}
-
-    diff = DeepDiff(
-        remote_canonical,
-        desired_canonical,
-        ignore_order=True,
-        verbose_level=2,
+    plan = reconcile_calendar_ops(
+        remote=remote,
+        desired=desired,
+        event_id_map=event_id_map,
+        remote_event_ids_by_index=remote_event_ids_by_index,
     )
 
-    # ── Creates: events in desired but not in remote ──
-    for key in added_keys:
-        r = desired_by_key[key]
-        start_dt = datetime.combine(desired.date, r["start_time"], tzinfo=tz)
-        end_dt = datetime.combine(desired.date, r["end_time"], tzinfo=tz)
-        seed = f"{desired.date}|{r['n']}|{r['start_time']}|{r['index']}"
+    for desired_record in plan.creates:
+        resolved = desired_record.resolved
+        start_dt = datetime.combine(desired.date, desired_record.start_time, tzinfo=tz)
+        end_dt = datetime.combine(desired.date, desired_record.end_time, tzinfo=tz)
+        seed = (
+            f"{desired.date}|{desired_record.summary}|"
+            f"{desired_record.start_time}|{desired_record.index}"
+        )
         event_id = base32hex_id(seed)
-
         payload = _build_mcp_payload(
-            r,
+            resolved,
             event_id=event_id,
             start_dt=start_dt,
             end_dt=end_dt,
@@ -302,114 +276,104 @@ def plan_sync(
             )
         )
 
-    # ── Updates: common events with field changes (DeepDiff) ──
-    changed_keys: set[str] = set()
-    for key_path in diff.get("values_changed", {}):
-        key = _extract_deepdiff_parent_key(key_path)
-        if key is not None:
-            changed_keys.add(key)
-    for key_path in diff.get("type_changes", {}):
-        key = _extract_deepdiff_parent_key(key_path)
-        if key is not None:
-            changed_keys.add(key)
-
-    for key in changed_keys:
-        if key not in desired_by_key or key not in event_id_map:
+    for match in plan.updates:
+        if not match.remote.event_id:
             continue
-
-        gcal_id = event_id_map[key]
-        # Only update agent-owned events
-        if not is_owned_event(gcal_id):
+        remote_canonical = _canonical(match.remote.resolved)
+        desired_canonical = _canonical(match.desired.resolved)
+        diff = DeepDiff(
+            remote_canonical,
+            desired_canonical,
+            ignore_order=True,
+            verbose_level=2,
+        )
+        if not diff:
+            continue
+        if not match.remote.is_owned:
             logger.info(
-                "Skipping update for foreign event %s (%s)",
-                gcal_id,
-                key,
+                "Skipping update for foreign event %s (%s).",
+                match.remote.event_id,
+                match.match_kind,
             )
             continue
 
-        r = desired_by_key[key]
-        start_dt = datetime.combine(desired.date, r["start_time"], tzinfo=tz)
-        end_dt = datetime.combine(desired.date, r["end_time"], tzinfo=tz)
-
-        before_r = remote_by_key.get(key)
-        before_payload = None
-        if before_r:
-            b_start = datetime.combine(remote.date, before_r["start_time"], tzinfo=tz)
-            b_end = datetime.combine(remote.date, before_r["end_time"], tzinfo=tz)
-            before_payload = _build_mcp_payload(
-                before_r,
-                event_id=gcal_id,
-                start_dt=b_start,
-                end_dt=b_end,
-                tz_name=remote.tz,
-                calendar_id=calendar_id,
-            )
-
+        before_start = datetime.combine(remote.date, match.remote.start_time, tzinfo=tz)
+        before_end = datetime.combine(remote.date, match.remote.end_time, tzinfo=tz)
+        after_start = datetime.combine(desired.date, match.desired.start_time, tzinfo=tz)
+        after_end = datetime.combine(desired.date, match.desired.end_time, tzinfo=tz)
+        before_payload = _build_mcp_payload(
+            match.remote.resolved,
+            event_id=match.remote.event_id,
+            start_dt=before_start,
+            end_dt=before_end,
+            tz_name=remote.tz,
+            calendar_id=calendar_id,
+        )
         after_payload = _build_mcp_payload(
-            r,
-            event_id=gcal_id,
-            start_dt=start_dt,
-            end_dt=end_dt,
+            match.desired.resolved,
+            event_id=match.remote.event_id,
+            start_dt=after_start,
+            end_dt=after_end,
             tz_name=desired.tz,
             calendar_id=calendar_id,
         )
         ops.append(
             SyncOp(
                 op_type=SyncOpType.UPDATE,
-                gcal_event_id=gcal_id,
+                gcal_event_id=match.remote.event_id,
                 after_payload=after_payload,
                 before_payload=before_payload,
             )
         )
 
-    # ── Deletes: events in remote but not in desired ──
-    for key in removed_keys:
-        if key in event_id_map:
-            gcal_id = event_id_map[key]
-            # Only delete agent-owned events
-            if not is_owned_event(gcal_id):
-                logger.info(
-                    "Skipping delete for foreign event %s (%s)",
-                    gcal_id,
-                    key,
-                )
-                continue
-
-            before_r = remote_by_key.get(key)
-            before_payload = None
-            if before_r:
-                b_start = datetime.combine(
-                    remote.date,
-                    before_r["start_time"],
-                    tzinfo=tz,
-                )
-                b_end = datetime.combine(
-                    remote.date,
-                    before_r["end_time"],
-                    tzinfo=tz,
-                )
-                before_payload = _build_mcp_payload(
-                    before_r,
-                    event_id=gcal_id,
-                    start_dt=b_start,
-                    end_dt=b_end,
-                    tz_name=remote.tz,
-                    calendar_id=calendar_id,
-                )
-
-            ops.append(
-                SyncOp(
-                    op_type=SyncOpType.DELETE,
-                    gcal_event_id=gcal_id,
-                    after_payload={"calendarId": calendar_id, "eventId": gcal_id},
-                    before_payload=before_payload,
-                )
+    for foreign_match in plan.noops:
+        remote_canonical = _canonical(foreign_match.remote.resolved)
+        desired_canonical = _canonical(foreign_match.desired.resolved)
+        diff = DeepDiff(
+            remote_canonical,
+            desired_canonical,
+            ignore_order=True,
+            verbose_level=2,
+        )
+        if diff:
+            logger.info(
+                "No-op for foreign event match (kind=%s, summary=%s).",
+                foreign_match.match_kind,
+                foreign_match.remote.summary,
             )
 
-    # Sort: creates → updates → deletes (creates first so IDs are available)
-    order = {SyncOpType.CREATE: 0, SyncOpType.UPDATE: 1, SyncOpType.DELETE: 2}
-    ops.sort(key=lambda o: order.get(o.op_type, 99))
+    for remote_record in plan.deletes:
+        if not remote_record.event_id:
+            continue
+        before_start = datetime.combine(remote.date, remote_record.start_time, tzinfo=tz)
+        before_end = datetime.combine(remote.date, remote_record.end_time, tzinfo=tz)
+        before_payload = _build_mcp_payload(
+            remote_record.resolved,
+            event_id=remote_record.event_id,
+            start_dt=before_start,
+            end_dt=before_end,
+            tz_name=remote.tz,
+            calendar_id=calendar_id,
+        )
+        ops.append(
+            SyncOp(
+                op_type=SyncOpType.DELETE,
+                gcal_event_id=remote_record.event_id,
+                after_payload={"calendarId": calendar_id, "eventId": remote_record.event_id},
+                before_payload=before_payload,
+            )
+        )
 
+    for skipped in plan.skips:
+        logger.debug(
+            "Sync skip: %s (desired_index=%s remote_index=%s)",
+            skipped.reason,
+            skipped.desired_index,
+            skipped.remote_index,
+        )
+
+    order = {SyncOpType.CREATE: 0, SyncOpType.UPDATE: 1, SyncOpType.DELETE: 2}
+    ops.sort(key=lambda op: order.get(op.op_type, 99))
     return ops
 
 
@@ -565,37 +529,6 @@ def _build_mcp_payload(
     }
 
 
-def _extract_deepdiff_key(path: str) -> str | None:
-    """Extract the dict key from a DeepDiff path like ``root['key']``.
-
-    Args:
-        path: DeepDiff path string.
-
-    Returns:
-        The key string, or None if parsing fails.
-    """
-    # root['Morning routine|09:00'] → Morning routine|09:00
-    start = path.find("['")
-    end = path.find("']", start)
-    if start == -1 or end == -1:
-        return None
-    return path[start + 2 : end]
-
-
-def _extract_deepdiff_parent_key(path: str) -> str | None:
-    """Extract the first-level dict key from a nested DeepDiff path.
-
-    For example: ``root['key']['summary']`` → ``key``.
-
-    Args:
-        path: DeepDiff path string.
-
-    Returns:
-        The parent key string, or None if parsing fails.
-    """
-    return _extract_deepdiff_key(path)
-
-
 def _extract_result_content(result: Any) -> str:
     """Extract content text from an MCP tool result.
 
@@ -631,6 +564,7 @@ __all__ = [
     "base32hex_id",
     "execute_sync",
     "gcal_response_to_tb_plan",
+    "gcal_response_to_tb_plan_with_identity",
     "is_owned_event",
     "plan_sync",
     "undo_sync",

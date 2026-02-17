@@ -116,7 +116,7 @@ from .stage_gating import (
     TimeboxingStage,
 )
 from .submitter import CalendarSubmitter
-from .sync_engine import FFTB_PREFIX, SyncTransaction
+from .sync_engine import FFTB_PREFIX, SyncTransaction, gcal_response_to_tb_plan_with_identity
 from .tb_models import TBEvent, TBPlan
 from .timebox import Timebox, tb_plan_to_timebox, timebox_to_tb_plan
 from .toon_views import (
@@ -182,6 +182,13 @@ class Session:
     prefetched_immovables_by_date: Dict[str, List[Dict[str, str]]] = field(
         default_factory=dict
     )
+    prefetched_remote_snapshots_by_date: Dict[str, TBPlan] = field(default_factory=dict)
+    prefetched_event_id_maps_by_date: Dict[str, Dict[str, str]] = field(
+        default_factory=dict
+    )
+    prefetched_remote_event_ids_by_date: Dict[str, List[str]] = field(
+        default_factory=dict
+    )
     active_constraints: List[Constraint] = field(default_factory=list)
     durable_constraints_by_stage: Dict[str, List[Constraint]] = field(
         default_factory=dict
@@ -202,6 +209,7 @@ class Session:
     tb_plan: TBPlan | None = None
     base_snapshot: TBPlan | None = None
     event_id_map: Dict[str, str] = field(default_factory=dict)
+    remote_event_ids_by_index: List[str] = field(default_factory=list)
     pending_submit: bool = False
     last_sync_transaction: SyncTransaction | None = None
     last_sync_event_id_map: Dict[str, str] | None = None
@@ -958,8 +966,11 @@ class TimeboxingFlowAgent(RoutedAgent):
     async def _prefetch_calendar_immovables(
         self, session: Session, planned_date: str
     ) -> None:
-        """Fetch calendar immovables for the planned date in the background."""
-        if planned_date in session.prefetched_immovables_by_date:
+        """Fetch calendar immovables + remote identity for the planned date."""
+        if (
+            planned_date in session.prefetched_immovables_by_date
+            and planned_date in session.prefetched_remote_snapshots_by_date
+        ):
             self._session_debug(
                 session,
                 "calendar_prefetch_skip_cached",
@@ -992,23 +1003,41 @@ class TimeboxingFlowAgent(RoutedAgent):
         # TODO(refactor): Validate planned_date with Pydantic before calendar prefetch.
         try:
             diagnostics: dict[str, Any] = {}
-            immovables = await client.list_day_immovables(
+            snapshot = await client.list_day_snapshot(
                 calendar_id="primary",
                 day=date.fromisoformat(planned_date),
                 tz=tz,
                 diagnostics=diagnostics,
             )
+            immovables = snapshot.immovables
             session.prefetched_immovables_by_date[planned_date] = immovables
+            remote_plan, event_id_map, event_ids_by_index = (
+                gcal_response_to_tb_plan_with_identity(
+                    snapshot.response,
+                    plan_date=date.fromisoformat(planned_date),
+                    tz_name=session.tz_name or "UTC",
+                )
+            )
+            session.prefetched_remote_snapshots_by_date[planned_date] = remote_plan
+            session.prefetched_event_id_maps_by_date[planned_date] = dict(event_id_map)
+            session.prefetched_remote_event_ids_by_date[planned_date] = list(
+                event_ids_by_index
+            )
             self._session_debug(
                 session,
                 "calendar_prefetch_success",
                 planned_date=planned_date,
                 immovable_count=len(immovables),
+                remote_identity_count=len(event_ids_by_index),
                 diagnostics=diagnostics,
             )
             if immovables:
                 session.background_updates.append(
                     f"Loaded {len(immovables)} calendar immovable(s)."
+                )
+            if event_ids_by_index:
+                session.background_updates.append(
+                    f"Loaded {len(event_ids_by_index)} remote calendar event identity record(s)."
                 )
         except Exception:
             logger.debug("Calendar prefetch failed for %s", planned_date, exc_info=True)
@@ -1016,7 +1045,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 session,
                 "calendar_prefetch_error",
                 planned_date=planned_date,
-                error="list_day_immovables_failed",
+                error="list_day_snapshot_failed",
             )
             self._append_background_update_once(
                 session,
@@ -1038,7 +1067,10 @@ class TimeboxingFlowAgent(RoutedAgent):
         planned_date = session.planned_date
         if not planned_date:
             return
-        if session.prefetched_immovables_by_date.get(planned_date):
+        if (
+            session.prefetched_immovables_by_date.get(planned_date)
+            and session.prefetched_remote_snapshots_by_date.get(planned_date)
+        ):
             self._apply_prefetched_calendar_immovables(session)
             self._session_debug(
                 session,
@@ -2024,9 +2056,23 @@ class TimeboxingFlowAgent(RoutedAgent):
         """Build the calendar baseline snapshot used by the sync engine."""
         planning_date = self._resolve_planning_date(session)
         tz_name = session.tz_name or "UTC"
+        planned_date_key = planning_date.isoformat()
+        prefetched = session.prefetched_remote_snapshots_by_date.get(planned_date_key)
+        if prefetched is not None:
+            prefetched_map = (
+                session.prefetched_event_id_maps_by_date.get(planned_date_key) or {}
+            )
+            prefetched_ids = (
+                session.prefetched_remote_event_ids_by_date.get(planned_date_key) or []
+            )
+            session.event_id_map = dict(prefetched_map)
+            session.remote_event_ids_by_index = list(prefetched_ids)
+            return prefetched.model_copy(deep=True)
+
         immovables = self._normalize_calendar_events(
             session.frame_facts.get("immovables")
         )
+        session.remote_event_ids_by_index = []
         return self._tb_plan_from_calendar_events(
             events=immovables,
             planning_date=planning_date,
@@ -2046,6 +2092,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 desired=session.tb_plan,
                 remote=session.base_snapshot,
                 event_id_map=session.event_id_map,
+                remote_event_ids_by_index=session.remote_event_ids_by_index,
             )
         except Exception:
             logger.exception("Calendar sync failed during refine stage.")
@@ -2058,6 +2105,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             transaction=tx,
         )
         session.base_snapshot = session.tb_plan.model_copy(deep=True)
+        session.remote_event_ids_by_index = []
         if tx.status == "committed":
             return "Synced to Google Calendar."
         if tx.status == "partial":
@@ -3208,6 +3256,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 desired=session.tb_plan,
                 remote=session.base_snapshot,
                 event_id_map=session.event_id_map,
+                remote_event_ids_by_index=session.remote_event_ids_by_index,
             )
         except Exception:
             logger.exception("Calendar submission failed.")
@@ -3224,6 +3273,8 @@ class TimeboxingFlowAgent(RoutedAgent):
             session=session,
             transaction=tx,
         )
+        session.remote_event_ids_by_index = []
+        session.base_snapshot = session.tb_plan.model_copy(deep=True)
 
         if tx.status == "committed":
             text = "Submitted to Google Calendar. You can undo this submission."

@@ -29,6 +29,7 @@ from .sync_engine import (
     SyncTransaction,
     execute_sync,
     gcal_response_to_tb_plan,
+    gcal_response_to_tb_plan_with_identity,
     plan_sync,
     undo_sync,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "ensure_constraint_schema",
     "execute_sync",
     "gcal_response_to_tb_plan",
+    "gcal_response_to_tb_plan_with_identity",
     "plan_sync",
     "run_graph_turn",
     "run_stage3_draft",
