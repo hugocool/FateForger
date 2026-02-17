@@ -623,9 +623,12 @@ class TimeboxingFlowAgent(RoutedAgent):
                 block_plan=block_plan,
                 frame_facts=dict(session.frame_facts or {}),
             )
-        except Exception:
-            logger.debug("Constraint memory query failed", exc_info=True)
-            return []
+        except Exception as exc:
+            # This is a background prefetch and we want failures to be visible in Slack.
+            msg = f"Durable constraints failed to load: {type(exc).__name__}: {exc}"
+            session.background_updates.append(msg)
+            logger.error(msg, exc_info=True)
+            raise
         return _constraints_from_memory(records, user_id=session.user_id)
 
     async def _ensure_constraint_interpreter_agent(self) -> None:
@@ -761,11 +764,9 @@ class TimeboxingFlowAgent(RoutedAgent):
                     )
                 await self._collect_constraints(session)
             except Exception:
-                logger.debug(
-                    "Durable constraint prefetch failed (reason=%s)",
-                    reason,
-                    exc_info=True,
-                )
+                msg = f"Durable constraint prefetch failed (reason={reason})"
+                session.background_updates.append(msg)
+                logger.error(msg, exc_info=True)
             finally:
                 if acquired:
                     self._durable_constraint_prefetch_semaphore.release()

@@ -495,10 +495,21 @@ class NotionConstraintStore:
             "recurrence": constraint.get("recurrence") or applicability.get("recurrence"),
             "ttl_days": lifecycle.get("ttl_days") or constraint.get("ttl_days"),
             "rule_kind": self._to_rule_kind(payload.get("rule_kind")),
-            "duration_min": scalar.get("duration_min"),
-            "duration_max": scalar.get("duration_max"),
             "contiguity": self._to_contiguity(scalar.get("contiguity")),
         }
+
+        # Backward/forward compatibility: some existing Notion DBs expose these
+        # as `duration_min_min` / `duration_max_min` attribute keys.
+        duration_min_attr = self._constraint_attr_alias(
+            "duration_min", "duration_min_min"
+        )
+        if duration_min_attr:
+            props[duration_min_attr] = scalar.get("duration_min")
+        duration_max_attr = self._constraint_attr_alias(
+            "duration_max", "duration_max_min"
+        )
+        if duration_max_attr:
+            props[duration_max_attr] = scalar.get("duration_max")
 
         dows = applicability.get("days_of_week")
         if dows:
@@ -534,6 +545,8 @@ class NotionConstraintStore:
                 superseded_pages.append(page)
         if superseded_pages:
             props["supersedes"] = superseded_pages
+
+        props = self._filter_constraint_schema_props(props)
 
         if existing:
             existing.update_props(**props)
@@ -707,6 +720,23 @@ class NotionConstraintStore:
         view = self.constraints_db.query.filter(uno.prop("UID") == uid).execute()
         pages = list(view)
         return pages[0] if pages else None
+
+    def _constraint_attr_alias(self, *candidates: str) -> Optional[str]:
+        schema = self.constraints_db.schema
+        for attr in candidates:
+            if hasattr(schema, attr):
+                return attr
+        return None
+
+    def _filter_constraint_schema_props(
+        self, props: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        schema = self.constraints_db.schema
+        return {
+            key: value
+            for key, value in props.items()
+            if hasattr(schema, key) and value is not None
+        }
 
     def _resolve_topics_by_name(self, names: Sequence[str]) -> List[uno.Page]:
         out: List[uno.Page] = []

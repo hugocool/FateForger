@@ -123,6 +123,7 @@ class ConstraintSearchResponse(BaseModel):
     total_found: int = 0
     constraints: List[ConstraintSearchResult] = Field(default_factory=list)
     queries_executed: int = 0
+    errors: List[str] = Field(default_factory=list)
     summary: str = ""
 
 
@@ -268,18 +269,12 @@ async def _execute_single_query(
     if query.necessities:
         filters["necessities_any"] = query.necessities
 
-    try:
-        raw_results = await client.query_constraints(
-            filters=filters,
-            tags=query.tags,
-            sort=[["Status", "descending"]],
-            limit=query.limit,
-        )
-    except Exception:
-        logger.debug(
-            "Constraint search query failed: label=%s", query.label, exc_info=True
-        )
-        return []
+    raw_results = await client.query_constraints(
+        filters=filters,
+        tags=query.tags,
+        sort=[["Status", "descending"]],
+        limit=query.limit,
+    )
 
     return [_raw_to_result(r) for r in raw_results]
 
@@ -299,18 +294,23 @@ async def execute_search_plan(
     """
     as_of = plan.planned_date or date.today().isoformat()
 
-    tasks = [
-        _execute_single_query(client, query, as_of=as_of, stage=plan.stage)
-        for query in plan.queries
-    ]
-    all_results_nested = await asyncio.gather(*tasks, return_exceptions=True)
+    async def _run(query: ConstraintSearchQuery):
+        try:
+            results = await _execute_single_query(client, query, as_of=as_of, stage=plan.stage)
+            return query.label, results
+        except Exception as exc:
+            return query.label, exc
+
+    tasks = [_run(query) for query in plan.queries]
+    outputs = await asyncio.gather(*tasks)
 
     all_results: list[ConstraintSearchResult] = []
-    for result in all_results_nested:
-        if isinstance(result, BaseException):
-            logger.debug("Search query raised: %s", result)
+    errors: list[str] = []
+    for label, payload in outputs:
+        if isinstance(payload, BaseException):
+            errors.append(f"{label}: {type(payload).__name__}: {payload}")
             continue
-        all_results.extend(result)
+        all_results.extend(payload)
 
     unique = _dedupe_results(all_results)
     summary = format_search_summary(unique)
@@ -319,6 +319,7 @@ async def execute_search_plan(
         total_found=len(unique),
         constraints=unique,
         queries_executed=len(plan.queries),
+        errors=errors,
         summary=summary,
     )
 
@@ -359,7 +360,9 @@ async def search_constraints(
         or an error message if no client is available.
     """
     if _client is None:
-        return "Error: Constraint memory client not available. Cannot search constraints."
+        return (
+            "Error: Constraint memory client not available. Cannot search constraints."
+        )
 
     parsed_queries = [
         ConstraintSearchQuery(
@@ -384,6 +387,9 @@ async def search_constraints(
     response = await execute_search_plan(_client, plan)
 
     header = f"Found {response.total_found} constraint(s) across {response.queries_executed} search(es):\n\n"
+    if response.errors:
+        lines = [f"{i}. {msg}" for i, msg in enumerate(response.errors, 1)]
+        header += f"ERRORS ({len(response.errors)}):\n" + "\n".join(lines) + "\n\n"
     return header + response.summary
 
 

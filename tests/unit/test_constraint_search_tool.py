@@ -254,6 +254,8 @@ class TestExecuteSearchPlan:
         response = await execute_search_plan(client, plan)
         assert response.total_found == 0
         assert response.queries_executed == 1
+        assert response.errors
+        assert "fail:" in response.errors[0]
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +287,18 @@ class TestSearchConstraintsWrapper:
         )
         assert "Found It" in result
         assert "1 constraint(s)" in result
+
+    @pytest.mark.asyncio
+    async def test_wrapper_surfaces_errors_section(self) -> None:
+        client = MagicMock()
+        client.query_constraints = AsyncMock(side_effect=RuntimeError("MCP down"))
+        result = await search_constraints(
+            queries=[{"label": "fail", "text_query": "x"}],
+            stage="Skeleton",
+            _client=client,
+        )
+        assert "ERRORS (" in result
+        assert "fail:" in result
 
     @pytest.mark.asyncio
     async def test_passes_filters_correctly(self) -> None:

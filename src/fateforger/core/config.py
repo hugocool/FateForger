@@ -121,6 +121,7 @@ class Settings(BaseSettings):
 
     # Notion Configuration
     notion_token: str = Field(default="")
+    work_notion_token: str = Field(default="", env="WORK_NOTION_TOKEN")
     notion_timeboxing_parent_page_id: str = Field(
         default="", env="NOTION_TIMEBOXING_PARENT_PAGE_ID"
     )

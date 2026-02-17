@@ -22,6 +22,31 @@ from fateforger.tools.constraint_mcp import (
 class ConstraintMemoryClient:
     """Client for the constraint-memory MCP server (stdio workbench)."""
 
+    @staticmethod
+    def _result_text(tool_name: str, result: Any) -> str:
+        to_text = getattr(result, "to_text", None)
+        if callable(to_text):
+            try:
+                return (to_text() or "").strip()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"constraint-memory tool {tool_name} produced unreadable text"
+                ) from exc
+        return str(result).strip()
+
+    @classmethod
+    def _parse_json_text(cls, tool_name: str, text: str) -> Any:
+        if not text:
+            raise RuntimeError(f"constraint-memory tool {tool_name} returned empty text")
+        if text.startswith("Error executing tool "):
+            raise RuntimeError(f"constraint-memory tool {tool_name} failed: {text}")
+        try:
+            return json.loads(text)
+        except Exception as exc:
+            raise RuntimeError(
+                f"constraint-memory tool {tool_name} returned non-JSON text: {text}"
+            ) from exc
+
     def __init__(self, *, timeout: float = 10.0) -> None:
         """Initialize the constraint-memory MCP workbench client.
 
@@ -46,17 +71,19 @@ class ConstraintMemoryClient:
         )
         self._workbench = McpWorkbench(params)
 
+    async def _call_tool_json(self, tool_name: str, *, arguments: dict[str, Any]) -> Any:
+        result = await self._workbench.call_tool(tool_name, arguments=arguments)
+        text = self._result_text(tool_name, result)
+        return self._parse_json_text(tool_name, text)
+
     async def get_store_info(self) -> dict[str, Any]:
         """Return store metadata from the MCP server."""
-        result = await self._workbench.call_tool(
-            "constraint_get_store_info", arguments={}
-        )
-        try:
-            text = result.to_text()
-            data = json.loads(text)
-        except Exception:
-            return {}
-        return data if isinstance(data, dict) else {}
+        data = await self._call_tool_json("constraint_get_store_info", arguments={})
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                "constraint-memory tool constraint_get_store_info returned non-dict JSON"
+            )
+        return data
 
     async def query_types(
         self, *, stage: str | None = None, event_types: list[str] | None = None
@@ -71,15 +98,12 @@ class ConstraintMemoryClient:
             A list of type dicts (raw MCP payload).
         """
         payload = {"stage": stage, "event_types": event_types or []}
-        result = await self._workbench.call_tool(
-            "constraint_query_types", arguments=payload
-        )
-        try:
-            text = result.to_text()
-            data = json.loads(text)
-        except Exception:
-            return []
-        return data if isinstance(data, list) else []
+        data = await self._call_tool_json("constraint_query_types", arguments=payload)
+        if not isinstance(data, list):
+            raise RuntimeError(
+                "constraint-memory tool constraint_query_types returned non-list JSON"
+            )
+        return [item for item in data if isinstance(item, dict)]
 
     async def query_constraints(
         self,
@@ -109,16 +133,14 @@ class ConstraintMemoryClient:
             "sort": sort or None,
             "limit": limit,
         }
-        result = await self._workbench.call_tool(
+        data = await self._call_tool_json(
             "constraint_query_constraints", arguments=payload
         )
-        # TODO(refactor): Validate MCP responses with a Pydantic schema.
-        try:
-            text = result.to_text()
-            data = json.loads(text)
-        except Exception:
-            return []
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            raise RuntimeError(
+                "constraint-memory tool constraint_query_constraints returned non-list JSON"
+            )
+        return [item for item in data if isinstance(item, dict)]
 
     async def upsert_constraint(
         self,
@@ -136,16 +158,16 @@ class ConstraintMemoryClient:
             Tool payload as a dict when available; otherwise an empty dict.
         """
         payload = {"record": record, "event": event or None}
-        result = await self._workbench.call_tool(
-            "constraint_upsert_constraint", arguments=payload
-        )
-        # TODO(refactor): Validate MCP responses with a Pydantic schema.
-        try:
-            text = result.to_text()
-            data = json.loads(text)
-        except Exception:
-            return {}
-        return data if isinstance(data, dict) else {}
+        data = await self._call_tool_json("constraint_upsert_constraint", arguments=payload)
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                "constraint-memory tool constraint_upsert_constraint returned non-dict JSON"
+            )
+        if not data.get("uid"):
+            raise RuntimeError(
+                "constraint-memory tool constraint_upsert_constraint returned missing uid"
+            )
+        return data
 
 
 class McpCalendarClient:
