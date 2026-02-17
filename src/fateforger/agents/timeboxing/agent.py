@@ -32,6 +32,9 @@ from pydantic import Field as PydanticField
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from fateforger.agents.schedular.models.calendar import CalendarEvent, EventType
+from fateforger.agents.timeboxing.constraint_search_tool import (
+    search_constraints,
+)
 from fateforger.agents.timeboxing.notion_constraint_extractor import (
     NotionConstraintExtractor,
 )
@@ -268,6 +271,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         self._constraint_mcp_tools: list | None = None
         self._notion_extractor: NotionConstraintExtractor | None = None
         self._constraint_extractor_tool = None
+        self._constraint_search_tool: FunctionTool | None = None
         self._durable_constraint_task_keys: set[str] = set()
         self._durable_constraint_semaphore = asyncio.Semaphore(
             TIMEBOXING_LIMITS.durable_upsert_concurrency
@@ -1410,9 +1414,23 @@ class TimeboxingFlowAgent(RoutedAgent):
             and self._review_commit_agent
         ):
             return
-        tools = None
 
-        def build(name: str, prompt: str, out_type) -> AssistantAgent:
+        # Build the constraint search tool so stage agents can search Notion.
+        if self._constraint_search_tool is None and settings.notion_timeboxing_parent_page_id:
+            self._constraint_search_tool = self._build_constraint_search_tool()
+
+        constraint_tools: list | None = (
+            [self._constraint_search_tool] if self._constraint_search_tool else None
+        )
+
+        def build(
+            name: str,
+            prompt: str,
+            out_type,
+            *,
+            tools: list[FunctionTool] | None = None,
+            max_tool_iterations: int = 2,
+        ) -> AssistantAgent:
             """Construct a stage helper agent with shared configuration."""
             return AssistantAgent(
                 name=name,
@@ -1421,15 +1439,23 @@ class TimeboxingFlowAgent(RoutedAgent):
                 output_content_type=out_type,
                 system_message=prompt,
                 reflect_on_tool_use=False,
-                max_tool_iterations=2,
+                max_tool_iterations=max_tool_iterations,
             )
 
         self._stage_agents = {
             TimeboxingStage.COLLECT_CONSTRAINTS: build(
-                "StageCollectConstraints", COLLECT_CONSTRAINTS_PROMPT, StageGateOutput
+                "StageCollectConstraints",
+                COLLECT_CONSTRAINTS_PROMPT,
+                StageGateOutput,
+                tools=constraint_tools,
+                max_tool_iterations=3,
             ),
             TimeboxingStage.CAPTURE_INPUTS: build(
-                "StageCaptureInputs", CAPTURE_INPUTS_PROMPT, StageGateOutput
+                "StageCaptureInputs",
+                CAPTURE_INPUTS_PROMPT,
+                StageGateOutput,
+                tools=constraint_tools,
+                max_tool_iterations=3,
             ),
         }
         self._decision_agent = build("StageDecision", DECISION_PROMPT, StageDecision)
@@ -2657,6 +2683,65 @@ class TimeboxingFlowAgent(RoutedAgent):
             ),
             reflect_on_tool_use=False,
             max_tool_iterations=1,
+        )
+
+    def _build_constraint_search_tool(self) -> FunctionTool:
+        """Build a FunctionTool that lets stage-gating LLMs search durable constraints.
+
+        The tool closes over ``self`` so it can lazily initialise the MCP client.
+        """
+        agent_ref = self  # prevent gc issues with the closure
+
+        async def _search_constraints_wrapper(
+            queries: list[dict[str, Any]],
+            planned_date: str = "",
+            stage: str = "",
+        ) -> str:
+            """Search the durable constraint store with one or more query facets.
+
+            Use this tool to find saved scheduling preferences and constraints
+            from the user's Notion preference store. You can search by:
+            - text (free-text match on constraint name or description)
+            - event type codes (M, DW, SW, H, R, C, BU, BG, PR)
+            - topic tags
+            - status (locked / proposed)
+            - scope (session / profile / datespan)
+            - necessity (must / should)
+
+            Args:
+                queries: List of search facets. Each facet is a dict with keys:
+                    - label (str): Short description of this query.
+                    - text_query (str): Free-text search on Name/Description.
+                    - event_types (list[str]): Event-type codes.
+                    - tags (list[str]): Topic tag names.
+                    - statuses (list[str]): 'locked' and/or 'proposed'.
+                    - scopes (list[str]): 'session', 'profile', 'datespan'.
+                    - necessities (list[str]): 'must' and/or 'should'.
+                    - limit (int): Max results per facet (default 20).
+                planned_date: ISO date (YYYY-MM-DD). Empty = today.
+                stage: Current timeboxing stage. Empty = unfiltered.
+
+            Returns:
+                Formatted summary of matching constraints.
+            """
+            client = agent_ref._ensure_constraint_memory_client()
+            return await search_constraints(
+                queries=queries,
+                planned_date=planned_date,
+                stage=stage,
+                _client=client,
+            )
+
+        return FunctionTool(
+            _search_constraints_wrapper,
+            name="search_constraints",
+            description=(
+                "Search the durable constraint/preference store in Notion. "
+                "Accepts one or more search facets (text, event types, tags, "
+                "status, scope, necessity) and returns a formatted summary of "
+                "matching constraints. Use this to find the user's saved "
+                "scheduling preferences before making planning decisions."
+            ),
         )
 
     async def _ensure_constraint_store(self) -> None:

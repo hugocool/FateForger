@@ -23,6 +23,7 @@ class Necessity(uno.OptionNS):
 class CStatus(uno.OptionNS):
     PROPOSED = uno.Option("proposed", color=uno.Color.GRAY)
     LOCKED = uno.Option("locked", color=uno.Color.GREEN)
+    DECLINED = uno.Option("declined", color=uno.Color.RED)
 
 
 class CSource(uno.OptionNS):
@@ -806,6 +807,8 @@ class NotionConstraintStore:
             return CStatus.LOCKED
         if value == "proposed":
             return CStatus.PROPOSED
+        if value == "declined":
+            return CStatus.DECLINED
         raise ValueError(f"Unknown status: {value}")
 
     def _to_source(self, value: Optional[str]) -> Optional[uno.Option]:
