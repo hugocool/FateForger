@@ -31,6 +31,7 @@ from fateforger.agents.timeboxing.sync_engine import (
     base32hex_id,
     execute_sync,
     gcal_response_to_tb_plan,
+    gcal_response_to_tb_plan_with_identity,
     is_owned_event,
     plan_sync,
     undo_sync,
@@ -225,6 +226,29 @@ class TestGcalResponseToTbPlan:
         assert plan.events[0].n == "Earlier"
         assert plan.events[1].n == "Later"
 
+    def test_identity_variant_returns_ordered_ids(self) -> None:
+        resp = _make_gcal_response(
+            [
+                (
+                    "evt-b",
+                    "Later",
+                    "2025-06-15T14:00:00+02:00",
+                    "2025-06-15T15:00:00+02:00",
+                ),
+                (
+                    "evt-a",
+                    "Earlier",
+                    "2025-06-15T09:00:00+02:00",
+                    "2025-06-15T10:00:00+02:00",
+                ),
+            ]
+        )
+        plan, _id_map, ids = gcal_response_to_tb_plan_with_identity(
+            resp, plan_date=PLAN_DATE, tz_name=TZ
+        )
+        assert [event.n for event in plan.events] == ["Earlier", "Later"]
+        assert ids == ["evt-a", "evt-b"]
+
 
 # ── plan_sync ────────────────────────────────────────────────────────────
 
@@ -378,6 +402,75 @@ class TestPlanSync:
         # Creates should appear before deletes
         if SyncOpType.CREATE in op_types and SyncOpType.DELETE in op_types:
             assert op_types.index(SyncOpType.CREATE) < op_types.index(SyncOpType.DELETE)
+
+    def test_remote_identity_enables_update_without_key_hint(self) -> None:
+        """When key-based map is missing, ordered remote IDs should still prevent duplicates."""
+        remote = TBPlan(
+            events=[
+                TBEvent(
+                    n="Deep Work",
+                    d="",
+                    t="DW",
+                    p=FixedWindow(st=time(9, 0), et=time(10, 0)),
+                )
+            ],
+            date=PLAN_DATE,
+            tz=TZ,
+        )
+        desired = TBPlan(
+            events=[
+                TBEvent(
+                    n="Deep Work",
+                    d="",
+                    t="DW",
+                    p=FixedWindow(st=time(9, 15), et=time(10, 15)),
+                )
+            ],
+            date=PLAN_DATE,
+            tz=TZ,
+        )
+        ops = plan_sync(
+            remote,
+            desired,
+            {},
+            remote_event_ids_by_index=["fftb-owned-1"],
+        )
+        assert [op.op_type for op in ops] == [SyncOpType.UPDATE]
+        assert ops[0].gcal_event_id == "fftb-owned-1"
+
+    def test_foreign_match_is_noop_not_create(self) -> None:
+        """Foreign events should never mutate or duplicate when reconciled."""
+        remote = TBPlan(
+            events=[
+                TBEvent(
+                    n="Lunch",
+                    d="",
+                    t="M",
+                    p=FixedWindow(st=time(12, 0), et=time(13, 0)),
+                )
+            ],
+            date=PLAN_DATE,
+            tz=TZ,
+        )
+        desired = TBPlan(
+            events=[
+                TBEvent(
+                    n="Lunch",
+                    d="changed but foreign",
+                    t="M",
+                    p=FixedWindow(st=time(12, 5), et=time(13, 5)),
+                )
+            ],
+            date=PLAN_DATE,
+            tz=TZ,
+        )
+        ops = plan_sync(
+            remote,
+            desired,
+            {},
+            remote_event_ids_by_index=["foreign-event-id-1"],
+        )
+        assert ops == []
 
 
 # ── execute_sync ─────────────────────────────────────────────────────────

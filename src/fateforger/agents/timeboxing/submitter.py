@@ -13,7 +13,6 @@ from fateforger.core.config import settings
 from .sync_engine import (
     SyncTransaction,
     execute_sync,
-    gcal_response_to_tb_plan,
     plan_sync,
     undo_sync,
 )
@@ -65,6 +64,7 @@ class CalendarSubmitter:
         *,
         remote: TBPlan,
         event_id_map: dict[str, str],
+        remote_event_ids_by_index: list[str] | None = None,
         calendar_id: str = "primary",
     ) -> SyncTransaction:
         """Diff and submit a plan to Google Calendar.
@@ -73,12 +73,20 @@ class CalendarSubmitter:
             desired: The target ``TBPlan`` to sync.
             remote: The current remote state (from ``gcal_response_to_tb_plan``).
             event_id_map: Maps ``(summary|start_iso)`` → ``gcal_event_id``.
+            remote_event_ids_by_index: Optional remote IDs aligned with
+                ``remote.resolve_times()`` order to avoid lossy keying.
             calendar_id: Target GCal calendar ID.
 
         Returns:
             A ``SyncTransaction`` with per-op results.
         """
-        ops = plan_sync(remote, desired, event_id_map, calendar_id=calendar_id)
+        ops = plan_sync(
+            remote,
+            desired,
+            event_id_map,
+            remote_event_ids_by_index=remote_event_ids_by_index,
+            calendar_id=calendar_id,
+        )
 
         if not ops:
             logger.info("No sync ops needed — plans are identical.")

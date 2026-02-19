@@ -441,6 +441,7 @@ class StageRefineNode(_StageNodeBase):
                     content=FlowSignal(kind="stage", note="missing-timebox"),
                 )
             )
+        await self._orchestrator._ensure_calendar_immovables(self._session)  # noqa: SLF001
         try:
             preflight = self._orchestrator._ensure_refine_plan_state(  # noqa: SLF001
                 self._session

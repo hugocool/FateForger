@@ -5,6 +5,7 @@ These are intentionally kept out of `agent.py` to keep orchestration logic reada
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -13,10 +14,19 @@ from zoneinfo import ZoneInfo
 
 from dateutil import parser as date_parser
 
+from fateforger.adapters.calendar.models import GCalEventsResponse
 from fateforger.tools.constraint_mcp import (
     build_constraint_server_env,
     resolve_constraint_repo_root,
 )
+
+
+@dataclass(frozen=True)
+class CalendarDaySnapshot:
+    """Typed day snapshot used by Stage 4 sync preflight."""
+
+    response: GCalEventsResponse
+    immovables: list[dict[str, str]]
 
 
 class ConstraintMemoryClient:
@@ -324,15 +334,8 @@ class McpCalendarClient:
             return None
         return dt_val.astimezone(tz).strftime("%H:%M")
 
-    async def list_day_immovables(
-        self,
-        *,
-        calendar_id: str,
-        day: date,
-        tz: ZoneInfo,
-        diagnostics: dict[str, Any] | None = None,
-    ) -> list[dict[str, str]]:
-        """Fetch a day's immovables from the MCP calendar server."""
+    @staticmethod
+    def _list_events_args(*, calendar_id: str, day: date, tz: ZoneInfo) -> dict[str, Any]:
         start = (
             datetime.combine(day, datetime.min.time(), tz)
             .astimezone(timezone.utc)
@@ -343,13 +346,50 @@ class McpCalendarClient:
             .astimezone(timezone.utc)
             .isoformat()
         )
-        args = {
+        return {
             "calendarId": calendar_id,
             "timeMin": start,
             "timeMax": end,
             "singleEvents": True,
             "orderBy": "startTime",
         }
+
+    def _immovables_from_response(
+        self,
+        *,
+        response: GCalEventsResponse,
+        day: date,
+        tz: ZoneInfo,
+    ) -> list[dict[str, str]]:
+        immovables: list[dict[str, str]] = []
+        for event in response.events:
+            if (event.status or "").lower() == "cancelled":
+                continue
+            event_dict = event.model_dump(mode="json", by_alias=True)
+            summary = str(event.summary or "").strip() or "Busy"
+            start_dt = self._parse_event_dt(event_dict.get("start"), tz=tz)
+            end_dt = self._parse_event_dt(event_dict.get("end"), tz=tz)
+            if not start_dt or not end_dt or end_dt <= start_dt:
+                continue
+            if start_dt.date() != day:
+                continue
+            start_str = self._to_hhmm(start_dt, tz=tz)
+            end_str = self._to_hhmm(end_dt, tz=tz)
+            if not start_str or not end_str:
+                continue
+            immovables.append({"title": summary, "start": start_str, "end": end_str})
+        return immovables
+
+    async def list_day_snapshot(
+        self,
+        *,
+        calendar_id: str,
+        day: date,
+        tz: ZoneInfo,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> CalendarDaySnapshot:
+        """Fetch a typed day snapshot with both raw events and immovables."""
+        args = self._list_events_args(calendar_id=calendar_id, day=day, tz=tz)
         if diagnostics is not None:
             diagnostics["request"] = args
         result = await self._workbench.call_tool("list-events", arguments=args)
@@ -361,23 +401,48 @@ class McpCalendarClient:
             if isinstance(payload, dict):
                 diagnostics["payload_keys"] = sorted(payload.keys())
         events = self._normalize_events(payload)
+        total_count = len(events)
+        if isinstance(payload, dict):
+            raw_total = payload.get("totalCount") or payload.get("total_count")
+            if isinstance(raw_total, int):
+                total_count = raw_total
+        try:
+            response = GCalEventsResponse.model_validate(
+                {
+                    "events": events,
+                    "totalCount": total_count,
+                }
+            )
+        except Exception:
+            response = GCalEventsResponse(events=[], totalCount=0)
+        immovables = self._immovables_from_response(response=response, day=day, tz=tz)
         if diagnostics is not None:
-            diagnostics["raw_event_count"] = len(events)
-
-        immovables: list[dict[str, str]] = []
-        for event in events:
-            if (event.get("status") or "").lower() == "cancelled":
-                continue
-            summary = (event.get("summary") or "").strip() or "Busy"
-            start_dt = self._parse_event_dt(event.get("start"), tz=tz)
-            end_dt = self._parse_event_dt(event.get("end"), tz=tz)
-            if not start_dt or not end_dt or end_dt <= start_dt:
-                continue
-            start_str = self._to_hhmm(start_dt, tz=tz)
-            end_str = self._to_hhmm(end_dt, tz=tz)
-            if not start_str or not end_str:
-                continue
-            immovables.append({"title": summary, "start": start_str, "end": end_str})
-        if diagnostics is not None:
+            diagnostics["raw_event_count"] = len(response.events)
             diagnostics["immovable_count"] = len(immovables)
-        return immovables
+        return CalendarDaySnapshot(response=response, immovables=immovables)
+
+    async def list_day_immovables(
+        self,
+        *,
+        calendar_id: str,
+        day: date,
+        tz: ZoneInfo,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        """Fetch a day's immovables from the MCP calendar server."""
+        snapshot = await self.list_day_snapshot(
+            calendar_id=calendar_id,
+            day=day,
+            tz=tz,
+            diagnostics=diagnostics,
+        )
+        return snapshot.immovables
+
+    async def close(self) -> None:
+        """Close the underlying MCP workbench when supported."""
+        close = getattr(self._workbench, "close", None)
+        if not callable(close):
+            return
+        maybe = close()
+        if hasattr(maybe, "__await__"):
+            await maybe
