@@ -86,6 +86,7 @@ async def test_list_day_immovables_reads_events_payload_shape() -> None:
         payload={
             "events": [
                 {
+                    "id": "test-brunch-event",
                     "summary": "Brunch",
                     "status": "confirmed",
                     "start": {"dateTime": "2026-02-14T11:30:00+01:00"},

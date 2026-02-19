@@ -19,6 +19,7 @@ class _Ctx:
 async def test_commit_does_not_trigger_initial_extraction():
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     agent._sessions = {}
+    agent._durable_constraint_prefetch_tasks = {}
 
     async def _fake_run_graph_turn(*, session, user_text):
         return TextMessage(content="ok", source="timeboxing_agent")

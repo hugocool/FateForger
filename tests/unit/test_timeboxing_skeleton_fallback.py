@@ -74,4 +74,4 @@ async def test_skeleton_draft_timeout_fallback(monkeypatch) -> None:
     assert plan.tz == "Europe/Amsterdam"
     assert len(plan.events) >= 1
     assert markdown.startswith("## Day Overview")
-    assert any("recovery patch" in msg.lower() for msg in session.background_updates)
+    assert any("deterministic fallback" in msg.lower() for msg in session.background_updates)
