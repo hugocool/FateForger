@@ -286,6 +286,17 @@ class StageCollectConstraintsNode(_StageNodeBase):
                 self._session, user_message=user_message
             ),
         )
+        self._session.frame_facts.update(gate.facts or {})
+        if user_message.strip():
+            await self._orchestrator._refresh_collect_constraints_durable(  # noqa: SLF001
+                self._session,
+                reason="collect_user_reply",
+            )
+        gate = self._orchestrator._normalize_collect_constraints_gate(  # noqa: SLF001
+            session=self._session,
+            gate=gate,
+            user_message=user_message,
+        )
         self._session.stage_ready = gate.ready
         self._session.stage_missing = list(gate.missing or [])
         self._session.stage_question = gate.question

@@ -15,6 +15,12 @@ from .reconcile import (
     PlanningRuleConfig,
     PlanningSessionRule,
 )
+from .planning_session_store import (
+    PlanningSessionRefPayload,
+    PlanningSessionStatus,
+    SqlAlchemyPlanningSessionStore,
+    ensure_planning_session_schema,
+)
 from .tools import FollowUpReceipt, build_haunting_tools
 
 __all__ = [
@@ -36,6 +42,10 @@ __all__ = [
     "PlanningReminder",
     "PlanningRuleConfig",
     "PlanningSessionRule",
+    "PlanningSessionRefPayload",
+    "PlanningSessionStatus",
+    "SqlAlchemyPlanningSessionStore",
+    "ensure_planning_session_schema",
     "FollowUpReceipt",
     "build_haunting_tools",
 ]

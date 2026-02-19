@@ -6,8 +6,9 @@ import pytest
 pytest.importorskip("autogen_agentchat")
 
 from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
+from fateforger.agents.timeboxing.constraint_retriever import STARTUP_PREFETCH_TAG
 from fateforger.agents.timeboxing.nlu import ConstraintInterpretation
-from fateforger.agents.timeboxing.stage_gating import TimeboxingStage
+from fateforger.agents.timeboxing.stage_gating import StageGateOutput, TimeboxingStage
 from fateforger.agents.timeboxing.preferences import (
     ConstraintBase,
     Constraint,
@@ -210,9 +211,158 @@ async def test_profile_constraints_auto_upsert_to_durable_store(monkeypatch):
 async def test_await_pending_durable_prefetch_waits_for_task():
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     session = Session(thread_ts="t1", channel_id="c1", user_id="u1", planned_date="2026-02-14")
-    task_key = agent._durable_prefetch_key(session)
+    task_key = agent._durable_prefetch_stage_key(
+        session, stage=TimeboxingStage.COLLECT_CONSTRAINTS
+    )
     slow_task = asyncio.create_task(asyncio.sleep(0.05))
     agent._durable_constraint_prefetch_tasks = {task_key: slow_task}
+    agent._queue_durable_constraint_prefetch = types.MethodType(
+        lambda _self, **_kwargs: None, agent
+    )
 
-    await agent._await_pending_durable_constraint_prefetch(session, timeout_s=0.5)
+    await agent._await_pending_durable_constraint_prefetch(
+        session,
+        timeout_s=0.5,
+        stage=TimeboxingStage.COLLECT_CONSTRAINTS,
+    )
     assert slow_task.done() is True
+
+
+def _durable_sleep_constraint(*, uid: str = "tb:sleep:default") -> Constraint:
+    return Constraint(
+        user_id="u1",
+        channel_id=None,
+        thread_ts=None,
+        name="Sleep schedule",
+        description="Sleep at 23:00 and wake at 07:00.",
+        necessity=ConstraintNecessity.MUST,
+        status=ConstraintStatus.LOCKED,
+        source=ConstraintSource.USER,
+        scope=ConstraintScope.PROFILE,
+        tags=["sleep"],
+        hints={"uid": uid, "rule_kind": "fixed_bedtime"},
+    )
+
+
+def test_collect_constraints_uses_durable_sleep_default_and_clears_sleep_missing() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.durable_constraints_by_stage[TimeboxingStage.COLLECT_CONSTRAINTS.value] = [
+        _durable_sleep_constraint()
+    ]
+
+    gate = StageGateOutput(
+        stage_id=TimeboxingStage.COLLECT_CONSTRAINTS,
+        ready=False,
+        summary=["Starting stage review."],
+        missing=["Sleep schedule or morning/evening routines"],
+        question="What are your sleep times?",
+        facts={},
+    )
+    normalized = agent._normalize_collect_constraints_gate(
+        session=session,
+        gate=gate,
+        user_message="",
+    )
+
+    assert normalized.ready is True
+    assert normalized.missing == []
+    assert normalized.facts.get("sleep_target", {}).get("start") == "23:00"
+    assert normalized.facts.get("sleep_target", {}).get("end") == "07:00"
+    assert normalized.question == (
+        "Using your saved defaults. Reply to override for this session, or proceed."
+    )
+    assert any("Using your saved defaults:" in line for line in normalized.summary)
+
+
+@pytest.mark.asyncio
+async def test_collect_constraints_session_override_suppresses_durable_uid() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    durable = _durable_sleep_constraint(uid="tb:sleep:primary")
+    session.durable_constraints_by_stage[TimeboxingStage.COLLECT_CONSTRAINTS.value] = [durable]
+    agent._constraint_store = None
+
+    gate = StageGateOutput(
+        stage_id=TimeboxingStage.COLLECT_CONSTRAINTS,
+        ready=False,
+        summary=["Captured user updates."],
+        missing=["sleep schedule"],
+        question="Confirm sleep schedule?",
+        facts={
+            "sleep_target": {
+                "start": "00:00",
+                "end": "08:00",
+                "hours": 8.0,
+            }
+        },
+    )
+
+    normalized = agent._normalize_collect_constraints_gate(
+        session=session,
+        gate=gate,
+        user_message="For tomorrow, sleep 00:00 to 08:00.",
+    )
+
+    assert "tb:sleep:primary" in session.suppressed_durable_uids
+    constraints = await agent._collect_constraints(session)
+    assert durable not in constraints
+    assert all(
+        (c.hints or {}).get("uid") != "tb:sleep:primary"
+        for c in session.active_constraints
+    )
+
+    context = agent._build_collect_constraints_context(session, user_message="")
+    assert context["durable_constraints"] == []
+    assert normalized.facts["sleep_target"]["start"] == "00:00"
+
+
+def test_collect_constraints_does_not_claim_no_durable_constraints_while_prefetch_pending() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.pending_durable_constraints = True
+    session.pending_durable_stages = {TimeboxingStage.COLLECT_CONSTRAINTS.value}
+    session.durable_constraints_loaded_stages = set()
+
+    gate = StageGateOutput(
+        stage_id=TimeboxingStage.COLLECT_CONSTRAINTS,
+        ready=False,
+        summary=["No existing durable constraints found; we're starting with a clean canvas."],
+        missing=["sleep target"],
+        question="What time do you sleep?",
+        facts={},
+    )
+
+    normalized = agent._normalize_collect_constraints_gate(
+        session=session,
+        gate=gate,
+        user_message="",
+    )
+
+    summary_text = "\n".join(normalized.summary)
+    assert "no existing durable constraints found" not in summary_text.lower()
+    assert "still loading" in summary_text.lower()
+
+
+def test_durable_upsert_record_marks_startup_prefetch_for_sleep_defaults() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1", planned_date="2026-02-18")
+    constraint = ConstraintBase(
+        name="Sleep schedule",
+        description="Sleep around 23:00 and wake around 07:00.",
+        necessity=ConstraintNecessity.MUST,
+        tags=["sleep"],
+        scope=ConstraintScope.PROFILE,
+        status=ConstraintStatus.PROPOSED,
+        source=ConstraintSource.USER,
+    )
+
+    record = agent._build_durable_constraint_record(
+        session=session,
+        constraint=constraint,
+        decision_scope="profile",
+    )
+
+    topics = record["constraint_record"]["topics"]
+    assert "sleep" in topics
+    assert STARTUP_PREFETCH_TAG in topics

@@ -25,6 +25,10 @@ from fateforger.haunt.event_draft_store import (
     SqlAlchemyEventDraftStore,
 )
 from fateforger.haunt.planning_guardian import PlanningGuardian
+from fateforger.haunt.planning_session_store import (
+    PlanningSessionStatus,
+    SqlAlchemyPlanningSessionStore,
+)
 from fateforger.haunt.planning_store import (
     PlanningAnchorPayload,
     SqlAlchemyPlanningAnchorStore,
@@ -72,6 +76,9 @@ class PlanningCoordinator:
         self._client = client
         self._anchor_store: SqlAlchemyPlanningAnchorStore | None = getattr(
             runtime, "planning_anchor_store", None
+        )
+        self._planning_session_store: SqlAlchemyPlanningSessionStore | None = getattr(
+            runtime, "planning_session_store", None
         )
         self._draft_store: SqlAlchemyEventDraftStore | None = getattr(
             runtime, "event_draft_store", None
@@ -569,6 +576,25 @@ class PlanningCoordinator:
                     blocks=payload["blocks"],
                     replace_original=True,
                 )
+            if self._planning_session_store:
+                try:
+                    planned_day = start.astimezone(tz).date()
+                    await self._planning_session_store.upsert(
+                        user_id=draft.user_id,
+                        planned_date=planned_day,
+                        calendar_id=draft.calendar_id,
+                        event_id=result_event_id or draft.event_id,
+                        status=PlanningSessionStatus.PLANNED,
+                        title=draft.title,
+                        event_url=result_event_url,
+                        source="admonisher_planning_card",
+                        channel_id=draft.channel_id,
+                        thread_ts=draft.message_ts,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to upsert planning_session_ref for draft=%s", draft.draft_id
+                    )
             if self._guardian:
                 try:
                     await self._guardian.reconcile_user(user_id=draft.user_id)

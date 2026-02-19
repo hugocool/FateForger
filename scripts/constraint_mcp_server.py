@@ -9,11 +9,13 @@ from typing import Any, Dict, List, Optional
 from mcp.server.fastmcp import FastMCP
 
 from fateforger.adapters.notion.timeboxing_preferences import (
+    NotionPreferenceDBs,
     ConstraintQueryFilters,
     NotionConstraintStore,
     get_notion_session,
     seed_default_constraint_types,
 )
+from fateforger.core.config import settings
 
 
 mcp = FastMCP(
@@ -28,16 +30,61 @@ def _get_store() -> NotionConstraintStore:
     global _STORE
     if _STORE:
         return _STORE
-    parent_page_id = os.getenv("NOTION_TIMEBOXING_PARENT_PAGE_ID", "").strip()
+    parent_page_id = (
+        os.getenv("NOTION_TIMEBOXING_PARENT_PAGE_ID", "").strip()
+        or os.getenv("WORK_NOTION_PARENT_PAGE_ID", "").strip()
+        or (settings.notion_timeboxing_parent_page_id or "").strip()
+    )
     if not parent_page_id:
         raise RuntimeError("NOTION_TIMEBOXING_PARENT_PAGE_ID is required.")
-    session = get_notion_session(notion_token=os.getenv("NOTION_TOKEN"))
-    _STORE = NotionConstraintStore.from_parent_page(
-        parent_page_id=parent_page_id,
-        notion=session,
-        write_registry_block=False,
+    notion_token = (
+        os.getenv("NOTION_TOKEN", "").strip()
+        or os.getenv("WORK_NOTION_TOKEN", "").strip()
+        or (settings.work_notion_token or "").strip()
     )
+    session = get_notion_session(notion_token=notion_token or None)
+    try:
+        _STORE = NotionConstraintStore.from_parent_page(
+            parent_page_id=parent_page_id,
+            notion=session,
+            write_registry_block=False,
+        )
+    except Exception as exc:
+        # Fallback: if the parent page is inaccessible, try discovering the known
+        # databases by title in the current workspace scope.
+        fallback = _discover_existing_store(session=session)
+        if fallback is None:
+            raise RuntimeError(
+                f"Failed to initialize constraint memory store via parent page "
+                f"{parent_page_id}: {exc}"
+            ) from exc
+        _STORE = fallback
     return _STORE
+
+
+def _discover_existing_store(session) -> NotionConstraintStore | None:
+    """Try constructing a store by discovering pre-existing DBs by title."""
+    titles = {
+        "topics_db_id": "TB Topics",
+        "types_db_id": "TB Constraint Types",
+        "constraints_db_id": "TB Constraints",
+        "windows_db_id": "TB Constraint Windows",
+        "events_db_id": "TB Constraint Events",
+    }
+    ids: dict[str, str] = {}
+    for key, title in titles.items():
+        matches = list(session.search_db(title))
+        if not matches:
+            return None
+        ids[key] = str(matches[0].id)
+    dbs = NotionPreferenceDBs(
+        topics_db_id=ids["topics_db_id"],
+        types_db_id=ids["types_db_id"],
+        constraints_db_id=ids["constraints_db_id"],
+        windows_db_id=ids["windows_db_id"],
+        events_db_id=ids["events_db_id"],
+    )
+    return NotionConstraintStore(session, dbs)
 
 
 def _option_name(value) -> Optional[str]:
@@ -69,26 +116,54 @@ def _safe_str(value) -> Optional[str]:
         return None
 
 
+def _raw_relation_ids(page, prop_name: str) -> List[str]:
+    """Extract relation target IDs from raw page payload without page hydration."""
+    raw_candidates = [
+        getattr(page, "obj_ref", None),
+        getattr(page, "_obj_ref", None),
+        getattr(page, "raw", None),
+        getattr(page, "_raw", None),
+    ]
+    payload: Dict[str, Any] | None = None
+    for candidate in raw_candidates:
+        if candidate is None:
+            continue
+        if isinstance(candidate, dict):
+            payload = candidate
+            break
+        if hasattr(candidate, "model_dump"):
+            try:
+                maybe = candidate.model_dump(mode="json")
+            except Exception:
+                maybe = None
+            if isinstance(maybe, dict):
+                payload = maybe
+                break
+    if not isinstance(payload, dict):
+        return []
+    properties = payload.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    prop = properties.get(prop_name)
+    if not isinstance(prop, dict):
+        return []
+    relation = prop.get("relation")
+    if not isinstance(relation, list):
+        return []
+    out: List[str] = []
+    for item in relation:
+        if not isinstance(item, dict):
+            continue
+        rid = item.get("id")
+        if isinstance(rid, str) and rid.strip():
+            out.append(rid.strip())
+    return out
+
+
 def _serialize_constraint(page) -> Dict[str, Any]:
     props = page.props
-    type_id = None
-    constraint_type_pages = None
-    try:
-        constraint_type_pages = getattr(props, "constraint_type", None)
-    except Exception:
-        constraint_type_pages = None
-    if constraint_type_pages:
-        type_id = getattr(constraint_type_pages[0].props, "type_id", None)
-    else:
-        try:
-            rel_pages = page.get_property("Constraint Type") or []
-            if rel_pages:
-                type_id = getattr(rel_pages[0].props, "type_id", None)
-        except Exception:
-            type_id = None
-    if not type_id:
-        type_id = _option_name(getattr(props, "rule_kind", None))
-    topics = getattr(props, "topics", None) or []
+    type_id = _option_name(getattr(props, "rule_kind", None))
+    topics = _raw_relation_ids(page, "Topics")
     return {
         "page_id": str(page.id),
         "url": getattr(page, "url", None),
@@ -105,7 +180,7 @@ def _serialize_constraint(page) -> Dict[str, Any]:
         "timezone": getattr(props, "timezone", None),
         "rule_kind": _option_name(getattr(props, "rule_kind", None)),
         "type_id": type_id,
-        "topics": [str(topic) for topic in topics],
+        "topics": topics,
     }
 
 

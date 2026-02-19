@@ -88,12 +88,13 @@ Definitions
 - should_extract: true only if the user explicitly states a scheduling constraint or preference as THEIR own.
 - scope:
   - session: applies only to this timeboxing session / thread
-  - profile: durable preference ("in general", "always", "usually", "from now on") in any language
+  - profile: durable preference ONLY when the user explicitly indicates permanence (e.g. "always", "never", "from now on", "save this permanently"), in any language
   - datespan: applies to a bounded period the user indicates ("this week", "next 2 weeks", date range) in any language
 
 Rules
 - Never extract from generic "start timeboxing" messages, greetings, or meta-chat about the bot.
 - Extract only what the user stated; do not infer missing times or add new rules.
+- Default to scope=session unless the user explicitly indicates durable or bounded-period intent.
 - Return constraints=[] if should_extract=false.
 - If scope=datespan, include start_date/end_date as ISO dates if the user provided enough info; otherwise keep them null.
 """.strip()
@@ -134,4 +135,3 @@ __all__ = [
     "build_constraint_interpreter",
     "build_planned_date_interpreter",
 ]
-

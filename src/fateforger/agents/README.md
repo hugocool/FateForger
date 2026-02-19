@@ -10,8 +10,8 @@ Top-level agent registry. Each subfolder owns one specialist agent (AutoGen `Rou
 | `timeboxing/` | PlanningCoordinator | Implemented, Tested | Stage-gated daily schedule builder with calendar sync. See `timeboxing/README.md`. |
 | `admonisher/` | HauntRouter | Implemented | Accountability nudge system ("haunters"): persistent follow-ups on commitments via calendar MCP. |
 | `schedular/` | SchedularAgent | Implemented | Calendar scheduling: slot finding, event upsert, plan-vs-calendar diffing via Google Calendar MCP. |
-| `tasks/` | TaskMarshal | Implemented, Documented, Tested | Task capture, prioritization (now/next/later), dedicated TickTick list-management tool for Slack-routed requests. |
-| `revisor/` | RevisorAgent | Implemented | Weekly retros, long-term project review, quarterly goal alignment, Notion Projects integration. |
+| `tasks/` | TaskMarshal | Implemented, Documented, Tested | Task capture, prioritization (now/next/later), TickTick list-management, and Notion sprint-domain operations (search/filter, relation linking, patch-style page edits). |
+| `revisor/` | RevisorAgent | Implemented, Documented | Weekly retros and long-term project review; hands off operational sprint execution requests to `tasks_agent`. |
 | `strategy/` | — | Roadmap | Placeholder for future strategy workflows. No code yet. |
 | `task_marshal/` | — | Roadmap (stub) | Stub with bare imports only. May be superseded by `tasks/`. |
 
@@ -27,6 +27,11 @@ Slack message
 ```
 
 The receptionist uses AutoGen handoff tools to delegate to the correct specialist. Each specialist owns its own session state and LLM interactions.
+
+Routing note:
+- Questions that check whether an event is already scheduled on the calendar
+  (for example: "is a timeboxing session planned for tomorrow?") route to
+  `planner_agent` as calendar inspection, even when the word "timeboxing" appears.
 
 ## Shared Patterns
 

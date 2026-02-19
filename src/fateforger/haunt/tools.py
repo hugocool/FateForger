@@ -29,13 +29,13 @@ class HauntingToolbox:
         message_id: str,
         content: str,
         user_id: str,
-        topic_id: str | None = None,
-        channel_id: str | None = None,
-        task_id: str | None = None,
-        after_seconds: int | None = None,
-        max_attempts: int | None = None,
-        escalation: FollowUpEscalation | None = None,
-        cancel_on_user_reply: bool | None = None,
+        topic_id: str | None,
+        channel_id: str | None,
+        task_id: str | None,
+        after_seconds: int | None,
+        max_attempts: int | None,
+        escalation: FollowUpEscalation | None,
+        cancel_on_user_reply: bool | None,
     ) -> FollowUpReceipt:
         if after_seconds is not None and after_seconds < 1:
             raise ValueError("after_seconds must be >= 1")
@@ -75,9 +75,9 @@ class HauntingToolbox:
     async def cancel_followups(
         self,
         *,
-        message_id: str | None = None,
-        topic_id: str | None = None,
-        task_id: str | None = None,
+        message_id: str | None,
+        topic_id: str | None,
+        task_id: str | None,
     ) -> int:
         return await self._service.cancel_followups(
             message_id=message_id,
@@ -88,9 +88,9 @@ class HauntingToolbox:
     async def record_user_activity(
         self,
         *,
-        topic_id: str | None = None,
-        task_id: str | None = None,
-        user_id: str | None = None,
+        topic_id: str | None,
+        task_id: str | None,
+        user_id: str | None,
     ) -> int:
         return await self._service.record_user_activity(
             topic_id=topic_id,
@@ -102,7 +102,7 @@ class HauntingToolbox:
         self,
         *,
         user_id: str,
-        channel_id: str | None = None,
+        channel_id: str | None,
     ) -> AdmonishmentSettingsPayload | None:
         return await self._service.get_settings(
             user_id=user_id,
@@ -113,12 +113,12 @@ class HauntingToolbox:
         self,
         *,
         user_id: str,
-        channel_id: str | None = None,
-        enabled: bool | None = None,
-        default_delay_minutes: int | None = None,
-        max_attempts: int | None = None,
-        escalation: FollowUpEscalation | None = None,
-        cancel_on_user_reply: bool | None = None,
+        channel_id: str | None,
+        enabled: bool | None,
+        default_delay_minutes: int | None,
+        max_attempts: int | None,
+        escalation: FollowUpEscalation | None,
+        cancel_on_user_reply: bool | None,
     ) -> AdmonishmentSettingsPayload:
         if default_delay_minutes is not None and default_delay_minutes < 1:
             raise ValueError("default_delay_minutes must be >= 1")

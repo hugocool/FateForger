@@ -15,6 +15,7 @@ from fateforger.llm import build_autogen_chat_client
 from fateforger.tools.ticktick_mcp import get_ticktick_mcp_url
 
 from .list_tools import TickTickListManager
+from .notion_sprint_tools import NotionSprintManager
 
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,13 @@ For TickTick list management requests, always call the `manage_ticktick_lists` t
 Use model="project" by default. Use model="subtask" only when the user provides
 explicit parent-task context.
 
+For Notion sprint operations:
+- use `find_sprint_items` to discover sprint tickets in a sprint data source
+- use `link_sprint_subtasks` to link parent/child sprint records
+- use `patch_sprint_page_content` for preview/apply page-content edits
+- strict tool schemas are enabled: pass every tool argument explicitly.
+  Use `null` for optional values you are not using.
+
 Be direct and concrete. If needed, ask 1-2 clarifying questions then propose a plan.
 Never invent IDs. If the tool reports ambiguity, ask a focused follow-up question.
 """.strip()
@@ -47,6 +55,9 @@ class TasksAgent(RoutedAgent):
             server_url=server_url,
             timeout=float(getattr(settings, "agent_mcp_discovery_timeout_seconds", 10)),
         )
+        self._notion_sprint_manager = NotionSprintManager(
+            timeout=float(getattr(settings, "agent_mcp_discovery_timeout_seconds", 10))
+        )
         tools = [
             FunctionTool(
                 self._list_manager.manage_ticktick_lists,
@@ -56,7 +67,31 @@ class TasksAgent(RoutedAgent):
                     "Supports project-mode and explicit subtask-mode operations."
                 ),
                 strict=True,
-            )
+            ),
+            FunctionTool(
+                self._notion_sprint_manager.find_sprint_items,
+                name="find_sprint_items",
+                description=(
+                    "Find sprint records in a Notion sprint data source with filters."
+                ),
+                strict=True,
+            ),
+            FunctionTool(
+                self._notion_sprint_manager.link_sprint_subtasks,
+                name="link_sprint_subtasks",
+                description=(
+                    "Link or unlink parent-child relations between Notion sprint pages."
+                ),
+                strict=True,
+            ),
+            FunctionTool(
+                self._notion_sprint_manager.patch_sprint_page_content,
+                name="patch_sprint_page_content",
+                description=(
+                    "Preview or apply patch-style edits to Notion sprint page content."
+                ),
+                strict=True,
+            ),
         ]
         self._assistant = AssistantAgent(
             name=f"{name}_assistant",

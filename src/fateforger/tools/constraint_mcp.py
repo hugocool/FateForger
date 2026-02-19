@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, Iterable
 
 from autogen_ext.tools.mcp import StdioServerParams, mcp_server_tools
+from fateforger.core.config import settings
 
 
 def build_constraint_server_env(root: Path) -> dict[str, str]:
@@ -23,6 +24,24 @@ def build_constraint_server_env(root: Path) -> dict[str, str]:
     if pythonpath:
         paths.append(pythonpath)
     env["PYTHONPATH"] = os.pathsep.join(paths)
+    notion_token = (
+        env.get("NOTION_TOKEN")
+        or env.get("WORK_NOTION_TOKEN")
+        or (settings.work_notion_token or "")
+    )
+    parent_page_id = (
+        env.get("NOTION_TIMEBOXING_PARENT_PAGE_ID")
+        or env.get("WORK_NOTION_PARENT_PAGE_ID")
+        or (settings.notion_timeboxing_parent_page_id or "")
+    )
+    if notion_token and "NOTION_TOKEN" not in env:
+        env["NOTION_TOKEN"] = notion_token
+    if notion_token and "WORK_NOTION_TOKEN" not in env:
+        env["WORK_NOTION_TOKEN"] = notion_token
+    if parent_page_id and "NOTION_TIMEBOXING_PARENT_PAGE_ID" not in env:
+        env["NOTION_TIMEBOXING_PARENT_PAGE_ID"] = parent_page_id
+    if parent_page_id and "WORK_NOTION_PARENT_PAGE_ID" not in env:
+        env["WORK_NOTION_PARENT_PAGE_ID"] = parent_page_id
     return env
 
 

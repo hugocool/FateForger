@@ -2,7 +2,7 @@ from fateforger.agents.timeboxing import stage_gating
 
 
 def test_stage_prompts_do_not_reference_forbidden_tools():
-    """Stage prompts must not reference MCP tools other than search_constraints."""
+    """Stage prompts must not reference forbidden/nonexistent external tools."""
     for prompt_text in (
         stage_gating.COLLECT_CONSTRAINTS_PROMPT,
         stage_gating.CAPTURE_INPUTS_PROMPT,
@@ -13,19 +13,13 @@ def test_stage_prompts_do_not_reference_forbidden_tools():
         assert "use your tools" not in lower
 
 
-def test_collect_constraints_prompt_references_search_tool():
-    """CollectConstraints prompt must guide the agent on using search_constraints."""
+def test_collect_constraints_prompt_is_deterministic_first_with_fallback_search():
+    """CollectConstraints should be deterministic-first with fallback search guidance."""
     prompt = stage_gating.COLLECT_CONSTRAINTS_PROMPT
     assert "search_constraints" in prompt
-    # Must explain key filter fields.
-    assert "text_query" in prompt
-    assert "event_types" in prompt
-    assert "statuses" in prompt
-    assert "scopes" in prompt
-    assert "necessities" in prompt
-    assert "planned_date" in prompt
-    # Must NOT tell the agent to avoid tools (old instruction).
-    assert "you should not request tools" not in prompt
+    assert "deterministic-first defaulting" in prompt.lower()
+    assert "injected durable constraints/defaults" in prompt.lower()
+    assert "fallback" in prompt.lower()
 
 
 def test_capture_inputs_prompt_mentions_search_tool():

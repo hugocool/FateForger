@@ -14,6 +14,8 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | Calendar sync + undo controls | Implemented, Tested | `test_timeboxing_submit_flow.py`, `test_slack_timebox_buttons.py` | — |
 | Stage 1 constraint-template coverage UX | Implemented, Tested | `test_timeboxing_stage_message_template_coverage.py` | — |
 | Durable profile/date-span constraint auto-upsert + Stage 1 prefetch wait | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_constraint_memory_client_tool_name.py` | — |
+| Constraint-memory MCP payload decoding hardening | Implemented, Tested | `test_timeboxing_constraint_memory_client_tool_name.py` | — |
+| Stage 1 lookup-first defaults + session override suppression | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_stage_gate_json_context.py` | — |
 | Stage 3 markdown-first skeleton overview | Implemented, Tested | `test_timeboxing_skeleton_draft_contract.py` | — |
 | Stage 4 advisory quality facts (0-4) | Implemented, Tested | `test_phase4_rewiring.py` | — |
 | Deterministic stage action buttons | Implemented, Tested | `test_timeboxing_stage_actions.py`, `test_slack_timebox_stage_buttons.py` | — |

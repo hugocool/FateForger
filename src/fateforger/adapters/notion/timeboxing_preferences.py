@@ -441,14 +441,20 @@ class NotionConstraintStore:
             cond = cond & type_cond
 
         if tags:
-            topic_pages = self._resolve_topics_by_name(tags)
-            if topic_pages:
-                tag_cond = None
-                for topic_page in topic_pages:
-                    term = uno.prop("Topics").contains(topic_page)
-                    tag_cond = term if tag_cond is None else (tag_cond | term)
-                if tag_cond is not None:
-                    cond = cond & tag_cond
+            topic_lookup_cache: Dict[str, Optional[uno.Page]] = {}
+            topic_pages = self._resolve_topics_by_name(
+                tags,
+                create_missing=False,
+                memo=topic_lookup_cache,
+            )
+            if not topic_pages:
+                return []
+            tag_cond = None
+            for topic_page in topic_pages:
+                term = uno.prop("Topics").contains(topic_page)
+                tag_cond = term if tag_cond is None else (tag_cond | term)
+            if tag_cond is not None:
+                cond = cond & tag_cond
 
         query = self.constraints_db.query.filter(cond)
 
@@ -527,7 +533,7 @@ class NotionConstraintStore:
 
         topics = constraint.get("topics") or []
         if topics:
-            topic_pages = self._resolve_topics_by_name(topics)
+            topic_pages = self._resolve_topics_by_name(topics, create_missing=True)
             if topic_pages:
                 props["topics"] = topic_pages
 
@@ -605,7 +611,7 @@ class NotionConstraintStore:
                 self._to_event_type(value) for value in event_types
             ]
         if topics:
-            topic_pages = self._resolve_topics_by_name(topics)
+            topic_pages = self._resolve_topics_by_name(topics, create_missing=True)
             if topic_pages:
                 props["suggested_topics"] = topic_pages
 
@@ -738,20 +744,46 @@ class NotionConstraintStore:
             if hasattr(schema, key) and value is not None
         }
 
-    def _resolve_topics_by_name(self, names: Sequence[str]) -> List[uno.Page]:
+    def _resolve_topics_by_name(
+        self,
+        names: Sequence[str],
+        *,
+        create_missing: bool = True,
+        memo: Optional[Dict[str, Optional[uno.Page]]] = None,
+    ) -> List[uno.Page]:
         out: List[uno.Page] = []
+        cache = memo if memo is not None else {}
         for name in names:
-            exact = list(self.topics_db.query.filter(uno.prop("Name") == name).execute())
+            normalized = str(name or "").strip()
+            if not normalized:
+                continue
+            lookup_key = normalized.casefold()
+            if lookup_key in cache:
+                cached = cache[lookup_key]
+                if cached is not None:
+                    out.append(cached)
+                continue
+
+            exact = list(
+                self.topics_db.query.filter(uno.prop("Name") == normalized).execute()
+            )
             if exact:
+                cache[lookup_key] = exact[0]
                 out.append(exact[0])
                 continue
             contains = list(
-                self.topics_db.query.filter(uno.prop("Name").contains(name)).execute()
+                self.topics_db.query.filter(uno.prop("Name").contains(normalized)).execute()
             )
             if contains:
+                cache[lookup_key] = contains[0]
                 out.append(contains[0])
                 continue
-            out.append(TBTopic.create(name=name, description=""))
+            if create_missing:
+                created = TBTopic.create(name=normalized, description="")
+                cache[lookup_key] = created
+                out.append(created)
+            else:
+                cache[lookup_key] = None
         return out
 
     def _resolve_types_by_id(self, type_ids: Sequence[str]) -> List[uno.Page]:

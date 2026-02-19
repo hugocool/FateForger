@@ -5,8 +5,9 @@ These are intentionally kept out of `agent.py` to keep orchestration logic reada
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
 import json
+from dataclasses import dataclass
 import sys
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -32,6 +33,8 @@ class CalendarDaySnapshot:
 class ConstraintMemoryClient:
     """Client for the constraint-memory MCP server (stdio workbench)."""
 
+    _MCP_TIMEOUT_MARKER = "Timed out while waiting for response to ClientRequest"
+
     @staticmethod
     def _result_text(tool_name: str, result: Any) -> str:
         to_text = getattr(result, "to_text", None)
@@ -45,17 +48,135 @@ class ConstraintMemoryClient:
         return str(result).strip()
 
     @classmethod
-    def _parse_json_text(cls, tool_name: str, text: str) -> Any:
+    def _parse_json_text(
+        cls, tool_name: str, text: str, *, allow_empty: bool = False
+    ) -> Any:
+        text = (text or "").strip()
         if not text:
+            if allow_empty:
+                return []
             raise RuntimeError(f"constraint-memory tool {tool_name} returned empty text")
         if text.startswith("Error executing tool "):
             raise RuntimeError(f"constraint-memory tool {tool_name} failed: {text}")
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
         try:
             return json.loads(text)
-        except Exception as exc:
+        except Exception:
+            decoder = json.JSONDecoder()
+            idx = 0
+            chunks: list[Any] = []
+            while idx < len(text):
+                while idx < len(text) and text[idx].isspace():
+                    idx += 1
+                if idx >= len(text):
+                    break
+                try:
+                    payload, next_idx = decoder.raw_decode(text, idx)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"constraint-memory tool {tool_name} returned non-JSON text: {text}"
+                    ) from exc
+                chunks.append(payload)
+                idx = next_idx
+            if chunks:
+                if len(chunks) == 1:
+                    return chunks[0]
+                merged: list[Any] = []
+                for payload in chunks:
+                    if isinstance(payload, list):
+                        merged.extend(payload)
+                    else:
+                        merged.append(payload)
+                return merged
             raise RuntimeError(
                 f"constraint-memory tool {tool_name} returned non-JSON text: {text}"
-            ) from exc
+            )
+
+    @classmethod
+    def _decode_tool_result(cls, tool_name: str, result: Any) -> Any:
+        if isinstance(result, (dict, list)):
+            return result
+
+        is_error = bool(getattr(result, "is_error", False))
+        raw_items = getattr(result, "result", None)
+        if is_error:
+            error_parts: list[str] = []
+            if isinstance(raw_items, list):
+                for item in raw_items:
+                    content = getattr(item, "content", None)
+                    if isinstance(content, str) and content.strip():
+                        error_parts.append(content.strip())
+                        continue
+                    item_text = getattr(item, "text", None)
+                    if isinstance(item_text, str) and item_text.strip():
+                        error_parts.append(item_text.strip())
+                        continue
+                    if isinstance(item, str) and item.strip():
+                        error_parts.append(item.strip())
+            text = cls._result_text(tool_name, result)
+            if text:
+                error_parts.append(text)
+            detail = " | ".join(part for part in error_parts if part).strip()
+            if not detail:
+                detail = "empty payload"
+            raise RuntimeError(f"constraint-memory tool {tool_name} failed: {detail}")
+
+        parsed_items: list[Any] = []
+        if isinstance(raw_items, list):
+            for item in raw_items:
+                if isinstance(item, (dict, list)):
+                    parsed_items.append(item)
+                    continue
+                if isinstance(item, str):
+                    parsed = cls._parse_json_text(tool_name, item, allow_empty=True)
+                    if isinstance(parsed, list):
+                        parsed_items.extend(parsed)
+                    elif parsed != []:
+                        parsed_items.append(parsed)
+                    continue
+                content = getattr(item, "content", None)
+                if isinstance(content, str):
+                    parsed = cls._parse_json_text(
+                        tool_name, content, allow_empty=True
+                    )
+                    if isinstance(parsed, list):
+                        parsed_items.extend(parsed)
+                    elif parsed != []:
+                        parsed_items.append(parsed)
+                    continue
+                item_text = getattr(item, "text", None)
+                if isinstance(item_text, str):
+                    parsed = cls._parse_json_text(
+                        tool_name, item_text, allow_empty=True
+                    )
+                    if isinstance(parsed, list):
+                        parsed_items.extend(parsed)
+                    elif parsed != []:
+                        parsed_items.append(parsed)
+
+        if parsed_items:
+            if len(parsed_items) == 1:
+                return parsed_items[0]
+            merged: list[Any] = []
+            for payload in parsed_items:
+                if isinstance(payload, list):
+                    merged.extend(payload)
+                else:
+                    merged.append(payload)
+            return merged
+
+        text = cls._result_text(tool_name, result)
+        return cls._parse_json_text(tool_name, text, allow_empty=True)
+
+    @classmethod
+    def _is_mcp_timeout_error(cls, exc: Exception) -> bool:
+        return cls._MCP_TIMEOUT_MARKER in str(exc)
 
     def __init__(self, *, timeout: float = 10.0) -> None:
         """Initialize the constraint-memory MCP workbench client.
@@ -82,9 +203,16 @@ class ConstraintMemoryClient:
         self._workbench = McpWorkbench(params)
 
     async def _call_tool_json(self, tool_name: str, *, arguments: dict[str, Any]) -> Any:
-        result = await self._workbench.call_tool(tool_name, arguments=arguments)
-        text = self._result_text(tool_name, result)
-        return self._parse_json_text(tool_name, text)
+        attempts = 2
+        for attempt in range(1, attempts + 1):
+            try:
+                result = await self._workbench.call_tool(tool_name, arguments=arguments)
+                return self._decode_tool_result(tool_name, result)
+            except Exception as exc:
+                if attempt >= attempts or not self._is_mcp_timeout_error(exc):
+                    raise
+                await asyncio.sleep(0.25 * attempt)
+        raise RuntimeError(f"constraint-memory tool {tool_name} failed unexpectedly")
 
     async def get_store_info(self) -> dict[str, Any]:
         """Return store metadata from the MCP server."""

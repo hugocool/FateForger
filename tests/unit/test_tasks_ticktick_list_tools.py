@@ -72,7 +72,12 @@ async def test_create_list_with_items_uses_project_model():
         operation="create_list",
         model="project",
         list_name="Weekend Prep",
+        list_id=None,
         items=["eggs", "milk"],
+        item_ids=None,
+        item_matches=None,
+        parent_task_id=None,
+        create_if_missing=True,
     )
 
     assert result["ok"] is True
@@ -99,7 +104,12 @@ async def test_add_items_to_existing_list():
         operation="add_items",
         model="project",
         list_name="Weekend Prep",
+        list_id=None,
         items=["apples", "lemons"],
+        item_ids=None,
+        item_matches=None,
+        parent_task_id=None,
+        create_if_missing=True,
     )
 
     assert result["ok"] is True
@@ -124,7 +134,12 @@ async def test_remove_items_returns_ambiguity_without_deleting():
         operation="remove_items",
         model="project",
         list_name="Weekend Prep",
+        list_id=None,
         items=["Lemons"],
+        item_ids=None,
+        item_matches=None,
+        parent_task_id=None,
+        create_if_missing=True,
     )
 
     assert result["ok"] is False
@@ -147,6 +162,12 @@ async def test_show_list_items_returns_items():
         operation="show_list_items",
         model="project",
         list_name="Weekend Prep",
+        list_id=None,
+        items=None,
+        item_ids=None,
+        item_matches=None,
+        parent_task_id=None,
+        create_if_missing=True,
     )
 
     assert result["ok"] is True
@@ -168,8 +189,12 @@ async def test_update_items_uses_item_ids():
         operation="update_items",
         model="project",
         list_name="Weekend Prep",
+        list_id=None,
         item_ids=["T1", "T2"],
         items=["Organic Eggs", "Whole Milk"],
+        item_matches=None,
+        parent_task_id=None,
+        create_if_missing=True,
     )
 
     assert result["ok"] is True
@@ -191,6 +216,12 @@ async def test_delete_list_deletes_project():
         operation="delete_list",
         model="project",
         list_name="Weekend Prep",
+        list_id=None,
+        items=None,
+        item_ids=None,
+        item_matches=None,
+        parent_task_id=None,
+        create_if_missing=True,
     )
 
     assert result["ok"] is True
@@ -206,6 +237,13 @@ async def test_returns_concise_error_when_mcp_call_fails():
     result = await manager.manage_ticktick_lists(
         operation="show_lists",
         model="project",
+        list_name=None,
+        list_id=None,
+        items=None,
+        item_ids=None,
+        item_matches=None,
+        parent_task_id=None,
+        create_if_missing=True,
     )
 
     assert result["ok"] is False
@@ -228,6 +266,10 @@ async def test_subtask_create_list_and_add_items():
         list_id="PROJECT1",
         list_name="Pack",
         items=["Socks", "Charger"],
+        item_ids=None,
+        item_matches=None,
+        parent_task_id=None,
+        create_if_missing=True,
     )
 
     assert result["ok"] is True

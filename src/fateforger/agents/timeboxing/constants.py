@@ -30,6 +30,7 @@ class TimeboxingTimeouts:
     notion_upsert_s: float = 20.0
     calendar_prefetch_wait_s: float = 2.0
     pending_constraints_wait_s: float = 2.0
+    durable_prefetch_wait_s: float = 20.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +38,7 @@ class TimeboxingLimits:
     """Concurrency / size limits for background work."""
 
     durable_upsert_concurrency: int = 1
-    durable_prefetch_concurrency: int = 1
+    durable_prefetch_concurrency: int = 3
     constraint_extract_concurrency: int = 2
 
     durable_task_key_len: int = 16

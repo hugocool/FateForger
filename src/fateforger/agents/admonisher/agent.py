@@ -27,6 +27,12 @@ Operating rules:
 - Prefer proposing 2–3 concrete options and asking the user to pick one.
 - If the user asks for timeboxing or a concrete daily plan, hand off to `timeboxing_agent`.
 - If the user asks to schedule or change calendar events, hand off to `planner_agent`.
+- If the user asks whether a timeboxing/planning event is already on the calendar
+  (example: "is a timeboxing session planned for tomorrow?"), treat this as
+  calendar inspection and hand off to `planner_agent` (not `timeboxing_agent`).
+- If the user asks for sprint/backlog refinement, task discovery/filtering,
+  parent/subtask linking, or patching Notion sprint page content, hand off to
+  `tasks_agent`.
 """.strip()
 
 

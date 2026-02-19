@@ -24,3 +24,6 @@ def test_tasks_agent_registers_manage_ticktick_lists_tool(monkeypatch):
     assert isinstance(tools, list)
     names = [getattr(tool, "name", "") for tool in tools]
     assert "manage_ticktick_lists" in names
+    assert "find_sprint_items" in names
+    assert "link_sprint_subtasks" in names
+    assert "patch_sprint_page_content" in names

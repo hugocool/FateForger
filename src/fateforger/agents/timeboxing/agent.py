@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
@@ -63,6 +64,7 @@ from fateforger.tools.ticktick_mcp import TickTickMcpClient, get_ticktick_mcp_ur
 from .actions import TimeboxAction
 from .constants import TIMEBOXING_FALLBACK, TIMEBOXING_LIMITS, TIMEBOXING_TIMEOUTS
 from .constraint_retriever import ConstraintRetriever
+from .constraint_retriever import STARTUP_PREFETCH_TAG
 from .contracts import (
     BlockPlan,
     CaptureInputsContext,
@@ -200,6 +202,8 @@ class Session:
     durable_constraints_loaded_stages: set[str] = field(default_factory=set)
     durable_constraints_date: str | None = None
     pending_durable_constraints: bool = False
+    pending_durable_stages: set[str] = field(default_factory=set)
+    durable_constraints_failed_stages: Dict[str, str] = field(default_factory=dict)
     pending_calendar_prefetch: bool = False
     background_updates: List[str] = field(default_factory=list)
     timebox: Timebox | None = None
@@ -224,6 +228,8 @@ class Session:
     stage_ready: bool = False
     stage_missing: List[str] = field(default_factory=list)
     stage_question: str | None = None
+    suppressed_durable_uids: set[str] = field(default_factory=set)
+    collect_defaults_applied: List[str] = field(default_factory=list)
     last_quality_level: int | None = None
     last_quality_label: str | None = None
     last_quality_next_step: str | None = None
@@ -587,6 +593,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             timeout = float(
                 getattr(settings, "agent_mcp_discovery_timeout_seconds", 10)
             )
+            # Constraint-memory Notion queries often traverse multiple relations; allow
+            # a slightly longer read timeout than generic MCP discovery.
+            timeout = max(timeout, TIMEBOXING_TIMEOUTS.durable_prefetch_wait_s)
             self._constraint_memory_client = ConstraintMemoryClient(timeout=timeout)
         except Exception:
             logger.error(
@@ -689,11 +698,124 @@ class TimeboxingFlowAgent(RoutedAgent):
     def _durable_prefetch_key(self, session: Session) -> str:
         """Return a stable key for deduping durable constraint prefetch tasks."""
         planned_date = session.planned_date or "unknown"
-        return f"{session.user_id}:{planned_date}"
+        return f"{session.user_id}:{session.thread_ts}:{planned_date}"
+
+    def _durable_prefetch_stage_key(
+        self, session: Session, *, stage: TimeboxingStage
+    ) -> str:
+        """Return a stable key for one stage-scoped durable prefetch task."""
+        return f"{self._durable_prefetch_key(session)}:{stage.value}"
+
+    @staticmethod
+    def _durable_prefetch_stages(
+        *, include_secondary: bool = True
+    ) -> tuple[TimeboxingStage, ...]:
+        """Return deterministic durable-prefetch stage groups."""
+        if include_secondary:
+            return (
+                TimeboxingStage.COLLECT_CONSTRAINTS,
+                TimeboxingStage.SKELETON,
+                TimeboxingStage.REFINE,
+            )
+        return (TimeboxingStage.COLLECT_CONSTRAINTS,)
+
+    @staticmethod
+    def _is_collect_stage_loaded(session: Session) -> bool:
+        """Return whether Stage 1 durable constraints are loaded for the current date."""
+        planned_date = session.planned_date or ""
+        return bool(
+            session.durable_constraints_date == planned_date
+            and TimeboxingStage.COLLECT_CONSTRAINTS.value
+            in session.durable_constraints_loaded_stages
+        )
+
+    def _reset_durable_prefetch_state(self, session: Session) -> None:
+        """Clear cached durable-prefetch state when planned date changes."""
+        session.durable_constraints_by_stage = {}
+        session.durable_constraints_loaded_stages = set()
+        session.pending_durable_stages = set()
+        session.pending_durable_constraints = False
+        session.durable_constraints_failed_stages = {}
+        session.durable_constraints_date = None
+
+    def _queue_durable_prefetch_stage(
+        self,
+        *,
+        session: Session,
+        stage: TimeboxingStage,
+        reason: str,
+    ) -> asyncio.Task | None:
+        """Queue one stage-scoped durable prefetch task with in-flight dedupe."""
+        if not settings.notion_timeboxing_parent_page_id:
+            return None
+        planned_date = session.planned_date or ""
+        if (
+            session.durable_constraints_date == planned_date
+            and stage.value in session.durable_constraints_loaded_stages
+        ):
+            return None
+        task_key = self._durable_prefetch_stage_key(session, stage=stage)
+        existing = self._durable_constraint_prefetch_tasks.get(task_key)
+        if existing:
+            return existing
+
+        async def _background() -> None:
+            """Fetch durable constraints for one stage."""
+            acquired = False
+            stage_label = stage.value
+            session.pending_durable_stages.add(stage_label)
+            session.pending_durable_constraints = True
+            task_planned_date = planned_date
+            try:
+                await self._durable_constraint_prefetch_semaphore.acquire()
+                acquired = True
+                constraints = await self._fetch_durable_constraints(session, stage=stage)
+                # Ignore stale results when the session date changed while fetching.
+                if (session.planned_date or "") != task_planned_date:
+                    return
+                session.durable_constraints_by_stage[stage_label] = constraints
+                session.durable_constraints_loaded_stages.add(stage_label)
+                session.durable_constraints_failed_stages.pop(stage_label, None)
+                session.durable_constraints_date = task_planned_date
+                if constraints:
+                    self._append_background_update_once(
+                        session,
+                        f"Loaded {len(constraints)} saved constraint(s) for {stage_label}.",
+                    )
+                await self._sync_durable_constraints_to_store(
+                    session, constraints=constraints
+                )
+                await self._collect_constraints(session)
+            except Exception as exc:
+                if (session.planned_date or "") != task_planned_date:
+                    return
+                details = str(exc).strip()
+                if len(details) > 240:
+                    details = details[:237] + "..."
+                msg = (
+                    f"Durable constraint prefetch failed (stage={stage_label}, reason={reason})"
+                )
+                if details:
+                    msg = f"{msg}: {details}"
+                session.durable_constraints_failed_stages[stage_label] = msg
+                self._append_background_update_once(session, msg)
+                logger.error(msg, exc_info=True)
+            finally:
+                if acquired:
+                    self._durable_constraint_prefetch_semaphore.release()
+                session.pending_durable_stages.discard(stage_label)
+                session.pending_durable_constraints = bool(session.pending_durable_stages)
+                self._durable_constraint_prefetch_tasks.pop(task_key, None)
+
+        task = asyncio.create_task(_background())
+        self._durable_constraint_prefetch_tasks[task_key] = task
+        return task
 
     def _queue_constraint_prefetch(self, session: Session) -> None:
         """Prefetch session-scoped constraints and durable constraints in background."""
-        self._queue_durable_constraint_prefetch(session=session, reason="prefetch")
+        self._queue_durable_constraint_prefetch(
+            session=session, reason="prefetch", include_secondary=True
+        )
         if session.constraints_prefetched:
             return
         if not settings.database_url:
@@ -717,73 +839,26 @@ class TimeboxingFlowAgent(RoutedAgent):
         asyncio.create_task(_background())
 
     def _queue_durable_constraint_prefetch(
-        self, *, session: Session, reason: str
+        self,
+        *,
+        session: Session,
+        reason: str,
+        include_secondary: bool = True,
     ) -> None:
         """Start background durable constraint prefetch if needed."""
         if not settings.notion_timeboxing_parent_page_id:
             return
         planned_date = session.planned_date or ""
-        prefetch_stages = (
-            TimeboxingStage.COLLECT_CONSTRAINTS,
-            TimeboxingStage.SKELETON,
-            TimeboxingStage.REFINE,
-        )
-        if session.durable_constraints_date == planned_date and all(
-            stage.value in session.durable_constraints_loaded_stages
-            for stage in prefetch_stages
-        ):
-            return
-        if session.pending_durable_constraints:
-            return
+        if session.durable_constraints_date and session.durable_constraints_date != planned_date:
+            self._reset_durable_prefetch_state(session)
 
-        task_key = self._durable_prefetch_key(session)
-        if task_key in self._durable_constraint_prefetch_tasks:
-            return
-
-        async def _background() -> None:
-            """Fetch durable constraints on a background task."""
-            acquired = False
-            session.pending_durable_constraints = True
-            try:
-                await self._durable_constraint_prefetch_semaphore.acquire()
-                acquired = True
-                for stage in prefetch_stages:
-                    if stage.value in session.durable_constraints_loaded_stages:
-                        continue
-                    constraints = await self._fetch_durable_constraints(
-                        session, stage=stage
-                    )
-                    session.durable_constraints_by_stage[stage.value] = constraints
-                    session.durable_constraints_loaded_stages.add(stage.value)
-                session.durable_constraints_date = planned_date
-
-                union = _dedupe_constraints(
-                    [
-                        c
-                        for stage_constraints in session.durable_constraints_by_stage.values()
-                        for c in (stage_constraints or [])
-                    ]
-                )
-                if union:
-                    session.background_updates.append(
-                        f"Loaded {len(union)} saved constraint(s)."
-                    )
-                    await self._sync_durable_constraints_to_store(
-                        session, constraints=union
-                    )
-                await self._collect_constraints(session)
-            except Exception:
-                msg = f"Durable constraint prefetch failed (reason={reason})"
-                session.background_updates.append(msg)
-                logger.error(msg, exc_info=True)
-            finally:
-                if acquired:
-                    self._durable_constraint_prefetch_semaphore.release()
-                session.pending_durable_constraints = False
-                self._durable_constraint_prefetch_tasks.pop(task_key, None)
-
-        task = asyncio.create_task(_background())
-        self._durable_constraint_prefetch_tasks[task_key] = task
+        stages = self._durable_prefetch_stages(include_secondary=include_secondary)
+        for stage in stages:
+            self._queue_durable_prefetch_stage(
+                session=session,
+                stage=stage,
+                reason=reason,
+            )
 
     def _queue_constraint_extraction(
         self,
@@ -962,9 +1037,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                         session,
                         f"Saved {persisted} durable constraint(s) to Notion.",
                     )
-                session.durable_constraints_by_stage = {}
-                session.durable_constraints_loaded_stages = set()
-                session.durable_constraints_date = None
+                self._reset_durable_prefetch_state(session)
                 self._queue_durable_constraint_prefetch(
                     session=session, reason="post_upsert"
                 )
@@ -1048,6 +1121,14 @@ class TimeboxingFlowAgent(RoutedAgent):
         rule_kind = self._resolve_rule_kind(hints=hints, selector=selector)
         scalar_params = self._extract_scalar_params(hints=hints, selector=selector)
         windows = self._extract_windows(hints=hints, selector=selector)
+        topics = [
+            str(tag).strip()
+            for tag in (constraint.tags or [])
+            if isinstance(tag, str) and str(tag).strip()
+        ]
+        if self._should_mark_startup_prefetch(constraint=constraint, rule_kind=rule_kind):
+            topics.append(STARTUP_PREFETCH_TAG)
+        topics = list(dict.fromkeys(topics))
         return {
             "constraint_record": {
                 "name": constraint.name,
@@ -1092,7 +1173,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 },
                 "applies_stages": self._default_durable_applies_stages(),
                 "applies_event_types": self._default_durable_event_types(),
-                "topics": list(constraint.tags or []),
+                "topics": topics,
             }
         }
 
@@ -1207,6 +1288,29 @@ class TimeboxingFlowAgent(RoutedAgent):
         """Return default event-type routing for durable constraints."""
         return ["M", "C", "DW", "SW", "H", "R", "BU", "BG", "PR"]
 
+    def _should_mark_startup_prefetch(
+        self, *, constraint: ConstraintBase, rule_kind: str | None
+    ) -> bool:
+        """Return whether a durable constraint should be startup-prefetched in Stage 1."""
+        rk = str(rule_kind or "").strip().lower()
+        if rk in {"fixed_bedtime", "min_sleep"}:
+            return True
+        tags = [str(tag).strip().lower() for tag in (constraint.tags or []) if tag]
+        if STARTUP_PREFETCH_TAG in tags:
+            return True
+        text = f"{constraint.name or ''} {constraint.description or ''} {' '.join(tags)}".lower()
+        tokens = (
+            "sleep",
+            "bed",
+            "wake",
+            "work window",
+            "work hours",
+            "availability",
+            "commute",
+            "routine",
+        )
+        return any(token in text for token in tokens)
+
     async def _await_pending_constraint_extractions(
         self,
         session: Session,
@@ -1230,15 +1334,31 @@ class TimeboxingFlowAgent(RoutedAgent):
     async def _await_pending_durable_constraint_prefetch(
         self,
         session: Session,
-        timeout_s: float = TIMEBOXING_TIMEOUTS.pending_constraints_wait_s,
+        timeout_s: float = TIMEBOXING_TIMEOUTS.durable_prefetch_wait_s,
+        *,
+        stage: TimeboxingStage = TimeboxingStage.COLLECT_CONSTRAINTS,
     ) -> None:
-        """Wait briefly for durable constraint prefetch before first stage render."""
-        task_key = self._durable_prefetch_key(session)
+        """Wait for one stage-scoped durable prefetch, capped with timeout."""
+        self._queue_durable_constraint_prefetch(
+            session=session,
+            reason="await_prefetch",
+            include_secondary=True,
+        )
+        task_key = self._durable_prefetch_stage_key(session, stage=stage)
         task = self._durable_constraint_prefetch_tasks.get(task_key)
         if not task:
             return
+        self._append_background_update_once(session, "Loading saved constraints...")
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            msg = (
+                f"Saved constraints timed out after {int(timeout_s)}s for {stage.value}. "
+                "You can continue now and use Redo to retry after a moment."
+            )
+            session.durable_constraints_failed_stages[stage.value] = msg
+            self._append_background_update_once(session, msg)
+            logger.error(msg)
         except Exception:
             return
 
@@ -1449,11 +1569,11 @@ class TimeboxingFlowAgent(RoutedAgent):
         ):
             return
 
-        # Build the constraint search tool so stage agents can search Notion.
+        # Build the constraint search tool for optional non-Stage-1 lookups.
         if self._constraint_search_tool is None and settings.notion_timeboxing_parent_page_id:
             self._constraint_search_tool = self._build_constraint_search_tool()
 
-        constraint_tools: list | None = (
+        optional_constraint_tools: list | None = (
             [self._constraint_search_tool] if self._constraint_search_tool else None
         )
 
@@ -1486,14 +1606,14 @@ class TimeboxingFlowAgent(RoutedAgent):
                 "StageCollectConstraints",
                 COLLECT_CONSTRAINTS_PROMPT,
                 StageGateOutput,
-                tools=constraint_tools,
-                max_tool_iterations=3,
+                tools=optional_constraint_tools,
+                max_tool_iterations=2,
             ),
             TimeboxingStage.CAPTURE_INPUTS: build(
                 "StageCaptureInputs",
                 CAPTURE_INPUTS_PROMPT,
                 StageGateOutput,
-                tools=constraint_tools,
+                tools=optional_constraint_tools,
                 max_tool_iterations=3,
             ),
         }
@@ -1526,7 +1646,375 @@ class TimeboxingFlowAgent(RoutedAgent):
             ),
             timeout_s=TIMEBOXING_TIMEOUTS.stage_gate_s,
         )
-        return parse_chat_content(StageGateOutput, response)
+        try:
+            return parse_chat_content(StageGateOutput, response)
+        except Exception as exc:
+            error = (
+                f"Stage gate parse failed for {stage.value}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            logger.error(error, exc_info=True)
+            fallback_facts = dict(context.get("facts") or {})
+            fallback_facts["_stage_gate_error"] = error
+            return StageGateOutput(
+                stage_id=stage,
+                ready=False,
+                summary=[
+                    "I hit an internal response-format error while processing this stage.",
+                    "I kept your known facts and can continue once you confirm or retry.",
+                ],
+                missing=["stage response parse failure"],
+                question="Reply `Redo` to retry this stage, or provide any updates and continue.",
+                facts=fallback_facts,
+            )
+
+    @staticmethod
+    def _constraint_uid(constraint: ConstraintBase) -> str | None:
+        """Return a durable constraint UID when present."""
+        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+        uid = hints.get("uid")
+        if isinstance(uid, str) and uid.strip():
+            return uid.strip()
+        return None
+
+    def _collect_stage_durable_constraints(
+        self, session: Session, *, stage: TimeboxingStage
+    ) -> list[Constraint]:
+        """Return durable constraints for a stage, excluding session-suppressed UIDs."""
+        durable = session.durable_constraints_by_stage.get(stage.value, [])
+        out: list[Constraint] = []
+        for constraint in durable or []:
+            uid = self._constraint_uid(constraint)
+            if uid and uid in session.suppressed_durable_uids:
+                continue
+            out.append(constraint)
+        return out
+
+    @staticmethod
+    def _extract_clock_times(text: str) -> list[str]:
+        """Extract HH:MM values in stable order from arbitrary text."""
+        if not text:
+            return []
+        return [
+            f"{int(hour):02d}:{minute}"
+            for hour, minute in re.findall(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
+        ]
+
+    def _extract_collect_default_value(
+        self, *, domain: str, constraint: Constraint
+    ) -> dict[str, Any] | None:
+        """Derive a deterministic default value for one collect-stage domain."""
+        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+        text = f"{constraint.name or ''} {constraint.description or ''}".strip()
+        times = self._extract_clock_times(text)
+
+        hint_start = str(
+            hints.get("start_time") or hints.get("bed_time") or hints.get("bedtime") or ""
+        ).strip()
+        hint_end = str(
+            hints.get("end_time") or hints.get("wake_time") or hints.get("wake") or ""
+        ).strip()
+
+        if domain == "sleep_target":
+            start = hint_start or (times[0] if len(times) > 0 else "")
+            end = hint_end or (times[1] if len(times) > 1 else "")
+            if not start or not end:
+                return None
+            try:
+                start_dt = datetime.strptime(start, "%H:%M")
+                end_dt = datetime.strptime(end, "%H:%M")
+            except Exception:
+                return {"start": start, "end": end, "hours": None}
+            minutes = int((end_dt - start_dt).total_seconds() // 60)
+            if minutes <= 0:
+                minutes += 24 * 60
+            hours = round(minutes / 60.0, 2)
+            return {"start": start, "end": end, "hours": hours}
+
+        if domain == "work_window":
+            start = hint_start or (times[0] if len(times) > 0 else "")
+            end = hint_end or (times[1] if len(times) > 1 else "")
+            if not start or not end:
+                return None
+            return {"start": start, "end": end}
+
+        return None
+
+    def _classify_collect_default_domain(self, constraint: Constraint) -> str | None:
+        """Classify collect-stage default domains from durable constraint metadata."""
+        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+        rule_kind = str(hints.get("rule_kind") or "").strip().lower()
+        tags = [str(tag).strip().lower() for tag in (constraint.tags or [])]
+        text = (
+            f"{constraint.name or ''} {constraint.description or ''} "
+            f"{' '.join(tags)} {rule_kind}"
+        ).lower()
+        if rule_kind in {"fixed_bedtime", "min_sleep"} or any(
+            token in text for token in ("sleep", "bed", "wake")
+        ):
+            return "sleep_target"
+        if any(
+            token in text
+            for token in ("work window", "start work", "work hours", "availability")
+        ):
+            return "work_window"
+        return None
+
+    @staticmethod
+    def _collect_default_priority_key(constraint: Constraint) -> tuple[int, int, int, str]:
+        """Stable sorting key for selecting one default per domain."""
+        status_rank = 0 if constraint.status == ConstraintStatus.LOCKED else 1
+        necessity_rank = 0 if constraint.necessity == ConstraintNecessity.MUST else 1
+        scope_rank = 0 if constraint.scope == ConstraintScope.PROFILE else 1
+        name = (constraint.name or "").strip().lower()
+        return (status_rank, necessity_rank, scope_rank, name)
+
+    def _derive_collect_defaults_from_durable(
+        self, constraints: list[Constraint]
+    ) -> dict[str, Any]:
+        """Derive deterministic collect-stage defaults from durable constraints."""
+        by_domain: dict[str, list[Constraint]] = {"sleep_target": [], "work_window": []}
+        for constraint in constraints or []:
+            domain = self._classify_collect_default_domain(constraint)
+            if domain in by_domain:
+                by_domain[domain].append(constraint)
+
+        domain_values: dict[str, dict[str, Any]] = {}
+        domain_uids: dict[str, list[str]] = {}
+        domain_lines: dict[str, str] = {}
+        durable_applies: list[str] = []
+
+        for domain, items in by_domain.items():
+            if not items:
+                continue
+            ordered = sorted(items, key=self._collect_default_priority_key)
+            chosen = ordered[0]
+            value = self._extract_collect_default_value(domain=domain, constraint=chosen)
+            if value:
+                domain_values[domain] = value
+            uids = [uid for uid in (self._constraint_uid(item) for item in ordered) if uid]
+            if uids:
+                domain_uids[domain] = uids
+            line = (chosen.name or domain).strip()
+            description = (chosen.description or "").strip()
+            if description:
+                line = f"{line} — {description}"
+            domain_lines[domain] = line
+            durable_applies.append(line)
+
+        return {
+            "domain_values": domain_values,
+            "domain_uids": domain_uids,
+            "domain_lines": domain_lines,
+            "durable_applies": durable_applies,
+        }
+
+    @staticmethod
+    def _merge_unique_lines(base: list[str], extra: list[str]) -> list[str]:
+        """Return first-seen unique lines from two lists."""
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in (base or []) + (extra or []):
+            line = (raw or "").strip()
+            if not line or line in seen:
+                continue
+            seen.add(line)
+            out.append(line)
+        return out
+
+    def _apply_collect_defaults_to_facts(
+        self,
+        *,
+        session: Session,
+        facts: dict[str, Any],
+        defaults: dict[str, Any],
+    ) -> list[str]:
+        """Apply deterministic collect defaults into stage facts when missing."""
+        domain_values: dict[str, dict[str, Any]] = defaults.get("domain_values", {})
+        domain_lines: dict[str, str] = defaults.get("domain_lines", {})
+        applied_domains: list[str] = []
+
+        if domain_values.get("sleep_target") and not parse_model_optional(
+            SleepTarget, facts.get("sleep_target")
+        ):
+            facts["sleep_target"] = domain_values["sleep_target"]
+            applied_domains.append("sleep_target")
+
+        if domain_values.get("work_window") and not parse_model_optional(
+            WorkWindow, facts.get("work_window")
+        ):
+            facts["work_window"] = domain_values["work_window"]
+            applied_domains.append("work_window")
+
+        overview = dict(facts.get("constraint_overview") or {})
+        durable_existing = list(overview.get("durable_applies") or [])
+        overview["durable_applies"] = self._merge_unique_lines(
+            durable_existing, list(defaults.get("durable_applies") or [])
+        )
+        facts["constraint_overview"] = overview
+
+        session.collect_defaults_applied = [
+            domain_lines[d]
+            for d in applied_domains
+            if isinstance(domain_lines.get(d), str)
+        ]
+        facts["defaults_applied"] = list(session.collect_defaults_applied)
+        return applied_domains
+
+    @staticmethod
+    def _facts_conflict_with_default(
+        *, domain: str, value: dict[str, Any], default: dict[str, Any]
+    ) -> bool:
+        """Return whether a fact value conflicts with a derived default for a domain."""
+        if domain == "sleep_target":
+            cur = parse_model_optional(SleepTarget, value)
+            ref = parse_model_optional(SleepTarget, default)
+            if cur is None or ref is None:
+                return False
+            return (cur.start, cur.end, cur.hours) != (ref.start, ref.end, ref.hours)
+        if domain == "work_window":
+            cur = parse_model_optional(WorkWindow, value)
+            ref = parse_model_optional(WorkWindow, default)
+            if cur is None or ref is None:
+                return False
+            return (cur.start, cur.end) != (ref.start, ref.end)
+        return False
+
+    def _normalize_collect_constraints_gate(
+        self,
+        *,
+        session: Session,
+        gate: StageGateOutput,
+        user_message: str,
+    ) -> StageGateOutput:
+        """Post-process Stage 1 gate output with deterministic defaults + suppression policy."""
+        durable = self._collect_stage_durable_constraints(
+            session, stage=TimeboxingStage.COLLECT_CONSTRAINTS
+        )
+        defaults = self._derive_collect_defaults_from_durable(durable)
+        facts = dict(session.frame_facts or {})
+        facts.update(gate.facts or {})
+        self._apply_collect_defaults_to_facts(session=session, facts=facts, defaults=defaults)
+
+        suppressed_domains: list[str] = []
+        if user_message.strip():
+            for domain, default_value in (defaults.get("domain_values") or {}).items():
+                current_value = facts.get(domain)
+                if not isinstance(current_value, dict):
+                    continue
+                if not self._facts_conflict_with_default(
+                    domain=domain,
+                    value=current_value,
+                    default=default_value,
+                ):
+                    continue
+                for uid in (defaults.get("domain_uids") or {}).get(domain, []):
+                    if uid in session.suppressed_durable_uids:
+                        continue
+                    session.suppressed_durable_uids.add(uid)
+                    suppressed_domains.append(domain)
+
+        if suppressed_domains:
+            durable = self._collect_stage_durable_constraints(
+                session, stage=TimeboxingStage.COLLECT_CONSTRAINTS
+            )
+            defaults = self._derive_collect_defaults_from_durable(durable)
+            self._apply_collect_defaults_to_facts(
+                session=session,
+                facts=facts,
+                defaults=defaults,
+            )
+            unique_domains = sorted(set(suppressed_domains))
+            override_line = (
+                "Session override applied for "
+                + ", ".join(unique_domains)
+                + "; matching saved defaults were hidden for this session."
+            )
+            gate.summary = self._merge_unique_lines(list(gate.summary or []), [override_line])
+
+        sleep_known = parse_model_optional(SleepTarget, facts.get("sleep_target")) is not None
+        if sleep_known and gate.missing:
+            gate.missing = [
+                item
+                for item in gate.missing
+                if "sleep" not in item.lower() and "routine" not in item.lower()
+            ]
+        if not gate.missing:
+            gate.ready = True
+
+        defaults_applied = list(session.collect_defaults_applied or [])
+        collect_stage = TimeboxingStage.COLLECT_CONSTRAINTS.value
+        collect_loaded = collect_stage in session.durable_constraints_loaded_stages
+        collect_pending = collect_stage in session.pending_durable_stages
+        collect_failure = session.durable_constraints_failed_stages.get(collect_stage)
+
+        if not collect_loaded:
+            gate.summary = [
+                line
+                for line in list(gate.summary or [])
+                if "no existing durable constraints found" not in line.lower()
+            ]
+            if collect_pending:
+                gate.summary = self._merge_unique_lines(
+                    gate.summary,
+                    [
+                        "Saved constraints are still loading; I have not confirmed durable defaults yet."
+                    ],
+                )
+            elif collect_failure:
+                gate.summary = self._merge_unique_lines(
+                    gate.summary,
+                    [f"Saved constraints could not be confirmed yet: {collect_failure}"],
+                )
+            else:
+                gate.summary = self._merge_unique_lines(
+                    gate.summary,
+                    ["Saved constraints are not loaded yet; I will keep checking in the background."],
+                )
+
+        if gate.ready and defaults_applied:
+            gate.summary = self._merge_unique_lines(
+                list(gate.summary or []),
+                [f"Using your saved defaults: {', '.join(defaults_applied)}."],
+            )
+            gate.question = (
+                "Using your saved defaults. Reply to override for this session, or proceed."
+            )
+
+        if isinstance(facts.get("_stage_gate_error"), str):
+            self._append_background_update_once(session, facts["_stage_gate_error"])
+
+        gate.facts = facts
+        return gate
+
+    async def _refresh_collect_constraints_durable(
+        self, session: Session, *, reason: str
+    ) -> None:
+        """Force a targeted Stage 1 durable refresh after new user hints."""
+        if not settings.notion_timeboxing_parent_page_id:
+            return
+        stage = TimeboxingStage.COLLECT_CONSTRAINTS
+        session.durable_constraints_loaded_stages.discard(stage.value)
+        task = self._queue_durable_prefetch_stage(
+            session=session,
+            stage=stage,
+            reason=reason,
+        )
+        if not task:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=TIMEBOXING_TIMEOUTS.durable_prefetch_wait_s,
+            )
+        except asyncio.TimeoutError:
+            msg = (
+                "Saved constraints refresh timed out while processing your latest "
+                "Stage 1 input. Continue now or use Redo to retry."
+            )
+            session.durable_constraints_failed_stages[stage.value] = msg
+            self._append_background_update_once(session, msg)
+            logger.error(msg)
 
     def _format_stage_gate_input(
         self, *, stage: TimeboxingStage, context: dict[str, Any]
@@ -1615,12 +2103,19 @@ class TimeboxingFlowAgent(RoutedAgent):
     ) -> dict[str, Any]:
         """Build the injected context payload for the CollectConstraints stage."""
         normalized = parse_model_list(Immovable, session.frame_facts.get("immovables"))
-        durable = session.durable_constraints_by_stage.get(
-            TimeboxingStage.COLLECT_CONSTRAINTS.value, []
+        durable = self._collect_stage_durable_constraints(
+            session, stage=TimeboxingStage.COLLECT_CONSTRAINTS
+        )
+        facts = dict(session.frame_facts or {})
+        defaults = self._derive_collect_defaults_from_durable(list(durable or []))
+        self._apply_collect_defaults_to_facts(
+            session=session,
+            facts=facts,
+            defaults=defaults,
         )
         return CollectConstraintsContext(
             user_message=user_message,
-            facts=dict(session.frame_facts or {}),
+            facts=facts,
             immovables=normalized,
             durable_constraints=list(durable or []),
         ).model_dump(mode="json")
@@ -2597,6 +3092,55 @@ class TimeboxingFlowAgent(RoutedAgent):
         missing = (
             "\n".join([f"- {m}" for m in gate.missing]) if gate.missing else "- (none)"
         )
+        if gate.stage_id == TimeboxingStage.COLLECT_CONSTRAINTS:
+            defaults_raw = []
+            if isinstance(gate.facts, dict):
+                defaults_raw = list(gate.facts.get("defaults_applied") or [])
+            defaults = [
+                f"- {line.strip()}"
+                for line in defaults_raw
+                if isinstance(line, str) and line.strip()
+            ]
+            defaults_block = "\n".join(defaults) if defaults else "- (none)"
+            parts = [
+                header,
+                "Confirmed Defaults:",
+                defaults_block,
+                "Still Missing:",
+                missing,
+            ]
+            if gate.question:
+                parts.append(f"Question: {gate.question}")
+            parts.extend(["What I Have So Far:", bullets])
+            if not gate.ready:
+                parts.append(
+                    "Stage criteria not met yet. Share the missing inputs, then use Redo."
+                )
+            else:
+                parts.append(
+                    "Stage criteria met. I can auto-proceed; click Proceed or share adjustments."
+                )
+            if constraints:
+                constraint_lines = self._format_constraints_section(constraints)
+                parts.extend(
+                    [
+                        "Constraints:",
+                        "\n".join([f"- {line}" for line in constraint_lines]),
+                    ]
+                )
+            if immovables:
+                immovable_lines = self._format_immovables_section(immovables)
+                parts.extend(
+                    [
+                        "Calendar:",
+                        "\n".join([f"- {line}" for line in immovable_lines]),
+                    ]
+                )
+            if background_notes:
+                notes = "\n".join([f"- {note}" for note in background_notes])
+                parts.extend(["Background:", notes])
+            return "\n".join(parts)
+
         parts = [header]
         if not gate.ready:
             parts.extend(
@@ -2642,18 +3186,25 @@ class TimeboxingFlowAgent(RoutedAgent):
     def _collect_background_notes(self, session: Session) -> list[str] | None:
         """Assemble background status notes to include in stage responses."""
         notes: list[str] = []
+
+        def _add(note: str) -> None:
+            if note in notes:
+                return
+            notes.append(note)
+
         if session.pending_durable_constraints:
-            notes.append("Fetching your saved constraints in the background.")
+            _add("Loading saved constraints...")
         if session.pending_calendar_prefetch:
-            notes.append("Loading calendar immovables for the day.")
+            _add("Loading calendar immovables for the day.")
         if session.pending_constraint_extractions:
-            notes.append(
+            _add(
                 "Syncing your preferences in the background so we can keep moving."
             )
         if session.pending_skeleton_pre_generation:
-            notes.append("Pre-drafting your skeleton in the background.")
+            _add("Pre-drafting your skeleton in the background.")
         if session.background_updates:
-            notes.extend(session.background_updates)
+            for note in session.background_updates:
+                _add(note)
             session.background_updates.clear()
         return notes or None
 
@@ -2779,6 +3330,14 @@ class TimeboxingFlowAgent(RoutedAgent):
             Returns:
                 Formatted summary of matching constraints.
             """
+            if (
+                stage == TimeboxingStage.COLLECT_CONSTRAINTS.value
+                and (not queries or all(not isinstance(q, dict) or not q for q in queries))
+            ):
+                return (
+                    "Skipped search_constraints for Stage 1 because no concrete query "
+                    "facet was provided. Using deterministic saved-default prefetch."
+                )
             client = agent_ref._ensure_constraint_memory_client()
             return await search_constraints(
                 queries=queries,
@@ -2844,23 +3403,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             ) -> Any:
                 tool = raw_by_name[tool_name]
                 result = await tool.run_json(arguments, CancellationToken())
-                if isinstance(result, (dict, list)):
-                    return result
-                render = getattr(tool, "return_value_as_string", None)
-                text = render(result) if callable(render) else str(result)
-                if not isinstance(text, str) or not text.strip():
-                    raise RuntimeError(
-                        f"constraint-memory tool {tool_name} returned empty payload"
-                    )
-                text = text.strip()
-                if text.startswith("Error executing tool "):
-                    raise RuntimeError(f"constraint-memory tool {tool_name} failed: {text}")
-                try:
-                    return json.loads(text)
-                except Exception as exc:
-                    raise RuntimeError(
-                        f"constraint-memory tool {tool_name} returned non-JSON payload: {text}"
-                    ) from exc
+                return ConstraintMemoryClient._decode_tool_result(tool_name, result)
 
             async def constraint_query_types(
                 stage: str | None,
@@ -3176,14 +3719,14 @@ class TimeboxingFlowAgent(RoutedAgent):
                 channel_id=session.channel_id,
                 thread_ts=session.thread_ts,
             )
-        combined = _dedupe_constraints(
-            [
-                c
-                for stage_constraints in session.durable_constraints_by_stage.values()
-                for c in (stage_constraints or [])
-            ]
-            + list(local_constraints or [])
-        )
+        durable_constraints = [
+            c
+            for stage_constraints in session.durable_constraints_by_stage.values()
+            for c in (stage_constraints or [])
+            if (uid := self._constraint_uid(c)) is None
+            or uid not in session.suppressed_durable_uids
+        ]
+        combined = _dedupe_constraints(durable_constraints + list(local_constraints or []))
         session.active_constraints = [
             c for c in combined if c.status != ConstraintStatus.DECLINED
         ]
@@ -3384,7 +3927,10 @@ class TimeboxingFlowAgent(RoutedAgent):
             timezone=session.tz_name,
         )
         self._queue_constraint_prefetch(session)
-        await self._await_pending_durable_constraint_prefetch(session)
+        await self._await_pending_durable_constraint_prefetch(
+            session,
+            stage=TimeboxingStage.COLLECT_CONSTRAINTS,
+        )
 
         await self._ensure_calendar_immovables(session)
 
@@ -3480,21 +4026,30 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
             if planned_date != session.planned_date:
                 session.planned_date = planned_date
-                session.durable_constraints_by_stage = {}
-                session.durable_constraints_loaded_stages = set()
-                session.durable_constraints_date = None
+                self._reset_durable_prefetch_state(session)
                 await self._prefetch_calendar_immovables(session, planned_date)
 
             session.frame_facts.setdefault("date", session.planned_date)
             session.frame_facts.setdefault("timezone", tz_name)
             await self._ensure_calendar_immovables(session)
             self._queue_constraint_prefetch(session)
-            await self._await_pending_durable_constraint_prefetch(session)
+            await self._await_pending_durable_constraint_prefetch(
+                session,
+                stage=TimeboxingStage.COLLECT_CONSTRAINTS,
+            )
 
             # Now continue with normal constraint extraction and stage processing
             # Fall through to the committed session logic below
 
         # Session is committed - run the GraphFlow stage machine.
+        if (
+            session.stage == TimeboxingStage.COLLECT_CONSTRAINTS
+            and not self._is_collect_stage_loaded(session)
+        ):
+            await self._await_pending_durable_constraint_prefetch(
+                session,
+                stage=TimeboxingStage.COLLECT_CONSTRAINTS,
+            )
         session.thread_state = None
         reply = await self._run_graph_turn(session=session, user_text=message.text)
         wrapped = await self._maybe_wrap_constraint_review(reply=reply, session=session)
@@ -3549,9 +4104,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 tz_name=tz_name,
             )
             if planned_date != session.planned_date:
-                session.durable_constraints_by_stage = {}
-                session.durable_constraints_loaded_stages = set()
-                session.durable_constraints_date = None
+                self._reset_durable_prefetch_state(session)
             session.planned_date = planned_date
             session.tz_name = tz_name
             asyncio.create_task(
@@ -3569,6 +4122,14 @@ class TimeboxingFlowAgent(RoutedAgent):
             channel_id=session.channel_id,
             thread_ts=session.thread_ts,
         )
+        if (
+            session.stage == TimeboxingStage.COLLECT_CONSTRAINTS
+            and not self._is_collect_stage_loaded(session)
+        ):
+            await self._await_pending_durable_constraint_prefetch(
+                session,
+                stage=TimeboxingStage.COLLECT_CONSTRAINTS,
+            )
         session.thread_state = None
         reply = await self._run_graph_turn(session=session, user_text=message.content)
         wrapped = await self._maybe_wrap_constraint_review(reply=reply, session=session)

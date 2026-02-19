@@ -48,6 +48,14 @@ class _CapturingStageAgent:
         )
 
 
+class _MalformedStageAgent:
+    """Fake stage agent returning malformed payload to test fallback behavior."""
+
+    async def on_messages(self, messages: list[TextMessage], _token: Any) -> _DummyResponse:
+        _ = messages
+        return _DummyResponse(chat_message=_DummyChatMessage(content="not-json"))
+
+
 @pytest.mark.asyncio
 async def test_run_stage_gate_sends_strict_json_context(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensures `_run_stage_gate` injects list-shaped data via TOON tables."""
@@ -77,3 +85,33 @@ async def test_run_stage_gate_sends_strict_json_context(monkeypatch: pytest.Monk
     assert "facts_json:" in content
     assert '"k": 1' in content
     assert "immovables[0]{title,start,end}:" in content
+
+
+@pytest.mark.asyncio
+async def test_run_stage_gate_returns_safe_fallback_on_parse_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed model output should not crash stage execution."""
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+
+    async def _noop_ensure_stage_agents(self: TimeboxingFlowAgent) -> None:
+        return None
+
+    monkeypatch.setattr(TimeboxingFlowAgent, "_ensure_stage_agents", _noop_ensure_stage_agents)
+    agent._stage_agents = {  # type: ignore[attr-defined]
+        TimeboxingStage.COLLECT_CONSTRAINTS: _MalformedStageAgent()
+    }
+
+    context = {"facts": {"timezone": "Europe/Amsterdam"}}
+    out = await TimeboxingFlowAgent._run_stage_gate(  # type: ignore[misc]
+        agent,
+        stage=TimeboxingStage.COLLECT_CONSTRAINTS,
+        user_message="use defaults",
+        context=context,
+    )
+
+    assert out.stage_id == TimeboxingStage.COLLECT_CONSTRAINTS
+    assert out.ready is False
+    assert "stage response parse failure" in out.missing
+    assert "_stage_gate_error" in out.facts
+    assert out.facts["timezone"] == "Europe/Amsterdam"

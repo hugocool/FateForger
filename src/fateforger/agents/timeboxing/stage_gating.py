@@ -72,26 +72,14 @@ Goal
   - applicability: scope (session|profile|datespan), start_date, end_date, days_of_week, timezone, recurrence, ttl_days
   - targeting/implementation: selector, hints, tags, rationale, supersedes
 
-Tool: search_constraints
-- You have access to the `search_constraints` tool to search the user's saved preferences and constraints in Notion.
-- Call it early to discover durable constraints that apply to this session.
-- You can run multiple search facets in parallel (up to 8) by providing multiple queries.
-- Search strategy:
-  1) Start with a broad search (no filters, or just the planned date) to see what exists.
-  2) Narrow by event type, scope, or text if results are too broad.
-  3) If the user mentions a specific preference (e.g. "I like to exercise in the morning"), search for it to check if it's already saved.
-- Filter fields (all optional — omit to leave unfiltered):
-  - text_query: free-text substring match on constraint Name or Description.
-  - event_types: filter by event-type codes:
-      M=meeting, C=commute, DW=deep work, SW=shallow work,
-      H=habit, R=rest, BU=buffer, BG=break, PR=prep.
-  - tags: filter by topic tags (e.g. ["focus", "meals", "exercise"]).
-  - statuses: constraint lifecycle status — "locked" (confirmed) or "proposed" (tentative).
-  - scopes: constraint applicability — "session" (this session only), "profile" (always applies), "datespan" (applies within a date range).
-  - necessities: priority — "must" (hard constraint) or "should" (soft preference).
-  - limit: max results per facet (default 20).
-- Also pass `planned_date` (YYYY-MM-DD) so the search filters by active date window.
-- Include results in your constraint overview and cite them by name.
+Deterministic-first defaulting
+- The coordinator injects any fetched durable constraints into facts before this stage runs.
+- Treat those injected durable constraints/defaults as authoritative for this turn.
+- Do not ask the user to re-enter already confirmed defaults unless they choose to override.
+
+Tool: search_constraints (fallback)
+- You may use `search_constraints` only when injected durable facts/defaults are clearly missing, stale, or the user explicitly asks for a lookup.
+- Do not call it by default when durable facts/defaults are already present in context.
 
 Input
 - You will receive a plain-text payload with:
@@ -105,7 +93,6 @@ Output
 - Return STRICT JSON matching StageGateOutput.
 
 Rules
-- On first turn, call search_constraints with a broad query to discover existing constraints.
 - If immovables are missing from facts and a date/timezone is set, call it out in missing/question so the coordinator can fetch it.
 - If the user asks about their calendar, tasks, or other related info, note the request in summary/question and keep going.
 - Be conservative: if a fact is uncertain, omit it from facts and add it to missing/question.

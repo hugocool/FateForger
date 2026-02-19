@@ -38,6 +38,15 @@ class _DummyRuntime:
         return self._result
 
 
+class _FakePlanningSessionStore:
+    def __init__(self):
+        self.upserts = []
+
+    async def upsert(self, **kwargs):
+        self.upserts.append(kwargs)
+        return kwargs
+
+
 @pytest.mark.asyncio
 async def test_add_to_calendar_success_updates_status_and_returns_url_button():
     draft = EventDraftPayload(
@@ -64,6 +73,8 @@ async def test_add_to_calendar_success_updates_status_and_returns_url_button():
     coordinator = PlanningCoordinator(runtime=runtime, focus=object(), client=object())  # type: ignore[arg-type]
     coordinator._draft_store = store  # type: ignore[attr-defined]
     coordinator._guardian = None  # type: ignore[attr-defined]
+    planning_session_store = _FakePlanningSessionStore()
+    coordinator._planning_session_store = planning_session_store  # type: ignore[attr-defined]
 
     updates = []
 
@@ -86,6 +97,9 @@ async def test_add_to_calendar_success_updates_status_and_returns_url_button():
         if block.get("type") == "actions"
         for el in block.get("elements", [])
     )
+    assert planning_session_store.upserts
+    assert planning_session_store.upserts[-1]["event_id"] == "ffplanningxyz"
+    assert planning_session_store.upserts[-1]["event_url"] == "https://example.invalid"
 
 
 @pytest.mark.asyncio

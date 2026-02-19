@@ -94,27 +94,31 @@ class TickTickListManager:
     async def manage_ticktick_lists(
         self,
         operation: str,
-        model: str = "project",
-        list_name: str | None = None,
-        list_id: str | None = None,
-        items: list[str] | None = None,
-        item_ids: list[str] | None = None,
-        item_matches: list[str] | None = None,
-        parent_task_id: str | None = None,
-        create_if_missing: bool = True,
+        model: str | None,
+        list_name: str | None,
+        list_id: str | None,
+        items: list[str] | None,
+        item_ids: list[str] | None,
+        item_matches: list[str] | None,
+        parent_task_id: str | None,
+        create_if_missing: bool | None,
     ) -> dict[str, Any]:
-        """Tool entrypoint used by the Tasks assistant."""
+        """Strict-compatible tool entrypoint used by the Tasks assistant."""
+        normalized_model = model or TickTickListModel.PROJECT.value
+        normalized_create_if_missing = (
+            True if create_if_missing is None else create_if_missing
+        )
         try:
             action = TickTickListActionInput(
                 operation=operation,
-                model=model,
+                model=normalized_model,
                 list_name=list_name,
                 list_id=list_id,
                 items=items or [],
                 item_ids=item_ids or [],
                 item_matches=item_matches or [],
                 parent_task_id=parent_task_id,
-                create_if_missing=create_if_missing,
+                create_if_missing=normalized_create_if_missing,
             )
         except ValidationError as exc:
             return TickTickListActionResult(
@@ -960,4 +964,3 @@ __all__ = [
     "TickTickListModel",
     "TickTickListOperation",
 ]
-

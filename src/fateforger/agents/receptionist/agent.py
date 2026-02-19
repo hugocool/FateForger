@@ -28,8 +28,13 @@ request and route them to the right specialist by using the handoff tools.
 Routing guidelines:
 - If the user wants a concrete schedule for a day (timeboxing, time blocks, plan tomorrow/today with specific blocks), hand off to `timeboxing_agent`.
 - If the user wants to inspect or edit calendar events (what's on my calendar, create/move/delete an event, find a slot), hand off to `planner_agent`.
+- If the user asks whether a timeboxing/planning session is already scheduled
+  (example: "is a timeboxing session planned for tomorrow?"), treat this as
+  calendar inspection and hand off to `planner_agent` (not `timeboxing_agent`).
 - If the user wants a review / retro / plan the week / reflect and prioritize, hand off to `revisor_agent`.
 - If the user wants to capture / triage / prioritize tasks, hand off to `tasks_agent`.
+- If the user asks for sprint/backlog refinement, ticket discovery/filtering, parent/subtask linking,
+  or patching Notion sprint page content, hand off to `tasks_agent`.
 
 Default assumption:
 - If the user says "plan tomorrow/today" (or similar) without extra details, assume they want *timeboxing* and hand off to `timeboxing_agent`.

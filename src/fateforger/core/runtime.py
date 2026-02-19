@@ -39,6 +39,10 @@ from fateforger.haunt.planning_store import (
     SqlAlchemyPlanningAnchorStore,
     ensure_planning_anchor_schema,
 )
+from fateforger.haunt.planning_session_store import (
+    SqlAlchemyPlanningSessionStore,
+    ensure_planning_session_schema,
+)
 from fateforger.haunt.reconcile import (
     McpCalendarClient,
     PlanningReconciler,
@@ -84,6 +88,7 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     settings_store = None
     settings_engine = None
     planning_anchor_store = None
+    planning_session_store = None
     event_draft_store = None
     if settings.database_url:
         async_url = _coerce_async_database_url(settings.database_url)
@@ -93,6 +98,8 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
         settings_store = SqlAlchemyAdmonishmentSettingsStore(sessionmaker)
         await ensure_planning_anchor_schema(settings_engine)
         planning_anchor_store = SqlAlchemyPlanningAnchorStore(sessionmaker)
+        await ensure_planning_session_schema(settings_engine)
+        planning_session_store = SqlAlchemyPlanningSessionStore(sessionmaker)
         await ensure_event_draft_schema(settings_engine)
         event_draft_store = SqlAlchemyEventDraftStore(sessionmaker)
 
@@ -152,7 +159,10 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
             )
 
         reconciler = PlanningReconciler(
-            scheduler, calendar_client=calendar_client, dispatcher=dispatch_planning
+            scheduler,
+            calendar_client=calendar_client,
+            dispatcher=dispatch_planning,
+            planning_session_store=planning_session_store,
         )
     except Exception:
         logger.exception(
@@ -174,7 +184,15 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     await RevisorAgent.register(
         runtime,
         "revisor_agent",
-        lambda: RevisorAgent("revisor_agent"),
+        lambda: RevisorAgent(
+            "revisor_agent",
+            allowed_handoffs=[
+                HandoffBase(
+                    target="tasks_agent",
+                    description="Task triage and sprint execution agent (ticket search/filter, relation linking, Notion sprint page patching).",
+                ),
+            ],
+        ),
     )
     await TasksAgent.register(
         runtime,
@@ -194,6 +212,10 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
                 HandoffBase(
                     target="planner_agent",
                     description="Calendar planning and scheduling agent.",
+                ),
+                HandoffBase(
+                    target="tasks_agent",
+                    description="Task triage and sprint execution agent (ticket search/filter, relation linking, Notion sprint page patching).",
                 ),
             ],
         ),
@@ -231,6 +253,7 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     setattr(runtime, "haunting_settings_engine", settings_engine)
     setattr(runtime, "planning_reconciler", reconciler)
     setattr(runtime, "planning_anchor_store", planning_anchor_store)
+    setattr(runtime, "planning_session_store", planning_session_store)
     setattr(runtime, "event_draft_store", event_draft_store)
     planning_guardian = None
     if planning_anchor_store and reconciler:

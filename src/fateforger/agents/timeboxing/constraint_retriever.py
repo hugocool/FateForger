@@ -25,6 +25,8 @@ from fateforger.agents.timeboxing.contracts import BlockPlan, Immovable, SleepTa
 from fateforger.agents.timeboxing.mcp_clients import ConstraintMemoryClient
 from fateforger.agents.timeboxing.stage_gating import TimeboxingStage
 
+STARTUP_PREFETCH_TAG = "startup_prefetch"
+
 
 class ConstraintEventType(str, Enum):
     """Constraint event types (Notion schema codes)."""
@@ -130,27 +132,65 @@ class ConstraintRetriever:
             block_plan=block_plan,
             frame_facts=frame_facts,
         )
-        type_ids = await self._select_type_ids(
-            client=client,
-            stage=stage,
-            event_types=plan.event_types_any,
-            max_type_ids=self._max_type_ids,
-        )
+        query_event_types = list(plan.event_types_any or [])
+        if stage == TimeboxingStage.COLLECT_CONSTRAINTS:
+            # Stage 1 prefetch is deterministic and startup-focused; event-type routing
+            # is too restrictive for defaults like sleep/work-window.
+            query_event_types = []
+        if stage == TimeboxingStage.COLLECT_CONSTRAINTS:
+            # Stage 1 startup prefetch is deterministic and startup-tag driven; avoid
+            # extra type lookup RPCs on the critical path.
+            type_ids = []
+        else:
+            type_ids = await self._select_type_ids(
+                client=client,
+                stage=stage,
+                event_types=query_event_types,
+                max_type_ids=self._max_type_ids,
+            )
         plan.type_ids = type_ids
+        filters = {
+            "as_of": planned_date,
+            "stage": stage.value,
+            "event_types_any": query_event_types,
+            "statuses_any": ["locked", "proposed"],
+            "require_active": True,
+        }
+        if stage == TimeboxingStage.COLLECT_CONSTRAINTS:
+            filters["scopes_any"] = ["profile", "datespan"]
+            startup_records = await client.query_constraints(
+                filters=filters,
+                type_ids=plan.type_ids,
+                tags=[STARTUP_PREFETCH_TAG],
+                sort=[["Status", "descending"]],
+                limit=plan.limit,
+            )
+            if startup_records:
+                return plan, self._dedupe_rows_by_uid(startup_records)
         records = await client.query_constraints(
-            filters={
-                "as_of": planned_date,
-                "stage": stage.value,
-                "event_types_any": list(plan.event_types_any or []),
-                "statuses_any": ["locked", "proposed"],
-                "require_active": True,
-            },
+            filters=filters,
             type_ids=plan.type_ids,
             tags=None,
             sort=[["Status", "descending"]],
             limit=plan.limit,
         )
         return plan, records
+
+    @staticmethod
+    def _dedupe_rows_by_uid(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Deduplicate row dicts by uid while preserving first-seen order."""
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            uid = str(row.get("uid") or "").strip()
+            if uid:
+                if uid in seen:
+                    continue
+                seen.add(uid)
+            out.append(row)
+        return out
 
     async def _select_type_ids(
         self,

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
-from typing import Any, Awaitable, Callable, Iterable, Optional, Protocol
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any, Awaitable, Callable, Iterable, Protocol
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser as date_parser
@@ -27,6 +28,19 @@ class CalendarClient(Protocol):
     ) -> list[dict]: ...
 
     async def get_event(self, *, calendar_id: str, event_id: str) -> dict | None: ...
+
+
+class PlanningSessionStore(Protocol):
+    async def list_for_user_between(
+        self,
+        *,
+        user_id: str,
+        start_date: date,
+        end_date: date,
+        statuses: tuple[Any, ...],
+    ) -> list[Any]: ...
+
+    async def upsert(self, **kwargs: Any) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -127,9 +141,11 @@ class PlanningSessionRule:
         *,
         calendar_client: CalendarClient,
         config: PlanningRuleConfig | None = None,
+        planning_session_store: PlanningSessionStore | None = None,
     ) -> None:
         self._calendar_client = calendar_client
         self._config = config or PlanningRuleConfig()
+        self._planning_session_store = planning_session_store
 
     async def evaluate(
         self,
@@ -152,13 +168,23 @@ class PlanningSessionRule:
             if anchor and _event_within_window(anchor, start, end):
                 return []
 
+        stored = await self._resolve_planning_from_stored_sessions(
+            user_id=user_id, start=start, end=end
+        )
+        if stored:
+            return []
+
         events = await self._calendar_client.list_events(
             calendar_id=self._config.calendar_id,
             time_min=start.isoformat(),
             time_max=end.isoformat(),
         )
 
-        if self._has_planning_session(events):
+        fallback = self._resolve_planning_from_fallback(events, start=start, end=end)
+        if fallback:
+            await self._sync_fallback_session_record(
+                user_id=user_id, event=fallback, start=start
+            )
             return []
 
         nudge_offsets = self._resolve_nudge_offsets(
@@ -247,17 +273,154 @@ class PlanningSessionRule:
 
         return offsets
 
-    def _has_planning_session(self, events: Iterable[dict]) -> bool:
-        for event in events:
-            if self._is_planning_event(event):
-                return True
-        return False
+    async def _resolve_planning_from_stored_sessions(
+        self, *, user_id: str | None, start: datetime, end: datetime
+    ) -> dict | None:
+        if not user_id or not self._planning_session_store:
+            return None
+        try:
+            statuses = ("planned", "in_progress")
+            stored = await self._planning_session_store.list_for_user_between(
+                user_id=user_id,
+                start_date=start.date(),
+                end_date=end.date(),
+                statuses=statuses,
+            )
+        except Exception:
+            logger.exception("Stored planning session lookup failed for user=%s", user_id)
+            return None
 
-    def _is_planning_event(self, event: dict) -> bool:
-        # TODO(refactor,typed-contracts): Replace summary substring matching with
-        # typed event classification (label/type metadata).
-        summary = (event.get("summary") or "").lower()
-        return any(keyword in summary for keyword in self._config.summary_keywords)
+        seen: set[tuple[str, str]] = set()
+        for session in stored:
+            calendar_id = str(getattr(session, "calendar_id", "") or "primary")
+            event_id = str(getattr(session, "event_id", "") or "")
+            if not event_id:
+                continue
+            key = (calendar_id, event_id)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            event = await self._calendar_client.get_event(
+                calendar_id=calendar_id,
+                event_id=event_id,
+            )
+            if event and _event_within_window(event, start, end):
+                return event
+        return None
+
+    def _resolve_planning_from_fallback(
+        self, events: Iterable[dict], *, start: datetime, end: datetime
+    ) -> dict | None:
+        scored: list[tuple[int, dict]] = []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if not _event_within_window(event, start, end):
+                continue
+            score = self._planning_event_score(event)
+            if score >= 60:
+                scored.append((score, event))
+
+        if not scored:
+            return None
+
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        if len(scored) == 1:
+            return scored[0][1]
+
+        top_score, top_event = scored[0]
+        second_score, _ = scored[1]
+        top_id = str(top_event.get("id") or "").lower()
+
+        # Multiple close matches are ambiguous unless we have a deterministic ID.
+        if not top_id.startswith("ffplanning") and (top_score - second_score) < 10:
+            logger.info(
+                "Planning fallback ambiguous: top_score=%s second_score=%s top_summary=%r",
+                top_score,
+                second_score,
+                top_event.get("summary"),
+            )
+            return None
+        return top_event
+
+    async def _sync_fallback_session_record(
+        self, *, user_id: str | None, event: dict, start: datetime
+    ) -> None:
+        if not user_id or not self._planning_session_store:
+            return
+        event_id = str(event.get("id") or "").strip()
+        if not event_id:
+            return
+        parsed_start = _parse_event_dt(event.get("start"), tz=start.tzinfo or timezone.utc)
+        if not parsed_start:
+            return
+        try:
+            await self._planning_session_store.upsert(
+                user_id=user_id,
+                planned_date=parsed_start.date(),
+                calendar_id=self._config.calendar_id,
+                event_id=event_id,
+                status="planned",
+                title=event.get("summary"),
+                event_url=event.get("htmlLink") or event.get("html_link") or event.get("url"),
+                source="calendar_fallback_scan",
+                channel_id=None,
+                thread_ts=None,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to sync fallback planning event into local store for user=%s event_id=%s",
+                user_id,
+                event_id,
+            )
+
+    def _planning_event_score(self, event: dict) -> int:
+        event_id = str(event.get("id") or "").lower()
+        summary = _normalize_summary_text(event.get("summary") or event.get("title") or "")
+        score = 0
+
+        if event_id.startswith("ffplanning"):
+            score = max(score, 100)
+
+        exact_titles = {
+            "planning",
+            "planning session",
+            "plan session",
+            "daily planning session",
+            "timeboxing",
+            "timebox",
+            "timeboxing session",
+            "timebox session",
+        }
+        if summary in exact_titles:
+            score = max(score, 90)
+
+        phrase_titles = (
+            "planning session",
+            "plan session",
+            "timeboxing session",
+            "timebox session",
+        )
+        if any(phrase in summary for phrase in phrase_titles):
+            score = max(score, 80)
+
+        if "timeboxing" in summary or "timebox" in summary:
+            score = max(score, 70)
+
+        # Keep legacy broad keyword support as low confidence only.
+        if any(keyword in summary for keyword in self._config.summary_keywords):
+            score = max(score, 30)
+
+        # Guardrails against social/planning-adjacent false positives.
+        if " with " in summary and "session" not in summary:
+            score -= 40
+        if "poker" in summary:
+            score -= 40
+        if "wife" in summary:
+            score -= 25
+
+        return score
 
     @staticmethod
     def _message_for_nudge(attempt: int) -> str:
@@ -282,13 +445,17 @@ class PlanningReconciler:
         scheduler: AsyncIOScheduler,
         *,
         calendar_client: CalendarClient,
+        planning_session_store: PlanningSessionStore | None = None,
         dispatcher: Callable[[PlanningReminder], Awaitable[None]] | None = None,
         rule: PlanningSessionRule | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._calendar_client = calendar_client
         self._dispatcher = dispatcher or self._log_dispatch
-        self._rule = rule or PlanningSessionRule(calendar_client=calendar_client)
+        self._rule = rule or PlanningSessionRule(
+            calendar_client=calendar_client,
+            planning_session_store=planning_session_store,
+        )
 
     @property
     def calendar_client(self) -> CalendarClient:
@@ -417,6 +584,13 @@ def _normalize_events(payload: Any) -> list[dict]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
     return []
+
+
+def _normalize_summary_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = re.sub(r"[^a-z0-9]+", " ", value.lower())
+    return " ".join(normalized.split())
 
 
 # TODO(refactor): Replace dict probing with Pydantic parsing of tool results.
