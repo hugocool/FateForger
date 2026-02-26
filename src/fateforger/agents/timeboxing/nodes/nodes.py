@@ -221,7 +221,22 @@ class TransitionNode(BaseChatAgent):
                 )
             )
 
-        # provide_info / redo: rerun current stage with user text
+        if decision.action == "provide_info":
+            # In Stage 5, new user schedule edits must route back to Stage 4 patching.
+            if self._session.stage == TimeboxingStage.REVIEW_COMMIT:
+                await self._orchestrator._advance_stage(  # noqa: SLF001
+                    self._session,
+                    next_stage=TimeboxingStage.REFINE,
+                )
+            self.stage_user_message = user_text
+            return Response(
+                chat_message=StructuredMessage(
+                    source=self.name,
+                    content=FlowSignal(kind="transition", note="rerun"),
+                )
+            )
+
+        # redo / assist: rerun current stage with user text
         self.stage_user_message = user_text
         return Response(
             chat_message=StructuredMessage(
@@ -509,9 +524,6 @@ class StageRefineNode(_StageNodeBase):
                 ),
             },
         )
-        await self._orchestrator._await_pending_constraint_extractions(
-            self._session
-        )  # noqa: SLF001
         constraints = await self._orchestrator._collect_constraints(
             self._session
         )  # noqa: SLF001

@@ -473,6 +473,101 @@ class TestRefineNodeUsesTBPlan:
         assert node.last_gate is not None
         assert "Synced to Google Calendar." in node.last_gate.summary
 
+    @pytest.mark.asyncio
+    async def test_refine_node_does_not_wait_for_pending_extractions(self) -> None:
+        """Stage 4 patching should not block on pending extraction waits."""
+        from autogen_agentchat.messages import TextMessage
+        from autogen_core import CancellationToken
+
+        from fateforger.agents.timeboxing.nodes.nodes import StageRefineNode, TransitionNode
+
+        agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+        wait_called = False
+
+        async def _mark_wait(_session: Session) -> None:
+            nonlocal wait_called
+            wait_called = True
+
+        async def _run_summary(*, stage, timebox, session=None) -> StageGateOutput:
+            _ = (timebox, session)
+            return StageGateOutput(
+                stage_id=stage,
+                ready=True,
+                summary=["Updated schedule."],
+                missing=[],
+                question="Proceed?",
+                facts={},
+            )
+
+        async def _submit(_session: Session) -> str | None:
+            return None
+
+        async def _apply_patch(**kwargs: Any) -> tuple[TBPlan, Any]:
+            validator = kwargs.get("plan_validator")
+            if validator is not None:
+                validator(session.tb_plan)
+            return session.tb_plan, {"ops": []}
+
+        agent._await_pending_constraint_extractions = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, _session: _mark_wait(_session),
+            agent,
+        )
+        agent._run_timebox_summary = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: _run_summary(**kwargs),
+            agent,
+        )
+        agent._submit_current_plan = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, session: _submit(session),
+            agent,
+        )
+        agent._collect_constraints = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, _session: asyncio.sleep(0, result=[]),
+            agent,
+        )
+        agent._compose_patcher_message = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: str(kwargs.get("base_message") or ""),
+            agent,
+        )
+        agent._timebox_patcher = types.SimpleNamespace(apply_patch=_apply_patch)
+
+        session = Session(
+            thread_ts="t1",
+            channel_id="c1",
+            user_id="u1",
+            stage=TimeboxingStage.REFINE,
+        )
+        session.timebox = Timebox(
+            events=[
+                CalendarEvent(
+                    summary="Focus",
+                    event_type=EventType.DEEP_WORK,
+                    start_time=time(9, 0),
+                    duration=timedelta(minutes=90),
+                )
+            ],
+            date=date(2026, 2, 13),
+            timezone="Europe/Amsterdam",
+        )
+        session.tb_plan = timebox_to_tb_plan(session.timebox)
+        session.base_snapshot = session.tb_plan.model_copy(deep=True)
+
+        transition = TransitionNode.__new__(TransitionNode)
+        transition.stage_user_message = "add lunch"
+        transition.decision = None
+
+        node = StageRefineNode(
+            orchestrator=agent,
+            session=session,
+            transition=transition,
+        )
+
+        await node.on_messages(
+            [TextMessage(content="add lunch", source="user")],
+            CancellationToken(),
+        )
+
+        assert wait_called is False
+
 
 class TestRefineQualityFacts:
     """Verify Refine stage quality facts are typed and persisted on Session."""

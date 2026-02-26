@@ -28,7 +28,7 @@ GraphFlow node agents that implement the timeboxing stage machine. Each node is 
 | `StageCaptureInputsNode` | 2 | Builds input context (frame_facts + user tasks/priorities), calls the Stage 2 LLM, updates `session.input_facts`, and queues skeleton pre-generation when context is sufficient. |
 | `StageSkeletonNode` | 3 | Uses pre-generated skeleton when available; otherwise drafts synchronously. Produces markdown overview rendered via Slack `markdown` block and carries the prepared draft plan forward, but does not build sync baselines. |
 | `StageRefineNode` | 4 | Prepares `TBPlan` + remote baseline if missing, sends `TBPlan` + user feedback to `TimeboxPatcher`, applies `TBPatch` via `apply_tb_ops()`, then syncs current plan to Google Calendar. |
-| `StageReviewCommitNode` | 5 | Presents final plan summary. Undo remains available through Slack action routing (`ff_timebox_undo_submit`). |
+| `StageReviewCommitNode` | 5 | Presents final plan summary. When user sends schedule edits/corrections, `TransitionNode` routes the turn back to `StageRefineNode` so patching runs before another review. Undo remains available through Slack action routing (`ff_timebox_undo_submit`). |
 
 ### Base Class
 

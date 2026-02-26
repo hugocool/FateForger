@@ -3663,7 +3663,6 @@ class TimeboxingFlowAgent(RoutedAgent):
             date=self._resolve_planning_date(session),
             timezone=session.tz_name or "UTC",
         )
-        await self._await_pending_constraint_extractions(session)
         constraints = await self._collect_constraints(session)
 
         # Use TBPlan path if available, fall back to legacy Timebox path

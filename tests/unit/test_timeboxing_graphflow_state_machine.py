@@ -9,6 +9,7 @@ from autogen_agentchat.messages import TextMessage
 
 from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
 from fateforger.agents.timeboxing.flow_graph import build_timeboxing_graphflow
+from fateforger.agents.timeboxing.nodes.nodes import TransitionNode
 from fateforger.agents.timeboxing.patching import TimeboxPatcher
 from fateforger.agents.timeboxing.stage_gating import StageDecision, StageGateOutput, TimeboxingStage
 
@@ -153,3 +154,27 @@ async def test_graphflow_cancel_terminates_without_stage_run():
     assert out.content == "Okay—stopping this timeboxing session."
     assert session.thread_state == "canceled"
 
+
+@pytest.mark.asyncio
+async def test_transition_routes_reviewcommit_edits_back_to_refine():
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+
+    async def _advance_stage(_self, session: Session, *, next_stage: TimeboxingStage) -> None:
+        session.stage = next_stage
+
+    agent._advance_stage = types.MethodType(_advance_stage, agent)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1", committed=True)
+    session.stage = TimeboxingStage.REVIEW_COMMIT
+
+    turn_init = types.SimpleNamespace(
+        turn=types.SimpleNamespace(
+            decision=StageDecision(action="provide_info"),
+            user_text="please add a lunch block and a buffer",
+        )
+    )
+    node = TransitionNode(orchestrator=agent, session=session, turn_init=turn_init)
+
+    await node.on_messages([], cancellation_token=types.SimpleNamespace())
+
+    assert session.stage == TimeboxingStage.REFINE
+    assert node.stage_user_message == "please add a lunch block and a buffer"
