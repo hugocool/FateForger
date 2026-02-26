@@ -22,8 +22,10 @@ pytest.importorskip("autogen_agentchat")
 
 from fateforger.agents.schedular.models.calendar import CalendarEvent, EventType
 from fateforger.agents.timeboxing.agent import (
+    CalendarSyncOutcome,
     RefinePreflight,
     RefineQualityFacts,
+    RefineToolExecutionOutcome,
     Session,
     TimeboxingFlowAgent,
 )
@@ -251,7 +253,7 @@ class TestRefineNodeUsesTBPlan:
     """Verify StageRefineNode patches via TBPlan when available."""
 
     def test_session_with_tb_plan_uses_new_path(self) -> None:
-        """When session.tb_plan is set, the refine node should use apply_patch (not legacy)."""
+        """When session.tb_plan is set, refine should run tool orchestration (not legacy path)."""
         # This is a structural test — verify the node code branches on tb_plan
         import inspect
 
@@ -260,9 +262,9 @@ class TestRefineNodeUsesTBPlan:
         source = inspect.getsource(StageRefineNode.on_messages)
         # Should reference tb_plan in the patching logic
         assert "tb_plan" in source
-        # Stage 4 should patch through TBPlan path only.
+        # Stage 4 should use orchestrated tool execution.
         assert "apply_patch_legacy" not in source
-        assert "apply_patch(" in source
+        assert "_run_refine_tool_orchestration" in source
 
     @pytest.mark.asyncio
     async def test_refine_node_runs_repair_patch_when_preflight_reports_issue(self) -> None:
@@ -296,16 +298,6 @@ class TestRefineNodeUsesTBPlan:
                 ]
             )
 
-        async def _apply_patch(**kwargs: Any) -> tuple[TBPlan, Any]:
-            patch_messages.append(str(kwargs["user_message"]))
-            validator = kwargs.get("plan_validator")
-            if validator is not None:
-                validator(seeded_plan)
-            return seeded_plan, {"ops": []}
-
-        async def _collect_constraints(_session: Session) -> list[Any]:
-            return []
-
         async def _run_summary(*, stage, timebox, session=None) -> StageGateOutput:
             _ = (timebox, session)
             return StageGateOutput(
@@ -317,30 +309,49 @@ class TestRefineNodeUsesTBPlan:
                 facts={},
             )
 
-        async def _submit(_session: Session) -> str | None:
-            return None
+        async def _run_orchestration(
+            *,
+            session: Session,
+            patch_message: str,
+            user_message: str,
+        ) -> RefineToolExecutionOutcome:
+            _ = user_message
+            patch_messages.append(patch_message)
+            session.tb_plan = seeded_plan
+            session.timebox = Timebox(
+                events=[
+                    CalendarEvent(
+                        summary="Wake Up",
+                        event_type=EventType.HABIT,
+                        start_time=time(9, 0),
+                        duration=timedelta(minutes=30),
+                    )
+                ],
+                date=date(2026, 2, 13),
+                timezone="Europe/Amsterdam",
+            )
+            return RefineToolExecutionOutcome(
+                patch_selected=True,
+                memory_selected=False,
+                memory_queued=False,
+                fallback_patch_used=False,
+                calendar=CalendarSyncOutcome(
+                    status="committed",
+                    changed=False,
+                    note="Calendar unchanged: no sync operations were needed.",
+                ),
+            )
 
         agent._ensure_refine_plan_state = types.MethodType(  # type: ignore[attr-defined]
             _ensure_refine,
             agent,
         )
-        agent._timebox_patcher = types.SimpleNamespace(
-            apply_patch=_apply_patch,
-        )
-        agent._collect_constraints = types.MethodType(  # type: ignore[attr-defined]
-            lambda self, session: _collect_constraints(session),
-            agent,
-        )
-        agent._await_pending_constraint_extractions = types.MethodType(  # type: ignore[attr-defined]
-            lambda self, _session: asyncio.sleep(0),
+        agent._run_refine_tool_orchestration = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: _run_orchestration(**kwargs),
             agent,
         )
         agent._run_timebox_summary = types.MethodType(  # type: ignore[attr-defined]
             lambda self, **kwargs: _run_summary(**kwargs),
-            agent,
-        )
-        agent._submit_current_plan = types.MethodType(  # type: ignore[attr-defined]
-            lambda self, session: _submit(session),
             agent,
         )
 
@@ -403,36 +414,36 @@ class TestRefineNodeUsesTBPlan:
                 facts={},
             )
 
-        async def _submit(_session: Session) -> str | None:
-            return "Synced to Google Calendar."
-
-        async def _apply_patch(**kwargs: Any) -> tuple[TBPlan, Any]:
-            validator = kwargs.get("plan_validator")
-            if validator is not None:
-                validator(session.tb_plan)
-            return session.tb_plan, {"ops": []}
+        async def _run_orchestration(
+            *,
+            session: Session,
+            patch_message: str,
+            user_message: str,
+        ) -> RefineToolExecutionOutcome:
+            _ = (patch_message, user_message)
+            return RefineToolExecutionOutcome(
+                patch_selected=True,
+                memory_selected=True,
+                memory_queued=True,
+                fallback_patch_used=False,
+                calendar=CalendarSyncOutcome(
+                    status="committed",
+                    changed=True,
+                    created=1,
+                    updated=0,
+                    deleted=0,
+                    note="Calendar changed: 1 created, 0 updated, 0 deleted.",
+                ),
+            )
 
         agent._run_timebox_summary = types.MethodType(  # type: ignore[attr-defined]
             lambda self, **kwargs: _run_summary(**kwargs),
             agent,
         )
-        agent._submit_current_plan = types.MethodType(  # type: ignore[attr-defined]
-            lambda self, session: _submit(session),
+        agent._run_refine_tool_orchestration = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: _run_orchestration(**kwargs),
             agent,
         )
-        agent._collect_constraints = types.MethodType(  # type: ignore[attr-defined]
-            lambda self, _session: asyncio.sleep(0, result=[]),
-            agent,
-        )
-        agent._await_pending_constraint_extractions = types.MethodType(  # type: ignore[attr-defined]
-            lambda self, _session: asyncio.sleep(0),
-            agent,
-        )
-        agent._compose_patcher_message = types.MethodType(  # type: ignore[attr-defined]
-            lambda self, **kwargs: str(kwargs.get("base_message") or ""),
-            agent,
-        )
-        agent._timebox_patcher = types.SimpleNamespace(apply_patch=_apply_patch)
 
         session = Session(
             thread_ts="t1",
@@ -471,7 +482,7 @@ class TestRefineNodeUsesTBPlan:
         )
 
         assert node.last_gate is not None
-        assert "Synced to Google Calendar." in node.last_gate.summary
+        assert "Calendar changed: 1 created, 0 updated, 0 deleted." in node.last_gate.summary
 
 
 class TestRefineQualityFacts:

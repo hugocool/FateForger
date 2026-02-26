@@ -258,6 +258,30 @@ class RefinePreflight:
         return bool(self.snapshot_issues)
 
 
+@dataclass
+class CalendarSyncOutcome:
+    """Structured result for calendar sync reporting in Stage 4/5 turns."""
+
+    status: str
+    changed: bool
+    created: int = 0
+    updated: int = 0
+    deleted: int = 0
+    failed: int = 0
+    note: str = ""
+
+
+@dataclass
+class RefineToolExecutionOutcome:
+    """Result of prompt-guided Stage 4 tool orchestration."""
+
+    patch_selected: bool
+    memory_selected: bool
+    memory_queued: bool
+    fallback_patch_used: bool
+    calendar: CalendarSyncOutcome
+
+
 class TimeboxingFlowAgent(RoutedAgent):
     """Entry point for the GraphFlow-driven timeboxing workflow."""
 
@@ -2838,12 +2862,73 @@ class TimeboxingFlowAgent(RoutedAgent):
             tz_name=tz_name,
         )
 
-    async def _submit_current_plan(self, session: Session) -> str | None:
-        """Sync the current TBPlan to Google Calendar and return a short status line."""
+    def _summarize_sync_transaction(self, tx: SyncTransaction) -> CalendarSyncOutcome:
+        """Convert a sync transaction into a stable user-facing outcome payload."""
+        created = 0
+        updated = 0
+        deleted = 0
+        failed = 0
+        succeeded = 0
+        for index, op in enumerate(tx.ops):
+            result = tx.results[index] if index < len(tx.results) else {}
+            ok = bool(result.get("ok", False))
+            if ok:
+                succeeded += 1
+                if op.op_type.value == "create":
+                    created += 1
+                elif op.op_type.value == "update":
+                    updated += 1
+                elif op.op_type.value == "delete":
+                    deleted += 1
+            else:
+                failed += 1
+
+        changed = succeeded > 0
+        if not tx.ops:
+            note = "Calendar unchanged: no sync operations were needed."
+        elif tx.status == "committed" and changed:
+            note = (
+                "Calendar changed: "
+                f"{created} created, {updated} updated, {deleted} deleted."
+            )
+        elif tx.status == "partial":
+            note = (
+                "Calendar partially changed: "
+                f"{created} created, {updated} updated, {deleted} deleted, {failed} failed."
+            )
+        else:
+            note = (
+                "Calendar sync finished with status "
+                f"`{tx.status}` ({created} created, {updated} updated, "
+                f"{deleted} deleted, {failed} failed)."
+            )
+        return CalendarSyncOutcome(
+            status=tx.status,
+            changed=changed,
+            created=created,
+            updated=updated,
+            deleted=deleted,
+            failed=failed,
+            note=note,
+        )
+
+    async def _submit_current_plan(self, session: Session) -> CalendarSyncOutcome:
+        """Sync the current TBPlan and return a structured calendar-change result."""
         if session.tb_plan is None:
-            return "Calendar sync skipped: plan is not ready yet."
+            return CalendarSyncOutcome(
+                status="skipped",
+                changed=False,
+                note="Calendar sync skipped: plan is not ready yet.",
+            )
         if session.base_snapshot is None:
-            return "Calendar sync skipped: baseline snapshot unavailable. Click Redo to retry sync."
+            return CalendarSyncOutcome(
+                status="skipped",
+                changed=False,
+                note=(
+                    "Calendar sync skipped: baseline snapshot unavailable. "
+                    "Click Redo to retry sync."
+                ),
+            )
 
         previous_map = dict(session.event_id_map)
         try:
@@ -2855,7 +2940,11 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
         except Exception:
             logger.exception("Calendar sync failed during refine stage.")
-            return "Calendar sync failed; keep refining and try again."
+            return CalendarSyncOutcome(
+                status="failed",
+                changed=False,
+                note="Calendar sync failed; keep refining and try again.",
+            )
         session.committed = True
         session.last_sync_transaction = tx
         session.last_sync_event_id_map = previous_map
@@ -2865,11 +2954,164 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         session.base_snapshot = session.tb_plan.model_copy(deep=True)
         session.remote_event_ids_by_index = []
-        if tx.status == "committed":
-            return "Synced to Google Calendar."
-        if tx.status == "partial":
-            return "Synced with partial calendar failures."
-        return f"Calendar sync finished with status `{tx.status}`."
+        return self._summarize_sync_transaction(tx)
+
+    async def _execute_refine_patch_and_sync(
+        self,
+        *,
+        session: Session,
+        patch_message: str,
+    ) -> CalendarSyncOutcome:
+        """Run the patch-critical Stage 4 path: patch plan then sync calendar."""
+        if session.tb_plan is None:
+            raise ValueError("Refine patch requested without TBPlan state.")
+        constraints = await self._collect_constraints(session)
+        validated_timebox: Timebox | None = None
+
+        def _materialize_timebox(plan: TBPlan) -> Timebox:
+            nonlocal validated_timebox
+            validated_timebox = tb_plan_to_timebox(plan)
+            return validated_timebox
+
+        patched_plan, _patch = await self._timebox_patcher.apply_patch(
+            stage=TimeboxingStage.REFINE.value,
+            current=session.tb_plan,
+            user_message=patch_message,
+            constraints=constraints,
+            actions=[],
+            plan_validator=_materialize_timebox,
+        )
+        session.tb_plan = patched_plan
+        if validated_timebox is None:
+            raise ValueError("Patch completed without producing a validated Timebox.")
+        session.timebox = validated_timebox
+        return await self._submit_current_plan(session)
+
+    async def _run_refine_tool_orchestration(
+        self,
+        *,
+        session: Session,
+        patch_message: str,
+        user_message: str,
+    ) -> RefineToolExecutionOutcome:
+        """Let the LLM choose tools while enforcing patch-critical execution priority."""
+        requested: list[tuple[int, str, str]] = []
+
+        async def timebox_patch_and_sync(user_instruction: str) -> dict[str, Any]:
+            requested.append((0, "patch", (user_instruction or "").strip()))
+            return {"queued": True, "priority": "critical"}
+
+        async def memory_extract_and_upsert(
+            user_instruction: str,
+            reason: str = "refine_tool_memory",
+        ) -> dict[str, Any]:
+            requested.append(
+                (10, "memory", (user_instruction or "").strip() or user_message.strip())
+            )
+            return {"queued": True, "priority": "background", "reason": reason}
+
+        tool_agent = AssistantAgent(
+            name="StageRefineExecutionPlanner",
+            model_client=self._model_client,
+            tools=[
+                FunctionTool(
+                    timebox_patch_and_sync,
+                    name="timebox_patch_and_sync",
+                    description=(
+                        "Primary tool for Stage 4/5 schedule edits. "
+                        "Use this to apply the requested patch and sync to calendar."
+                    ),
+                    strict=True,
+                ),
+                FunctionTool(
+                    memory_extract_and_upsert,
+                    name="memory_extract_and_upsert",
+                    description=(
+                        "Background memory update. Optional and non-blocking. "
+                        "Use after selecting patching when useful for long-term preference memory."
+                    ),
+                    strict=True,
+                ),
+            ],
+            system_message=(
+                "You are selecting tools for Stage 4/5 timeboxing execution.\n"
+                "Primary objective: apply user-requested schedule changes now.\n"
+                "Rules:\n"
+                "1) If the user asks for any plan/calendar change, call `timebox_patch_and_sync` exactly once.\n"
+                "2) `memory_extract_and_upsert` is optional and must never replace patching.\n"
+                "3) Prefer patch first; memory update can run in background.\n"
+                "Return a brief confirmation after tool calls."
+            ),
+            reflect_on_tool_use=False,
+            max_tool_iterations=3,
+        )
+        await with_timeout(
+            "timeboxing:refine-tool-orchestration",
+            tool_agent.on_messages(
+                [
+                    TextMessage(
+                        content=(
+                            f"stage={session.stage.value}\n"
+                            f"user_message={user_message.strip()}\n"
+                            f"patch_message={patch_message}"
+                        ),
+                        source="user",
+                    )
+                ],
+                CancellationToken(),
+            ),
+            timeout_s=TIMEBOXING_TIMEOUTS.stage_decision_s,
+        )
+
+        patch_instruction, memory_instruction = self._select_refine_tool_intents(
+            requested
+        )
+
+        fallback_patch_used = False
+        if not patch_instruction:
+            patch_instruction = patch_message
+            fallback_patch_used = True
+
+        memory_queued = False
+        if memory_instruction:
+            task = self._queue_constraint_extraction(
+                session=session,
+                text=memory_instruction,
+                reason="refine_tool_memory",
+                is_initial=False,
+            )
+            memory_queued = task is not None
+            if memory_queued:
+                self._append_background_update_once(
+                    session,
+                    "Updating preference memory in the background.",
+                )
+
+        calendar = await self._execute_refine_patch_and_sync(
+            session=session,
+            patch_message=patch_instruction,
+        )
+        return RefineToolExecutionOutcome(
+            patch_selected=bool(patch_instruction and not fallback_patch_used),
+            memory_selected=bool(memory_instruction),
+            memory_queued=memory_queued,
+            fallback_patch_used=fallback_patch_used,
+            calendar=calendar,
+        )
+
+    @staticmethod
+    def _select_refine_tool_intents(
+        requested: list[tuple[int, str, str]],
+    ) -> tuple[str, str]:
+        """Return prioritized patch + memory intents from tool-selected operations."""
+        patch_instruction = ""
+        memory_instruction = ""
+        for _, kind, payload in sorted(requested, key=lambda item: item[0]):
+            if kind == "patch" and not patch_instruction:
+                patch_instruction = payload
+            if kind == "memory" and not memory_instruction:
+                memory_instruction = payload
+        return patch_instruction, memory_instruction
 
     async def _build_skeleton_context(self, session: Session) -> SkeletonContext:
         """Assemble the injected context for the skeleton drafter."""
@@ -3663,7 +3905,6 @@ class TimeboxingFlowAgent(RoutedAgent):
             date=self._resolve_planning_date(session),
             timezone=session.tz_name or "UTC",
         )
-        await self._await_pending_constraint_extractions(session)
         constraints = await self._collect_constraints(session)
 
         # Use TBPlan path if available, fall back to legacy Timebox path
