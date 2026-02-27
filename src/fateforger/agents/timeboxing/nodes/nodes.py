@@ -221,7 +221,22 @@ class TransitionNode(BaseChatAgent):
                 )
             )
 
-        # provide_info / redo: rerun current stage with user text
+        if decision.action == "provide_info":
+            # In Stage 5, user corrections must return to Stage 4 patching.
+            if self._session.stage == TimeboxingStage.REVIEW_COMMIT:
+                await self._orchestrator._advance_stage(  # noqa: SLF001
+                    self._session,
+                    next_stage=TimeboxingStage.REFINE,
+                )
+            self.stage_user_message = user_text
+            return Response(
+                chat_message=StructuredMessage(
+                    source=self.name,
+                    content=FlowSignal(kind="transition", note="rerun"),
+                )
+            )
+
+        # redo / assist: rerun current stage with user text
         self.stage_user_message = user_text
         return Response(
             chat_message=StructuredMessage(
@@ -509,12 +524,6 @@ class StageRefineNode(_StageNodeBase):
                 ),
             },
         )
-        await self._orchestrator._await_pending_constraint_extractions(
-            self._session
-        )  # noqa: SLF001
-        constraints = await self._orchestrator._collect_constraints(
-            self._session
-        )  # noqa: SLF001
         if self._session.tb_plan is None:
             gate = StageGateOutput(
                 stage_id=TimeboxingStage.REFINE,
@@ -532,32 +541,15 @@ class StageRefineNode(_StageNodeBase):
             self._session.stage_question = gate.question
             self.last_gate = gate
             return Response(chat_message=StructuredMessage(source=self.name, content=gate))
-        from fateforger.agents.timeboxing.timebox import tb_plan_to_timebox
-
-        validated_timebox = None
-
-        def _materialize_timebox(plan):
-            nonlocal validated_timebox
-            validated_timebox = tb_plan_to_timebox(plan)
-            return validated_timebox
 
         try:
-            patched_plan, _patch = (
-                await self._orchestrator._timebox_patcher.apply_patch(  # noqa: SLF001
-                    stage=TimeboxingStage.REFINE.value,
-                    current=self._session.tb_plan,
-                    user_message=user_message,
-                    constraints=constraints,
-                    actions=[],
-                    plan_validator=_materialize_timebox,
+            execution = (
+                await self._orchestrator._run_refine_tool_orchestration(  # noqa: SLF001
+                    session=self._session,
+                    patch_message=user_message,
+                    user_message=self._transition.stage_user_message or user_message,
                 )
             )
-            self._session.tb_plan = patched_plan
-            if validated_timebox is None:
-                raise ValueError(
-                    "Patch completed without producing a validated Timebox."
-                )
-            self._session.timebox = validated_timebox
         except Exception as exc:
             logger.warning("Refine patch failed: %s", exc, exc_info=True)
             gate = StageGateOutput(
@@ -579,14 +571,17 @@ class StageRefineNode(_StageNodeBase):
             self._session.stage_question = gate.question
             self.last_gate = gate
             return Response(chat_message=StructuredMessage(source=self.name, content=gate))
-        sync_note = await self._orchestrator._submit_current_plan(self._session)  # noqa: SLF001
         gate = await self._orchestrator._run_timebox_summary(  # noqa: SLF001
             stage=TimeboxingStage.REFINE,
             timebox=self._session.timebox,
             session=self._session,
         )
-        if sync_note:
-            gate.summary.append(sync_note)
+        if execution.calendar.note:
+            gate.summary.append(execution.calendar.note)
+        if execution.fallback_patch_used:
+            gate.summary.append(
+                "Patch execution used fallback tool routing for this turn."
+            )
         self._session.stage_ready = True
         self._session.stage_missing = []
         self._session.stage_question = gate.question

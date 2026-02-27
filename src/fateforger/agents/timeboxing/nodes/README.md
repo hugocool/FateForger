@@ -27,8 +27,8 @@ GraphFlow node agents that implement the timeboxing stage machine. Each node is 
 | `StageCollectConstraintsNode` | 1 | Builds constraint context (immovables + Notion + session constraints), calls the Stage 1 LLM via `stage_gating.py`, updates `session.frame_facts`. |
 | `StageCaptureInputsNode` | 2 | Builds input context (frame_facts + user tasks/priorities), calls the Stage 2 LLM, updates `session.input_facts`, and queues skeleton pre-generation when context is sufficient. |
 | `StageSkeletonNode` | 3 | Uses pre-generated skeleton when available; otherwise drafts synchronously. Produces markdown overview rendered via Slack `markdown` block and carries the prepared draft plan forward, but does not build sync baselines. |
-| `StageRefineNode` | 4 | Prepares `TBPlan` + remote baseline if missing, sends `TBPlan` + user feedback to `TimeboxPatcher`, applies `TBPatch` via `apply_tb_ops()`, then syncs current plan to Google Calendar. |
-| `StageReviewCommitNode` | 5 | Presents final plan summary. Undo remains available through Slack action routing (`ff_timebox_undo_submit`). |
+| `StageRefineNode` | 4 | Prepares `TBPlan` + remote baseline if missing, then delegates execution to prompt-guided tool orchestration (`timebox_patch_and_sync` as patch-critical primary action, optional background memory update). Appends explicit calendar changed/unchanged sync feedback. |
+| `StageReviewCommitNode` | 5 | Presents final plan summary. If user sends corrections, `TransitionNode` routes the same turn back to `StageRefineNode` so patching runs before another review. Undo remains available through Slack action routing (`ff_timebox_undo_submit`). |
 
 ### Base Class
 

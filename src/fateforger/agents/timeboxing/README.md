@@ -108,8 +108,8 @@ Stage 0: Date Confirmation (Slack buttons)
 Stage 1: CollectConstraints -> StageGateOutput (frame_facts)
 Stage 2: CaptureInputs -> StageGateOutput (input_facts)
 Stage 3: Skeleton -> pre-generated draft if available, else synchronous draft -> markdown overview (presentation-first) + carry-forward seed `TBPlan` (no Stage 3 patch loop)
-Stage 4: Refine -> ensure TBPlan+baseline -> TBPatch -> apply_tb_ops() -> updated TBPlan -> advisory quality facts (0-4) -> sync to Google Calendar
-Stage 5: ReviewCommit -> final summary (no extra submit gate)
+Stage 4: Refine -> prompt-guided tool orchestration (`timebox_patch_and_sync` primary, `memory_extract_and_upsert` optional background) -> advisory quality facts (0-4) -> sync to Google Calendar with explicit changed/unchanged reporting
+Stage 5: ReviewCommit -> final summary; user corrections route back to Stage 4 Refine in the same turn
 Undo action: undo latest sync transaction via session-backed state -> return to Refine
 Each stage response also includes deterministic Slack actions (Proceed when ready, plus Back/Redo/Cancel) that replace the same message when clicked.
 ```

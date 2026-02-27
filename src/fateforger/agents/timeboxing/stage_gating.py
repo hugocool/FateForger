@@ -197,6 +197,7 @@ Decision rules
 - If the user supplies new details for the current stage, use action="provide_info".
 - If the user wants to move forward, use action="proceed".
 - If `stage_ready=true`, default to action="proceed" unless the user explicitly asks to stay/back/cancel or provides new scheduling facts.
+- If `current_stage=ReviewCommit` and the user provides corrections/changes/additions to the plan, use action="provide_info" (do not use proceed).
 - If the user pushes back on precision (for example "I don't need exact start times") and wants to keep moving, use action="proceed".
 - If the user asks to revisit earlier stages, use action="back" and set target_stage.
 - If the user asks to redo the current stage, use action="redo".
