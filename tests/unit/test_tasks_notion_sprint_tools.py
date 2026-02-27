@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 
 import pytest
 
@@ -62,6 +63,81 @@ async def test_find_sprint_items_supports_query_and_filters():
     assert workbench.calls[0][1]["query"] == "sprint patch"
     assert workbench.calls[0][1]["data_source_url"] == "collection://sprint-db"
     assert workbench.calls[0][1]["filters"] == {"status": "WIP"}
+
+
+@pytest.mark.asyncio
+async def test_find_sprint_items_uses_default_data_source_when_missing():
+    workbench = _FakeWorkbench(
+        {"notion-search": [{"results": [{"id": "page-1", "title": "Open Ticket"}]}]}
+    )
+    manager = NotionSprintManager(
+        server_url="http://example.invalid/mcp",
+        workbench=workbench,
+        default_data_source_url="collection://f336d0bc-b841-465b-8045-024475c079dd",
+    )
+
+    result = await manager.find_sprint_items(
+        query="open tickets",
+        data_source_url=None,
+        filters=None,
+        limit=10,
+    )
+
+    assert result["ok"] is True
+    assert workbench.calls[0][0] == "notion-search"
+    assert (
+        workbench.calls[0][1]["data_source_url"]
+        == "collection://f336d0bc-b841-465b-8045-024475c079dd"
+    )
+
+
+@pytest.mark.asyncio
+async def test_find_sprint_items_resolves_data_source_from_default_database_id():
+    workbench = _FakeWorkbench(
+        {
+            "notion-fetch": [
+                '<database>\n<data-source url="collection://f336d0bc-b841-465b-8045-024475c079dd">\n'
+            ],
+            "notion-search": [{"results": [{"id": "page-1", "title": "Open Ticket"}]}],
+        }
+    )
+    manager = NotionSprintManager(
+        server_url="http://example.invalid/mcp",
+        workbench=workbench,
+        default_database_id="db-page-id",
+    )
+
+    result = await manager.find_sprint_items(
+        query="open tickets",
+        data_source_url=None,
+        filters=None,
+        limit=10,
+    )
+
+    assert result["ok"] is True
+    assert [name for name, _ in workbench.calls] == ["notion-fetch", "notion-search"]
+    assert (
+        workbench.calls[1][1]["data_source_url"]
+        == "collection://f336d0bc-b841-465b-8045-024475c079dd"
+    )
+
+
+@pytest.mark.asyncio
+async def test_find_sprint_items_returns_error_when_no_source_available():
+    manager = NotionSprintManager(
+        server_url="http://example.invalid/mcp",
+        workbench=_FakeWorkbench({}),
+    )
+
+    result = await manager.find_sprint_items(
+        query="open tickets",
+        data_source_url=None,
+        filters=None,
+        limit=10,
+    )
+
+    assert result["ok"] is False
+    assert "No Notion sprint data source is configured" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -202,3 +278,315 @@ async def test_patch_sprint_page_accepts_langdiff_plan_json():
 
     assert result["ok"] is True
     assert result["verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_patch_sprint_event_wraps_single_page_patch():
+    workbench = _FakeWorkbench(
+        {
+            "notion-fetch": [
+                "# Sprint Notes\n\nStatus: old phrase.\n",
+            ]
+        }
+    )
+    manager = NotionSprintManager(server_url="http://example.invalid/mcp", workbench=workbench)
+
+    result = await manager.patch_sprint_event(
+        page_id="page-1",
+        search_text="old phrase.",
+        replace_text="new phrase.",
+        langdiff_plan_json=None,
+        dry_run=True,
+        match_threshold=None,
+        match_distance=None,
+    )
+
+    assert result["ok"] is True
+    assert result["mode"] == "preview"
+    assert result["page_id"] == "page-1"
+    assert result["result"]["mode"] == "preview"
+    assert [name for name, _ in workbench.calls] == ["notion-fetch"]
+
+
+@pytest.mark.asyncio
+async def test_patch_sprint_events_searches_then_patches():
+    workbench = _FakeWorkbench(
+        {
+            "notion-search": [{"results": [{"id": "page-1"}, {"id": "page-2"}]}],
+            "notion-fetch": [
+                "# Sprint Notes\n\nStatus: old phrase.\n",
+                "# Sprint Notes\n\nStatus: old phrase.\n",
+            ],
+        }
+    )
+    manager = NotionSprintManager(server_url="http://example.invalid/mcp", workbench=workbench)
+
+    result = await manager.patch_sprint_events(
+        page_ids=None,
+        query="open sprint events",
+        data_source_url="collection://sprint-db",
+        filters={"status": "WIP"},
+        limit=2,
+        search_text="old phrase.",
+        replace_text="new phrase.",
+        langdiff_plan_json=None,
+        dry_run=True,
+        match_threshold=None,
+        match_distance=None,
+        stop_on_error=False,
+    )
+
+    assert result["ok"] is True
+    assert result["selection_mode"] == "search"
+    assert result["attempted"] == 2
+    assert result["patched"] == 2
+    assert result["failed"] == 0
+    assert [name for name, _ in workbench.calls] == [
+        "notion-search",
+        "notion-fetch",
+        "notion-fetch",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_patch_sprint_events_requires_page_ids_or_query():
+    manager = NotionSprintManager(
+        server_url="http://example.invalid/mcp",
+        workbench=_FakeWorkbench({}),
+    )
+
+    result = await manager.patch_sprint_events(
+        page_ids=None,
+        query=None,
+        data_source_url=None,
+        filters=None,
+        limit=None,
+        search_text="old phrase.",
+        replace_text="new phrase.",
+        langdiff_plan_json=None,
+        dry_run=True,
+        match_threshold=None,
+        match_distance=None,
+        stop_on_error=None,
+    )
+
+    assert result["ok"] is False
+    assert result["selection_mode"] == "none"
+    assert result["attempted"] == 0
+
+
+@pytest.mark.asyncio
+async def test_patch_sprint_events_stops_on_first_error_by_default():
+    workbench = _FakeWorkbench(
+        {
+            "notion-search": [{"results": [{"id": "page-1"}, {"id": "page-2"}]}],
+            "notion-fetch": [
+                "# Sprint Notes\n\nStatus: unrelated text.\n",
+            ],
+        }
+    )
+    manager = NotionSprintManager(server_url="http://example.invalid/mcp", workbench=workbench)
+
+    result = await manager.patch_sprint_events(
+        page_ids=None,
+        query="open sprint events",
+        data_source_url="collection://sprint-db",
+        filters=None,
+        limit=2,
+        search_text="old phrase.",
+        replace_text="new phrase.",
+        langdiff_plan_json=None,
+        dry_run=True,
+        match_threshold=None,
+        match_distance=None,
+        stop_on_error=None,
+    )
+
+    assert result["ok"] is False
+    assert result["attempted"] == 1
+    assert result["failed"] == 1
+    assert [name for name, _ in workbench.calls] == ["notion-search", "notion-fetch"]
+
+
+@pytest.mark.asyncio
+async def test_find_sprint_items_queries_multiple_default_data_sources():
+    source_a = "collection://f336d0bc-b841-465b-8045-024475c079dd"
+    source_b = "collection://a5da15f6-b853-455d-8827-f906fb52db2b"
+    workbench = _FakeWorkbench(
+        {
+            "notion-search": [
+                {"results": [{"id": "page-1", "title": "Ticket A"}]},
+                {"results": [{"id": "page-2", "title": "Ticket B"}]},
+            ]
+        }
+    )
+    manager = NotionSprintManager(
+        server_url="http://example.invalid/mcp",
+        workbench=workbench,
+        default_data_source_urls=[source_a, source_b],
+    )
+
+    result = await manager.find_sprint_items(
+        query="open tickets",
+        data_source_url=None,
+        filters=None,
+        limit=10,
+    )
+
+    assert result["ok"] is True
+    assert result["count"] == 2
+    assert result["data_source_urls"] == [source_a, source_b]
+    search_calls = [args for name, args in workbench.calls if name == "notion-search"]
+    assert len(search_calls) == 2
+    assert search_calls[0]["data_source_url"] == source_a
+    assert search_calls[1]["data_source_url"] == source_b
+
+
+@pytest.mark.asyncio
+async def test_find_sprint_items_resolves_multiple_data_sources_from_multiple_databases():
+    source_a = "collection://f336d0bc-b841-465b-8045-024475c079dd"
+    source_b = "collection://a5da15f6-b853-455d-8827-f906fb52db2b"
+    workbench = _FakeWorkbench(
+        {
+            "notion-fetch": [
+                f'<database>\n<data-source url="{source_a}">\n',
+                f'<database>\n<data-source url="{source_b}">\n',
+            ],
+            "notion-search": [
+                {"results": [{"id": "page-1", "title": "Ticket A"}]},
+                {"results": [{"id": "page-2", "title": "Ticket B"}]},
+            ],
+        }
+    )
+    manager = NotionSprintManager(
+        server_url="http://example.invalid/mcp",
+        workbench=workbench,
+        default_database_ids=["db-a", "db-b"],
+    )
+
+    result = await manager.find_sprint_items(
+        query="open tickets",
+        data_source_url=None,
+        filters=None,
+        limit=10,
+    )
+
+    assert result["ok"] is True
+    assert result["count"] == 2
+    assert result["data_source_urls"] == [source_a, source_b]
+    assert [name for name, _ in workbench.calls] == [
+        "notion-fetch",
+        "notion-fetch",
+        "notion-search",
+        "notion-search",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_find_sprint_items_continues_when_one_default_database_fetch_fails():
+    source_b = "collection://a5da15f6-b853-455d-8827-f906fb52db2b"
+    workbench = _FakeWorkbench(
+        {
+            "notion-fetch": [
+                RuntimeError("db-a unavailable"),
+                f'<database>\n<data-source url="{source_b}">\n',
+            ],
+            "notion-search": [{"results": [{"id": "page-2", "title": "Ticket B"}]}],
+        }
+    )
+    manager = NotionSprintManager(
+        server_url="http://example.invalid/mcp",
+        workbench=workbench,
+        default_database_ids=["db-a", "db-b"],
+    )
+
+    result = await manager.find_sprint_items(
+        query="open tickets",
+        data_source_url=None,
+        filters=None,
+        limit=10,
+    )
+
+    assert result["ok"] is True
+    assert result["count"] == 1
+    assert result["data_source_urls"] == [source_b]
+    fetch_calls = [name for name, _ in workbench.calls if name in {"notion-fetch", "notion_fetch"}]
+    assert len(fetch_calls) >= 2
+    assert workbench.calls[-1][0] == "notion-search"
+
+
+@pytest.mark.asyncio
+async def test_resolve_data_source_urls_parallelizes_default_database_fetches():
+    source_a = "collection://f336d0bc-b841-465b-8045-024475c079dd"
+    source_b = "collection://a5da15f6-b853-455d-8827-f906fb52db2b"
+    source_c = "collection://ef123456-7890-4abc-8123-1234567890ab"
+    payloads = {
+        "db-a": f'<database><data-source url="{source_a}"></database>',
+        "db-b": f'<database><data-source url="{source_b}"></database>',
+        "db-c": f'<database><data-source url="{source_c}"></database>',
+    }
+
+    manager = NotionSprintManager(
+        server_url="http://example.invalid/mcp",
+        workbench=_FakeWorkbench({}),
+        default_database_ids=["db-a", "db-b", "db-c"],
+    )
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def _call_tool_alias(_aliases, arguments):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.02)
+        in_flight -= 1
+        return payloads[arguments["id"]]
+
+    manager._call_tool_alias = _call_tool_alias  # type: ignore[method-assign]
+    resolved = await manager._resolve_data_source_urls(None)
+
+    assert resolved == [source_a, source_b, source_c]
+    assert max_in_flight >= 2
+
+
+@pytest.mark.asyncio
+async def test_patch_sprint_events_dry_run_supports_parallel_preview_with_ordering():
+    manager = NotionSprintManager(
+        server_url="http://example.invalid/mcp",
+        workbench=_FakeWorkbench({}),
+    )
+    manager._dry_run_patch_parallelism = 3  # type: ignore[attr-defined]
+    page_ids = ["page-1", "page-2", "page-3"]
+    delays = {"page-1": 0.03, "page-2": 0.01, "page-3": 0.02}
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def _patch(*, page_id, **_kwargs):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(delays[page_id])
+        in_flight -= 1
+        return {"ok": True, "mode": "preview", "summary": f"preview {page_id}"}
+
+    manager.patch_sprint_page_content = _patch  # type: ignore[method-assign]
+    result = await manager.patch_sprint_events(
+        page_ids=page_ids,
+        query=None,
+        data_source_url=None,
+        filters=None,
+        limit=None,
+        search_text="old phrase",
+        replace_text="new phrase",
+        langdiff_plan_json=None,
+        dry_run=True,
+        match_threshold=None,
+        match_distance=None,
+        stop_on_error=False,
+    )
+
+    assert result["ok"] is True
+    assert [row["page_id"] for row in result["results"]] == page_ids
+    assert max_in_flight >= 2
