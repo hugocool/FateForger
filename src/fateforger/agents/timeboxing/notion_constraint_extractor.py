@@ -49,7 +49,7 @@ class ConstraintLifecycle(BaseModel):
 class ExtractedConstraintRecord(BaseModel):
     name: str
     description: str
-    necessity: str = Field(description="must|should")
+    necessity: str = Field(description="must|should|prefer")
     status: str = Field(description="proposed|locked")
     source: str = Field(description="user|calendar|system|feedback")
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
@@ -113,7 +113,7 @@ Tools:
 - constraint_log_event(event)
 
 Allowed enums:
-- necessity: must|should
+- necessity: must|should|prefer
 - status: proposed|locked
 - source: user|calendar|system|feedback
 - scope: session|profile|datespan

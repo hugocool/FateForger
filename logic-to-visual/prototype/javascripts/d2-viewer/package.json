@@ -1,0 +1,9 @@
+{
+  "name": "d2-viewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "npx -p typescript tsc -p tsconfig.json --noEmit",
+    "build": "npx -p typescript tsc -p tsconfig.json && cp -f dist/*.js ."
+  }
+}

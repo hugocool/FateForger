@@ -20,6 +20,8 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | Stage 4 advisory quality facts (0-4) | Implemented, Tested | `test_phase4_rewiring.py` | — |
 | Deterministic stage action buttons | Implemented, Tested | `test_timeboxing_stage_actions.py`, `test_slack_timebox_stage_buttons.py` | — |
 | Structured-output strict tool contract | Implemented, Tested | `test_timeboxing_constraint_search_tool_strict.py`, `test_timeboxing_flow.py` | — |
+| Stage context temporal anchors (`current_time`, `current_datetime`) | Implemented, Tested | `test_timeboxing_durable_constraints.py` | — |
+| Durable upsert semantic idempotency (no duplicate-on-rephrase) | Implemented, Tested | `test_timeboxing_durable_constraints.py` | — |
 
 ## File Index
 
@@ -71,7 +73,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | File | Responsibility |
 |------|---------------|
 | `nlu.py` | `PlannedDateResult`, `ConstraintInterpretation`: structured LLM outputs for multilingual date/scope inference. No regex/keyword matching. |
-| `preferences.py` | `ConstraintStore`: SQLite-backed session constraint persistence. |
+| `preferences.py` | `ConstraintStore`: SQLite-backed session constraint persistence (`necessity`: must/should/prefer). |
 | `constraint_retriever.py` | `ConstraintRetriever`: gap-driven durable constraint fetch from Notion MCP. |
 | `constraint_search_tool.py` | Stage-gating Notion search tool (`search_constraints`) with strict FunctionTool schema for structured-output compatibility. |
 | `notion_constraint_extractor.py` | LLM fallback path for durable Notion upserts when deterministic MCP upsert mapping is unavailable. |
@@ -104,11 +106,11 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 
 ```
 Stage 0: Date Confirmation (Slack buttons)
-    background: calendar prefetch + Notion constraint retrieval (with short await before first Stage 1 render)
+    commit gate: calendar prefetch + durable constraint retrieval are awaited in parallel before first Stage 1 render
 Stage 1: CollectConstraints -> StageGateOutput (frame_facts)
 Stage 2: CaptureInputs -> StageGateOutput (input_facts)
 Stage 3: Skeleton -> pre-generated draft if available, else synchronous draft -> markdown overview (presentation-first) + carry-forward seed `TBPlan` (no Stage 3 patch loop)
-Stage 4: Refine -> prompt-guided tool orchestration (`timebox_patch_and_sync` primary, `memory_extract_and_upsert` optional background) -> advisory quality facts (0-4) -> sync to Google Calendar with explicit changed/unchanged reporting
+Stage 4: Refine -> prompt-guided patch tool orchestration (`timebox_patch_and_sync` primary) + automatic background memory extraction/upsert -> advisory quality facts (0-4) -> sync to Google Calendar with explicit changed/unchanged reporting
 Stage 5: ReviewCommit -> final summary; user corrections route back to Stage 4 Refine in the same turn
 Undo action: undo latest sync transaction via session-backed state -> return to Refine
 Each stage response also includes deterministic Slack actions (Proceed when ready, plus Back/Redo/Cancel) that replace the same message when clicked.

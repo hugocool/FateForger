@@ -16,40 +16,35 @@ Related docs:
 - `docs/indices/agents_timeboxing.md`
 - `docs/architecture/timeboxing_refactor.md`
 
-## ConstraintExtractorAgent (Notion-backed)
+## Constraint Memory + Extraction (Mem0-backed)
 
-Extractor agent that turns user preference corrections into a deterministic constraint record and
-upserts it into Notion for durable future reuse.
+Constraint extraction turns user preference corrections into a deterministic
+`constraint_record` and upserts it into Mem0 for durable future reuse.
 
-- Output schema: `ConstraintExtractionOutput` (JSON, structured)
-- Persistence: `NotionConstraintStore.upsert_constraint(...)` + `TB Constraint Events` audit log
-- Timeboxing agents can call the tool `extract_and_upsert_constraint` (Agent-as-Tool under the hood).
-- Notion access is via the constraint-memory MCP server (`scripts/constraint_mcp_server.py`).
+- Output schema: typed `ConstraintBase`/`constraint_record` payloads
+- Persistence: `Mem0ConstraintMemoryClient.upsert_constraint(...)`
+- Orchestration path: `_queue_constraint_extraction` + `_queue_durable_constraint_upsert`
+- Memory edit/review is explicit via `memory_*` tools in Stage 4/5.
 
 Code:
-- `src/fateforger/agents/timeboxing/notion_constraint_extractor.py`
-- `src/fateforger/adapters/notion/timeboxing_preferences.py`
+- `src/fateforger/agents/timeboxing/mem0_constraint_memory.py`
+- `src/fateforger/agents/timeboxing/durable_constraint_store.py`
+- `src/fateforger/agents/timeboxing/agent.py`
 
 ## ConstraintRetriever
 
 Gap-driven retriever for durable constraints that:
 - derives a small query plan from stage + day context (gaps/blocks/immovables)
-- uses `constraint_query_types` to select relevant `type_id`s
-- then queries constraints via `constraint_query_constraints` with those `type_id`s
+- uses `query_types` to select relevant `type_id`s (except Stage 1 startup path)
+- then queries durable constraints with deterministic filters and typed post-filtering
 
 Code:
 - `src/fateforger/agents/timeboxing/constraint_retriever.py`
-- `src/fateforger/agents/timeboxing/mcp_clients.py`
+- `src/fateforger/agents/timeboxing/mem0_constraint_memory.py`
 - `src/fateforger/agents/timeboxing/agent.py`
 
-## (Next) ConstraintRetriever Improvements
-
-Planned improvements:
-- loads global/profile constraints first (high precedence)
-- then queries only what is needed for remaining planning gaps ("degrees of freedom")
-- uses structured Notion properties (no embeddings requirement)
-
-Status: partially implemented; tracked in `lattice_ticket.md`.
+See full retrieval/update flow:
+- `docs/architecture/constraint-flow/index.md`
 
 ## SlackBot Router + Review
 

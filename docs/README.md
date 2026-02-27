@@ -2,6 +2,10 @@
 
 This repo uses **MkDocs Material** for documentation.
 
+## Status
+- Implemented: docs infrastructure and indexes for FateForger runtime domains.
+- Out of scope: the Logic-to-Visual initiative has been moved to root folder `logic-to-visual/`.
+
 ## Build
 
 ```bash

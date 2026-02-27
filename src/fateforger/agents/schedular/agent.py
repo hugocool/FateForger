@@ -20,7 +20,7 @@ from autogen_core import (
     message_handler,
 )
 from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
-from dateutil import parser as date_parser
+from pydantic import TypeAdapter, ValidationError
 
 from fateforger.core.config import settings
 from fateforger.debug.diag import with_timeout
@@ -75,6 +75,8 @@ prompt = (
 
 
 SERVER_URL = settings.mcp_calendar_server_url
+_DATETIME_ADAPTER = TypeAdapter(dt.datetime)
+_DATE_ADAPTER = TypeAdapter(dt.date)
 
 
 @dataclass
@@ -235,25 +237,31 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
 
     @staticmethod
     def _parse_event_dt(raw: dict | str | None, *, tz: ZoneInfo) -> dt.datetime | None:
-        # TODO(refactor): Use a Pydantic date-time field parser instead of try/except.
+        # TODO(refactor): Move this parser into a shared calendar payload model.
         if not raw:
             return None
-        if isinstance(raw, str):
-            try:
-                parsed = date_parser.isoparse(raw)
-            except Exception:
-                return None
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=tz)
-            return parsed.astimezone(tz)
-        if isinstance(raw, dict):
-            if raw.get("dateTime"):
-                parsed = date_parser.isoparse(raw["dateTime"])
+        match raw:
+            case str(value):
+                try:
+                    parsed = _DATETIME_ADAPTER.validate_python(value)
+                except ValidationError:
+                    return None
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=tz)
                 return parsed.astimezone(tz)
-            if raw.get("date"):
-                day = date_parser.isoparse(raw["date"]).date()
+            case {"dateTime": str(value), **_rest}:
+                try:
+                    parsed = _DATETIME_ADAPTER.validate_python(value)
+                except ValidationError:
+                    return None
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=tz)
+                return parsed.astimezone(tz)
+            case {"date": str(value), **_rest}:
+                try:
+                    day = _DATE_ADAPTER.validate_python(value)
+                except ValidationError:
+                    return None
                 return dt.datetime.combine(day, dt.time(0, 0), tz)
         return None
 

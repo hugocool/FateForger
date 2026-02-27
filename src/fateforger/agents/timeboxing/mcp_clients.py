@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
 import sys
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from dateutil import parser as date_parser
+from pydantic import ValidationError
 
 from fateforger.adapters.calendar.models import GCalEventsResponse
 from fateforger.tools.constraint_mcp import (
@@ -55,7 +56,9 @@ class ConstraintMemoryClient:
         if not text:
             if allow_empty:
                 return []
-            raise RuntimeError(f"constraint-memory tool {tool_name} returned empty text")
+            raise RuntimeError(
+                f"constraint-memory tool {tool_name} returned empty text"
+            )
         if text.startswith("Error executing tool "):
             raise RuntimeError(f"constraint-memory tool {tool_name} failed: {text}")
         if text.startswith("```"):
@@ -67,7 +70,7 @@ class ConstraintMemoryClient:
             text = "\n".join(lines).strip()
         try:
             return json.loads(text)
-        except Exception:
+        except json.JSONDecodeError:
             decoder = json.JSONDecoder()
             idx = 0
             chunks: list[Any] = []
@@ -78,7 +81,7 @@ class ConstraintMemoryClient:
                     break
                 try:
                     payload, next_idx = decoder.raw_decode(text, idx)
-                except Exception as exc:
+                except json.JSONDecodeError as exc:
                     raise RuntimeError(
                         f"constraint-memory tool {tool_name} returned non-JSON text: {text}"
                     ) from exc
@@ -142,9 +145,7 @@ class ConstraintMemoryClient:
                     continue
                 content = getattr(item, "content", None)
                 if isinstance(content, str):
-                    parsed = cls._parse_json_text(
-                        tool_name, content, allow_empty=True
-                    )
+                    parsed = cls._parse_json_text(tool_name, content, allow_empty=True)
                     if isinstance(parsed, list):
                         parsed_items.extend(parsed)
                     elif parsed != []:
@@ -202,7 +203,9 @@ class ConstraintMemoryClient:
         )
         self._workbench = McpWorkbench(params)
 
-    async def _call_tool_json(self, tool_name: str, *, arguments: dict[str, Any]) -> Any:
+    async def _call_tool_json(
+        self, tool_name: str, *, arguments: dict[str, Any]
+    ) -> Any:
         attempts = 2
         for attempt in range(1, attempts + 1):
             try:
@@ -296,7 +299,9 @@ class ConstraintMemoryClient:
             Tool payload as a dict when available; otherwise an empty dict.
         """
         payload = {"record": record, "event": event or None}
-        data = await self._call_tool_json("constraint_upsert_constraint", arguments=payload)
+        data = await self._call_tool_json(
+            "constraint_upsert_constraint", arguments=payload
+        )
         if not isinstance(data, dict):
             raise RuntimeError(
                 "constraint-memory tool constraint_upsert_constraint returned non-dict JSON"
@@ -353,7 +358,7 @@ class McpCalendarClient:
             text = "\n".join(lines).strip()
         try:
             return json.loads(text)
-        except Exception as exc:
+        except json.JSONDecodeError as exc:
             raise RuntimeError(
                 f"calendar MCP payload from {source} is not valid JSON: {text}"
             ) from exc
@@ -427,9 +432,7 @@ class McpCalendarClient:
             if not dict_items:
                 return []
             direct_events = [
-                item
-                for item in dict_items
-                if "start" in item and "end" in item
+                item for item in dict_items if "start" in item and "end" in item
             ]
             if direct_events:
                 return direct_events
@@ -463,7 +466,9 @@ class McpCalendarClient:
         return dt_val.astimezone(tz).strftime("%H:%M")
 
     @staticmethod
-    def _list_events_args(*, calendar_id: str, day: date, tz: ZoneInfo) -> dict[str, Any]:
+    def _list_events_args(
+        *, calendar_id: str, day: date, tz: ZoneInfo
+    ) -> dict[str, Any]:
         start = (
             datetime.combine(day, datetime.min.time(), tz)
             .astimezone(timezone.utc)
@@ -541,8 +546,10 @@ class McpCalendarClient:
                     "totalCount": total_count,
                 }
             )
-        except Exception:
-            response = GCalEventsResponse(events=[], totalCount=0)
+        except ValidationError as exc:
+            if diagnostics is not None:
+                diagnostics["validation_error"] = str(exc)
+            raise RuntimeError("calendar MCP day snapshot validation failed") from exc
         immovables = self._immovables_from_response(response=response, day=day, tz=tz)
         if diagnostics is not None:
             diagnostics["raw_event_count"] = len(response.events)

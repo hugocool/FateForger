@@ -19,11 +19,20 @@ from fateforger.agents.timeboxing.preferences import (
     ConstraintStore,
     ensure_constraint_schema,
 )
+from fateforger.agents.timeboxing.durable_constraint_store import (
+    DurableConstraintStore,
+    build_durable_constraint_store,
+)
+from fateforger.agents.timeboxing.mem0_constraint_memory import (
+    build_mem0_client_from_settings,
+)
 from fateforger.core.config import settings
 from fateforger.slack_bot.bootstrap import ensure_workspace_ready
 from fateforger.slack_bot.constraint_review import (
+    CONSTRAINT_REVIEW_ALL_ACTION_ID,
     CONSTRAINT_REVIEW_VIEW_CALLBACK_ID,
     CONSTRAINT_ROW_REVIEW_ACTION_ID,
+    build_constraint_review_list_view,
     build_constraint_review_view,
     build_constraint_row_blocks,
     decode_metadata,
@@ -205,6 +214,37 @@ async def _maybe_update_timeboxing_thread_constraints(
         )
     except Exception:
         return
+
+
+def _constraint_uid(constraint: Constraint | None) -> str | None:
+    """Extract durable uid hint from a local constraint row."""
+    if constraint is None:
+        return None
+    hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+    uid = str(hints.get("uid") or "").strip()
+    return uid or None
+
+
+async def _find_constraint_by_uid(
+    *,
+    store: ConstraintStore | None,
+    user_id: str,
+    channel_id: str,
+    thread_ts: str,
+    uid: str,
+) -> Constraint | None:
+    """Resolve a local constraint row by durable uid hint."""
+    if not store or not uid:
+        return None
+    rows = await store.list_constraints(
+        user_id=user_id,
+        channel_id=channel_id or None,
+        thread_ts=thread_ts or None,
+    )
+    for row in rows:
+        if _constraint_uid(row) == uid:
+            return row
+    return None
 
 
 async def _maybe_update_timeboxing_thread_header(
@@ -1335,6 +1375,7 @@ def register_handlers(
       - DM handler           : route DMs via focus→agent
     """
     constraint_store: ConstraintStore | None = None
+    durable_memory_stores: dict[str, DurableConstraintStore] = {}
     workspace_store: SlackWorkspaceStore | None = None
     planning = PlanningCoordinator(runtime=runtime, focus=focus, client=app.client)
     planning.attach_reconciler_dispatch()
@@ -1401,6 +1442,27 @@ def register_handlers(
         sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
         constraint_store = ConstraintStore(sessionmaker)
         return constraint_store
+
+    def _get_durable_memory_store(user_id: str) -> DurableConstraintStore | None:
+        cleaned_user = str(user_id or "").strip()
+        if not cleaned_user:
+            return None
+        existing = durable_memory_stores.get(cleaned_user)
+        if existing is not None:
+            return existing
+        try:
+            client = build_mem0_client_from_settings(user_id=cleaned_user)
+        except Exception:
+            logger.debug(
+                "Failed to initialize durable memory client for user=%s",
+                cleaned_user,
+                exc_info=True,
+            )
+            return None
+        store = build_durable_constraint_store(client)
+        if store is not None:
+            durable_memory_stores[cleaned_user] = store
+        return store
 
     async def _get_workspace_store() -> SlackWorkspaceStore | None:
         nonlocal workspace_store
@@ -1829,26 +1891,100 @@ def register_handlers(
         channel_id = body.get("channel", {}).get("id") or ""
         if not (constraint_id_raw and user_id and channel_id):
             return
+
+        store = await _get_constraint_store()
+        cleaned_uid = ""
+        constraint = None
         try:
             constraint_id = int(constraint_id_raw)
         except ValueError:
-            return
-
-        store = await _get_constraint_store()
-        if not store:
-            return
-        constraint = await store.get_constraint(
-            user_id=user_id, constraint_id=constraint_id
-        )
+            constraint_id = None
+            cleaned_uid = constraint_id_raw.strip()
+        if store and constraint_id is not None:
+            constraint = await store.get_constraint(
+                user_id=user_id, constraint_id=constraint_id
+            )
+            cleaned_uid = _constraint_uid(constraint) or cleaned_uid
+        elif store and cleaned_uid:
+            constraint = await _find_constraint_by_uid(
+                store=store,
+                user_id=user_id,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                uid=cleaned_uid,
+            )
+        if constraint is None and cleaned_uid:
+            durable_store = _get_durable_memory_store(user_id)
+            if durable_store is not None:
+                loaded = await durable_store.get_constraint(uid=cleaned_uid)
+                if loaded:
+                    payload = dict(loaded.get("constraint_record") or {})
+                    payload.setdefault("uid", loaded.get("uid") or cleaned_uid)
+                    constraint = payload
         if not constraint:
             return
-        if thread_ts and constraint.thread_ts and constraint.thread_ts != thread_ts:
+        if (
+            isinstance(constraint, Constraint)
+            and thread_ts
+            and constraint.thread_ts
+            and constraint.thread_ts != thread_ts
+        ):
             return
         view = build_constraint_review_view(
             constraint,
             channel_id=channel_id,
-            thread_ts=thread_ts or (constraint.thread_ts or ""),
+            thread_ts=thread_ts
+            or (
+                constraint.thread_ts
+                if isinstance(constraint, Constraint)
+                else ""
+            ),
             user_id=user_id,
+        )
+        await client.views_open(trigger_id=body["trigger_id"], view=view)
+
+    @app.action(CONSTRAINT_REVIEW_ALL_ACTION_ID)
+    async def on_constraint_review_all_action(ack, body, client, logger):
+        """Open a modal with the complete active-constraint list for this thread."""
+        await ack()
+        action = (body.get("actions") or [{}])[0]
+        metadata = decode_metadata(action.get("value") or "")
+        thread_ts = metadata.get("thread_ts") or (body.get("message") or {}).get("thread_ts") or ""
+        user_id = metadata.get("user_id") or (body.get("user") or {}).get("id") or ""
+        channel_id = (body.get("channel") or {}).get("id") or ""
+        if not (user_id and channel_id and thread_ts):
+            return
+
+        constraints: list[Constraint | dict[str, object]] = []
+        store = await _get_constraint_store()
+        if store:
+            constraints = await store.list_constraints(
+                user_id=user_id,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+            )
+
+        if not constraints:
+            durable_store = _get_durable_memory_store(user_id)
+            if durable_store is not None:
+                try:
+                    rows = await durable_store.query_constraints(
+                        filters={
+                            "require_active": True,
+                            "statuses_any": ["locked", "proposed"],
+                        },
+                        limit=100,
+                    )
+                except Exception:
+                    rows = []
+                constraints = [row for row in rows if isinstance(row, dict)]
+
+        view = build_constraint_review_list_view(
+            constraints,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            user_id=user_id,
+            limit=30,
         )
         await client.views_open(trigger_id=body["trigger_id"], view=view)
 
@@ -1856,8 +1992,6 @@ def register_handlers(
     async def on_constraint_review_submit(ack, body, client, logger):
         await ack()
         store = await _get_constraint_store()
-        if not store:
-            return
         state = body.get("view", {}).get("state", {}).get("values", {})
         status, description = parse_constraint_review_submission(state)
         metadata = body.get("view", {}).get("private_metadata") or ""
@@ -1868,21 +2002,72 @@ def register_handlers(
         thread_ts = info.get("thread_ts") or ""
         if not (constraint_id_raw and user_id):
             return
+        cleaned_uid = ""
+        local_row = None
         try:
             constraint_id = int(constraint_id_raw)
         except ValueError:
-            return
-        await store.update_constraint(
-            user_id=user_id,
-            constraint_id=constraint_id,
-            status=status,
-            description=description,
-        )
+            constraint_id = None
+            cleaned_uid = constraint_id_raw.strip()
+        if store and constraint_id is not None:
+            local_row = await store.get_constraint(
+                user_id=user_id, constraint_id=constraint_id
+            )
+            cleaned_uid = _constraint_uid(local_row) or cleaned_uid
+        elif store and cleaned_uid:
+            local_row = await _find_constraint_by_uid(
+                store=store,
+                user_id=user_id,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                uid=cleaned_uid,
+            )
+
+        patch: dict[str, object] = {}
+        if status is not None:
+            patch["status"] = status.value
+        if description is not None:
+            patch["description"] = description
+
+        durable_updated = False
+        if cleaned_uid and patch:
+            durable_store = _get_durable_memory_store(user_id)
+            if durable_store is not None:
+                try:
+                    result = await durable_store.update_constraint(
+                        uid=cleaned_uid,
+                        patch=patch,
+                        event={
+                            "action": "slack_modal_update",
+                            "channel_id": channel_id,
+                            "thread_ts": thread_ts,
+                            "source": "constraint_review_modal",
+                        },
+                    )
+                    durable_updated = bool(result.get("updated"))
+                except Exception:
+                    logger.debug(
+                        "Durable memory update failed for uid=%s",
+                        cleaned_uid,
+                        exc_info=True,
+                    )
+
+        if store and local_row is not None and local_row.id is not None:
+            await store.update_constraint(
+                user_id=user_id,
+                constraint_id=int(local_row.id),
+                status=status,
+                description=description,
+            )
         if channel_id and thread_ts:
             await client.chat_postMessage(
                 channel=channel_id,
                 thread_ts=thread_ts,
-                text="Saved your constraint update.",
+                text=(
+                    "Saved your constraint update."
+                    if durable_updated or local_row is not None
+                    else "Saved locally, but durable memory update could not be confirmed."
+                ),
             )
             await _maybe_update_timeboxing_thread_constraints(
                 client=client,

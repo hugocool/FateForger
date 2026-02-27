@@ -114,6 +114,6 @@ def test_not_ready_stage_message_leads_with_missing_before_summary() -> None:
 
     message = agent._format_stage_message(gate, constraints=[], immovables=[])
 
-    assert "Need Before Proceeding:" in message
-    assert "What I Have So Far:" in message
-    assert message.index("Need Before Proceeding:") < message.index("What I Have So Far:")
+    assert "### Need before proceeding" in message
+    assert "### What I have so far" in message
+    assert message.index("### Need before proceeding") < message.index("### What I have so far")

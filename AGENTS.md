@@ -6,6 +6,10 @@
 - `AGENTS.md` files are for agent operating rules/invariants only. Put architecture, APIs, schemas, and feature documentation in the relevant `README.md` files or `docs/`.
 - Before editing a folder/module, check that folder’s `AGENTS.md`; add one if the folder has non-trivial workflows or constraints.
 - For multi-step work, write a short plan first and keep it updated as scope changes.
+- **Concision audit loop (required for each implementation slice):**
+  - **Before coding:** run a short reuse/minimality audit in chat/issue notes (what existing helpers, models, and framework hooks can be reused; what code can be deleted instead of extended).
+  - **After tests pass:** run a second audit and simplify once more (dedupe branches, collapse repeated logic, remove dead fallback paths, tighten function boundaries).
+  - Record both audits in Issue/PR checkpoints for every substantial slice.
 - **Ticket + acceptance criteria first (required):** before implementing any new functionality or behavior change, co-create a small “ticket” with the user that includes acceptance criteria and ownership boundaries (see below). Do not start coding until the ticket is agreed.
 - Keep edits minimal and consistent with existing conventions; prefer shared helpers/utilities over duplicated logic.
 - For new features/bug fixes or integration changes, add/adjust tests and run the relevant subset of the suite before finishing.

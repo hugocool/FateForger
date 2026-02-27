@@ -14,11 +14,31 @@ For file index, architecture, and status, see `README.md` in this folder.
 - Each stage agent has a single responsibility and a typed input/output contract; avoid prompt overlap.
 - The coordinator is the only place that assembles context (facts + constraints + immovables) and passes it forward.
 
+## MECE Capability Taxonomy
+
+- **Stage orchestration:** GraphFlow routing, stage transitions, and presenter termination.
+- **Planning synthesis:** Stage prompts + typed stage contracts (`Collect`, `Capture`, `Skeleton`, `Refine`, `Review`).
+- **Calendar side effects:** deterministic sync/undo and transaction logging.
+- **Memory pipelines:** durable constraint retrieval/upsert plus session-local constraint state.
+- **Task-marshalling integration:** pending-task prefetch and assist-turn delegation.
+- **Slack interaction surface:** stage controls, review/undo actions, and sectioned stage messages.
+
 ## Invariants
 
 - Keep orchestration constants out of `agent.py`; use `constants.py` (timeouts/limits/fallbacks).
 - Keep parsing/validation DRY; use `pydantic_parsing.py` helpers for LLM outputs and mixed payloads.
 - Prefer Pydantic validation for Slack/MCP/Notion payloads; avoid try/except parsing and manual dict probing.
+- For each implementation slice in this module, run a **two-pass concision audit**:
+  - **Pre-pass (before edits):** identify framework-native reuse points (`GraphFlow`, `FunctionTool`, memory component, shared parsing helpers) and a deletion-first path.
+  - **Post-pass (after tests):** minimize code by extracting shared paths, removing duplicate `if`/`try` blocks, and deleting obsolete compatibility/fallback code.
+  - Issue/PR checkpoints must include what was removed/simplified in this pass.
+- For each touched file, record a **code-quality pre/post audit** in issue/PR checkpoints:
+  - line count + `if`/`try`/`match` counts,
+  - typed boundary additions (Pydantic models/messages),
+  - framework leverage deltas (AutoGen, mem0/memory component, GraphFlow).
+- Prefer composable capability classes over coordinator method sprawl.
+- Use `match` for MECE branching; keep `if` for guard clauses only.
+- Keep exception boundaries narrow and local to IO edges; avoid broad control-flow `try/except`.
 - Legacy/back-compat code must be marked with `# TODO(refactor):` and removed after migration.
 - Keep MCP wiring out of `agent.py`; use `mcp_clients.py` for calendar/constraint-memory clients.
 - Durable constraint retrieval is centralized in `constraint_retriever.py` (query_types -> type_ids -> query_constraints).

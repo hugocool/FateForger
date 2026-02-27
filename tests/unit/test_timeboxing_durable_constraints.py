@@ -1,31 +1,32 @@
 import asyncio
 import types
+from datetime import datetime, timezone
 
 import pytest
 
 pytest.importorskip("autogen_agentchat")
 
+import fateforger.agents.timeboxing.agent as timeboxing_agent_module
 from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
 from fateforger.agents.timeboxing.constraint_retriever import STARTUP_PREFETCH_TAG
 from fateforger.agents.timeboxing.nlu import ConstraintInterpretation
 from fateforger.agents.timeboxing.stage_gating import StageGateOutput, TimeboxingStage
 from fateforger.agents.timeboxing.preferences import (
     ConstraintBase,
+    ConstraintDayOfWeek,
     Constraint,
     ConstraintNecessity,
     ConstraintScope,
     ConstraintSource,
     ConstraintStatus,
 )
-from fateforger.core.config import settings
 
 
 @pytest.mark.asyncio
-async def test_durable_constraint_prefetch_populates_session(monkeypatch):
+async def test_durable_constraint_prefetch_populates_session():
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     agent._durable_constraint_prefetch_tasks = {}
     agent._durable_constraint_prefetch_semaphore = asyncio.Semaphore(1)
-    monkeypatch.setattr(settings, "notion_timeboxing_parent_page_id", "parent")
 
     done = asyncio.Event()
 
@@ -123,9 +124,8 @@ async def test_collect_constraints_merges_durable_with_session():
 
 
 @pytest.mark.asyncio
-async def test_profile_constraints_auto_upsert_to_durable_store(monkeypatch):
+async def test_profile_constraints_auto_upsert_to_durable_store():
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
-    monkeypatch.setattr(settings, "notion_timeboxing_parent_page_id", "parent")
 
     agent._constraint_extraction_semaphore = asyncio.Semaphore(1)
     agent._durable_constraint_semaphore = asyncio.Semaphore(1)
@@ -199,7 +199,7 @@ async def test_profile_constraints_auto_upsert_to_durable_store(monkeypatch):
         await asyncio.sleep(0.01)
 
     assert captured_adds, "Expected local session constraints to be persisted."
-    assert captured_upserts, "Expected durable Notion upsert to be attempted."
+    assert captured_upserts, "Expected durable upsert to be attempted."
     upsert_record = captured_upserts[0]["record"]["constraint_record"]
     assert upsert_record["scope"] == "profile"
     assert TimeboxingStage.COLLECT_CONSTRAINTS.value in upsert_record["applies_stages"]
@@ -366,3 +366,128 @@ def test_durable_upsert_record_marks_startup_prefetch_for_sleep_defaults() -> No
     topics = record["constraint_record"]["topics"]
     assert "sleep" in topics
     assert STARTUP_PREFETCH_TAG in topics
+
+
+def test_collect_constraints_context_includes_timezone_local_current_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return datetime(2026, 2, 27, 1, 34, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(timeboxing_agent_module, "datetime", _FixedDateTime)
+
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(
+        thread_ts="t1",
+        channel_id="c1",
+        user_id="u1",
+        planned_date="2026-02-27",
+        tz_name="Europe/Amsterdam",
+    )
+    context = agent._build_collect_constraints_context(session=session, user_message="")
+
+    facts = context["facts"]
+    assert facts["date"] == "2026-02-27"
+    assert facts["timezone"] == "Europe/Amsterdam"
+    assert facts["current_time"] == "02:34"
+    assert facts["current_datetime"].startswith("2026-02-27T02:34")
+
+
+def test_durable_uid_is_stable_when_description_wording_changes() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(
+        thread_ts="t1",
+        channel_id="c1",
+        user_id="u1",
+        planned_date="2026-02-27",
+        tz_name="Europe/Amsterdam",
+    )
+    base = ConstraintBase(
+        name="No calls after 17:00",
+        description="Avoid meetings after 17:00.",
+        necessity=ConstraintNecessity.SHOULD,
+        scope=ConstraintScope.PROFILE,
+        tags=["meetings"],
+        hints={"rule_kind": "avoid_window"},
+        selector={
+            "windows": [
+                {
+                    "kind": "avoid",
+                    "start_time_local": "17:00",
+                    "end_time_local": "23:59",
+                }
+            ]
+        },
+    )
+    revised = ConstraintBase(
+        name="No calls after 17:00",
+        description="Please keep late afternoon clear for focus.",
+        necessity=ConstraintNecessity.MUST,
+        scope=ConstraintScope.PROFILE,
+        tags=["meetings"],
+        hints={"rule_kind": "avoid_window"},
+        selector={
+            "windows": [
+                {
+                    "kind": "avoid",
+                    "start_time_local": "17:00",
+                    "end_time_local": "23:59",
+                }
+            ]
+        },
+    )
+
+    uid_base = agent._build_durable_constraint_record(
+        session=session,
+        constraint=base,
+        decision_scope="profile",
+    )["constraint_record"]["lifecycle"]["uid"]
+    uid_revised = agent._build_durable_constraint_record(
+        session=session,
+        constraint=revised,
+        decision_scope="profile",
+    )["constraint_record"]["lifecycle"]["uid"]
+
+    assert uid_base == uid_revised
+
+
+def test_durable_uid_normalizes_days_of_week_order() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(
+        thread_ts="t1",
+        channel_id="c1",
+        user_id="u1",
+        planned_date="2026-02-27",
+        tz_name="Europe/Amsterdam",
+    )
+    c1 = ConstraintBase(
+        name="Deep work weekdays",
+        description="Protect deep work on weekdays.",
+        necessity=ConstraintNecessity.SHOULD,
+        scope=ConstraintScope.PROFILE,
+        days_of_week=[ConstraintDayOfWeek.MO, ConstraintDayOfWeek.WE],
+        hints={"rule_kind": "prefer_window"},
+    )
+    c2 = ConstraintBase(
+        name="Deep work weekdays",
+        description="Protect deep work on weekdays.",
+        necessity=ConstraintNecessity.SHOULD,
+        scope=ConstraintScope.PROFILE,
+        days_of_week=[ConstraintDayOfWeek.WE, ConstraintDayOfWeek.MO],
+        hints={"rule_kind": "prefer_window"},
+    )
+
+    uid1 = agent._build_durable_constraint_record(
+        session=session,
+        constraint=c1,
+        decision_scope="profile",
+    )["constraint_record"]["lifecycle"]["uid"]
+    uid2 = agent._build_durable_constraint_record(
+        session=session,
+        constraint=c2,
+        decision_scope="profile",
+    )["constraint_record"]["lifecycle"]["uid"]
+
+    assert uid1 == uid2

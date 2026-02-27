@@ -1,0 +1,224 @@
+d2 = r"""direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+extraction: "Phase 1 \u2014 Live Extraction" {
+  style.fill: "#f0f7ff"
+  style.stroke: "#93c5fd"
+  style.border-radius: 10
+  style.font-size: 13
+
+  slack: "\U0001f4ac Slack Thread" {
+    style.fill: "#dbeafe"
+    style.stroke: "#3b82f6"
+    style.border-radius: 8
+  }
+
+  llm_agent: "LLM Constraint Agent" {
+    shape: hexagon
+    style.fill: "#bfdbfe"
+    style.stroke: "#2563eb"
+  }
+
+  notion_extractor: "NotionConstraintExtractor" {
+    style.fill: "#dbeafe"
+    style.stroke: "#60a5fa"
+    style.border-radius: 6
+  }
+
+  slack -> llm_agent: "user message"
+  llm_agent -> notion_extractor: "proposed constraints"
+}
+
+stores: "Stores" {
+  style.fill: "#f8fafc"
+  style.stroke: "#cbd5e1"
+  style.border-radius: 10
+
+  notion_db: "\U0001f4d3 Notion DB\nTB Constraints" {
+    shape: cylinder
+    style.fill: "#fef3c7"
+    style.stroke: "#f59e0b"
+  }
+
+  sqlite_db: "\U0001f5c4 SQLite\nSession Store" {
+    shape: cylinder
+    style.fill: "#dcfce7"
+    style.stroke: "#22c55e"
+  }
+}
+
+extraction.notion_extractor -> stores.notion_db: "upsert (deduped by UID)"
+extraction.llm_agent -> stores.sqlite_db: "session write"
+
+prefetch: "Phase 2 \u2014 Background Prefetch" {
+  style.fill: "#faf5ff"
+  style.stroke: "#c4b5fd"
+  style.border-radius: 10
+  style.font-size: 13
+
+  date_commit: "Stage 0: Date Commit" {
+    shape: diamond
+    style.fill: "#e9d5ff"
+    style.stroke: "#9333ea"
+  }
+
+  retriever: "ConstraintRetriever\n.retrieve()" {
+    style.fill: "#f3e8ff"
+    style.stroke: "#a855f7"
+    style.border-radius: 6
+  }
+
+  query_plan: "Build Query Plan\n(stage + gap-driven event types)" {
+    style.fill: "#f3e8ff"
+    style.stroke: "#c4b5fd"
+    style.border-radius: 6
+  }
+
+  type_ids: "query_types(): rank type_ids\n(skipped at Stage 1)" {
+    style.fill: "#f3e8ff"
+    style.stroke: "#c4b5fd"
+    style.border-radius: 6
+    style.stroke-dash: 4
+  }
+
+  mcp_server: "Constraint Memory MCP" {
+    style.fill: "#ede9fe"
+    style.stroke: "#7c3aed"
+    style.border-radius: 6
+  }
+
+  date_commit -> retriever: "fire async task"
+  retriever -> query_plan
+  query_plan -> type_ids: "stage != COLLECT"
+  query_plan -> mcp_server: "COLLECT: direct" {
+    style.stroke-dash: 5
+  }
+  type_ids -> mcp_server
+}
+
+stores.notion_db -> prefetch.mcp_server
+
+filters: "Phase 3 \u2014 Notion Query + Filters" {
+  style.fill: "#fff7ed"
+  style.stroke: "#fb923c"
+  style.border-radius: 10
+  style.font-size: 13
+
+  notion_store: "NotionConstraintStore\n.query_constraints()" {
+    style.fill: "#fed7aa"
+    style.stroke: "#ea580c"
+    style.border-radius: 6
+    style.bold: true
+  }
+
+  date_filter: "\U0001f4c5 Date Range\nstart_date <= today <= end_date" {
+    style.fill: "#fff7ed"
+    style.stroke: "#fdba74"
+    style.border-radius: 6
+  }
+
+  scope_filter: "\U0001f52d Scope\nprofile: always / datespan: bounded" {
+    style.fill: "#fff7ed"
+    style.stroke: "#fdba74"
+    style.border-radius: 6
+  }
+
+  status_filter: "\u2705 Status: locked | proposed" {
+    style.fill: "#fff7ed"
+    style.stroke: "#fdba74"
+    style.border-radius: 6
+  }
+
+  stage_filter: "\U0001f3af Applies Stages\nCOLLECT / SKELETON / REFINE / ..." {
+    style.fill: "#fff7ed"
+    style.stroke: "#fdba74"
+    style.border-radius: 6
+  }
+
+  event_filter: "\U0001f5c2 Event Types: M / DW / SW / H / R" {
+    style.fill: "#fff7ed"
+    style.stroke: "#fdba74"
+    style.border-radius: 6
+  }
+
+  startup_tag: "\U0001f3f7 Tag: startup_prefetch\nStage 1 only: pull profile defaults\nbefore LLM sees session" {
+    style.fill: "#fdf4ff"
+    style.stroke: "#d946ef"
+    style.border-radius: 6
+  }
+
+  notion_store -> date_filter
+  notion_store -> scope_filter
+  notion_store -> status_filter
+  notion_store -> stage_filter
+  notion_store -> event_filter
+  notion_store -> startup_tag: "Stage 1 first-pass" {
+    style.stroke: "#d946ef"
+    style.stroke-dash: 4
+  }
+}
+
+prefetch.mcp_server -> filters.notion_store
+
+postprocess: "Phase 4 \u2014 Post-retrieval Processing" {
+  style.fill: "#f0fdf4"
+  style.stroke: "#4ade80"
+  style.border-radius: 10
+  style.font-size: 13
+
+  dedup: "Deduplicate by UID\n(first-seen wins)" {
+    style.fill: "#dcfce7"
+    style.stroke: "#16a34a"
+    style.border-radius: 6
+  }
+
+  suppress: "Filter suppressed UIDs\n(user declined this session)" {
+    style.fill: "#dcfce7"
+    style.stroke: "#16a34a"
+    style.border-radius: 6
+  }
+
+  dow: "days_of_week metadata\nnot filtered; LLM must respect SA/SU" {
+    style.fill: "#dcfce7"
+    style.stroke: "#16a34a"
+    style.border-radius: 6
+  }
+
+  dedup -> suppress
+  suppress -> dow
+}
+
+filters.date_filter -> postprocess.dedup
+filters.scope_filter -> postprocess.dedup
+filters.status_filter -> postprocess.dedup
+filters.stage_filter -> postprocess.dedup
+filters.event_filter -> postprocess.dedup
+filters.startup_tag -> postprocess.dedup
+
+collect: "_collect_constraints()" {
+  style.fill: "#fef2f2"
+  style.stroke: "#f87171"
+  style.border-radius: 10
+  style.bold: true
+  style.font-size: 16
+}
+
+active: "session.active_constraints\ninjected into every LLM planning prompt" {
+  style.fill: "#fee2e2"
+  style.stroke: "#fca5a5"
+  style.border-radius: 8
+  style.bold: true
+}
+
+postprocess.dow -> collect: "durable constraints"
+stores.sqlite_db -> collect: "session-local constraints"
+collect -> active
+"""
+
+with open("constraint_flow.d2", "w") as f:
+    f.write(d2)
+print("wrote constraint_flow.d2")

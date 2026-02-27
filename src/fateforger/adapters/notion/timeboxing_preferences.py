@@ -18,6 +18,7 @@ from ultimate_notion.schema import AggFunc
 class Necessity(uno.OptionNS):
     MUST = uno.Option("must", color=uno.Color.RED)
     SHOULD = uno.Option("should", color=uno.Color.YELLOW)
+    PREFER = uno.Option("prefer", color=uno.Color.GREEN)
 
 
 class CStatus(uno.OptionNS):
@@ -860,6 +861,8 @@ class NotionConstraintStore:
             return Necessity.MUST
         if value == "should":
             return Necessity.SHOULD
+        if value == "prefer":
+            return Necessity.PREFER
         raise ValueError(f"Unknown necessity: {value}")
 
     def _to_status(self, value: Optional[str]) -> Optional[uno.Option]:

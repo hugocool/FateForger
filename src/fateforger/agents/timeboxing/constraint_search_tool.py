@@ -1,7 +1,7 @@
 """Conversational constraint search tool for the timeboxing agent.
 
 This module provides a FunctionTool-compatible search function that stage-gating
-LLMs can invoke to find relevant durable constraints in the Notion store.
+LLMs can invoke to find relevant durable constraints in the configured durable store.
 
 The tool accepts a structured search plan (multiple query facets) and executes
 them in parallel against the constraint-memory MCP server. Results are
@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from pydantic import BaseModel, Field
 
-from fateforger.agents.timeboxing.mcp_clients import ConstraintMemoryClient
+from fateforger.agents.timeboxing.durable_constraint_store import DurableConstraintStore
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class ConstraintSearchQuery(BaseModel):
     event_types: Optional[List[str]] = Field(
         default=None,
         description=(
-            "Notion event-type codes to filter by. "
+            "Event-type codes to filter by. "
             "Options: M (meeting), C (commute), DW (deep work), SW (shallow work), "
             "H (habit), R (rest), BU (buffer), BG (break), PR (prep)."
         ),
@@ -235,7 +235,7 @@ def _dedupe_results(
 
 
 async def _execute_single_query(
-    client: ConstraintMemoryClient,
+    client: DurableConstraintStore,
     query: ConstraintSearchQuery,
     *,
     as_of: str,
@@ -280,7 +280,7 @@ async def _execute_single_query(
 
 
 async def execute_search_plan(
-    client: ConstraintMemoryClient,
+    client: DurableConstraintStore,
     plan: ConstraintSearchPlan,
 ) -> ConstraintSearchResponse:
     """Execute a full search plan (parallel queries), deduplicate, and summarise.
@@ -333,7 +333,7 @@ async def search_constraints(
     queries: list[dict[str, Any]],
     planned_date: str | None = None,
     stage: str | None = None,
-    _client: ConstraintMemoryClient | None = None,
+    _client: DurableConstraintStore | None = None,
 ) -> str:
     """Search the durable constraint store with one or more query facets.
 

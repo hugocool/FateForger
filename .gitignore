@@ -238,3 +238,5 @@ data/*.db
 # Logs
 logs/
 *.log
+.playwright-mcp/*.png
+logic-to-visual/prototype/artifacts/screenshots/*.png

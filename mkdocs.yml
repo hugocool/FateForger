@@ -33,6 +33,7 @@ nav:
       - Overview: architecture/overview.md
       - Agents: architecture/agents.md
       - Data Models: architecture/data-models.md
+      - Constraint Flow: architecture/constraint-flow/index.md
       - Scheduling: architecture/scheduling.md
       - Timeboxing Refactor: architecture/timeboxing_refactor.md
       - Calendar Haunter: calendar-haunter.md

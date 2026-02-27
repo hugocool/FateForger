@@ -174,6 +174,7 @@ class TransitionNode(BaseChatAgent):
         decision = self._turn_init.turn.decision
         user_text = self._turn_init.turn.user_text
         self.stage_user_message = user_text
+        self._session.skip_stage_execution = False
 
         if decision is None:
             return Response(
@@ -183,66 +184,52 @@ class TransitionNode(BaseChatAgent):
                 )
             )
 
-        if decision.action == "cancel":
-            self._session.completed = True
-            self._session.thread_state = "canceled"
-            self._session.last_response = "Okay—stopping this timeboxing session."
-            return Response(
-                chat_message=StructuredMessage(
-                    source=self.name,
-                    content=FlowSignal(kind="transition", note="canceled"),
+        match decision.action:
+            case "cancel":
+                self._session.completed = True
+                self._session.thread_state = "canceled"
+                self._session.last_response = "Okay—stopping this timeboxing session."
+                signal = FlowSignal(kind="transition", note="canceled")
+            case "back":
+                target = (
+                    decision.target_stage
+                    or self._orchestrator._previous_stage(  # noqa: SLF001
+                        self._session.stage
+                    )
                 )
-            )
+                await self._orchestrator._advance_stage(
+                    self._session, next_stage=target
+                )  # noqa: SLF001
+                signal = FlowSignal(kind="transition", note="back")
+            case "proceed":
+                await self._orchestrator._proceed(self._session)  # noqa: SLF001
+                self.stage_user_message = ""
+                signal = FlowSignal(kind="transition", note="proceed")
+            case "assist":
+                assist_reply = await self._orchestrator._run_assist_turn(  # noqa: SLF001
+                    session=self._session,
+                    user_message=user_text,
+                    note=decision.note,
+                )
+                if assist_reply:
+                    self._session.last_response = assist_reply
+                    self._session.skip_stage_execution = True
+                    self.stage_user_message = ""
+                    signal = FlowSignal(kind="transition", note="assist")
+                else:
+                    signal = FlowSignal(kind="transition", note="rerun")
+            case "provide_info":
+                # In Stage 5, user corrections must return to Stage 4 patching.
+                if self._session.stage == TimeboxingStage.REVIEW_COMMIT:
+                    await self._orchestrator._advance_stage(  # noqa: SLF001
+                        self._session,
+                        next_stage=TimeboxingStage.REFINE,
+                    )
+                signal = FlowSignal(kind="transition", note="rerun")
+            case _:
+                signal = FlowSignal(kind="transition", note="rerun")
 
-        if decision.action == "back":
-            target = (
-                decision.target_stage
-                or self._orchestrator._previous_stage(  # noqa: SLF001
-                    self._session.stage
-                )
-            )
-            await self._orchestrator._advance_stage(
-                self._session, next_stage=target
-            )  # noqa: SLF001
-            self.stage_user_message = user_text
-            return Response(
-                chat_message=StructuredMessage(
-                    source=self.name, content=FlowSignal(kind="transition", note="back")
-                )
-            )
-
-        if decision.action == "proceed":
-            await self._orchestrator._proceed(self._session)  # noqa: SLF001
-            self.stage_user_message = ""
-            return Response(
-                chat_message=StructuredMessage(
-                    source=self.name,
-                    content=FlowSignal(kind="transition", note="proceed"),
-                )
-            )
-
-        if decision.action == "provide_info":
-            # In Stage 5, user corrections must return to Stage 4 patching.
-            if self._session.stage == TimeboxingStage.REVIEW_COMMIT:
-                await self._orchestrator._advance_stage(  # noqa: SLF001
-                    self._session,
-                    next_stage=TimeboxingStage.REFINE,
-                )
-            self.stage_user_message = user_text
-            return Response(
-                chat_message=StructuredMessage(
-                    source=self.name,
-                    content=FlowSignal(kind="transition", note="rerun"),
-                )
-            )
-
-        # redo / assist: rerun current stage with user text
-        self.stage_user_message = user_text
-        return Response(
-            chat_message=StructuredMessage(
-                source=self.name, content=FlowSignal(kind="transition", note="rerun")
-            )
-        )
+        return Response(chat_message=StructuredMessage(source=self.name, content=signal))
 
     async def on_reset(self, cancellation_token: CancellationToken) -> None:
         self.stage_user_message = ""
@@ -582,6 +569,10 @@ class StageRefineNode(_StageNodeBase):
             gate.summary.append(
                 "Patch execution used fallback tool routing for this turn."
             )
+        if execution.memory_operations:
+            gate.summary.append(
+                f"Memory operations: {', '.join(execution.memory_operations)}."
+            )
         self._session.stage_ready = True
         self._session.stage_missing = []
         self._session.stage_question = gate.question
@@ -656,6 +647,7 @@ class PresenterNode(BaseChatAgent):
         if self._session.last_response:
             content = self._session.last_response
             self._session.last_response = None
+            self._session.skip_stage_execution = False
             return Response(chat_message=TextMessage(content=content, source=self.name))
 
         background_notes = self._orchestrator._collect_background_notes(

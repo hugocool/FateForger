@@ -10,11 +10,8 @@ Verifies that:
 
 from __future__ import annotations
 
-import asyncio
 import types
 from datetime import date, time, timedelta
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -32,7 +29,6 @@ from fateforger.agents.timeboxing.agent import (
 from fateforger.agents.timeboxing.stage_gating import StageGateOutput, TimeboxingStage
 from fateforger.agents.timeboxing.tb_models import (
     ET,
-    AfterPrev,
     FixedStart,
     FixedWindow,
     TBEvent,
@@ -332,7 +328,6 @@ class TestRefineNodeUsesTBPlan:
             )
             return RefineToolExecutionOutcome(
                 patch_selected=True,
-                memory_selected=False,
                 memory_queued=False,
                 fallback_patch_used=False,
                 calendar=CalendarSyncOutcome(
@@ -423,7 +418,6 @@ class TestRefineNodeUsesTBPlan:
             _ = (patch_message, user_message)
             return RefineToolExecutionOutcome(
                 patch_selected=True,
-                memory_selected=True,
                 memory_queued=True,
                 fallback_patch_used=False,
                 calendar=CalendarSyncOutcome(

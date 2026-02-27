@@ -31,6 +31,7 @@ class TimeboxingTimeouts:
     calendar_prefetch_wait_s: float = 2.0
     pending_constraints_wait_s: float = 2.0
     durable_prefetch_wait_s: float = 20.0
+    tasks_snapshot_s: float = 12.0
 
 
 @dataclass(frozen=True, slots=True)

@@ -86,34 +86,54 @@ def build_timeboxing_graphflow(
     builder.add_edge(
         transition,
         presenter,
-        condition=lambda _m: bool(session.completed),
+        condition=lambda _m: bool(session.completed or session.skip_stage_execution),
         activation_condition="any",
     )
 
     builder.add_edge(
         transition,
         stage_collect,
-        condition=lambda _m: session.stage == TimeboxingStage.COLLECT_CONSTRAINTS and not session.completed,
+        condition=lambda _m: (
+            session.stage == TimeboxingStage.COLLECT_CONSTRAINTS
+            and not session.completed
+            and not session.skip_stage_execution
+        ),
     )
     builder.add_edge(
         transition,
         stage_capture,
-        condition=lambda _m: session.stage == TimeboxingStage.CAPTURE_INPUTS and not session.completed,
+        condition=lambda _m: (
+            session.stage == TimeboxingStage.CAPTURE_INPUTS
+            and not session.completed
+            and not session.skip_stage_execution
+        ),
     )
     builder.add_edge(
         transition,
         stage_skeleton,
-        condition=lambda _m: session.stage == TimeboxingStage.SKELETON and not session.completed,
+        condition=lambda _m: (
+            session.stage == TimeboxingStage.SKELETON
+            and not session.completed
+            and not session.skip_stage_execution
+        ),
     )
     builder.add_edge(
         transition,
         stage_refine,
-        condition=lambda _m: session.stage == TimeboxingStage.REFINE and not session.completed,
+        condition=lambda _m: (
+            session.stage == TimeboxingStage.REFINE
+            and not session.completed
+            and not session.skip_stage_execution
+        ),
     )
     builder.add_edge(
         transition,
         stage_review,
-        condition=lambda _m: session.stage == TimeboxingStage.REVIEW_COMMIT and not session.completed,
+        condition=lambda _m: (
+            session.stage == TimeboxingStage.REVIEW_COMMIT
+            and not session.completed
+            and not session.skip_stage_execution
+        ),
     )
 
     builder.add_edge(stage_collect, presenter, activation_condition="any")

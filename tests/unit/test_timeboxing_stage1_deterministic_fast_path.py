@@ -6,8 +6,6 @@ pytest.importorskip("autogen_agentchat")
 
 import fateforger.agents.timeboxing.agent as timeboxing_agent_mod
 from fateforger.agents.timeboxing.agent import TimeboxingFlowAgent
-from fateforger.core.config import settings
-
 
 @pytest.mark.asyncio
 async def test_stage_collect_constraints_agent_keeps_search_tool(
@@ -56,8 +54,6 @@ async def test_stage_collect_constraints_agent_keeps_search_tool(
         "_build_constraint_search_tool",
         lambda _self: "search_constraints_tool",
     )
-    monkeypatch.setattr(settings, "notion_timeboxing_parent_page_id", "parent")
-
     await TimeboxingFlowAgent._ensure_stage_agents(agent)
 
     assert captured_tools["StageCollectConstraints"] == ["search_constraints_tool"]

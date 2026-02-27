@@ -1,7 +1,7 @@
 """Gap-driven durable constraint retrieval for timeboxing.
 
-This module provides a deterministic retriever that queries the Notion-backed
-constraint-memory MCP server using structured filters and routing metadata.
+This module provides a deterministic retriever that queries the configured
+durable-memory store using structured filters and routing metadata.
 
 It is "gap-driven" in the sense that it derives a small query plan from the
 current planning context (stage + presence of gaps/blocks/immovables) and uses
@@ -16,20 +16,20 @@ from __future__ import annotations
 
 from datetime import date
 from enum import Enum
-from typing import Any, Iterable, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 from pydantic import BaseModel, Field
 
 from fateforger.agents.timeboxing.constants import TIMEBOXING_LIMITS
 from fateforger.agents.timeboxing.contracts import BlockPlan, Immovable, SleepTarget, WorkWindow
-from fateforger.agents.timeboxing.mcp_clients import ConstraintMemoryClient
+from fateforger.agents.timeboxing.durable_constraint_store import DurableConstraintStore
 from fateforger.agents.timeboxing.stage_gating import TimeboxingStage
 
 STARTUP_PREFETCH_TAG = "startup_prefetch"
 
 
 class ConstraintEventType(str, Enum):
-    """Constraint event types (Notion schema codes)."""
+    """Constraint event types used by durable-memory filtering."""
 
     MEETING = "M"
     COMMUTE = "C"
@@ -76,7 +76,7 @@ class ConstraintRetriever:
 
         Args:
             max_type_ids: Maximum number of constraint type IDs to request.
-            query_limit: Maximum constraints to request from the MCP server.
+            query_limit: Maximum constraints to request from durable memory.
         """
         self._max_type_ids = max_type_ids
         self._query_limit = query_limit
@@ -112,7 +112,7 @@ class ConstraintRetriever:
     async def retrieve(
         self,
         *,
-        client: ConstraintMemoryClient,
+        client: DurableConstraintStore,
         stage: TimeboxingStage,
         planned_day: date,
         work_window: WorkWindow | None,
@@ -195,7 +195,7 @@ class ConstraintRetriever:
     async def _select_type_ids(
         self,
         *,
-        client: ConstraintMemoryClient,
+        client: DurableConstraintStore,
         stage: TimeboxingStage,
         event_types: Sequence[str],
         max_type_ids: int,

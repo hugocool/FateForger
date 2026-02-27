@@ -1,0 +1,159 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+title: "C2T Indexer Self-Hosted Deployment (Draft v0)"
+
+tb: {
+  label: "1) Trust Boundaries"
+
+  client: {
+    label: "Client Environment"
+    sources: "Client Data Sources"
+    io: "C2T I/O Components\\n(Connectors + API Adapters + MCP Gateway)"
+    store: "Client Storage"
+    kms: "Client KMS\\n(K_client)"
+  }
+
+  c2t: {
+    label: "C2T Managed Environment"
+    api: "C2T API/MCP Surface"
+    engine: "C2T Indexer Engine\\n(proprietary logic)"
+    kms: "C2T KMS\\n(K_engine)"
+    internal: "Internal C2T Tables\\n(questions/answers/queue)"
+  }
+
+  client.sources -> client.io
+  client.io -> client.store: "Write encrypted payloads"
+  client.kms -> client.io: "Client key control"
+
+  client.io <-> c2t.api: "mTLS"
+  c2t.api -> c2t.engine
+  c2t.engine -> c2t.internal
+  c2t.engine -> client.store: "Scoped read/write handles only"
+  c2t.kms -> c2t.engine: "Engine key control"
+}
+
+exposure: {
+  label: "2) Allowed Exposure Model"
+
+  apps: "Client Apps / Agentic QA Clients"
+  surface: "MCP + API + Connectors"
+  products: "Datasets + Answer Streams"
+
+  hidden: {
+    label: "Not directly exposed"
+    questions: "Internal questions table"
+    answers: "Internal answers table"
+    queue: "Internal queue + orchestration"
+    methods: "Clustering + facet extraction internals"
+  }
+
+  apps -> surface -> products
+  products -> hidden.questions: "not directly exposed"
+  products -> hidden.answers: "not directly exposed"
+  products -> hidden.queue: "not directly exposed"
+  products -> hidden.methods: "not directly exposed"
+}
+
+encryption: {
+  label: "3) Encryption States by Stage"
+
+  ingest: "Ingest from source systems\\nplaintext in process memory\\nKey owner: Client"
+  at_rest_client: "Stored source payloads\\nEnc[K_client](data)\\nKey owner: Client"
+  transport: "Transport to C2T services\\nmTLS in transit\\nKey owner: shared transport policy"
+  runtime: "Active indexing runtime\\nplaintext only in transient memory\\nKey owner: C2T runtime"
+  persisted: "Persisted index artifacts\\nEnc[K_client](Enc[K_engine](artifact))\\nKey owner: Client + C2T"
+  streaming: "Dataset/answer streaming\\nmTLS + client-readable policy\\nKey owner: client-facing contract"
+
+  ingest -> at_rest_client -> transport -> runtime -> persisted -> streaming
+}
+
+request: {
+  label: "4) Request / Stream Flow"
+
+  app: "Client App"
+  io: "Client I/O Components"
+  api: "C2T API/MCP"
+  engine: "C2T Indexer Engine"
+  store: "Client Storage"
+
+  app -> io: "Request dataset/answer stream"
+  io -> api: "Authenticated API/MCP call (mTLS)"
+  api -> engine: "Execute request"
+  engine -> store: "Read/write with scoped handles"
+  store -> engine: "Encrypted payloads/artifacts"
+  engine -> api: "Result chunks"
+  api -> io: "Streamed response (mTLS)"
+  io -> app: "Client-consumable stream"
+}
+
+todo: {
+  label: "TODO for next revision"
+  ownership: "Overview of who owns what"
+  mitigations: "Mitigation measures"
+  encryption: "Encryption design details"
+  infoflow: "Information flow hardening"
+
+  ownership -> mitigations -> encryption -> infoflow
+}
+
+next: {
+  label: "Future design commitments"
+  envelope: "Pin one concrete envelope-encryption design"
+  rotation: "Add key rotation + revocation flows"
+  retry: "Add failure/retry + queue semantics without exposing internals"
+  deploy: "Add deployment options: single-tenant, per-tenant pools, BYO storage"
+
+  envelope -> rotation -> retry -> deploy
+}
+
+tb -> exposure: "surface policy"
+exposure -> encryption: "data handling"
+encryption -> request: "runtime path"
+request -> todo: "gaps"
+todo -> next: "planned upgrades"
+
+classes: {
+  boundary: {
+    style: {
+      stroke: "#1f4db3"
+      stroke-width: 2
+      fill: "#eff6ff"
+    }
+  }
+  hidden: {
+    style: {
+      stroke: "#8a8f98"
+      stroke-width: 1
+      stroke-dash: 4
+      fill: "#f5f5f5"
+    }
+  }
+  stage: {
+    style: {
+      stroke: "#6d28d9"
+      fill: "#f3e8ff"
+    }
+  }
+  todo: {
+    style: {
+      stroke: "#b45309"
+      fill: "#fff7ed"
+    }
+  }
+}
+
+tb.client.class: boundary
+tb.c2t.class: boundary
+exposure.hidden.questions.class: hidden
+exposure.hidden.answers.class: hidden
+exposure.hidden.queue.class: hidden
+exposure.hidden.methods.class: hidden
+encryption.class: stage
+todo.class: todo
+next.class: todo

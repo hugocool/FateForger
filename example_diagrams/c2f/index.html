@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
+  <title>C2T Self-Hosted Deployment Narrative</title>
+  <style>
+    :root {
+      --bg: #f2f5fb;
+      --surface: #ffffff;
+      --surface-soft: #f8faff;
+      --text: #10192a;
+      --muted: #4f5f7a;
+      --line: #d2dcec;
+      --line-strong: #b8c8e6;
+      --accent: #1d4ed8;
+      --accent-soft: #dce8ff;
+      --title: #0b2447;
+      --shadow-sm: 0 6px 18px rgba(11, 36, 71, 0.08);
+      --shadow-md: 0 16px 36px rgba(11, 36, 71, 0.14);
+      --radius: 12px;
+      --font-ui: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+      --font-display: "Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% -8%, #dfe9ff 0%, transparent 30%),
+        radial-gradient(circle at 90% 108%, #e1efff 0%, transparent 32%),
+        var(--bg);
+      font: 14px/1.52 var(--font-ui);
+      display: grid;
+      grid-template-columns: minmax(240px, 280px) minmax(0, 1fr) minmax(320px, 390px);
+      height: 100dvh;
+      overflow: hidden;
+    }
+    #left, #right {
+      background: linear-gradient(180deg, #ffffff 0%, var(--surface-soft) 100%);
+      border-right: 1px solid var(--line);
+      overflow: auto;
+      position: relative;
+      z-index: 2;
+    }
+    #right {
+      border-right: 0;
+      border-left: 1px solid var(--line);
+      display: grid;
+      grid-template-rows: 1fr auto;
+    }
+    #left h1 {
+      font-size: 12px;
+      margin: 18px 18px 4px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: #33476b;
+      font-family: var(--font-display);
+      font-weight: 700;
+    }
+    #left p {
+      margin: 0 18px 16px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .step-btn {
+      width: calc(100% - 20px);
+      margin: 4px 10px;
+      text-align: left;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 11px;
+      background: #ffffffcc;
+      cursor: pointer;
+      color: var(--text);
+      font-size: 13px;
+      transition: all .16s ease;
+    }
+    .step-btn:hover {
+      background: #f3f7ff;
+      border-color: var(--line-strong);
+      transform: translateY(-1px);
+    }
+    .step-btn.active {
+      background: linear-gradient(180deg, #e8f0ff 0%, #dae7ff 100%);
+      border-color: #98b3e6;
+      color: #12326f;
+      font-weight: 600;
+      box-shadow: inset 0 0 0 1px #c1d4ff;
+    }
+    .step-btn:focus-visible,
+    .tb-btn:focus-visible,
+    .nav-btn:focus-visible,
+    #drawer-close:focus-visible {
+      outline: 3px solid #90b4ff;
+      outline-offset: 1px;
+    }
+    #center {
+      position: relative;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: 1fr;
+      min-width: 0;
+    }
+    #canvas-wrap {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background:
+        linear-gradient(180deg, #f6f9ff 0%, #f2f7ff 100%);
+    }
+    #svg-host { width: 100%; height: 100%; }
+    #svg-host > svg { width: 100%; height: 100%; }
+
+    /* Force total light mode inside D2 output for consistent contrast. */
+    #svg-host .d2-node text {
+      fill: #17243b !important;
+      stroke: transparent !important;
+      font-weight: 560;
+      paint-order: stroke fill;
+    }
+    #svg-host .d2-node rect,
+    #svg-host .d2-node ellipse,
+    #svg-host .d2-node polygon,
+    #svg-host .d2-node path {
+      fill: #eef4ff !important;
+      stroke: #8ca5d4 !important;
+      stroke-width: 1.35 !important;
+    }
+    #svg-host .d2-node.boundary rect,
+    #svg-host .d2-node.boundary ellipse,
+    #svg-host .d2-node.boundary polygon,
+    #svg-host .d2-node.boundary path {
+      fill: #e9f4ff !important;
+      stroke: #77a4d8 !important;
+    }
+    #svg-host .d2-node.stage rect,
+    #svg-host .d2-node.stage ellipse,
+    #svg-host .d2-node.stage polygon,
+    #svg-host .d2-node.stage path {
+      fill: #f5efff !important;
+      stroke: #a58bd7 !important;
+    }
+    #svg-host .d2-node.todo rect,
+    #svg-host .d2-node.todo ellipse,
+    #svg-host .d2-node.todo polygon,
+    #svg-host .d2-node.todo path {
+      fill: #fff5e8 !important;
+      stroke: #d5a06e !important;
+    }
+    #svg-host .d2-node.hidden rect,
+    #svg-host .d2-node.hidden ellipse,
+    #svg-host .d2-node.hidden polygon,
+    #svg-host .d2-node.hidden path {
+      fill: #f8f9fc !important;
+      stroke: #abb4c8 !important;
+    }
+    #svg-host .d2-edge path {
+      stroke: #7487ad !important;
+      stroke-width: 1.45 !important;
+    }
+    #svg-host .d2-edge text {
+      fill: #33425e !important;
+      stroke: rgba(255, 255, 255, 0.88);
+      stroke-width: 0.8px;
+      paint-order: stroke fill;
+    }
+
+    .d2-node, .d2-edge { transition: opacity .22s ease; }
+    .d2-node.lit rect,
+    .d2-node.lit path,
+    .d2-node.lit polygon,
+    .d2-node.lit ellipse {
+      stroke: #1d4ed8 !important;
+      stroke-width: 2.5 !important;
+      fill: #e8f0ff !important;
+      fill-opacity: 1 !important;
+      filter: drop-shadow(0 0 6px rgba(29, 78, 216, .22));
+    }
+    .d2-node.lit text {
+      fill: #0b1222 !important;
+      font-weight: 700;
+      stroke: rgba(255,255,255,.9);
+      stroke-width: .8px;
+      paint-order: stroke fill;
+    }
+    .d2-edge.lit path {
+      stroke: #1d4ed8 !important;
+      stroke-width: 2.2 !important;
+    }
+    .focus-mode .d2-node.dimmed,
+    .focus-mode .d2-edge.dimmed {
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    #toolbar {
+      position: absolute;
+      right: 14px;
+      bottom: 14px;
+      display: flex;
+      gap: 6px;
+      z-index: 40;
+      background: rgba(255,255,255,.88);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 6px;
+      box-shadow: var(--shadow-sm);
+      backdrop-filter: blur(6px);
+    }
+    .tb-btn {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 5px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      color: #1a2f52;
+      transition: all .16s ease;
+    }
+    .tb-btn:hover {
+      border-color: #93b2f4;
+      background: #ecf2ff;
+    }
+
+    #detail-drawer {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      max-height: 42%;
+      background: var(--surface);
+      border-top: 2px solid var(--accent);
+      box-shadow: var(--shadow-md);
+      transform: translateY(102%);
+      transition: transform .22s ease;
+      z-index: 50;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    #detail-drawer.open { transform: translateY(0); }
+    #drawer-header {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #f3f8ff;
+    }
+    #drawer-node-id {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      color: #32425f;
+      background: #eef2ff;
+      border-radius: 6px;
+      padding: 2px 8px;
+    }
+    #drawer-close {
+      margin-left: auto;
+      border: 0;
+      background: transparent;
+      font-size: 18px;
+      cursor: pointer;
+      color: #5c6f93;
+      line-height: 1;
+    }
+    #drawer-body { overflow: auto; padding: 12px 14px; }
+    #drawer-body p { margin: 0; color: #22304f; }
+
+    #edge-tooltip {
+      position: fixed;
+      z-index: 70;
+      max-width: 280px;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.4;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity .14s ease;
+    }
+    #edge-tooltip.visible { opacity: 1; }
+
+    #sidebar-inner { padding: 18px; overflow: auto; }
+    .step-tag {
+      display: inline-block;
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #1f3f7c;
+      background: #dbe8ff;
+      border-radius: 999px;
+      padding: 4px 9px;
+      margin-bottom: 10px;
+      border: 1px solid #bed2ff;
+      font-family: var(--font-display);
+    }
+    #step-title {
+      margin: 0 0 10px;
+      font-size: 29px;
+      line-height: 1.16;
+      font-family: var(--font-display);
+      color: var(--title);
+    }
+    #step-body p { margin: 0 0 10px; color: #334155; }
+    .fact-list { margin: 0 0 8px 18px; padding: 0; }
+    .fact-list li { margin: 8px 0; }
+    .callout {
+      margin-top: 10px;
+      border: 1px solid #f2c07b;
+      background: #fff7e7;
+      border-radius: 8px;
+      padding: 8px 10px;
+      color: #7a4b05;
+    }
+    .callout.info {
+      border-color: #9ac2ff;
+      background: #eaf2ff;
+      color: #1d4ed8;
+    }
+    #nav {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      border-top: 1px solid var(--line);
+      padding: 12px;
+      background: var(--surface);
+      box-shadow: 0 -2px 10px rgba(11, 36, 71, 0.05);
+    }
+    .nav-btn {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      color: #1a2f52;
+      transition: all .16s ease;
+    }
+    .nav-btn:hover:not(:disabled) {
+      border-color: #97b7f0;
+      background: #ecf3ff;
+    }
+    .nav-btn:disabled { opacity: .35; cursor: default; }
+    .dp-header { font-weight: 700; margin-bottom: 6px; }
+
+    @media (max-width: 1300px) {
+      body {
+        grid-template-columns: minmax(220px, 250px) minmax(0, 1fr) minmax(290px, 330px);
+      }
+      #step-title { font-size: 24px; }
+    }
+
+    @media (max-width: 1040px) {
+      body {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto minmax(0, 1fr) minmax(230px, 36vh);
+      }
+      #left {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+        overflow-x: auto;
+        overflow-y: hidden;
+        white-space: nowrap;
+        padding-bottom: 6px;
+      }
+      #left h1, #left p {
+        display: inline-block;
+        margin-right: 10px;
+      }
+      .step-btn {
+        width: auto;
+        display: inline-block;
+        white-space: nowrap;
+        margin: 6px 4px;
+      }
+      #right {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+      #toolbar {
+        right: 10px;
+        bottom: 10px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <aside id="left">
+    <h1>C2F Narrative</h1>
+    <p>Self-hosted deployment walkthrough</p>
+    <button class="step-btn" data-step="0" onclick="goStep(0,this)">0. Overview</button>
+    <button class="step-btn" data-step="1" onclick="goStep(1,this)">1. Responsibility split</button>
+    <button class="step-btn" data-step="2" onclick="goStep(2,this)">2. Trust boundaries</button>
+    <button class="step-btn" data-step="3" onclick="goStep(3,this)">3. Exposure model</button>
+    <button class="step-btn" data-step="4" onclick="goStep(4,this)">4. Encryption states</button>
+    <button class="step-btn" data-step="5" onclick="goStep(5,this)">5. Request/stream flow</button>
+    <button class="step-btn" data-step="6" onclick="goStep(6,this)">6. TODO set</button>
+    <button class="step-btn" data-step="7" onclick="goStep(7,this)">7. Future commitments</button>
+    <button class="step-btn" data-step="8" onclick="goStep(8,this)">8. Review checklist</button>
+  </aside>
+
+  <main id="center">
+    <div id="canvas-wrap">
+      <div id="svg-host"></div>
+      <div id="detail-drawer">
+        <div id="drawer-header">
+          <span id="drawer-node-id"></span>
+          <button id="drawer-close" onclick="hideDetail()" title="Close">x</button>
+        </div>
+        <div id="drawer-body"></div>
+      </div>
+      <div id="toolbar">
+        <button class="tb-btn" id="btn-focus" onclick="toggleFocus()" title="Toggle focus/context">Focus</button>
+        <button class="tb-btn" id="btn-fit" onclick="resetOverview()">Fit</button>
+        <button class="tb-btn" id="btn-zoom-in" onclick="pz&&pz.zoomIn()">+</button>
+        <button class="tb-btn" id="btn-zoom-out" onclick="pz&&pz.zoomOut()">-</button>
+      </div>
+    </div>
+  </main>
+
+  <aside id="right">
+    <div id="sidebar-inner">
+      <span class="step-tag" id="step-tag"></span>
+      <h2 id="step-title"></h2>
+      <div id="step-body"></div>
+    </div>
+    <div id="nav">
+      <button class="nav-btn" id="btn-prev" onclick="goStep(curStep-1,null)">Prev</button>
+      <button class="nav-btn" id="btn-next" onclick="goStep(curStep+1,null)">Next</button>
+    </div>
+  </aside>
+
+  <div id="edge-tooltip"></div>
+
+  <script src="./vendor/svg-pan-zoom.min.js"></script>
+  <script type="module" src="./narrative-page.js"></script>
+</body>
+</html>

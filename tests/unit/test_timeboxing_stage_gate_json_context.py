@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,6 +12,7 @@ pytest.importorskip("autogen_agentchat")
 
 from autogen_agentchat.messages import TextMessage
 
+import fateforger.agents.timeboxing.agent as timeboxing_agent_mod
 from fateforger.agents.timeboxing.agent import TimeboxingFlowAgent
 from fateforger.agents.timeboxing.stage_gating import StageGateOutput, TimeboxingStage
 
@@ -114,4 +116,50 @@ async def test_run_stage_gate_returns_safe_fallback_on_parse_failure(
     assert out.ready is False
     assert "stage response parse failure" in out.missing
     assert "_stage_gate_error" in out.facts
+    assert out.facts["timezone"] == "Europe/Amsterdam"
+
+
+@pytest.mark.asyncio
+async def test_run_stage_gate_returns_safe_fallback_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Timeouts should degrade to a safe gate output instead of crashing."""
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+
+    async def _noop_ensure_stage_agents(self: TimeboxingFlowAgent) -> None:
+        return None
+
+    async def _timeout_with_timeout(
+        _label: str,
+        _awaitable: Any,
+        *,
+        timeout_s: float,
+        dump_on_timeout: bool | None = None,
+        dump_threads_on_timeout: bool | None = None,
+    ) -> Any:
+        _ = (timeout_s, dump_on_timeout, dump_threads_on_timeout)
+        close = getattr(_awaitable, "close", None)
+        if callable(close):
+            close()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(TimeboxingFlowAgent, "_ensure_stage_agents", _noop_ensure_stage_agents)
+    monkeypatch.setattr(timeboxing_agent_mod, "with_timeout", _timeout_with_timeout)
+    agent._stage_agents = {  # type: ignore[attr-defined]
+        TimeboxingStage.COLLECT_CONSTRAINTS: _CapturingStageAgent()
+    }
+
+    context = {"facts": {"timezone": "Europe/Amsterdam"}}
+    out = await TimeboxingFlowAgent._run_stage_gate(  # type: ignore[misc]
+        agent,
+        stage=TimeboxingStage.COLLECT_CONSTRAINTS,
+        user_message="use defaults",
+        context=context,
+    )
+
+    assert out.stage_id == TimeboxingStage.COLLECT_CONSTRAINTS
+    assert out.ready is False
+    assert "stage gate timeout" in out.missing
+    assert "_stage_gate_error" in out.facts
+    assert "TimeoutError" in out.facts["_stage_gate_error"]
     assert out.facts["timezone"] == "Europe/Amsterdam"
