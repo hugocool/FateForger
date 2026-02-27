@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
+from difflib import SequenceMatcher
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
+from yarl import URL
 
-from fateforger.tools.ticktick_mcp import get_ticktick_mcp_url
+from fateforger.tools.ticktick_mcp import (
+    get_ticktick_mcp_url,
+    normalize_ticktick_mcp_url,
+    probe_ticktick_mcp_endpoint,
+    ticktick_localhost_fallback_urls,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -81,15 +90,57 @@ class TickTickTask(BaseModel):
     project_id: str | None = None
 
 
+class TickTickPendingTask(BaseModel):
+    """Pending-task row enriched with project metadata."""
+
+    id: str
+    title: str
+    project_id: str | None = None
+    project_name: str | None = None
+
+
+class TickTickMentionCandidate(BaseModel):
+    """Scored task candidate for a specific mention."""
+
+    task_id: str
+    title: str
+    project_id: str | None = None
+    project_name: str | None = None
+    score: float
+    matched_query: str
+    match_type: str
+
+
+class TickTickMentionResolution(BaseModel):
+    """Resolution outcome for a single mention."""
+
+    mention: str
+    status: Literal["resolved", "ambiguous", "unresolved"]
+    expanded_queries: list[str]
+    resolved_task_id: str | None = None
+    resolved_title: str | None = None
+    resolved_project_id: str | None = None
+    resolved_project_name: str | None = None
+    candidates: list[TickTickMentionCandidate] = Field(default_factory=list)
+
+
 class TickTickListManager:
     """Coordinator that executes list-management operations via TickTick MCP."""
 
     def __init__(
-        self, *, server_url: str | None = None, timeout: float = 10.0, workbench: Any = None
+        self,
+        *,
+        server_url: str | None = None,
+        timeout: float = 10.0,
+        workbench: Any = None,
+        pending_snapshot_parallelism: int = 4,
     ) -> None:
-        self._server_url = (server_url or get_ticktick_mcp_url()).strip()
+        self._server_url = normalize_ticktick_mcp_url(
+            server_url or get_ticktick_mcp_url()
+        ).strip()
         self._timeout = timeout
         self._workbench = workbench
+        self._pending_snapshot_parallelism = max(1, int(pending_snapshot_parallelism))
 
     async def manage_ticktick_lists(
         self,
@@ -108,6 +159,8 @@ class TickTickListManager:
         normalized_create_if_missing = (
             True if create_if_missing is None else create_if_missing
         )
+        parsed_operation = self._safe_operation(operation)
+        parsed_model = self._safe_model(normalized_model)
         try:
             action = TickTickListActionInput(
                 operation=operation,
@@ -123,14 +176,79 @@ class TickTickListManager:
         except ValidationError as exc:
             return TickTickListActionResult(
                 ok=False,
-                operation=TickTickListOperation.SHOW_LISTS,
-                model=TickTickListModel.PROJECT,
+                operation=parsed_operation,
+                model=parsed_model,
                 errors=[f"invalid_input: {exc.errors()}"],
                 summary="Invalid list-management input.",
             ).model_dump(mode="json")
 
         result = await self.execute(action)
         return result.model_dump(mode="json")
+
+    async def resolve_ticktick_task_mentions(
+        self,
+        mentions: list[str] | None,
+        expansion_queries: list[str] | None,
+        max_candidates_per_mention: int | None,
+        min_score: float | None,
+        ambiguity_gap: float | None,
+        include_all_projects: bool | None,
+    ) -> dict[str, Any]:
+        """Resolve task mentions against exhaustive cross-project candidates."""
+        clean_mentions = self._clean_items(mentions or [])
+        if not clean_mentions:
+            return {
+                "ok": False,
+                "summary": "No task mentions were provided.",
+                "results": [],
+                "status_counts": {"resolved": 0, "ambiguous": 0, "unresolved": 0},
+            }
+
+        normalized_max_candidates = 5 if max_candidates_per_mention is None else max(
+            1, max_candidates_per_mention
+        )
+        normalized_min_score = 0.45 if min_score is None else max(0.0, min(1.0, min_score))
+        normalized_ambiguity_gap = (
+            0.08 if ambiguity_gap is None else max(0.0, min(1.0, ambiguity_gap))
+        )
+        use_all_projects = True if include_all_projects is None else include_all_projects
+        rows = (
+            await self.list_all_pending_tasks()
+            if use_all_projects
+            else await self.list_pending_tasks(limit=200, per_project_limit=20)
+        )
+
+        resolutions: list[TickTickMentionResolution] = []
+        counts = {"resolved": 0, "ambiguous": 0, "unresolved": 0}
+        normalized_expansions = self._clean_items(expansion_queries or [])
+        for mention in clean_mentions:
+            expanded_queries = self._build_query_expansions(mention, normalized_expansions)
+            candidates = self._score_mention_candidates(
+                mention=mention,
+                expanded_queries=expanded_queries,
+                rows=rows,
+                min_score=normalized_min_score,
+            )[:normalized_max_candidates]
+            resolution = self._classify_mention_resolution(
+                mention=mention,
+                expanded_queries=expanded_queries,
+                candidates=candidates,
+                ambiguity_gap=normalized_ambiguity_gap,
+            )
+            counts[resolution.status] += 1
+            resolutions.append(resolution)
+
+        return {
+            "ok": True,
+            "summary": (
+                f"Resolved {counts['resolved']}, ambiguous {counts['ambiguous']}, "
+                f"unresolved {counts['unresolved']} mention(s)."
+            ),
+            "exhausted": len(resolutions) == len(clean_mentions),
+            "mention_count": len(clean_mentions),
+            "status_counts": counts,
+            "results": [resolution.model_dump(mode="json") for resolution in resolutions],
+        }
 
     async def execute(self, action: TickTickListActionInput) -> TickTickListActionResult:
         """Dispatch a validated list-management action."""
@@ -231,6 +349,24 @@ class TickTickListManager:
             )
 
         if action.operation == TickTickListOperation.SHOW_LIST_ITEMS:
+            if not action.list_id and not action.list_name:
+                rows = await self.list_all_pending_tasks()
+                items = [
+                    {
+                        "id": row.id,
+                        "title": row.title,
+                        "project_id": row.project_id,
+                        "project_name": row.project_name,
+                    }
+                    for row in rows
+                ]
+                return TickTickListActionResult(
+                    ok=True,
+                    operation=action.operation,
+                    model=action.model,
+                    summary=f"Found {len(items)} pending task(s) across all projects.",
+                    data={"list_name": "__all__", "items": items},
+                )
             project, _, errors, ambiguous = await self._resolve_project(
                 action, allow_create=False
             )
@@ -638,6 +774,78 @@ class TickTickListManager:
         text = await self._call_tool("get_project_tasks", {"project_id": project_id})
         return self._parse_tasks(text)
 
+    async def list_pending_tasks(
+        self, *, limit: int = 12, per_project_limit: int = 4
+    ) -> list[TickTickPendingTask]:
+        """Return a bounded pending-task snapshot across projects."""
+        started_at = time.perf_counter()
+        try:
+            projects = await self._list_projects()
+        except Exception as exc:
+            logger.warning(
+                "TickTick pending snapshot unavailable; returning empty set (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            return []
+        if not projects:
+            return []
+        rows: list[TickTickPendingTask] = []
+        task_batches = await self._list_project_task_batches(projects)
+        for project, task_batch in zip(projects, task_batches):
+            if isinstance(task_batch, Exception):
+                exc = task_batch
+                logger.warning(
+                    "TickTick project task fetch failed; skipping project",
+                    extra={
+                        "event": "ticktick_pending_snapshot_project_failed",
+                        "project_id": project.id,
+                        "project_name": project.name,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+                continue
+            tasks = task_batch
+            for task in tasks[:per_project_limit]:
+                rows.append(
+                    TickTickPendingTask(
+                        id=task.id,
+                        title=task.title,
+                        project_id=project.id,
+                        project_name=project.name,
+                    )
+                )
+                if len(rows) >= limit:
+                    logger.info(
+                        "TickTick pending snapshot completed",
+                        extra={
+                            "event": "ticktick_pending_snapshot_latency",
+                            "project_count": len(projects),
+                            "row_count": len(rows),
+                            "elapsed_ms": round(
+                                (time.perf_counter() - started_at) * 1000.0, 3
+                            ),
+                        },
+                    )
+                    return rows
+        logger.info(
+            "TickTick pending snapshot completed",
+            extra={
+                "event": "ticktick_pending_snapshot_latency",
+                "project_count": len(projects),
+                "row_count": len(rows),
+                "elapsed_ms": round((time.perf_counter() - started_at) * 1000.0, 3),
+            },
+        )
+        return rows
+
+    async def list_all_pending_tasks(self) -> list[TickTickPendingTask]:
+        """Return all pending tasks across all projects."""
+        # High ceiling keeps this bounded for safety while effectively "all"
+        # for normal TickTick workspaces.
+        return await self.list_pending_tasks(limit=10_000, per_project_limit=10_000)
+
     async def _delete_items(
         self, *, project_id: str, task_ids: list[str]
     ) -> tuple[int, list[str]]:
@@ -703,6 +911,142 @@ class TickTickListManager:
         deduped = list(dict.fromkeys(resolved))
         return deduped, skipped, errors
 
+    def _build_query_expansions(
+        self, mention: str, expansion_queries: list[str]
+    ) -> list[str]:
+        queries: list[str] = []
+        seen: set[str] = set()
+
+        def _add(value: str) -> None:
+            clean = " ".join((value or "").split()).strip()
+            key = self._normalize(clean)
+            if not clean or not key or key in seen:
+                return
+            seen.add(key)
+            queries.append(clean)
+
+        _add(mention)
+        for query in expansion_queries:
+            _add(query)
+
+        tokens = re.findall(r"[A-Za-z0-9]+", mention)
+        long_tokens = [token for token in tokens if len(token) >= 4]
+        for token in long_tokens:
+            _add(token)
+        if len(tokens) >= 2:
+            _add(" ".join(tokens))
+            _add(" ".join(tokens[:2]))
+            _add(" ".join(tokens[-2:]))
+        return queries
+
+    def _score_mention_candidates(
+        self,
+        *,
+        mention: str,
+        expanded_queries: list[str],
+        rows: list[TickTickPendingTask],
+        min_score: float,
+    ) -> list[TickTickMentionCandidate]:
+        best_by_task: dict[str, TickTickMentionCandidate] = {}
+        for row in rows:
+            if not row.id or not row.title:
+                continue
+            best_score = -1.0
+            best_query = ""
+            best_match_type = "none"
+            for query in expanded_queries:
+                score, match_type = self._score_title_match(row.title, query)
+                if score > best_score:
+                    best_score = score
+                    best_query = query
+                    best_match_type = match_type
+            if best_score < min_score:
+                continue
+            candidate = TickTickMentionCandidate(
+                task_id=row.id,
+                title=row.title,
+                project_id=row.project_id,
+                project_name=row.project_name,
+                score=round(best_score, 4),
+                matched_query=best_query,
+                match_type=best_match_type,
+            )
+            existing = best_by_task.get(row.id)
+            if existing is None or candidate.score > existing.score:
+                best_by_task[row.id] = candidate
+
+        return sorted(
+            best_by_task.values(),
+            key=lambda candidate: (-candidate.score, candidate.title.lower()),
+        )
+
+    def _score_title_match(self, title: str, query: str) -> tuple[float, str]:
+        normalized_title = self._normalize(title)
+        normalized_query = self._normalize(query)
+        if not normalized_title or not normalized_query:
+            return 0.0, "none"
+        if normalized_title == normalized_query:
+            return 1.0, "exact"
+        if normalized_query in normalized_title:
+            return 0.9, "contains"
+        if normalized_title in normalized_query and len(normalized_title) >= 4:
+            return 0.86, "superset"
+
+        title_tokens = set(normalized_title.split())
+        query_tokens = set(normalized_query.split())
+        overlap = title_tokens & query_tokens
+        jaccard = (
+            len(overlap) / len(title_tokens | query_tokens)
+            if title_tokens and query_tokens
+            else 0.0
+        )
+        seq = SequenceMatcher(None, normalized_title, normalized_query).ratio()
+        score = max(seq, jaccard)
+        if query_tokens and query_tokens.issubset(title_tokens):
+            score = max(score, 0.82)
+        if overlap and len(overlap) >= 2:
+            score = max(score, 0.78)
+        return score, "fuzzy"
+
+    def _classify_mention_resolution(
+        self,
+        *,
+        mention: str,
+        expanded_queries: list[str],
+        candidates: list[TickTickMentionCandidate],
+        ambiguity_gap: float,
+    ) -> TickTickMentionResolution:
+        if not candidates:
+            return TickTickMentionResolution(
+                mention=mention,
+                status="unresolved",
+                expanded_queries=expanded_queries,
+                candidates=[],
+            )
+
+        best = candidates[0]
+        second = candidates[1] if len(candidates) > 1 else None
+        resolved = best.score >= 0.9 and (
+            second is None or (best.score - second.score) >= ambiguity_gap
+        )
+        if resolved:
+            return TickTickMentionResolution(
+                mention=mention,
+                status="resolved",
+                expanded_queries=expanded_queries,
+                resolved_task_id=best.task_id,
+                resolved_title=best.title,
+                resolved_project_id=best.project_id,
+                resolved_project_name=best.project_name,
+                candidates=candidates,
+            )
+        return TickTickMentionResolution(
+            mention=mention,
+            status="ambiguous",
+            expanded_queries=expanded_queries,
+            candidates=candidates,
+        )
+
     def _match_tasks_by_title(
         self, tasks: list[TickTickTask], selector: str
     ) -> list[TickTickTask]:
@@ -730,6 +1074,25 @@ class TickTickListManager:
             return None, contains
         return None, []
 
+    async def _list_project_task_batches(
+        self, projects: list[TickTickProject]
+    ) -> list[list[TickTickTask] | Exception]:
+        semaphore = asyncio.Semaphore(self._pending_snapshot_parallelism)
+        batches: list[list[TickTickTask] | Exception | None] = [None] * len(projects)
+
+        async def _fetch(index: int, project: TickTickProject) -> None:
+            async with semaphore:
+                try:
+                    tasks = await self._list_project_tasks(project.id)
+                    batches[index] = tasks
+                except Exception as exc:
+                    batches[index] = exc
+
+        await asyncio.gather(
+            *(_fetch(index, project) for index, project in enumerate(projects))
+        )
+        return [batch if batch is not None else [] for batch in batches]
+
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> str:
         workbench = self._ensure_workbench()
         result = await workbench.call_tool(name, arguments=arguments)
@@ -750,6 +1113,30 @@ class TickTickListManager:
             ) from exc
         if not self._server_url:
             raise RuntimeError("TickTick MCP URL is not configured.")
+        ok, reason = probe_ticktick_mcp_endpoint(
+            self._server_url, connect_timeout_s=min(self._timeout, 1.5)
+        )
+        if not ok:
+            parsed = URL(self._server_url)
+            if parsed.host == "ticktick-mcp":
+                for fallback in ticktick_localhost_fallback_urls(self._server_url):
+                    fallback_ok, fallback_reason = probe_ticktick_mcp_endpoint(
+                        fallback, connect_timeout_s=min(self._timeout, 1.5)
+                    )
+                    if not fallback_ok:
+                        reason = fallback_reason or reason
+                        continue
+                    logger.warning(
+                        "TickTick MCP endpoint '%s' is unavailable (%s); using '%s'.",
+                        self._server_url,
+                        reason,
+                        fallback,
+                    )
+                    self._server_url = fallback
+                    ok = True
+                    break
+            if not ok:
+                raise RuntimeError(reason or "TickTick MCP endpoint is unavailable.")
         params = StreamableHttpServerParams(url=self._server_url, timeout=self._timeout)
         self._workbench = McpWorkbench(params)
         return self._workbench
@@ -900,10 +1287,24 @@ class TickTickListManager:
 
     @staticmethod
     def _extract_first_id(text: str) -> str | None:
-        match = re.search(r"ID:\s*([A-Za-z0-9]+)", text)
+        match = re.search(r"ID:\s*([A-Za-z0-9_-]+)", text)
         if match:
             return match.group(1).strip()
         return None
+
+    @staticmethod
+    def _safe_operation(value: str) -> TickTickListOperation:
+        try:
+            return TickTickListOperation(value)
+        except Exception:
+            return TickTickListOperation.SHOW_LISTS
+
+    @staticmethod
+    def _safe_model(value: str) -> TickTickListModel:
+        try:
+            return TickTickListModel(value)
+        except Exception:
+            return TickTickListModel.PROJECT
 
     @staticmethod
     def _parse_created_count(text: str) -> int | None:
@@ -958,6 +1359,8 @@ class TickTickListManager:
 
 
 __all__ = [
+    "TickTickMentionCandidate",
+    "TickTickMentionResolution",
     "TickTickListActionInput",
     "TickTickListActionResult",
     "TickTickListManager",
