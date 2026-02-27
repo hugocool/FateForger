@@ -53,6 +53,24 @@ def test_foreign_event_changes_are_noop_and_not_created() -> None:
     assert plan.noops[0].remote.event_id == "foreign-id-1"
 
 
+def test_foreign_overlap_with_different_summary_is_noop_and_not_created() -> None:
+    """Near-identical foreign overlap should not produce a duplicate desired create."""
+    remote = TBPlan(events=[_fw("Lunch", time(13, 0), time(14, 0), event_type="M")], date=PLAN_DATE, tz=TZ)
+    desired = TBPlan(events=[_fw("Lunch Break", time(13, 0), time(14, 0), event_type="M")], date=PLAN_DATE, tz=TZ)
+
+    plan = reconcile_calendar_ops(
+        remote=remote,
+        desired=desired,
+        event_id_map={},
+        remote_event_ids_by_index=["foreign-id-2"],
+    )
+
+    assert len(plan.creates) == 0
+    assert len(plan.updates) == 0
+    assert len(plan.noops) == 1
+    assert plan.noops[0].remote.event_id == "foreign-id-2"
+
+
 def test_unmatched_owned_remote_is_delete_candidate() -> None:
     """Owned remote events missing from desired should be deleted."""
     remote = TBPlan(events=[_fw("Old", time(8, 0), time(9, 0))], date=PLAN_DATE, tz=TZ)
@@ -98,3 +116,33 @@ def test_repeated_summaries_match_deterministically() -> None:
     assert len(plan.updates) == 2
     assert [match.remote.event_id for match in plan.updates] == ["fftb-a", "fftb-b"]
     assert len(plan.creates) == 0
+
+
+def test_remote_overlapping_snapshot_does_not_crash_reconciliation() -> None:
+    """Overlapping remote snapshots should reconcile instead of raising ValueError."""
+    remote = TBPlan(
+        events=[
+            _fw("Lunch", time(13, 0), time(14, 0), event_type="R"),
+            _fw("Deep Work: Facet extraction", time(13, 30), time(15, 0)),
+        ],
+        date=PLAN_DATE,
+        tz=TZ,
+    )
+    desired = TBPlan(
+        events=[
+            _fw("Lunch", time(13, 0), time(13, 30), event_type="R"),
+            _fw("Deep Work: Facet extraction", time(13, 30), time(15, 0)),
+        ],
+        date=PLAN_DATE,
+        tz=TZ,
+    )
+
+    plan = reconcile_calendar_ops(
+        remote=remote,
+        desired=desired,
+        event_id_map={"Deep Work: Facet extraction|13:30:00": "fftb-deep-1"},
+        remote_event_ids_by_index=["foreign-lunch-1", "fftb-deep-1"],
+    )
+
+    assert len(plan.creates) == 0
+    assert any(match.remote.event_id == "fftb-deep-1" for match in plan.updates + plan.noops)

@@ -3,9 +3,52 @@ import logging
 import os
 import re
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from fateforger.debug.log_index import append_index_entry
+
+try:
+    from prometheus_client import Counter, Histogram, start_http_server
+except Exception:  # pragma: no cover - optional runtime dependency
+    Counter = None  # type: ignore[assignment]
+    Histogram = None  # type: ignore[assignment]
+    start_http_server = None  # type: ignore[assignment]
+
+
+_PROM_LOCK = threading.Lock()
+_PROM_STARTED_PORT: int | None = None
+_METRICS_READY = False
+
+_LLM_AUDIT_LOGGER_NAME = "fateforger.observability.llm_io"
+_LLM_AUDIT_LOGGER: logging.Logger | None = None
+
+_REDACT_KEYS = {
+    "token",
+    "authorization",
+    "api_key",
+    "secret",
+    "password",
+}
+_NON_SECRET_TOKEN_KEYS = {"prompt_tokens", "completion_tokens", "total_tokens"}
+
+_METRIC_LLM_CALLS = None
+_METRIC_LLM_TOKENS = None
+_METRIC_TOOL_CALLS = None
+_METRIC_ERRORS = None
+_METRIC_STAGE_DURATION = None
+
+
+def observe_stage_duration(*, stage: str, duration_s: float) -> None:
+    """Observe stage duration in seconds (no-op when metrics are disabled)."""
+    _ensure_metrics_initialized()
+    metric = _METRIC_STAGE_DURATION
+    if metric is None:
+        return
+    safe_stage = _bounded_label(stage, fallback="unknown")
+    metric.labels(stage=safe_stage).observe(max(0.0, float(duration_s)))
 
 
 def configure_logging(*, default_level: str | int = "INFO") -> None:
@@ -16,6 +59,8 @@ def configure_logging(*, default_level: str | int = "INFO") -> None:
     """
 
     logging.basicConfig(level=_coerce_level(os.getenv("LOG_LEVEL", default_level)))
+    _configure_prometheus_exporter()
+    _configure_llm_audit_file_logging()
 
     mode = (os.getenv("AUTOGEN_EVENTS_LOG", "summary") or "summary").strip().lower()
     max_chars = _coerce_int(os.getenv("AUTOGEN_EVENTS_MAX_CHARS", "900"), default=900)
@@ -31,6 +76,12 @@ def configure_logging(*, default_level: str | int = "INFO") -> None:
     if not any(isinstance(f, _AutogenCoreFilter) for f in core_logger.filters):
         core_logger.addFilter(_AutogenCoreFilter(max_chars=max_chars))
 
+    openai_client_logger = logging.getLogger("autogen_ext.models.openai._openai_client")
+    if not any(
+        isinstance(f, _SafeRecordMessageFilter) for f in openai_client_logger.filters
+    ):
+        openai_client_logger.addFilter(_SafeRecordMessageFilter())
+
     # Keep HTTP noise down by default (can still override via LOG_LEVEL).
     logging.getLogger("httpx").setLevel(
         _coerce_level(os.getenv("HTTPX_LOG_LEVEL", "WARNING"))
@@ -43,6 +94,77 @@ def configure_logging(*, default_level: str | int = "INFO") -> None:
         _coerce_level(os.getenv("APSCHEDULER_LOG_LEVEL", "WARNING"))
     )
     _configure_timebox_patcher_debug_file_logging()
+
+
+def _configure_prometheus_exporter() -> None:
+    if not _is_truthy(os.getenv("OBS_PROMETHEUS_ENABLED", "1")):
+        return
+    if start_http_server is None:
+        logging.getLogger(__name__).warning(
+            "prometheus_client unavailable; metrics exporter disabled"
+        )
+        return
+    port = _coerce_int(os.getenv("OBS_PROMETHEUS_PORT", "9464"), default=9464)
+    global _PROM_STARTED_PORT
+    with _PROM_LOCK:
+        if _PROM_STARTED_PORT == port:
+            _ensure_metrics_initialized()
+            return
+        if _PROM_STARTED_PORT is not None and _PROM_STARTED_PORT != port:
+            logging.getLogger(__name__).warning(
+                "Prometheus exporter already running on port %s (requested %s).",
+                _PROM_STARTED_PORT,
+                port,
+            )
+            return
+        try:
+            start_http_server(port)
+        except OSError as exc:
+            logging.getLogger(__name__).warning(
+                "Prometheus exporter not started on :%s (%s).", port, exc
+            )
+            _PROM_STARTED_PORT = port
+            _ensure_metrics_initialized()
+            return
+        _PROM_STARTED_PORT = port
+        _ensure_metrics_initialized()
+    logging.getLogger(__name__).info("Prometheus exporter enabled on :%s", port)
+
+
+def _configure_llm_audit_file_logging() -> None:
+    global _LLM_AUDIT_LOGGER
+    if not _is_truthy(os.getenv("OBS_LLM_AUDIT_ENABLED", "1")):
+        return
+    if _LLM_AUDIT_LOGGER is not None and any(
+        getattr(h, "_fftb_llm_io_file", False) for h in _LLM_AUDIT_LOGGER.handlers
+    ):
+        return
+    log_dir = Path(os.getenv("OBS_LLM_AUDIT_LOG_DIR", "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    file_path = log_dir / f"llm_io_{ts}_{os.getpid()}.jsonl"
+
+    llm_logger = logging.getLogger(_LLM_AUDIT_LOGGER_NAME)
+    handler = logging.FileHandler(file_path, encoding="utf-8")
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    setattr(handler, "_fftb_llm_io_file", True)
+    llm_logger.addHandler(handler)
+    llm_logger.setLevel(logging.INFO)
+    llm_logger.propagate = False
+    _LLM_AUDIT_LOGGER = llm_logger
+
+    append_index_entry(
+        index_path=log_dir / os.getenv("OBS_LLM_AUDIT_INDEX_FILE", "llm_io_index.jsonl"),
+        entry={
+            "type": "llm_io",
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "log_path": str(file_path),
+            "pid": os.getpid(),
+            "mode": os.getenv("OBS_LLM_AUDIT_MODE", "sanitized"),
+        },
+    )
+    logging.getLogger(__name__).info("LLM I/O audit logging enabled: %s", file_path)
 
 
 def _configure_timebox_patcher_debug_file_logging() -> None:
@@ -77,6 +199,16 @@ def _configure_timebox_patcher_debug_file_logging() -> None:
     # Keep patcher debug logs out of stdout noise; diagnostics go to file.
     patcher_logger.setLevel(logging.DEBUG)
     patcher_logger.propagate = False
+    append_index_entry(
+        index_path=log_dir / os.getenv("TIMEBOX_PATCHER_INDEX_FILE", "timebox_patcher_index.jsonl"),
+        entry={
+            "type": "timebox_patcher",
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "logger": patcher_logger.name,
+            "log_path": str(file_path),
+            "pid": os.getpid(),
+        },
+    )
     logging.getLogger(__name__).info(
         "Timebox patcher debug logging enabled: %s", file_path
     )
@@ -113,6 +245,218 @@ def _coerce_int(value: str | None, *, default: int) -> int:
         return default
 
 
+def _ensure_metrics_initialized() -> None:
+    global _METRICS_READY
+    global _METRIC_LLM_CALLS, _METRIC_LLM_TOKENS, _METRIC_TOOL_CALLS
+    global _METRIC_ERRORS, _METRIC_STAGE_DURATION
+
+    if _METRICS_READY or Counter is None or Histogram is None:
+        return
+    _METRIC_LLM_CALLS = Counter(
+        "fateforger_llm_calls_total",
+        "LLM calls observed by logging pipeline",
+        ["agent", "model", "status", "call_label"],
+    )
+    _METRIC_LLM_TOKENS = Counter(
+        "fateforger_llm_tokens_total",
+        "LLM token usage observed by logging pipeline",
+        ["agent", "model", "type", "call_label"],
+    )
+    _METRIC_TOOL_CALLS = Counter(
+        "fateforger_tool_calls_total",
+        "Tool call outcomes observed by logging pipeline",
+        ["agent", "tool", "status"],
+    )
+    _METRIC_ERRORS = Counter(
+        "fateforger_errors_total",
+        "Observed component errors",
+        ["component", "error_type"],
+    )
+    _METRIC_STAGE_DURATION = Histogram(
+        "fateforger_stage_duration_seconds",
+        "Stage duration in seconds",
+        ["stage"],
+        buckets=(0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 30, 60, 120),
+    )
+    _METRICS_READY = True
+
+
+def _bounded_label(value: Any, *, fallback: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return fallback
+    compact = re.sub(r"[^A-Za-z0-9_.:-]+", "_", raw)
+    return compact[:80] or fallback
+
+
+def _emit_llm_audit_event(event: dict[str, Any]) -> None:
+    if not _is_truthy(os.getenv("OBS_LLM_AUDIT_ENABLED", "1")):
+        return
+    logger = _LLM_AUDIT_LOGGER
+    if logger is None:
+        return
+    mode = (os.getenv("OBS_LLM_AUDIT_MODE", "sanitized") or "sanitized").strip().lower()
+    max_chars = _coerce_int(os.getenv("OBS_LLM_AUDIT_MAX_CHARS", "2000"), default=2000)
+    payload = dict(event)
+    payload.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
+    serialized = (
+        payload
+        if mode in {"raw", "off"}
+        else _sanitize_for_audit(payload, max_chars=max_chars)
+    )
+    logger.info(json.dumps(serialized, ensure_ascii=False, default=str))
+
+
+def _sanitize_for_audit(value: Any, *, max_chars: int, key: str | None = None) -> Any:
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for child_key, child_value in value.items():
+            child_key_str = str(child_key)
+            if _key_is_sensitive(child_key_str):
+                out[child_key_str] = "***REDACTED***"
+                continue
+            out[child_key_str] = _sanitize_for_audit(
+                child_value, max_chars=max_chars, key=child_key_str
+            )
+        return out
+    if isinstance(value, list):
+        return [_sanitize_for_audit(item, max_chars=max_chars, key=key) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_for_audit(item, max_chars=max_chars, key=key) for item in value]
+    if key and _key_is_sensitive(key):
+        return "***REDACTED***"
+    if isinstance(value, str):
+        return _truncate(value, max_chars=max_chars)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return _truncate(str(value), max_chars=max_chars)
+
+
+def _key_is_sensitive(key: str) -> bool:
+    lowered = key.strip().lower()
+    if lowered in _NON_SECRET_TOKEN_KEYS:
+        return False
+    return any(marker in lowered for marker in _REDACT_KEYS)
+
+
+def _extract_event_payload(msg_obj: Any, msg_text: str) -> dict[str, Any] | None:
+    if isinstance(msg_obj, dict):
+        return msg_obj
+    kwargs = getattr(msg_obj, "kwargs", None)
+    if isinstance(kwargs, dict):
+        return kwargs
+    if msg_text.startswith("{") and msg_text.endswith("}"):
+        try:
+            parsed = json.loads(msg_text)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _extract_response_usage(response: Any) -> dict[str, Any]:
+    if not isinstance(response, dict):
+        return {}
+    usage = response.get("usage")
+    if isinstance(usage, dict):
+        return usage
+    return {}
+
+
+def _record_observability_event(payload: dict[str, Any], *, record_level: int) -> None:
+    _ensure_metrics_initialized()
+    event_type = str(payload.get("type", "")).strip()
+    agent = _bounded_label(payload.get("agent_id"), fallback="unknown")
+    call_label = _bounded_label(
+        payload.get("call_label") or payload.get("stage"), fallback="unknown"
+    )
+
+    if event_type in {"LLMCall", "LLMStreamEnd"}:
+        response = payload.get("response")
+        model = _bounded_label(
+            payload.get("model") or (response.get("model") if isinstance(response, dict) else None),
+            fallback="unknown",
+        )
+        response_error = (
+            isinstance(response, dict) and response.get("error") not in (None, "")
+        )
+        status = "error" if (record_level >= logging.ERROR or response_error) else "ok"
+        if _METRIC_LLM_CALLS is not None:
+            _METRIC_LLM_CALLS.labels(
+                agent=agent,
+                model=model,
+                status=status,
+                call_label=call_label,
+            ).inc()
+        prompt_tokens = payload.get("prompt_tokens")
+        completion_tokens = payload.get("completion_tokens")
+        usage = _extract_response_usage(response)
+        if prompt_tokens is None:
+            prompt_tokens = usage.get("prompt_tokens")
+        if completion_tokens is None:
+            completion_tokens = usage.get("completion_tokens")
+        if _METRIC_LLM_TOKENS is not None:
+            if isinstance(prompt_tokens, int) and prompt_tokens >= 0:
+                _METRIC_LLM_TOKENS.labels(
+                    agent=agent,
+                    model=model,
+                    type="prompt",
+                    call_label=call_label,
+                ).inc(prompt_tokens)
+            if isinstance(completion_tokens, int) and completion_tokens >= 0:
+                _METRIC_LLM_TOKENS.labels(
+                    agent=agent,
+                    model=model,
+                    type="completion",
+                    call_label=call_label,
+                ).inc(completion_tokens)
+        _emit_llm_audit_event(
+            {
+                "event_type": event_type,
+                "agent": payload.get("agent_id"),
+                "model": model,
+                "status": status,
+                "call_label": payload.get("call_label"),
+                "stage": payload.get("stage"),
+                "session_key": payload.get("session_key"),
+                "thread_ts": payload.get("thread_ts"),
+                "channel_id": payload.get("channel_id"),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "request_excerpt": payload.get("messages"),
+                "response_excerpt": response,
+                "error": response.get("error") if isinstance(response, dict) else None,
+            }
+        )
+        return
+
+    if event_type == "ToolCall":
+        if _METRIC_TOOL_CALLS is not None:
+            _METRIC_TOOL_CALLS.labels(
+                agent=agent,
+                tool=_bounded_label(payload.get("tool_name"), fallback="unknown"),
+                status="ok" if record_level < logging.ERROR else "error",
+            ).inc()
+        return
+
+    if event_type in {"MessageHandlerException", "AgentConstructionException"}:
+        if _METRIC_ERRORS is not None:
+            _METRIC_ERRORS.labels(
+                component=_bounded_label(payload.get("handling_agent") or payload.get("agent_id"), fallback="unknown"),
+                error_type=_bounded_label(payload.get("error_type") or event_type, fallback="error"),
+            ).inc()
+        _emit_llm_audit_event(
+            {
+                "event_type": event_type,
+                "component": payload.get("handling_agent") or payload.get("agent_id"),
+                "error": payload.get("exception"),
+                "session_key": payload.get("session_key"),
+                "thread_ts": payload.get("thread_ts"),
+                "stage": payload.get("stage"),
+            }
+        )
+
+
 class _AutogenEventsFilter(logging.Filter):
     def __init__(self, *, mode: str, max_chars: int, max_tools: int) -> None:
         super().__init__(name="autogen_core.events")
@@ -125,9 +469,13 @@ class _AutogenEventsFilter(logging.Filter):
             return True
 
         mode = self._mode
+        raw_obj = record.msg
+        msg = _safe_get_record_message(record)
+        payload = _extract_event_payload(raw_obj, msg)
+        if payload is not None:
+            _record_observability_event(payload, record_level=record.levelno)
         if mode in ("off", "false", "0", "none"):
             return False
-        msg = _safe_get_record_message(record)
         record.msg = msg
         record.args = ()
         if mode in ("full", "on", "true", "1"):
@@ -170,6 +518,14 @@ class _AutogenCoreFilter(logging.Filter):
         sender = m.group("sender").strip()
         out = f"autogen_core resolved message_type={message_type} sender={sender} recipient={recipient}"
         record.msg = _truncate(out, max_chars=self._max_chars)
+        record.args = ()
+        return True
+
+
+class _SafeRecordMessageFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Coerce unserializable record messages into safe string payloads."""
+        record.msg = _safe_get_record_message(record)
         record.args = ()
         return True
 

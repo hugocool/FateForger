@@ -17,6 +17,24 @@ def test_constraint_search_tool_is_strict() -> None:
     params = tool.schema.get("parameters", {})
     required = set(params.get("required", []))
     assert {"queries", "planned_date", "stage"} == required
+    query_items = (
+        params.get("properties", {})
+        .get("queries", {})
+        .get("items", {})
+    )
+    assert query_items.get("type") == "object"
+    assert query_items.get("additionalProperties") is False
+    item_required = set(query_items.get("required", []))
+    assert {
+        "label",
+        "text_query",
+        "event_types",
+        "tags",
+        "statuses",
+        "scopes",
+        "necessities",
+        "limit",
+    }.issubset(item_required)
 
 
 async def test_constraint_search_tool_skips_empty_stage1_query(monkeypatch) -> None:
@@ -40,7 +58,19 @@ async def test_constraint_search_tool_skips_empty_stage1_query(monkeypatch) -> N
     tool = timeboxing_agent_mod.TimeboxingFlowAgent._build_constraint_search_tool(agent)
     out = await tool.run_json(
         {
-            "queries": [{}],
+            # OpenAI strict schemas require all query keys to be present.
+            "queries": [
+                {
+                    "label": "empty",
+                    "text_query": None,
+                    "event_types": None,
+                    "tags": None,
+                    "statuses": None,
+                    "scopes": None,
+                    "necessities": None,
+                    "limit": 20,
+                }
+            ],
             "planned_date": "2026-02-18",
             "stage": "CollectConstraints",
         },

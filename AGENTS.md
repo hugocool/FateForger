@@ -123,6 +123,39 @@ After implementation:
   - prioritize signal over volume; avoid repetitive low-value events.
   - once an incident is resolved, downgrade temporary deep-debug logs back to baseline.
   - keep debug-log changes scoped to the active ticket and document any temporary toggles in Issue checkpoints.
+- Prometheus audit protocol (local dev):
+  - run the standalone stack in `observability/` (`docker compose -f observability/docker-compose.yml up -d`).
+  - expose app metrics with `OBS_PROMETHEUS_ENABLED=1` and `OBS_PROMETHEUS_PORT` (default `9464`).
+  - treat metrics as detection only and logs as payload-level diagnosis:
+    - detection: `fateforger_llm_calls_total`, `fateforger_llm_tokens_total`, `fateforger_tool_calls_total`, `fateforger_errors_total`, `fateforger_stage_duration_seconds_*`
+    - diagnosis: `scripts/dev/timebox_log_query.py events` + `scripts/dev/timebox_log_query.py llm`
+  - correlate by `session_key`, `thread_ts`, `call_label`, and stage markers.
+  - use the repo skill `.codex/skills/prometheus-agent-audit/SKILL.md` for standard query windows/playbook.
+
+## Slack capability audit loop (critical)
+- Use the Slack skill as the primary operator surface for live end-to-end audits of agent behavior in Slack.
+- If the Slack skill is unavailable, use the deterministic fallback driver (`scripts/dev/slack_user_timeboxing_driver.py`) with `SLACK_USER_TOKEN`.
+- For behavior/debug tickets that affect Slack-facing flows, run an explicit audit conversation:
+  - send the agreed seed prompt,
+  - progress through all stages (including Stage 4/5 loops) until terminal state,
+  - capture both rendered responses and raw block/action payload behavior.
+- During the audit, continuously correlate Slack thread activity with runtime logs:
+  - map `thread_ts` to `session_key`,
+  - inspect `logs/timeboxing_session_*.log` and `logs/timebox_patcher_*.log`,
+  - record concrete error/warning evidence with timestamps.
+- If any error/regression appears in conversation behavior or logs:
+  - add a regression test that reproduces the scenario before applying the fix,
+  - implement the minimal fix,
+  - rerun tests, then replay the same Slack audit conversation from the start.
+- Completion gate for Slack-facing fixes:
+  - stage progression is correct and complete,
+  - no duplicate side effects (calendar events, constraints/memory writes),
+  - no uncategorized error-level log events for the audited scenario.
+- Each substantial checkpoint must include audit artifacts in Issue/PR updates:
+  - Slack thread/channel reference,
+  - log file paths used,
+  - failing/passing test evidence,
+  - remaining risks or follow-up items.
 
 ## PR/Issue sync protocol (critical)
 - **Primary operator surface:** progress must be visible in GitHub Issue/PR (including VS Code GitHub Pull Requests panel), not hidden in local ticket markdown.

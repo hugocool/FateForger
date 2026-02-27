@@ -9,11 +9,13 @@ import logging
 import os
 import re
 import sys
+from time import perf_counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
+from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Type, TypeVar
+from typing import Any, Callable, Dict, List, Literal, ParamSpec, Type, TypeVar
 from zoneinfo import ZoneInfo
 
 from autogen_agentchat.agents import AssistantAgent
@@ -28,24 +30,27 @@ from autogen_core import (
 )
 from autogen_core.tools import FunctionTool
 from dateutil import parser as date_parser
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError, model_validator
 from pydantic import Field as PydanticField
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from fateforger.agents.schedular.models.calendar import CalendarEvent, EventType
 from fateforger.agents.timeboxing.constraint_search_tool import (
+    ConstraintSearchQuery,
     search_constraints,
 )
-from fateforger.agents.timeboxing.notion_constraint_extractor import (
-    NotionConstraintExtractor,
-)
 from fateforger.core.config import settings
+from fateforger.core.logging_config import observe_stage_duration
 from fateforger.debug.diag import with_timeout
+from fateforger.debug.log_index import append_index_entry
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
 from fateforger.llm import build_autogen_chat_client
 from fateforger.llm import assert_strict_tools_for_structured_output
 from fateforger.llm.toon import toon_encode
 from fateforger.slack_bot.constraint_review import (
+    CONSTRAINT_REVIEW_ALL_ACTION_ID,
+    CONSTRAINT_ROW_REVIEW_ACTION_ID,
+    build_constraint_review_all_action_block,
     build_constraint_row_blocks,
     encode_metadata,
 )
@@ -58,13 +63,13 @@ from fateforger.slack_bot.timeboxing_submit import (
     build_text_section_block,
     build_undo_submit_actions_block,
 )
-from fateforger.tools.constraint_mcp import get_constraint_mcp_tools
 from fateforger.tools.ticktick_mcp import TickTickMcpClient, get_ticktick_mcp_url
 
 from .actions import TimeboxAction
 from .constants import TIMEBOXING_FALLBACK, TIMEBOXING_LIMITS, TIMEBOXING_TIMEOUTS
 from .constraint_retriever import ConstraintRetriever
 from .constraint_retriever import STARTUP_PREFETCH_TAG
+from .constraint_memory_component import ConstraintPlanningMemory
 from .contracts import (
     BlockPlan,
     CaptureInputsContext,
@@ -77,7 +82,12 @@ from .contracts import (
     WorkWindow,
 )
 from .flow_graph import build_timeboxing_graphflow
-from .mcp_clients import ConstraintMemoryClient, McpCalendarClient
+from .durable_constraint_store import (
+    DurableConstraintStore,
+    build_durable_constraint_store,
+)
+from .mem0_constraint_memory import build_mem0_client_from_settings
+from .mcp_clients import McpCalendarClient
 from .messages import (
     StartTimeboxing,
     TimeboxingCancelSubmit,
@@ -114,8 +124,12 @@ from .pydantic_parsing import parse_chat_content, parse_model_list, parse_model_
 from .stage_gating import (
     CAPTURE_INPUTS_PROMPT,
     COLLECT_CONSTRAINTS_PROMPT,
+    ConstraintsSection,
     DECISION_PROMPT,
+    FreeformSection,
+    NextStepsSection,
     REVIEW_COMMIT_PROMPT,
+    SessionMessage,
     TIMEBOX_SUMMARY_PROMPT,
     StageDecision,
     StageGateOutput,
@@ -123,8 +137,12 @@ from .stage_gating import (
 )
 from .submitter import CalendarSubmitter
 from .sync_engine import FFTB_PREFIX, SyncTransaction, gcal_response_to_tb_plan_with_identity
+from .scheduler_prefetch_capability import SchedulerPrefetchCapability
+from .task_marshalling_capability import TaskMarshallingCapability
 from .tb_models import TBEvent, TBPlan
 from .timebox import Timebox, tb_plan_to_timebox, timebox_to_tb_plan
+from .tool_result_models import InteractionMode, MemoryConstraintItem, MemoryToolResult
+from .tool_result_presenter import InteractionContext, present_memory_tool_result
 from .toon_views import (
     constraints_rows,
     immovables_rows,
@@ -134,6 +152,24 @@ from .toon_views import (
 
 logger = logging.getLogger(__name__)
 TEnum = TypeVar("TEnum", bound=Enum)
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def _fallback_on_parse_error(default: R) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """Return a decorator that falls back when pydantic/date parsing fails."""
+
+    def _decorator(func: Callable[P, R]) -> Callable[P, R]:
+        @wraps(func)
+        def _wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
+            try:
+                return func(*args, **kwargs)
+            except (ValidationError, TypeError, ValueError):
+                return default
+
+        return _wrapped
+
+    return _decorator
 
 
 class _ConstraintInterpretationPayload(BaseModel):
@@ -160,6 +196,42 @@ class _ConstraintTemplateView(BaseModel):
     filled_fields: list[str] = PydanticField(default_factory=list)
     useful_next_fields: list[str] = PydanticField(default_factory=list)
     notes: str | None = None
+
+
+class _CalendarSnapshotEvent(BaseModel):
+    """Strict event shape used when normalizing remote calendar snapshots."""
+
+    model_config = {"extra": "ignore", "populate_by_name": True}
+
+    summary: str = PydanticField(min_length=1)
+    event_type: EventType = PydanticField(default=EventType.MEETING, alias="type")
+    start_time: time | None = PydanticField(default=None, alias="ST")
+    end_time: time | None = PydanticField(default=None, alias="ET")
+    duration: timedelta | None = PydanticField(default=None, alias="DT")
+    start: datetime | date | None = None
+    end: datetime | date | None = None
+    calendarId: str = "primary"
+    timeZone: str = "UTC"
+    description: str | None = None
+    eventId: str | None = None
+
+    @model_validator(mode="after")
+    def _require_timing(self) -> "_CalendarSnapshotEvent":
+        if not any(
+            (
+                self.start is not None,
+                self.end is not None,
+                self.start_time is not None,
+                self.end_time is not None,
+                self.duration is not None,
+            )
+        ):
+            raise ValueError("calendar snapshot event requires at least one timing field")
+        return self
+
+    def to_calendar_event(self) -> CalendarEvent:
+        payload = self.model_dump(mode="python", by_alias=False, exclude_none=True)
+        return CalendarEvent.model_validate(payload)
 
 
 class RefineQualityFacts(BaseModel):
@@ -206,6 +278,8 @@ class Session:
     durable_constraints_failed_stages: Dict[str, str] = field(default_factory=dict)
     pending_calendar_prefetch: bool = False
     background_updates: List[str] = field(default_factory=list)
+    prefetched_pending_tasks: List[TaskCandidate] = field(default_factory=list)
+    pending_tasks_prefetch: bool = False
     timebox: Timebox | None = None
     pre_generated_skeleton: Timebox | None = None
     pre_generated_skeleton_plan: TBPlan | None = None
@@ -237,6 +311,10 @@ class Session:
     pending_constraint_extractions: set[str] = field(default_factory=set)
     last_extraction_task: asyncio.Task | None = None
     graphflow: GraphFlow | None = None
+    reply_turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    graph_turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    skip_stage_execution: bool = False
+    force_stage_rerun: bool = False
     thread_state: str | None = None
     session_key: str | None = None
     debug_log_path: str | None = None
@@ -269,6 +347,7 @@ class CalendarSyncOutcome:
     deleted: int = 0
     failed: int = 0
     note: str = ""
+    failed_details: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -276,10 +355,10 @@ class RefineToolExecutionOutcome:
     """Result of prompt-guided Stage 4 tool orchestration."""
 
     patch_selected: bool
-    memory_selected: bool
     memory_queued: bool
     fallback_patch_used: bool
     calendar: CalendarSyncOutcome
+    memory_operations: list[str] = field(default_factory=list)
 
 
 class TimeboxingFlowAgent(RoutedAgent):
@@ -299,7 +378,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             "timeboxing_draft", parallel_tool_calls=False
         )
         self._calendar_client: McpCalendarClient | None = None
-        self._constraint_memory_client: ConstraintMemoryClient | None = None
+        self._constraint_memory_client: Any | None = None
+        self._constraint_memory_unavailable_reason: str | None = None
+        self._durable_constraint_store: DurableConstraintStore | None = None
         self._ticktick_client: TickTickMcpClient | None = None
         self._constraint_store: ConstraintStore | None = None
         self._constraint_engine = None
@@ -307,11 +388,21 @@ class TimeboxingFlowAgent(RoutedAgent):
         self._constraint_retriever = ConstraintRetriever()
         self._timebox_patcher = TimeboxPatcher()
         self._calendar_submitter = CalendarSubmitter()
-        self._constraint_mcp_tools: list | None = None
-        self._notion_extractor: NotionConstraintExtractor | None = None
-        self._constraint_extractor_tool = None
+        self._task_marshalling = TaskMarshallingCapability(
+            send_message=self.send_message,
+            timeout_s=TIMEBOXING_TIMEOUTS.tasks_snapshot_s,
+            source_resolver=self._agent_source,
+        )
+        self._scheduler_prefetch = SchedulerPrefetchCapability(
+            queue_constraint_prefetch=self._queue_constraint_prefetch,
+            await_pending_durable_prefetch=self._await_pending_durable_constraint_prefetch,
+            ensure_calendar_immovables=self._ensure_calendar_immovables,
+            prefetch_calendar_immovables=self._prefetch_calendar_immovables,
+            is_collect_stage_loaded=self._is_collect_stage_loaded,
+        )
         self._constraint_search_tool: FunctionTool | None = None
         self._durable_constraint_task_keys: set[str] = set()
+        self._durable_dedupe_task_keys: set[str] = set()
         self._durable_constraint_semaphore = asyncio.Semaphore(
             TIMEBOXING_LIMITS.durable_upsert_concurrency
         )
@@ -335,11 +426,11 @@ class TimeboxingFlowAgent(RoutedAgent):
 
     def _session_key(self, ctx: MessageContext, *, fallback: str | None = None) -> str:
         """Return a stable session key for the current routing context."""
+        if fallback:
+            return fallback
         topic_key = ctx.topic_id.source if ctx.topic_id else None
         if topic_key:
             return topic_key
-        if fallback:
-            return fallback
         agent = ctx.sender if ctx.sender else None
         return agent.key if agent else "default"
 
@@ -353,6 +444,54 @@ class TimeboxingFlowAgent(RoutedAgent):
     def _default_tz_name(self) -> str:
         """Return the default timezone name for planning."""
         return getattr(settings, "planning_timezone", "") or "Europe/Amsterdam"
+
+    def _resolve_tz_name(self, tz_name: str | None) -> str:
+        """Normalize an IANA timezone name to a valid value."""
+        candidate = (tz_name or "").strip() or "UTC"
+        try:
+            ZoneInfo(candidate)
+            return candidate
+        except Exception:
+            return "UTC"
+
+    def _ensure_uncommitted_session(
+        self,
+        *,
+        key: str,
+        thread_ts: str,
+        channel_id: str,
+        user_id: str,
+        user_input: str,
+        tz_name: str,
+        default_planned_date: str,
+        debug_event: str,
+        start_message: str | None = None,
+    ) -> tuple[Session, bool]:
+        """Get existing session or create an uncommitted session deterministically."""
+        session = self._sessions.get(key)
+        if session:
+            if session.session_key is None:
+                session.session_key = key
+            return session, False
+        session = Session(
+            thread_ts=thread_ts,
+            channel_id=channel_id,
+            user_id=user_id,
+            last_user_message=user_input,
+            start_message=start_message,
+            committed=False,
+            planned_date=default_planned_date,
+            tz_name=tz_name,
+            session_key=key,
+        )
+        self._sessions[key] = session
+        self._session_debug(
+            session,
+            debug_event,
+            committed=False,
+            user_input=(user_input or "")[:500],
+        )
+        return session, True
 
     def _default_planned_date(self, *, now: datetime, tz: ZoneInfo) -> str:
         """Return a deterministic default planned date.
@@ -369,6 +508,21 @@ class TimeboxingFlowAgent(RoutedAgent):
         if (local_now.hour, local_now.minute) >= (9, 0):
             planned = planned + timedelta(days=1)
         return planned.isoformat()
+
+    def _refresh_temporal_facts(self, session: Session) -> None:
+        """Refresh timezone-local temporal anchors used by stage prompts."""
+        tz_name = (session.tz_name or "UTC").strip() or "UTC"
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz_name = "UTC"
+            tz = ZoneInfo("UTC")
+            session.tz_name = tz_name
+        local_now = datetime.now(timezone.utc).astimezone(tz)
+        session.frame_facts["date"] = session.planned_date or local_now.date().isoformat()
+        session.frame_facts["timezone"] = tz_name
+        session.frame_facts["current_time"] = local_now.strftime("%H:%M")
+        session.frame_facts["current_datetime"] = local_now.isoformat(timespec="minutes")
 
     @staticmethod
     def _is_truthy_env(value: str | None) -> bool:
@@ -437,6 +591,24 @@ class TimeboxingFlowAgent(RoutedAgent):
             session_logger.addHandler(handler)
         session.debug_log_path = str(file_path)
         session_loggers[session_key] = session_logger
+        append_index_entry(
+            index_path=log_dir
+            / os.getenv(
+                "TIMEBOX_SESSION_INDEX_FILE", "timeboxing_session_index.jsonl"
+            ),
+            entry={
+                "type": "timeboxing_session",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "session_key": session.session_key,
+                "thread_ts": session.thread_ts,
+                "channel_id": session.channel_id,
+                "user_id": session.user_id,
+                "planned_date": session.planned_date,
+                "stage": session.stage.value if session.stage else None,
+                "log_path": str(file_path),
+                "pid": os.getpid(),
+            },
+        )
         logger.info("Timeboxing session debug logging enabled: %s", file_path)
         return session_logger
 
@@ -485,39 +657,93 @@ class TimeboxingFlowAgent(RoutedAgent):
     # TODO: remove this, we need to rely on the autogen framework to handle this
     async def _run_graph_turn(self, *, session: Session, user_text: str) -> TextMessage:
         """Run one GraphFlow turn and return the presenter text message."""
-        self._session_debug(
-            session,
-            "graph_turn_start",
-            user_text=(user_text or "")[:500],
-        )
-        flow = self._ensure_graphflow(session)
-        presenter: TextMessage | None = None
-        try:
-            async for item in flow.run_stream(
-                task=TextMessage(content=user_text, source="user")
-            ):
-                if isinstance(item, TextMessage) and item.source == "PresenterNode":
-                    presenter = item
-        except Exception as exc:
+        async with session.graph_turn_lock:
+            turn_started_at = perf_counter()
+            turn_elapsed_s = lambda: round(perf_counter() - turn_started_at, 3)
+            self._refresh_temporal_facts(session)
             self._session_debug(
                 session,
-                "graph_turn_error",
-                error_type=type(exc).__name__,
-                error=str(exc)[:2000],
+                "graph_turn_start",
+                user_text=(user_text or "")[:500],
             )
-            raise
-        content = (
-            presenter.content
-            if presenter
-            else "Timed out waiting for tools/LLM. Please try again in a moment."
-        )
-        self._session_debug(
-            session,
-            "graph_turn_end",
-            presenter_found=presenter is not None,
-            output_preview=content[:500],
-        )
-        return TextMessage(content=content, source=self.id.type)
+            flow = self._ensure_graphflow(session)
+            presenter: TextMessage | None = None
+
+            async def _run_stream() -> TextMessage | None:
+                presenter_message: TextMessage | None = None
+                async for item in flow.run_stream(
+                    task=TextMessage(content=user_text, source="user")
+                ):
+                    if isinstance(item, TextMessage) and item.source == "PresenterNode":
+                        presenter_message = item
+                return presenter_message
+
+            try:
+                presenter = await with_timeout(
+                    "timeboxing:graph-turn",
+                    _run_stream(),
+                    timeout_s=TIMEBOXING_TIMEOUTS.graph_turn_s,
+                    dump_on_timeout=False,
+                    dump_threads_on_timeout=False,
+                )
+            except TimeoutError as exc:
+                timeout_message = (
+                    "This turn hit a processing timeout. Reply `Redo` to retry this stage."
+                )
+                self._session_debug(
+                    session,
+                    "graph_turn_timeout",
+                    error_type=type(exc).__name__,
+                    timeout_s=TIMEBOXING_TIMEOUTS.graph_turn_s,
+                    elapsed_s=turn_elapsed_s(),
+                )
+                self._session_debug(
+                    session,
+                    "graph_turn_end",
+                    presenter_found=False,
+                    output_preview=timeout_message[:500],
+                    elapsed_s=turn_elapsed_s(),
+                )
+                observe_stage_duration(
+                    stage=session.stage.value if session.stage else "unknown",
+                    duration_s=turn_elapsed_s(),
+                )
+                return TextMessage(content=timeout_message, source=self.id.type)
+            except Exception as exc:
+                self._session_debug(
+                    session,
+                    "graph_turn_error",
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:2000],
+                    elapsed_s=turn_elapsed_s(),
+                )
+                raise
+            content = (
+                presenter.content
+                if presenter
+                else "No stage response was generated. Reply `Redo` to retry this stage."
+            )
+            elapsed_s = turn_elapsed_s()
+            self._session_debug(
+                session,
+                "graph_turn_end",
+                presenter_found=presenter is not None,
+                output_preview=content[:500],
+                elapsed_s=elapsed_s,
+            )
+            observe_stage_duration(
+                stage=session.stage.value if session.stage else "unknown",
+                duration_s=elapsed_s,
+            )
+            if elapsed_s >= TIMEBOXING_TIMEOUTS.slow_turn_warn_s:
+                self._session_debug(
+                    session,
+                    "graph_turn_slow",
+                    elapsed_s=elapsed_s,
+                    threshold_s=TIMEBOXING_TIMEOUTS.slow_turn_warn_s,
+                    user_text_preview=(user_text or "")[:200],
+                )
+            return TextMessage(content=content, source=self.id.type)
 
     # TODO: why is this even here?!?
     async def _ensure_planning_date_interpreter_agent(self) -> None:
@@ -556,6 +782,8 @@ class TimeboxingFlowAgent(RoutedAgent):
                     CancellationToken(),
                 ),
                 timeout_s=TIMEBOXING_TIMEOUTS.planning_date_interpret_s,
+                dump_on_timeout=False,
+                dump_threads_on_timeout=False,
             )
             result = parse_chat_content(PlannedDateResult, response)
             if result.planned_date:
@@ -607,34 +835,47 @@ class TimeboxingFlowAgent(RoutedAgent):
         return self._ticktick_client
 
     # TODO:  this should be handled by the mcpworkbench, not a re-implementation
-    def _ensure_constraint_memory_client(self) -> ConstraintMemoryClient | None:
+    def _ensure_constraint_memory_client(self) -> Any | None:
         """Return the constraint-memory MCP client, initializing it if needed."""
         if self._constraint_memory_client:
             return self._constraint_memory_client
-        if not settings.notion_timeboxing_parent_page_id:
+        if self._constraint_memory_unavailable_reason:
             return None
         try:
-            timeout = float(
-                getattr(settings, "agent_mcp_discovery_timeout_seconds", 10)
+            user_id = str(getattr(settings, "mem0_user_id", "") or "").strip() or "timeboxing"
+            self._constraint_memory_client = build_mem0_client_from_settings(
+                user_id=user_id
             )
-            # Constraint-memory Notion queries often traverse multiple relations; allow
-            # a slightly longer read timeout than generic MCP discovery.
-            timeout = max(timeout, TIMEBOXING_TIMEOUTS.durable_prefetch_wait_s)
-            self._constraint_memory_client = ConstraintMemoryClient(timeout=timeout)
-        except Exception:
-            logger.error(
-                "Failed to initialize constraint memory MCP client", exc_info=True
+            self._constraint_memory_unavailable_reason = None
+        except Exception as exc:
+            self._constraint_memory_unavailable_reason = (
+                f"{type(exc).__name__}: {exc}"
+            )
+            logger.warning(
+                "Failed to initialize Mem0 constraint memory client; disabling retries "
+                "for this runtime instance (%s)",
+                self._constraint_memory_unavailable_reason,
             )
             return None
         return self._constraint_memory_client
+
+    def _ensure_durable_constraint_store(self) -> DurableConstraintStore | None:
+        """Return a backend-neutral durable-memory store adapter."""
+        existing = getattr(self, "_durable_constraint_store", None)
+        if existing is not None:
+            return existing
+        client = self._ensure_constraint_memory_client()
+        store = build_durable_constraint_store(client)
+        self._durable_constraint_store = store
+        return store
 
     # TODO: thia should be a tool, not a bolted on method
     async def _fetch_durable_constraints(
         self, session: Session, *, stage: TimeboxingStage
     ) -> List[Constraint]:
-        """Fetch durable constraints for a stage from Notion via the MCP server."""
-        client = self._ensure_constraint_memory_client()
-        if not client:
+        """Fetch durable constraints for a stage from the configured memory backend."""
+        store = self._ensure_durable_constraint_store()
+        if not store:
             return []
         try:
             planned_day = date.fromisoformat(
@@ -656,7 +897,7 @@ class TimeboxingFlowAgent(RoutedAgent):
 
         try:
             _plan, records = await self._constraint_retriever.retrieve(
-                client=client,
+                client=store,
                 stage=stage,
                 planned_day=planned_day,
                 work_window=work_window,
@@ -770,8 +1011,6 @@ class TimeboxingFlowAgent(RoutedAgent):
         reason: str,
     ) -> asyncio.Task | None:
         """Queue one stage-scoped durable prefetch task with in-flight dedupe."""
-        if not settings.notion_timeboxing_parent_page_id:
-            return None
         planned_date = session.planned_date or ""
         if (
             session.durable_constraints_date == planned_date
@@ -837,6 +1076,11 @@ class TimeboxingFlowAgent(RoutedAgent):
 
     def _queue_constraint_prefetch(self, session: Session) -> None:
         """Prefetch session-scoped constraints and durable constraints in background."""
+        self._task_marshalling.queue_prefetch(
+            session=session,
+            reason="prefetch",
+            append_background_update=self._append_background_update_once,
+        )
         self._queue_durable_constraint_prefetch(
             session=session, reason="prefetch", include_secondary=True
         )
@@ -862,6 +1106,33 @@ class TimeboxingFlowAgent(RoutedAgent):
 
         asyncio.create_task(_background())
 
+    async def _prime_collect_prefetch_non_blocking(
+        self, *, session: Session, planned_date: str, blocking: bool = False
+    ) -> None:
+        """Prime collect-stage prefetch with optional blocking stage gate."""
+        scheduler_prefetch = getattr(self, "_scheduler_prefetch", None)
+        if scheduler_prefetch is not None:
+            await scheduler_prefetch.prime_committed_collect_context(
+                session=session,
+                blocking=blocking,
+            )
+            return
+        if blocking:
+            await self._await_pending_durable_constraint_prefetch(
+                session,
+                stage=TimeboxingStage.COLLECT_CONSTRAINTS,
+            )
+            if planned_date:
+                await self._prefetch_calendar_immovables(session, planned_date)
+            else:
+                await self._ensure_calendar_immovables(
+                    session, timeout_s=TIMEBOXING_TIMEOUTS.calendar_prefetch_wait_s
+                )
+            return
+        if planned_date:
+            asyncio.create_task(self._prefetch_calendar_immovables(session, planned_date))
+        self._queue_constraint_prefetch(session)
+
     def _queue_durable_constraint_prefetch(
         self,
         *,
@@ -870,8 +1141,6 @@ class TimeboxingFlowAgent(RoutedAgent):
         include_secondary: bool = True,
     ) -> None:
         """Start background durable constraint prefetch if needed."""
-        if not settings.notion_timeboxing_parent_page_id:
-            return
         planned_date = session.planned_date or ""
         if session.durable_constraints_date and session.durable_constraints_date != planned_date:
             self._reset_durable_prefetch_state(session)
@@ -919,6 +1188,14 @@ class TimeboxingFlowAgent(RoutedAgent):
                     for constraint in constraints:
                         if constraint.scope is None:
                             constraint.scope = scope
+                        if self._constraint_needs_confirmation(constraint):
+                            hints = (
+                                dict(constraint.hints)
+                                if isinstance(constraint.hints, dict)
+                                else {}
+                            )
+                            hints["needs_confirmation"] = True
+                            constraint.hints = hints
                         if scope == ConstraintScope.DATESPAN:
                             if (
                                 interpretation.start_date
@@ -957,12 +1234,26 @@ class TimeboxingFlowAgent(RoutedAgent):
                         )
                     return ConstraintBatch(constraints=constraints)
                 return None
-            except Exception:
-                logger.debug(
-                    "Constraint extraction failed (reason=%s task_key=%s)",
+            except Exception as exc:
+                logger.warning(
+                    "Constraint extraction failed (reason=%s task_key=%s): %s",
                     reason,
                     task_key,
+                    exc,
                     exc_info=True,
+                )
+                self._append_background_update_once(
+                    session,
+                    "Couldn't update remembered constraints from that message. "
+                    "Calendar patching can still continue.",
+                )
+                self._session_debug(
+                    session,
+                    "constraint_extraction_error",
+                    reason=reason,
+                    task_key=task_key,
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:500],
                 )
                 return None
             finally:
@@ -985,9 +1276,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         decision_scope: str | None,
         constraints: list[ConstraintBase] | None = None,
     ) -> None:
-        """Queue durable constraint upserts into Notion for profile/datespan rules."""
-        if not settings.notion_timeboxing_parent_page_id:
-            return
+        """Queue durable constraint upserts into the configured durable-memory backend."""
         if not (text or "").strip():
             return
 
@@ -1018,7 +1307,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         self._durable_constraint_task_keys.add(task_key)
 
         async def _background() -> None:
-            """Upsert a durable constraint to Notion on a background task."""
+            """Upsert durable constraints on a background task."""
             acquired = False
             try:
                 await self._durable_constraint_semaphore.acquire()
@@ -1030,41 +1319,19 @@ class TimeboxingFlowAgent(RoutedAgent):
                     triggering_suggestion=payload["triggering_suggestion"] or None,
                     decision_scope=payload["decision_scope"],
                 )
-                if persisted <= 0:
-                    await self._ensure_constraint_mcp_tools()
-                    if not self._notion_extractor:
-                        self._append_background_update_once(
-                            session,
-                            "Could not initialize Notion durable constraint upsert.",
-                        )
-                        return
-                    await with_timeout(
-                        f"notion:constraint-upsert:{task_key}",
-                        self._notion_extractor.extract_and_upsert_constraint(
-                            planned_date=payload["planned_date"],
-                            timezone=payload["timezone"],
-                            stage_id=payload["stage_id"] or None,
-                            user_utterance=payload["user_utterance"],
-                            triggering_suggestion=payload["triggering_suggestion"] or None,
-                            impacted_event_types=payload["impacted_event_types"],
-                            suggested_tags=payload["suggested_tags"],
-                            decision_scope=payload["decision_scope"],
-                        ),
-                        timeout_s=TIMEBOXING_TIMEOUTS.notion_upsert_s,
-                    )
+                if persisted > 0:
                     self._append_background_update_once(
                         session,
-                        "Saved durable constraint to Notion from your latest message.",
+                        f"Saved {persisted} durable constraint(s).",
                     )
-                else:
-                    self._append_background_update_once(
-                        session,
-                        f"Saved {persisted} durable constraint(s) to Notion.",
+                    self._queue_durable_constraint_dedupe(
+                        session=session,
+                        reason="post_upsert",
                     )
-                self._reset_durable_prefetch_state(session)
-                self._queue_durable_constraint_prefetch(
-                    session=session, reason="post_upsert"
-                )
+                    self._reset_durable_prefetch_state(session)
+                    self._queue_durable_constraint_prefetch(
+                        session=session, reason="post_upsert"
+                    )
             except Exception:
                 logger.warning(
                     "Durable constraint upsert failed (task_key=%s)",
@@ -1073,12 +1340,72 @@ class TimeboxingFlowAgent(RoutedAgent):
                 )
                 self._append_background_update_once(
                     session,
-                    "Failed to save durable constraint(s) to Notion; continuing with local session constraints.",
+                    "Failed to save durable constraint(s); continuing with local session constraints.",
                 )
             finally:
                 if acquired:
                     self._durable_constraint_semaphore.release()
                 self._durable_constraint_task_keys.discard(task_key)
+
+        asyncio.create_task(_background())
+
+    def _queue_durable_constraint_dedupe(
+        self,
+        *,
+        session: Session,
+        reason: str,
+    ) -> None:
+        """Queue non-blocking durable dedupe to clean legacy overlaps."""
+        if not hasattr(self, "_durable_dedupe_task_keys"):
+            self._durable_dedupe_task_keys = set()
+        task_payload = {
+            "user_id": session.user_id,
+            "planned_date": session.planned_date,
+            "stage": session.stage.value if session.stage else None,
+            "reason": reason,
+        }
+        task_key = hashlib.sha256(
+            json.dumps(task_payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[: TIMEBOXING_LIMITS.durable_task_key_len]
+        if task_key in self._durable_dedupe_task_keys:
+            return
+        self._durable_dedupe_task_keys.add(task_key)
+
+        async def _background() -> None:
+            acquired = False
+            try:
+                await self._durable_constraint_semaphore.acquire()
+                acquired = True
+                store = self._ensure_durable_constraint_store()
+                if store is None:
+                    return
+                result = await store.dedupe_constraints(limit=2000, dry_run=False)
+                archived = int(result.get("duplicates_archived") or 0)
+                if archived > 0:
+                    self._append_background_update_once(
+                        session,
+                        f"Merged and archived {archived} duplicate durable constraint(s).",
+                    )
+                if hasattr(self, "_session_debug_loggers"):
+                    self._session_debug(
+                        session,
+                        "durable_dedupe",
+                        reason=reason,
+                        scanned=int(result.get("scanned") or 0),
+                        duplicate_groups=int(result.get("duplicate_groups") or 0),
+                        duplicates_archived=archived,
+                        failed_archives=int(result.get("failed_archives") or 0),
+                    )
+            except Exception:
+                logger.warning(
+                    "Durable constraint dedupe failed (task_key=%s)",
+                    task_key,
+                    exc_info=True,
+                )
+            finally:
+                if acquired:
+                    self._durable_constraint_semaphore.release()
+                self._durable_dedupe_task_keys.discard(task_key)
 
         asyncio.create_task(_background())
 
@@ -1094,10 +1421,14 @@ class TimeboxingFlowAgent(RoutedAgent):
         """Upsert extracted constraints deterministically into the durable MCP store."""
         if not constraints:
             return 0
-        client = self._ensure_constraint_memory_client()
-        if client is None:
+        store = self._ensure_durable_constraint_store()
+        if store is None:
             return 0
         persisted = 0
+        reused_existing = 0
+        created_new = 0
+        merge_conflicts = 0
+        dedupe_matches = 0
         for constraint in constraints:
             try:
                 record = self._build_durable_constraint_record(
@@ -1115,15 +1446,77 @@ class TimeboxingFlowAgent(RoutedAgent):
                     "overrode_planner": False,
                     "extracted_type_id": None,
                 }
-                result = await client.upsert_constraint(record=record, event=event)
+                equivalent = await store.find_equivalent_constraint(record=record, limit=200)
+                equivalent_uid = ""
+                equivalent_record: dict[str, Any] = {}
+                if isinstance(equivalent, dict):
+                    equivalent_uid = str(equivalent.get("uid") or "").strip()
+                    maybe_record = equivalent.get("constraint_record")
+                    if isinstance(maybe_record, dict):
+                        equivalent_record = dict(maybe_record)
+
+                if equivalent_uid and equivalent_record:
+                    dedupe_matches += 1
+                    incoming_record = dict(record.get("constraint_record") or {})
+                    merge_fn = getattr(store, "merge_constraint_records", None)
+                    if callable(merge_fn):
+                        merged_record = merge_fn(
+                            current=equivalent_record,
+                            incoming=incoming_record,
+                        )
+                    else:
+                        merged_record = incoming_record
+                    lifecycle = dict(merged_record.get("lifecycle") or {})
+                    lifecycle["uid"] = equivalent_uid
+                    merged_record["lifecycle"] = lifecycle
+                    patch_ops_fn = getattr(store, "build_constraint_json_patch_ops", None)
+                    patch_ops: list[dict[str, Any]] = []
+                    if callable(patch_ops_fn):
+                        patch_ops = patch_ops_fn(
+                            current=equivalent_record,
+                            merged=merged_record,
+                        )
+                    if not patch_ops:
+                        reused_existing += 1
+                        persisted += 1
+                        continue
+
+                    update_result = await store.update_constraint(
+                        uid=equivalent_uid,
+                        patch={
+                            "constraint_record": merged_record,
+                            "json_patch_ops": patch_ops,
+                        },
+                        event={
+                            **event,
+                            "action": "semantic_upsert",
+                            "matched_uid": equivalent_uid,
+                        },
+                    )
+                    if update_result.get("updated"):
+                        reused_existing += 1
+                        persisted += 1
+                        continue
+                    merge_conflicts += 1
+
+                result = await store.upsert_constraint(record=record, event=event)
                 if result.get("uid") or result.get("page_id"):
                     persisted += 1
+                    created_new += 1
             except Exception:
                 logger.debug(
                     "Deterministic durable upsert failed for constraint=%s",
                     constraint.name,
                     exc_info=True,
                 )
+        logger.info(
+            "durable constraint upsert summary: persisted=%s created=%s reused=%s matches=%s merge_conflicts=%s",
+            persisted,
+            created_new,
+            reused_existing,
+            dedupe_matches,
+            merge_conflicts,
+        )
         return persisted
 
     def _build_durable_constraint_record(
@@ -1133,18 +1526,21 @@ class TimeboxingFlowAgent(RoutedAgent):
         constraint: ConstraintBase,
         decision_scope: str | None,
     ) -> dict[str, Any]:
-        """Map a local extracted constraint to a Notion MCP upsert payload."""
+        """Map a local extracted constraint to a durable-memory upsert payload."""
         hints = constraint.hints if isinstance(constraint.hints, dict) else {}
         selector = constraint.selector if isinstance(constraint.selector, dict) else {}
         scope = constraint.scope.value if constraint.scope else (decision_scope or "profile")
+        rule_kind = self._resolve_rule_kind(hints=hints, selector=selector)
+        scalar_params = self._extract_scalar_params(hints=hints, selector=selector)
+        windows = self._extract_windows(hints=hints, selector=selector)
         uid = self._build_durable_constraint_uid(
             session=session,
             constraint=constraint,
             scope=scope,
+            rule_kind=rule_kind,
+            scalar_params=scalar_params,
+            windows=windows,
         )
-        rule_kind = self._resolve_rule_kind(hints=hints, selector=selector)
-        scalar_params = self._extract_scalar_params(hints=hints, selector=selector)
-        windows = self._extract_windows(hints=hints, selector=selector)
         topics = [
             str(tag).strip()
             for tag in (constraint.tags or [])
@@ -1207,13 +1603,43 @@ class TimeboxingFlowAgent(RoutedAgent):
         session: Session,
         constraint: ConstraintBase,
         scope: str,
+        rule_kind: str | None,
+        scalar_params: dict[str, Any],
+        windows: list[dict[str, Any]],
     ) -> str:
         """Build a stable idempotency key for durable upserts."""
+        normalized_tags = sorted(
+            {
+                str(tag).strip().lower()
+                for tag in (constraint.tags or [])
+                if isinstance(tag, str) and str(tag).strip()
+            }
+        )
+        normalized_windows = sorted(
+            {
+                (
+                    str(item.get("kind") or "").strip().lower(),
+                    str(item.get("start_time_local") or "").strip(),
+                    str(item.get("end_time_local") or "").strip(),
+                )
+                for item in (windows or [])
+                if isinstance(item, dict)
+            }
+        )
+        normalized_scalars = {
+            key: scalar_params[key]
+            for key in sorted(scalar_params.keys())
+            if key in {"duration_min", "duration_max", "contiguity"}
+        }
         material = {
             "user_id": session.user_id,
             "scope": scope,
             "name": (constraint.name or "").strip().lower(),
-            "description": (constraint.description or "").strip().lower(),
+            # Keep UID stable for semantic updates even when prose wording changes.
+            "rule_kind": (rule_kind or "").strip().lower(),
+            "scalar_params": normalized_scalars,
+            "windows": normalized_windows,
+            "tags": normalized_tags,
             "start_date": (
                 constraint.start_date.isoformat()
                 if constraint.start_date is not None
@@ -1222,8 +1648,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             "end_date": (
                 constraint.end_date.isoformat() if constraint.end_date is not None else None
             ),
-            "days_of_week": [day.value for day in (constraint.days_of_week or [])],
+            "days_of_week": sorted(day.value for day in (constraint.days_of_week or [])),
             "timezone": constraint.timezone or session.tz_name,
+            "recurrence": constraint.recurrence,
         }
         digest = hashlib.sha256(
             json.dumps(material, sort_keys=True, ensure_ascii=False).encode("utf-8")
@@ -1361,6 +1788,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         timeout_s: float = TIMEBOXING_TIMEOUTS.durable_prefetch_wait_s,
         *,
         stage: TimeboxingStage = TimeboxingStage.COLLECT_CONSTRAINTS,
+        fail_on_timeout: bool = True,
     ) -> None:
         """Wait for one stage-scoped durable prefetch, capped with timeout."""
         self._queue_durable_constraint_prefetch(
@@ -1376,6 +1804,14 @@ class TimeboxingFlowAgent(RoutedAgent):
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=timeout_s)
         except asyncio.TimeoutError:
+            if not fail_on_timeout:
+                self._session_debug(
+                    session,
+                    "durable_prefetch_soft_timeout",
+                    stage=stage.value,
+                    timeout_s=timeout_s,
+                )
+                return
             msg = (
                 f"Saved constraints timed out after {int(timeout_s)}s for {stage.value}. "
                 "You can continue now and use Redo to retry after a moment."
@@ -1383,15 +1819,26 @@ class TimeboxingFlowAgent(RoutedAgent):
             session.durable_constraints_failed_stages[stage.value] = msg
             self._append_background_update_once(session, msg)
             logger.error(msg)
-        except Exception:
-            return
+        except Exception as exc:
+            msg = (
+                f"Saved constraints failed for {stage.value}: "
+                f"{type(exc).__name__}: {str(exc)[:180]}"
+            )
+            session.durable_constraints_failed_stages[stage.value] = msg
+            self._append_background_update_once(session, msg)
+            logger.error(msg, exc_info=True)
 
     async def _prefetch_calendar_immovables(
-        self, session: Session, planned_date: str
+        self,
+        session: Session,
+        planned_date: str,
+        *,
+        force_refresh: bool = False,
     ) -> None:
         """Fetch calendar immovables + remote identity for the planned date."""
         if (
-            planned_date in session.prefetched_immovables_by_date
+            not force_refresh
+            and planned_date in session.prefetched_immovables_by_date
             and planned_date in session.prefetched_remote_snapshots_by_date
         ):
             self._session_debug(
@@ -1400,6 +1847,15 @@ class TimeboxingFlowAgent(RoutedAgent):
                 planned_date=planned_date,
             )
             return
+        if force_refresh and (
+            planned_date in session.prefetched_immovables_by_date
+            and planned_date in session.prefetched_remote_snapshots_by_date
+        ):
+            self._session_debug(
+                session,
+                "calendar_prefetch_force_refresh",
+                planned_date=planned_date,
+            )
         client = self._ensure_calendar_client()
         if not client:
             self._append_background_update_once(
@@ -1424,8 +1880,8 @@ class TimeboxingFlowAgent(RoutedAgent):
         except Exception:
             tz = ZoneInfo("UTC")
         # TODO(refactor): Validate planned_date with Pydantic before calendar prefetch.
+        diagnostics: dict[str, Any] = {}
         try:
-            diagnostics: dict[str, Any] = {}
             snapshot = await client.list_day_snapshot(
                 calendar_id="primary",
                 day=date.fromisoformat(planned_date),
@@ -1462,13 +1918,16 @@ class TimeboxingFlowAgent(RoutedAgent):
                 session.background_updates.append(
                     f"Loaded {len(event_ids_by_index)} remote calendar event identity record(s)."
                 )
-        except Exception:
+        except Exception as exc:
             logger.debug("Calendar prefetch failed for %s", planned_date, exc_info=True)
             self._session_debug(
                 session,
                 "calendar_prefetch_error",
                 planned_date=planned_date,
                 error="list_day_snapshot_failed",
+                error_type=type(exc).__name__,
+                error_detail=(str(exc) or type(exc).__name__)[:1200],
+                diagnostics=diagnostics,
             )
             self._append_background_update_once(
                 session,
@@ -1594,12 +2053,22 @@ class TimeboxingFlowAgent(RoutedAgent):
             return
 
         # Build the constraint search tool for optional non-Stage-1 lookups.
-        if self._constraint_search_tool is None and settings.notion_timeboxing_parent_page_id:
+        if self._constraint_search_tool is None:
             self._constraint_search_tool = self._build_constraint_search_tool()
 
         optional_constraint_tools: list | None = (
             [self._constraint_search_tool] if self._constraint_search_tool else None
         )
+
+        def _schema_prompt(prompt: str, model_type: Type) -> str:
+            """Append a JSON schema for text-mode structured outputs."""
+            schema = TypeAdapter(model_type).json_schema()
+            schema_json = json.dumps(schema, ensure_ascii=False, sort_keys=True, indent=2)
+            return (
+                f"{prompt}\n\n"
+                "Return ONLY valid JSON matching this schema.\n"
+                f"JSON Schema:\n```json\n{schema_json}\n```"
+            )
 
         def build(
             name: str,
@@ -1608,19 +2077,23 @@ class TimeboxingFlowAgent(RoutedAgent):
             *,
             tools: list[FunctionTool] | None = None,
             max_tool_iterations: int = 2,
+            structured_output: bool = True,
         ) -> AssistantAgent:
             """Construct a stage helper agent with shared configuration."""
+            output_type = out_type if structured_output else None
             assert_strict_tools_for_structured_output(
                 tools=tools,
-                output_content_type=out_type,
+                output_content_type=output_type,
                 agent_name=name,
             )
             return AssistantAgent(
                 name=name,
                 model_client=self._model_client,
                 tools=tools,
-                output_content_type=out_type,
-                system_message=prompt,
+                output_content_type=output_type,
+                system_message=(
+                    prompt if structured_output else _schema_prompt(prompt, out_type)
+                ),
                 reflect_on_tool_use=False,
                 max_tool_iterations=max_tool_iterations,
             )
@@ -1632,6 +2105,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 StageGateOutput,
                 tools=optional_constraint_tools,
                 max_tool_iterations=2,
+                structured_output=True,
             ),
             TimeboxingStage.CAPTURE_INPUTS: build(
                 "StageCaptureInputs",
@@ -1639,14 +2113,21 @@ class TimeboxingFlowAgent(RoutedAgent):
                 StageGateOutput,
                 tools=optional_constraint_tools,
                 max_tool_iterations=3,
+                structured_output=True,
             ),
         }
         self._decision_agent = build("StageDecision", DECISION_PROMPT, StageDecision)
         self._summary_agent = build(
-            "StageTimeboxSummary", TIMEBOX_SUMMARY_PROMPT, StageGateOutput
+            "StageTimeboxSummary",
+            TIMEBOX_SUMMARY_PROMPT,
+            StageGateOutput,
+            structured_output=False,
         )
         self._review_commit_agent = build(
-            "StageReviewCommit", REVIEW_COMMIT_PROMPT, StageGateOutput
+            "StageReviewCommit",
+            REVIEW_COMMIT_PROMPT,
+            StageGateOutput,
+            structured_output=False,
         )
 
     async def _run_stage_gate(
@@ -1663,13 +2144,37 @@ class TimeboxingFlowAgent(RoutedAgent):
             raise ValueError(f"Unsupported stage: {stage}")
 
         task = self._format_stage_gate_input(stage=stage, context=context)
-        response = await with_timeout(
-            f"timeboxing:stage:{stage.value}",
-            agent.on_messages(
-                [TextMessage(content=task, source="user")], CancellationToken()
-            ),
-            timeout_s=TIMEBOXING_TIMEOUTS.stage_gate_s,
-        )
+        try:
+            response = await with_timeout(
+                f"timeboxing:stage:{stage.value}",
+                agent.on_messages(
+                    [TextMessage(content=task, source="user")], CancellationToken()
+                ),
+                timeout_s=TIMEBOXING_TIMEOUTS.stage_gate_s,
+            )
+        except TimeoutError as exc:
+            error = f"Stage gate timeout for {stage.value}: {type(exc).__name__}"
+            logger.warning(error)
+            return self._build_stage_gate_fallback(
+                stage=stage,
+                context=context,
+                error=error,
+                missing="stage gate timeout",
+                question="This stage timed out. Reply in thread with `Redo` to retry, or share updates to continue.",
+            )
+        except Exception as exc:
+            error = (
+                f"Stage gate execution failed for {stage.value}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            logger.error(error, exc_info=True)
+            return self._build_stage_gate_fallback(
+                stage=stage,
+                context=context,
+                error=error,
+                missing="stage retry required",
+                question="I hit an internal stage error. Reply in thread with `Redo` to retry this stage.",
+            )
         try:
             return parse_chat_content(StageGateOutput, response)
         except Exception as exc:
@@ -1678,19 +2183,37 @@ class TimeboxingFlowAgent(RoutedAgent):
                 f"{type(exc).__name__}: {exc}"
             )
             logger.error(error, exc_info=True)
-            fallback_facts = dict(context.get("facts") or {})
-            fallback_facts["_stage_gate_error"] = error
-            return StageGateOutput(
-                stage_id=stage,
-                ready=False,
-                summary=[
-                    "I hit an internal response-format error while processing this stage.",
-                    "I kept your known facts and can continue once you confirm or retry.",
-                ],
-                missing=["stage response parse failure"],
-                question="Reply `Redo` to retry this stage, or provide any updates and continue.",
-                facts=fallback_facts,
+            return self._build_stage_gate_fallback(
+                stage=stage,
+                context=context,
+                error=error,
+                missing="stage retry required",
+                question="Reply in thread with `Redo` to retry this stage, or provide any updates and continue.",
             )
+
+    @staticmethod
+    def _build_stage_gate_fallback(
+        *,
+        stage: TimeboxingStage,
+        context: dict[str, Any],
+        error: str,
+        missing: str,
+        question: str,
+    ) -> StageGateOutput:
+        """Build a safe gate result for recoverable stage failures."""
+        fallback_facts = dict(context.get("facts") or {})
+        fallback_facts["_stage_gate_error"] = error
+        return StageGateOutput(
+            stage_id=stage,
+            ready=False,
+            summary=[
+                "I hit an internal stage-processing issue.",
+                "I kept your known facts and can continue once you confirm or retry.",
+            ],
+            missing=[missing],
+            question=question,
+            facts=fallback_facts,
+        )
 
     @staticmethod
     def _constraint_uid(constraint: ConstraintBase) -> str | None:
@@ -1788,7 +2311,11 @@ class TimeboxingFlowAgent(RoutedAgent):
     def _collect_default_priority_key(constraint: Constraint) -> tuple[int, int, int, str]:
         """Stable sorting key for selecting one default per domain."""
         status_rank = 0 if constraint.status == ConstraintStatus.LOCKED else 1
-        necessity_rank = 0 if constraint.necessity == ConstraintNecessity.MUST else 1
+        necessity_map = _constraint_necessity_rank()
+        necessity_value: ConstraintNecessity | str = constraint.necessity
+        if necessity_value not in necessity_map and necessity_value is not None:
+            necessity_value = str(necessity_value).lower()
+        necessity_rank = necessity_map.get(necessity_value, 3)
         scope_rank = 0 if constraint.scope == ConstraintScope.PROFILE else 1
         name = (constraint.name or "").strip().lower()
         return (status_rank, necessity_rank, scope_rank, name)
@@ -2015,8 +2542,6 @@ class TimeboxingFlowAgent(RoutedAgent):
         self, session: Session, *, reason: str
     ) -> None:
         """Force a targeted Stage 1 durable refresh after new user hints."""
-        if not settings.notion_timeboxing_parent_page_id:
-            return
         stage = TimeboxingStage.COLLECT_CONSTRAINTS
         session.durable_constraints_loaded_stages.discard(stage.value)
         task = self._queue_durable_prefetch_stage(
@@ -2126,6 +2651,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         self, session: Session, *, user_message: str
     ) -> dict[str, Any]:
         """Build the injected context payload for the CollectConstraints stage."""
+        self._refresh_temporal_facts(session)
         normalized = parse_model_list(Immovable, session.frame_facts.get("immovables"))
         durable = self._collect_stage_durable_constraints(
             session, stage=TimeboxingStage.COLLECT_CONSTRAINTS
@@ -2148,10 +2674,14 @@ class TimeboxingFlowAgent(RoutedAgent):
         self, session: Session, *, user_message: str
     ) -> dict[str, Any]:
         """Build the injected context payload for the CaptureInputs stage."""
+        input_facts = TaskMarshallingCapability.merge_prefetched_tasks(
+            input_facts=dict(session.input_facts or {}),
+            prefetched=list(session.prefetched_pending_tasks or []),
+        )
         return CaptureInputsContext(
             user_message=user_message,
             frame_facts=dict(session.frame_facts or {}),
-            input_facts=dict(session.input_facts or {}),
+            input_facts=input_facts,
         ).model_dump(mode="json")
 
     def _quality_snapshot_for_prompt(self, session: Session) -> dict[str, Any]:
@@ -2295,7 +2825,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             session.skeleton_overview_markdown = markdown_overview
             seed_plan = self._build_skeleton_seed_plan(session)
             return None, markdown_overview, seed_plan
-        except Exception as exc:
+        except Exception:
             logger.warning(
                 "Skeleton overview draft failed; using deterministic fallback.",
                 exc_info=True,
@@ -2753,6 +3283,49 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
         ]
 
+    def _render_constraints_preview_blocks(
+        self,
+        *,
+        session: Session,
+        limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Render a compact constraint preview with a modal entrypoint for the full list."""
+        constraints = list(session.active_constraints or [])
+        if not constraints:
+            return []
+        ranked = sorted(constraints, key=_constraint_priority)
+        blocks: list[dict[str, Any]] = [
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"*Constraints*\n"
+                        f"Showing the top {min(limit, len(ranked))} of {len(ranked)}."
+                    ),
+                },
+            },
+        ]
+        blocks.extend(
+            build_constraint_row_blocks(
+                ranked,
+                thread_ts=session.thread_ts,
+                user_id=session.user_id,
+                limit=limit,
+                button_text="Deny / Edit",
+            )
+        )
+        if len(ranked) > limit:
+            blocks.append(
+                build_constraint_review_all_action_block(
+                    thread_ts=session.thread_ts,
+                    user_id=session.user_id,
+                    count=len(ranked),
+                )
+            )
+        return blocks
+
     def _event_key_from_summary_and_start(
         self, *, summary: str, start: str, tz_name: str
     ) -> str | None:
@@ -2813,6 +3386,27 @@ class TimeboxingFlowAgent(RoutedAgent):
                 updated[key] = event_id
         return updated
 
+    async def _refresh_remote_baseline_after_sync(self, session: Session) -> None:
+        """Refresh baseline snapshot/event IDs from live calendar after sync."""
+        fallback_plan = session.tb_plan.model_copy(deep=True) if session.tb_plan else None
+        fallback_ids = list(session.remote_event_ids_by_index or [])
+        planned_date = session.planned_date or self._resolve_planning_date(session).isoformat()
+        try:
+            await self._prefetch_calendar_immovables(
+                session,
+                planned_date,
+                force_refresh=True,
+            )
+            session.base_snapshot = self._build_remote_snapshot_plan(session)
+        except Exception as exc:
+            logger.warning(
+                "Unable to refresh remote baseline after sync; using local fallback (%s).",
+                exc,
+            )
+            if fallback_plan is not None:
+                session.base_snapshot = fallback_plan
+            session.remote_event_ids_by_index = fallback_ids
+
     def _render_submit_prompt_blocks(
         self, *, session: Session, text: str
     ) -> list[dict[str, Any]]:
@@ -2869,6 +3463,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         deleted = 0
         failed = 0
         succeeded = 0
+        failed_details: list[dict[str, str]] = []
         for index, op in enumerate(tx.ops):
             result = tx.results[index] if index < len(tx.results) else {}
             ok = bool(result.get("ok", False))
@@ -2882,6 +3477,22 @@ class TimeboxingFlowAgent(RoutedAgent):
                     deleted += 1
             else:
                 failed += 1
+                failure_message = str(
+                    result.get("error")
+                    or result.get("content")
+                    or "unknown sync failure"
+                ).strip()
+                if len(failure_message) > 300:
+                    failure_message = f"{failure_message[:297]}..."
+                failed_details.append(
+                    {
+                        "index": str(index),
+                        "op": op.op_type.value,
+                        "tool": op.tool_name,
+                        "event_id": op.gcal_event_id,
+                        "error": failure_message.replace("\n", " "),
+                    }
+                )
 
         changed = succeeded > 0
         if not tx.ops:
@@ -2910,17 +3521,28 @@ class TimeboxingFlowAgent(RoutedAgent):
             deleted=deleted,
             failed=failed,
             note=note,
+            failed_details=failed_details,
         )
 
     async def _submit_current_plan(self, session: Session) -> CalendarSyncOutcome:
         """Sync the current TBPlan and return a structured calendar-change result."""
         if session.tb_plan is None:
+            self._session_debug(
+                session,
+                "calendar_sync_skipped",
+                reason="missing_tb_plan",
+            )
             return CalendarSyncOutcome(
                 status="skipped",
                 changed=False,
                 note="Calendar sync skipped: plan is not ready yet.",
             )
         if session.base_snapshot is None:
+            self._session_debug(
+                session,
+                "calendar_sync_skipped",
+                reason="missing_base_snapshot",
+            )
             return CalendarSyncOutcome(
                 status="skipped",
                 changed=False,
@@ -2930,6 +3552,13 @@ class TimeboxingFlowAgent(RoutedAgent):
                 ),
             )
 
+        sync_started_at = perf_counter()
+        self._session_debug(
+            session,
+            "calendar_sync_start",
+            remote_events=len(session.base_snapshot.events),
+            event_id_map_size=len(session.event_id_map),
+        )
         previous_map = dict(session.event_id_map)
         try:
             tx = await self._calendar_submitter.submit_plan(
@@ -2938,8 +3567,15 @@ class TimeboxingFlowAgent(RoutedAgent):
                 event_id_map=session.event_id_map,
                 remote_event_ids_by_index=session.remote_event_ids_by_index,
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("Calendar sync failed during refine stage.")
+            self._session_debug(
+                session,
+                "calendar_sync_error",
+                error_type=type(exc).__name__,
+                error=str(exc)[:2000],
+                elapsed_s=round(perf_counter() - sync_started_at, 3),
+            )
             return CalendarSyncOutcome(
                 status="failed",
                 changed=False,
@@ -2952,9 +3588,22 @@ class TimeboxingFlowAgent(RoutedAgent):
             session=session,
             transaction=tx,
         )
-        session.base_snapshot = session.tb_plan.model_copy(deep=True)
-        session.remote_event_ids_by_index = []
-        return self._summarize_sync_transaction(tx)
+        await self._refresh_remote_baseline_after_sync(session)
+        outcome = self._summarize_sync_transaction(tx)
+        self._session_debug(
+            session,
+            "calendar_sync_result",
+            status=outcome.status,
+            changed=outcome.changed,
+            created=outcome.created,
+            updated=outcome.updated,
+            deleted=outcome.deleted,
+            failed=outcome.failed,
+            failed_ops=outcome.failed_details[:3],
+            ops=len(tx.ops),
+            elapsed_s=round(perf_counter() - sync_started_at, 3),
+        )
+        return outcome
 
     async def _execute_refine_patch_and_sync(
         self,
@@ -2987,6 +3636,27 @@ class TimeboxingFlowAgent(RoutedAgent):
         session.timebox = validated_timebox
         return await self._submit_current_plan(session)
 
+    @staticmethod
+    def _build_refine_noop_execution(*, note: str) -> RefineToolExecutionOutcome:
+        """Build a no-op refine outcome when no user edits were requested."""
+        return RefineToolExecutionOutcome(
+            patch_selected=False,
+            memory_queued=False,
+            fallback_patch_used=False,
+            calendar=CalendarSyncOutcome(
+                status="skipped",
+                changed=False,
+                note=note,
+            ),
+            memory_operations=[],
+        )
+
+    @staticmethod
+    def _materialize_timebox_from_tb_plan(session: Session) -> None:
+        """Ensure ``session.timebox`` is available from the current ``session.tb_plan``."""
+        if session.timebox is None and session.tb_plan is not None:
+            session.timebox = tb_plan_to_timebox(session.tb_plan)
+
     async def _run_refine_tool_orchestration(
         self,
         *,
@@ -2994,21 +3664,113 @@ class TimeboxingFlowAgent(RoutedAgent):
         patch_message: str,
         user_message: str,
     ) -> RefineToolExecutionOutcome:
-        """Let the LLM choose tools while enforcing patch-critical execution priority."""
-        requested: list[tuple[int, str, str]] = []
+        """Run prompt-guided patch tooling while always queueing memory in background."""
+        requested_patch: list[str] = []
+        memory_operations: list[str] = []
+        memory_request_text = (user_message or "").strip() or (patch_message or "").strip()
 
         async def timebox_patch_and_sync(user_instruction: str) -> dict[str, Any]:
-            requested.append((0, "patch", (user_instruction or "").strip()))
+            instruction = (user_instruction or "").strip()
+            if instruction:
+                requested_patch.append(instruction)
             return {"queued": True, "priority": "critical"}
 
-        async def memory_extract_and_upsert(
-            user_instruction: str,
-            reason: str = "refine_tool_memory",
+        async def memory_list_constraints(
+            text_query: str | None,
+            statuses: list[str] | None,
+            scopes: list[str] | None,
+            necessities: list[str] | None,
+            tags: list[str] | None,
+            limit: int,
         ) -> dict[str, Any]:
-            requested.append(
-                (10, "memory", (user_instruction or "").strip() or user_message.strip())
+            return await self._run_memory_tool_action(
+                action="list",
+                session=session,
+                memory_operations=memory_operations,
+                memory_request_text=memory_request_text,
+                text_query=text_query,
+                statuses=statuses,
+                scopes=scopes,
+                necessities=necessities,
+                tags=tags,
+                limit=limit,
             )
-            return {"queued": True, "priority": "background", "reason": reason}
+
+        async def memory_get_constraint(uid: str) -> dict[str, Any]:
+            return await self._run_memory_tool_action(
+                action="get",
+                session=session,
+                memory_operations=memory_operations,
+                memory_request_text=memory_request_text,
+                uid=uid,
+            )
+
+        async def memory_update_constraint(
+            uid: str,
+            patch_json: str,
+            note: str | None,
+        ) -> dict[str, Any]:
+            parsed_patch, parse_error = self._parse_memory_patch_json(patch_json)
+            if parse_error:
+                return self._record_memory_tool_result(
+                    session=session,
+                    result=MemoryToolResult(
+                        action="update",
+                        ok=False,
+                        uid=str(uid or "").strip() or None,
+                        error="invalid_patch_json",
+                        message=parse_error,
+                    ),
+                )
+            return await self._run_memory_tool_action(
+                action="update",
+                session=session,
+                memory_operations=memory_operations,
+                memory_request_text=memory_request_text,
+                uid=uid,
+                patch=parsed_patch,
+                note=note,
+            )
+
+        async def memory_archive_constraint(
+            uid: str,
+            reason: str | None,
+        ) -> dict[str, Any]:
+            return await self._run_memory_tool_action(
+                action="archive",
+                session=session,
+                memory_operations=memory_operations,
+                memory_request_text=memory_request_text,
+                uid=uid,
+                reason=reason,
+            )
+
+        async def memory_supersede_constraint(
+            uid: str,
+            patch_json: str,
+            reason: str | None,
+        ) -> dict[str, Any]:
+            parsed_patch, parse_error = self._parse_memory_patch_json(patch_json)
+            if parse_error:
+                return self._record_memory_tool_result(
+                    session=session,
+                    result=MemoryToolResult(
+                        action="supersede",
+                        ok=False,
+                        uid=str(uid or "").strip() or None,
+                        error="invalid_patch_json",
+                        message=parse_error,
+                    ),
+                )
+            return await self._run_memory_tool_action(
+                action="supersede",
+                session=session,
+                memory_operations=memory_operations,
+                memory_request_text=memory_request_text,
+                uid=uid,
+                patch=parsed_patch,
+                reason=reason,
+            )
 
         tool_agent = AssistantAgent(
             name="StageRefineExecutionPlanner",
@@ -3024,11 +3786,46 @@ class TimeboxingFlowAgent(RoutedAgent):
                     strict=True,
                 ),
                 FunctionTool(
-                    memory_extract_and_upsert,
-                    name="memory_extract_and_upsert",
+                    memory_list_constraints,
+                    name="memory_list_constraints",
                     description=(
-                        "Background memory update. Optional and non-blocking. "
-                        "Use after selecting patching when useful for long-term preference memory."
+                        "Review durable memory constraints/preferences. Use when the user asks "
+                        "what is remembered or wants to inspect active constraints."
+                    ),
+                    strict=True,
+                ),
+                FunctionTool(
+                    memory_get_constraint,
+                    name="memory_get_constraint",
+                    description="Get one durable memory constraint by uid.",
+                    strict=True,
+                ),
+                FunctionTool(
+                    memory_update_constraint,
+                    name="memory_update_constraint",
+                    description=(
+                        "Edit one durable memory constraint by uid. "
+                        "Provide `patch_json` as a JSON object string "
+                        '(for example "{\"status\":\"locked\"}" or "{\"json_patch_ops\":[...]}"). '
+                        "Use for explicit user requests to revise remembered preferences."
+                    ),
+                    strict=True,
+                ),
+                FunctionTool(
+                    memory_archive_constraint,
+                    name="memory_archive_constraint",
+                    description=(
+                        "Archive one durable memory constraint by uid. Use when the user says "
+                        "a remembered rule is no longer valid."
+                    ),
+                    strict=True,
+                ),
+                FunctionTool(
+                    memory_supersede_constraint,
+                    name="memory_supersede_constraint",
+                    description=(
+                        "Supersede an existing durable memory constraint by uid with a new record. "
+                        "Provide `patch_json` as a JSON object string."
                     ),
                     strict=True,
                 ),
@@ -3038,12 +3835,18 @@ class TimeboxingFlowAgent(RoutedAgent):
                 "Primary objective: apply user-requested schedule changes now.\n"
                 "Rules:\n"
                 "1) If the user asks for any plan/calendar change, call `timebox_patch_and_sync` exactly once.\n"
-                "2) `memory_extract_and_upsert` is optional and must never replace patching.\n"
-                "3) Prefer patch first; memory update can run in background.\n"
-                "Return a brief confirmation after tool calls."
+                "2) If the user asks to review or edit remembered constraints/preferences, "
+                "call the appropriate memory_* tool.\n"
+                "3) If both schedule patching and memory edits are requested, call patch tool first, "
+                "then memory tools.\n"
+                "4) Memory extraction/upsert runs automatically in the background and is NOT a tool choice.\n"
+                "5) Return a brief confirmation after tool calls."
             ),
             reflect_on_tool_use=False,
             max_tool_iterations=3,
+            memory=[
+                self._build_refine_memory_component(session=session),
+            ],
         )
         await with_timeout(
             "timeboxing:refine-tool-orchestration",
@@ -3063,21 +3866,23 @@ class TimeboxingFlowAgent(RoutedAgent):
             timeout_s=TIMEBOXING_TIMEOUTS.stage_decision_s,
         )
 
-        patch_instruction, memory_instruction = self._select_refine_tool_intents(
-            requested
-        )
+        patch_instruction = self._select_patch_instruction(requested_patch)
 
         fallback_patch_used = False
-        if not patch_instruction:
+        if (
+            not patch_instruction
+            and not self._looks_like_memory_management_request(memory_request_text)
+        ):
             patch_instruction = patch_message
             fallback_patch_used = True
 
+        memory_instruction = (user_message or "").strip() or (patch_message or "").strip()
         memory_queued = False
         if memory_instruction:
             task = self._queue_constraint_extraction(
                 session=session,
                 text=memory_instruction,
-                reason="refine_tool_memory",
+                reason="refine_background_memory",
                 is_initial=False,
             )
             memory_queued = task is not None
@@ -3087,31 +3892,435 @@ class TimeboxingFlowAgent(RoutedAgent):
                     "Updating preference memory in the background.",
                 )
 
-        calendar = await self._execute_refine_patch_and_sync(
+        if patch_instruction:
+            calendar = await self._execute_refine_patch_and_sync(
+                session=session,
+                patch_message=patch_instruction,
+            )
+        else:
+            calendar = CalendarSyncOutcome(
+                status="skipped",
+                changed=False,
+                note="No calendar patch requested in this turn.",
+            )
+        self._queue_reflection_memory_write(
             session=session,
-            patch_message=patch_instruction,
+            user_message=user_message or patch_message,
+            calendar=calendar,
+            memory_operations=list(memory_operations),
         )
         return RefineToolExecutionOutcome(
             patch_selected=bool(patch_instruction and not fallback_patch_used),
-            memory_selected=bool(memory_instruction),
             memory_queued=memory_queued,
             fallback_patch_used=fallback_patch_used,
             calendar=calendar,
+            memory_operations=memory_operations,
+        )
+
+    async def _run_memory_tool_action(
+        self,
+        *,
+        action: Literal["list", "get", "update", "archive", "supersede"],
+        session: Session,
+        memory_operations: list[str],
+        memory_request_text: str,
+        uid: str | None = None,
+        patch: dict[str, Any] | None = None,
+        reason: str | None = None,
+        note: str | None = None,
+        text_query: str | None = None,
+        statuses: list[str] | None = None,
+        scopes: list[str] | None = None,
+        necessities: list[str] | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Execute one durable-memory tool action with shared validation and logging."""
+        store = self._ensure_durable_constraint_store()
+        if store is None:
+            return self._record_memory_tool_result(
+                session=session,
+                result=MemoryToolResult(
+                    action=action,
+                    ok=False,
+                    error="durable memory store unavailable",
+                    message="Memory backend is unavailable right now.",
+                ),
+            )
+
+        match action:
+            case "list":
+                query_limit = max(1, min(int(limit or 20), 100))
+                filters: dict[str, Any] = {
+                    "as_of": (session.planned_date or datetime.utcnow().date().isoformat()),
+                    "require_active": False,
+                    "stage": session.stage.value if session.stage else None,
+                }
+                if (text_query or "").strip():
+                    filters["text_query"] = str(text_query).strip()
+                if statuses:
+                    filters["statuses_any"] = statuses
+                if scopes:
+                    filters["scopes_any"] = scopes
+                if necessities:
+                    filters["necessities_any"] = necessities
+                rows = await store.query_constraints(
+                    filters=filters,
+                    type_ids=None,
+                    tags=tags or None,
+                    sort=[["Status", "descending"], ["Name", "ascending"]],
+                    limit=query_limit,
+                )
+                items = [
+                    item
+                    for item in (
+                        MemoryConstraintItem.from_payload(row)
+                        for row in rows
+                        if isinstance(row, dict)
+                    )
+                    if item is not None
+                ]
+                memory_operations.append(f"list:{len(items)}")
+                message = (
+                    "Memory review: no matching constraints found."
+                    if not items
+                    else (
+                        "Memory review: found "
+                        f"{len(items)} constraint(s) "
+                        f"({', '.join(item.name or item.uid for item in items[:3])})."
+                    )
+                )
+                self._append_background_update_once(session, message)
+                return self._record_memory_tool_result(
+                    session=session,
+                    result=MemoryToolResult(
+                        action="list",
+                        ok=True,
+                        message=message,
+                        count=len(items),
+                        constraints=items,
+                    ),
+                )
+            case "get" | "update" | "archive" | "supersede":
+                cleaned_uid = str(uid or "").strip()
+                if not cleaned_uid:
+                    return self._record_memory_tool_result(
+                        session=session,
+                        result=MemoryToolResult(
+                            action=action,
+                            ok=False,
+                            error="uid is required",
+                            message="Memory action needs a constraint uid.",
+                        ),
+                    )
+            case _:
+                return self._record_memory_tool_result(
+                    session=session,
+                    result=MemoryToolResult(
+                        action="list",
+                        ok=False,
+                        error=f"unsupported action: {action}",
+                    ),
+                )
+
+        match action:
+            case "get":
+                item = await store.get_constraint(uid=cleaned_uid)
+                if not item:
+                    return self._record_memory_tool_result(
+                        session=session,
+                        result=MemoryToolResult(
+                            action="get",
+                            ok=False,
+                            uid=cleaned_uid,
+                            error="constraint not found",
+                            message=f"Constraint `{cleaned_uid}` was not found in memory.",
+                        ),
+                    )
+                memory_operations.append(f"get:{cleaned_uid}")
+                parsed = MemoryConstraintItem.from_payload(item)
+                result = MemoryToolResult(
+                    action="get",
+                    ok=True,
+                    uid=cleaned_uid,
+                    message=f"Loaded remembered constraint `{cleaned_uid}`.",
+                    constraints=[parsed] if parsed else [],
+                )
+                payload = self._record_memory_tool_result(session=session, result=result)
+                if parsed:
+                    payload["constraint"] = item
+                return payload
+            case "update":
+                result = await store.update_constraint(
+                    uid=cleaned_uid,
+                    patch=patch if isinstance(patch, dict) else {},
+                    event={
+                        "action": "update",
+                        "stage": session.stage.value if session.stage else None,
+                        "note": (note or "").strip() or None,
+                        "user_utterance": memory_request_text,
+                    },
+                )
+                parsed_item = None
+                if result.get("updated"):
+                    memory_operations.append(f"update:{cleaned_uid}")
+                    self._append_background_update_once(
+                        session,
+                        f"Updated durable memory for constraint `{cleaned_uid}`.",
+                    )
+                    parsed_item = MemoryConstraintItem.from_payload(
+                        await store.get_constraint(uid=cleaned_uid) or {}
+                    )
+                return self._record_memory_tool_result(
+                    session=session,
+                    result=MemoryToolResult(
+                        action="update",
+                        ok=bool(result.get("updated")),
+                        uid=cleaned_uid,
+                        error=None if result.get("updated") else str(result.get("reason") or ""),
+                        message=(
+                            f"Updated remembered constraint `{cleaned_uid}`."
+                            if result.get("updated")
+                            else f"Unable to update remembered constraint `{cleaned_uid}`."
+                        ),
+                        constraints=[parsed_item] if parsed_item else [],
+                    ),
+                )
+            case "archive":
+                result = await store.archive_constraint(uid=cleaned_uid, reason=reason)
+                parsed_item = None
+                if result.get("updated"):
+                    memory_operations.append(f"archive:{cleaned_uid}")
+                    self._append_background_update_once(
+                        session,
+                        f"Archived durable memory for constraint `{cleaned_uid}`.",
+                    )
+                    parsed_item = MemoryConstraintItem.from_payload(
+                        await store.get_constraint(uid=cleaned_uid) or {}
+                    )
+                return self._record_memory_tool_result(
+                    session=session,
+                    result=MemoryToolResult(
+                        action="archive",
+                        ok=bool(result.get("updated")),
+                        uid=cleaned_uid,
+                        error=None if result.get("updated") else str(result.get("reason") or ""),
+                        message=(
+                            f"Archived remembered constraint `{cleaned_uid}`."
+                            if result.get("updated")
+                            else f"Unable to archive remembered constraint `{cleaned_uid}`."
+                        ),
+                        constraints=[parsed_item] if parsed_item else [],
+                    ),
+                )
+            case "supersede":
+                current = await store.get_constraint(uid=cleaned_uid)
+                if not current:
+                    return self._record_memory_tool_result(
+                        session=session,
+                        result=MemoryToolResult(
+                            action="supersede",
+                            ok=False,
+                            uid=cleaned_uid,
+                            error="constraint not found",
+                            message=f"Constraint `{cleaned_uid}` was not found in memory.",
+                        ),
+                    )
+                patch_payload = patch if isinstance(patch, dict) else {}
+                if isinstance(patch_payload.get("constraint_record"), dict):
+                    new_record = {
+                        "constraint_record": dict(patch_payload["constraint_record"])
+                    }
+                else:
+                    merged = dict(current.get("constraint_record") or {})
+                    merged.update({k: v for k, v in patch_payload.items() if v is not None})
+                    new_record = {"constraint_record": merged}
+                result = await store.supersede_constraint(
+                    uid=cleaned_uid,
+                    new_record=new_record,
+                    event={
+                        "action": "supersede",
+                        "reason": (reason or "").strip() or None,
+                        "stage": session.stage.value if session.stage else None,
+                        "user_utterance": memory_request_text,
+                    },
+                )
+                if result.get("updated"):
+                    memory_operations.append(f"supersede:{cleaned_uid}")
+                    self._append_background_update_once(
+                        session,
+                        f"Superseded durable memory for constraint `{cleaned_uid}`.",
+                    )
+                new_uid = str(result.get("new_uid") or result.get("uid") or "").strip()
+                parsed_item = None
+                if new_uid:
+                    parsed_item = MemoryConstraintItem.from_payload(
+                        await store.get_constraint(uid=new_uid) or {}
+                    )
+                return self._record_memory_tool_result(
+                    session=session,
+                    result=MemoryToolResult(
+                        action="supersede",
+                        ok=bool(result.get("updated")),
+                        uid=new_uid or cleaned_uid,
+                        error=None if result.get("updated") else str(result.get("reason") or ""),
+                        message=(
+                            f"Superseded remembered constraint `{cleaned_uid}`."
+                            if result.get("updated")
+                            else f"Unable to supersede remembered constraint `{cleaned_uid}`."
+                        ),
+                        constraints=[parsed_item] if parsed_item else [],
+                    ),
+                )
+            case _:
+                return self._record_memory_tool_result(
+                    session=session,
+                    result=MemoryToolResult(
+                        action="list",
+                        ok=False,
+                        error=f"unsupported action: {action}",
+                    ),
+                )
+
+    def _queue_reflection_memory_write(
+        self,
+        *,
+        session: Session,
+        user_message: str,
+        calendar: CalendarSyncOutcome,
+        memory_operations: list[str],
+    ) -> None:
+        """Persist a lightweight per-turn reflection entry in durable memory."""
+        text = (user_message or "").strip()
+        if not text:
+            return
+        store = self._ensure_durable_constraint_store()
+        if store is None:
+            return
+        payload = {
+            "user_id": session.user_id,
+            "stage": session.stage.value if session.stage else None,
+            "planned_date": session.planned_date,
+            "calendar_status": calendar.status,
+            "calendar_changed": calendar.changed,
+            "memory_operations": list(memory_operations or []),
+            "summary": (
+                f"Stage {session.stage.value if session.stage else 'unknown'} "
+                f"calendar={calendar.status} changed={calendar.changed}"
+            ),
+            "user_utterance": text,
+        }
+
+        async def _background() -> None:
+            try:
+                await store.add_reflection(payload=payload)
+            except Exception as exc:
+                logger.warning(
+                    "Reflection memory write failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+                self._session_debug(
+                    session,
+                    "reflection_memory_error",
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:500],
+                )
+
+        asyncio.create_task(_background())
+
+    def _build_refine_memory_component(self, *, session: Session) -> ConstraintPlanningMemory:
+        """Build a per-turn AutoGen memory component for stage-aware constraint injection."""
+        component = ConstraintPlanningMemory(
+            store_provider=self._ensure_durable_constraint_store,
+            max_items=12,
+        )
+        component.set_planning_state(
+            {
+                "stage": session.stage.value if session.stage else None,
+                "planned_date": session.planned_date,
+                "event_types": [],
+            }
+        )
+        return component
+
+    @staticmethod
+    def _select_patch_instruction(requested_patch: list[str]) -> str:
+        """Return the first valid patch instruction from tool-selected operations."""
+        for instruction in requested_patch:
+            cleaned = (instruction or "").strip()
+            if cleaned:
+                return cleaned
+        return ""
+
+    @staticmethod
+    def _looks_like_schedule_request(text: str) -> bool:
+        """Heuristic to detect explicit schedule/calendar patch intent."""
+        lowered = (text or "").strip().lower()
+        if not lowered:
+            return False
+        schedule_markers = (
+            "move",
+            "reschedule",
+            "shift",
+            "patch",
+            "calendar",
+            "timebox",
+            "schedule",
+            "block",
+            "add buffer",
+            "remove buffer",
+            "today plan",
+            "tomorrow plan",
+        )
+        if any(marker in lowered for marker in schedule_markers):
+            return True
+        return bool(
+            re.search(
+                r"\b([01]?\d|2[0-3]):[0-5]\d\b|\b(today|tomorrow|tonight|morning|afternoon|evening)\b",
+                lowered,
+            )
         )
 
     @staticmethod
-    def _select_refine_tool_intents(
-        requested: list[tuple[int, str, str]],
-    ) -> tuple[str, str]:
-        """Return prioritized patch + memory intents from tool-selected operations."""
-        patch_instruction = ""
-        memory_instruction = ""
-        for _, kind, payload in sorted(requested, key=lambda item: item[0]):
-            if kind == "patch" and not patch_instruction:
-                patch_instruction = payload
-            if kind == "memory" and not memory_instruction:
-                memory_instruction = payload
-        return patch_instruction, memory_instruction
+    def _looks_like_memory_management_request(text: str) -> bool:
+        """Heuristic to detect explicit memory review/edit commands."""
+        lowered = (text or "").strip().lower()
+        if not lowered:
+            return False
+        if TimeboxingFlowAgent._looks_like_schedule_request(lowered):
+            return False
+        memory_markers = (
+            "memory",
+            "remember",
+            "constraint",
+            "preference",
+            "saved rule",
+            "what do you know",
+            "what do you remember",
+            "show my",
+            "list my",
+            "update my",
+            "edit my",
+            "delete",
+            "remove",
+            "archive",
+            "forget",
+        )
+        has_memory = any(marker in lowered for marker in memory_markers)
+        if not has_memory:
+            return False
+        explicit_memory_only = (
+            lowered.startswith("show my")
+            or lowered.startswith("list my")
+            or lowered.startswith("what do you remember")
+            or lowered.startswith("what do you know")
+            or lowered.startswith("forget ")
+            or lowered.startswith("archive ")
+            or lowered.startswith("delete ")
+            or lowered.startswith("edit my preference")
+        )
+        return explicit_memory_only or has_memory
 
     async def _build_skeleton_context(self, session: Session) -> SkeletonContext:
         """Assemble the injected context for the skeleton drafter."""
@@ -3179,7 +4388,50 @@ class TimeboxingFlowAgent(RoutedAgent):
 
     def _normalize_calendar_events(self, immovables: Any | None) -> list[CalendarEvent]:
         """Normalize immovable payloads into CalendarEvent instances."""
-        events = parse_model_list(CalendarEvent, immovables)
+        raw_calendar_events = parse_model_list(CalendarEvent, immovables)
+        normalized_events = parse_model_list(
+            _CalendarSnapshotEvent,
+            [
+                {
+                    "summary": getattr(event, "summary", None),
+                    "event_type": getattr(event, "event_type", None),
+                    "start_time": getattr(event, "start_time", None),
+                    "end_time": getattr(event, "end_time", None),
+                    "duration": getattr(event, "duration", None),
+                    "start": getattr(event, "start", None),
+                    "end": getattr(event, "end", None),
+                    "calendarId": getattr(event, "calendarId", None),
+                    "timeZone": getattr(event, "timeZone", None),
+                    "description": getattr(event, "description", None),
+                    "eventId": getattr(event, "eventId", None),
+                }
+                for event in raw_calendar_events
+            ],
+        )
+        if normalized_events:
+            return self._sort_calendar_events(
+                [event.to_calendar_event() for event in normalized_events]
+            )
+        immovable_rows = parse_model_list(Immovable, immovables)
+        if not immovable_rows:
+            return []
+        events = [
+            event.to_calendar_event()
+            for event in parse_model_list(
+                _CalendarSnapshotEvent,
+                [
+                    {
+                        "summary": row.title,
+                        "event_type": EventType.MEETING,
+                        "start_time": row.start,
+                        "end_time": row.end,
+                        "calendarId": "primary",
+                        "timeZone": getattr(settings, "planning_timezone", "") or "UTC",
+                    }
+                    for row in immovable_rows
+                ],
+            )
+        ]
         return self._sort_calendar_events(events)
 
     def _sort_calendar_events(self, events: list[CalendarEvent]) -> list[CalendarEvent]:
@@ -3203,6 +4455,16 @@ class TimeboxingFlowAgent(RoutedAgent):
             duration=timedelta(minutes=TIMEBOXING_FALLBACK.focus_block_minutes),
             calendarId="primary",
             timeZone=timezone,
+        )
+
+    async def _run_assist_turn(
+        self, *, session: Session, user_message: str, note: str | None
+    ) -> str | None:
+        """Handle adjacent assist requests without progressing the stage."""
+        return await self._task_marshalling.assist_response(
+            session=session,
+            user_message=user_message,
+            note=note,
         )
 
     async def _decide_next_action(
@@ -3229,15 +4491,53 @@ class TimeboxingFlowAgent(RoutedAgent):
             fields=["item"],
         )
         payload = f"{decision_ctx}\n{missing}\n"
-        response = await with_timeout(
-            "timeboxing:stage-decision",
-            self._decision_agent.on_messages(
-                [TextMessage(content=payload, source="user")],
-                CancellationToken(),
-            ),
-            timeout_s=TIMEBOXING_TIMEOUTS.stage_decision_s,
-        )
-        return parse_chat_content(StageDecision, response)
+        try:
+            response = await with_timeout(
+                "timeboxing:stage-decision",
+                self._decision_agent.on_messages(
+                    [TextMessage(content=payload, source="user")],
+                    CancellationToken(),
+                ),
+                timeout_s=TIMEBOXING_TIMEOUTS.stage_decision_s,
+            )
+        except TimeoutError as exc:
+            error = f"Stage decision timeout: {type(exc).__name__}"
+            logger.warning(error)
+            self._session_debug(
+                session,
+                "stage_decision_timeout",
+                error=error,
+            )
+            return StageDecision(
+                action="provide_info",
+                note="stage_decision_timeout",
+            )
+        except Exception as exc:
+            error = f"Stage decision failed: {type(exc).__name__}: {exc}"
+            logger.error(error, exc_info=True)
+            self._session_debug(
+                session,
+                "stage_decision_error",
+                error=error[:2000],
+            )
+            return StageDecision(
+                action="provide_info",
+                note="stage_decision_error",
+            )
+        try:
+            return parse_chat_content(StageDecision, response)
+        except Exception as exc:
+            error = f"Stage decision parse failed: {type(exc).__name__}: {exc}"
+            logger.error(error, exc_info=True)
+            self._session_debug(
+                session,
+                "stage_decision_parse_error",
+                error=error[:2000],
+            )
+            return StageDecision(
+                action="provide_info",
+                note="stage_decision_parse_error",
+            )
 
     def _format_constraints_section(
         self, constraints: list[Constraint], limit: int = 6
@@ -3255,6 +4555,130 @@ class TimeboxingFlowAgent(RoutedAgent):
         if remaining > 0:
             lines.append(f"...and {remaining} more")
         return lines
+
+    @staticmethod
+    def _constraint_needs_confirmation(constraint: ConstraintBase) -> bool:
+        """Return whether a constraint should be explicitly confirmed by the user."""
+        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+        selector = constraint.selector if isinstance(constraint.selector, dict) else {}
+        if bool(hints.get("needs_confirmation") or selector.get("needs_confirmation")):
+            return True
+        confidence = getattr(constraint, "confidence", None)
+        if confidence is not None:
+            try:
+                return float(confidence) < 0.7
+            except (TypeError, ValueError):
+                return False
+        if constraint.source == ConstraintSource.SYSTEM:
+            return True
+        if constraint.scope == ConstraintScope.DATESPAN and (
+            constraint.start_date is None or constraint.end_date is None
+        ):
+            return True
+        return False
+
+    def _format_assumptions_section(
+        self, constraints: list[Constraint], limit: int = 4
+    ) -> list[str]:
+        """Format inferred/proposed constraints as deny-able assumptions."""
+        assumptions = [
+            constraint
+            for constraint in constraints
+            if constraint.status == ConstraintStatus.PROPOSED
+            and constraint.source == ConstraintSource.SYSTEM
+        ]
+        lines: list[str] = []
+        for constraint in assumptions[:limit]:
+            name = (constraint.name or "Assumption").strip()
+            description = (constraint.description or "").strip()
+            suffix = (
+                " (needs confirmation; deny/edit if wrong)"
+                if self._constraint_needs_confirmation(constraint)
+                else " (reply with deny to remove)"
+            )
+            if description:
+                lines.append(f"{name}: {description}{suffix}")
+            else:
+                lines.append(f"{name}{suffix}")
+        remaining = len(assumptions) - len(lines)
+        if remaining > 0:
+            lines.append(f"...and {remaining} more assumption(s)")
+        return lines
+
+    @staticmethod
+    def _sanitize_slack_markdown(text: str) -> str:
+        """Strip unsupported HTML-like disclosure tags from Slack markdown text."""
+        cleaned = str(text or "")
+        cleaned = re.sub(r"</?details[^>]*>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"</?summary[^>]*>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _render_session_message(message: SessionMessage) -> str:
+        """Render a structured session message into markdown text."""
+        parts: list[str] = []
+        for section in message.sections:
+            match section:
+                case NextStepsSection():
+                    parts.append(f"### {section.heading}")
+                    lines = [
+                        TimeboxingFlowAgent._sanitize_slack_markdown(line)
+                        for line in section.content
+                    ]
+                    lines = [line for line in lines if line]
+                    if not lines:
+                        continue
+                    first, *rest = lines
+                    parts.append(first)
+                    if rest:
+                        parts.append("\n".join([f"- {line}" for line in rest]))
+                case ConstraintsSection():
+                    parts.append(f"### {section.heading}")
+                    top = [
+                        TimeboxingFlowAgent._sanitize_slack_markdown(line)
+                        for line in section.content
+                    ]
+                    top = [line for line in top if line]
+                    parts.append(
+                        "\n".join([f"- {line}" for line in top]) if top else "- (none)"
+                    )
+                    folded = [
+                        TimeboxingFlowAgent._sanitize_slack_markdown(line)
+                        for line in section.folded_content
+                    ]
+                    folded = [line for line in folded if line]
+                    if folded:
+                        parts.extend(
+                            [
+                                "### All active constraints",
+                                "\n".join([f"- {line}" for line in folded]),
+                            ]
+                        )
+                case FreeformSection():
+                    content = TimeboxingFlowAgent._sanitize_slack_markdown(section.content)
+                    parts.extend([f"### {section.heading}", content or "-"])
+        return "\n".join(parts)
+
+    @staticmethod
+    def _ordered_session_sections(message: SessionMessage) -> SessionMessage:
+        """Normalize section ordering so the final section is always next steps."""
+        def _section_priority(section: MessageSection) -> int:
+            kind = str(getattr(section, "kind", "freeform"))
+            if kind == "constraints":
+                return 0
+            if kind == "next_steps":
+                return 2
+            heading = str(getattr(section, "heading", "")).strip().lower()
+            if heading in {"what i need from you", "next steps"}:
+                return 2
+            return 1
+
+        ordered = sorted(
+            enumerate(message.sections),
+            key=lambda pair: (_section_priority(pair[1]), pair[0]),
+        )
+        return SessionMessage(sections=[section for _, section in ordered])
 
     def _build_collect_constraint_template_section(
         self, *, gate: StageGateOutput, constraints: list[Constraint] | None
@@ -3314,7 +4738,13 @@ class TimeboxingFlowAgent(RoutedAgent):
         constraints: list[Constraint] | None = None,
         immovables: list[dict[str, str]] | None = None,
     ) -> str:
-        """Render a human-readable stage update message."""
+        """Render a markdown stage update, preferring structured section payloads."""
+        if gate.response_message and gate.response_message.sections:
+            ordered = self._ordered_session_sections(gate.response_message)
+            rendered = self._render_session_message(ordered)
+            if rendered.strip():
+                return rendered
+
         stage_order = {
             TimeboxingStage.COLLECT_CONSTRAINTS: "Stage 1/5 (CollectConstraints)",
             TimeboxingStage.CAPTURE_INPUTS: "Stage 2/5 (CaptureInputs)",
@@ -3326,14 +4756,25 @@ class TimeboxingFlowAgent(RoutedAgent):
         summary_lines = self._sanitize_stage_summary_lines(
             gate=gate, immovables=immovables
         )
-        bullets = (
-            "\n".join([f"- {b}" for b in summary_lines])
-            if summary_lines
-            else "- (none)"
+        bullets = "\n".join([f"- {b}" for b in summary_lines]) if summary_lines else "- (none)"
+        missing = "\n".join([f"- {m}" for m in gate.missing]) if gate.missing else "- (none)"
+        question = (
+            (gate.question or "").strip()
+            or (
+                "Share the missing inputs, then reply in thread with `Redo`."
+                if not gate.ready
+                else "Confirm this plan or share any changes."
+            )
         )
-        missing = (
-            "\n".join([f"- {m}" for m in gate.missing]) if gate.missing else "- (none)"
+        status_line = (
+            "Stage criteria met. You can proceed or share adjustments."
+            if gate.ready
+            else "Stage criteria not met. Share missing inputs, then reply with `Redo`."
         )
+        sections: list[NextStepsSection | ConstraintsSection | FreeformSection] = [
+            NextStepsSection(heading="What I need from you", content=[question, status_line]),
+            FreeformSection(heading="Current step", content=header),
+        ]
         if gate.stage_id == TimeboxingStage.COLLECT_CONSTRAINTS:
             defaults_raw = []
             if isinstance(gate.facts, dict):
@@ -3344,86 +4785,95 @@ class TimeboxingFlowAgent(RoutedAgent):
                 if isinstance(line, str) and line.strip()
             ]
             defaults_block = "\n".join(defaults) if defaults else "- (none)"
-            parts = [
-                header,
-                "Confirmed Defaults:",
-                defaults_block,
-                "Still Missing:",
-                missing,
-            ]
-            if gate.question:
-                parts.append(f"Question: {gate.question}")
-            parts.extend(["What I Have So Far:", bullets])
-            if not gate.ready:
-                parts.append(
-                    "Stage criteria not met yet. Share the missing inputs, then use Redo."
-                )
-            else:
-                parts.append(
-                    "Stage criteria met. I can auto-proceed; click Proceed or share adjustments."
-                )
+            sections.extend(
+                [
+                    FreeformSection(heading="Confirmed defaults", content=defaults_block),
+                    FreeformSection(heading="Still missing", content=missing),
+                    FreeformSection(heading="What I have so far", content=bullets),
+                ]
+            )
             if constraints:
-                constraint_lines = self._format_constraints_section(constraints)
-                parts.extend(
-                    [
-                        "Constraints:",
-                        "\n".join([f"- {line}" for line in constraint_lines]),
-                    ]
+                top_constraints = self._format_constraints_section(constraints, limit=3)
+                all_constraints = (
+                    self._format_constraints_section(constraints, limit=100)
+                    if len(constraints) > 3
+                    else []
                 )
+                sections.append(
+                    ConstraintsSection(
+                        heading=f"Constraints (top {min(3, len(constraints))}/{len(constraints)})",
+                        content=top_constraints,
+                        folded_content=all_constraints,
+                    )
+                )
+                assumption_lines = self._format_assumptions_section(constraints)
+                if assumption_lines:
+                    sections.append(
+                        FreeformSection(
+                            heading="Assumptions currently applied (yes-state; deny/edit if wrong)",
+                            content="\n".join([f"- {line}" for line in assumption_lines]),
+                        )
+                    )
             if immovables:
                 immovable_lines = self._format_immovables_section(immovables)
-                parts.extend(
-                    [
-                        "Calendar:",
-                        "\n".join([f"- {line}" for line in immovable_lines]),
-                    ]
+                sections.append(
+                    FreeformSection(
+                        heading="Calendar",
+                        content="\n".join([f"- {line}" for line in immovable_lines]),
+                    )
                 )
             if background_notes:
                 notes = "\n".join([f"- {note}" for note in background_notes])
-                parts.extend(["Background:", notes])
-            return "\n".join(parts)
+                sections.append(FreeformSection(heading="Background", content=notes))
+            return self._render_session_message(
+                self._ordered_session_sections(SessionMessage(sections=sections))
+            )
 
-        parts = [header]
         if not gate.ready:
-            parts.extend(
+            sections.extend(
                 [
-                    "Need Before Proceeding:",
-                    missing,
+                    FreeformSection(heading="Need before proceeding", content=missing),
+                    FreeformSection(heading="What I have so far", content=bullets),
                 ]
             )
-            parts.append(
-                "Stage criteria not met yet. Share the missing inputs, then use Redo."
-            )
-            if gate.question:
-                parts.append(f"Question: {gate.question}")
-            parts.extend(["What I Have So Far:", bullets])
         else:
-            parts.extend(["Summary:", bullets])
-            if gate.question:
-                parts.append(f"Question: {gate.question}")
-            parts.append(
-                "Stage criteria met. I can auto-proceed; click Proceed or share adjustments."
-            )
+            sections.append(FreeformSection(heading="Summary", content=bullets))
         if constraints:
-            constraint_lines = self._format_constraints_section(constraints)
-            parts.extend(
-                [
-                    "Constraints:",
-                    "\n".join([f"- {line}" for line in constraint_lines]),
-                ]
+            top_constraints = self._format_constraints_section(constraints, limit=3)
+            all_constraints = (
+                self._format_constraints_section(constraints, limit=100)
+                if len(constraints) > 3
+                else []
             )
+            sections.append(
+                ConstraintsSection(
+                    heading=f"Constraints (top {min(3, len(constraints))}/{len(constraints)})",
+                    content=top_constraints,
+                    folded_content=all_constraints,
+                )
+            )
+            assumption_lines = self._format_assumptions_section(constraints)
+            if assumption_lines:
+                sections.append(
+                    FreeformSection(
+                        heading="Assumptions currently applied (yes-state; deny/edit if wrong)",
+                        content="\n".join([f"- {line}" for line in assumption_lines]),
+                    )
+                )
         if immovables:
             immovable_lines = self._format_immovables_section(immovables)
-            parts.extend(
-                [
-                    "Calendar:",
-                    "\n".join([f"- {line}" for line in immovable_lines]),
-                ]
+            sections.append(
+                FreeformSection(
+                    heading="Calendar",
+                    content="\n".join([f"- {line}" for line in immovable_lines]),
+                )
             )
         if background_notes:
             notes = "\n".join([f"- {note}" for note in background_notes])
-            parts.extend(["Background:", notes])
-        return "\n".join(parts)
+            sections.append(FreeformSection(heading="Background", content=notes))
+        return self._render_session_message(
+            self._ordered_session_sections(SessionMessage(sections=sections))
+        )
 
     def _collect_background_notes(self, session: Session) -> list[str] | None:
         """Assemble background status notes to include in stage responses."""
@@ -3526,7 +4976,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 "- Anything the user did NOT explicitly state as their own preference\n\n"
                 "If no valid user constraints are found, return an empty constraints list.\n"
                 "Return ONLY a JSON object with a list of constraints. Each constraint needs "
-                "name, description, necessity (must/should), and any useful hints/selector "
+                "name, description, necessity (must/should/prefer), and any useful hints/selector "
                 "metadata. Use source=user and status=proposed unless explicitly locked."
             ),
             reflect_on_tool_use=False,
@@ -3541,20 +4991,20 @@ class TimeboxingFlowAgent(RoutedAgent):
         agent_ref = self  # prevent gc issues with the closure
 
         async def _search_constraints_wrapper(
-            queries: list[dict[str, Any]],
+            queries: list[ConstraintSearchQuery],
             planned_date: str | None,
             stage: str | None,
         ) -> str:
             """Search the durable constraint store with one or more query facets.
 
             Use this tool to find saved scheduling preferences and constraints
-            from the user's Notion preference store. You can search by:
+            from the durable preference store. You can search by:
             - text (free-text match on constraint name or description)
             - event type codes (M, DW, SW, H, R, C, BU, BG, PR)
             - topic tags
             - status (locked / proposed)
             - scope (session / profile / datespan)
-            - necessity (must / should)
+            - necessity (must / should / prefer)
 
             Args:
                 queries: List of search facets. Each facet is a dict with keys:
@@ -3564,7 +5014,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                     - tags (list[str]): Topic tag names.
                     - statuses (list[str]): 'locked' and/or 'proposed'.
                     - scopes (list[str]): 'session', 'profile', 'datespan'.
-                    - necessities (list[str]): 'must' and/or 'should'.
+                    - necessities (list[str]): 'must', 'should', and/or 'prefer'.
                     - limit (int): Max results per facet (default 20).
                 planned_date: ISO date (YYYY-MM-DD), or null to use today.
                 stage: Current timeboxing stage, or null for no stage filter.
@@ -3572,17 +5022,36 @@ class TimeboxingFlowAgent(RoutedAgent):
             Returns:
                 Formatted summary of matching constraints.
             """
+            query_payloads = [
+                query.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                    exclude_defaults=True,
+                )
+                for query in queries
+            ]
+            semantic_query_payloads = [
+                {
+                    key: value
+                    for key, value in payload.items()
+                    if key not in {"label", "limit"}
+                }
+                for payload in query_payloads
+            ]
             if (
                 stage == TimeboxingStage.COLLECT_CONSTRAINTS.value
-                and (not queries or all(not isinstance(q, dict) or not q for q in queries))
+                and (
+                    not semantic_query_payloads
+                    or all(not payload for payload in semantic_query_payloads)
+                )
             ):
                 return (
                     "Skipped search_constraints for Stage 1 because no concrete query "
                     "facet was provided. Using deterministic saved-default prefetch."
                 )
-            client = agent_ref._ensure_constraint_memory_client()
+            client = agent_ref._ensure_durable_constraint_store()
             return await search_constraints(
-                queries=queries,
+                queries=query_payloads,
                 planned_date=planned_date,
                 stage=stage,
                 _client=client,
@@ -3592,7 +5061,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             _search_constraints_wrapper,
             name="search_constraints",
             description=(
-                "Search the durable constraint/preference store in Notion. "
+                "Search the durable constraint/preference store. "
                 "Accepts one or more search facets (text, event types, tags, "
                 "status, scope, necessity) and returns a formatted summary of "
                 "matching constraints. Use this to find the user's saved "
@@ -3612,248 +5081,6 @@ class TimeboxingFlowAgent(RoutedAgent):
         self._constraint_store = ConstraintStore(sessionmaker)
         self._constraint_engine = engine
 
-    async def _ensure_constraint_mcp_tools(self) -> None:
-        """Initialize constraint MCP tools for durable preference upserts."""
-        if self._constraint_mcp_tools:
-            return
-        if not settings.notion_timeboxing_parent_page_id:
-            return
-        model_client = getattr(self, "_constraint_model_client", None) or getattr(
-            self, "_model_client", None
-        )
-        if model_client is None:
-            return
-        try:
-            raw_tools = await get_constraint_mcp_tools()
-            raw_by_name = {
-                str(getattr(tool, "name", "")).strip(): tool for tool in raw_tools
-            }
-            required_tool_names = (
-                "constraint_query_types",
-                "constraint_query_constraints",
-                "constraint_upsert_constraint",
-                "constraint_log_event",
-            )
-            missing = [name for name in required_tool_names if name not in raw_by_name]
-            if missing:
-                raise RuntimeError(
-                    f"Constraint MCP server missing required tools: {', '.join(missing)}"
-                )
-
-            async def _run_constraint_tool_json(
-                tool_name: str, arguments: dict[str, Any]
-            ) -> Any:
-                tool = raw_by_name[tool_name]
-                result = await tool.run_json(arguments, CancellationToken())
-                return ConstraintMemoryClient._decode_tool_result(tool_name, result)
-
-            async def constraint_query_types(
-                stage: str | None,
-                event_types: list[str] | None,
-            ) -> list[dict[str, Any]]:
-                payload = await _run_constraint_tool_json(
-                    "constraint_query_types",
-                    {
-                        "stage": stage,
-                        "event_types": event_types,
-                    },
-                )
-                if not isinstance(payload, list):
-                    raise RuntimeError(
-                        "constraint_query_types returned non-list JSON payload"
-                    )
-                return [item for item in payload if isinstance(item, dict)]
-
-            async def constraint_query_constraints(
-                filters: dict[str, Any],
-                type_ids: list[str] | None,
-                tags: list[str] | None,
-                sort: list[list[str]] | None,
-                limit: int,
-            ) -> list[dict[str, Any]]:
-                payload = await _run_constraint_tool_json(
-                    "constraint_query_constraints",
-                    {
-                        "filters": filters,
-                        "type_ids": type_ids,
-                        "tags": tags,
-                        "sort": sort,
-                        "limit": limit,
-                    },
-                )
-                if not isinstance(payload, list):
-                    raise RuntimeError(
-                        "constraint_query_constraints returned non-list JSON payload"
-                    )
-                return [item for item in payload if isinstance(item, dict)]
-
-            async def constraint_upsert_constraint(
-                record: dict[str, Any],
-                event: dict[str, Any] | None,
-            ) -> dict[str, Any]:
-                payload = await _run_constraint_tool_json(
-                    "constraint_upsert_constraint",
-                    {
-                        "record": record,
-                        "event": event,
-                    },
-                )
-                if not isinstance(payload, dict):
-                    raise RuntimeError(
-                        "constraint_upsert_constraint returned non-dict JSON payload"
-                    )
-                if not payload.get("uid"):
-                    raise RuntimeError(
-                        "constraint_upsert_constraint returned missing uid"
-                    )
-                return payload
-
-            async def constraint_log_event(event: dict[str, Any]) -> dict[str, Any]:
-                payload = await _run_constraint_tool_json(
-                    "constraint_log_event",
-                    {"event": event},
-                )
-                if not isinstance(payload, dict):
-                    raise RuntimeError("constraint_log_event returned non-dict JSON payload")
-                return payload
-
-            self._constraint_mcp_tools = [
-                FunctionTool(
-                    constraint_query_types,
-                    name="constraint_query_types",
-                    description="Query ranked constraint types from durable memory.",
-                    strict=True,
-                ),
-                FunctionTool(
-                    constraint_query_constraints,
-                    name="constraint_query_constraints",
-                    description="Query durable constraints using filters, tags, and type ids.",
-                    strict=True,
-                ),
-                FunctionTool(
-                    constraint_upsert_constraint,
-                    name="constraint_upsert_constraint",
-                    description="Create or update one durable constraint record.",
-                    strict=True,
-                ),
-                FunctionTool(
-                    constraint_log_event,
-                    name="constraint_log_event",
-                    description="Log a durable-memory extraction/upsert event.",
-                    strict=True,
-                ),
-            ]
-            self._notion_extractor = NotionConstraintExtractor(
-                model_client=model_client,
-                tools=self._constraint_mcp_tools,
-            )
-
-            async def extract_and_upsert_constraint(
-                planned_date: str,
-                timezone: str,
-                stage_id: str,
-                user_utterance: str,
-                triggering_suggestion: str,
-                impacted_event_types: list[str],
-                suggested_tags: list[str],
-                decision_scope: str,
-            ) -> dict[str, Any] | None:
-                """Extract a durable timeboxing constraint from user text and upsert it into Notion.
-
-                Args:
-                    planned_date: The date being planned (YYYY-MM-DD format)
-                    timezone: User's timezone (e.g. "Europe/Amsterdam")
-                    stage_id: Current timeboxing stage ID (empty string if none)
-                    user_utterance: The user's exact words
-                    triggering_suggestion: The suggestion that triggered this (empty string if none)
-                    impacted_event_types: List of event types affected
-                    suggested_tags: List of suggested constraint tags
-                    decision_scope: session|profile|datespan (empty string if unknown)
-                """
-                assert self._notion_extractor is not None
-
-                payload = {
-                    "planned_date": planned_date,
-                    "timezone": timezone,
-                    "stage_id": stage_id,
-                    "user_utterance": user_utterance,
-                    "triggering_suggestion": triggering_suggestion,
-                    "impacted_event_types": impacted_event_types,
-                    "suggested_tags": suggested_tags,
-                    "decision_scope": decision_scope,
-                }
-                task_key = hashlib.sha256(
-                    json.dumps(payload, sort_keys=True, ensure_ascii=False).encode(
-                        "utf-8"
-                    )
-                ).hexdigest()[: TIMEBOXING_LIMITS.durable_task_key_len]
-
-                if task_key in self._durable_constraint_task_keys:
-                    return {"queued": False, "deduped": True, "task_key": task_key}
-
-                if (
-                    len(self._durable_constraint_task_keys)
-                    >= TIMEBOXING_LIMITS.durable_task_queue_limit
-                ):
-                    return {"queued": False, "rate_limited": True, "task_key": task_key}
-
-                self._durable_constraint_task_keys.add(task_key)
-
-                async def _background() -> None:
-                    """Run the durable upsert in the background."""
-                    acquired = False
-                    try:
-                        await self._durable_constraint_semaphore.acquire()
-                        acquired = True
-                        await with_timeout(
-                            f"notion:constraint-upsert:{task_key}",
-                            self._notion_extractor.extract_and_upsert_constraint(
-                                planned_date=planned_date,
-                                timezone=timezone,
-                                stage_id=stage_id if stage_id else None,
-                                user_utterance=user_utterance,
-                                triggering_suggestion=(
-                                    triggering_suggestion
-                                    if triggering_suggestion
-                                    else None
-                                ),
-                                impacted_event_types=impacted_event_types,
-                                suggested_tags=suggested_tags,
-                                decision_scope=(
-                                    decision_scope if decision_scope else None
-                                ),
-                            ),
-                            timeout_s=TIMEBOXING_TIMEOUTS.notion_upsert_s,
-                        )
-                    except Exception:
-                        logger.error(
-                            "Durable constraint upsert failed (task_key=%s)",
-                            task_key,
-                            exc_info=True,
-                        )
-                    finally:
-                        if acquired:
-                            self._durable_constraint_semaphore.release()
-                        self._durable_constraint_task_keys.discard(task_key)
-
-                asyncio.create_task(_background())
-                return {"queued": True, "task_key": task_key}
-
-            self._constraint_extractor_tool = FunctionTool(
-                extract_and_upsert_constraint,
-                name="extract_and_upsert_constraint",
-                description=(
-                    "Extract a durable timeboxing constraint from user text and upsert it into "
-                    "Notion. Use empty string for optional fields (stage_id, triggering_suggestion, "
-                    "decision_scope) if not applicable."
-                ),
-                strict=True,
-            )
-        except Exception:
-            logger.exception(
-                "Failed to initialize constraint MCP tools; skipping Notion upserts."
-            )
-
     async def _extract_constraints(
         self,
         session: Session,
@@ -3865,7 +5092,6 @@ class TimeboxingFlowAgent(RoutedAgent):
         if not text.strip():
             return None
         await self._ensure_constraint_store()
-        await self._ensure_constraint_mcp_tools()
         message = TextMessage(content=text, source="user")
         response = await with_timeout(
             "timeboxing:constraint-extract",
@@ -4071,8 +5297,54 @@ class TimeboxingFlowAgent(RoutedAgent):
         """Attach pending presenter blocks to the outgoing Slack payload."""
         presenter_blocks = list(session.pending_presenter_blocks or [])
         session.pending_presenter_blocks = None
+        has_constraint_preview = False
+        if isinstance(reply, SlackBlockMessage):
+            for block in reply.blocks:
+                accessory = block.get("accessory") if isinstance(block, dict) else None
+                if (
+                    isinstance(accessory, dict)
+                    and accessory.get("action_id") == CONSTRAINT_ROW_REVIEW_ACTION_ID
+                ):
+                    has_constraint_preview = True
+                    break
+                if block.get("type") == "actions":
+                    elements = block.get("elements") if isinstance(block, dict) else []
+                    if any(
+                        isinstance(element, dict)
+                        and element.get("action_id") == CONSTRAINT_REVIEW_ALL_ACTION_ID
+                        for element in (elements or [])
+                    ):
+                        has_constraint_preview = True
+                        break
+        constraint_blocks = (
+            []
+            if has_constraint_preview
+            else self._render_constraints_preview_blocks(session=session)
+        )
+        submit_blocks: list[dict[str, Any]] = []
+        match session.stage:
+            case TimeboxingStage.REVIEW_COMMIT:
+                if session.stage_ready and session.tb_plan is not None and session.base_snapshot is not None:
+                    session.pending_submit = True
+                    submit_blocks = self._render_submit_prompt_blocks(
+                        session=session,
+                        text=(
+                            reply.content
+                            if isinstance(reply, TextMessage)
+                            else reply.text
+                        ),
+                    )
+                else:
+                    session.pending_submit = False
+            case _:
+                session.pending_submit = False
         stage_blocks = self._render_stage_action_blocks(session=session)
-        combined_blocks = [*presenter_blocks, *stage_blocks]
+        combined_blocks = [
+            *presenter_blocks,
+            *constraint_blocks,
+            *submit_blocks,
+            *stage_blocks,
+        ]
         if not combined_blocks:
             return reply
         if isinstance(reply, SlackBlockMessage):
@@ -4082,8 +5354,57 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
         return SlackBlockMessage(
             text=reply.content,
-            blocks=[build_text_section_block(text=reply.content), *combined_blocks],
+            blocks=[build_markdown_block(text=reply.content), *combined_blocks],
         )
+
+    @staticmethod
+    def _interaction_mode(session: Session) -> InteractionMode:
+        """Infer the interaction mode for response serialization."""
+        if (session.channel_id or "").strip():
+            return InteractionMode.SLACK
+        return InteractionMode.TEXT
+
+    @staticmethod
+    def _append_presenter_blocks(session: Session, blocks: list[dict[str, Any]]) -> None:
+        """Append blocks without overwriting previously queued presenter content."""
+        if not blocks:
+            return
+        existing = list(session.pending_presenter_blocks or [])
+        session.pending_presenter_blocks = [*existing, *blocks]
+
+    def _record_memory_tool_result(
+        self,
+        *,
+        session: Session,
+        result: MemoryToolResult,
+    ) -> dict[str, Any]:
+        """Store/render one typed tool result and return tool-transport payload."""
+        presentation = present_memory_tool_result(
+            result=result,
+            context=InteractionContext(
+                mode=self._interaction_mode(session),
+                user_id=session.user_id,
+                thread_ts=session.thread_ts,
+            ),
+        )
+        self._append_presenter_blocks(session, presentation.blocks)
+        if presentation.text_update:
+            self._append_background_update_once(session, presentation.text_update)
+        return presentation.payload
+
+    @staticmethod
+    def _parse_memory_patch_json(patch_json: str) -> tuple[dict[str, Any], str | None]:
+        """Parse a JSON object payload used by memory update/supersede tools."""
+        cleaned = str(patch_json or "").strip()
+        if not cleaned:
+            return {}, "Memory patch payload cannot be empty."
+        try:
+            parsed = TypeAdapter(dict[str, Any]).validate_json(cleaned)
+        except ValidationError:
+            return {}, "Memory patch payload must be a valid JSON object string."
+        except (TypeError, ValueError):
+            return {}, "Memory patch payload must be a valid JSON object string."
+        return parsed, None
 
     # endregion
 
@@ -4099,37 +5420,36 @@ class TimeboxingFlowAgent(RoutedAgent):
             channel_id=message.channel_id,
             thread_ts=message.thread_ts,
         )
-        tz_name = self._default_tz_name()
-        try:
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            tz = ZoneInfo("UTC")
-            tz_name = "UTC"
-        planned_date = await self._interpret_planned_date(
-            message.user_input,
-            now=datetime.now(timezone.utc),
-            tz_name=tz_name,
+        tz_name = self._resolve_tz_name(self._default_tz_name())
+        now_utc = datetime.now(timezone.utc)
+        default_planned_date = self._default_planned_date(
+            now=now_utc,
+            tz=ZoneInfo(tz_name),
         )
-        session = Session(
+        session, created = self._ensure_uncommitted_session(
+            key=key,
             thread_ts=message.thread_ts,
             channel_id=message.channel_id,
             user_id=message.user_id,
-            last_user_message=message.user_input,
-            start_message=message.user_input,
-            committed=False,
-            planned_date=planned_date,
+            user_input=message.user_input,
             tz_name=tz_name,
-            session_key=key,
+            default_planned_date=default_planned_date,
+            debug_event="session_started",
+            start_message=message.user_input,
         )
-        self._sessions[key] = session
-        self._session_debug(
-            session,
-            "session_started",
-            committed=False,
-            user_input=(message.user_input or "")[:500],
+
+        planned_date = await self._interpret_planned_date(
+            message.user_input,
+            now=now_utc,
+            tz_name=tz_name,
         )
-        asyncio.create_task(self._prefetch_calendar_immovables(session, planned_date))
-        self._queue_constraint_prefetch(session)
+        if not session.committed:
+            session.planned_date = planned_date
+            if created:
+                asyncio.create_task(
+                    self._prefetch_calendar_immovables(session, planned_date)
+                )
+                self._queue_constraint_prefetch(session)
         return self._build_commit_prompt_blocks(session=session)
 
     @message_handler
@@ -4159,21 +5479,18 @@ class TimeboxingFlowAgent(RoutedAgent):
         session.committed = True
         session.planned_date = message.planned_date
         session.tz_name = message.timezone or session.tz_name or "UTC"
-        session.frame_facts.setdefault("date", message.planned_date)
-        session.frame_facts.setdefault("timezone", session.tz_name)
+        self._refresh_temporal_facts(session)
         self._session_debug(
             session,
             "commit_date",
             planned_date=message.planned_date,
             timezone=session.tz_name,
         )
-        self._queue_constraint_prefetch(session)
-        await self._await_pending_durable_constraint_prefetch(
-            session,
-            stage=TimeboxingStage.COLLECT_CONSTRAINTS,
+        await self._prime_collect_prefetch_non_blocking(
+            session=session,
+            planned_date=message.planned_date,
+            blocking=True,
         )
-
-        await self._ensure_calendar_immovables(session)
 
         session.thread_state = None
         session.last_extraction_task = None
@@ -4207,110 +5524,102 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         session = self._sessions.get(key)
         if not session:
-            tz_name = self._default_tz_name()
-            try:
-                tz = ZoneInfo(tz_name)
-            except Exception:
-                tz = ZoneInfo("UTC")
-                tz_name = "UTC"
-            planned_date = await self._interpret_planned_date(
-                message.text,
-                now=datetime.now(timezone.utc),
-                tz_name=tz_name,
+            tz_name = self._resolve_tz_name(self._default_tz_name())
+            now_utc = datetime.now(timezone.utc)
+            default_planned_date = self._default_planned_date(
+                now=now_utc,
+                tz=ZoneInfo(tz_name),
             )
-            session = Session(
+            session, _ = self._ensure_uncommitted_session(
+                key=key,
                 thread_ts=message.thread_ts,
                 channel_id=message.channel_id,
                 user_id=message.user_id,
-                last_user_message=message.text,
-                committed=False,
-                planned_date=planned_date,
+                user_input=message.text,
                 tz_name=tz_name,
-                session_key=key,
+                default_planned_date=default_planned_date,
+                debug_event="session_started_from_reply",
             )
-            self._sessions[key] = session
-            self._session_debug(
-                session,
-                "session_started_from_reply",
-                committed=False,
-                user_input=(message.text or "")[:500],
-            )
-            asyncio.create_task(
-                self._prefetch_calendar_immovables(session, planned_date)
-            )
-            self._queue_constraint_prefetch(session)
-            return self._build_commit_prompt_blocks(session=session)
         if session.session_key is None:
             session.session_key = key
-        self._session_debug(
-            session,
-            "user_reply",
-            text=(message.text or "")[:800],
-            committed=session.committed,
-        )
-
-        if not session.committed:
-            # User is replying with text before clicking Confirm - treat this as implicit confirmation
-            session.committed = True
-            tz_name = session.tz_name or self._default_tz_name()
-            try:
-                tz = ZoneInfo(tz_name)
-            except Exception:
-                tz = ZoneInfo("UTC")
-                tz_name = "UTC"
-
-            # Update planned date if it seems like the user is specifying a different day
-            planned_date = await self._interpret_planned_date(
-                message.text,
-                now=datetime.now(timezone.utc),
-                tz_name=tz_name,
-            )
-            if planned_date != session.planned_date:
-                session.planned_date = planned_date
-                self._reset_durable_prefetch_state(session)
-                await self._prefetch_calendar_immovables(session, planned_date)
-
-            session.frame_facts.setdefault("date", session.planned_date)
-            session.frame_facts.setdefault("timezone", tz_name)
-            await self._ensure_calendar_immovables(session)
-            self._queue_constraint_prefetch(session)
-            await self._await_pending_durable_constraint_prefetch(
+        async with session.reply_turn_lock:
+            self._session_debug(
                 session,
-                stage=TimeboxingStage.COLLECT_CONSTRAINTS,
+                "user_reply",
+                text=(message.text or "")[:800],
+                committed=session.committed,
             )
 
-            # Now continue with normal constraint extraction and stage processing
-            # Fall through to the committed session logic below
-
-        # Session is committed - run the GraphFlow stage machine.
-        if (
-            session.stage == TimeboxingStage.COLLECT_CONSTRAINTS
-            and not self._is_collect_stage_loaded(session)
-        ):
-            await self._await_pending_durable_constraint_prefetch(
-                session,
-                stage=TimeboxingStage.COLLECT_CONSTRAINTS,
+            was_committed = session.committed
+            if not session.committed:
+                # Thread replies should progress naturally even without explicit button confirmation.
+                tz_name = self._resolve_tz_name(session.tz_name or self._default_tz_name())
+                session.tz_name = tz_name
+                planned_date = await self._interpret_planned_date(
+                    message.text,
+                    now=datetime.now(timezone.utc),
+                    tz_name=tz_name,
+                )
+                if planned_date != session.planned_date:
+                    session.planned_date = planned_date
+                    self._reset_durable_prefetch_state(session)
+                resolved_planned_date = session.planned_date or planned_date
+                session.committed = True
+                self._session_debug(
+                    session,
+                    "implicit_commit_from_thread_reply",
+                    planned_date=resolved_planned_date,
+                )
+                self._refresh_temporal_facts(session)
+                await self._prime_collect_prefetch_non_blocking(
+                    session=session,
+                    planned_date=resolved_planned_date,
+                    blocking=True,
+                )
+            if was_committed:
+                await self._scheduler_prefetch.ensure_collect_stage_ready(session=session)
+            if session.stage == TimeboxingStage.REVIEW_COMMIT and session.pending_submit:
+                decision = await self._decide_next_action(
+                    session,
+                    user_message=message.text,
+                )
+                if decision.action == "proceed":
+                    self._session_debug(
+                        session,
+                        "nl_submit_from_reply",
+                        decision_action=decision.action,
+                    )
+                    submit_reply = await self._submit_pending_plan(session=session)
+                    await self._publish_update(
+                        session=session,
+                        user_message=(
+                            submit_reply.content
+                            if isinstance(submit_reply, TextMessage)
+                            else submit_reply.text
+                        ),
+                        actions=[],
+                    )
+                    return submit_reply
+            session.thread_state = None
+            reply = await self._run_graph_turn(session=session, user_text=message.text)
+            wrapped = await self._maybe_wrap_constraint_review(reply=reply, session=session)
+            outgoing = self._attach_presenter_blocks(reply=wrapped, session=session)
+            await self._publish_update(
+                session=session,
+                user_message=(
+                    outgoing.content
+                    if isinstance(outgoing, TextMessage)
+                    else getattr(outgoing, "text", "")
+                ),
+                actions=[],
             )
-        session.thread_state = None
-        reply = await self._run_graph_turn(session=session, user_text=message.text)
-        wrapped = await self._maybe_wrap_constraint_review(reply=reply, session=session)
-        outgoing = self._attach_presenter_blocks(reply=wrapped, session=session)
-        await self._publish_update(
-            session=session,
-            user_message=(
-                outgoing.content
-                if isinstance(outgoing, TextMessage)
-                else getattr(outgoing, "text", "")
-            ),
-            actions=[],
-        )
-        if session.thread_state:
-            timeboxing_activity.mark_inactive(user_id=session.user_id)
-            return SlackThreadStateMessage(
-                text=reply.content,
-                thread_state=session.thread_state,
-            )
-        return outgoing
+            if session.thread_state:
+                timeboxing_activity.mark_inactive(user_id=session.user_id)
+                return SlackThreadStateMessage(
+                    text=reply.content,
+                    thread_state=session.thread_state,
+                )
+            return outgoing
 
     @message_handler
     async def on_user_text(
@@ -4335,9 +5644,9 @@ class TimeboxingFlowAgent(RoutedAgent):
         if not session.committed:
             tz_name = session.tz_name or self._default_tz_name()
             try:
-                tz = ZoneInfo(tz_name)
+                ZoneInfo(tz_name)
             except Exception:
-                tz = ZoneInfo("UTC")
+                ZoneInfo("UTC")
                 tz_name = "UTC"
             planned_date = await self._interpret_planned_date(
                 message.content,
@@ -4348,10 +5657,9 @@ class TimeboxingFlowAgent(RoutedAgent):
                 self._reset_durable_prefetch_state(session)
             session.planned_date = planned_date
             session.tz_name = tz_name
-            asyncio.create_task(
-                self._prefetch_calendar_immovables(session, planned_date)
+            self._scheduler_prefetch.queue_initial_prefetch(
+                session=session, planned_date=planned_date
             )
-            self._queue_constraint_prefetch(session)
             timeboxing_activity.mark_active(
                 user_id=session.user_id,
                 channel_id=session.channel_id,
@@ -4363,14 +5671,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             channel_id=session.channel_id,
             thread_ts=session.thread_ts,
         )
-        if (
-            session.stage == TimeboxingStage.COLLECT_CONSTRAINTS
-            and not self._is_collect_stage_loaded(session)
-        ):
-            await self._await_pending_durable_constraint_prefetch(
-                session,
-                stage=TimeboxingStage.COLLECT_CONSTRAINTS,
-            )
+        await self._scheduler_prefetch.ensure_collect_stage_ready(session=session)
         session.thread_state = None
         reply = await self._run_graph_turn(session=session, user_text=message.content)
         wrapped = await self._maybe_wrap_constraint_review(reply=reply, session=session)
@@ -4417,58 +5718,67 @@ class TimeboxingFlowAgent(RoutedAgent):
             stage=session.stage.value if session.stage else None,
         )
         try:
-            if message.action == "cancel":
-                session.completed = True
-                session.thread_state = "canceled"
-                timeboxing_activity.mark_inactive(user_id=session.user_id)
-                self._session_debug(session, "session_canceled")
-                self._close_session_debug_logger(key)
-                return TextMessage(
-                    content="Okay—stopping this timeboxing session.",
-                    source=self._agent_source(),
-                )
-
-            if message.action == "back":
-                await self._advance_stage(
-                    session, next_stage=self._previous_stage(session.stage)
-                )
-            elif message.action == "proceed":
-                if not session.stage_ready:
-                    missing_lines = (
-                        "\n".join(f"- {item}" for item in (session.stage_missing or []))
-                        if session.stage_missing
-                        else "- (none listed)"
-                    )
-                    question = (
-                        session.stage_question or "Share missing details, then retry."
-                    )
-                    blocked_reply = TextMessage(
-                        content=(
-                            "Cannot proceed yet.\n"
-                            "Missing:\n"
-                            f"{missing_lines}\n"
-                            f"Question: {question}"
-                        ),
+            should_force_stage_rerun = False
+            match message.action:
+                case "cancel":
+                    session.completed = True
+                    session.thread_state = "canceled"
+                    timeboxing_activity.mark_inactive(user_id=session.user_id)
+                    self._session_debug(session, "session_canceled")
+                    self._close_session_debug_logger(key)
+                    return TextMessage(
+                        content="Okay—stopping this timeboxing session.",
                         source=self._agent_source(),
                     )
-                    outgoing = self._attach_presenter_blocks(
-                        reply=blocked_reply, session=session
+                case "back":
+                    await self._advance_stage(
+                        session, next_stage=self._previous_stage(session.stage)
                     )
-                    await self._publish_update(
-                        session=session,
-                        user_message=(
-                            outgoing.content
-                            if isinstance(outgoing, TextMessage)
-                            else getattr(outgoing, "text", "")
-                        ),
-                        actions=[],
+                    should_force_stage_rerun = True
+                case "proceed":
+                    if not session.stage_ready:
+                        missing_lines = (
+                            "\n".join(f"- {item}" for item in (session.stage_missing or []))
+                            if session.stage_missing
+                            else "- (none listed)"
+                        )
+                        question = (
+                            session.stage_question or "Share missing details, then retry."
+                        )
+                        blocked_reply = TextMessage(
+                            content=(
+                                "Cannot proceed yet.\n"
+                                "Missing:\n"
+                                f"{missing_lines}\n"
+                                f"Question: {question}"
+                            ),
+                            source=self._agent_source(),
+                        )
+                        outgoing = self._attach_presenter_blocks(
+                            reply=blocked_reply, session=session
+                        )
+                        await self._publish_update(
+                            session=session,
+                            user_message=(
+                                outgoing.content
+                                if isinstance(outgoing, TextMessage)
+                                else getattr(outgoing, "text", "")
+                            ),
+                            actions=[],
+                        )
+                        return outgoing
+                    await self._proceed(session)
+                    should_force_stage_rerun = True
+                case "redo":
+                    should_force_stage_rerun = True
+                case _:
+                    return TextMessage(
+                        content=f"Unknown stage action: {message.action}",
+                        source=self._agent_source(),
                     )
-                    return outgoing
-                await self._proceed(session)
-            elif message.action == "redo":
-                pass
 
             session.thread_state = None
+            session.force_stage_rerun = should_force_stage_rerun
             reply = await self._run_graph_turn(session=session, user_text="")
             wrapped = await self._maybe_wrap_constraint_review(
                 reply=reply, session=session
@@ -4517,18 +5827,54 @@ class TimeboxingFlowAgent(RoutedAgent):
                 content="This session has already ended; submission is no longer available.",
                 source=self._agent_source(),
             )
+        return await self._submit_pending_plan(session=session)
+
+    async def _submit_pending_plan(
+        self,
+        *,
+        session: Session,
+    ) -> TextMessage | SlackBlockMessage:
+        """Submit the pending Stage 5 plan to calendar when ready."""
         if not session.pending_submit:
+            self._session_debug(
+                session,
+                "submission_skipped",
+                reason="not_pending_submit",
+            )
             return TextMessage(
                 content="There is no pending plan submission right now.",
                 source=self._agent_source(),
             )
-        if session.tb_plan is None or session.base_snapshot is None:
+        if session.tb_plan is None:
             session.pending_submit = False
+            self._session_debug(
+                session,
+                "submission_skipped",
+                reason="missing_tb_plan",
+            )
+            return TextMessage(
+                content="Cannot submit yet because the plan is incomplete. Please refine first.",
+                source=self._agent_source(),
+            )
+        if session.base_snapshot is None:
+            session.pending_submit = False
+            self._session_debug(
+                session,
+                "submission_skipped",
+                reason="missing_base_snapshot",
+            )
             return TextMessage(
                 content="Cannot submit yet because the plan is incomplete. Please refine first.",
                 source=self._agent_source(),
             )
 
+        submit_started_at = perf_counter()
+        self._session_debug(
+            session,
+            "submission_start",
+            remote_events=len(session.base_snapshot.events),
+            event_id_map_size=len(session.event_id_map),
+        )
         previous_map = dict(session.event_id_map)
         try:
             tx = await self._calendar_submitter.submit_plan(
@@ -4537,8 +5883,15 @@ class TimeboxingFlowAgent(RoutedAgent):
                 event_id_map=session.event_id_map,
                 remote_event_ids_by_index=session.remote_event_ids_by_index,
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("Calendar submission failed.")
+            self._session_debug(
+                session,
+                "submission_error",
+                error_type=type(exc).__name__,
+                error=str(exc)[:2000],
+                elapsed_s=round(perf_counter() - submit_started_at, 3),
+            )
             return TextMessage(
                 content="Calendar submission failed. Please try again.",
                 source=self._agent_source(),
@@ -4552,13 +5905,40 @@ class TimeboxingFlowAgent(RoutedAgent):
             session=session,
             transaction=tx,
         )
-        session.remote_event_ids_by_index = []
-        session.base_snapshot = session.tb_plan.model_copy(deep=True)
+        await self._refresh_remote_baseline_after_sync(session)
+        summary = self._summarize_sync_transaction(tx)
+        self._session_debug(
+            session,
+            "submission_result",
+            status=summary.status,
+            changed=summary.changed,
+            created=summary.created,
+            updated=summary.updated,
+            deleted=summary.deleted,
+            failed=summary.failed,
+            failed_ops=summary.failed_details[:3],
+            ops=len(tx.ops),
+            elapsed_s=round(perf_counter() - submit_started_at, 3),
+        )
 
         if tx.status == "committed":
             text = "Submitted to Google Calendar. You can undo this submission."
         elif tx.status == "partial":
-            text = "Submission completed with partial failures. You can undo attempted changes."
+            first_error = (
+                summary.failed_details[0].get("error", "").strip()
+                if summary.failed_details
+                else ""
+            )
+            if first_error:
+                text = (
+                    "Submission completed with partial failures. "
+                    f"First error: {first_error}"
+                )
+            else:
+                text = (
+                    "Submission completed with partial failures. "
+                    "You can undo attempted changes."
+                )
         else:
             text = f"Submission finished with status `{tx.status}`."
         return SlackBlockMessage(
@@ -4695,7 +6075,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             await self._calendar_client.close()
         # Add cleanup for other MCP clients if needed
         if self._constraint_memory_client:
-            # ConstraintMemoryClient might also need cleanup
+            # Mem0 client currently does not expose async cleanup.
             pass
 
 
@@ -4841,25 +6221,78 @@ def _format_time(value) -> str | None:
     return value.strftime("%H:%M")
 
 
+def _constraint_necessity_rank() -> dict[ConstraintNecessity | str, int]:
+    """Return a stable necessity rank map tolerant to older enum definitions."""
+    rank: dict[ConstraintNecessity | str, int] = {
+        ConstraintNecessity.MUST: 0,
+        ConstraintNecessity.SHOULD: 1,
+    }
+    prefer = getattr(ConstraintNecessity, "PREFER", None)
+    if prefer is not None:
+        rank[prefer] = 2
+    rank["prefer"] = 2
+    return rank
+
+
+def _constraint_priority(constraint: Constraint) -> tuple[int, int, str]:
+    """Rank constraints so the top rows are the most decision-critical."""
+    necessity_rank = _constraint_necessity_rank()
+    status_rank = {
+        ConstraintStatus.LOCKED: 0,
+        ConstraintStatus.PROPOSED: 1,
+        ConstraintStatus.DECLINED: 2,
+    }
+    necessity_value: ConstraintNecessity | str = constraint.necessity
+    if necessity_value not in necessity_rank and necessity_value is not None:
+        necessity_value = str(necessity_value).lower()
+    return (
+        necessity_rank.get(necessity_value, 3),
+        status_rank.get(constraint.status, 3),
+        (constraint.name or "").lower(),
+    )
+
+
 def _wrap_with_constraint_review(
     message: TextMessage,
     *,
     constraints: list[Constraint],
     session: Session,
 ) -> SlackBlockMessage:
-    """Attach single-row constraint review cards to a stage response."""
-    blocks: list[dict[str, Any]] = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": message.content}},
-    ]
+    """Attach a compact constraint-review section to a stage response."""
+    blocks: list[dict[str, Any]] = [build_markdown_block(text=message.content)]
     if constraints:
+        ranked = sorted(constraints, key=_constraint_priority)
         blocks.append({"type": "divider"})
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"*Constraints*\n"
+                        f"Showing the top {min(3, len(ranked))} of {len(ranked)}. "
+                        "Use Deny / Edit or open the full list."
+                    ),
+                },
+            }
+        )
         blocks.extend(
             build_constraint_row_blocks(
-                constraints,
+                ranked,
                 thread_ts=session.thread_ts,
                 user_id=session.user_id,
+                limit=3,
+                button_text="Deny / Edit",
             )
         )
+        if len(ranked) > 3:
+            blocks.append(
+                build_constraint_review_all_action_block(
+                    thread_ts=session.thread_ts,
+                    user_id=session.user_id,
+                    count=len(ranked),
+                )
+            )
     return SlackBlockMessage(text=message.content, blocks=blocks)
 
 
@@ -4870,32 +6303,35 @@ def _parse_enum(enum_cls: Type[TEnum], value: object, default: TEnum) -> TEnum:
         return value
     if value is None:
         return default
-    try:
-        return enum_cls(str(value).lower())
-    except Exception:
+    normalized = str(value).strip()
+    if not normalized:
         return default
+    adapter = TypeAdapter(enum_cls)
+    candidates = [normalized, normalized.lower(), normalized.upper()]
+    for candidate in candidates:
+        try:
+            return adapter.validate_python(candidate)
+        except ValidationError:
+            continue
+    return default
 
 
 # TODO(refactor): Parse enums/dates via Pydantic fields instead of try/except.
+@_fallback_on_parse_error(default=None)
 def _parse_dow(value: str | None) -> ConstraintDayOfWeek | None:
     """Parse a day-of-week enum from a string."""
     if not value:
         return None
-    try:
-        return ConstraintDayOfWeek(str(value).upper())
-    except Exception:
-        return None
+    return TypeAdapter(ConstraintDayOfWeek).validate_python(str(value).upper())
 
 
 # TODO(refactor): Parse ISO dates via Pydantic fields instead of try/except.
+@_fallback_on_parse_error(default=None)
 def _parse_date_value(value: str | None) -> date | None:
     """Parse an ISO date string into a date."""
     if not value:
         return None
-    try:
-        return date.fromisoformat(value)
-    except Exception:
-        return None
+    return TypeAdapter(date).validate_python(value)
 
 
 # TODO: this should be part of a tool, not bolted onto an agent
@@ -4928,6 +6364,15 @@ def _constraints_from_memory(
         rule_kind = record.get("rule_kind") or record.get("type_id")
         if rule_kind:
             hints["rule_kind"] = rule_kind
+        confidence = record.get("confidence")
+        parsed_confidence: float | None = None
+        if confidence is not None:
+            try:
+                parsed_confidence = float(confidence)
+                if parsed_confidence < 0.7:
+                    hints["needs_confirmation"] = True
+            except (TypeError, ValueError):
+                parsed_confidence = None
         constraints.append(
             Constraint(
                 user_id=user_id,
@@ -4941,6 +6386,7 @@ def _constraints_from_memory(
                 scope=scope,
                 tags=list(record.get("topics") or []),
                 hints=hints,
+                confidence=parsed_confidence,
                 start_date=_parse_date_value(record.get("start_date")),
                 end_date=_parse_date_value(record.get("end_date")),
                 days_of_week=days,

@@ -112,6 +112,6 @@ async def test_run_stage_gate_returns_safe_fallback_on_parse_failure(
 
     assert out.stage_id == TimeboxingStage.COLLECT_CONSTRAINTS
     assert out.ready is False
-    assert "stage response parse failure" in out.missing
+    assert "stage retry required" in out.missing
     assert "_stage_gate_error" in out.facts
     assert out.facts["timezone"] == "Europe/Amsterdam"

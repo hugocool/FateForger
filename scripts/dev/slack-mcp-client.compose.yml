@@ -1,0 +1,22 @@
+services:
+  slack-mcp-client:
+    image: ${SLACK_MCP_IMAGE:-ghcr.io/tuannvm/slack-mcp-client:latest}
+    container_name: ${SLACK_MCP_CONTAINER_NAME:-slack-mcp-client-local}
+    restart: unless-stopped
+    environment:
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      MCP_MODE: ${MCP_MODE:-sse}
+      MCP_SERVER_LISTEN_ADDRESS: ${MCP_SERVER_LISTEN_ADDRESS:-:8080}
+      SLACK_MCP_UPSTREAM_URL: ${SLACK_MCP_UPSTREAM_URL:-http://host.docker.internal:3000/mcp}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${SLACK_MCP_CLIENT_PORT:-38180}:8080"
+    command: ["--config", "/app/config.json"]
+    volumes:
+      - ${SLACK_MCP_CONFIG_PATH:-./slack-mcp-client.config.json}:/app/config.json:ro
+      - ./slack-mcp-client.mcp-servers.json:/app/mcp-servers.json:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

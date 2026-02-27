@@ -74,6 +74,21 @@ def _make_mock_client(results: list[list[dict[str, Any]]]) -> MagicMock:
     return client
 
 
+def _make_query(**overrides: Any) -> ConstraintSearchQuery:
+    payload: dict[str, Any] = {
+        "label": "q",
+        "text_query": None,
+        "event_types": None,
+        "tags": None,
+        "statuses": None,
+        "scopes": None,
+        "necessities": None,
+        "limit": 20,
+    }
+    payload.update(overrides)
+    return ConstraintSearchQuery(**payload)
+
+
 # ---------------------------------------------------------------------------
 # Unit tests: _raw_to_result
 # ---------------------------------------------------------------------------
@@ -197,7 +212,7 @@ class TestExecuteSearchPlan:
         raw = [_make_raw_constraint(uid="u1", name="Test Rule")]
         client = _make_mock_client([raw])
         plan = ConstraintSearchPlan(
-            queries=[ConstraintSearchQuery(label="test", text_query="deep work")],
+            queries=[_make_query(label="test", text_query="deep work")],
             planned_date="2025-01-15",
         )
         response = await execute_search_plan(client, plan)
@@ -212,8 +227,8 @@ class TestExecuteSearchPlan:
         client = _make_mock_client([raw, raw])
         plan = ConstraintSearchPlan(
             queries=[
-                ConstraintSearchQuery(label="q1", text_query="Shared"),
-                ConstraintSearchQuery(label="q2", event_types=["DW"]),
+                _make_query(label="q1", text_query="Shared"),
+                _make_query(label="q2", event_types=["DW"]),
             ],
         )
         response = await execute_search_plan(client, plan)
@@ -227,8 +242,8 @@ class TestExecuteSearchPlan:
         client = _make_mock_client([raw_a, raw_b])
         plan = ConstraintSearchPlan(
             queries=[
-                ConstraintSearchQuery(label="q1", text_query="A"),
-                ConstraintSearchQuery(label="q2", text_query="B"),
+                _make_query(label="q1", text_query="A"),
+                _make_query(label="q2", text_query="B"),
             ],
         )
         response = await execute_search_plan(client, plan)
@@ -238,7 +253,7 @@ class TestExecuteSearchPlan:
     async def test_empty_results(self) -> None:
         client = _make_mock_client([[]])
         plan = ConstraintSearchPlan(
-            queries=[ConstraintSearchQuery(label="empty", text_query="nonexistent")],
+            queries=[_make_query(label="empty", text_query="nonexistent")],
         )
         response = await execute_search_plan(client, plan)
         assert response.total_found == 0
@@ -249,7 +264,7 @@ class TestExecuteSearchPlan:
         client = MagicMock()
         client.query_constraints = AsyncMock(side_effect=RuntimeError("MCP down"))
         plan = ConstraintSearchPlan(
-            queries=[ConstraintSearchQuery(label="fail", text_query="test")],
+            queries=[_make_query(label="fail", text_query="test")],
         )
         response = await execute_search_plan(client, plan)
         assert response.total_found == 0
@@ -343,13 +358,13 @@ class TestSearchPlanValidation:
             ConstraintSearchPlan(queries=[])
 
     def test_max_eight_queries(self) -> None:
-        queries = [ConstraintSearchQuery(label=f"q{i}") for i in range(9)]
+        queries = [_make_query(label=f"q{i}") for i in range(9)]
         with pytest.raises(Exception):
             ConstraintSearchPlan(queries=queries)
 
     def test_valid_plan(self) -> None:
         plan = ConstraintSearchPlan(
-            queries=[ConstraintSearchQuery(label="q1")],
+            queries=[_make_query(label="q1")],
             planned_date="2025-01-15",
             stage="Skeleton",
         )

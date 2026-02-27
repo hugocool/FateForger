@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     slack_port: int = Field(default=3000, env="SLACK_PORT")
     slack_focus_ttl_seconds: int = Field(default=60 * 60, env="SLACK_FOCUS_TTL_SECONDS")
     slack_app_name: str = Field(default="FateForger")
+    slack_user_token: str = Field(default="", env="SLACK_USER_TOKEN")
+    slack_test_user_token: str = Field(default="", env="SLACK_TEST_USER_TOKEN")
     slack_timeboxing_channel_id: str = Field(
         default="", env="SLACK_TIMEBOXING_CHANNEL_ID"
     )
@@ -95,6 +97,11 @@ class Settings(BaseSettings):
     llm_reasoning_effort_timebox_patcher: str = Field(
         default="", env="LLM_REASONING_EFFORT_TIMEBOX_PATCHER"
     )
+    # Per-agent max output token caps (0 means "provider default")
+    llm_max_tokens: int = Field(default=0, env="LLM_MAX_TOKENS")
+    llm_max_tokens_timebox_patcher: int = Field(
+        default=0, env="LLM_MAX_TOKENS_TIMEBOX_PATCHER"
+    )
 
     # MCP Server Configuration
     mcp_version: str = Field(default="v1.4.8")
@@ -142,6 +149,13 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     environment: str = Field(default="development")
     development: str = Field(default="true")
+    obs_prometheus_enabled: bool = Field(default=True, env="OBS_PROMETHEUS_ENABLED")
+    obs_prometheus_port: int = Field(default=9464, env="OBS_PROMETHEUS_PORT")
+    obs_llm_audit_enabled: bool = Field(default=True, env="OBS_LLM_AUDIT_ENABLED")
+    obs_llm_audit_mode: str = Field(default="sanitized", env="OBS_LLM_AUDIT_MODE")
+    obs_llm_audit_max_chars: int = Field(
+        default=2000, env="OBS_LLM_AUDIT_MAX_CHARS"
+    )
 
     wizard_admin_token: str = Field(default="admin_token", env="WIZARD_ADMIN_TOKEN")
     wizard_session_secret: str = Field(default="", env="WIZARD_SESSION_SECRET")

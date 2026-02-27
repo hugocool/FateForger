@@ -472,6 +472,40 @@ class TestPlanSync:
         )
         assert ops == []
 
+    def test_foreign_overlap_summary_mismatch_is_noop_not_create(self) -> None:
+        """Foreign overlaps with renamed summaries should still avoid duplicate creates."""
+        remote = TBPlan(
+            events=[
+                TBEvent(
+                    n="Lunch",
+                    d="",
+                    t="M",
+                    p=FixedWindow(st=time(13, 0), et=time(14, 0)),
+                )
+            ],
+            date=PLAN_DATE,
+            tz=TZ,
+        )
+        desired = TBPlan(
+            events=[
+                TBEvent(
+                    n="Lunch Break",
+                    d="planner wording changed",
+                    t="M",
+                    p=FixedWindow(st=time(13, 0), et=time(14, 0)),
+                )
+            ],
+            date=PLAN_DATE,
+            tz=TZ,
+        )
+        ops = plan_sync(
+            remote,
+            desired,
+            {},
+            remote_event_ids_by_index=["foreign-event-id-2"],
+        )
+        assert ops == []
+
 
 # ── execute_sync ─────────────────────────────────────────────────────────
 

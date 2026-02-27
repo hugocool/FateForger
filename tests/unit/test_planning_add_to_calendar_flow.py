@@ -87,6 +87,8 @@ async def test_add_to_calendar_success_updates_status_and_returns_url_button():
     sent, recipient = runtime.calls[-1]
     assert isinstance(sent, UpsertCalendarEvent)
     assert recipient.type == "planner_agent"
+    assert sent.start == "2026-01-18T10:00:00"
+    assert sent.end == "2026-01-18T10:30:00"
 
     assert store.status_updates
     assert store.status_updates[-1][0] == DraftStatus.SUCCESS

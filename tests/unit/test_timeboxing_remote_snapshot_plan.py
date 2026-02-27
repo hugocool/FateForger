@@ -81,3 +81,29 @@ def test_build_remote_snapshot_plan_uses_prefetched_identity() -> None:
     assert plan.events[0].n == "Standup"
     assert session.event_id_map["Standup|09:00:00"] == "fftb-1"
     assert session.remote_event_ids_by_index == ["fftb-1"]
+
+
+def test_build_remote_snapshot_plan_maps_immovable_shape() -> None:
+    """`title/start/end` immovable rows should become snapshot TB events."""
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(
+        thread_ts="t1",
+        channel_id="c1",
+        user_id="u1",
+        planned_date="2026-02-14",
+        tz_name="Europe/Amsterdam",
+        frame_facts={
+            "immovables": [
+                {
+                    "title": "Lunch",
+                    "start": "13:00",
+                    "end": "14:00",
+                }
+            ]
+        },
+    )
+
+    plan = TimeboxingFlowAgent._build_remote_snapshot_plan(agent, session)
+
+    assert len(plan.events) == 1
+    assert plan.events[0].n == "Lunch"
