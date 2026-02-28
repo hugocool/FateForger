@@ -297,3 +297,45 @@ async def test_apply_patch_raises_after_max_attempts(
             actions=[],
             plan_validator=_validator,
         )
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_stops_on_non_retryable_provider_error(
+    simple_plan: TBPlan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-retryable provider errors should fail fast instead of spending all retries."""
+    attempts = {"calls": 0}
+
+    class _PermissionDeniedError(Exception):
+        status_code = 403
+
+    class _FakeAssistant:
+        def __init__(self, **kwargs: object) -> None:
+            _ = kwargs
+
+        async def on_messages(
+            self, messages: list[object], cancellation_token: object
+        ) -> object:
+            _ = (messages, cancellation_token)
+            attempts["calls"] += 1
+            raise _PermissionDeniedError("forbidden")
+
+    async def _passthrough_timeout(
+        label: str, awaitable: object, *, timeout_s: float
+    ) -> object:
+        _ = (label, timeout_s)
+        return await awaitable  # type: ignore[misc]
+
+    monkeypatch.setattr(patching_module, "AssistantAgent", _FakeAssistant)
+    monkeypatch.setattr(patching_module, "with_timeout", _passthrough_timeout)
+    patcher = TimeboxPatcher(model_client=object(), max_attempts=5)
+
+    with pytest.raises(ValueError, match="non-retryable error"):
+        await patcher.apply_patch(
+            stage="Refine",
+            current=simple_plan,
+            user_message="adjust deep work",
+            constraints=[],
+            actions=[],
+        )
+    assert attempts["calls"] == 1

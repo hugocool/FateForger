@@ -101,7 +101,7 @@ class CalendarSubmitter:
         )
 
         wb = self._get_workbench()
-        tx = await execute_sync(ops, wb)
+        tx = await execute_sync(ops, wb, halt_on_error=True)
         self._last_tx = tx
 
         logger.info("Sync transaction status: %s", tx.status)
