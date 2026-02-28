@@ -1,19 +1,20 @@
 import os
 import sys
-from typing import Optional
+from urllib.parse import urlparse
 
-from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Application configuration using environment variables."""
 
     # Core Configuration
-    slack_bot_token: str = Field(default="x", env="SLACK_BOT_TOKEN")
-    slack_signing_secret: str = Field(default="x")
+    slack_bot_token: str = Field(default="xoxb-local-dev", env="SLACK_BOT_TOKEN")
+    slack_user_token: str = Field(default="", env="SLACK_USER_TOKEN")
+    slack_signing_secret: str = Field(default="local-signing-secret")
     # Slack Configuration
-    slack_app_token: str = Field(default="your_slack_app_token_here")
+    slack_app_token: str = Field(default="xapp-local-dev")
     slack_socket_mode: bool = Field(default=True, env="SLACK_SOCKET_MODE")
     slack_port: int = Field(default=3000, env="SLACK_PORT")
     slack_focus_ttl_seconds: int = Field(default=60 * 60, env="SLACK_FOCUS_TTL_SECONDS")
@@ -154,15 +155,65 @@ class Settings(BaseSettings):
         default=10, env="AGENT_MCP_DISCOVERY_TIMEOUT_SECONDS"
     )
 
-    # Timeboxing feature flags
-
-    class Config:
-        env_file = (
+    model_config = SettingsConfigDict(
+        env_file=(
             None
             if ("pytest" in sys.modules) or os.getenv("PYTEST_CURRENT_TEST")
             else os.getenv("FATEFORGER_ENV_FILE", ".env")
-        )
-        case_sensitive = False
+        ),
+        case_sensitive=False,
+        extra="forbid",
+    )
+
+    @field_validator("slack_app_token")
+    @classmethod
+    def _validate_slack_app_token(cls, value: str) -> str:
+        if not value.startswith("xapp-"):
+            raise ValueError("SLACK_APP_TOKEN must start with 'xapp-'")
+        return value
+
+    @field_validator("slack_bot_token")
+    @classmethod
+    def _validate_slack_bot_token(cls, value: str) -> str:
+        if not value.startswith("xoxb-"):
+            raise ValueError("SLACK_BOT_TOKEN must start with 'xoxb-'")
+        return value
+
+    @field_validator("slack_user_token")
+    @classmethod
+    def _validate_slack_user_token(cls, value: str) -> str:
+        if value and not value.startswith("xoxp-"):
+            raise ValueError("SLACK_USER_TOKEN must start with 'xoxp-' when provided")
+        return value
+
+    @field_validator(
+        "mcp_calendar_server_url",
+        "mcp_calendar_server_url_docker",
+        "openrouter_base_url",
+    )
+    @classmethod
+    def _validate_http_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError(f"URL must use http/https scheme: {value}")
+        if not parsed.netloc:
+            raise ValueError(f"URL must include host: {value}")
+        return value
+
+    @field_validator("database_url")
+    @classmethod
+    def _validate_database_url(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("DATABASE_URL must not be empty")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_runtime_mode(self) -> "Settings":
+        if not self.slack_socket_mode:
+            raise ValueError(
+                "SLACK_SOCKET_MODE=false is unsupported; use Socket Mode only."
+            )
+        return self
 
 
 settings = Settings()

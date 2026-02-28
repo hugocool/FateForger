@@ -300,6 +300,50 @@ async def initialize_runtime() -> SingleThreadedAgentRuntime:
         return _runtime
 
 
+async def shutdown_runtime() -> None:
+    """Stop and release the singleton runtime and attached resources."""
+    global _runtime
+    async with _runtime_lock:
+        runtime = _runtime
+        if runtime is None:
+            return
+        _runtime = None
+
+    try:
+        await runtime.stop()
+    except Exception:
+        logger.exception("Failed to stop runtime")
+
+    try:
+        await runtime.close()
+    except Exception:
+        logger.exception("Failed to close runtime")
+
+    scheduler = getattr(getattr(runtime, "haunting_service", None), "_scheduler", None)
+    if scheduler is not None:
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:
+            logger.exception("Failed to shutdown scheduler")
+
+    settings_engine = getattr(runtime, "haunting_settings_engine", None)
+    if settings_engine is not None:
+        try:
+            await settings_engine.dispose()
+        except Exception:
+            logger.exception("Failed to dispose settings engine")
+
+    planning_reconciler = getattr(runtime, "planning_reconciler", None)
+    if planning_reconciler is not None:
+        calendar_client = getattr(planning_reconciler, "calendar_client", None)
+        close = getattr(calendar_client, "close", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception:
+                logger.exception("Failed to close planning calendar client")
+
+
 # in this file we register the agents
 
 # @dataclass

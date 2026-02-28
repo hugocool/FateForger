@@ -34,6 +34,8 @@ from fateforger.slack_bot.planning import (
     FF_EVENT_ADD_ACTION_ID,
     FF_EVENT_ADD_DISABLED_ACTION_ID,
     FF_EVENT_DURATION_ACTION_ID,
+    FF_EVENT_EDIT_ACTION_ID,
+    FF_EVENT_EDIT_MODAL_CALLBACK_ID,
     FF_EVENT_RETRY_ACTION_ID,
     FF_EVENT_START_AT_ACTION_ID,
     FF_EVENT_START_DATE_ACTION_ID,
@@ -47,13 +49,6 @@ from fateforger.slack_bot.timeboxing_commit import (
     TimeboxingCommitCoordinator,
     format_relative_day_label,
 )
-from fateforger.slack_bot.timeboxing_submit import (
-    FF_TIMEBOX_CANCEL_SUBMIT_ACTION_ID,
-    FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID,
-    FF_TIMEBOX_UNDO_SUBMIT_ACTION_ID,
-    TimeboxSubmitActionPayload,
-    TimeboxingSubmitCoordinator,
-)
 from fateforger.slack_bot.timeboxing_stage_actions import (
     FF_TIMEBOX_STAGE_BACK_ACTION_ID,
     FF_TIMEBOX_STAGE_CANCEL_ACTION_ID,
@@ -61,6 +56,13 @@ from fateforger.slack_bot.timeboxing_stage_actions import (
     FF_TIMEBOX_STAGE_REDO_ACTION_ID,
     TimeboxingStageActionCoordinator,
     TimeboxingStageActionPayload,
+)
+from fateforger.slack_bot.timeboxing_submit import (
+    FF_TIMEBOX_CANCEL_SUBMIT_ACTION_ID,
+    FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID,
+    FF_TIMEBOX_UNDO_SUBMIT_ACTION_ID,
+    TimeboxingSubmitCoordinator,
+    TimeboxSubmitActionPayload,
 )
 
 from .focus import FocusManager
@@ -934,6 +936,15 @@ async def route_slack_event(
             )
         return
 
+    forced_thread_root = (
+        "dm"
+        if (is_dm and agent_type == "timeboxing_agent")
+        else (
+            origin_processing_msg["ts"]
+            if (agent_type == "timeboxing_agent" and not thread_ts)
+            else None
+        )
+    )
     msg = _build_agent_message(
         agent_type=agent_type,
         cleaned_text=cleaned_text,
@@ -941,24 +952,19 @@ async def route_slack_event(
         channel=channel,
         thread_ts=thread_ts,
         ts=ts,
-        force_thread_root=(
-            "dm"
-            if (is_dm and agent_type == "timeboxing_agent")
-            else (
-                origin_processing_msg["ts"]
-                if (agent_type == "timeboxing_agent" and not thread_ts)
-                else None
-            )
-        ),
+        force_thread_root=forced_thread_root,
         force_reply=(
             True
             if (is_dm and agent_type == "timeboxing_agent")
             else False if (agent_type == "timeboxing_agent" and not thread_ts) else None
         ),
     )
+    recipient_key = origin_key
+    if forced_thread_root:
+        recipient_key = f"{channel}:{forced_thread_root}"
     try:
         result = await runtime.send_message(
-            msg, recipient=AgentId(agent_type, key=origin_key)
+            msg, recipient=AgentId(agent_type, key=recipient_key)
         )
     except asyncio.TimeoutError:
         await _origin_update(
@@ -970,7 +976,9 @@ async def route_slack_event(
         return
     except Exception as e:
         logger.exception(
-            "runtime.send_message failed (agent=%s key=%s)", agent_type, origin_key
+            "runtime.send_message failed (agent=%s key=%s)",
+            agent_type,
+            recipient_key,
         )
         await _origin_update(
             text=f":warning: {type(e).__name__}: {_safe_exc_summary(e)}"
@@ -1690,6 +1698,62 @@ def register_handlers(
             (body.get("channel") or {}).get("id"),
             (body.get("message") or {}).get("ts"),
             action.get("value"),
+        )
+
+    @app.action(FF_EVENT_EDIT_ACTION_ID)
+    async def on_event_edit_action(ack, body, client, logger):
+        """Open the Edit modal (duration etc.) for a planning card."""
+        await ack()
+        trigger_id = body.get("trigger_id") or ""
+        action = (body.get("actions") or [{}])[0]
+        draft_id = parse_draft_id_from_value(action.get("value") or "")
+        if not (draft_id and trigger_id):
+            logger.warning(
+                "on_event_edit_action: missing draft_id or trigger_id (draft_id=%r trigger_id=%r)",
+                draft_id,
+                trigger_id,
+            )
+            return
+        await planning.open_edit_modal(
+            draft_id=draft_id,
+            trigger_id=trigger_id,
+            client=client,
+        )
+
+    @app.view(FF_EVENT_EDIT_MODAL_CALLBACK_ID)
+    async def on_event_edit_modal_submit(ack, body, client, logger):
+        """Persist changes from the Edit modal and refresh the planning card."""
+        await ack()
+        import json as _json
+
+        private_meta = (body.get("view") or {}).get("private_metadata") or "{}"
+        try:
+            meta = _json.loads(private_meta)
+        except Exception:
+            logger.warning("on_event_edit_modal_submit: invalid private_metadata")
+            return
+        draft_id = meta.get("draft_id") or ""
+        if not draft_id:
+            return
+        values = ((body.get("view") or {}).get("state") or {}).get("values") or {}
+        duration_str = (
+            (values.get("duration_input") or {})
+            .get("duration_select", {})
+            .get("selected_option", {})
+            .get("value")
+        )
+        if not duration_str:
+            return
+        try:
+            duration_min = int(duration_str)
+        except ValueError:
+            logger.warning(
+                "on_event_edit_modal_submit: invalid duration_str=%r", duration_str
+            )
+            return
+        await planning.handle_edit_modal_submit(
+            draft_id=draft_id,
+            duration_min=duration_min,
         )
 
     @app.action(FF_TIMEBOX_COMMIT_START_ACTION_ID)

@@ -568,9 +568,11 @@ class McpCalendarClient:
 
     async def close(self) -> None:
         """Close the underlying MCP workbench when supported."""
-        close = getattr(self._workbench, "close", None)
-        if not callable(close):
+        for method_name in ("stop", "close"):
+            method = getattr(self._workbench, method_name, None)
+            if not callable(method):
+                continue
+            outcome = method()
+            if hasattr(outcome, "__await__"):
+                await outcome
             return
-        maybe = close()
-        if hasattr(maybe, "__await__"):
-            await maybe

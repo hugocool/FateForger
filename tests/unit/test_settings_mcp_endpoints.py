@@ -22,3 +22,10 @@ def test_settings_mcp_calendar_server_url_docker_from_env(monkeypatch) -> None:
     monkeypatch.setenv("MCP_CALENDAR_SERVER_URL_DOCKER", "http://calendar-mcp:9999")
     settings = Settings()
     assert settings.mcp_calendar_server_url_docker == "http://calendar-mcp:9999"
+
+
+def test_settings_accepts_slack_user_token(monkeypatch) -> None:
+    """Settings accepts SLACK_USER_TOKEN from environment without validation errors."""
+    monkeypatch.setenv("SLACK_USER_TOKEN", "xoxp-test-token")
+    settings = Settings()
+    assert settings.slack_user_token == "xoxp-test-token"

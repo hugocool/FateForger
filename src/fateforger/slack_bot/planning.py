@@ -49,11 +49,15 @@ FF_EVENT_ADD_ACTION_ID = "add_to_calendar"
 FF_EVENT_ADD_DISABLED_ACTION_ID = "add_to_calendar_disabled"
 FF_EVENT_RETRY_ACTION_ID = "retry_add_to_calendar"
 FF_EVENT_OPEN_URL_ACTION_ID = "open_event_url"
+FF_EVENT_EDIT_ACTION_ID = "edit_event_details"
+FF_EVENT_EDIT_MODAL_CALLBACK_ID = "ff_event_edit_modal"
 
 FF_EVENT_BLOCK_DESC = "desc"
 FF_EVENT_BLOCK_SUMMARY = "summary"
 FF_EVENT_BLOCK_EDIT = "edit_controls"
 FF_EVENT_BLOCK_STATUS = "status"
+FF_EVENT_BLOCK_PICK_DATE = "pick_date"
+FF_EVENT_BLOCK_PICK_TIME = "pick_time"
 
 DEFAULT_PLANNING_TITLE = "Daily planning session"
 DEFAULT_PLANNING_DESCRIPTION = "Plan tomorrow’s priorities and prep for shutdown."
@@ -426,6 +430,7 @@ class PlanningCoordinator:
         message_ts: str,
         duration_min: int,
     ) -> EventDraftPayload | None:
+        """Persist a duration change for the event draft identified by channel+ts."""
         if not self._draft_store:
             return None
         return await self._draft_store.update_time(
@@ -433,6 +438,60 @@ class PlanningCoordinator:
             message_ts=message_ts,
             duration_min=duration_min,
         )
+
+    async def get_draft(
+        self,
+        *,
+        draft_id: str,
+    ) -> EventDraftPayload | None:
+        """Retrieve a draft by its draft_id."""
+        if not self._draft_store:
+            return None
+        return await self._draft_store.get_by_draft_id(draft_id=draft_id)
+
+    async def open_edit_modal(
+        self,
+        *,
+        draft_id: str,
+        trigger_id: str,
+        client: Any,
+    ) -> None:
+        """Open the Edit modal for duration (and future fields) for a planning card draft."""
+        draft = await self.get_draft(draft_id=draft_id)
+        if not draft:
+            logger.warning("open_edit_modal: draft not found (%s)", draft_id)
+            return
+        modal = _edit_modal_payload(draft)
+        await client.views_open(trigger_id=trigger_id, view=modal)
+
+    async def handle_edit_modal_submit(
+        self,
+        *,
+        draft_id: str,
+        duration_min: int,
+    ) -> None:
+        """Persist modal edits (duration) and refresh the planning card in-place."""
+        draft = await self.get_draft(draft_id=draft_id)
+        if not draft or not draft.channel_id or not draft.message_ts:
+            logger.warning(
+                "handle_edit_modal_submit: draft missing or no message coords (%s)",
+                draft_id,
+            )
+            return
+        await self.handle_duration_changed(
+            channel_id=draft.channel_id,
+            message_ts=draft.message_ts,
+            duration_min=duration_min,
+        )
+        updated = await self.get_draft(draft_id=draft_id)
+        if updated and updated.channel_id and updated.message_ts:
+            payload = _card_payload(updated)
+            await self._client.chat_update(
+                channel=updated.channel_id,
+                ts=updated.message_ts,
+                text=payload["text"],
+                blocks=payload["blocks"],
+            )
 
     async def start_add_to_calendar(
         self,
@@ -493,7 +552,9 @@ class PlanningCoordinator:
             return
         draft = await self._draft_store.get_by_draft_id(draft_id=draft_id)
         if not draft:
-            logger.warning("_add_to_calendar_async skipped: draft not found (%s)", draft_id)
+            logger.warning(
+                "_add_to_calendar_async skipped: draft not found (%s)", draft_id
+            )
             return
 
         try:
@@ -593,7 +654,8 @@ class PlanningCoordinator:
                     )
                 except Exception:
                     logger.exception(
-                        "Failed to upsert planning_session_ref for draft=%s", draft.draft_id
+                        "Failed to upsert planning_session_ref for draft=%s",
+                        draft.draft_id,
                     )
             if self._guardian:
                 try:
@@ -606,9 +668,7 @@ class PlanningCoordinator:
 
         error = result_error if result_error else None
         if result_ok and not result_event_url:
-            error = (
-                "Calendar upsert returned no event URL; insertion not confirmed. Please retry."
-            )
+            error = "Calendar upsert returned no event URL; insertion not confirmed. Please retry."
             logger.warning(
                 "_add_to_calendar_async strict-success failure: missing event URL despite ok=true (draft_id=%s event_id=%s)",
                 draft.draft_id,
@@ -688,8 +748,7 @@ def _status_text(draft: EventDraftPayload) -> str:
     if draft.status is DraftStatus.SUCCESS:
         if draft.event_url:
             return (
-                "✅ Added to calendar\n"
-                f"<{draft.event_url}|Open in Google Calendar>"
+                "✅ Added to calendar\n" f"<{draft.event_url}|Open in Google Calendar>"
             )
         return "✅ Added to calendar"
     if draft.status is DraftStatus.FAILURE:
@@ -703,6 +762,16 @@ def _status_text(draft: EventDraftPayload) -> str:
 def _card_payload(
     draft: EventDraftPayload, *, status_override: str | None = None
 ) -> dict[str, Any]:
+    """Build the planning card Slack Block Kit payload for a given draft.
+
+    Layout (mobile-first):
+    - Header: event title
+    - Description section
+    - Date section with datepicker accessory  (primary interactive element)
+    - Time section with timepicker accessory  (primary interactive element)
+    - Actions row: primary button + Edit button (opens modal for duration etc.)
+    - Context footer: status
+    """
     tz = ZoneInfo(draft.timezone or DEFAULT_TIMEZONE)
     start = date_parser.isoparse(draft.start_at_utc).astimezone(tz)
     end = start + timedelta(minutes=int(draft.duration_min))
@@ -710,11 +779,113 @@ def _card_payload(
     when = f"{start.strftime('%a %H:%M')}"
     end_str = f"{end.strftime('%H:%M')}"
     duration_label = f"{int(draft.duration_min)} min"
+    date_str = start.strftime("%Y-%m-%d")
+    time_str = start.strftime("%H:%M")
 
     text = f"{draft.title} • {when} ({duration_label})"
     status_text = status_override or _status_text(draft)
 
-    summary_text = f"*When*\n{when}–{end_str}\n*Duration*\n{duration_label}"
+    # --- Determine primary action button ---
+    if draft.status is DraftStatus.SUCCESS and draft.event_url:
+        primary_button: dict[str, Any] = {
+            "type": "button",
+            "action_id": FF_EVENT_OPEN_URL_ACTION_ID,
+            "text": {"type": "plain_text", "text": "Open event"},
+            "url": draft.event_url,
+        }
+    elif draft.status is DraftStatus.PENDING:
+        primary_button = {
+            "type": "button",
+            "action_id": FF_EVENT_ADD_DISABLED_ACTION_ID,
+            "text": {"type": "plain_text", "text": "Adding…"},
+            "style": "primary",
+            "value": json.dumps({"draft_id": draft.draft_id}),
+        }
+    elif draft.status is DraftStatus.FAILURE:
+        primary_button = {
+            "type": "button",
+            "action_id": FF_EVENT_RETRY_ACTION_ID,
+            "text": {"type": "plain_text", "text": "Try again"},
+            "style": "danger",
+            "value": json.dumps({"draft_id": draft.draft_id}),
+        }
+    else:
+        primary_button = {
+            "type": "button",
+            "action_id": FF_EVENT_ADD_ACTION_ID,
+            "text": {"type": "plain_text", "text": "Add to calendar"},
+            "style": "primary",
+            "value": json.dumps({"draft_id": draft.draft_id}),
+        }
+
+    # --- Blocks ---
+    blocks: list[dict[str, Any]] = [
+        {"type": "header", "text": {"type": "plain_text", "text": draft.title}},
+        {
+            "type": "section",
+            "block_id": FF_EVENT_BLOCK_DESC,
+            "text": {"type": "mrkdwn", "text": draft.description or ""},
+        },
+        # Date picker — section+accessory renders as a tappable row on mobile
+        {
+            "type": "section",
+            "block_id": FF_EVENT_BLOCK_PICK_DATE,
+            "text": {"type": "mrkdwn", "text": "*Date*"},
+            "accessory": {
+                "type": "datepicker",
+                "action_id": FF_EVENT_START_DATE_ACTION_ID,
+                "initial_date": date_str,
+                "placeholder": {"type": "plain_text", "text": "Select date"},
+            },
+        },
+        # Time picker — prominently displayed; caption shows full range + duration
+        {
+            "type": "section",
+            "block_id": FF_EVENT_BLOCK_PICK_TIME,
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Time*  _{when}–{end_str} ({duration_label})_",
+            },
+            "accessory": {
+                "type": "timepicker",
+                "action_id": FF_EVENT_START_TIME_ACTION_ID,
+                "initial_time": time_str,
+                "placeholder": {"type": "plain_text", "text": "Select time"},
+            },
+        },
+    ]
+
+    # --- Actions row ---
+    action_elements: list[dict[str, Any]] = [primary_button]
+    if draft.status is not DraftStatus.SUCCESS:
+        action_elements.append(
+            {
+                "type": "button",
+                "action_id": FF_EVENT_EDIT_ACTION_ID,
+                "text": {"type": "plain_text", "text": "Edit"},
+                "value": json.dumps({"draft_id": draft.draft_id}),
+            }
+        )
+    blocks.append(
+        {
+            "type": "actions",
+            "block_id": FF_EVENT_BLOCK_EDIT,
+            "elements": action_elements,
+        }
+    )
+
+    blocks.append(
+        {
+            "type": "context",
+            "block_id": FF_EVENT_BLOCK_STATUS,
+            "elements": [{"type": "mrkdwn", "text": status_text}],
+        }
+    )
+    return {"text": text, "blocks": blocks}
+
+
+def _edit_modal_payload(draft: EventDraftPayload) -> dict[str, Any]:
+    """Build the Edit modal payload for adjusting duration and other secondary details."""
 
     def duration_option(minutes: int) -> dict[str, Any]:
         return {
@@ -725,84 +896,27 @@ def _card_payload(
     duration_options = [duration_option(m) for m in DEFAULT_DURATION_OPTIONS]
     initial_duration = duration_option(int(draft.duration_min))
 
-    start_epoch = int(date_parser.isoparse(draft.start_at_utc).timestamp())
-    start_at_element = {
-        "type": "datetimepicker",
-        "action_id": FF_EVENT_START_AT_ACTION_ID,
-        "initial_date_time": start_epoch,
+    return {
+        "type": "modal",
+        "callback_id": FF_EVENT_EDIT_MODAL_CALLBACK_ID,
+        "title": {"type": "plain_text", "text": "Edit session"},
+        "submit": {"type": "plain_text", "text": "Save"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "private_metadata": json.dumps({"draft_id": draft.draft_id}),
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "duration_input",
+                "label": {"type": "plain_text", "text": "Duration"},
+                "element": {
+                    "type": "static_select",
+                    "action_id": "duration_select",
+                    "initial_option": initial_duration,
+                    "options": duration_options,
+                },
+            }
+        ],
     }
-    duration_element = {
-        "type": "static_select",
-        "action_id": FF_EVENT_DURATION_ACTION_ID,
-        "initial_option": initial_duration,
-        "options": duration_options,
-    }
-
-    if draft.status is DraftStatus.SUCCESS and draft.event_url:
-        actions_block = {
-            "type": "actions",
-            "block_id": "post_add_actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Open event"},
-                    "url": draft.event_url,
-                    "action_id": FF_EVENT_OPEN_URL_ACTION_ID,
-                }
-            ],
-        }
-    else:
-        if draft.status is DraftStatus.PENDING:
-            action_id = FF_EVENT_ADD_DISABLED_ACTION_ID
-            label = "Adding…"
-        elif draft.status is DraftStatus.FAILURE:
-            action_id = FF_EVENT_RETRY_ACTION_ID
-            label = "Try again"
-        else:
-            action_id = FF_EVENT_ADD_ACTION_ID
-            label = "Add to calendar"
-
-        actions_block = {
-            "type": "actions",
-            "block_id": FF_EVENT_BLOCK_EDIT,
-            "elements": [
-                start_at_element,
-                duration_element,
-                {
-                    "type": "button",
-                    "action_id": action_id,
-                    "text": {"type": "plain_text", "text": label},
-                    "style": "primary",
-                    "value": json.dumps({"draft_id": draft.draft_id}),
-                }
-            ],
-        }
-
-    blocks: list[dict[str, Any]] = [
-        {"type": "header", "text": {"type": "plain_text", "text": draft.title}},
-        {
-            "type": "section",
-            "block_id": FF_EVENT_BLOCK_DESC,
-            "text": {"type": "mrkdwn", "text": draft.description or ""},
-        },
-        {
-            "type": "section",
-            "block_id": FF_EVENT_BLOCK_SUMMARY,
-            "text": {"type": "mrkdwn", "text": summary_text},
-        },
-    ]
-    if draft.status is DraftStatus.SUCCESS and draft.event_url:
-        blocks.append(actions_block)
-    else:
-        blocks.append(actions_block)
-    blocks.append(
-        {
-            "type": "context",
-            "block_id": FF_EVENT_BLOCK_STATUS,
-            "elements": [{"type": "mrkdwn", "text": status_text}],
-        }
-    )
-    return {"text": text, "blocks": blocks}
 
 
 def parse_draft_id_from_value(value: str) -> str | None:
@@ -821,6 +935,8 @@ __all__ = [
     "FF_EVENT_ADD_ACTION_ID",
     "FF_EVENT_ADD_DISABLED_ACTION_ID",
     "FF_EVENT_DURATION_ACTION_ID",
+    "FF_EVENT_EDIT_ACTION_ID",
+    "FF_EVENT_EDIT_MODAL_CALLBACK_ID",
     "FF_EVENT_RETRY_ACTION_ID",
     "FF_EVENT_START_AT_ACTION_ID",
     "FF_EVENT_START_DATE_ACTION_ID",

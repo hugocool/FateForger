@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import inspect
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Protocol
@@ -131,6 +132,16 @@ class McpCalendarClient:
         result = await self._workbench.call_tool("list-events", arguments=args)
         payload = _extract_tool_payload(result)
         return _normalize_events(payload)
+
+    async def close(self) -> None:
+        for method_name in ("stop", "close"):
+            method = getattr(self._workbench, method_name, None)
+            if not callable(method):
+                continue
+            outcome = method()
+            if inspect.isawaitable(outcome):
+                await outcome
+            return
 
 
 class PlanningSessionRule:

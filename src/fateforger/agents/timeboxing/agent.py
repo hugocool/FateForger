@@ -2048,7 +2048,9 @@ class TimeboxingFlowAgent(RoutedAgent):
         if stage == TimeboxingStage.COLLECT_CONSTRAINTS:
             facts = dict(context.get("facts") or {})
             immovables = parse_model_list(Immovable, context.get("immovables"))
-            durable_constraints = list(context.get("durable_constraints") or [])
+            durable_constraints = parse_model_list(
+                Constraint, context.get("durable_constraints")
+            )
             facts_json = json.dumps(facts, ensure_ascii=False, sort_keys=True)
             immovables_toon = toon_encode(
                 name="immovables",

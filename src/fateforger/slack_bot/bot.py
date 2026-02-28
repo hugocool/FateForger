@@ -17,7 +17,7 @@ from ..core.config import settings
 from ..core.logging_config import configure_logging
 
 # Pull in your AutoGen runtime initialization
-from ..core.runtime import initialize_runtime
+from ..core.runtime import initialize_runtime, shutdown_runtime
 from .bootstrap import ensure_workspace_ready
 from .focus import FocusManager
 from .handlers import register_handlers
@@ -145,10 +145,8 @@ async def start() -> None:
         try:
             await handler.start_async()
         finally:
-            # Ensure aiohttp sessions are closed on dev reload / Ctrl+C, otherwise you'll see:
-            # "ERROR:asyncio:Unclosed client session"
             try:
-                await handler.client.close()
+                await handler.close_async()
             except Exception:
                 pass
             sess = getattr(app, "_aiohttp_session", None)
@@ -157,15 +155,11 @@ async def start() -> None:
                     await sess.close()
                 except Exception:
                     pass
+            await shutdown_runtime()
     else:
         # Fallback to HTTP server
         app.start(port=settings.slack_port)
 
 
 if __name__ == "__main__":
-    asyncio.run(start())
-    asyncio.run(start())
-    asyncio.run(start())
-    asyncio.run(start())
-    asyncio.run(start())
     asyncio.run(start())

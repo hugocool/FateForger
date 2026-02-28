@@ -31,7 +31,7 @@ def main() -> int:
         target=_run_bot,
         target_type="function",
         watch_filter=PythonFilter(),
-        grace_period=0.2,
+        grace_period=2.0,
     )
 
 

@@ -70,7 +70,23 @@ async def test_run_stage_gate_sends_strict_json_context(monkeypatch: pytest.Monk
     capturing = _CapturingStageAgent()
     agent._stage_agents = {TimeboxingStage.COLLECT_CONSTRAINTS: capturing}  # type: ignore[attr-defined]
 
-    context = {"stage_id": "CollectConstraints", "user_message": "hi", "facts": {"k": 1}}
+    context = {
+        "stage_id": "CollectConstraints",
+        "user_message": "hi",
+        "facts": {"k": 1},
+        "durable_constraints": [
+            {
+                "name": "Sleep target",
+                "description": "Aim for 8 hours",
+                "necessity": "should",
+                "status": "proposed",
+                "source": "system",
+                "scope": "profile",
+                "tags": [],
+                "hints": {},
+            }
+        ],
+    }
     out = await TimeboxingFlowAgent._run_stage_gate(  # type: ignore[misc]
         agent,
         stage=TimeboxingStage.COLLECT_CONSTRAINTS,
@@ -85,6 +101,7 @@ async def test_run_stage_gate_sends_strict_json_context(monkeypatch: pytest.Monk
     assert "facts_json:" in content
     assert '"k": 1' in content
     assert "immovables[0]{title,start,end}:" in content
+    assert "durable_constraints[1]{name,necessity,scope,status,source,description}:" in content
 
 
 @pytest.mark.asyncio
