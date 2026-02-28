@@ -377,6 +377,7 @@ class TestPlanSync:
         assert ops[0].after_payload["description"] == "new desc"
         assert ops[0].before_payload is not None
         assert ops[0].before_payload["description"] == "old desc"
+        assert "root['description']" in ops[0].diff_paths
         assert re.fullmatch(
             r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", ops[0].after_payload["start"]
         )
@@ -609,6 +610,30 @@ class TestExecuteSync:
         tx = await execute_sync(ops, mock_workbench)
         assert tx.status == "committed"
         assert mock_workbench.call_tool.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_halt_on_error_stops_remaining_ops(self, mock_workbench: AsyncMock) -> None:
+        error_result = MagicMock()
+        error_result.is_error = True
+        error_result.result = [MagicMock(text="bad request")]
+        mock_workbench.call_tool.return_value = error_result
+
+        ops = [
+            SyncOp(
+                op_type=SyncOpType.UPDATE,
+                gcal_event_id="fftb-first",
+                after_payload={"summary": "First"},
+            ),
+            SyncOp(
+                op_type=SyncOpType.DELETE,
+                gcal_event_id="fftb-second",
+                after_payload={"eventId": "fftb-second"},
+            ),
+        ]
+        tx = await execute_sync(ops, mock_workbench, halt_on_error=True)
+        assert tx.status == "partial_halted"
+        assert len(tx.results) == 1
+        assert mock_workbench.call_tool.call_count == 1
 
 
 # ── undo_sync ────────────────────────────────────────────────────────────

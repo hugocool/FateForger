@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Iterator
 from typing import Any, Callable, Iterable, List, Literal
 
 from autogen_agentchat.agents import AssistantAgent
@@ -174,6 +175,7 @@ class TimeboxPatcher:
         )
         retry_feedback: str | None = None
         last_error: Exception | None = None
+        last_retryable = True
 
         for attempt in range(1, self._max_attempts + 1):
             context = _build_context(
@@ -235,19 +237,25 @@ class TimeboxPatcher:
                 return patched, patch
             except Exception as exc:
                 last_error = exc
+                retryable = _is_retryable_patch_error(exc)
+                last_retryable = retryable
                 retry_feedback = _build_retry_feedback(error=exc)
                 logger.warning(
-                    "timebox_patcher request_id=%s failed attempt=%s/%s error=%s",
+                    "timebox_patcher request_id=%s failed attempt=%s/%s retryable=%s error=%s",
                     request_id,
                     attempt,
                     self._max_attempts,
+                    retryable,
                     retry_feedback,
                 )
+                if not retryable:
+                    break
                 continue
 
         assert last_error is not None
+        qualifier = "non-retryable " if not last_retryable else ""
         raise ValueError(
-            f"Timebox patch failed after {self._max_attempts} attempts: {last_error}"
+            f"Timebox patch failed after {attempt} attempts due to {qualifier}error: {last_error}"
         ) from last_error
 
     async def apply_patch_legacy(
@@ -434,6 +442,51 @@ def _coerce_positive_int(value: str | None, *, default: int) -> int:
         return parsed
     except Exception:
         return default
+
+
+def _iter_exception_chain(error: Exception) -> Iterator[Exception]:
+    seen: set[int] = set()
+    current: Exception | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        if current.__cause__ is not None:
+            current = current.__cause__
+            continue
+        current = current.__context__
+
+
+def _status_code_from_exception(error: Exception) -> int | None:
+    for attr in ("status_code", "http_status", "status"):
+        value = getattr(error, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(error, "response", None)
+    value = getattr(response, "status_code", None)
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _is_retryable_patch_error(error: Exception) -> bool:
+    non_retryable_types = {
+        "AuthenticationError",
+        "PermissionDeniedError",
+        "BadRequestError",
+    }
+    for item in _iter_exception_chain(error):
+        if type(item).__name__ in non_retryable_types:
+            return False
+        status = _status_code_from_exception(item)
+        if status is None:
+            continue
+        if status in {400, 401, 403, 404, 422}:
+            return False
+        if status in {408, 409, 425, 429}:
+            return True
+        if status >= 500:
+            return True
+    return True
 
 
 def _to_log_string(value: Any) -> str:

@@ -208,6 +208,7 @@ class SyncOp:
     gcal_event_id: str
     after_payload: dict[str, Any]
     before_payload: dict[str, Any] | None = None
+    diff_paths: tuple[str, ...] = field(default_factory=tuple)
     tool_name: str = ""
 
     def __post_init__(self) -> None:
@@ -328,6 +329,7 @@ def plan_sync(
                 gcal_event_id=match.remote.event_id,
                 after_payload=after_payload,
                 before_payload=before_payload,
+                diff_paths=_deepdiff_paths(diff),
             )
         )
 
@@ -388,6 +390,8 @@ def plan_sync(
 async def execute_sync(
     ops: list[SyncOp],
     mcp_workbench: Any,
+    *,
+    halt_on_error: bool = False,
 ) -> SyncTransaction:
     """Execute sync ops against the MCP calendar server.
 
@@ -413,6 +417,8 @@ async def execute_sync(
                 {
                     "tool": op.tool_name,
                     "event_id": op.gcal_event_id,
+                    "op_type": op.op_type.value,
+                    "diff_paths": list(op.diff_paths),
                     "ok": not is_error,
                     "content": content,
                 }
@@ -425,19 +431,30 @@ async def execute_sync(
                     op.gcal_event_id,
                     content,
                 )
+                if halt_on_error:
+                    break
         except Exception as exc:
             all_ok = False
             tx.results.append(
                 {
                     "tool": op.tool_name,
                     "event_id": op.gcal_event_id,
+                    "op_type": op.op_type.value,
+                    "diff_paths": list(op.diff_paths),
                     "ok": False,
                     "error": str(exc),
                 }
             )
             logger.exception("Sync op exception: %s %s", op.tool_name, op.gcal_event_id)
+            if halt_on_error:
+                break
 
-    tx.status = "committed" if all_ok else "partial"
+    if all_ok:
+        tx.status = "committed"
+    elif halt_on_error:
+        tx.status = "partial_halted"
+    else:
+        tx.status = "partial"
     return tx
 
 
@@ -570,6 +587,26 @@ def _extract_result_content(result: Any) -> str:
         return str(text)
 
     return str(result)
+
+
+def _deepdiff_paths(diff: Any) -> tuple[str, ...]:
+    """Extract stable changed-paths from a DeepDiff payload."""
+    if hasattr(diff, "to_dict"):
+        payload = diff.to_dict()
+    elif isinstance(diff, dict):
+        payload = diff
+    else:
+        return ()
+    paths: set[str] = set()
+    for value in payload.values():
+        if isinstance(value, dict):
+            for path in value.keys():
+                paths.add(str(path))
+            continue
+        if isinstance(value, (list, set, tuple)):
+            for item in value:
+                paths.add(str(item))
+    return tuple(sorted(paths))
 
 
 __all__ = [
