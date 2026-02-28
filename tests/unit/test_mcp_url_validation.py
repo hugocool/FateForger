@@ -11,7 +11,6 @@ from fateforger.tools.mcp_url_validation import (
     TickTickMcpEndpointResolver,
 )
 from fateforger.tools.ticktick_mcp import (
-    normalize_ticktick_mcp_url,
     probe_ticktick_mcp_endpoint,
     validate_ticktick_mcp_url,
 )
@@ -37,11 +36,6 @@ def test_validate_ticktick_mcp_url_fails_loudly(
 def test_validate_ticktick_mcp_url_does_not_normalize() -> None:
     configured = "http://ticktick-mcp:8000/mcp?transport=sse"
     assert validate_ticktick_mcp_url(configured) == configured
-
-
-def test_normalize_ticktick_mcp_url_is_validate_only() -> None:
-    configured = "http://ticktick-mcp:8000/mcp?transport=sse"
-    assert normalize_ticktick_mcp_url(configured) == configured
 
 
 def test_probe_ticktick_mcp_endpoint_reports_validation_error() -> None:
