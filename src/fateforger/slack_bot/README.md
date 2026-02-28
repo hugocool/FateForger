@@ -13,6 +13,7 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | Planning/scheduling UI | Implemented, Tested (strict add-to-calendar success verification + explicit link surfacing) |
 | Haunt delivery (nudges) | Implemented |
 | Sync engine confirm/cancel/undo buttons | Implemented, Tested |
+| Dispatch timeout fallback reply | Implemented, Tested |
 
 ## File Index
 

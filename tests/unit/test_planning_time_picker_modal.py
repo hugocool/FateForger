@@ -1,10 +1,16 @@
 from datetime import datetime, timezone
 
 from fateforger.haunt.event_draft_store import DraftStatus, EventDraftPayload
-from fateforger.slack_bot.planning import _card_payload
+from fateforger.slack_bot.planning import (
+    FF_EVENT_BLOCK_PICK_TIME,
+    FF_EVENT_START_TIME_ACTION_ID,
+    _card_payload,
+)
 
 
-def test_planning_card_defaults_datetimepicker_to_draft_start():
+def test_planning_card_timepicker_defaults_to_draft_start_time():
+    """The timepicker section accessory must show the event's local start time."""
+    # UTC 09:00 → Europe/Amsterdam (UTC+1 in January) = 10:00
     start = datetime(2026, 1, 18, 9, 0, tzinfo=timezone.utc)
     draft = EventDraftPayload(
         draft_id="draft_abc123",
@@ -23,6 +29,11 @@ def test_planning_card_defaults_datetimepicker_to_draft_start():
         last_error=None,
     )
     payload = _card_payload(draft)
-    actions = next(block for block in payload["blocks"] if block.get("type") == "actions")
-    dt_picker = next(el for el in actions["elements"] if el.get("type") == "datetimepicker")
-    assert dt_picker["initial_date_time"] == int(start.timestamp())
+    time_section = next(
+        b for b in payload["blocks"] if b.get("block_id") == FF_EVENT_BLOCK_PICK_TIME
+    )
+    timepicker = time_section["accessory"]
+    assert timepicker["type"] == "timepicker"
+    assert timepicker["action_id"] == FF_EVENT_START_TIME_ACTION_ID
+    # 09:00 UTC → 10:00 Europe/Amsterdam (UTC+1 winter)
+    assert timepicker["initial_time"] == "10:00"

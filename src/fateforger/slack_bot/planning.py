@@ -512,8 +512,9 @@ class PlanningCoordinator:
         *,
         draft_id: str,
         duration_min: int,
+        date_str: str | None = None,
     ) -> None:
-        """Persist modal edits (duration) and refresh the planning card in-place."""
+        """Persist modal edits (duration + optional date) and refresh the planning card in-place."""
         draft = await self.get_draft(draft_id=draft_id)
         if not draft or not draft.channel_id or not draft.message_ts:
             logger.warning(
@@ -521,6 +522,12 @@ class PlanningCoordinator:
                 draft_id,
             )
             return
+        if date_str:
+            await self.handle_start_date_changed(
+                channel_id=draft.channel_id,
+                message_ts=draft.message_ts,
+                selected_date=date_str,
+            )
         await self.handle_duration_changed(
             channel_id=draft.channel_id,
             message_ts=draft.message_ts,
@@ -863,25 +870,6 @@ def _card_payload(
             "value": json.dumps({"draft_id": draft.draft_id}),
         }
 
-    # --- Duration options for inline selector ---
-    dur_options = [
-        {"text": {"type": "plain_text", "text": f"{m} min"}, "value": str(m)}
-        for m in DEFAULT_DURATION_OPTIONS
-    ]
-    cur_dur = int(draft.duration_min)
-    # Ensure current duration appears in the list
-    if str(cur_dur) not in {o["value"] for o in dur_options}:
-        dur_options.insert(
-            0,
-            {
-                "text": {"type": "plain_text", "text": f"{cur_dur} min"},
-                "value": str(cur_dur),
-            },
-        )
-    dur_initial = next(
-        (o for o in dur_options if o["value"] == str(cur_dur)), dur_options[0]
-    )
-
     # --- Blocks ---
     blocks: list[dict[str, Any]] = [
         {"type": "header", "text": {"type": "plain_text", "text": draft.title}},
@@ -892,24 +880,28 @@ def _card_payload(
         },
     ]
 
-    # --- Actions row: primary button first, then datetimepicker + duration ---
-    action_elements: list[dict[str, Any]] = [
-        primary_button,
-        # Combined date+time picker (primary interactive element)
-        {
-            "type": "datetimepicker",
-            "action_id": FF_EVENT_START_AT_ACTION_ID,
-            "initial_date_time": int(start.timestamp()),
-        },
-        # Inline duration selector
-        {
-            "type": "static_select",
-            "action_id": FF_EVENT_DURATION_ACTION_ID,
-            "placeholder": {"type": "plain_text", "text": "Duration"},
-            "initial_option": dur_initial,
-            "options": dur_options,
-        },
-    ]
+    # --- Time picker: first-class citizen on the card ---
+    # Only shown when the event isn't already committed (SUCCESS).
+    if draft.status is not DraftStatus.SUCCESS:
+        blocks.append(
+            {
+                "type": "section",
+                "block_id": FF_EVENT_BLOCK_PICK_TIME,
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Time* · {start.strftime('%a %-d %b')}",
+                },
+                "accessory": {
+                    "type": "timepicker",
+                    "action_id": FF_EVENT_START_TIME_ACTION_ID,
+                    "initial_time": start.strftime("%H:%M"),
+                    "placeholder": {"type": "plain_text", "text": "Pick a time"},
+                },
+            }
+        )
+
+    # --- Actions row: primary button + Edit (duration etc. are in the modal) ---
+    action_elements: list[dict[str, Any]] = [primary_button]
     if draft.status is not DraftStatus.SUCCESS:
         action_elements.append(
             {
@@ -938,7 +930,13 @@ def _card_payload(
 
 
 def _edit_modal_payload(draft: EventDraftPayload) -> dict[str, Any]:
-    """Build the Edit modal payload for adjusting duration and other secondary details."""
+    """Build the Edit modal payload for adjusting duration and date.
+
+    Time is the first-class element on the card itself; the Edit modal handles
+    secondary controls: duration and date.
+    """
+    tz = ZoneInfo(draft.timezone or DEFAULT_TIMEZONE)
+    start = date_parser.isoparse(draft.start_at_utc).astimezone(tz)
 
     def duration_option(minutes: int) -> dict[str, Any]:
         return {
@@ -947,7 +945,10 @@ def _edit_modal_payload(draft: EventDraftPayload) -> dict[str, Any]:
         }
 
     duration_options = [duration_option(m) for m in DEFAULT_DURATION_OPTIONS]
-    initial_duration = duration_option(int(draft.duration_min))
+    cur_dur = int(draft.duration_min)
+    if cur_dur not in DEFAULT_DURATION_OPTIONS:
+        duration_options.insert(0, duration_option(cur_dur))
+    initial_duration = duration_option(cur_dur)
 
     return {
         "type": "modal",
@@ -959,6 +960,17 @@ def _edit_modal_payload(draft: EventDraftPayload) -> dict[str, Any]:
         "blocks": [
             {
                 "type": "input",
+                "block_id": "date_input",
+                "label": {"type": "plain_text", "text": "Date"},
+                "element": {
+                    "type": "datepicker",
+                    "action_id": "date_select",
+                    "initial_date": start.strftime("%Y-%m-%d"),
+                    "placeholder": {"type": "plain_text", "text": "Select date"},
+                },
+            },
+            {
+                "type": "input",
                 "block_id": "duration_input",
                 "label": {"type": "plain_text", "text": "Duration"},
                 "element": {
@@ -967,7 +979,7 @@ def _edit_modal_payload(draft: EventDraftPayload) -> dict[str, Any]:
                     "initial_option": initial_duration,
                     "options": duration_options,
                 },
-            }
+            },
         ],
     }
 

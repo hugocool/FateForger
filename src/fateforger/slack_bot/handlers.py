@@ -1566,6 +1566,31 @@ def register_handlers(
         client: AsyncWebClient,
         origin: str,
     ) -> None:
+        def _fallback_thread_root() -> str | None:
+            candidate = str(event.get("thread_ts") or "").strip()
+            if candidate:
+                return candidate
+            channel_id = str(event.get("channel") or "")
+            channel_type = str(event.get("channel_type") or "")
+            is_dm = channel_type == "im" or channel_id.startswith("D")
+            if is_dm:
+                return None
+            ts = str(event.get("ts") or "").strip()
+            return ts or None
+
+        async def _post_dispatch_fallback(text: str) -> None:
+            channel_id = str(event.get("channel") or "").strip()
+            if not channel_id:
+                return
+            payload: dict[str, str] = {
+                "channel": channel_id,
+                "text": text,
+            }
+            thread_root = _fallback_thread_root()
+            if thread_root:
+                payload["thread_ts"] = thread_root
+            await client.chat_postMessage(**payload)
+
         timeout_s = float(
             getattr(settings, "slack_route_dispatch_timeout_seconds", 75.0)
         )
@@ -1597,6 +1622,16 @@ def register_handlers(
                 event.get("ts"),
                 timeout_s,
             )
+            try:
+                await _post_dispatch_fallback(
+                    ":hourglass_flowing_sand: Routing timed out before I could finish this reply. Please try again (or press `Redo` in the thread)."
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to post Slack route timeout fallback channel=%s ts=%s",
+                    event.get("channel"),
+                    event.get("ts"),
+                )
         except Exception:
             duration_s = perf_counter() - started
             observe_stage_duration(
@@ -1609,6 +1644,16 @@ def register_handlers(
                 event.get("channel"),
                 event.get("ts"),
             )
+            try:
+                await _post_dispatch_fallback(
+                    ":warning: Routing failed before I could finish this reply. Please retry the message."
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to post Slack route exception fallback channel=%s ts=%s",
+                    event.get("channel"),
+                    event.get("ts"),
+                )
         else:
             observe_stage_duration(
                 stage="slack_route_dispatch", duration_s=perf_counter() - started
@@ -1920,6 +1965,11 @@ def register_handlers(
         if not draft_id:
             return
         values = ((body.get("view") or {}).get("state") or {}).get("values") or {}
+        date_str = (
+            (values.get("date_input") or {})
+            .get("date_select", {})
+            .get("selected_date")
+        )
         duration_str = (
             (values.get("duration_input") or {})
             .get("duration_select", {})
@@ -1938,6 +1988,7 @@ def register_handlers(
         await planning.handle_edit_modal_submit(
             draft_id=draft_id,
             duration_min=duration_min,
+            date_str=date_str or None,
         )
 
     @app.action(FF_TIMEBOX_COMMIT_START_ACTION_ID)

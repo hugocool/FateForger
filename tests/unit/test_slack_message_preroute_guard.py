@@ -36,7 +36,12 @@ class _FakeRuntime:
 
 
 class _FakeClient:
-    pass
+    def __init__(self):
+        self.posted: list[dict] = []
+
+    async def chat_postMessage(self, **payload):
+        self.posted.append(payload)
+        return {"ok": True, "channel": payload.get("channel"), "ts": "fallback-ts"}
 
 
 class _FakeApp:
@@ -138,5 +143,97 @@ async def test_message_event_routes_even_when_preregister_times_out(monkeypatch)
         assert ("slack_routing", "register_timeout") in error_calls
         assert "slack_preroute_register_timeout" in stage_calls
         assert "slack_route_dispatch" in stage_calls
+    finally:
+        WorkspaceRegistry.set_global(previous)
+
+
+@pytest.mark.asyncio
+async def test_message_event_posts_timeout_fallback_when_route_dispatch_times_out(
+    monkeypatch,
+):
+    app = _FakeApp()
+    runtime = _FakeRuntime()
+    focus = FocusManager(
+        ttl_seconds=3600,
+        allowed_agents=["receptionist_agent", "revisor_agent", "tasks_agent"],
+    )
+
+    directory = WorkspaceDirectory(
+        team_id="T1",
+        channels_by_name={"general": "C_GENERAL"},
+        channels_by_agent={"receptionist_agent": "C_PLAN"},
+        personas_by_agent={},
+    )
+    previous = WorkspaceRegistry.get_global()
+    WorkspaceRegistry.set_global(directory)
+
+    error_calls: list[tuple[str, str]] = []
+    stage_calls: list[str] = []
+    planning_instances: list[_FakePlanningCoordinator] = []
+
+    async def _slow_route_slack_event(**_kwargs):
+        await asyncio.sleep(0.05)
+
+    def _planning_factory(*, runtime, focus, client):
+        inst = _FakePlanningCoordinator(runtime=runtime, focus=focus, client=client)
+        planning_instances.append(inst)
+        return inst
+
+    monkeypatch.setattr(
+        settings, "slack_route_dispatch_timeout_seconds", 0.01, raising=False
+    )
+    monkeypatch.setattr(
+        settings, "slack_register_user_timeout_seconds", 0.5, raising=False
+    )
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.PlanningCoordinator", _planning_factory
+    )
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.route_slack_event", _slow_route_slack_event
+    )
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.record_error",
+        lambda *, component, error_type: error_calls.append((component, error_type)),
+    )
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.observe_stage_duration",
+        lambda *, stage, duration_s: stage_calls.append(stage),
+    )
+
+    try:
+        register_handlers(
+            app=app,
+            runtime=runtime,
+            focus=focus,
+            default_agent="receptionist_agent",
+        )
+        handler = app.events["message"]
+
+        async def _say(**_kwargs):
+            return {"ok": True}
+
+        event = {
+            "channel": "C_PLAN",
+            "channel_type": "channel",
+            "user": "U1",
+            "text": "hello",
+            "ts": "1772279000.000001",
+        }
+        await handler(
+            body={"event": event},
+            say=_say,
+            context={"bot_user_id": "U_BOT"},
+            client=app.client,
+            logger=types.SimpleNamespace(debug=lambda *a, **k: None),
+        )
+
+        assert planning_instances
+        assert ("slack_routing", "route_timeout") in error_calls
+        assert "slack_route_dispatch_timeout" in stage_calls
+        assert app.client.posted
+        fallback = app.client.posted[-1]
+        assert fallback["channel"] == "C_PLAN"
+        assert fallback.get("thread_ts") == event["ts"]
+        assert "Routing timed out" in (fallback.get("text") or "")
     finally:
         WorkspaceRegistry.set_global(previous)

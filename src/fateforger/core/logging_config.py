@@ -53,6 +53,10 @@ _METRIC_OBS_DROPPED = None
 
 _CHANNEL_ID_RE = re.compile(r"^[CDG][A-Z0-9]+$")
 _STAGE_AGENT_RE = re.compile(r"^Stage(?P<stage>[A-Za-z]+)Node(?:_|$)")
+# Strip UUID suffixes from agent names (e.g. NodeName_7f1fc69d-15e3-4d21-...)
+_UUID_SUFFIX_RE = re.compile(r"_[0-9a-f]{8}-[0-9a-f]{4}-.+$")
+# Strip session suffixes from agent names (e.g. agent_name_CHANID:thread_ts)
+_SESSION_SUFFIX_RE = re.compile(r"_[A-Z][A-Z0-9]{5,}:[0-9]+\.[0-9]+$")
 
 
 def observe_stage_duration(*, stage: str, duration_s: float) -> None:
@@ -438,7 +442,8 @@ def _configure_llm_audit_pipeline() -> None:
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         _LLM_AUDIT_FILE_PATH = log_dir / f"llm_io_{ts}_{os.getpid()}.jsonl"
         append_index_entry(
-            index_path=log_dir / os.getenv("OBS_LLM_AUDIT_INDEX_FILE", "llm_io_index.jsonl"),
+            index_path=log_dir
+            / os.getenv("OBS_LLM_AUDIT_INDEX_FILE", "llm_io_index.jsonl"),
             entry={
                 "type": "llm_io",
                 "created_at": datetime.utcnow().isoformat() + "Z",
@@ -451,7 +456,9 @@ def _configure_llm_audit_pipeline() -> None:
 
     if sink in {"loki", "both"}:
         _LLM_AUDIT_LOKI_URL = (
-            os.getenv("OBS_LLM_AUDIT_LOKI_URL", "http://localhost:3100/loki/api/v1/push")
+            os.getenv(
+                "OBS_LLM_AUDIT_LOKI_URL", "http://localhost:3100/loki/api/v1/push"
+            )
             or "http://localhost:3100/loki/api/v1/push"
         ).strip()
 
@@ -530,7 +537,9 @@ def _push_llm_events_to_loki(loki_url: str, events: list[dict[str, Any]]) -> Non
         "service": "fateforger",
         "source": "llm_io",
         "agent": _bounded_label(representative.get("agent"), fallback="unknown"),
-        "call_label": _bounded_label(representative.get("call_label"), fallback="unknown"),
+        "call_label": _bounded_label(
+            representative.get("call_label"), fallback="unknown"
+        ),
         "function": _bounded_label(representative.get("function"), fallback="unknown"),
         "model": _bounded_label(representative.get("model"), fallback="unknown"),
         "status": _bounded_label(representative.get("status"), fallback="unknown"),
@@ -730,22 +739,69 @@ def _bounded_label(value: Any, *, fallback: str) -> str:
     return compact[:80] or fallback
 
 
+def _sanitize_agent_label(agent_id: str | None) -> str | None:
+    """Return a low-cardinality Prometheus label for a raw AutoGen agent_id.
+
+    Strips session-specific suffixes (channel/thread IDs, UUIDs) so the
+    'agent' metric label only contains the stable agent-type name, preventing
+    unbounded label cardinality in long-running deployments.
+
+    Examples::
+
+        "timeboxing_agent/C0AA6HC1RJL:1772..."  → "timeboxing_agent"
+        "timeboxing_agent_C0AA6HC1RJL:1772..."  → "timeboxing_agent"
+        "TurnInitNode_7f1fc69d-15e3-..."        → "TurnInitNode"
+        "StageCollectConstraintsNode_UUID..."    → "CollectConstraints"
+    """
+    raw = str(agent_id or "").strip()
+    if not raw:
+        return None
+    # Strip /session-context suffix (e.g. timeboxing_agent/CHANID:ts)
+    base = raw.split("/", 1)[0].strip()
+    # Strip _CHANID:thread_ts suffix (e.g. timeboxing_agent_C0AA6HC1RJL:1772...)
+    base = _SESSION_SUFFIX_RE.sub("", base).strip("_")
+    # Strip _UUID... suffix(es) (e.g. TurnInitNode_7f1fc69d-15e3-...)
+    base = _UUID_SUFFIX_RE.sub("", base).strip("_")
+    if not base:
+        return None
+    # For StageXxxNode → return stable stage name (e.g. CollectConstraints)
+    match = _STAGE_AGENT_RE.match(base)
+    if match:
+        return match.group("stage")
+    return base
+
+
 def _extract_context_from_agent_id(
     agent_id: str | None,
 ) -> tuple[str | None, str | None, str | None]:
-    """Derive session/channel/thread context from standard agent id shapes."""
+    """Derive session/channel/thread context from standard agent id shapes.
+
+    Handles two naming conventions:
+    - Slash format:      ``timeboxing_agent/CHANID:thread_ts``
+    - Underscore format: ``timeboxing_agent_CHANID:thread_ts``
+    """
     raw = str(agent_id or "").strip()
-    if not raw or "/" not in raw:
+    if not raw:
         return None, None, None
-    _, _, key = raw.partition("/")
-    if not key:
-        return None, None, None
-    channel, sep, thread = key.partition(":")
-    if not sep or not channel or not thread:
+    # Slash format: agent_name/CHANID:thread_ts
+    if "/" in raw:
+        _, _, key = raw.partition("/")
+        if not key:
+            return None, None, None
+        channel, sep, thread = key.partition(":")
+        if not sep or not channel or not thread:
+            return key, None, None
+        if _CHANNEL_ID_RE.match(channel):
+            return f"{channel}:{thread}", channel, thread
         return key, None, None
-    if _CHANNEL_ID_RE.match(channel):
-        return f"{channel}:{thread}", channel, thread
-    return key, None, None
+    # Underscore format: agent_name_CHANID:thread_ts
+    if ":" in raw:
+        suffix = raw.rsplit("_", 1)[-1] if "_" in raw else ""
+        if suffix:
+            ch, _, ts = suffix.partition(":")
+            if ts and _CHANNEL_ID_RE.match(ch):
+                return f"{ch}:{ts}", ch, ts
+    return None, None, None
 
 
 def _extract_stage_from_agent_id(agent_id: str | None) -> str | None:
@@ -772,7 +828,7 @@ def _derive_call_label(
     stage_from_agent = _extract_stage_from_agent_id(agent_id)
     if stage_from_agent:
         return stage_from_agent
-    base_agent = str(agent_id or "").split("/", 1)[0].strip()
+    base_agent = _sanitize_agent_label(agent_id)
     if base_agent:
         return base_agent
     return event_type
@@ -829,9 +885,7 @@ def _emit_llm_audit_event(event: dict[str, Any]) -> None:
     payload = dict(event)
     payload.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
     serialized = (
-        payload
-        if mode == "raw"
-        else _sanitize_for_audit(payload, max_chars=max_chars)
+        payload if mode == "raw" else _sanitize_for_audit(payload, max_chars=max_chars)
     )
     _enqueue_llm_audit_event(serialized)
 
@@ -911,7 +965,9 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
     session_key = event.session_key or derived_session_key
     thread_ts = event.thread_ts or derived_thread_ts
     channel_id = event.channel_id or derived_channel_id
-    agent = _bounded_label(event.agent_id, fallback="unknown")
+    agent = _bounded_label(
+        _sanitize_agent_label(event.agent_id) or event.agent_id, fallback="unknown"
+    )
     call_label = _bounded_label(
         _derive_call_label(
             call_label=event.call_label,
@@ -923,7 +979,9 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
     )
     function_name = _bounded_label(
         _derive_function_name(
-            function_name=str(payload.get("function_name") or payload.get("function") or "").strip()
+            function_name=str(
+                payload.get("function_name") or payload.get("function") or ""
+            ).strip()
             or None,
             stage=event.stage,
             call_label=call_label,
