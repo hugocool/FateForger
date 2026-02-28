@@ -188,3 +188,115 @@ class TestMessageEventPayload:
         from fateforger.core.autogen_event_models import MessageEventPayload
         ev = MessageEventPayload(type="Message", payload="{broken}")
         assert ev.parsed_payload is None
+
+
+# ---------------------------------------------------------------------------
+# LLMResponse sub-model — typed access replacing isinstance(response, dict)
+# ---------------------------------------------------------------------------
+
+
+class TestLLMResponse:
+    """LLMResponse + sub-models parse the raw response dict into typed fields."""
+
+    def _make(self, **kwargs):
+        from fateforger.core.autogen_event_models import LLMResponse
+        return LLMResponse.model_validate(kwargs)
+
+    def test_model_field(self) -> None:
+        r = self._make(model="gpt-4o")
+        assert r.model == "gpt-4o"
+
+    def test_error_field(self) -> None:
+        r = self._make(error="timeout")
+        assert r.error == "timeout"
+
+    def test_usage_parsed(self) -> None:
+        r = self._make(usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
+        assert r.usage is not None
+        assert r.usage.prompt_tokens == 10
+        assert r.usage.completion_tokens == 5
+        assert r.usage.total_tokens == 15
+
+    def test_usage_none_when_absent(self) -> None:
+        r = self._make(model="x")
+        assert r.usage is None
+
+    def test_finish_reason_via_first_choice(self) -> None:
+        r = self._make(choices=[{"finish_reason": "stop", "message": {}}])
+        assert r.finish_reason == "stop"
+
+    def test_finish_reason_none_when_no_choices(self) -> None:
+        r = self._make()
+        assert r.finish_reason is None
+
+    def test_tool_call_names_extracted(self) -> None:
+        r = self._make(choices=[{
+            "finish_reason": "tool_calls",
+            "message": {
+                "tool_calls": [
+                    {"function": {"name": "list-events"}},
+                    {"function": {"name": "get-event"}},
+                ]
+            },
+        }])
+        assert r.tool_call_names == ["list-events", "get-event"]
+
+    def test_tool_call_names_empty_when_no_choices(self) -> None:
+        r = self._make()
+        assert r.tool_call_names == []
+
+    def test_empty_dict_gives_defaults(self) -> None:
+        from fateforger.core.autogen_event_models import LLMResponse
+        r = LLMResponse.model_validate({})
+        assert r.model is None
+        assert r.usage is None
+        assert r.choices == []
+        assert r.finish_reason is None
+        assert r.tool_call_names == []
+
+    def test_extra_fields_allowed(self) -> None:
+        r = self._make(model="x", unknown_future_field="y")
+        assert r.model == "x"
+
+
+class TestLLMEventPayloadResponseObj:
+    """LLMEventPayload.response_obj surfaces the typed LLMResponse sub-model."""
+
+    def _ev(self, response=None, **kw):
+        from fateforger.core.autogen_event_models import LLMEventPayload
+        return LLMEventPayload(type="LLMCall", response=response, **kw)
+
+    def test_response_obj_none_when_no_response(self) -> None:
+        assert self._ev().response_obj is None
+
+    def test_response_obj_parsed(self) -> None:
+        from fateforger.core.autogen_event_models import LLMResponse
+        ev = self._ev(response={"model": "gpt-4o", "usage": {"prompt_tokens": 8}})
+        assert isinstance(ev.response_obj, LLMResponse)
+        assert ev.response_obj.model == "gpt-4o"
+        assert ev.response_obj.usage is not None
+        assert ev.response_obj.usage.prompt_tokens == 8
+
+    def test_response_error_via_obj(self) -> None:
+        ev = self._ev(response={"error": "server_error"})
+        assert ev.response_error == "server_error"
+        assert ev.response_status == "error"
+
+    def test_response_model_via_obj(self) -> None:
+        ev = self._ev(response={"model": "gpt-4o-mini"})
+        assert ev.response_model == "gpt-4o-mini"
+
+    def test_prompt_tokens_from_response_obj(self) -> None:
+        ev = self._ev(response={"usage": {"prompt_tokens": 42, "completion_tokens": 7}})
+        assert ev.prompt_tokens_from_response() == 42
+        assert ev.completion_tokens_from_response() == 7
+
+    def test_explicit_fields_take_priority_over_response(self) -> None:
+        ev = self._ev(
+            prompt_tokens=99,
+            completion_tokens=11,
+            response={"usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+        )
+        assert ev.prompt_tokens_from_response() == 99
+        assert ev.completion_tokens_from_response() == 11
+

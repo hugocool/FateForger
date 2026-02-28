@@ -88,7 +88,7 @@ from .durable_constraint_store import (
     build_durable_constraint_store,
 )
 from .flow_graph import build_timeboxing_graphflow
-from .mcp_clients import McpCalendarClient
+from .mcp_clients import ConstraintMemoryClient, McpCalendarClient
 from .mem0_constraint_memory import build_mem0_client_from_settings
 from .messages import (
     StartTimeboxing,
@@ -939,19 +939,35 @@ class TimeboxingFlowAgent(RoutedAgent):
             return self._constraint_memory_client
         if self._constraint_memory_unavailable_reason:
             return None
+        backend = str(getattr(settings, "timeboxing_memory_backend", "constraint_mcp"))
+        backend = backend.strip().lower()
         try:
-            user_id = (
-                str(getattr(settings, "mem0_user_id", "") or "").strip() or "timeboxing"
-            )
-            self._constraint_memory_client = build_mem0_client_from_settings(
-                user_id=user_id
-            )
+            timeout = float(getattr(settings, "agent_mcp_discovery_timeout_seconds", 10))
+            match backend:
+                case "constraint_mcp":
+                    self._constraint_memory_client = ConstraintMemoryClient(
+                        timeout=timeout
+                    )
+                case "mem0":
+                    user_id = (
+                        str(getattr(settings, "mem0_user_id", "") or "").strip()
+                        or "timeboxing"
+                    )
+                    self._constraint_memory_client = build_mem0_client_from_settings(
+                        user_id=user_id
+                    )
+                case _:
+                    raise ValueError(
+                        "Unsupported timeboxing memory backend: "
+                        f"{settings.timeboxing_memory_backend}"
+                    )
             self._constraint_memory_unavailable_reason = None
         except Exception as exc:
             self._constraint_memory_unavailable_reason = f"{type(exc).__name__}: {exc}"
             logger.warning(
-                "Failed to initialize Mem0 constraint memory client; disabling retries "
+                "Failed to initialize %s constraint memory client; disabling retries "
                 "for this runtime instance (%s)",
+                backend,
                 self._constraint_memory_unavailable_reason,
             )
             return None
@@ -3913,7 +3929,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             tags: list[str] | None,
             limit: int,
         ) -> dict[str, Any]:
-            return await self._run_memory_tool_action(
+            return await self._run_memory_tool_action_guarded(
                 action="list",
                 session=session,
                 memory_operations=memory_operations,
@@ -3927,7 +3943,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
 
         async def memory_get_constraint(uid: str) -> dict[str, Any]:
-            return await self._run_memory_tool_action(
+            return await self._run_memory_tool_action_guarded(
                 action="get",
                 session=session,
                 memory_operations=memory_operations,
@@ -3952,7 +3968,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                         message=parse_error,
                     ),
                 )
-            return await self._run_memory_tool_action(
+            return await self._run_memory_tool_action_guarded(
                 action="update",
                 session=session,
                 memory_operations=memory_operations,
@@ -3966,7 +3982,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             uid: str,
             reason: str | None,
         ) -> dict[str, Any]:
-            return await self._run_memory_tool_action(
+            return await self._run_memory_tool_action_guarded(
                 action="archive",
                 session=session,
                 memory_operations=memory_operations,
@@ -3992,7 +4008,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                         message=parse_error,
                     ),
                 )
-            return await self._run_memory_tool_action(
+            return await self._run_memory_tool_action_guarded(
                 action="supersede",
                 session=session,
                 memory_operations=memory_operations,
@@ -4147,6 +4163,79 @@ class TimeboxingFlowAgent(RoutedAgent):
             calendar=calendar,
             memory_operations=memory_operations,
         )
+
+    async def _run_memory_tool_action_guarded(
+        self,
+        *,
+        action: Literal["list", "get", "update", "archive", "supersede"],
+        session: Session,
+        memory_operations: list[str],
+        memory_request_text: str,
+        uid: str | None = None,
+        patch: dict[str, Any] | None = None,
+        reason: str | None = None,
+        note: str | None = None,
+        text_query: str | None = None,
+        statuses: list[str] | None = None,
+        scopes: list[str] | None = None,
+        necessities: list[str] | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Execute one memory action and preserve stage flow on backend failures."""
+        try:
+            return await self._run_memory_tool_action(
+                action=action,
+                session=session,
+                memory_operations=memory_operations,
+                memory_request_text=memory_request_text,
+                uid=uid,
+                patch=patch,
+                reason=reason,
+                note=note,
+                text_query=text_query,
+                statuses=statuses,
+                scopes=scopes,
+                necessities=necessities,
+                tags=tags,
+                limit=limit,
+            )
+        except Exception as exc:  # pragma: no cover
+            error = f"{type(exc).__name__}: {exc}"
+            cleaned_uid = str(uid or "").strip() or None
+            self._constraint_memory_unavailable_reason = error
+            self._durable_constraint_store = None
+            logger.warning(
+                "Memory tool action failed (action=%s uid=%s): %s",
+                action,
+                cleaned_uid or "",
+                error,
+                exc_info=True,
+            )
+            self._append_background_update_once(
+                session,
+                "Memory backend is currently unavailable; continuing without durable memory updates.",
+            )
+            self._session_debug(
+                session,
+                "memory_tool_action_error",
+                action=action,
+                uid=cleaned_uid,
+                error=error[:500],
+            )
+            return self._record_memory_tool_result(
+                session=session,
+                result=MemoryToolResult(
+                    action=action,
+                    ok=False,
+                    uid=cleaned_uid,
+                    error=error,
+                    message=(
+                        "Memory backend is unavailable right now. "
+                        "Scheduling can continue without durable memory updates."
+                    ),
+                ),
+            )
 
     async def _run_memory_tool_action(
         self,
@@ -4738,7 +4827,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         if decision.action != "memory_review":
             return None
         memory_operations: list[str] = []
-        payload = await self._run_memory_tool_action(
+        payload = await self._run_memory_tool_action_guarded(
             action="list",
             session=session,
             memory_operations=memory_operations,
@@ -6418,10 +6507,10 @@ class TimeboxingFlowAgent(RoutedAgent):
             self._close_session_debug_logger(session_key)
         if self._calendar_client:
             await self._calendar_client.close()
-        # Add cleanup for other MCP clients if needed
         if self._constraint_memory_client:
-            # Mem0 client currently does not expose async cleanup.
-            pass
+            close = getattr(self._constraint_memory_client, "close", None)
+            if callable(close):
+                await close()
 
 
 def _extract_constraint_batch(response: object) -> ConstraintBatch | None:

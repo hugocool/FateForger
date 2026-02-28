@@ -157,3 +157,98 @@ class TestSummarizeAutogenEventMessageDispatch:
         long_text = "abc" * 300
         out = _summarize_autogen_event_message(long_text, max_chars=100, max_tools=3)
         assert len(out) <= 120
+
+
+# ---------------------------------------------------------------------------
+# Tests for the LLM event path of _summarize_autogen_event_message
+# ---------------------------------------------------------------------------
+
+
+def _make_llm_event(
+    *,
+    agent_id: str = "planner",
+    model: str = "gpt-4o",
+    finish_reason: str | None = "stop",
+    tool_call_names: list[str] | None = None,
+    prompt_tokens: int | None = 100,
+    completion_tokens: int | None = 25,
+    total_tokens: int | None = 125,
+    error: str | None = None,
+) -> dict:
+    """Build a minimal LLMCall event dict as emitted by AutoGen."""
+    choices = []
+    if finish_reason is not None:
+        msg = {}
+        if tool_call_names:
+            msg["tool_calls"] = [
+                {"function": {"name": n}} for n in tool_call_names
+            ]
+        choices.append({"finish_reason": finish_reason, "message": msg})
+    usage: dict = {}
+    if prompt_tokens is not None:
+        usage["prompt_tokens"] = prompt_tokens
+    if completion_tokens is not None:
+        usage["completion_tokens"] = completion_tokens
+    if total_tokens is not None:
+        usage["total_tokens"] = total_tokens
+    return {
+        "type": "LLMCall",
+        "agent_id": agent_id,
+        "model": model,
+        "response": {
+            "model": model,
+            "choices": choices,
+            "usage": usage,
+            **({"error": error} if error else {}),
+        },
+    }
+
+
+class TestSummarizeAutogenEventMessageLLMPath:
+    """_summarize_autogen_event_message summary for LLMEventPayload events."""
+
+    def _call(self, payload: dict, max_chars: int = 500, max_tools: int = 5) -> str:
+        import json
+        from fateforger.core.logging_config import _summarize_autogen_event_message
+        return _summarize_autogen_event_message(json.dumps(payload), max_chars=max_chars, max_tools=max_tools)
+
+    def test_type_and_agent_in_output(self) -> None:
+        out = self._call(_make_llm_event())
+        assert "LLMCall" in out
+        assert "planner" in out
+
+    def test_model_name_in_output(self) -> None:
+        out = self._call(_make_llm_event(model="gpt-4o-mini"))
+        assert "gpt-4o-mini" in out
+
+    def test_finish_reason_in_output(self) -> None:
+        out = self._call(_make_llm_event(finish_reason="stop"))
+        assert "finish=stop" in out
+
+    def test_tool_calls_in_output(self) -> None:
+        out = self._call(_make_llm_event(finish_reason="tool_calls", tool_call_names=["list-events", "get-event"]))
+        assert "list-events" in out
+        assert "get-event" in out
+
+    def test_tokens_in_output(self) -> None:
+        out = self._call(_make_llm_event(prompt_tokens=100, completion_tokens=25, total_tokens=125))
+        assert "100" in out and "25" in out
+
+    def test_no_finish_reason_omitted(self) -> None:
+        out = self._call(_make_llm_event(finish_reason=None))
+        assert "finish=" not in out
+
+    def test_empty_usage_omits_tokens(self) -> None:
+        ev = _make_llm_event(prompt_tokens=None, completion_tokens=None, total_tokens=None)
+        out = self._call(ev)
+        assert "tokens=" not in out
+
+    def test_respects_max_chars(self) -> None:
+        out = self._call(_make_llm_event(), max_chars=30)
+        assert len(out) <= 40  # some tolerance
+
+    def test_tool_list_in_output(self) -> None:
+        ev = _make_llm_event()
+        ev["tools"] = [{"function": {"name": t}} for t in ["alpha", "beta", "gamma"]]
+        out = self._call(ev, max_tools=3)
+        assert "3" in out or "alpha" in out

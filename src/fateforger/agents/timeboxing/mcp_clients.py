@@ -312,6 +312,10 @@ class ConstraintMemoryClient:
             )
         return data
 
+    async def close(self) -> None:
+        """Close the underlying MCP workbench when supported."""
+        await self._workbench.stop()
+
 
 class McpCalendarClient:
     """Client for Google Calendar MCP server (streamable HTTP workbench)."""

@@ -66,6 +66,27 @@ _runtime: SingleThreadedAgentRuntime | None = None
 _runtime_lock = asyncio.Lock()
 
 
+async def _run_initial_planning_reconcile(
+    *,
+    planning_guardian: PlanningGuardian,
+    timeout_s: float = 15.0,
+) -> bool:
+    """Run startup planning reconcile without aborting runtime initialization."""
+    try:
+        await asyncio.wait_for(planning_guardian.reconcile_all(), timeout=timeout_s)
+        logger.info("Initial planning reconcile completed successfully")
+        return True
+    except TimeoutError:
+        logger.warning(
+            "Initial planning reconcile timed out after %.1fs; continuing startup.",
+            timeout_s,
+        )
+        return False
+    except Exception:
+        logger.exception("Initial planning reconcile failed; continuing startup.")
+        return False
+
+
 def _create_scheduler(database_url: str | None) -> AsyncIOScheduler:
     """Create scheduler with in-memory jobstore.
 
@@ -249,8 +270,10 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     planning_guardian.schedule_daily()
     # Kick off reconcile on startup so nudges are scheduled immediately.
     # This is critical since we use in-memory scheduler (jobs lost on restart).
-    await asyncio.wait_for(planning_guardian.reconcile_all(), timeout=15)
-    logger.info("Initial planning reconcile completed successfully")
+    await _run_initial_planning_reconcile(
+        planning_guardian=planning_guardian,
+        timeout_s=15.0,
+    )
 
     setattr(runtime, "planning_guardian", planning_guardian)
     return runtime

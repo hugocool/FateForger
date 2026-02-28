@@ -40,6 +40,9 @@ _METRIC_TOOL_CALLS = None
 _METRIC_ERRORS = None
 _METRIC_STAGE_DURATION = None
 
+_CHANNEL_ID_RE = re.compile(r"^[CDG][A-Z0-9]+$")
+_STAGE_AGENT_RE = re.compile(r"^Stage(?P<stage>[A-Za-z]+)Node(?:_|$)")
+
 
 def observe_stage_duration(*, stage: str, duration_s: float) -> None:
     """Observe stage duration in seconds (no-op when metrics are disabled)."""
@@ -511,6 +514,83 @@ def _bounded_label(value: Any, *, fallback: str) -> str:
     return compact[:80] or fallback
 
 
+def _extract_context_from_agent_id(
+    agent_id: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Derive session/channel/thread context from standard agent id shapes."""
+    raw = str(agent_id or "").strip()
+    if not raw or "/" not in raw:
+        return None, None, None
+    _, _, key = raw.partition("/")
+    if not key:
+        return None, None, None
+    channel, sep, thread = key.partition(":")
+    if not sep or not channel or not thread:
+        return key, None, None
+    if _CHANNEL_ID_RE.match(channel):
+        return f"{channel}:{thread}", channel, thread
+    return key, None, None
+
+
+def _extract_stage_from_agent_id(agent_id: str | None) -> str | None:
+    base = str(agent_id or "").split("/", 1)[0].strip()
+    if not base:
+        return None
+    match = _STAGE_AGENT_RE.match(base)
+    if not match:
+        return None
+    return match.group("stage")
+
+
+def _derive_call_label(
+    *,
+    call_label: str | None,
+    stage: str | None,
+    agent_id: str | None,
+    event_type: str,
+) -> str:
+    if call_label and call_label.strip():
+        return call_label.strip()
+    if stage and stage.strip():
+        return stage.strip()
+    stage_from_agent = _extract_stage_from_agent_id(agent_id)
+    if stage_from_agent:
+        return stage_from_agent
+    base_agent = str(agent_id or "").split("/", 1)[0].strip()
+    if base_agent:
+        return base_agent
+    return event_type
+
+
+def _extract_model_from_response(raw_response: Any) -> str | None:
+    if isinstance(raw_response, dict):
+        model = raw_response.get("model")
+        return str(model).strip() if isinstance(model, str) and model.strip() else None
+    model = getattr(raw_response, "model", None)
+    return str(model).strip() if isinstance(model, str) and model.strip() else None
+
+
+def _extract_usage_tokens_from_response(
+    raw_response: Any,
+) -> tuple[int | None, int | None]:
+    usage = None
+    if isinstance(raw_response, dict):
+        usage = raw_response.get("usage")
+    else:
+        usage = getattr(raw_response, "usage", None)
+    if isinstance(usage, dict):
+        prompt = usage.get("prompt_tokens")
+        completion = usage.get("completion_tokens")
+    else:
+        prompt = getattr(usage, "prompt_tokens", None)
+        completion = getattr(usage, "completion_tokens", None)
+    prompt_int = prompt if isinstance(prompt, int) and prompt >= 0 else None
+    completion_int = (
+        completion if isinstance(completion, int) and completion >= 0 else None
+    )
+    return prompt_int, completion_int
+
+
 def _emit_llm_audit_event(event: dict[str, Any]) -> None:
     if not _is_truthy(os.getenv("OBS_LLM_AUDIT_ENABLED", "1")):
         return
@@ -598,11 +678,31 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
     if event is None:
         return
 
+    derived_session_key, derived_channel_id, derived_thread_ts = (
+        _extract_context_from_agent_id(event.agent_id)
+    )
+    session_key = event.session_key or derived_session_key
+    thread_ts = event.thread_ts or derived_thread_ts
+    channel_id = event.channel_id or derived_channel_id
     agent = _bounded_label(event.agent_id, fallback="unknown")
-    call_label = _bounded_label(event.call_label or event.stage, fallback="unknown")
+    call_label = _bounded_label(
+        _derive_call_label(
+            call_label=event.call_label,
+            stage=event.stage,
+            agent_id=event.agent_id,
+            event_type=event.type,
+        ),
+        fallback="unknown",
+    )
 
     if isinstance(event, LLMEventPayload):
-        model = _bounded_label(event.response_model, fallback="unknown")
+        raw_response = payload.get("response")
+        model_candidate = event.response_model
+        if model_candidate == "unknown":
+            model_candidate = _extract_model_from_response(raw_response) or _extract_model_from_response(
+                event.response
+            ) or "unknown"
+        model = _bounded_label(model_candidate, fallback="unknown")
         status = (
             "error"
             if (record_level >= logging.ERROR or event.response_error)
@@ -616,9 +716,12 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
                 call_label=call_label,
             ).inc()
         prompt_tokens = event.prompt_tokens or event.prompt_tokens_from_response()
-        completion_tokens = (
-            event.completion_tokens or event.completion_tokens_from_response()
-        )
+        completion_tokens = event.completion_tokens or event.completion_tokens_from_response()
+        extra_prompt, extra_completion = _extract_usage_tokens_from_response(raw_response)
+        if prompt_tokens is None:
+            prompt_tokens = extra_prompt
+        if completion_tokens is None:
+            completion_tokens = extra_completion
         if _METRIC_LLM_TOKENS is not None:
             if isinstance(prompt_tokens, int) and prompt_tokens >= 0:
                 _METRIC_LLM_TOKENS.labels(
@@ -640,11 +743,11 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
                 "agent": event.agent_id,
                 "model": model,
                 "status": status,
-                "call_label": event.call_label,
+                "call_label": call_label,
                 "stage": event.stage,
-                "session_key": event.session_key,
-                "thread_ts": event.thread_ts,
-                "channel_id": event.channel_id,
+                "session_key": session_key,
+                "thread_ts": thread_ts,
+                "channel_id": channel_id,
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "request_excerpt": event.model_extra.get("messages"),
@@ -664,6 +767,9 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
         return
 
     if isinstance(event, ExceptionPayload):
+        exc_session_key, exc_channel_id, exc_thread_ts = _extract_context_from_agent_id(
+            event.component
+        )
         if _METRIC_ERRORS is not None:
             _METRIC_ERRORS.labels(
                 component=_bounded_label(event.component, fallback="unknown"),
@@ -676,8 +782,9 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
                 "event_type": event.type,
                 "component": event.component,
                 "error": event.exception,
-                "session_key": event.session_key,
-                "thread_ts": event.thread_ts,
+                "session_key": event.session_key or exc_session_key,
+                "thread_ts": event.thread_ts or exc_thread_ts,
+                "channel_id": event.channel_id or exc_channel_id,
                 "stage": event.stage,
             }
         )
@@ -815,8 +922,7 @@ def _summarize_autogen_event_message(
         # ToolCall, ExceptionPayload, or unknown: fall back to simple truncation.
         return _truncate(msg, max_chars=max_chars)
 
-    # LLMEventPayload: build a structured single-line summary.
-    response = event.response or {}
+    # LLMEventPayload: build a structured single-line summary via typed sub-model.
     summary_parts: list[str] = [f"autogen type={event.type}"]
     if event.agent_id:
         summary_parts.append(f"agent_id={event.agent_id}")
@@ -824,21 +930,10 @@ def _summarize_autogen_event_message(
     if model_name and model_name != "unknown":
         summary_parts.append(f"model={model_name}")
 
-    # finish_reason + tool_calls extracted from response.choices
-    finish_reason = None
-    tool_calls: list[str] = []
-    choices = response.get("choices") or [] if isinstance(response, dict) else []
-    if isinstance(choices, list) and choices:
-        first = choices[0] if isinstance(choices[0], dict) else {}
-        finish_reason = first.get("finish_reason")
-        msg_obj = first.get("message") if isinstance(first, dict) else None
-        if isinstance(msg_obj, dict):
-            for call in (msg_obj.get("tool_calls") or []):
-                if isinstance(call, dict):
-                    fn = call.get("function") or {}
-                    name = fn.get("name") if isinstance(fn, dict) else None
-                    if isinstance(name, str) and name:
-                        tool_calls.append(name)
+    # Typed access via LLMResponse — no more isinstance chains.
+    resp = event.response_obj
+    finish_reason = resp.finish_reason if resp else None
+    tool_calls = resp.tool_call_names if resp else []
 
     # Available tools from the request payload (extra field, high-cardinality)
     tool_names: list[str] = []
@@ -858,13 +953,13 @@ def _summarize_autogen_event_message(
             f"tools={len(tool_names)} {_format_list(tool_names, max_items=max_tools)}"
         )
 
-    usage = response.get("usage") if isinstance(response, dict) else None
-    if isinstance(usage, dict):
-        pt = usage.get("prompt_tokens")
-        ct = usage.get("completion_tokens")
-        tt = usage.get("total_tokens")
-        if pt is not None or ct is not None or tt is not None:
-            summary_parts.append(f"tokens={pt}/{ct}/{tt}")
+    usage = resp.usage if resp else None
+    if usage and any(
+        v is not None for v in (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
+    ):
+        summary_parts.append(
+            f"tokens={usage.prompt_tokens}/{usage.completion_tokens}/{usage.total_tokens}"
+        )
 
     return _truncate(" ".join(summary_parts), max_chars=max_chars)
 
@@ -933,10 +1028,10 @@ def _summarize_autogen_message_event(
         parts.append(f"source={source}")
 
     if isinstance(usage, dict):
-        pt = usage.get("prompt_tokens")
-        ct = usage.get("completion_tokens")
-        if pt is not None or ct is not None:
-            parts.append(f"tokens={pt}/{ct}")
+        from fateforger.core.autogen_event_models import LLMUsage  # noqa: PLC0415
+        u = LLMUsage.model_validate(usage)
+        if u.prompt_tokens is not None or u.completion_tokens is not None:
+            parts.append(f"tokens={u.prompt_tokens}/{u.completion_tokens}")
 
     if isinstance(content, str) and content:
         content_one_line = " ".join(content.splitlines())

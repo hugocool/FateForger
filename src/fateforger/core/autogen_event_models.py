@@ -44,6 +44,78 @@ class _AutogenEventBase(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# LLM response sub-models  (typed access to the raw OpenAI-style response dict)
+# ---------------------------------------------------------------------------
+
+
+class LLMUsage(BaseModel):
+    """Token usage from an LLM response."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+class LLMChoiceMessage(BaseModel):
+    """The ``message`` object inside a single ``choices`` entry."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    tool_calls: list[Any] = Field(default_factory=list)
+
+
+class LLMChoice(BaseModel):
+    """A single entry in ``response.choices``."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    finish_reason: str | None = None
+    message: LLMChoiceMessage | None = None
+
+
+class LLMResponse(BaseModel):
+    """Typed wrapper around the raw OpenAI-style LLM response dict.
+
+    Replaces ``isinstance(response, dict)`` chains with validated field access.
+    Constructed via :attr:`LLMEventPayload.response_obj`.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    model: str | None = None
+    error: str | None = None
+    choices: list[LLMChoice] = Field(default_factory=list)
+    usage: LLMUsage | None = None
+
+    @property
+    def first_choice(self) -> LLMChoice | None:
+        """Return the first choices entry, or None."""
+        return self.choices[0] if self.choices else None
+
+    @property
+    def finish_reason(self) -> str | None:
+        """Convenience: finish_reason from the first choice."""
+        return self.first_choice.finish_reason if self.first_choice else None
+
+    @property
+    def tool_call_names(self) -> list[str]:
+        """Collect function names from tool_calls in the first choice message."""
+        fc = self.first_choice
+        if not fc or not fc.message:
+            return []
+        names: list[str] = []
+        for call in fc.message.tool_calls:
+            if isinstance(call, dict):
+                fn = call.get("function") or {}
+                name = fn.get("name") if isinstance(fn, dict) else None
+                if isinstance(name, str) and name:
+                    names.append(name)
+        return names
+
+
+# ---------------------------------------------------------------------------
 # LLM events  (type = "LLMCall" | "LLMStreamEnd")
 # ---------------------------------------------------------------------------
 
@@ -60,12 +132,22 @@ class LLMEventPayload(_AutogenEventBase):
 
     @computed_field  # type: ignore[misc]
     @property
+    def response_obj(self) -> LLMResponse | None:
+        """Parse the raw response dict into a typed :class:`LLMResponse`, or None."""
+        if not isinstance(self.response, dict):
+            return None
+        try:
+            return LLMResponse.model_validate(self.response)
+        except Exception:
+            return None
+
+    @computed_field  # type: ignore[misc]
+    @property
     def response_error(self) -> str | None:
         """Return the error string from the response, or None if not errored."""
-        if isinstance(self.response, dict):
-            err = self.response.get("error")
-            if isinstance(err, str) and err:
-                return err
+        obj = self.response_obj
+        if obj and obj.error:
+            return obj.error
         return None
 
     @computed_field  # type: ignore[misc]
@@ -78,10 +160,9 @@ class LLMEventPayload(_AutogenEventBase):
     @property
     def response_model(self) -> str:
         """Resolve the actual model name from response first, then model field."""
-        if isinstance(self.response, dict):
-            m = self.response.get("model")
-            if isinstance(m, str) and m:
-                return m
+        obj = self.response_obj
+        if obj and obj.model:
+            return obj.model
         if isinstance(self.model, str) and self.model:
             return self.model
         return "unknown"
@@ -90,19 +171,15 @@ class LLMEventPayload(_AutogenEventBase):
         """Return prompt tokens, preferring explicit field then response.usage."""
         if self.prompt_tokens is not None:
             return self.prompt_tokens
-        if isinstance(self.response, dict):
-            usage = self.response.get("usage") or {}
-            return usage.get("prompt_tokens") if isinstance(usage, dict) else None
-        return None
+        obj = self.response_obj
+        return obj.usage.prompt_tokens if obj and obj.usage else None
 
     def completion_tokens_from_response(self) -> int | None:
         """Return completion tokens, preferring explicit field then response.usage."""
         if self.completion_tokens is not None:
             return self.completion_tokens
-        if isinstance(self.response, dict):
-            usage = self.response.get("usage") or {}
-            return usage.get("completion_tokens") if isinstance(usage, dict) else None
-        return None
+        obj = self.response_obj
+        return obj.usage.completion_tokens if obj and obj.usage else None
 
 
 # ---------------------------------------------------------------------------

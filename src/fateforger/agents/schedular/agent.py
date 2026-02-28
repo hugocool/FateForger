@@ -209,34 +209,30 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
     @staticmethod
     def _normalize_event(
         payload: object,
-    ) -> dict | None:  # TODO: why is this needed, what uses it?
+    ) -> dict | None:
+        """Extract a single event dict from direct, wrapper-keyed, or list payloads."""
         if isinstance(payload, dict):
             if "id" in payload or "summary" in payload:
                 return payload
-            item = payload.get("item")
-            if isinstance(item, dict):
-                return item
-            event = payload.get("event")
-            if isinstance(event, dict):
-                return event
+            for key in ("item", "event"):
+                val = payload.get(key)
+                if isinstance(val, dict):
+                    return val
             items = payload.get("items")
             if isinstance(items, list):
-                for item in items:
-                    if isinstance(item, dict):
-                        return item
+                return next((item for item in items if isinstance(item, dict)), None)
         if isinstance(payload, list):
-            for item in payload:
-                if isinstance(item, dict):
-                    return item
+            return next((item for item in payload if isinstance(item, dict)), None)
         return None
 
     @staticmethod
     def _normalize_events(payload: object) -> list[dict]:
-        # TODO(refactor): Replace dict filtering with Pydantic CalendarEvent parsing.
+        """Coerce MCP / Google API payloads into a flat list of event dicts."""
         if isinstance(payload, dict):
-            items = payload.get("items") or payload.get("events")
-            if isinstance(items, list):
-                return [item for item in items if isinstance(item, dict)]
+            for key in ("items", "events"):
+                val = payload.get(key)
+                if isinstance(val, list):
+                    return [item for item in val if isinstance(item, dict)]
             return []
         if isinstance(payload, list):
             return [item for item in payload if isinstance(item, dict)]
@@ -285,32 +281,20 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
 
     @staticmethod
     def _parse_event_dt(raw: dict | str | None, *, tz: ZoneInfo) -> dt.datetime | None:
-        # TODO(refactor): Move this parser into a shared calendar payload model.
+        """Parse a calendar datetime value (ISO string or EventDateTime dict) to tz-aware datetime."""
         if not raw:
             return None
-        match raw:
-            case str(value):
-                try:
-                    parsed = _DATETIME_ADAPTER.validate_python(value)
-                except ValidationError:
-                    return None
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=tz)
-                return parsed.astimezone(tz)
-            case {"dateTime": str(value), **_rest}:
-                try:
-                    parsed = _DATETIME_ADAPTER.validate_python(value)
-                except ValidationError:
-                    return None
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=tz)
-                return parsed.astimezone(tz)
-            case {"date": str(value), **_rest}:
-                try:
-                    day = _DATE_ADAPTER.validate_python(value)
-                except ValidationError:
-                    return None
-                return dt.datetime.combine(day, dt.time(0, 0), tz)
+        if isinstance(raw, str):
+            try:
+                parsed = _DATETIME_ADAPTER.validate_python(raw)
+            except ValidationError:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=tz)
+            return parsed.astimezone(tz)
+        if isinstance(raw, dict):
+            from fateforger.contracts import EventDateTime  # noqa: PLC0415
+            return EventDateTime.model_validate(raw).to_datetime(tz)
         return None
 
     @classmethod

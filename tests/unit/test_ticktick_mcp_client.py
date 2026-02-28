@@ -20,8 +20,14 @@ async def test_get_tools_raises_when_loader_fails(
     monkeypatch.setattr(mcp_mod, "mcp_server_tools", _failing_loader)
     client = TickTickMcpClient.__new__(TickTickMcpClient)
     client._params = object()
+    client._server_url = "http://ticktick-mcp:8000/mcp"
+    client._timeout = 1.0
+    monkeypatch.setattr(
+        "fateforger.tools.ticktick_mcp.probe_ticktick_mcp_endpoint",
+        lambda *_args, **_kwargs: (True, ""),
+    )
 
-    with pytest.raises(RuntimeError, match="Failed to load TickTick MCP tools"):
+    with pytest.raises(RuntimeError, match="boom"):
         await client.get_tools()
 
 
@@ -37,6 +43,12 @@ async def test_get_tools_raises_when_loader_returns_empty(
     monkeypatch.setattr(mcp_mod, "mcp_server_tools", _empty_loader)
     client = TickTickMcpClient.__new__(TickTickMcpClient)
     client._params = object()
+    client._server_url = "http://ticktick-mcp:8000/mcp"
+    client._timeout = 1.0
+    monkeypatch.setattr(
+        "fateforger.tools.ticktick_mcp.probe_ticktick_mcp_endpoint",
+        lambda *_args, **_kwargs: (True, ""),
+    )
 
-    with pytest.raises(RuntimeError, match="Failed to load TickTick MCP tools"):
+    with pytest.raises(RuntimeError, match="returned no tools"):
         await client.get_tools()

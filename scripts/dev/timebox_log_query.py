@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -164,6 +165,28 @@ def _merge_entries(
     return [*indexed, *extras]
 
 
+def _entry_sort_key(entry: dict[str, Any]) -> tuple[float, str]:
+    created_at = str(entry.get("created_at") or "").strip()
+    timestamp = 0.0
+    if created_at:
+        if re.match(r"^\d{8}_\d{6}$", created_at):
+            try:
+                timestamp = datetime.strptime(created_at, "%Y%m%d_%H%M%S").timestamp()
+            except ValueError:
+                timestamp = 0.0
+        else:
+            iso_value = created_at.replace("Z", "+00:00")
+            try:
+                timestamp = datetime.fromisoformat(iso_value).timestamp()
+            except ValueError:
+                timestamp = 0.0
+    if timestamp <= 0:
+        path = Path(str(entry.get("log_path") or ""))
+        if path.exists():
+            timestamp = path.stat().st_mtime
+    return timestamp, str(entry.get("log_path") or "")
+
+
 def _print_json_lines(rows: Iterable[dict[str, Any]]) -> None:
     for row in rows:
         print(json.dumps(row, ensure_ascii=False))
@@ -205,6 +228,7 @@ def _run_sessions(args: argparse.Namespace) -> int:
         thread_ts=args.thread_ts,
         channel_id=args.channel_id,
     )
+    filtered = sorted(filtered, key=_entry_sort_key)
     limit = max(1, int(args.limit))
     _print_json_lines(filtered[-limit:])
     return 0
@@ -253,6 +277,7 @@ def _run_patcher(args: argparse.Namespace) -> int:
     merged = _merge_entries(
         indexed=indexed, discovered=_discover_patcher_entries(patcher_log_dir)
     )
+    merged = sorted(merged, key=_entry_sort_key)
     limit = max(1, int(args.limit))
     _print_json_lines(merged[-limit:])
     return 0
@@ -278,15 +303,26 @@ def _read_json_lines(path: Path) -> list[dict[str, Any]]:
 
 def _run_llm(args: argparse.Namespace) -> int:
     selected_path = str(args.log_path or "").strip()
-    if not selected_path:
+    if selected_path:
+        rows = _read_json_lines(Path(selected_path))
+        for row in rows:
+            row.setdefault("log_path", selected_path)
+    else:
         llm_log_dir = Path(os.getenv("OBS_LLM_AUDIT_LOG_DIR", "logs"))
         indexed = newest_existing_entries(entries=read_index_entries(index_path=_llm_index_path()))
         merged = _merge_entries(indexed=indexed, discovered=_discover_llm_entries(llm_log_dir))
         if not merged:
             return 1
-        selected_path = str(merged[-1]["log_path"])
-
-    rows = _read_json_lines(Path(selected_path))
+        merged = sorted(merged, key=_entry_sort_key)
+        rows: list[dict[str, Any]] = []
+        for entry in merged:
+            path = str(entry.get("log_path") or "")
+            if not path:
+                continue
+            file_rows = _read_json_lines(Path(path))
+            for row in file_rows:
+                row.setdefault("log_path", path)
+            rows.extend(file_rows)
 
     session_key = str(args.session_key or "").strip()
     if session_key:

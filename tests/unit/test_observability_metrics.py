@@ -122,3 +122,48 @@ def test_observe_stage_duration_records_histogram() -> None:
         labels=labels,
     )
     assert after == before + 1
+
+
+def test_record_observability_event_derives_timeboxing_context(monkeypatch) -> None:
+    """LLM audit events should derive session/thread/channel from agent key when omitted."""
+    monkeypatch.setenv("OBS_LLM_AUDIT_ENABLED", "0")
+    captured: list[dict] = []
+    monkeypatch.setattr(logging_config, "_emit_llm_audit_event", captured.append)
+
+    logging_config._record_observability_event(
+        {
+            "type": "LLMCall",
+            "agent_id": "timeboxing_agent/C0AA6HC1RJL:1772248936.310119",
+            "response": {"model": "google/gemini-3-flash-preview"},
+            "messages": [{"role": "user", "content": "start"}],
+        },
+        record_level=logging.INFO,
+    )
+
+    assert captured
+    event = captured[-1]
+    assert event["session_key"] == "C0AA6HC1RJL:1772248936.310119"
+    assert event["channel_id"] == "C0AA6HC1RJL"
+    assert event["thread_ts"] == "1772248936.310119"
+    assert event["model"] == "google_gemini-3-flash-preview"
+    assert event["call_label"] == "timeboxing_agent"
+
+
+def test_record_observability_event_derives_stage_call_label(monkeypatch) -> None:
+    """Stage node agent ids should map to stable stage-level call labels."""
+    monkeypatch.setenv("OBS_LLM_AUDIT_ENABLED", "0")
+    captured: list[dict] = []
+    monkeypatch.setattr(logging_config, "_emit_llm_audit_event", captured.append)
+
+    logging_config._record_observability_event(
+        {
+            "type": "LLMCall",
+            "agent_id": "StageCollectConstraintsNode_abc/abc",
+            "response": {"model": "google/gemini-3-flash-preview"},
+            "messages": [{"role": "user", "content": "start"}],
+        },
+        record_level=logging.INFO,
+    )
+
+    assert captured
+    assert captured[-1]["call_label"] == "CollectConstraints"

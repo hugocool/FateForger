@@ -36,3 +36,14 @@ async def test_call_tool_json_raises_on_non_json_text() -> None:
         await client._call_tool_json("constraint_get_store_info", arguments={})
 
     assert "constraint_get_store_info" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_close_stops_underlying_workbench() -> None:
+    stop = AsyncMock()
+    client = ConstraintMemoryClient.__new__(ConstraintMemoryClient)
+    client._workbench = SimpleNamespace(stop=stop)
+
+    await client.close()
+
+    stop.assert_awaited_once()

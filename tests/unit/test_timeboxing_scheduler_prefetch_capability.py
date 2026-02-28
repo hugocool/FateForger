@@ -55,7 +55,7 @@ async def test_prime_committed_collect_context_non_blocking_prefetches_in_backgr
 
 
 @pytest.mark.asyncio
-async def test_prime_committed_collect_context_blocking_fetches_calendar_and_durable() -> None:
+async def test_prime_committed_collect_context_blocking_uses_bounded_calendar_ensure() -> None:
     calls: list[str] = []
 
     async def _await_prefetch(session, *, stage, **_kwargs):  # noqa: ARG001
@@ -78,7 +78,8 @@ async def test_prime_committed_collect_context_blocking_fetches_calendar_and_dur
 
     assert calls[0] == "queue_constraint"
     assert "await:CollectConstraints" in calls
-    assert "prefetch:2026-02-27" in calls
+    assert "ensure_calendar" in calls
+    assert not any(call.startswith("prefetch:") for call in calls)
 
 
 @pytest.mark.asyncio

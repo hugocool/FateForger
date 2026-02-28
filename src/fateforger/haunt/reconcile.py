@@ -538,35 +538,36 @@ class PlanningReconciler:
         logger.info("Planning reminder (%s): %s", reminder.scope, reminder.message)
 
 
-# TODO(refactor): Replace manual MCP payload normalization with Pydantic models.
 def _extract_tool_payload(result: Any) -> Any:
+    """Normalize an MCP tool result into a parsed payload (dict, list, or {}).
+
+    Probes ``result.result`` then ``result.content`` in order, attempting JSON
+    decode on any str values found.  Falls back to ``{}`` when no attribute is
+    found.
+    """
     import json
+
+    def _try_json(text: str) -> Any:
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            return text
 
     if isinstance(result, dict):
         return result
 
-    # Handle ToolResult objects from MCP
-    payload = getattr(result, "result", None)
-    if payload is not None:
-        # result is often a list of TextResultContent objects
-        if isinstance(payload, list) and len(payload) > 0:
+    for attr in ("result", "content"):
+        payload = getattr(result, attr, None)
+        if payload is None:
+            continue
+        if isinstance(payload, list) and payload:
             first = payload[0]
-            # TextResultContent has a 'content' attribute with JSON string
             content = getattr(first, "content", None)
             if isinstance(content, str):
-                try:
-                    return json.loads(content)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        return payload
-
-    payload = getattr(result, "content", None)
-    if payload is not None:
+                return _try_json(content)
+            return payload
         if isinstance(payload, str):
-            try:
-                return json.loads(payload)
-            except (json.JSONDecodeError, TypeError):
-                pass
+            return _try_json(payload)
         return payload
 
     return {}

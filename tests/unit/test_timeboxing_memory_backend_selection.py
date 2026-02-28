@@ -24,6 +24,12 @@ def test_ensure_constraint_memory_client_uses_mem0_backend(monkeypatch) -> None:
         timeboxing_agent_mod.settings, "mem0_user_id", "user-123", raising=False
     )
     monkeypatch.setattr(
+        timeboxing_agent_mod.settings,
+        "timeboxing_memory_backend",
+        "mem0",
+        raising=False,
+    )
+    monkeypatch.setattr(
         timeboxing_agent_mod, "build_mem0_client_from_settings", _fake_build
     )
 
@@ -49,6 +55,12 @@ def test_ensure_constraint_memory_client_stops_retrying_after_failure(monkeypatc
     monkeypatch.setattr(
         timeboxing_agent_mod.settings, "mem0_user_id", "user-123", raising=False
     )
+    monkeypatch.setattr(
+        timeboxing_agent_mod.settings,
+        "timeboxing_memory_backend",
+        "mem0",
+        raising=False,
+    )
     monkeypatch.setattr(timeboxing_agent_mod, "build_mem0_client_from_settings", _boom)
 
     first = TimeboxingFlowAgent._ensure_constraint_memory_client(agent)
@@ -58,6 +70,40 @@ def test_ensure_constraint_memory_client_stops_retrying_after_failure(monkeypatc
     assert second is None
     assert calls["count"] == 1
     assert "RuntimeError" in (agent._constraint_memory_unavailable_reason or "")
+
+
+def test_ensure_constraint_memory_client_uses_constraint_mcp_backend(
+    monkeypatch,
+) -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    agent._constraint_memory_client = None
+    agent._constraint_memory_unavailable_reason = None
+
+    sentinel = object()
+    captured: dict[str, float] = {}
+
+    monkeypatch.setattr(
+        timeboxing_agent_mod.settings,
+        "timeboxing_memory_backend",
+        "constraint_mcp",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        timeboxing_agent_mod.settings,
+        "agent_mcp_discovery_timeout_seconds",
+        12,
+        raising=False,
+    )
+    def _fake_constraint_client(*, timeout: float):
+        captured["timeout"] = timeout
+        return sentinel
+
+    monkeypatch.setattr(timeboxing_agent_mod, "ConstraintMemoryClient", _fake_constraint_client)
+
+    client = TimeboxingFlowAgent._ensure_constraint_memory_client(agent)
+
+    assert client is sentinel
+    assert captured["timeout"] == 12.0
 
 
 def test_queue_durable_constraint_upsert_queues_without_parent_config(
