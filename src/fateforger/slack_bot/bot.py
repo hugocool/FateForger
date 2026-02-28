@@ -6,7 +6,6 @@ import aiohttp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.context.context import BoltContext
-from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -93,35 +92,12 @@ async def build_app() -> AsyncApp:
         default_agent="receptionist_agent",
     )
 
-    # Best-effort workspace bootstrap (channels + IDs). Requires Slack scopes.
-    try:
-        store = None
-        if settings.database_url:
-            engine = create_async_engine(
-                _coerce_async_database_url(settings.database_url)
-            )
-            await ensure_slack_workspace_schema(engine)
-            sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
-            store = SlackWorkspaceStore(sessionmaker)
-        await ensure_workspace_ready(app.client, store=store)
-    except SlackApiError as e:
-        resp = getattr(e, "response", None)
-        needed = None
-        provided = None
-        if resp is not None:
-            try:
-                needed = resp.get("needed")
-                provided = resp.get("provided")
-            except Exception:
-                pass
-        logging.warning(
-            "Workspace bootstrap skipped due to Slack missing scopes (needed=%s provided=%s). "
-            "Update Slack app scopes and reinstall.",
-            needed,
-            provided,
-        )
-    except Exception:
-        logging.exception("Workspace bootstrap failed")
+    # Strict bootstrap: configuration/scope issues should fail loudly at startup.
+    engine = create_async_engine(_coerce_async_database_url(settings.database_url))
+    await ensure_slack_workspace_schema(engine)
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    store = SlackWorkspaceStore(sessionmaker)
+    await ensure_workspace_ready(app.client, store=store)
 
     # catch and print anything bad
     @app.error
@@ -136,29 +112,15 @@ logger = logging.getLogger(__name__)
 
 async def start() -> None:
     app = await build_app()
-
-    if settings.slack_socket_mode and settings.slack_app_token:
-        handler = AsyncSocketModeHandler(
-            app, settings.slack_app_token, web_client=app.client
-        )
-        logger.info("Starting Socket Mode handler...")
-        try:
-            await handler.start_async()
-        finally:
-            try:
-                await handler.close_async()
-            except Exception:
-                pass
-            sess = getattr(app, "_aiohttp_session", None)
-            if sess:
-                try:
-                    await sess.close()
-                except Exception:
-                    pass
-            await shutdown_runtime()
-    else:
-        # Fallback to HTTP server
-        app.start(port=settings.slack_port)
+    handler = AsyncSocketModeHandler(app, settings.slack_app_token, web_client=app.client)
+    logger.info("Starting Socket Mode handler...")
+    try:
+        await handler.start_async()
+    finally:
+        await handler.close_async()
+        sess = getattr(app, "_aiohttp_session", None)
+        await sess.close()
+        await shutdown_runtime()
 
 
 if __name__ == "__main__":

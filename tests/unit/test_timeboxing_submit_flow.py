@@ -106,6 +106,54 @@ async def test_confirm_submit_updates_session_and_returns_undo_button() -> None:
 
 
 @pytest.mark.asyncio
+async def test_confirm_submit_refreshes_remote_baseline_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stage 5 submit should refresh remote baseline once after sync."""
+    submit_plan = AsyncMock(return_value=_build_submit_transaction())
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    agent._sessions = {}
+    agent._calendar_submitter = SimpleNamespace(submit_plan=submit_plan)
+
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.tz_name = "Europe/Amsterdam"
+    session.stage = TimeboxingStage.REVIEW_COMMIT
+    session.pending_submit = True
+    session.tb_plan = _build_plan()
+    session.base_snapshot = _build_plan(summary="Base")
+    session.event_id_map = {}
+    session.remote_event_ids_by_index = []
+    agent._sessions["t1"] = session
+
+    refreshed = {"called": 0}
+
+    async def _fake_refresh(self: TimeboxingFlowAgent, target: Session) -> None:
+        _ = self
+        refreshed["called"] += 1
+        target.base_snapshot = _build_plan(summary=f"Remote-{refreshed['called']}")
+        target.remote_event_ids_by_index = ["fftb123"]
+
+    monkeypatch.setattr(
+        TimeboxingFlowAgent,
+        "_refresh_remote_baseline_after_sync",
+        _fake_refresh,
+    )
+
+    result = await agent.on_confirm_submit(
+        TimeboxingConfirmSubmit(channel_id="c1", thread_ts="t1", user_id="u1"),
+        _Ctx(),
+    )
+
+    assert isinstance(result, SlackBlockMessage)
+    assert refreshed["called"] == 1
+    assert submit_plan.await_count == 1
+    assert submit_plan.await_args.kwargs["remote"].events[0].n == "Base"
+    assert session.base_snapshot is not None
+    assert session.base_snapshot.events[0].n == "Remote-1"
+    assert session.remote_event_ids_by_index == ["fftb123"]
+
+
+@pytest.mark.asyncio
 async def test_cancel_submit_returns_to_refine() -> None:
     """Cancel submit should clear pending state and move session to refine."""
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
@@ -181,3 +229,43 @@ async def test_undo_submit_rejected_when_session_ended() -> None:
 
     assert isinstance(result, TextMessage)
     assert "already ended" in result.content
+
+
+@pytest.mark.asyncio
+async def test_submit_current_plan_refreshes_remote_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stage 4 submit should refresh remote baseline once after sync."""
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    submit_plan = AsyncMock(return_value=_build_submit_transaction())
+    agent._calendar_submitter = SimpleNamespace(submit_plan=submit_plan)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.tz_name = "Europe/Amsterdam"
+    session.tb_plan = _build_plan(summary="Edited")
+    session.base_snapshot = _build_plan(summary="Base")
+    session.event_id_map = {}
+    session.remote_event_ids_by_index = []
+
+    refreshed = {"called": 0}
+
+    async def _fake_refresh(self: TimeboxingFlowAgent, target: Session) -> None:
+        _ = self
+        refreshed["called"] += 1
+        target.base_snapshot = _build_plan(summary=f"Remote-{refreshed['called']}")
+        target.remote_event_ids_by_index = ["fftb123"]
+
+    monkeypatch.setattr(
+        TimeboxingFlowAgent,
+        "_refresh_remote_baseline_after_sync",
+        _fake_refresh,
+    )
+
+    outcome = await TimeboxingFlowAgent._submit_current_plan(agent, session)
+
+    assert refreshed["called"] == 1
+    assert submit_plan.await_count == 1
+    assert submit_plan.await_args.kwargs["remote"].events[0].n == "Base"
+    assert outcome.status == "committed"
+    assert session.base_snapshot is not None
+    assert session.base_snapshot.events[0].n == "Remote-1"
+    assert session.remote_event_ids_by_index == ["fftb123"]

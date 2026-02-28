@@ -1,7 +1,7 @@
 ---
 applyTo: "**"
 ---
-
+read agents.md!!
 # 🧠 MemoriPilot Memory-First Directive
 **Always call `memory_bank_show_memory` before you answer or run code.**  
 Memory is the single source of truth for project knowledge and history.

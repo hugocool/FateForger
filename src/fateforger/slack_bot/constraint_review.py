@@ -8,13 +8,18 @@ from urllib.parse import parse_qs, urlencode
 import ultimate_notion as uno
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from fateforger.agents.timeboxing.tool_result_models import (
+    MemoryToolResult,
+)
 from fateforger.agents.timeboxing.preferences import (
     ConstraintScope,
     ConstraintStatus,
 )
 
 CONSTRAINT_ROW_REVIEW_ACTION_ID = "timeboxing_constraint_review"
+CONSTRAINT_REVIEW_ALL_ACTION_ID = "timeboxing_constraint_review_all"
 CONSTRAINT_REVIEW_VIEW_CALLBACK_ID = "timeboxing_constraint_review_modal"
+CONSTRAINT_REVIEW_LIST_VIEW_CALLBACK_ID = "timeboxing_constraint_review_list_modal"
 CONSTRAINT_DECISION_ACTION_ID = "constraint_decision"
 CONSTRAINT_DESCRIPTION_ACTION_ID = "constraint_description"
 
@@ -100,6 +105,7 @@ def build_constraint_row_blocks(
     thread_ts: str,
     user_id: str,
     limit: int = 20,
+    button_text: str = "Review",
 ) -> list[dict[str, Any]]:
     """Build single-row constraint blocks with a review button."""
     items = [ConstraintReviewItem.coerce(constraint) for constraint in constraints]
@@ -121,7 +127,7 @@ def build_constraint_row_blocks(
                 "accessory": {
                     "type": "button",
                     "action_id": CONSTRAINT_ROW_REVIEW_ACTION_ID,
-                    "text": {"type": "plain_text", "text": "Review"},
+                    "text": {"type": "plain_text", "text": button_text},
                     "value": value,
                 },
             }
@@ -137,6 +143,147 @@ def build_constraint_row_blocks(
             }
         )
     return blocks
+
+
+def build_constraint_review_all_action_block(
+    *,
+    thread_ts: str,
+    user_id: str,
+    count: int,
+) -> dict[str, Any]:
+    """Build a button that opens a modal with the complete constraint list."""
+    value = encode_metadata(
+        {
+            "thread_ts": thread_ts,
+            "user_id": user_id,
+        }
+    )
+    return {
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "action_id": CONSTRAINT_REVIEW_ALL_ACTION_ID,
+                "text": {"type": "plain_text", "text": f"Review all constraints ({count})"},
+                "value": value,
+            }
+        ],
+    }
+
+
+def build_memory_tool_result_blocks(
+    result: MemoryToolResult,
+    *,
+    thread_ts: str,
+    user_id: str,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Serialize a typed memory-tool result into Slack card blocks."""
+    if not result.ok and not result.message and not result.error:
+        return []
+    title = _single_line(result.message or _default_memory_result_message(result))
+    blocks: list[dict[str, Any]] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Memory*\n{title}"}}
+    ]
+    if result.error:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f":warning: {result.error}"}],
+            }
+        )
+    if not result.constraints:
+        return blocks
+    rows = [
+        {
+            "uid": item.uid,
+            "name": item.name,
+            "description": item.description,
+            "necessity": item.necessity or "should",
+            "status": item.status or "proposed",
+            "scope": item.scope or "session",
+        }
+        for item in result.constraints[:limit]
+    ]
+    blocks.append({"type": "divider"})
+    blocks.extend(
+        build_constraint_row_blocks(
+            rows,
+            thread_ts=thread_ts,
+            user_id=user_id,
+            limit=limit,
+            button_text="Deny / Edit",
+        )
+    )
+    pending = [item.name for item in result.constraints if item.needs_confirmation]
+    if pending:
+        preview = ", ".join(_single_line(name or "Constraint") for name in pending[:3])
+        more = f" (+{len(pending) - 3})" if len(pending) > 3 else ""
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f":information_source: Needs confirmation: {preview}{more}",
+                    }
+                ],
+            }
+        )
+    return blocks
+
+
+def build_constraint_review_list_view(
+    constraints: Iterable[object],
+    *,
+    channel_id: str,
+    thread_ts: str,
+    user_id: str,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Build a modal listing active constraints with per-row deny/edit controls."""
+    items = [ConstraintReviewItem.coerce(constraint) for constraint in constraints]
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*Constraint review*\nSelect any row to deny or edit it.",
+            },
+        }
+    ]
+    if items:
+        blocks.append({"type": "divider"})
+        blocks.extend(
+            build_constraint_row_blocks(
+                items,
+                thread_ts=thread_ts,
+                user_id=user_id,
+                limit=limit,
+                button_text="Deny / Edit",
+            )
+        )
+    else:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": "No active constraints found."}],
+            }
+        )
+    return {
+        "type": "modal",
+        "callback_id": CONSTRAINT_REVIEW_LIST_VIEW_CALLBACK_ID,
+        "private_metadata": encode_metadata(
+            {
+                "channel_id": channel_id,
+                "thread_ts": thread_ts,
+                "user_id": user_id,
+            }
+        ),
+        "title": {"type": "plain_text", "text": "Constraints"},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": blocks,
+    }
 
 
 def build_constraint_review_view(
@@ -294,6 +441,22 @@ def _constraint_scope_label(constraint: ConstraintReviewItem) -> str:
     return "session"
 
 
+def _default_memory_result_message(result: MemoryToolResult) -> str:
+    action = result.action
+    count = int(result.count or len(result.constraints) or 0)
+    if action == "list":
+        return f"Found {count} remembered constraint(s)."
+    if action == "get":
+        return "Loaded remembered constraint."
+    if action == "update":
+        return "Updated remembered constraint."
+    if action == "archive":
+        return "Archived remembered constraint."
+    if action == "supersede":
+        return "Superseded remembered constraint."
+    return "Memory action completed."
+
+
 def encode_metadata(values: dict[str, str]) -> str:
     """Encode modal metadata into a querystring value."""
     return urlencode(values)
@@ -309,10 +472,15 @@ def decode_metadata(payload: str) -> dict[str, str]:
 
 __all__ = [
     "CONSTRAINT_ROW_REVIEW_ACTION_ID",
+    "CONSTRAINT_REVIEW_ALL_ACTION_ID",
+    "CONSTRAINT_REVIEW_LIST_VIEW_CALLBACK_ID",
     "CONSTRAINT_REVIEW_VIEW_CALLBACK_ID",
     "CONSTRAINT_DECISION_ACTION_ID",
     "CONSTRAINT_DESCRIPTION_ACTION_ID",
+    "build_constraint_review_all_action_block",
+    "build_constraint_review_list_view",
     "build_constraint_row_blocks",
+    "build_memory_tool_result_blocks",
     "build_constraint_review_view",
     "parse_constraint_review_submission",
     "encode_metadata",

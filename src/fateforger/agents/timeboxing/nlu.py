@@ -9,11 +9,12 @@ All interpretation uses structured LLM outputs (Pydantic) and avoids keyword/reg
 
 from __future__ import annotations
 
+import json
 from typing import Literal, Optional
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_ext.models.openai import OpenAIChatCompletionClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter
 
 from fateforger.agents.timeboxing.preferences import ConstraintBase
 
@@ -100,6 +101,21 @@ Rules
 """.strip()
 
 
+def _constraint_interpreter_prompt_with_schema() -> str:
+    """Return schema-augmented prompt for robust text-mode JSON parsing."""
+    schema_json = json.dumps(
+        TypeAdapter(ConstraintInterpretation).json_schema(),
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+    )
+    return (
+        CONSTRAINT_INTERPRETER_PROMPT
+        + "\n\nReturn ONLY valid JSON matching this schema.\n"
+        + f"ConstraintInterpretation JSON Schema:\n```json\n{schema_json}\n```"
+    )
+
+
 def build_planned_date_interpreter(
     *, model_client: OpenAIChatCompletionClient
 ) -> AssistantAgent:
@@ -121,8 +137,11 @@ def build_constraint_interpreter(
     return AssistantAgent(
         name="ConstraintInterpreter",
         model_client=model_client,
-        output_content_type=ConstraintInterpretation,
-        system_message=CONSTRAINT_INTERPRETER_PROMPT,
+        # ConstraintInterpretation includes open dict fields through nested models;
+        # OpenAI strict response_format rejects that schema. Keep typed validation
+        # by parsing JSON text with Pydantic instead.
+        output_content_type=None,
+        system_message=_constraint_interpreter_prompt_with_schema(),
         reflect_on_tool_use=False,
         max_tool_iterations=1,
     )

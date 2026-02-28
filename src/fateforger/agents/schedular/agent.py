@@ -20,7 +20,7 @@ from autogen_core import (
     message_handler,
 )
 from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
-from dateutil import parser as date_parser
+from pydantic import TypeAdapter, ValidationError
 
 from fateforger.core.config import settings
 from fateforger.debug.diag import with_timeout
@@ -75,6 +75,8 @@ prompt = (
 
 
 SERVER_URL = settings.mcp_calendar_server_url
+_DATETIME_ADAPTER = TypeAdapter(dt.datetime)
+_DATE_ADAPTER = TypeAdapter(dt.date)
 
 
 @dataclass
@@ -119,6 +121,26 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
 
     @staticmethod
     def _decode_tool_payload(payload: object, *, source: str) -> object:
+        def _decode_text(raw: str, *, text_source: str) -> object:
+            text = raw.strip()
+            if not text:
+                return {
+                    "ok": False,
+                    "success": False,
+                    "error": f"calendar MCP payload from {text_source} is empty",
+                }
+            if text.startswith("```"):
+                lines = text.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                text = "\n".join(lines).strip()
+            try:
+                return json.loads(text)
+            except (TypeError, json.JSONDecodeError):
+                return {"ok": False, "success": False, "error": text}
+
         if isinstance(payload, (dict, list)):
             if isinstance(payload, list):
                 if not payload:
@@ -130,31 +152,59 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                     return first
                 content = getattr(first, "content", None)
                 if isinstance(content, str):
-                    try:
-                        return json.loads(content)
-                    except (TypeError, json.JSONDecodeError) as exc:
-                        raise RuntimeError(
-                            f"calendar MCP payload from {source}[].content is not valid JSON: {content}"
-                        ) from exc
+                    return _decode_text(content, text_source=f"{source}[].content")
                 text = getattr(first, "text", None)
                 if isinstance(text, str):
-                    try:
-                        return json.loads(text)
-                    except (TypeError, json.JSONDecodeError) as exc:
-                        raise RuntimeError(
-                            f"calendar MCP payload from {source}[].text is not valid JSON: {text}"
-                        ) from exc
+                    return _decode_text(text, text_source=f"{source}[].text")
             return payload
         if isinstance(payload, str):
-            try:
-                return json.loads(payload)
-            except (TypeError, json.JSONDecodeError) as exc:
-                raise RuntimeError(
-                    f"calendar MCP payload from {source} is not valid JSON: {payload}"
-                ) from exc
+            return _decode_text(payload, text_source=source)
         raise RuntimeError(
             f"calendar MCP payload from {source} has unsupported type: {type(payload).__name__}"
         )
+
+    @staticmethod
+    def _calendar_tool_datetime(value: dt.datetime) -> str:
+        """Return MCP-compatible datetime text without timezone offset suffix."""
+        return value.replace(tzinfo=None, microsecond=0).isoformat()
+
+    @classmethod
+    def _calendar_event_datetime_arg(
+        cls, value: str, *, time_zone: str | None
+    ) -> str:
+        """Normalize create/update event start/end for MCP schema expectations."""
+        raw = str(value or "").strip()
+        if not raw:
+            raise ValueError("calendar event datetime argument is empty")
+
+        # Preserve all-day date values as YYYY-MM-DD.
+        try:
+            parsed_date = _DATE_ADAPTER.validate_python(raw)
+            if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+                return parsed_date.isoformat()
+        except ValidationError:
+            pass
+
+        try:
+            parsed = _DATETIME_ADAPTER.validate_python(raw)
+        except ValidationError:
+            raise ValueError(
+                f"calendar event datetime argument is not ISO 8601: {raw}"
+            ) from None
+
+        tz: dt.tzinfo
+        if time_zone:
+            try:
+                tz = ZoneInfo(time_zone)
+            except Exception:
+                tz = parsed.tzinfo or dt.timezone.utc
+        else:
+            tz = parsed.tzinfo or dt.timezone.utc
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=tz)
+        localized = parsed.astimezone(tz)
+        return localized.replace(tzinfo=None, microsecond=0).isoformat()
 
     @staticmethod
     def _normalize_event(
@@ -235,25 +285,31 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
 
     @staticmethod
     def _parse_event_dt(raw: dict | str | None, *, tz: ZoneInfo) -> dt.datetime | None:
-        # TODO(refactor): Use a Pydantic date-time field parser instead of try/except.
+        # TODO(refactor): Move this parser into a shared calendar payload model.
         if not raw:
             return None
-        if isinstance(raw, str):
-            try:
-                parsed = date_parser.isoparse(raw)
-            except Exception:
-                return None
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=tz)
-            return parsed.astimezone(tz)
-        if isinstance(raw, dict):
-            if raw.get("dateTime"):
-                parsed = date_parser.isoparse(raw["dateTime"])
+        match raw:
+            case str(value):
+                try:
+                    parsed = _DATETIME_ADAPTER.validate_python(value)
+                except ValidationError:
+                    return None
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=tz)
                 return parsed.astimezone(tz)
-            if raw.get("date"):
-                day = date_parser.isoparse(raw["date"]).date()
+            case {"dateTime": str(value), **_rest}:
+                try:
+                    parsed = _DATETIME_ADAPTER.validate_python(value)
+                except ValidationError:
+                    return None
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=tz)
+                return parsed.astimezone(tz)
+            case {"date": str(value), **_rest}:
+                try:
+                    day = _DATE_ADAPTER.validate_python(value)
+                except ValidationError:
+                    return None
                 return dt.datetime.combine(day, dt.time(0, 0), tz)
         return None
 
@@ -393,13 +449,23 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                 "list-events",
                 arguments={
                     "calendarId": message.calendar_id,
-                    "timeMin": window_start.astimezone(dt.timezone.utc).isoformat(),
-                    "timeMax": window_end.astimezone(dt.timezone.utc).isoformat(),
+                    "timeMin": self._calendar_tool_datetime(window_start),
+                    "timeMax": self._calendar_tool_datetime(window_end),
                     "singleEvents": True,
                     "orderBy": "startTime",
                 },
             )
-            events = self._normalize_events(self._extract_tool_payload(result))
+            payload = self._extract_tool_payload(result)
+            tool_error = self._extract_tool_error(payload)
+            if tool_error:
+                logger.warning(
+                    "PlannerAgent list-events failed for slot search: calendar=%s day=%s error=%s",
+                    message.calendar_id,
+                    day.isoformat(),
+                    tool_error,
+                )
+                continue
+            events = self._normalize_events(payload)
             start = _first_gap(window_start, window_end, _busy_intervals(events))
             if start:
                 end = start + duration
@@ -446,6 +512,12 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             exists = False
 
         try:
+            normalized_start = self._calendar_event_datetime_arg(
+                message.start, time_zone=message.time_zone
+            )
+            normalized_end = self._calendar_event_datetime_arg(
+                message.end, time_zone=message.time_zone
+            )
             if exists:
                 upsert_result = await workbench.call_tool(
                     "update-event",
@@ -453,8 +525,8 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                         "calendarId": message.calendar_id,
                         "eventId": message.event_id,
                         "summary": message.summary,
-                        "start": message.start,
-                        "end": message.end,
+                        "start": normalized_start,
+                        "end": normalized_end,
                         "timeZone": message.time_zone,
                         "colorId": message.color_id,
                         "description": message.description,
@@ -467,8 +539,8 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                         "calendarId": message.calendar_id,
                         "eventId": message.event_id,
                         "summary": message.summary,
-                        "start": message.start,
-                        "end": message.end,
+                        "start": normalized_start,
+                        "end": normalized_end,
                         "timeZone": message.time_zone,
                         "colorId": message.color_id,
                         "description": message.description,

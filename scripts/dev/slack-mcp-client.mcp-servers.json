@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "calendar": {
+      "url": "${SLACK_MCP_UPSTREAM_URL}",
+      "transport": "sse",
+      "initializeTimeoutSeconds": 30
+    }
+  }
+}

@@ -85,23 +85,17 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     scheduler = _create_scheduler(settings.database_url)
     scheduler.start()
 
-    settings_store = None
-    settings_engine = None
-    planning_anchor_store = None
-    planning_session_store = None
-    event_draft_store = None
-    if settings.database_url:
-        async_url = _coerce_async_database_url(settings.database_url)
-        settings_engine = create_async_engine(async_url)
-        await ensure_admonishment_settings_schema(settings_engine)
-        sessionmaker = async_sessionmaker(settings_engine, expire_on_commit=False)
-        settings_store = SqlAlchemyAdmonishmentSettingsStore(sessionmaker)
-        await ensure_planning_anchor_schema(settings_engine)
-        planning_anchor_store = SqlAlchemyPlanningAnchorStore(sessionmaker)
-        await ensure_planning_session_schema(settings_engine)
-        planning_session_store = SqlAlchemyPlanningSessionStore(sessionmaker)
-        await ensure_event_draft_schema(settings_engine)
-        event_draft_store = SqlAlchemyEventDraftStore(sessionmaker)
+    async_url = _coerce_async_database_url(settings.database_url)
+    settings_engine = create_async_engine(async_url)
+    await ensure_admonishment_settings_schema(settings_engine)
+    sessionmaker = async_sessionmaker(settings_engine, expire_on_commit=False)
+    settings_store = SqlAlchemyAdmonishmentSettingsStore(sessionmaker)
+    await ensure_planning_anchor_schema(settings_engine)
+    planning_anchor_store = SqlAlchemyPlanningAnchorStore(sessionmaker)
+    await ensure_planning_session_schema(settings_engine)
+    planning_session_store = SqlAlchemyPlanningSessionStore(sessionmaker)
+    await ensure_event_draft_schema(settings_engine)
+    event_draft_store = SqlAlchemyEventDraftStore(sessionmaker)
 
     haunting_service = HauntingService(scheduler, settings_store=settings_store)
     intervention = HauntingInterventionHandler(
@@ -144,32 +138,24 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
 
     haunting_service.set_dispatcher(dispatch_due)
 
-    reconciler = None
-    try:
-        calendar_client = McpCalendarClient(server_url=settings.mcp_calendar_server_url)
+    calendar_client = McpCalendarClient(server_url=settings.mcp_calendar_server_url)
 
-        async def dispatch_planning(reminder: PlanningReminder) -> None:
-            await runtime.send_message(
-                UserFacingMessage(
-                    content=reminder.message,
-                    user_id=reminder.user_id,
-                    channel_id=reminder.channel_id,
-                ),
-                recipient=AgentId(USER_CHANNEL_AGENT_TYPE, key=reminder.scope),
-            )
+    async def dispatch_planning(reminder: PlanningReminder) -> None:
+        await runtime.send_message(
+            UserFacingMessage(
+                content=reminder.message,
+                user_id=reminder.user_id,
+                channel_id=reminder.channel_id,
+            ),
+            recipient=AgentId(USER_CHANNEL_AGENT_TYPE, key=reminder.scope),
+        )
 
-        reconciler = PlanningReconciler(
-            scheduler,
-            calendar_client=calendar_client,
-            dispatcher=dispatch_planning,
-            planning_session_store=planning_session_store,
-        )
-    except Exception:
-        logger.exception(
-            "Planning reconciler disabled (failed to init Calendar MCP client). "
-            "Set MCP_CALENDAR_SERVER_URL and ensure the calendar MCP server is reachable."
-        )
-        reconciler = None
+    reconciler = PlanningReconciler(
+        scheduler,
+        calendar_client=calendar_client,
+        dispatcher=dispatch_planning,
+        planning_session_store=planning_session_store,
+    )
 
     await PlannerAgent.register(
         runtime,
@@ -255,25 +241,16 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     setattr(runtime, "planning_anchor_store", planning_anchor_store)
     setattr(runtime, "planning_session_store", planning_session_store)
     setattr(runtime, "event_draft_store", event_draft_store)
-    planning_guardian = None
-    if planning_anchor_store and reconciler:
-        planning_guardian = PlanningGuardian(
-            scheduler,
-            anchor_store=planning_anchor_store,
-            reconciler=reconciler,
-        )
-        planning_guardian.schedule_daily()
-        # Kick off reconcile on startup so nudges are scheduled immediately.
-        # This is critical since we use in-memory scheduler (jobs lost on restart).
-        try:
-            await asyncio.wait_for(planning_guardian.reconcile_all(), timeout=15)
-            logger.info("Initial planning reconcile completed successfully")
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Initial planning reconcile timed out (will retry on daily cron)"
-            )
-        except Exception:
-            logger.exception("Initial planning reconcile_all failed")
+    planning_guardian = PlanningGuardian(
+        scheduler,
+        anchor_store=planning_anchor_store,
+        reconciler=reconciler,
+    )
+    planning_guardian.schedule_daily()
+    # Kick off reconcile on startup so nudges are scheduled immediately.
+    # This is critical since we use in-memory scheduler (jobs lost on restart).
+    await asyncio.wait_for(planning_guardian.reconcile_all(), timeout=15)
+    logger.info("Initial planning reconcile completed successfully")
 
     setattr(runtime, "planning_guardian", planning_guardian)
     return runtime
@@ -309,39 +286,18 @@ async def shutdown_runtime() -> None:
             return
         _runtime = None
 
-    try:
-        await runtime.stop()
-    except Exception:
-        logger.exception("Failed to stop runtime")
-
-    try:
-        await runtime.close()
-    except Exception:
-        logger.exception("Failed to close runtime")
+    await runtime.stop()
+    await runtime.close()
 
     scheduler = getattr(getattr(runtime, "haunting_service", None), "_scheduler", None)
-    if scheduler is not None:
-        try:
-            scheduler.shutdown(wait=False)
-        except Exception:
-            logger.exception("Failed to shutdown scheduler")
+    scheduler.shutdown(wait=False)
 
     settings_engine = getattr(runtime, "haunting_settings_engine", None)
-    if settings_engine is not None:
-        try:
-            await settings_engine.dispose()
-        except Exception:
-            logger.exception("Failed to dispose settings engine")
+    await settings_engine.dispose()
 
     planning_reconciler = getattr(runtime, "planning_reconciler", None)
-    if planning_reconciler is not None:
-        calendar_client = getattr(planning_reconciler, "calendar_client", None)
-        close = getattr(calendar_client, "close", None)
-        if close is not None:
-            try:
-                await close()
-            except Exception:
-                logger.exception("Failed to close planning calendar client")
+    calendar_client = getattr(planning_reconciler, "calendar_client", None)
+    await calendar_client.close()
 
 
 # in this file we register the agents

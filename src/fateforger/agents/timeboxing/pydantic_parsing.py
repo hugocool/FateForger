@@ -7,11 +7,49 @@ These helpers centralize tolerant parsing/normalization so orchestration code ca
 
 from __future__ import annotations
 
+import json
 from typing import Any, TypeVar
 
 from pydantic import TypeAdapter, ValidationError
 
 T = TypeVar("T")
+
+
+def _strip_markdown_json_fence(payload: str) -> str:
+    """Remove optional markdown code fences around JSON payloads."""
+    text = payload.strip()
+    if not text.startswith("```"):
+        return text
+    lines = text.splitlines()
+    if len(lines) >= 2 and lines[0].startswith("```") and lines[-1].strip() == "```":
+        return "\n".join(lines[1:-1]).strip()
+    return text
+
+
+def _decode_json_payload(payload: str) -> Any:
+    """Decode JSON-ish payloads, tolerating wrapper text around one JSON object."""
+    cleaned = _strip_markdown_json_fence(payload)
+    any_adapter = TypeAdapter(Any)
+    try:
+        parsed = any_adapter.validate_json(cleaned)
+    except ValidationError:
+        decoder = json.JSONDecoder()
+        starts = [idx for idx, ch in enumerate(cleaned) if ch in "{["]
+        for start in starts:
+            try:
+                parsed, _ = decoder.raw_decode(cleaned[start:])
+                break
+            except json.JSONDecodeError:
+                continue
+        else:
+            raise
+
+    if isinstance(parsed, str):
+        try:
+            return any_adapter.validate_json(_strip_markdown_json_fence(parsed))
+        except ValidationError:
+            return parsed
+    return parsed
 
 
 # TODO: this should not be neccesary, we should leverage the agents message type to get this to work
@@ -31,7 +69,16 @@ def parse_chat_content(model: type[T], response: Any) -> T:
     content = getattr(getattr(response, "chat_message", None), "content", None)
     if isinstance(content, model):
         return content
-    return TypeAdapter(model).validate_python(content)
+    adapter = TypeAdapter(model)
+    if isinstance(content, (str, bytes, bytearray)):
+        text = content.decode() if isinstance(content, (bytes, bytearray)) else content
+        cleaned = _strip_markdown_json_fence(text)
+        try:
+            return adapter.validate_json(cleaned)
+        except ValidationError:
+            parsed = _decode_json_payload(cleaned)
+            return adapter.validate_python(parsed)
+    return adapter.validate_python(content)
 
 
 # TODO: this should not be neccesary, we should leverage the agents message type to get this to work

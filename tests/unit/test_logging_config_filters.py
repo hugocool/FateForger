@@ -9,6 +9,8 @@ from pathlib import Path
 from fateforger.core.logging_config import (
     _AutogenCoreFilter,
     _AutogenEventsFilter,
+    _SafeRecordMessageFilter,
+    _sanitize_for_audit,
     configure_logging,
 )
 
@@ -72,6 +74,20 @@ def test_autogen_core_filter_handles_unserializable_message() -> None:
     assert "coerced-log-payload" in record.msg
 
 
+def test_safe_record_filter_handles_unserializable_message() -> None:
+    """Generic safe filter should coerce bad message objects into strings."""
+    filt = _SafeRecordMessageFilter()
+    record = _record(
+        logger_name="autogen_ext.models.openai._openai_client", msg=_BadStrMessage()
+    )
+
+    allowed = filt.filter(record)
+
+    assert allowed is True
+    assert isinstance(record.msg, str)
+    assert "coerced-log-payload" in record.msg
+
+
 def test_configure_logging_adds_timebox_patcher_file_handler(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -85,6 +101,8 @@ def test_configure_logging_adds_timebox_patcher_file_handler(
 
     monkeypatch.setenv("TIMEBOX_PATCHER_DEBUG_LOG", "1")
     monkeypatch.setenv("TIMEBOX_PATCHER_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("TIMEBOX_PATCHER_INDEX_FILE", "patcher.index.jsonl")
+    monkeypatch.setenv("OBS_PROMETHEUS_ENABLED", "0")
 
     try:
         configure_logging(default_level="INFO")
@@ -99,6 +117,11 @@ def test_configure_logging_adds_timebox_patcher_file_handler(
         assert log_path.parent == tmp_path
         assert log_path.name.startswith("timebox_patcher_")
         assert log_path.suffix == ".log"
+        index_path = tmp_path / "patcher.index.jsonl"
+        assert index_path.exists()
+        lines = index_path.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) >= 1
+        assert "timebox_patcher" in lines[-1]
     finally:
         for handler in list(patcher_logger.handlers):
             patcher_logger.removeHandler(handler)
@@ -110,3 +133,44 @@ def test_configure_logging_adds_timebox_patcher_file_handler(
             patcher_logger.addHandler(handler)
         patcher_logger.propagate = original_propagate
         patcher_logger.setLevel(original_level)
+
+
+def test_configure_logging_adds_openai_safe_filter(monkeypatch) -> None:
+    """configure_logging should protect OpenAI client logs from serialization errors."""
+    openai_logger = logging.getLogger("autogen_ext.models.openai._openai_client")
+    existing_filters = list(openai_logger.filters)
+    for existing in existing_filters:
+        openai_logger.removeFilter(existing)
+    monkeypatch.delenv("TIMEBOX_PATCHER_DEBUG_LOG", raising=False)
+    monkeypatch.setenv("OBS_PROMETHEUS_ENABLED", "0")
+
+    try:
+        configure_logging(default_level="INFO")
+        safe_filters = [
+            filt for filt in openai_logger.filters if isinstance(filt, _SafeRecordMessageFilter)
+        ]
+        assert len(safe_filters) == 1
+    finally:
+        for filt in list(openai_logger.filters):
+            openai_logger.removeFilter(filt)
+        for filt in existing_filters:
+            openai_logger.addFilter(filt)
+
+
+def test_sanitize_for_audit_redacts_and_truncates() -> None:
+    """Sanitized audit payloads must redact sensitive keys and cap long strings."""
+    payload = {
+        "session_key": "s1",
+        "api_key": "abc123",
+        "nested": {"authorization_header": "Bearer SECRET"},
+        "messages": [{"content": "x" * 120}],
+        "prompt_tokens": 123,
+    }
+
+    sanitized = _sanitize_for_audit(payload, max_chars=40)
+
+    assert sanitized["api_key"] == "***REDACTED***"
+    assert sanitized["nested"]["authorization_header"] == "***REDACTED***"
+    assert sanitized["messages"][0]["content"].startswith("x")
+    assert "truncated" in sanitized["messages"][0]["content"]
+    assert sanitized["prompt_tokens"] == 123

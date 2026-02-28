@@ -128,15 +128,33 @@ class DecisionNode(BaseChatAgent):
         self, messages: Sequence[BaseChatMessage], cancellation_token: CancellationToken
     ) -> Response:
         user_text = self._turn_init.turn.user_text
-        if not user_text.strip():
-            decision = StageDecision(action="provide_info")
-            self._turn_init.turn.decision = decision
-            return Response(
-                chat_message=StructuredMessage(source=self.name, content=decision)
-            )
-        decision = await self._orchestrator._decide_next_action(  # noqa: SLF001
-            self._session, user_message=user_text
-        )
+        match (
+            self._session.force_stage_rerun,
+            user_text.strip(),
+            self._session.stage_ready,
+        ):
+            case (True, _, _):
+                self._session.force_stage_rerun = False
+                decision = StageDecision(action="redo", note="stage_action_rerun")
+            case (_, "", _):
+                decision = StageDecision(action="provide_info")
+            case _:
+                decision = await self._orchestrator._decide_next_action(  # noqa: SLF001
+                    self._session, user_message=user_text
+                )
+                match (
+                    self._session.stage_ready,
+                    bool(user_text.strip()),
+                    decision.action,
+                ):
+                    case (False, True, "proceed"):
+                        # Preserve user details for the stage gate when "proceed"
+                        # is selected before the current stage is ready.
+                        decision = StageDecision(
+                            action="provide_info", note="stage_not_ready_user_detail"
+                        )
+                    case _:
+                        pass
         self._turn_init.turn.decision = decision
         return Response(
             chat_message=StructuredMessage(source=self.name, content=decision)
@@ -174,6 +192,7 @@ class TransitionNode(BaseChatAgent):
         decision = self._turn_init.turn.decision
         user_text = self._turn_init.turn.user_text
         self.stage_user_message = user_text
+        self._session.skip_stage_execution = False
 
         if decision is None:
             return Response(
@@ -183,66 +202,58 @@ class TransitionNode(BaseChatAgent):
                 )
             )
 
-        if decision.action == "cancel":
-            self._session.completed = True
-            self._session.thread_state = "canceled"
-            self._session.last_response = "Okay—stopping this timeboxing session."
-            return Response(
-                chat_message=StructuredMessage(
-                    source=self.name,
-                    content=FlowSignal(kind="transition", note="canceled"),
+        match decision.action:
+            case "cancel":
+                self._session.completed = True
+                self._session.thread_state = "canceled"
+                self._session.last_response = "Okay—stopping this timeboxing session."
+                signal = FlowSignal(kind="transition", note="canceled")
+            case "back":
+                target = (
+                    decision.target_stage
+                    or self._orchestrator._previous_stage(  # noqa: SLF001
+                        self._session.stage
+                    )
                 )
-            )
+                await self._orchestrator._advance_stage(
+                    self._session, next_stage=target
+                )  # noqa: SLF001
+                signal = FlowSignal(kind="transition", note="back")
+            case "proceed":
+                await self._orchestrator._proceed(self._session)  # noqa: SLF001
+                self.stage_user_message = ""
+                signal = FlowSignal(kind="transition", note="proceed")
+            case "assist":
+                assist_reply = await self._orchestrator._run_assist_turn(  # noqa: SLF001
+                    session=self._session,
+                    user_message=user_text,
+                    note=decision.note,
+                )
+                if assist_reply:
+                    self._session.last_response = assist_reply
+                    self._session.skip_stage_execution = True
+                    self.stage_user_message = ""
+                    signal = FlowSignal(kind="transition", note="assist")
+                else:
+                    signal = FlowSignal(kind="transition", note="rerun")
+            case "provide_info":
+                # In Stage 5, user corrections must return to Stage 4 patching.
+                if self._session.stage == TimeboxingStage.REVIEW_COMMIT:
+                    await self._orchestrator._advance_stage(  # noqa: SLF001
+                        self._session,
+                        next_stage=TimeboxingStage.REFINE,
+                    )
+                # In Stage 3, user edits should move into Stage 4 patching.
+                if self._session.stage == TimeboxingStage.SKELETON:
+                    await self._orchestrator._advance_stage(  # noqa: SLF001
+                        self._session,
+                        next_stage=TimeboxingStage.REFINE,
+                    )
+                signal = FlowSignal(kind="transition", note="rerun")
+            case _:
+                signal = FlowSignal(kind="transition", note="rerun")
 
-        if decision.action == "back":
-            target = (
-                decision.target_stage
-                or self._orchestrator._previous_stage(  # noqa: SLF001
-                    self._session.stage
-                )
-            )
-            await self._orchestrator._advance_stage(
-                self._session, next_stage=target
-            )  # noqa: SLF001
-            self.stage_user_message = user_text
-            return Response(
-                chat_message=StructuredMessage(
-                    source=self.name, content=FlowSignal(kind="transition", note="back")
-                )
-            )
-
-        if decision.action == "proceed":
-            await self._orchestrator._proceed(self._session)  # noqa: SLF001
-            self.stage_user_message = ""
-            return Response(
-                chat_message=StructuredMessage(
-                    source=self.name,
-                    content=FlowSignal(kind="transition", note="proceed"),
-                )
-            )
-
-        if decision.action == "provide_info":
-            # In Stage 5, user corrections must return to Stage 4 patching.
-            if self._session.stage == TimeboxingStage.REVIEW_COMMIT:
-                await self._orchestrator._advance_stage(  # noqa: SLF001
-                    self._session,
-                    next_stage=TimeboxingStage.REFINE,
-                )
-            self.stage_user_message = user_text
-            return Response(
-                chat_message=StructuredMessage(
-                    source=self.name,
-                    content=FlowSignal(kind="transition", note="rerun"),
-                )
-            )
-
-        # redo / assist: rerun current stage with user text
-        self.stage_user_message = user_text
-        return Response(
-            chat_message=StructuredMessage(
-                source=self.name, content=FlowSignal(kind="transition", note="rerun")
-            )
-        )
+        return Response(chat_message=StructuredMessage(source=self.name, content=signal))
 
     async def on_reset(self, cancellation_token: CancellationToken) -> None:
         self.stage_user_message = ""
@@ -494,36 +505,15 @@ class StageRefineNode(_StageNodeBase):
             self.last_gate = gate
             return Response(chat_message=StructuredMessage(source=self.name, content=gate))
         user_message = self._transition.stage_user_message.strip()
-        if not user_message:
-            user_message = (
-                "Prepare the editable Stage 4 plan from the current draft. "
-                "Preserve intent and ordering, and repair only what is needed "
-                "for plan validity."
-            )
-        if preflight.has_plan_issues:
-            issues = "\n".join(f"- {issue}" for issue in preflight.plan_issues)
-            repair_instruction = (
-                "Repair the current plan first so it passes validation, then apply the "
-                "user refinement while preserving intent/order as much as possible.\n"
-                f"Preflight validation issues:\n{issues}"
-            )
-            user_message = (
-                f"{user_message}\n\n{repair_instruction}"
-                if user_message
-                else repair_instruction
-            )
-        user_message = self._orchestrator._compose_patcher_message(  # noqa: SLF001
-            base_message=user_message,
-            session=self._session,
-            stage=TimeboxingStage.REFINE.value,
-            extra={
-                "preflight_plan_issues": list(preflight.plan_issues),
-                "preflight_snapshot_issues": list(preflight.snapshot_issues),
-                "quality_snapshot": self._orchestrator._quality_snapshot_for_prompt(  # noqa: SLF001
+        if not user_message and not preflight.has_plan_issues:
+            try:
+                self._orchestrator._materialize_timebox_from_tb_plan(  # noqa: SLF001
                     self._session
-                ),
-            },
-        )
+                )
+            except Exception as exc:
+                preflight.plan_issues.append(
+                    f"tb_plan_to_timebox: {str(exc) or type(exc).__name__}"
+                )
         if self._session.tb_plan is None:
             gate = StageGateOutput(
                 stage_id=TimeboxingStage.REFINE,
@@ -543,12 +533,36 @@ class StageRefineNode(_StageNodeBase):
             return Response(chat_message=StructuredMessage(source=self.name, content=gate))
 
         try:
-            execution = (
-                await self._orchestrator._run_refine_tool_orchestration(  # noqa: SLF001
-                    session=self._session,
-                    patch_message=user_message,
-                    user_message=self._transition.stage_user_message or user_message,
+            if not user_message:
+                user_message = (
+                    "Prepare the editable Stage 4 plan from the current draft. "
+                    "Preserve intent and ordering, and repair only what is needed "
+                    "for plan validity."
                 )
+            if preflight.has_plan_issues:
+                issues = "\n".join(f"- {issue}" for issue in preflight.plan_issues)
+                repair_instruction = (
+                    "Repair the current plan first so it passes validation, then apply the "
+                    "user refinement while preserving intent/order as much as possible.\n"
+                    f"Preflight validation issues:\n{issues}"
+                )
+                user_message = f"{user_message}\n\n{repair_instruction}"
+            patch_message = self._orchestrator._compose_patcher_message(  # noqa: SLF001
+                base_message=user_message,
+                session=self._session,
+                stage=TimeboxingStage.REFINE.value,
+                extra={
+                    "preflight_plan_issues": list(preflight.plan_issues),
+                    "preflight_snapshot_issues": list(preflight.snapshot_issues),
+                    "quality_snapshot": self._orchestrator._quality_snapshot_for_prompt(  # noqa: SLF001
+                        self._session
+                    ),
+                },
+            )
+            execution = await self._orchestrator._run_refine_tool_orchestration(  # noqa: SLF001
+                session=self._session,
+                patch_message=patch_message,
+                user_message=self._transition.stage_user_message or user_message,
             )
         except Exception as exc:
             logger.warning("Refine patch failed: %s", exc, exc_info=True)
@@ -581,6 +595,10 @@ class StageRefineNode(_StageNodeBase):
         if execution.fallback_patch_used:
             gate.summary.append(
                 "Patch execution used fallback tool routing for this turn."
+            )
+        if execution.memory_operations:
+            gate.summary.append(
+                f"Memory operations: {', '.join(execution.memory_operations)}."
             )
         self._session.stage_ready = True
         self._session.stage_missing = []
@@ -656,6 +674,7 @@ class PresenterNode(BaseChatAgent):
         if self._session.last_response:
             content = self._session.last_response
             self._session.last_response = None
+            self._session.skip_stage_execution = False
             return Response(chat_message=TextMessage(content=content, source=self.name))
 
         background_notes = self._orchestrator._collect_background_notes(

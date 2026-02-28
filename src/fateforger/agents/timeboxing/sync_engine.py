@@ -453,9 +453,17 @@ async def undo_sync(
     Returns:
         A new ``SyncTransaction`` representing the undo.
     """
+    if len(tx.results) != len(tx.ops):
+        raise ValueError(
+            "Cannot undo sync transaction without complete per-op execution results."
+        )
+
+    successful_forward_ops = [
+        op for index, op in enumerate(tx.ops) if bool(tx.results[index].get("ok"))
+    ]
     undo_ops: list[SyncOp] = []
 
-    for op in reversed(tx.ops):
+    for op in reversed(successful_forward_ops):
         if op.op_type == SyncOpType.CREATE:
             # Undo create → delete
             undo_ops.append(
@@ -486,6 +494,9 @@ async def undo_sync(
                     after_payload=op.before_payload,
                 )
             )
+
+    if not undo_ops:
+        return SyncTransaction(status="undone")
 
     undo_tx = await execute_sync(undo_ops, mcp_workbench)
     undo_tx.status = "undone" if undo_tx.status == "committed" else "undo_partial"

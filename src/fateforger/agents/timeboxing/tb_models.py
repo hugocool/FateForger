@@ -169,7 +169,7 @@ class TBPlan(BaseModel):
             )
         return self
 
-    def resolve_times(self) -> list[dict]:
+    def resolve_times(self, *, validate_non_overlap: bool = True) -> list[dict]:
         """Deterministically compute concrete start/end for every event.
 
         Returns:
@@ -240,15 +240,18 @@ class TBPlan(BaseModel):
                 next_start_dt = datetime.combine(planning_date, r["start_time"])
 
         # ── Overlap check (non-BG only) ──
-        chain = [r for r in resolved if r["t"] != "BG"]
-        for a, b in zip(chain, chain[1:]):
-            a_end = datetime.combine(planning_date, a["end_time"])
-            b_start = datetime.combine(planning_date, b["start_time"])
-            if a_end > b_start:
-                raise ValueError(
-                    f"Overlap: '{a['n']}' ends {a['end_time']} "
-                    f"but '{b['n']}' starts {b['start_time']}"
-                )
+        # Desired/generated plans should remain strict, but remote calendar
+        # snapshots can legitimately contain overlaps from prior edits.
+        if validate_non_overlap:
+            chain = [r for r in resolved if r["t"] != "BG"]
+            for a, b in zip(chain, chain[1:]):
+                a_end = datetime.combine(planning_date, a["end_time"])
+                b_start = datetime.combine(planning_date, b["start_time"])
+                if a_end > b_start:
+                    raise ValueError(
+                        f"Overlap: '{a['n']}' ends {a['end_time']} "
+                        f"but '{b['n']}' starts {b['start_time']}"
+                    )
 
         return resolved
 

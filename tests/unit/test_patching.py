@@ -131,7 +131,13 @@ class TestExtractPatch:
     def test_invalid_json_string_raises(self) -> None:
         """Raise ValueError for a string that is not valid JSON."""
         resp = _make_response("this is not json")
-        with pytest.raises(ValueError, match="Could not extract TBPatch"):
+        with pytest.raises(ValueError, match="TBPatch parse/validation failed"):
+            _extract_patch(resp)
+
+    def test_invalid_dict_raises_validation_details(self) -> None:
+        """Raise ValueError with details for malformed dict payloads."""
+        resp = _make_response({"ops": [{"op": "ue", "i": "bad-index"}]})
+        with pytest.raises(ValueError, match="TBPatch validation failed from dict payload"):
             _extract_patch(resp)
 
 

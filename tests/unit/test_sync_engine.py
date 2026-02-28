@@ -588,7 +588,8 @@ class TestUndoSync:
                         "summary": "New",
                     },
                 ),
-            ]
+            ],
+            results=[{"ok": True, "event_id": "fftbcreated"}],
         )
         undo_tx = await undo_sync(tx, mock_workbench)
         assert undo_tx.status == "undone"
@@ -608,7 +609,8 @@ class TestUndoSync:
                     after_payload=after,
                     before_payload=before,
                 ),
-            ]
+            ],
+            results=[{"ok": True, "event_id": "fftbx"}],
         )
         undo_tx = await undo_sync(tx, mock_workbench)
         assert undo_tx.status == "undone"
@@ -628,7 +630,8 @@ class TestUndoSync:
                     after_payload={"calendarId": "primary", "eventId": "fftbdel"},
                     before_payload=before,
                 ),
-            ]
+            ],
+            results=[{"ok": True, "event_id": "fftbdel"}],
         )
         undo_tx = await undo_sync(tx, mock_workbench)
         assert undo_tx.status == "undone"
@@ -651,13 +654,68 @@ class TestUndoSync:
                     gcal_event_id="fftbb",
                     after_payload={"calendarId": "primary", "eventId": "fftbb"},
                 ),
-            ]
+            ],
+            results=[
+                {"ok": True, "event_id": "fftba"},
+                {"ok": True, "event_id": "fftbb"},
+            ],
         )
         undo_tx = await undo_sync(tx, mock_workbench)
         # First undo call should be for fftbb (last created)
         calls = mock_workbench.call_tool.call_args_list
         assert calls[0][1]["arguments"]["eventId"] == "fftbb"
         assert calls[1][1]["arguments"]["eventId"] == "fftba"
+
+    @pytest.mark.asyncio
+    async def test_undo_skips_forward_ops_that_failed(
+        self, mock_workbench: AsyncMock
+    ) -> None:
+        """Undo should compensate only forward ops that completed successfully."""
+        tx = SyncTransaction(
+            ops=[
+                SyncOp(
+                    op_type=SyncOpType.CREATE,
+                    gcal_event_id="fftb-failed",
+                    after_payload={"calendarId": "primary", "eventId": "fftb-failed"},
+                ),
+                SyncOp(
+                    op_type=SyncOpType.CREATE,
+                    gcal_event_id="fftb-ok",
+                    after_payload={"calendarId": "primary", "eventId": "fftb-ok"},
+                ),
+            ],
+            results=[
+                {"ok": False, "event_id": "fftb-failed"},
+                {"ok": True, "event_id": "fftb-ok"},
+            ],
+            status="partial",
+        )
+
+        undo_tx = await undo_sync(tx, mock_workbench)
+        assert undo_tx.status == "undone"
+        calls = mock_workbench.call_tool.call_args_list
+        assert len(calls) == 1
+        assert calls[0][0][0] == "delete-event"
+        assert calls[0][1]["arguments"]["eventId"] == "fftb-ok"
+
+    @pytest.mark.asyncio
+    async def test_undo_raises_when_transaction_results_missing(
+        self, mock_workbench: AsyncMock
+    ) -> None:
+        """Undo should fail loudly when deterministic execution results are absent."""
+        tx = SyncTransaction(
+            ops=[
+                SyncOp(
+                    op_type=SyncOpType.CREATE,
+                    gcal_event_id="fftb-created",
+                    after_payload={"calendarId": "primary", "eventId": "fftb-created"},
+                )
+            ],
+            status="committed",
+        )
+
+        with pytest.raises(ValueError, match="complete per-op execution results"):
+            await undo_sync(tx, mock_workbench)
 
 
 # ── SyncTransaction ─────────────────────────────────────────────────────

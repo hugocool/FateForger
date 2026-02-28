@@ -12,12 +12,14 @@ from hashlib import sha256
 from typing import Any, Sequence
 
 from pydantic import BaseModel, Field
+from yarl import URL
 
+from fateforger.tools.mcp_url_validation import rewrite_mcp_host
 from fateforger.tools.notion_mcp import (
     get_notion_mcp_headers,
     get_notion_mcp_url,
+    normalize_notion_mcp_url,
     probe_notion_mcp_endpoint,
-    validate_notion_mcp_url,
 )
 
 
@@ -64,7 +66,7 @@ class NotionSprintManager:
         default_source_resolution_parallelism: int = 4,
         dry_run_patch_parallelism: int = 4,
     ) -> None:
-        self._server_url = validate_notion_mcp_url(
+        self._server_url = normalize_notion_mcp_url(
             server_url or get_notion_mcp_url()
         ).strip()
         self._timeout = timeout
@@ -633,7 +635,27 @@ class NotionSprintManager:
             self._server_url, connect_timeout_s=min(self._timeout, 1.5)
         )
         if not ok:
-            raise RuntimeError(reason or "Notion MCP endpoint is unavailable.")
+            parsed = URL(self._server_url)
+            if parsed.host == "notion-mcp":
+                fallback = rewrite_mcp_host(
+                    self._server_url, "localhost", default_path="/mcp"
+                )
+                fallback_ok, fallback_reason = probe_notion_mcp_endpoint(
+                    fallback, connect_timeout_s=min(self._timeout, 1.5)
+                )
+                if fallback_ok:
+                    logger.warning(
+                        "Notion MCP endpoint '%s' is unavailable (%s); using '%s'.",
+                        self._server_url,
+                        reason,
+                        fallback,
+                    )
+                    self._server_url = fallback
+                    ok = True
+                else:
+                    reason = fallback_reason or reason
+            if not ok:
+                raise RuntimeError(reason or "Notion MCP endpoint is unavailable.")
         params = StreamableHttpServerParams(
             url=self._server_url,
             headers=get_notion_mcp_headers(),

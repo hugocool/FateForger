@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,37 @@ class TimeboxingStage(str, Enum):
 StageAction = Literal["provide_info", "proceed", "back", "redo", "cancel", "assist"]
 
 
+class NextStepsSection(BaseModel):
+    kind: Literal["next_steps"] = "next_steps"
+    heading: str = "What I need from you"
+    content: List[str] = Field(default_factory=list, description="clear next-step lines")
+
+
+class ConstraintsSection(BaseModel):
+    kind: Literal["constraints"] = "constraints"
+    heading: str = "Constraints"
+    content: List[str] = Field(default_factory=list, description="top constraints only")
+    folded_content: List[str] = Field(
+        default_factory=list, description="optional full list shown folded"
+    )
+
+
+class FreeformSection(BaseModel):
+    kind: Literal["freeform"] = "freeform"
+    heading: str
+    content: str
+
+
+MessageSection = Annotated[
+    NextStepsSection | ConstraintsSection | FreeformSection,
+    Field(discriminator="kind"),
+]
+
+
+class SessionMessage(BaseModel):
+    sections: List[MessageSection] = Field(default_factory=list)
+
+
 class StageGateOutput(BaseModel):
     stage_id: TimeboxingStage
     ready: bool
@@ -30,6 +61,13 @@ class StageGateOutput(BaseModel):
     question: Optional[str] = Field(default=None, description="single concise question")
     facts: Dict[str, Any] = Field(
         default_factory=dict, description="canonical structured facts for this stage"
+    )
+    response_message: SessionMessage | None = Field(
+        default=None,
+        description=(
+            "Optional UI-ready message sections. "
+            "Order: next_steps, constraints, then freeform sections."
+        ),
     )
 
 
@@ -67,7 +105,7 @@ Goal
 - Constraint modeling is flexible: constraints can be windows, ordering, capacity, or durations. Exact HH:MM is only required for truly fixed events.
 - Use the constraint template below to reason about extraction completeness:
   - core identity: name, description
-  - priority/intent: necessity (must|should)
+  - priority/intent: necessity (must|should|prefer)
   - lifecycle: status (proposed|locked|declined), source (user|calendar|system|feedback)
   - applicability: scope (session|profile|datespan), start_date, end_date, days_of_week, timezone, recurrence, ttl_days
   - targeting/implementation: selector, hints, tags, rationale, supersedes
@@ -91,10 +129,16 @@ Input
 
 Output
 - Return STRICT JSON matching StageGateOutput.
+- Include `response_message.sections` when possible. Section schema:
+  - `next_steps`: {"kind":"next_steps","heading":"What I need from you","content":[...]}
+  - `constraints`: {"kind":"constraints","heading":"Constraints","content":[...],"folded_content":[...]}
+  - `freeform`: {"kind":"freeform","heading":"<header>","content":"<markdown text>"}
+- Section ordering: `next_steps` first, `constraints` second, then any `freeform` sections.
 
 Rules
 - If immovables are missing from facts and a date/timezone is set, call it out in missing/question so the coordinator can fetch it.
 - If the user asks about their calendar, tasks, or other related info, note the request in summary/question and keep going.
+- Use `current_time` / `current_datetime` (when provided) to interpret relative anchors like "now", "later", or "after I wake up".
 - Be conservative: if a fact is uncertain, omit it from facts and add it to missing/question.
 - Always keep the user oriented: summary should include what you assumed/locked so far (as Schedular, frame it as “what’s anchored” vs “what still floats”).
 - Summary should clearly separate:
@@ -113,6 +157,8 @@ Rules
 facts keys (preferred)
 - timezone: string
 - date: YYYY-MM-DD (if known)
+- current_time: HH:MM in timezone-local time
+- current_datetime: ISO datetime with timezone offset (for relative-time interpretation)
 - work_window: {start: "HH:MM", end: "HH:MM"}
 - sleep_target: {start: "HH:MM"|null, end: "HH:MM"|null, hours: number|null}
 - immovables: [{title: string, start: "HH:MM", end: "HH:MM"}]
@@ -164,6 +210,9 @@ Input
 
 Output
 - Return STRICT JSON matching StageGateOutput.
+- Include `response_message.sections` when possible, using ordered sections:
+  `next_steps`, then `constraints` (if relevant), then `freeform`.
+- `freeform` sections are allowed for any extra heading + content.
 
 facts keys (preferred)
 - daily_one_thing: {title: string, block_count: int|null, duration_min: int|null}
@@ -202,7 +251,7 @@ Decision rules
 - If the user asks to revisit earlier stages, use action="back" and set target_stage.
 - If the user asks to redo the current stage, use action="redo".
 - If the user wants to stop, use action="cancel".
-- If the user asks an adjacent question (e.g. "what's on my calendar?", "show my tasks", "what did I plan yesterday?"), use action="assist" with a note describing what they need. This lets you help them with info that feeds back into timeboxing.
+- If the user asks an adjacent question (e.g. "what's on my calendar?", "show my tasks", "what did I plan yesterday?", "show my TickTick lists", "link sprint subtasks in Notion"), use action="assist" with a note describing what they need. This lets you help them with info that feeds back into timeboxing.
 
 Constraints
 - Never output prose.
@@ -221,6 +270,8 @@ Input
 
 Task
 - Output STRICT JSON matching StageGateOutput.
+- Include `response_message.sections` when possible with ordering:
+  `next_steps`, `constraints` (if relevant), then `freeform`.
 - stage_id must match the input stage_id.
 - ready should be true (the draft exists); use missing/question only if the timebox is invalid or incomplete.
 - summary should be 2-4 short bullets describing the main blocks and the intent, with a calm “conductor” voice (brief, not flowery).
@@ -247,6 +298,8 @@ Input
 
 Output
 - Return STRICT JSON matching StageGateOutput with stage_id="ReviewCommit" and ready=true.
+- Include `response_message.sections` when possible with ordering:
+  `next_steps`, `constraints` (if relevant), then `freeform`.
 - summary should be 2-4 bullets plus (optionally) a single risk/edge case.
 - question should ask whether to finalize or go back to refine.
 """.strip()
@@ -255,9 +308,13 @@ Output
 __all__ = [
     "CAPTURE_INPUTS_PROMPT",
     "COLLECT_CONSTRAINTS_PROMPT",
+    "ConstraintsSection",
     "DECISION_PROMPT",
+    "FreeformSection",
+    "NextStepsSection",
     "StageDecision",
     "StageGateOutput",
+    "SessionMessage",
     "TimeboxingStage",
     "REVIEW_COMMIT_PROMPT",
     "TIMEBOX_SUMMARY_PROMPT",

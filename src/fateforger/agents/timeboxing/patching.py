@@ -209,9 +209,10 @@ class TimeboxPatcher:
                 )
                 raw_content = getattr(getattr(response, "chat_message", None), "content", None)
                 logger.debug(
-                    "timebox_patcher request_id=%s attempt=%s raw_content=%s",
+                    "timebox_patcher request_id=%s attempt=%s raw_len=%s raw_content=%s",
                     request_id,
                     attempt,
+                    len(raw_content) if isinstance(raw_content, str) else None,
                     _to_log_string(raw_content),
                 )
                 patch = _extract_patch(response)
@@ -407,12 +408,15 @@ def _extract_patch(response: Any) -> TBPatch:
             text = "\n".join(lines)
         try:
             return TBPatch.model_validate_json(text)
-        except Exception:
-            pass
+        except Exception as exc:
+            raise ValueError(f"TBPatch parse/validation failed: {exc}") from exc
 
     # Try from dict
     if isinstance(content, dict):
-        return TBPatch.model_validate(content)
+        try:
+            return TBPatch.model_validate(content)
+        except Exception as exc:
+            raise ValueError(f"TBPatch validation failed from dict payload: {exc}") from exc
 
     raise ValueError(
         f"Could not extract TBPatch from response: {type(content).__name__}"

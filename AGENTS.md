@@ -124,6 +124,19 @@ After implementation:
   - once an incident is resolved, downgrade temporary deep-debug logs back to baseline.
   - keep debug-log changes scoped to the active ticket and document any temporary toggles in Issue checkpoints.
 
+## Observability reality check (critical)
+- Prometheus is a metrics system, not a log store; do not assume Prometheus queries can retrieve raw session text, LLM request/response payloads, or traceback bodies.
+- During audits, always declare which surfaces are available:
+  - metrics (Prometheus)
+  - structured logs (JSONL/session logs)
+  - traces (if enabled)
+- If a requested audit needs payload-level diagnosis and traces/logs are not wired, treat that as an explicit gap and record it in:
+  - `potential_logging_improvements.md` (technical remediation plan)
+  - the active Issue/PR checkpoint (`Open Items` section)
+- For Slack-agent debugging, use a two-step loop:
+  - detect anomalies via metrics (rates/errors/latency/tokens)
+  - diagnose root cause via correlated logs/traces (same session/thread correlation IDs)
+
 ## PR/Issue sync protocol (critical)
 - **Primary operator surface:** progress must be visible in GitHub Issue/PR (including VS Code GitHub Pull Requests panel), not hidden in local ticket markdown.
 - **Deterministic sync checkpoints:** when an Issue exists (with or without a PR), update GitHub at:

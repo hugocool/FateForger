@@ -1,24 +1,25 @@
 import os
 import sys
-from urllib.parse import urlparse
+from typing import Optional
 
-from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     """Application configuration using environment variables."""
 
     # Core Configuration
-    slack_bot_token: str = Field(default="xoxb-local-dev", env="SLACK_BOT_TOKEN")
-    slack_user_token: str = Field(default="", env="SLACK_USER_TOKEN")
-    slack_signing_secret: str = Field(default="local-signing-secret")
+    slack_bot_token: str = Field(default="x", env="SLACK_BOT_TOKEN")
+    slack_signing_secret: str = Field(default="x")
     # Slack Configuration
-    slack_app_token: str = Field(default="xapp-local-dev")
+    slack_app_token: str = Field(default="your_slack_app_token_here")
     slack_socket_mode: bool = Field(default=True, env="SLACK_SOCKET_MODE")
     slack_port: int = Field(default=3000, env="SLACK_PORT")
     slack_focus_ttl_seconds: int = Field(default=60 * 60, env="SLACK_FOCUS_TTL_SECONDS")
     slack_app_name: str = Field(default="FateForger")
+    slack_user_token: str = Field(default="", env="SLACK_USER_TOKEN")
+    slack_test_user_token: str = Field(default="", env="SLACK_TEST_USER_TOKEN")
     slack_timeboxing_channel_id: str = Field(
         default="", env="SLACK_TIMEBOXING_CHANNEL_ID"
     )
@@ -96,6 +97,11 @@ class Settings(BaseSettings):
     llm_reasoning_effort_timebox_patcher: str = Field(
         default="", env="LLM_REASONING_EFFORT_TIMEBOX_PATCHER"
     )
+    # Per-agent max output token caps (0 means "provider default")
+    llm_max_tokens: int = Field(default=0, env="LLM_MAX_TOKENS")
+    llm_max_tokens_timebox_patcher: int = Field(
+        default=0, env="LLM_MAX_TOKENS_TIMEBOX_PATCHER"
+    )
 
     # MCP Server Configuration
     mcp_version: str = Field(default="v1.4.8")
@@ -126,6 +132,22 @@ class Settings(BaseSettings):
     notion_timeboxing_parent_page_id: str = Field(
         default="", env="NOTION_TIMEBOXING_PARENT_PAGE_ID"
     )
+    notion_sprint_db_id: str = Field(default="", env="NOTION_SPRINT_DB_ID")
+    notion_sprint_data_source_url: str = Field(
+        default="", env="NOTION_SPRINT_DATA_SOURCE_URL"
+    )
+    notion_sprint_db_ids: str = Field(default="", env="NOTION_SPRINT_DB_IDS")
+    notion_sprint_data_source_urls: str = Field(
+        default="", env="NOTION_SPRINT_DATA_SOURCE_URLS"
+    )
+    timeboxing_memory_backend: str = Field(
+        default="mem0", env="TIMEBOXING_MEMORY_BACKEND"
+    )
+    mem0_user_id: str = Field(default="timeboxing", env="MEM0_USER_ID")
+    mem0_api_key: str = Field(default="", env="MEM0_API_KEY")
+    mem0_is_cloud: bool = Field(default=False, env="MEM0_IS_CLOUD")
+    mem0_local_config_json: str = Field(default="", env="MEM0_LOCAL_CONFIG_JSON")
+    mem0_query_limit: int = Field(default=200, env="MEM0_QUERY_LIMIT")
 
     # Database Configuration
     alembic_database_url: str = Field(default="sqlite:///data/admonish.db")
@@ -143,6 +165,13 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     environment: str = Field(default="development")
     development: str = Field(default="true")
+    obs_prometheus_enabled: bool = Field(default=True, env="OBS_PROMETHEUS_ENABLED")
+    obs_prometheus_port: int = Field(default=9464, env="OBS_PROMETHEUS_PORT")
+    obs_llm_audit_enabled: bool = Field(default=True, env="OBS_LLM_AUDIT_ENABLED")
+    obs_llm_audit_mode: str = Field(default="sanitized", env="OBS_LLM_AUDIT_MODE")
+    obs_llm_audit_max_chars: int = Field(
+        default=2000, env="OBS_LLM_AUDIT_MAX_CHARS"
+    )
 
     wizard_admin_token: str = Field(default="admin_token", env="WIZARD_ADMIN_TOKEN")
     wizard_session_secret: str = Field(default="", env="WIZARD_SESSION_SECRET")
@@ -155,65 +184,15 @@ class Settings(BaseSettings):
         default=10, env="AGENT_MCP_DISCOVERY_TIMEOUT_SECONDS"
     )
 
-    model_config = SettingsConfigDict(
-        env_file=(
+    # Timeboxing feature flags
+
+    class Config:
+        env_file = (
             None
             if ("pytest" in sys.modules) or os.getenv("PYTEST_CURRENT_TEST")
             else os.getenv("FATEFORGER_ENV_FILE", ".env")
-        ),
-        case_sensitive=False,
-        extra="forbid",
-    )
-
-    @field_validator("slack_app_token")
-    @classmethod
-    def _validate_slack_app_token(cls, value: str) -> str:
-        if not value.startswith("xapp-"):
-            raise ValueError("SLACK_APP_TOKEN must start with 'xapp-'")
-        return value
-
-    @field_validator("slack_bot_token")
-    @classmethod
-    def _validate_slack_bot_token(cls, value: str) -> str:
-        if not value.startswith("xoxb-"):
-            raise ValueError("SLACK_BOT_TOKEN must start with 'xoxb-'")
-        return value
-
-    @field_validator("slack_user_token")
-    @classmethod
-    def _validate_slack_user_token(cls, value: str) -> str:
-        if value and not value.startswith("xoxp-"):
-            raise ValueError("SLACK_USER_TOKEN must start with 'xoxp-' when provided")
-        return value
-
-    @field_validator(
-        "mcp_calendar_server_url",
-        "mcp_calendar_server_url_docker",
-        "openrouter_base_url",
-    )
-    @classmethod
-    def _validate_http_url(cls, value: str) -> str:
-        parsed = urlparse(value)
-        if parsed.scheme not in {"http", "https"}:
-            raise ValueError(f"URL must use http/https scheme: {value}")
-        if not parsed.netloc:
-            raise ValueError(f"URL must include host: {value}")
-        return value
-
-    @field_validator("database_url")
-    @classmethod
-    def _validate_database_url(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("DATABASE_URL must not be empty")
-        return value
-
-    @model_validator(mode="after")
-    def _validate_runtime_mode(self) -> "Settings":
-        if not self.slack_socket_mode:
-            raise ValueError(
-                "SLACK_SOCKET_MODE=false is unsupported; use Socket Mode only."
-            )
-        return self
+        )
+        case_sensitive = False
 
 
 settings = Settings()

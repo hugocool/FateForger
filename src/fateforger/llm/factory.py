@@ -150,6 +150,25 @@ def _reasoning_effort_for_agent(agent_type: str) -> ReasoningEffort | None:
     return None
 
 
+def _max_tokens_for_agent(agent_type: str) -> int | None:
+    """Return per-agent max token cap, or ``None`` for provider defaults."""
+
+    def normalize(value: int | str | None) -> int | None:
+        try:
+            parsed = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    agent_type = _clean(agent_type)
+    if agent_type == "timebox_patcher":
+        # Stage 4 patch prompts are large. Keep patcher uncapped by default to
+        # avoid truncating JSON patches; allow explicit env override when set.
+        return normalize(settings.llm_max_tokens_timebox_patcher)
+
+    return normalize(settings.llm_max_tokens)
+
+
 def _ensure_autogen_ext_allows_openai_sdk_passthrough_args() -> None:
     """Allow `extra_body` / `extra_headers` passthrough to the OpenAI SDK.
 
@@ -176,7 +195,19 @@ def build_autogen_chat_client(
 ) -> OpenAIChatCompletionClient:
     resolved_model = _clean(model) or _model_for_agent(agent_type)
     reasoning_effort = _reasoning_effort_for_agent(agent_type)
+    max_tokens = _max_tokens_for_agent(agent_type)
     provider = _openai_compatible_provider_config(reasoning_effort=reasoning_effort)
+    provider_name = _clean(settings.llm_provider).lower() or "openai"
+    if provider_name != "openrouter" and "/" in resolved_model:
+        openai_default = _clean(settings.openai_model) or "gpt-4o-mini"
+        logger.warning(
+            "Provider=%s does not accept OpenRouter-style model id '%s'; "
+            "falling back to '%s'",
+            provider_name,
+            resolved_model,
+            openai_default,
+        )
+        resolved_model = openai_default
 
     _ensure_autogen_ext_allows_openai_sdk_passthrough_args()
 
@@ -191,13 +222,17 @@ def build_autogen_chat_client(
         kwargs["base_url"] = provider.base_url
     if provider.default_headers:
         kwargs["default_headers"] = provider.default_headers
-    if parallel_tool_calls is not None:
+    # OpenAI rejects `parallel_tool_calls` when a request has no tools;
+    # keep this flag scoped to OpenRouter-backed clients.
+    if parallel_tool_calls is not None and provider_name == "openrouter":
         kwargs["parallel_tool_calls"] = parallel_tool_calls
     if temperature is not None:
         kwargs["temperature"] = temperature
-    if _clean(settings.llm_provider).lower() == "openrouter" and reasoning_effort:
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if provider_name == "openrouter" and reasoning_effort:
         kwargs["extra_body"] = {"reasoning": {"effort": reasoning_effort}}
-    if _clean(settings.llm_provider).lower() == "openrouter":
+    if provider_name == "openrouter":
         # OpenRouter model IDs (e.g. `google/gemini-...`) are not valid OpenAI model names,
         # so autogen-ext requires an explicit ModelInfo.
         kwargs["model_info"] = {

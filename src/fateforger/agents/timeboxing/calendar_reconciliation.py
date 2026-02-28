@@ -40,6 +40,12 @@ def _overlap_minutes(a_start: time, a_end: time, b_start: time, b_end: time) -> 
     return max(0, end - start)
 
 
+def _duration_minutes(start: time, end: time) -> int:
+    start_min = start.hour * 60 + start.minute
+    end_min = end.hour * 60 + end.minute
+    return max(0, end_min - start_min)
+
+
 @dataclass(frozen=True)
 class RemoteEventRecord:
     """Resolved remote event enriched with identity metadata."""
@@ -119,7 +125,9 @@ def build_remote_records(
     owned_prefix: str = "fftb",
 ) -> list[RemoteEventRecord]:
     """Build resolved remote records with robust identity lookup."""
-    resolved = remote.resolve_times()
+    # Remote snapshots can contain historical overlaps; reconciliation should
+    # stay robust and avoid crashing on those records.
+    resolved = remote.resolve_times(validate_non_overlap=False)
     records: list[RemoteEventRecord] = []
     for index, item in enumerate(resolved):
         summary = str(item["n"])
@@ -173,6 +181,7 @@ def reconcile_calendar_ops(
     event_id_map: dict[str, str],
     remote_event_ids_by_index: list[str] | None = None,
     fuzzy_start_tolerance_min: int = 20,
+    foreign_overlap_match_min_percent: int = 80,
 ) -> CalendarOpPlan:
     """Reconcile desired and remote plans into deterministic op candidates."""
     remote_records = build_remote_records(
@@ -263,6 +272,58 @@ def reconcile_calendar_ops(
                 - _minutes_between(remote_record.start_time, remote_record.end_time)
             )
             score = (overlap, -start_delta, -duration_delta)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_remote = remote_record
+        if best_remote is None:
+            continue
+        matches.append(
+            EventMatch(
+                desired=desired_record,
+                remote=best_remote,
+                match_kind="fuzzy",
+            )
+        )
+        remaining_desired.discard(desired_record.index)
+        remaining_remote.discard(best_remote.index)
+
+    # Pass 4: overlap guard against foreign immovables.
+    # If a desired event almost fully overlaps a foreign remote event, treat it as
+    # a no-op match to avoid creating duplicate calendar blocks (e.g., seeded lunch).
+    for desired_index in sorted(remaining_desired):
+        desired_record = desired_by_index[desired_index]
+        desired_duration = _duration_minutes(
+            desired_record.start_time, desired_record.end_time
+        )
+        if desired_duration <= 0:
+            continue
+        best_score: tuple[int, int, int, int] | None = None
+        best_remote: RemoteEventRecord | None = None
+        for remote_index in sorted(remaining_remote):
+            remote_record = remote_by_index[remote_index]
+            if remote_record.is_owned:
+                continue
+            remote_duration = _duration_minutes(
+                remote_record.start_time, remote_record.end_time
+            )
+            if remote_duration <= 0:
+                continue
+            overlap = _overlap_minutes(
+                desired_record.start_time,
+                desired_record.end_time,
+                remote_record.start_time,
+                remote_record.end_time,
+            )
+            if overlap <= 0:
+                continue
+            overlap_percent = int((overlap * 100) / min(desired_duration, remote_duration))
+            if overlap_percent < foreign_overlap_match_min_percent:
+                continue
+            start_delta = _minutes_between(
+                desired_record.start_time, remote_record.start_time
+            )
+            end_delta = _minutes_between(desired_record.end_time, remote_record.end_time)
+            score = (overlap_percent, overlap, -start_delta, -end_delta)
             if best_score is None or score > best_score:
                 best_score = score
                 best_remote = remote_record
