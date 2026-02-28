@@ -131,10 +131,14 @@ class NotionMcpClient:
             raise RuntimeError("Failed to load Notion MCP tools") from exc
 
 
+# Stable alias used by HEAD-based callers after the normalize→validate rename.
+validate_notion_mcp_url = normalize_notion_mcp_url
+
 __all__ = [
     "NotionMcpClient",
     "get_notion_mcp_headers",
     "get_notion_mcp_url",
     "normalize_notion_mcp_url",
+    "validate_notion_mcp_url",
     "probe_notion_mcp_endpoint",
 ]
