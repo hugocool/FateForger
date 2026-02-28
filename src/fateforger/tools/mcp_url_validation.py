@@ -6,12 +6,7 @@ import os
 import socket
 from dataclasses import dataclass
 from typing import Mapping
-from urllib.parse import ParseResult, urlparse, urlunparse
-
-
-def _normalize_default_path(default_path: str) -> str:
-    value = (default_path or "").strip() or "/mcp"
-    return value if value.startswith("/") else f"/{value}"
+from urllib.parse import ParseResult, urlparse
 
 
 def _validate_url(
@@ -49,6 +44,10 @@ class McpEndpointResolver:
 
     def __init__(self, policy: McpEndpointPolicy) -> None:
         self._policy = policy
+
+    @property
+    def policy(self) -> McpEndpointPolicy:
+        return self._policy
 
     def _default_url(self, env: Mapping[str, str]) -> str:
         return self._policy.default_url
@@ -127,60 +126,9 @@ class TickTickMcpEndpointResolver(McpEndpointResolver):
         )
 
 
-def canonical_mcp_url(raw_url: str, *, default_path: str = "/mcp") -> str:
-    """Return URL with explicit path; useful for deterministic defaulting."""
-    raw, parsed = _validate_url(raw_url, label="MCP URL", require_explicit_path=False)
-    _ = raw
-    if parsed.path and parsed.path != "/":
-        return raw
-    normalized_path = _normalize_default_path(default_path)
-    return urlunparse(
-        (
-            parsed.scheme,
-            parsed.netloc,
-            normalized_path,
-            parsed.params,
-            parsed.query,
-            parsed.fragment,
-        )
-    )
-
-
-def rewrite_mcp_host(raw_url: str, host: str, *, default_path: str = "/mcp") -> str:
-    """Rewrite hostname while keeping scheme/port/path/query."""
-    _raw, parsed = _validate_url(
-        raw_url, label="MCP URL", require_explicit_path=False
-    )
-    normalized_path = (
-        parsed.path
-        if parsed.path and parsed.path != "/"
-        else _normalize_default_path(default_path)
-    )
-    auth = ""
-    if parsed.username:
-        auth = parsed.username
-        if parsed.password:
-            auth = f"{auth}:{parsed.password}"
-        auth = f"{auth}@"
-    port = f":{parsed.port}" if parsed.port else ""
-    netloc = f"{auth}{host}{port}"
-    return urlunparse(
-        (
-            parsed.scheme,
-            netloc,
-            normalized_path,
-            parsed.params,
-            parsed.query,
-            parsed.fragment,
-        )
-    )
-
-
 __all__ = [
     "McpEndpointPolicy",
     "McpEndpointResolver",
     "NotionMcpEndpointResolver",
     "TickTickMcpEndpointResolver",
-    "canonical_mcp_url",
-    "rewrite_mcp_host",
 ]

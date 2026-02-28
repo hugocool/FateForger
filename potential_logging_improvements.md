@@ -1,5 +1,7 @@
 # Potential Logging Improvements
 
+Tracking issue: https://github.com/hugocool/FateForger/issues/41
+
 ## Audit Snapshot (2026-02-28)
 
 ### What exists
@@ -61,6 +63,56 @@
 5. MCP access for audits
 - Add Prometheus MCP server config and a repo skill for triage workflows.
 - Keep query-only allowlist for safety.
+
+## Implementation options (compare/contrast)
+
+### Option A: Metrics-only baseline
+- Scope:
+  - Prometheus exporter bootstrap
+  - low-cardinality counters/histograms only
+- Strengths:
+  - fastest implementation
+  - lowest operational overhead
+- Weaknesses:
+  - no payload-level diagnosis
+  - traceback and LLM I/O require separate manual log spelunking
+- Best when:
+  - immediate health signals are the only priority
+
+### Option B: Metrics + structured LLM I/O logs (recommended baseline)
+- Scope:
+  - Option A +
+  - sanitized `llm_io` JSONL sink
+  - indexed query CLI for session/thread/stage correlation
+- Strengths:
+  - good anomaly-to-root-cause loop without full tracing stack
+  - lower complexity than full LGTM
+- Weaknesses:
+  - causality across services is still partly manual
+- Best when:
+  - Slack-first debugging and cost/token diagnosis are immediate priorities
+
+### Option C: Full local triage stack (Prometheus + logs + traces)
+- Scope:
+  - Option B +
+  - local Loki/Tempo/OTel collector + Grafana exploration
+- Strengths:
+  - fastest metric spike -> trace -> payload drill-down
+  - best long-term observability posture
+- Weaknesses:
+  - highest setup and maintenance complexity
+  - larger operator surface area
+- Best when:
+  - multi-agent and multi-service failures need rapid forensic depth
+
+### Decision matrix
+| Criterion | Option A | Option B | Option C |
+|---|---|---|---|
+| Delivery speed | Fastest | Medium | Slowest |
+| Debug depth | Low | Medium-High | Highest |
+| Operational complexity | Lowest | Medium | Highest |
+| Root-cause time for Slack incidents | Slow | Medium-Fast | Fastest |
+| Recommended for current repo stage | No | Yes | Later |
 
 ## Suggested acceptance checks
 - `AC1`: app metrics endpoint exposes expected counters/histograms.

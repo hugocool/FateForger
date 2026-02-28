@@ -206,7 +206,7 @@ class Settings(BaseSettings):
     obs_llm_audit_mode: str = Field(default="sanitized")
     obs_llm_audit_max_chars: int = Field(default=2000)
 
-    @field_validator("slack_user_token")
+    @field_validator("slack_user_token", "slack_test_user_token")
     @classmethod
     def _validate_slack_user_token(cls, value: str) -> str:
         token = (value or "").strip()
@@ -214,7 +214,9 @@ class Settings(BaseSettings):
             return ""
         if token.startswith("xoxp-"):
             return token
-        raise ValueError("SLACK_USER_TOKEN must start with 'xoxp-' when provided")
+        raise ValueError(
+            "SLACK_USER_TOKEN and SLACK_TEST_USER_TOKEN must start with 'xoxp-' when provided"
+        )
 
     @field_validator("mcp_calendar_server_url", "mcp_calendar_server_url_docker")
     @classmethod
@@ -274,4 +276,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-# TODO: should automatically read the environment variables/.env

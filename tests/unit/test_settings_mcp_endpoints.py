@@ -33,8 +33,20 @@ def test_settings_accepts_slack_user_token(monkeypatch) -> None:
     assert settings.slack_user_token == "xoxp-test-token"
 
 
+def test_settings_accepts_slack_test_user_token(monkeypatch) -> None:
+    monkeypatch.setenv("SLACK_TEST_USER_TOKEN", "xoxp-test-user-token")
+    settings = Settings()
+    assert settings.slack_test_user_token == "xoxp-test-user-token"
+
+
 def test_settings_rejects_invalid_slack_user_token(monkeypatch) -> None:
     monkeypatch.setenv("SLACK_USER_TOKEN", "invalid-token")
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_settings_rejects_invalid_slack_test_user_token(monkeypatch) -> None:
+    monkeypatch.setenv("SLACK_TEST_USER_TOKEN", "invalid-token")
     with pytest.raises(ValueError):
         Settings()
 

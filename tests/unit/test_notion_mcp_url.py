@@ -6,13 +6,13 @@ import fateforger.tools.notion_mcp as notion_mcp
 from fateforger.tools.notion_mcp import (
     NotionMcpClient,
     get_notion_mcp_url,
-    normalize_notion_mcp_url,
+    validate_notion_mcp_url,
 )
 
 
-def test_normalize_notion_mcp_url_validates_without_normalizing() -> None:
+def test_validate_notion_mcp_url_validates_without_normalizing() -> None:
     configured = "http://localhost:3001/mcp?transport=sse"
-    assert normalize_notion_mcp_url(configured) == configured
+    assert validate_notion_mcp_url(configured) == configured
 
 
 def test_get_notion_mcp_url_rejects_schemeless_env(monkeypatch) -> None:
