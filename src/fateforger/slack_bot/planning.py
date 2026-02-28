@@ -36,7 +36,12 @@ from fateforger.haunt.planning_store import (
 )
 from fateforger.haunt.reconcile import PlanningReconciler, PlanningReminder
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
-from fateforger.core.logging_config import observe_stage_duration, record_error
+from fateforger.core.logging_config import (
+    observe_stage_duration,
+    record_admonishment_event,
+    record_error,
+    record_tool_call,
+)
 from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.workspace import DEFAULT_PERSONAS, WorkspaceRegistry
 
@@ -592,6 +597,9 @@ class PlanningCoordinator:
         asyncio.create_task(
             self._add_to_calendar_async(draft_id=draft.draft_id, respond=respond)
         )
+        record_admonishment_event(
+            component="planning_card", event="add_to_calendar", status="queued"
+        )
 
     async def _add_to_calendar_async(self, *, draft_id: str, respond) -> None:
         if not self._draft_store:
@@ -677,6 +685,10 @@ class PlanningCoordinator:
             and result_ok
             and bool(result_event_url)
         ):
+            record_tool_call(agent="planning_card", tool="upsert_calendar_event", status="ok")
+            record_admonishment_event(
+                component="planning_card", event="add_to_calendar", status="ok"
+            )
             await self._draft_store.update_status(
                 draft_id=draft.draft_id,
                 status=DraftStatus.SUCCESS,
@@ -730,6 +742,14 @@ class PlanningCoordinator:
             )
         if not error:
             error = "Calendar operation failed"
+        _cal_error_type = (
+            "calendar_no_event_url" if (result_ok and not result_event_url) else "calendar_upsert_failed"
+        )
+        record_error(component="planning_card", error_type=_cal_error_type)
+        record_tool_call(agent="planning_card", tool="upsert_calendar_event", status="error")
+        record_admonishment_event(
+            component="planning_card", event="add_to_calendar", status="error"
+        )
         await self._draft_store.update_status(
             draft_id=draft.draft_id, status=DraftStatus.FAILURE, last_error=str(error)
         )

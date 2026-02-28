@@ -50,6 +50,7 @@ _METRIC_TOOL_CALLS = None
 _METRIC_ERRORS = None
 _METRIC_STAGE_DURATION = None
 _METRIC_OBS_DROPPED = None
+_METRIC_ADMONISHMENTS = None
 
 _CHANNEL_ID_RE = re.compile(r"^[CDG][A-Z0-9]+$")
 _STAGE_AGENT_RE = re.compile(r"^Stage(?P<stage>[A-Za-z]+)Node(?:_|$)")
@@ -144,6 +145,24 @@ def record_error(*, component: str, error_type: str) -> None:
     _METRIC_ERRORS.labels(
         component=_bounded_label(component, fallback="unknown"),
         error_type=_bounded_label(error_type, fallback="error"),
+    ).inc()
+
+
+def record_admonishment_event(*, component: str, event: str, status: str) -> None:
+    """Increment the admonishments counter (no-op when metrics are disabled).
+
+    Labels:
+      component: high-level origin, e.g. ``haunt_delivery``, ``planning_card``.
+      event:     what happened, e.g. ``admonishment_sent``, ``add_to_calendar``.
+      status:    outcome, e.g. ``ok``, ``error``, ``no_event_url``, ``skipped``.
+    """
+    _ensure_metrics_initialized()
+    if _METRIC_ADMONISHMENTS is None:
+        return
+    _METRIC_ADMONISHMENTS.labels(
+        component=_bounded_label(component, fallback="unknown"),
+        event=_bounded_label(event, fallback="unknown"),
+        status=_bounded_label(status, fallback="unknown"),
     ).inc()
 
 
@@ -694,6 +713,7 @@ def _ensure_metrics_initialized() -> None:
     global _METRICS_READY
     global _METRIC_LLM_CALLS, _METRIC_LLM_TOKENS, _METRIC_TOOL_CALLS
     global _METRIC_ERRORS, _METRIC_STAGE_DURATION, _METRIC_OBS_DROPPED
+    global _METRIC_ADMONISHMENTS
 
     if _METRICS_READY or Counter is None or Histogram is None:
         return
@@ -727,6 +747,11 @@ def _ensure_metrics_initialized() -> None:
         "fateforger_observability_dropped_events_total",
         "Events dropped by observability pipelines",
         ["source", "reason"],
+    )
+    _METRIC_ADMONISHMENTS = Counter(
+        "fateforger_admonishments_total",
+        "Admonishment and planning-card action outcomes",
+        ["component", "event", "status"],
     )
     _METRICS_READY = True
 

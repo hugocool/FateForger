@@ -5,6 +5,7 @@ import logging
 from autogen_core import MessageContext
 from slack_sdk.web.async_client import AsyncWebClient
 
+from fateforger.core.logging_config import record_admonishment_event, record_error
 from fateforger.haunt.delivery import DeliverySink
 from fateforger.haunt.messages import UserFacingMessage
 from fateforger.slack_bot.ui import open_link_blocks
@@ -53,9 +54,16 @@ def make_slack_delivery_sink(client: AsyncWebClient) -> DeliverySink:
                 channel_id = (dm.get("channel") or {}).get("id") or ""
             except Exception:
                 logger.debug("Failed to open DM for %s", user_id, exc_info=True)
+                record_error(component="haunt_delivery", error_type="dm_open_failed")
+                record_admonishment_event(
+                    component="haunt_delivery", event="admonishment_sent", status="error"
+                )
                 return
 
         if not channel_id:
+            record_admonishment_event(
+                component="haunt_delivery", event="admonishment_sent", status="skipped"
+            )
             return
 
         payload = {"channel": channel_id, "text": message.content}
@@ -72,7 +80,17 @@ def make_slack_delivery_sink(client: AsyncWebClient) -> DeliverySink:
                 button_text="Open log",
                 action_id="ff_open_admonishments_log",
             )
-        await client.chat_postMessage(**payload)
+        try:
+            await client.chat_postMessage(**payload)
+            record_admonishment_event(
+                component="haunt_delivery", event="admonishment_sent", status="ok"
+            )
+        except Exception:
+            logger.exception("Failed to deliver admonishment to channel=%s", channel_id)
+            record_error(component="haunt_delivery", error_type="post_message_failed")
+            record_admonishment_event(
+                component="haunt_delivery", event="admonishment_sent", status="error"
+            )
 
     return _deliver
 

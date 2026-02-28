@@ -306,6 +306,75 @@ def test_record_observability_event_sanitizes_high_cardinality_agent_label(
     )
 
 
+class TestRecordAdmonishmentEvent:
+    """record_admonishment_event should increment fateforger_admonishments_total."""
+
+    def test_ok_increments_counter(self, monkeypatch) -> None:
+        monkeypatch.setenv("OBS_LLM_AUDIT_ENABLED", "0")
+        logging_config._ensure_metrics_initialized()
+
+        labels = {"component": "haunt_delivery", "event": "admonishment_sent", "status": "ok"}
+        before = _counter_value(logging_config._METRIC_ADMONISHMENTS, **labels)
+
+        logging_config.record_admonishment_event(
+            component="haunt_delivery", event="admonishment_sent", status="ok"
+        )
+
+        assert _counter_value(logging_config._METRIC_ADMONISHMENTS, **labels) == before + 1
+
+    def test_error_increments_counter(self, monkeypatch) -> None:
+        monkeypatch.setenv("OBS_LLM_AUDIT_ENABLED", "0")
+        logging_config._ensure_metrics_initialized()
+
+        labels = {"component": "planning_card", "event": "add_to_calendar", "status": "error"}
+        before = _counter_value(logging_config._METRIC_ADMONISHMENTS, **labels)
+
+        logging_config.record_admonishment_event(
+            component="planning_card", event="add_to_calendar", status="error"
+        )
+
+        assert _counter_value(logging_config._METRIC_ADMONISHMENTS, **labels) == before + 1
+
+    def test_queued_increments_counter(self, monkeypatch) -> None:
+        monkeypatch.setenv("OBS_LLM_AUDIT_ENABLED", "0")
+        logging_config._ensure_metrics_initialized()
+
+        labels = {"component": "planning_card", "event": "add_to_calendar", "status": "queued"}
+        before = _counter_value(logging_config._METRIC_ADMONISHMENTS, **labels)
+
+        logging_config.record_admonishment_event(
+            component="planning_card", event="add_to_calendar", status="queued"
+        )
+
+        assert _counter_value(logging_config._METRIC_ADMONISHMENTS, **labels) == before + 1
+
+    def test_noop_when_metrics_not_initialized(self) -> None:
+        """Should not raise even if _METRIC_ADMONISHMENTS is None."""
+        orig = logging_config._METRIC_ADMONISHMENTS
+        logging_config._METRIC_ADMONISHMENTS = None
+        try:
+            logging_config.record_admonishment_event(
+                component="test", event="test", status="ok"
+            )
+        finally:
+            logging_config._METRIC_ADMONISHMENTS = orig
+
+    def test_skipped_tracked_separately_from_error(self, monkeypatch) -> None:
+        monkeypatch.setenv("OBS_LLM_AUDIT_ENABLED", "0")
+        logging_config._ensure_metrics_initialized()
+
+        skipped_l = {"component": "haunt_delivery", "event": "admonishment_sent", "status": "skipped"}
+        error_l = {"component": "haunt_delivery", "event": "admonishment_sent", "status": "error"}
+        skipped_before = _counter_value(logging_config._METRIC_ADMONISHMENTS, **skipped_l)
+        error_before = _counter_value(logging_config._METRIC_ADMONISHMENTS, **error_l)
+
+        logging_config.record_admonishment_event(
+            component="haunt_delivery", event="admonishment_sent", status="skipped"
+        )
+
+        assert _counter_value(logging_config._METRIC_ADMONISHMENTS, **skipped_l) == skipped_before + 1
+        assert _counter_value(logging_config._METRIC_ADMONISHMENTS, **error_l) == error_before
+
 def test_record_observability_event_sanitizes_uuid_node_agent_label(
     monkeypatch,
 ) -> None:
