@@ -7,14 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+import sys
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from dateutil import parser as date_parser
-from pydantic import ValidationError
 
 from fateforger.adapters.calendar.models import GCalEventsResponse
 from fateforger.tools.constraint_mcp import (
@@ -56,9 +55,7 @@ class ConstraintMemoryClient:
         if not text:
             if allow_empty:
                 return []
-            raise RuntimeError(
-                f"constraint-memory tool {tool_name} returned empty text"
-            )
+            raise RuntimeError(f"constraint-memory tool {tool_name} returned empty text")
         if text.startswith("Error executing tool "):
             raise RuntimeError(f"constraint-memory tool {tool_name} failed: {text}")
         if text.startswith("```"):
@@ -70,7 +67,7 @@ class ConstraintMemoryClient:
             text = "\n".join(lines).strip()
         try:
             return json.loads(text)
-        except json.JSONDecodeError:
+        except Exception:
             decoder = json.JSONDecoder()
             idx = 0
             chunks: list[Any] = []
@@ -81,7 +78,7 @@ class ConstraintMemoryClient:
                     break
                 try:
                     payload, next_idx = decoder.raw_decode(text, idx)
-                except json.JSONDecodeError as exc:
+                except Exception as exc:
                     raise RuntimeError(
                         f"constraint-memory tool {tool_name} returned non-JSON text: {text}"
                     ) from exc
@@ -145,7 +142,9 @@ class ConstraintMemoryClient:
                     continue
                 content = getattr(item, "content", None)
                 if isinstance(content, str):
-                    parsed = cls._parse_json_text(tool_name, content, allow_empty=True)
+                    parsed = cls._parse_json_text(
+                        tool_name, content, allow_empty=True
+                    )
                     if isinstance(parsed, list):
                         parsed_items.extend(parsed)
                     elif parsed != []:
@@ -203,9 +202,7 @@ class ConstraintMemoryClient:
         )
         self._workbench = McpWorkbench(params)
 
-    async def _call_tool_json(
-        self, tool_name: str, *, arguments: dict[str, Any]
-    ) -> Any:
+    async def _call_tool_json(self, tool_name: str, *, arguments: dict[str, Any]) -> Any:
         attempts = 2
         for attempt in range(1, attempts + 1):
             try:
@@ -299,9 +296,7 @@ class ConstraintMemoryClient:
             Tool payload as a dict when available; otherwise an empty dict.
         """
         payload = {"record": record, "event": event or None}
-        data = await self._call_tool_json(
-            "constraint_upsert_constraint", arguments=payload
-        )
+        data = await self._call_tool_json("constraint_upsert_constraint", arguments=payload)
         if not isinstance(data, dict):
             raise RuntimeError(
                 "constraint-memory tool constraint_upsert_constraint returned non-dict JSON"
@@ -316,14 +311,6 @@ class ConstraintMemoryClient:
 class McpCalendarClient:
     """Client for Google Calendar MCP server (streamable HTTP workbench)."""
 
-    _RECOVERABLE_ERROR_MARKERS = (
-        "mcp actor not running",
-        "all connection attempts failed",
-        "timed out while waiting for response to clientrequest",
-        "connection refused",
-        "server disconnected",
-    )
-
     def __init__(self, *, server_url: str, timeout: float = 10.0) -> None:
         """Initialize the calendar MCP workbench.
 
@@ -331,37 +318,10 @@ class McpCalendarClient:
             server_url: MCP server base URL.
             timeout: HTTP timeout seconds.
         """
-        self._server_url = server_url
-        self._timeout = timeout
-        self._params = self._build_params()
-        self._workbench = self._build_workbench()
+        from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
 
-    def _build_params(self):
-        from autogen_ext.tools.mcp import StreamableHttpServerParams
-
-        return StreamableHttpServerParams(url=self._server_url, timeout=self._timeout)
-
-    def _build_workbench(self):
-        from autogen_ext.tools.mcp import McpWorkbench
-
-        return McpWorkbench(self._params)
-
-    @classmethod
-    def _is_recoverable_transport_error(cls, exc: Exception) -> bool:
-        text = str(exc or "").strip().lower()
-        if not text:
-            return False
-        return any(marker in text for marker in cls._RECOVERABLE_ERROR_MARKERS)
-
-    async def _reset_workbench(self) -> None:
-        current = self._workbench
-        close = getattr(current, "close", None)
-        if callable(close):
-            maybe = close()
-            if hasattr(maybe, "__await__"):
-                await maybe
-        self._params = self._build_params()
-        self._workbench = self._build_workbench()
+        self._params = StreamableHttpServerParams(url=server_url, timeout=timeout)
+        self._workbench = McpWorkbench(self._params)
 
     async def get_tools(self) -> list:
         """Return MCP tool definitions for AutoGen tool wiring."""
@@ -393,7 +353,7 @@ class McpCalendarClient:
             text = "\n".join(lines).strip()
         try:
             return json.loads(text)
-        except json.JSONDecodeError as exc:
+        except Exception as exc:
             raise RuntimeError(
                 f"calendar MCP payload from {source} is not valid JSON: {text}"
             ) from exc
@@ -450,35 +410,6 @@ class McpCalendarClient:
             "calendar MCP tool returned unsupported payload; expected dict/list/JSON text"
         )
 
-    async def _call_tool_payload(
-        self,
-        *,
-        tool_name: str,
-        arguments: dict[str, Any],
-        diagnostics: dict[str, Any] | None = None,
-    ) -> Any:
-        attempts = 2
-        for attempt in range(1, attempts + 1):
-            try:
-                result = await self._workbench.call_tool(tool_name, arguments=arguments)
-                if diagnostics is not None:
-                    diagnostics["result_type"] = type(result).__name__
-                return self._extract_tool_payload(result)
-            except Exception as exc:
-                recoverable = self._is_recoverable_transport_error(exc)
-                if diagnostics is not None:
-                    attempt_errors = diagnostics.setdefault("attempt_errors", [])
-                    attempt_errors.append(
-                        {
-                            "attempt": attempt,
-                            "recoverable": recoverable,
-                            "error": (str(exc) or type(exc).__name__)[:300],
-                        }
-                    )
-                if attempt >= attempts or not recoverable:
-                    raise
-                await self._reset_workbench()
-
     @staticmethod
     def _normalize_events(payload: Any) -> list[dict[str, Any]]:
         """Coerce raw MCP payloads into a list of event dicts."""
@@ -496,7 +427,9 @@ class McpCalendarClient:
             if not dict_items:
                 return []
             direct_events = [
-                item for item in dict_items if "start" in item and "end" in item
+                item
+                for item in dict_items
+                if "start" in item and "end" in item
             ]
             if direct_events:
                 return direct_events
@@ -530,21 +463,21 @@ class McpCalendarClient:
         return dt_val.astimezone(tz).strftime("%H:%M")
 
     @staticmethod
-    def _list_events_args(
-        *, calendar_id: str, day: date, tz: ZoneInfo
-    ) -> dict[str, Any]:
-        start = datetime.combine(day, datetime.min.time(), tz).replace(
-            tzinfo=None,
-            microsecond=0,
+    def _list_events_args(*, calendar_id: str, day: date, tz: ZoneInfo) -> dict[str, Any]:
+        start = (
+            datetime.combine(day, datetime.min.time(), tz)
+            .astimezone(timezone.utc)
+            .isoformat()
         )
-        end = (datetime.combine(day, datetime.min.time(), tz) + timedelta(days=1)).replace(
-            tzinfo=None,
-            microsecond=0,
+        end = (
+            (datetime.combine(day, datetime.min.time(), tz) + timedelta(days=1))
+            .astimezone(timezone.utc)
+            .isoformat()
         )
         return {
             "calendarId": calendar_id,
-            "timeMin": start.isoformat(timespec="seconds"),
-            "timeMax": end.isoformat(timespec="seconds"),
+            "timeMin": start,
+            "timeMax": end,
             "singleEvents": True,
             "orderBy": "startTime",
         }
@@ -587,11 +520,10 @@ class McpCalendarClient:
         args = self._list_events_args(calendar_id=calendar_id, day=day, tz=tz)
         if diagnostics is not None:
             diagnostics["request"] = args
-        payload = await self._call_tool_payload(
-            tool_name="list-events",
-            arguments=args,
-            diagnostics=diagnostics,
-        )
+        result = await self._workbench.call_tool("list-events", arguments=args)
+        if diagnostics is not None:
+            diagnostics["result_type"] = type(result).__name__
+        payload = self._extract_tool_payload(result)
         if diagnostics is not None:
             diagnostics["payload_type"] = type(payload).__name__
             if isinstance(payload, dict):
@@ -609,10 +541,8 @@ class McpCalendarClient:
                     "totalCount": total_count,
                 }
             )
-        except ValidationError as exc:
-            if diagnostics is not None:
-                diagnostics["validation_error"] = str(exc)
-            raise RuntimeError("calendar MCP day snapshot validation failed") from exc
+        except Exception:
+            response = GCalEventsResponse(events=[], totalCount=0)
         immovables = self._immovables_from_response(response=response, day=day, tz=tz)
         if diagnostics is not None:
             diagnostics["raw_event_count"] = len(response.events)

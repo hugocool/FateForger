@@ -14,6 +14,7 @@ from fateforger.agents.timeboxing.preferences import (
 )
 
 CONSTRAINT_ROW_REVIEW_ACTION_ID = "timeboxing_constraint_review"
+CONSTRAINT_REVIEW_ALL_ACTION_ID = "timeboxing_constraint_review_all"
 CONSTRAINT_REVIEW_VIEW_CALLBACK_ID = "timeboxing_constraint_review_modal"
 CONSTRAINT_DECISION_ACTION_ID = "constraint_decision"
 CONSTRAINT_DESCRIPTION_ACTION_ID = "constraint_description"
@@ -100,6 +101,7 @@ def build_constraint_row_blocks(
     thread_ts: str,
     user_id: str,
     limit: int = 20,
+    button_text: str = "Review",
 ) -> list[dict[str, Any]]:
     """Build single-row constraint blocks with a review button."""
     items = [ConstraintReviewItem.coerce(constraint) for constraint in constraints]
@@ -121,7 +123,7 @@ def build_constraint_row_blocks(
                 "accessory": {
                     "type": "button",
                     "action_id": CONSTRAINT_ROW_REVIEW_ACTION_ID,
-                    "text": {"type": "plain_text", "text": "Review"},
+                    "text": {"type": "plain_text", "text": button_text},
                     "value": value,
                 },
             }
@@ -137,6 +139,34 @@ def build_constraint_row_blocks(
             }
         )
     return blocks
+
+
+def build_constraint_review_all_action_block(
+    *,
+    thread_ts: str,
+    user_id: str,
+    count: int,
+    button_text: str = "Review all",
+) -> dict[str, Any]:
+    """Build an actions block that opens full-constraint review in Slack."""
+    value = encode_metadata(
+        {
+            "thread_ts": thread_ts,
+            "user_id": user_id,
+            "count": str(max(0, int(count))),
+        }
+    )
+    return {
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "action_id": CONSTRAINT_REVIEW_ALL_ACTION_ID,
+                "text": {"type": "plain_text", "text": button_text},
+                "value": value,
+            }
+        ],
+    }
 
 
 def build_constraint_review_view(
@@ -309,10 +339,12 @@ def decode_metadata(payload: str) -> dict[str, str]:
 
 __all__ = [
     "CONSTRAINT_ROW_REVIEW_ACTION_ID",
+    "CONSTRAINT_REVIEW_ALL_ACTION_ID",
     "CONSTRAINT_REVIEW_VIEW_CALLBACK_ID",
     "CONSTRAINT_DECISION_ACTION_ID",
     "CONSTRAINT_DESCRIPTION_ACTION_ID",
     "build_constraint_row_blocks",
+    "build_constraint_review_all_action_block",
     "build_constraint_review_view",
     "parse_constraint_review_submission",
     "encode_metadata",

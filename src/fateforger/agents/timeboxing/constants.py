@@ -17,7 +17,7 @@ from dataclasses import dataclass
 class TimeboxingTimeouts:
     """Timeout configuration for timeboxing orchestration."""
 
-    stage_gate_s: float = 35.0
+    stage_gate_s: float = 25.0
     stage_decision_s: float = 20.0
     constraint_intent_s: float = 10.0
     constraint_interpret_s: float = 20.0
@@ -31,9 +31,6 @@ class TimeboxingTimeouts:
     calendar_prefetch_wait_s: float = 2.0
     pending_constraints_wait_s: float = 2.0
     durable_prefetch_wait_s: float = 20.0
-    tasks_snapshot_s: float = 12.0
-    graph_turn_s: float = 120.0
-    slow_turn_warn_s: float = 30.0
 
 
 @dataclass(frozen=True, slots=True)
