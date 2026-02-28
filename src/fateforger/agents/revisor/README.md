@@ -2,8 +2,9 @@
 
 Strategic review agent for retros and prioritization.
 
-Status: Implemented (handoff-capable for sprint execution requests to `tasks_agent`).
+Status: Tested (guided weekly-review v0 + Slack App Home trigger wiring + handoff path).
 
 Key files:
 - `agent.py`: revisor agent logic.
+- `messages.py`: typed weekly-review phase and recap contracts.
 - `AGENTS.md`: routing and ownership constraints.

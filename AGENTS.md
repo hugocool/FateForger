@@ -134,6 +134,85 @@ After implementation:
   - use the repo skill `.codex/skills/prometheus-agent-audit/SKILL.md` for standard query windows/playbook.
   - if Prometheus MCP tool execution is unavailable in the current Codex runtime, use direct Prometheus HTTP API queries as an explicit fallback and document that fallback in the checkpoint.
 
+## Observability audit workflow (how to leverage tools during investigations)
+
+Use this two-phase workflow: **detect anomalies with Prometheus → diagnose root cause with logs**.
+
+### Phase 1 — Detect with Prometheus MCP
+
+The Prometheus MCP server is available in VS Code via `.vscode/mcp.json` (endpoint `http://host.docker.internal:9090`). Use it for fast anomaly detection before opening log files.
+
+**Verify scrape health first:**
+```promql
+up{job="fateforger_app"}
+```
+If `0`, fix the scrape target before querying metrics.
+
+**Standard detection queries (use as starting point):**
+```promql
+# Error rate by component
+rate(fateforger_errors_total[5m])
+
+# LLM call volume by stage + call_label
+rate(fateforger_llm_calls_total[5m])
+
+# Token spend anomaly (high token usage)
+rate(fateforger_llm_tokens_total[5m])
+
+# Tool call failure scan
+fateforger_tool_calls_total{status!="ok"}
+
+# Stage latency outliers
+histogram_quantile(0.95, rate(fateforger_stage_duration_seconds_bucket[10m]))
+```
+
+**Label cardinality rule (critical):** metric labels must be low-cardinality. `_sanitize_agent_label()` in `logging_config.py` strips UUID suffixes and session/channel suffixes before emission. If you see raw UUIDs or Slack channel IDs in label values during a query, that is a bug — file it or fix it immediately.
+
+**Common label dimensions to group by:**
+- `component` — Slack routing, scheduling, agents
+- `stage` — timeboxing stage names (stable, not UUID-suffixed)
+- `call_label` — LLM call purpose (e.g., `stage1_extract`, `planning_draft`)
+- `error_type` — `register_timeout`, `tool_error`, etc.
+
+### Phase 2 — Diagnose with log query CLI
+
+Once a suspicious signal appears in metrics, pivot to logs using `scripts/dev/timebox_log_query.py`:
+
+```bash
+# List all sessions matching a time window or user
+poetry run python scripts/dev/timebox_log_query.py sessions
+
+# Get all events for a specific session (correlate to thread_ts from Slack)
+poetry run python scripts/dev/timebox_log_query.py events --session-key "C0AA6HC1RJL:1772290041.386259"
+
+# Get all LLM calls for a session (call_label, token counts, model, latency)
+poetry run python scripts/dev/timebox_log_query.py llm --session-key "C0AA6HC1RJL:1772290041.386259"
+
+# Get patcher events
+poetry run python scripts/dev/timebox_log_query.py patcher --session-key "C0AA6HC1RJL:1772290041.386259"
+
+# Query from a specific log file
+poetry run python scripts/dev/timebox_log_query.py llm --log-path logs/llm_io_20260227_234414_38206.jsonl
+```
+
+### Phase 3 — Cross-reference with Slack
+
+1. Identify the `thread_ts` from the Slack incident report.
+2. Map `thread_ts` → `session_key` using `timebox_log_query.py sessions`.
+3. Run `events` + `llm` subcommands with `--session-key` to see exact stage/LLM flow.
+4. Correlate `call_label` from Prometheus with call records in llm_io JSONL.
+5. If an LLM call had unexpected output, the `llm` log shows model request shape + response metadata.
+
+### Audit checklist (use at every Issue checkpoint)
+- [ ] Verified Prometheus scrape healthy (`up{job="fateforger_app"} == 1`)
+- [ ] Queried error rate: `rate(fateforger_errors_total[5m])` — documented any non-zero findings
+- [ ] Checked label cardinality: no UUIDs or session suffixes in metric label values
+- [ ] Ran `timebox_log_query.py sessions` to find affected session key(s)
+- [ ] Ran `timebox_log_query.py events --session-key <key>` to trace stage progression
+- [ ] Ran `timebox_log_query.py llm --session-key <key>` to inspect LLM call quality
+- [ ] Correlated `call_label` between metrics and log records
+- [ ] Recorded log file paths used in the Issue/PR checkpoint
+
 ## Slack capability audit loop (critical)
 - Use the Slack skill as the primary operator surface for live end-to-end audits of agent behavior in Slack.
 - If the Slack skill is unavailable, use the deterministic fallback driver (`scripts/dev/slack_user_timeboxing_driver.py`) with `SLACK_USER_TOKEN`.

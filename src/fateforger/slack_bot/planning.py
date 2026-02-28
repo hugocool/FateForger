@@ -6,6 +6,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -35,6 +36,12 @@ from fateforger.haunt.planning_store import (
 )
 from fateforger.haunt.reconcile import PlanningReconciler, PlanningReminder
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
+from fateforger.core.logging_config import (
+    observe_stage_duration,
+    record_admonishment_event,
+    record_error,
+    record_tool_call,
+)
 from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.workspace import DEFAULT_PERSONAS, WorkspaceRegistry
 
@@ -143,15 +150,56 @@ class PlanningCoordinator:
     ) -> None:
         if not user_id:
             return
+        total_started = perf_counter()
         preferred_channel = channel_id if channel_type == "im" else None
-        await self.ensure_anchor(user_id=user_id, channel_id=preferred_channel)
+        ensure_anchor_started = perf_counter()
+        try:
+            await self.ensure_anchor(user_id=user_id, channel_id=preferred_channel)
+        except asyncio.CancelledError:
+            observe_stage_duration(
+                stage="planning_register_ensure_anchor_cancelled",
+                duration_s=perf_counter() - ensure_anchor_started,
+            )
+            record_error(component="planning_register", error_type="ensure_anchor_cancelled")
+            raise
+        else:
+            observe_stage_duration(
+                stage="planning_register_ensure_anchor",
+                duration_s=perf_counter() - ensure_anchor_started,
+            )
+
         if self._guardian:
+            reconcile_started = perf_counter()
             try:
                 await self._guardian.reconcile_user(user_id=user_id)
+            except asyncio.CancelledError:
+                observe_stage_duration(
+                    stage="planning_guardian_reconcile_cancelled",
+                    duration_s=perf_counter() - reconcile_started,
+                )
+                record_error(
+                    component="planning_guardian", error_type="reconcile_cancelled"
+                )
+                raise
             except Exception:
+                observe_stage_duration(
+                    stage="planning_guardian_reconcile_error",
+                    duration_s=perf_counter() - reconcile_started,
+                )
+                record_error(component="planning_guardian", error_type="reconcile_error")
                 logger.exception(
                     "Planning guardian reconcile_user failed for %s", user_id
                 )
+            else:
+                observe_stage_duration(
+                    stage="planning_guardian_reconcile",
+                    duration_s=perf_counter() - reconcile_started,
+                )
+
+        observe_stage_duration(
+            stage="planning_register_user_total",
+            duration_s=perf_counter() - total_started,
+        )
 
     async def dispatch_planning_reminder(self, reminder: PlanningReminder) -> None:
         if not reminder.user_id:
@@ -469,8 +517,9 @@ class PlanningCoordinator:
         *,
         draft_id: str,
         duration_min: int,
+        date_str: str | None = None,
     ) -> None:
-        """Persist modal edits (duration) and refresh the planning card in-place."""
+        """Persist modal edits (duration + optional date) and refresh the planning card in-place."""
         draft = await self.get_draft(draft_id=draft_id)
         if not draft or not draft.channel_id or not draft.message_ts:
             logger.warning(
@@ -478,6 +527,12 @@ class PlanningCoordinator:
                 draft_id,
             )
             return
+        if date_str:
+            await self.handle_start_date_changed(
+                channel_id=draft.channel_id,
+                message_ts=draft.message_ts,
+                selected_date=date_str,
+            )
         await self.handle_duration_changed(
             channel_id=draft.channel_id,
             message_ts=draft.message_ts,
@@ -541,6 +596,9 @@ class PlanningCoordinator:
 
         asyncio.create_task(
             self._add_to_calendar_async(draft_id=draft.draft_id, respond=respond)
+        )
+        record_admonishment_event(
+            component="planning_card", event="add_to_calendar", status="queued"
         )
 
     async def _add_to_calendar_async(self, *, draft_id: str, respond) -> None:
@@ -627,6 +685,10 @@ class PlanningCoordinator:
             and result_ok
             and bool(result_event_url)
         ):
+            record_tool_call(agent="planning_card", tool="upsert_calendar_event", status="ok")
+            record_admonishment_event(
+                component="planning_card", event="add_to_calendar", status="ok"
+            )
             await self._draft_store.update_status(
                 draft_id=draft.draft_id,
                 status=DraftStatus.SUCCESS,
@@ -680,6 +742,14 @@ class PlanningCoordinator:
             )
         if not error:
             error = "Calendar operation failed"
+        _cal_error_type = (
+            "calendar_no_event_url" if (result_ok and not result_event_url) else "calendar_upsert_failed"
+        )
+        record_error(component="planning_card", error_type=_cal_error_type)
+        record_tool_call(agent="planning_card", tool="upsert_calendar_event", status="error")
+        record_admonishment_event(
+            component="planning_card", event="add_to_calendar", status="error"
+        )
         await self._draft_store.update_status(
             draft_id=draft.draft_id, status=DraftStatus.FAILURE, last_error=str(error)
         )
@@ -820,25 +890,6 @@ def _card_payload(
             "value": json.dumps({"draft_id": draft.draft_id}),
         }
 
-    # --- Duration options for inline selector ---
-    dur_options = [
-        {"text": {"type": "plain_text", "text": f"{m} min"}, "value": str(m)}
-        for m in DEFAULT_DURATION_OPTIONS
-    ]
-    cur_dur = int(draft.duration_min)
-    # Ensure current duration appears in the list
-    if str(cur_dur) not in {o["value"] for o in dur_options}:
-        dur_options.insert(
-            0,
-            {
-                "text": {"type": "plain_text", "text": f"{cur_dur} min"},
-                "value": str(cur_dur),
-            },
-        )
-    dur_initial = next(
-        (o for o in dur_options if o["value"] == str(cur_dur)), dur_options[0]
-    )
-
     # --- Blocks ---
     blocks: list[dict[str, Any]] = [
         {"type": "header", "text": {"type": "plain_text", "text": draft.title}},
@@ -849,24 +900,28 @@ def _card_payload(
         },
     ]
 
-    # --- Actions row: primary button first, then datetimepicker + duration ---
-    action_elements: list[dict[str, Any]] = [
-        primary_button,
-        # Combined date+time picker (primary interactive element)
-        {
-            "type": "datetimepicker",
-            "action_id": FF_EVENT_START_AT_ACTION_ID,
-            "initial_date_time": int(start.timestamp()),
-        },
-        # Inline duration selector
-        {
-            "type": "static_select",
-            "action_id": FF_EVENT_DURATION_ACTION_ID,
-            "placeholder": {"type": "plain_text", "text": "Duration"},
-            "initial_option": dur_initial,
-            "options": dur_options,
-        },
-    ]
+    # --- Time picker: first-class citizen on the card ---
+    # Only shown when the event isn't already committed (SUCCESS).
+    if draft.status is not DraftStatus.SUCCESS:
+        blocks.append(
+            {
+                "type": "section",
+                "block_id": FF_EVENT_BLOCK_PICK_TIME,
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Time* · {start.strftime('%a %-d %b')}",
+                },
+                "accessory": {
+                    "type": "timepicker",
+                    "action_id": FF_EVENT_START_TIME_ACTION_ID,
+                    "initial_time": start.strftime("%H:%M"),
+                    "placeholder": {"type": "plain_text", "text": "Pick a time"},
+                },
+            }
+        )
+
+    # --- Actions row: primary button + Edit (duration etc. are in the modal) ---
+    action_elements: list[dict[str, Any]] = [primary_button]
     if draft.status is not DraftStatus.SUCCESS:
         action_elements.append(
             {
@@ -895,7 +950,13 @@ def _card_payload(
 
 
 def _edit_modal_payload(draft: EventDraftPayload) -> dict[str, Any]:
-    """Build the Edit modal payload for adjusting duration and other secondary details."""
+    """Build the Edit modal payload for adjusting duration and date.
+
+    Time is the first-class element on the card itself; the Edit modal handles
+    secondary controls: duration and date.
+    """
+    tz = ZoneInfo(draft.timezone or DEFAULT_TIMEZONE)
+    start = date_parser.isoparse(draft.start_at_utc).astimezone(tz)
 
     def duration_option(minutes: int) -> dict[str, Any]:
         return {
@@ -904,7 +965,10 @@ def _edit_modal_payload(draft: EventDraftPayload) -> dict[str, Any]:
         }
 
     duration_options = [duration_option(m) for m in DEFAULT_DURATION_OPTIONS]
-    initial_duration = duration_option(int(draft.duration_min))
+    cur_dur = int(draft.duration_min)
+    if cur_dur not in DEFAULT_DURATION_OPTIONS:
+        duration_options.insert(0, duration_option(cur_dur))
+    initial_duration = duration_option(cur_dur)
 
     return {
         "type": "modal",
@@ -916,6 +980,17 @@ def _edit_modal_payload(draft: EventDraftPayload) -> dict[str, Any]:
         "blocks": [
             {
                 "type": "input",
+                "block_id": "date_input",
+                "label": {"type": "plain_text", "text": "Date"},
+                "element": {
+                    "type": "datepicker",
+                    "action_id": "date_select",
+                    "initial_date": start.strftime("%Y-%m-%d"),
+                    "placeholder": {"type": "plain_text", "text": "Select date"},
+                },
+            },
+            {
+                "type": "input",
                 "block_id": "duration_input",
                 "label": {"type": "plain_text", "text": "Duration"},
                 "element": {
@@ -924,7 +999,7 @@ def _edit_modal_payload(draft: EventDraftPayload) -> dict[str, Any]:
                     "initial_option": initial_duration,
                     "options": duration_options,
                 },
-            }
+            },
         ],
     }
 

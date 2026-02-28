@@ -82,7 +82,11 @@ def test_normalize_events_accepts_events_key() -> None:
 class TestNormalizeEvents:
     """Full branch coverage for _normalize_events structural normalizer."""
 
-    _ev = {"summary": "S", "start": {"dateTime": "2025-01-01T09:00:00Z"}, "end": {"dateTime": "2025-01-01T10:00:00Z"}}
+    _ev = {
+        "summary": "S",
+        "start": {"dateTime": "2025-01-01T09:00:00Z"},
+        "end": {"dateTime": "2025-01-01T10:00:00Z"},
+    }
 
     def _call(self, payload: Any) -> list[dict[str, Any]]:
         return McpCalendarClient._normalize_events(payload)
@@ -311,6 +315,7 @@ class TestParseEventDt:
 
     def test_all_day_returns_midnight(self) -> None:
         from datetime import date as _date
+
         dt = self._call({"date": "2025-03-01"})
         assert dt is not None
         assert dt.date() == _date(2025, 3, 1)

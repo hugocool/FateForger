@@ -2,9 +2,9 @@
 
 Tracking issue: https://github.com/hugocool/FateForger/issues/41
 
-## Audit Snapshot (2026-02-28)
+## Audit Snapshot (2026-02-28) — Updated 2026-03-XX
 
-### What exists
+### What exists ✅
 - Timeboxing session file logs and patcher debug logs are available.
   - `src/fateforger/agents/timeboxing/agent.py`
   - `src/fateforger/core/logging_config.py`
@@ -15,14 +15,17 @@ Tracking issue: https://github.com/hugocool/FateForger/issues/41
   - `OBS_PROMETHEUS_PORT`
   - `OBS_LLM_AUDIT_*`
   - `.vscode/launch.json`
+- **`observability/` directory exists** with full docker-compose stack (Prometheus, Grafana, Loki, Tempo, OTel, Promtail).
+- **Prometheus metrics exporter** is wired in `_record_observability_event` (counters, histograms, labels).
+- **Structured `llm_io` JSONL sink** is implemented (`logs/llm_io_*.jsonl` + index `logs/llm_io_index.jsonl`).
+- **Log query CLI** is available: `scripts/dev/timebox_log_query.py` with `sessions`, `events`, `llm`, `patcher` subcommands; supports `--session-key`, `--log-path` filters.
+- **Prometheus MCP server** wired at `http://host.docker.internal:9090` via `.vscode/mcp.json`; repo skill at `.codex/skills/prometheus-agent-audit/SKILL.md`.
+- **Low-cardinality label enforcement**: `_sanitize_agent_label()` in `logging_config.py` strips UUID suffixes, session-channel suffixes, and dynamic node IDs before Prometheus emission, preventing metric explosion.
 
-### Gaps (current blockers)
-- No in-repo Prometheus stack/config exists (`observability/` directory is missing).
-- No active Prometheus exporter bootstrap is implemented in runtime/logging code.
-- No structured `llm_io` JSONL sink currently exists in source.
-- No trace backend wiring exists (OTel/Tempo/Collector absent).
-- No current log-query utility for combined session + llm_io + traceback lookup (previous `timebox_log_query.py` path is absent).
-- No Prometheus MCP skill/server config is present in this repo.
+### Remaining gaps
+- OTel trace export (Tempo correlation) is not yet wired end-to-end in production code paths.
+- Loki log ingestion via Promtail is configured in `observability/` but not exercised in CI.
+- Traceback event searchability (AC4) requires Loki or a dedicated sink — currently manual grep of session logs.
 
 ## Direct answer to “Can we query specific logs/llmIO/tracebacks via Prometheus now?”
 - Not fully.
@@ -115,11 +118,12 @@ Tracking issue: https://github.com/hugocool/FateForger/issues/41
 | Recommended for current repo stage | No | Yes | Later |
 
 ## Suggested acceptance checks
-- `AC1`: app metrics endpoint exposes expected counters/histograms.
-- `AC2`: llm_io JSONL records are emitted and secrets are redacted.
-- `AC3`: one command can retrieve correlated metrics + logs for a single Slack thread/session.
-- `AC4`: traceback events are searchable by session/thread/stage.
-- `AC5`: documented runbook exists and is reproducible in local dev.
+
+- `AC1` ✅ **DONE**: app metrics endpoint exposes expected counters/histograms (low-cardinality labels enforced via `_sanitize_agent_label()`).
+- `AC2` ✅ **DONE**: llm_io JSONL records are emitted (`logs/llm_io_*.jsonl`); redaction via `OBS_LLM_AUDIT_SANITIZE` env flag.
+- `AC3` ✅ **DONE**: `scripts/dev/timebox_log_query.py` retrieves correlated sessions + llm_io for a single `--session-key`; Prometheus MCP accessible via `.vscode/mcp.json`.
+- `AC4` ⚠️ **PARTIAL**: error-level log events are in session logs (searchable by `session_key` via `timebox_log_query.py events`); full traceback searchability requires Loki integration.
+- `AC5` ✅ **DONE**: runbook documented in `AGENTS.md` debug-logging protocol + Prometheus audit sections; repo skill at `.codex/skills/prometheus-agent-audit/SKILL.md`.
 
 ## Operational notes
 - Keep labels low-cardinality in metrics; do not label by user/session IDs.

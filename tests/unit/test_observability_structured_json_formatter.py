@@ -15,6 +15,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_record(
     msg: str,
     *,
@@ -38,6 +39,7 @@ def _make_record(
             raise ValueError("boom")
         except ValueError:
             import sys
+
             record.exc_info = sys.exc_info()
     for k, v in extra.items():
         setattr(record, k, v)
@@ -48,12 +50,14 @@ def _make_record(
 # Baseline envelope tests
 # ---------------------------------------------------------------------------
 
+
 class TestStructuredJsonFormatterEnvelope:
     """StructuredJsonFormatter must always produce a valid JSON envelope."""
 
     @pytest.fixture
     def formatter(self):
         from fateforger.core.logging_config import StructuredJsonFormatter
+
         return StructuredJsonFormatter()
 
     def test_plain_text_produces_valid_json(self, formatter):
@@ -100,12 +104,14 @@ class TestStructuredJsonFormatterEnvelope:
 # AutoGen event JSON message extraction
 # ---------------------------------------------------------------------------
 
+
 class TestStructuredJsonFormatterEventExtraction:
     """When record.msg is an AutoGen event JSON, extract structured fields."""
 
     @pytest.fixture
     def formatter(self):
         from fateforger.core.logging_config import StructuredJsonFormatter
+
         return StructuredJsonFormatter()
 
     def _make_autogen_record(self, payload: dict) -> logging.LogRecord:
@@ -132,17 +138,23 @@ class TestStructuredJsonFormatterEventExtraction:
         assert parsed.get("model") == "gpt-4o"
 
     def test_extracts_session_key(self, formatter):
-        record = self._make_autogen_record({"type": "LLMCall", "session_key": "sess-123"})
+        record = self._make_autogen_record(
+            {"type": "LLMCall", "session_key": "sess-123"}
+        )
         parsed = json.loads(formatter.format(record))
         assert parsed.get("session_key") == "sess-123"
 
     def test_extracts_thread_ts(self, formatter):
-        record = self._make_autogen_record({"type": "LLMCall", "thread_ts": "1234567.890"})
+        record = self._make_autogen_record(
+            {"type": "LLMCall", "thread_ts": "1234567.890"}
+        )
         parsed = json.loads(formatter.format(record))
         assert parsed.get("thread_ts") == "1234567.890"
 
     def test_extracts_tool_name(self, formatter):
-        record = self._make_autogen_record({"type": "ToolCall", "tool_name": "list-events"})
+        record = self._make_autogen_record(
+            {"type": "ToolCall", "tool_name": "list-events"}
+        )
         parsed = json.loads(formatter.format(record))
         assert parsed.get("tool_name") == "list-events"
 
@@ -170,12 +182,14 @@ class TestStructuredJsonFormatterEventExtraction:
 # Redaction of sensitive fields
 # ---------------------------------------------------------------------------
 
+
 class TestStructuredJsonFormatterRedaction:
     """Sensitive fields in the JSON payload must be redacted."""
 
     @pytest.fixture
     def formatter(self):
         from fateforger.core.logging_config import StructuredJsonFormatter
+
         return StructuredJsonFormatter()
 
     def test_api_key_redacted(self, formatter):
@@ -202,6 +216,7 @@ class TestStructuredJsonFormatterRedaction:
 # configure_logging integration: OBS_LOG_FORMAT=json
 # ---------------------------------------------------------------------------
 
+
 class TestConfigureLoggingJsonMode:
     """When OBS_LOG_FORMAT=json, the root stdout handler uses StructuredJsonFormatter."""
 
@@ -223,31 +238,29 @@ class TestConfigureLoggingJsonMode:
             StructuredJsonFormatter,
             configure_logging,
         )
+
         monkeypatch.setenv("OBS_LOG_FORMAT", "json")
         monkeypatch.setenv("OBS_PROMETHEUS_ENABLED", "0")  # avoid port side effects
         configure_logging(default_level="WARNING")
         root = logging.getLogger()
         stream_formatters = [
-            type(h.formatter)
-            for h in root.handlers
-            if hasattr(h, "stream")
+            type(h.formatter) for h in root.handlers if hasattr(h, "stream")
         ]
-        assert StructuredJsonFormatter in stream_formatters, (
-            f"Expected StructuredJsonFormatter in root stream handlers, got {stream_formatters}"
-        )
+        assert (
+            StructuredJsonFormatter in stream_formatters
+        ), f"Expected StructuredJsonFormatter in root stream handlers, got {stream_formatters}"
 
     def test_json_formatter_not_installed_by_default(self, monkeypatch):
         from fateforger.core.logging_config import (
             StructuredJsonFormatter,
             configure_logging,
         )
+
         monkeypatch.delenv("OBS_LOG_FORMAT", raising=False)
         monkeypatch.setenv("OBS_PROMETHEUS_ENABLED", "0")
         configure_logging(default_level="WARNING")
         root = logging.getLogger()
         stream_formatters = [
-            type(h.formatter)
-            for h in root.handlers
-            if hasattr(h, "stream")
+            type(h.formatter) for h in root.handlers if hasattr(h, "stream")
         ]
         assert StructuredJsonFormatter not in stream_formatters
