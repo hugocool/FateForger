@@ -538,47 +538,48 @@ class PlanningReconciler:
         logger.info("Planning reminder (%s): %s", reminder.scope, reminder.message)
 
 
-# TODO(refactor): Replace manual MCP payload normalization with Pydantic models.
 def _extract_tool_payload(result: Any) -> Any:
+    """Normalize an MCP tool result into a parsed payload (dict, list, or {}).
+
+    Probes ``result.result`` then ``result.content`` in order, attempting JSON
+    decode on any str values found.  Falls back to ``{}`` when no attribute is
+    found.
+    """
     import json
+
+    def _try_json(text: str) -> Any:
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            return text
 
     if isinstance(result, dict):
         return result
 
-    # Handle ToolResult objects from MCP
-    payload = getattr(result, "result", None)
-    if payload is not None:
-        # result is often a list of TextResultContent objects
-        if isinstance(payload, list) and len(payload) > 0:
+    for attr in ("result", "content"):
+        payload = getattr(result, attr, None)
+        if payload is None:
+            continue
+        if isinstance(payload, list) and payload:
             first = payload[0]
-            # TextResultContent has a 'content' attribute with JSON string
             content = getattr(first, "content", None)
             if isinstance(content, str):
-                try:
-                    return json.loads(content)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        return payload
-
-    payload = getattr(result, "content", None)
-    if payload is not None:
+                return _try_json(content)
+            return payload
         if isinstance(payload, str):
-            try:
-                return json.loads(payload)
-            except (json.JSONDecodeError, TypeError):
-                pass
+            return _try_json(payload)
         return payload
 
     return {}
 
 
-# TODO(refactor): Use a validated CalendarEvent list model instead of dict checks.
 def _normalize_events(payload: Any) -> list[dict]:
+    """Coerce MCP / Google API payloads into a flat list of event dicts."""
     if isinstance(payload, dict):
-        # MCP returns {"events": [...]} or Google API returns {"items": [...]}
-        items = payload.get("events") or payload.get("items")
-        if isinstance(items, list):
-            return [item for item in items if isinstance(item, dict)]
+        for key in ("events", "items"):
+            val = payload.get(key)
+            if isinstance(val, list):
+                return [item for item in val if isinstance(item, dict)]
         return []
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
@@ -592,22 +593,21 @@ def _normalize_summary_text(value: Any) -> str:
     return " ".join(normalized.split())
 
 
-# TODO(refactor): Replace dict probing with Pydantic parsing of tool results.
 def _normalize_event(payload: Any) -> dict | None:
-    if isinstance(payload, dict):
-        if "id" in payload or "summary" in payload:
-            return payload
-        item = payload.get("item")
-        if isinstance(item, dict):
-            return item
-        event = payload.get("event")
-        if isinstance(event, dict):
-            return event
+    """Extract a single event dict from direct or wrapper-keyed payloads."""
+    if not isinstance(payload, dict):
+        return None
+    if "id" in payload or "summary" in payload:
+        return payload
+    for key in ("item", "event"):
+        val = payload.get(key)
+        if isinstance(val, dict):
+            return val
     return None
 
 
-# TODO(refactor): Use a Pydantic date-time field parser instead of try/except.
 def _parse_event_dt(raw: Any, *, tz: timezone) -> datetime | None:
+    """Parse a calendar datetime value (str ISO, EventDateTime dict, or None)."""
     if raw is None:
         return None
     if isinstance(raw, str):
@@ -615,24 +615,10 @@ def _parse_event_dt(raw: Any, *, tz: timezone) -> datetime | None:
             parsed = date_parser.isoparse(raw)
         except Exception:
             return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=tz)
-        return parsed
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=tz)
     if isinstance(raw, dict):
-        if raw.get("dateTime"):
-            try:
-                parsed = date_parser.isoparse(raw["dateTime"])
-            except Exception:
-                return None
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=tz)
-            return parsed
-        if raw.get("date"):
-            try:
-                day = date_parser.isoparse(raw["date"]).date()
-            except Exception:
-                return None
-            return datetime.combine(day, time(0, 0), tz)
+        from fateforger.contracts import EventDateTime  # noqa: PLC0415
+        return EventDateTime.model_validate(raw).to_datetime(tz)
     return None
 
 

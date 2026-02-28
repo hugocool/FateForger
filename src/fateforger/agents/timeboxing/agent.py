@@ -88,7 +88,7 @@ from .durable_constraint_store import (
     build_durable_constraint_store,
 )
 from .flow_graph import build_timeboxing_graphflow
-from .mcp_clients import McpCalendarClient
+from .mcp_clients import ConstraintMemoryClient, McpCalendarClient
 from .mem0_constraint_memory import build_mem0_client_from_settings
 from .messages import (
     StartTimeboxing,
@@ -103,8 +103,10 @@ from .messages import (
 )
 from .nlu import (
     ConstraintInterpretation,
+    MemoryReviewDecision,
     PlannedDateResult,
     build_constraint_interpreter,
+    build_memory_review_router,
     build_planned_date_interpreter,
 )
 from .notion_constraint_extractor import NotionConstraintExtractor
@@ -444,6 +446,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         self._constraint_interpreter_agent: AssistantAgent | None = None
         self._planning_date_interpreter_agent: AssistantAgent | None = None
+        self._memory_review_agent: AssistantAgent | None = None
         self._stage_agents: Dict[TimeboxingStage, AssistantAgent] = {}
         self._decision_agent: AssistantAgent | None = None
         self._summary_agent: AssistantAgent | None = None
@@ -785,6 +788,14 @@ class TimeboxingFlowAgent(RoutedAgent):
             model_client=self._model_client
         )
 
+    async def _ensure_memory_review_agent(self) -> None:
+        """Initialize the memory-review router agent if needed."""
+        if self._memory_review_agent:
+            return
+        self._memory_review_agent = build_memory_review_router(
+            model_client=self._model_client
+        )
+
     # TODO: this should be build into the agent itself using the autogen message in that stage, not bolted on like this
     async def _interpret_planned_date(
         self, text: str, *, now: datetime, tz_name: str
@@ -824,6 +835,62 @@ class TimeboxingFlowAgent(RoutedAgent):
                 "Planned date interpretation failed; using default.", exc_info=True
             )
         return self._default_planned_date(now=now, tz=tz)
+
+    async def _decide_memory_review_turn(
+        self,
+        *,
+        session: Session,
+        user_message: str,
+    ) -> MemoryReviewDecision:
+        """Route user replies that should trigger immediate memory review."""
+        message = (user_message or "").strip()
+        if not message:
+            return MemoryReviewDecision(action="none")
+        if getattr(self, "_model_client", None) is None:
+            return MemoryReviewDecision(action="none")
+        await self._ensure_memory_review_agent()
+        assert self._memory_review_agent is not None
+        payload = {
+            "stage": session.stage.value if session.stage else None,
+            "stage_ready": bool(session.stage_ready),
+            "pending_submit": bool(session.pending_submit),
+            "user_message": message,
+        }
+        try:
+            response = await with_timeout(
+                "timeboxing:memory-review-decision",
+                self._memory_review_agent.on_messages(
+                    [
+                        TextMessage(
+                            content=json.dumps(payload, ensure_ascii=False),
+                            source="user",
+                        )
+                    ],
+                    CancellationToken(),
+                ),
+                timeout_s=TIMEBOXING_TIMEOUTS.stage_decision_s,
+            )
+            decision = parse_chat_content(MemoryReviewDecision, response)
+            self._session_debug(
+                session,
+                "memory_review_decision",
+                action=decision.action,
+                text_query=decision.text_query,
+                statuses=list(decision.statuses or []),
+                scopes=list(decision.scopes or []),
+                necessities=list(decision.necessities or []),
+                tags=list(decision.tags or []),
+                limit=decision.limit,
+            )
+            return decision
+        except Exception as exc:
+            self._session_debug(
+                session,
+                "memory_review_decision_error",
+                error_type=type(exc).__name__,
+                error=str(exc)[:1000],
+            )
+            return MemoryReviewDecision(action="none")
 
     # TODO:  this should be handled by the mcpworkbench, not a re-implementation
     def _ensure_calendar_client(self) -> McpCalendarClient | None:
@@ -872,19 +939,35 @@ class TimeboxingFlowAgent(RoutedAgent):
             return self._constraint_memory_client
         if self._constraint_memory_unavailable_reason:
             return None
+        backend = str(getattr(settings, "timeboxing_memory_backend", "constraint_mcp"))
+        backend = backend.strip().lower()
         try:
-            user_id = (
-                str(getattr(settings, "mem0_user_id", "") or "").strip() or "timeboxing"
-            )
-            self._constraint_memory_client = build_mem0_client_from_settings(
-                user_id=user_id
-            )
+            timeout = float(getattr(settings, "agent_mcp_discovery_timeout_seconds", 10))
+            match backend:
+                case "constraint_mcp":
+                    self._constraint_memory_client = ConstraintMemoryClient(
+                        timeout=timeout
+                    )
+                case "mem0":
+                    user_id = (
+                        str(getattr(settings, "mem0_user_id", "") or "").strip()
+                        or "timeboxing"
+                    )
+                    self._constraint_memory_client = build_mem0_client_from_settings(
+                        user_id=user_id
+                    )
+                case _:
+                    raise ValueError(
+                        "Unsupported timeboxing memory backend: "
+                        f"{settings.timeboxing_memory_backend}"
+                    )
             self._constraint_memory_unavailable_reason = None
         except Exception as exc:
             self._constraint_memory_unavailable_reason = f"{type(exc).__name__}: {exc}"
             logger.warning(
-                "Failed to initialize Mem0 constraint memory client; disabling retries "
+                "Failed to initialize %s constraint memory client; disabling retries "
                 "for this runtime instance (%s)",
+                backend,
                 self._constraint_memory_unavailable_reason,
             )
             return None
@@ -3846,7 +3929,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             tags: list[str] | None,
             limit: int,
         ) -> dict[str, Any]:
-            return await self._run_memory_tool_action(
+            return await self._run_memory_tool_action_guarded(
                 action="list",
                 session=session,
                 memory_operations=memory_operations,
@@ -3860,7 +3943,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
 
         async def memory_get_constraint(uid: str) -> dict[str, Any]:
-            return await self._run_memory_tool_action(
+            return await self._run_memory_tool_action_guarded(
                 action="get",
                 session=session,
                 memory_operations=memory_operations,
@@ -3885,7 +3968,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                         message=parse_error,
                     ),
                 )
-            return await self._run_memory_tool_action(
+            return await self._run_memory_tool_action_guarded(
                 action="update",
                 session=session,
                 memory_operations=memory_operations,
@@ -3899,7 +3982,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             uid: str,
             reason: str | None,
         ) -> dict[str, Any]:
-            return await self._run_memory_tool_action(
+            return await self._run_memory_tool_action_guarded(
                 action="archive",
                 session=session,
                 memory_operations=memory_operations,
@@ -3925,7 +4008,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                         message=parse_error,
                     ),
                 )
-            return await self._run_memory_tool_action(
+            return await self._run_memory_tool_action_guarded(
                 action="supersede",
                 session=session,
                 memory_operations=memory_operations,
@@ -4081,6 +4164,79 @@ class TimeboxingFlowAgent(RoutedAgent):
             memory_operations=memory_operations,
         )
 
+    async def _run_memory_tool_action_guarded(
+        self,
+        *,
+        action: Literal["list", "get", "update", "archive", "supersede"],
+        session: Session,
+        memory_operations: list[str],
+        memory_request_text: str,
+        uid: str | None = None,
+        patch: dict[str, Any] | None = None,
+        reason: str | None = None,
+        note: str | None = None,
+        text_query: str | None = None,
+        statuses: list[str] | None = None,
+        scopes: list[str] | None = None,
+        necessities: list[str] | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Execute one memory action and preserve stage flow on backend failures."""
+        try:
+            return await self._run_memory_tool_action(
+                action=action,
+                session=session,
+                memory_operations=memory_operations,
+                memory_request_text=memory_request_text,
+                uid=uid,
+                patch=patch,
+                reason=reason,
+                note=note,
+                text_query=text_query,
+                statuses=statuses,
+                scopes=scopes,
+                necessities=necessities,
+                tags=tags,
+                limit=limit,
+            )
+        except Exception as exc:  # pragma: no cover
+            error = f"{type(exc).__name__}: {exc}"
+            cleaned_uid = str(uid or "").strip() or None
+            self._constraint_memory_unavailable_reason = error
+            self._durable_constraint_store = None
+            logger.warning(
+                "Memory tool action failed (action=%s uid=%s): %s",
+                action,
+                cleaned_uid or "",
+                error,
+                exc_info=True,
+            )
+            self._append_background_update_once(
+                session,
+                "Memory backend is currently unavailable; continuing without durable memory updates.",
+            )
+            self._session_debug(
+                session,
+                "memory_tool_action_error",
+                action=action,
+                uid=cleaned_uid,
+                error=error[:500],
+            )
+            return self._record_memory_tool_result(
+                session=session,
+                result=MemoryToolResult(
+                    action=action,
+                    ok=False,
+                    uid=cleaned_uid,
+                    error=error,
+                    message=(
+                        "Memory backend is unavailable right now. "
+                        "Scheduling can continue without durable memory updates."
+                    ),
+                ),
+            )
+
     async def _run_memory_tool_action(
         self,
         *,
@@ -4137,15 +4293,24 @@ class TimeboxingFlowAgent(RoutedAgent):
                     sort=[["Status", "descending"], ["Name", "ascending"]],
                     limit=query_limit,
                 )
-                items = [
-                    item
-                    for item in (
-                        MemoryConstraintItem.from_payload(row)
-                        for row in rows
-                        if isinstance(row, dict)
+                active_constraints = await self._collect_constraints(session)
+                active_uids = {
+                    uid
+                    for uid in (
+                        self._constraint_uid(constraint)
+                        for constraint in (active_constraints or [])
                     )
-                    if item is not None
-                ]
+                    if uid and uid not in session.suppressed_durable_uids
+                }
+                items: list[MemoryConstraintItem] = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    item = MemoryConstraintItem.from_payload(row)
+                    if item is None:
+                        continue
+                    item.used_this_session = item.uid in active_uids
+                    items.append(item)
                 memory_operations.append(f"list:{len(items)}")
                 message = (
                     "Memory review: no matching constraints found."
@@ -4650,6 +4815,46 @@ class TimeboxingFlowAgent(RoutedAgent):
             user_message=user_message,
             note=note,
         )
+
+    async def _maybe_handle_memory_review_turn(
+        self, *, session: Session, user_message: str
+    ) -> TextMessage | None:
+        """Handle pure memory-review turns without progressing stage flow."""
+        decision = await self._decide_memory_review_turn(
+            session=session,
+            user_message=user_message,
+        )
+        if decision.action != "memory_review":
+            return None
+        memory_operations: list[str] = []
+        payload = await self._run_memory_tool_action_guarded(
+            action="list",
+            session=session,
+            memory_operations=memory_operations,
+            memory_request_text=user_message,
+            text_query=(decision.text_query or "").strip() or None,
+            statuses=list(decision.statuses or []),
+            scopes=list(decision.scopes or []),
+            necessities=list(decision.necessities or []),
+            tags=list(decision.tags or []),
+            limit=int(decision.limit or 20),
+        )
+        message = str(
+            payload.get("message") or "Memory review complete. See the attached rows."
+        ).strip()
+        self._session_debug(
+            session,
+            "memory_review_turn",
+            text=(user_message or "")[:500],
+            operations=list(memory_operations),
+            text_query=decision.text_query,
+            statuses=list(decision.statuses or []),
+            scopes=list(decision.scopes or []),
+            necessities=list(decision.necessities or []),
+            tags=list(decision.tags or []),
+            limit=decision.limit,
+        )
+        return TextMessage(content=message, source=self.id.type)
 
     async def _decide_next_action(
         self, session: Session, *, user_message: str
@@ -5806,6 +6011,24 @@ class TimeboxingFlowAgent(RoutedAgent):
                         actions=[],
                     )
                     return submit_reply
+            memory_reply = await self._maybe_handle_memory_review_turn(
+                session=session,
+                user_message=message.text,
+            )
+            if memory_reply is not None:
+                outgoing = self._attach_presenter_blocks(
+                    reply=memory_reply, session=session
+                )
+                await self._publish_update(
+                    session=session,
+                    user_message=(
+                        outgoing.content
+                        if isinstance(outgoing, TextMessage)
+                        else getattr(outgoing, "text", "")
+                    ),
+                    actions=[],
+                )
+                return outgoing
             session.thread_state = None
             reply = await self._run_graph_turn(session=session, user_text=message.text)
             wrapped = await self._maybe_wrap_constraint_review(
@@ -6284,10 +6507,10 @@ class TimeboxingFlowAgent(RoutedAgent):
             self._close_session_debug_logger(session_key)
         if self._calendar_client:
             await self._calendar_client.close()
-        # Add cleanup for other MCP clients if needed
         if self._constraint_memory_client:
-            # Mem0 client currently does not expose async cleanup.
-            pass
+            close = getattr(self._constraint_memory_client, "close", None)
+            if callable(close):
+                await close()
 
 
 def _extract_constraint_batch(response: object) -> ConstraintBatch | None:

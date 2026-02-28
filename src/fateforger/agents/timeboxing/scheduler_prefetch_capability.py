@@ -74,16 +74,14 @@ class SchedulerPrefetchCapability:
                 stage=TimeboxingStage.COLLECT_CONSTRAINTS,
             )
         ]
-        planned_date = (session.planned_date or "").strip()
-        if planned_date:
-            awaitables.append(self._prefetch_calendar_immovables(session, planned_date))
-        else:
-            awaitables.append(
-                self._ensure_calendar_immovables(
-                    session,
-                    timeout_s=TIMEBOXING_TIMEOUTS.calendar_prefetch_wait_s,
-                )
+        # Blocking path must remain bounded; avoid direct prefetch calls that can
+        # inherit long MCP transport timeouts and stall the turn.
+        awaitables.append(
+            self._ensure_calendar_immovables(
+                session,
+                timeout_s=TIMEBOXING_TIMEOUTS.calendar_prefetch_wait_s,
             )
+        )
         await asyncio.gather(*awaitables)
 
     async def ensure_collect_stage_ready(

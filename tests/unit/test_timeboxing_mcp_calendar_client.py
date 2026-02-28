@@ -79,6 +79,56 @@ def test_normalize_events_accepts_events_key() -> None:
     assert events[0]["summary"] == "Meeting"
 
 
+class TestNormalizeEvents:
+    """Full branch coverage for _normalize_events structural normalizer."""
+
+    _ev = {"summary": "S", "start": {"dateTime": "2025-01-01T09:00:00Z"}, "end": {"dateTime": "2025-01-01T10:00:00Z"}}
+
+    def _call(self, payload: Any) -> list[dict[str, Any]]:
+        return McpCalendarClient._normalize_events(payload)
+
+    def test_dict_events_key(self) -> None:
+        assert len(self._call({"events": [self._ev], "totalCount": 1})) == 1
+
+    def test_dict_items_key(self) -> None:
+        assert len(self._call({"items": [self._ev]})) == 1
+
+    def test_dict_single_event_key(self) -> None:
+        result = self._call({"event": self._ev})
+        assert len(result) == 1 and result[0] is self._ev
+
+    def test_dict_empty(self) -> None:
+        assert self._call({}) == []
+
+    def test_list_of_direct_events(self) -> None:
+        assert len(self._call([self._ev, self._ev])) == 2
+
+    def test_list_prefers_start_end_items(self) -> None:
+        plain = {"foo": "bar"}
+        result = self._call([plain, self._ev])
+        # items with start/end are preferred
+        assert all("start" in item for item in result)
+
+    def test_list_nested_payload(self) -> None:
+        nested = {"events": [self._ev]}
+        result = self._call([nested])
+        assert len(result) == 1
+
+    def test_empty_list(self) -> None:
+        assert self._call([]) == []
+
+    def test_scalar_returns_empty(self) -> None:
+        assert self._call("not-a-list") == []
+
+    def test_none_returns_empty(self) -> None:
+        assert self._call(None) == []
+
+    def test_non_dict_items_in_list_are_skipped(self) -> None:
+        # Non-dict items in a list should be ignored
+        result = self._call([42, "string", self._ev])
+        assert all(isinstance(item, dict) for item in result)
+
+
 def test_extract_tool_payload_parses_wrapped_result_content() -> None:
     """Tool payload extraction should parse JSON from wrapped text content."""
     wrapped = _FakeWrappedResult('{"events":[{"summary":"Deep work"}]}')
@@ -232,3 +282,47 @@ async def test_list_day_snapshot_recovers_after_actor_not_running_payload() -> N
     assert failing.calls == 1
     assert healthy.calls == 1
     assert diagnostics["attempt_errors"][0]["recoverable"] is True  # type: ignore[index]
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _parse_event_dt (Pydantic EventDateTime dispatch)
+# ---------------------------------------------------------------------------
+
+
+class TestParseEventDt:
+    """_parse_event_dt should delegate to EventDateTime.to_datetime()."""
+
+    UTC = ZoneInfo("UTC")
+    EASTERN = ZoneInfo("America/New_York")
+
+    def _call(self, raw: dict[str, str] | None, tz: ZoneInfo | None = None):  # type: ignore[return]
+        return McpCalendarClient._parse_event_dt(raw, tz=tz or self.UTC)
+
+    def test_datetime_utc_z(self) -> None:
+        dt = self._call({"dateTime": "2025-03-01T09:00:00Z"})
+        assert dt is not None
+        assert dt.hour == 9
+        assert dt.tzinfo is not None
+
+    def test_datetime_offset_converted(self) -> None:
+        dt = self._call({"dateTime": "2025-03-01T09:00:00+05:00"}, tz=self.UTC)
+        assert dt is not None
+        assert dt.hour == 4  # 09:00+05:00 → 04:00Z
+
+    def test_all_day_returns_midnight(self) -> None:
+        from datetime import date as _date
+        dt = self._call({"date": "2025-03-01"})
+        assert dt is not None
+        assert dt.date() == _date(2025, 3, 1)
+        assert dt.hour == 0
+
+    def test_none_returns_none(self) -> None:
+        assert self._call(None) is None
+
+    def test_empty_dict_returns_none(self) -> None:
+        assert self._call({}) is None
+
+    def test_all_day_respects_tz(self) -> None:
+        dt = self._call({"date": "2025-06-01"}, tz=self.EASTERN)
+        assert dt is not None
+        assert dt.tzinfo is not None

@@ -49,3 +49,38 @@ def test_settings_requires_socket_mode(monkeypatch) -> None:
     monkeypatch.setenv("SLACK_SOCKET_MODE", "false")
     with pytest.raises(ValueError):
         Settings()
+
+
+def test_settings_rejects_unknown_timeboxing_memory_backend(monkeypatch) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "invalid-backend")
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_settings_rejects_mem0_without_runtime_config(monkeypatch) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "mem0")
+    monkeypatch.setenv("MEM0_IS_CLOUD", "false")
+    monkeypatch.delenv("MEM0_LOCAL_CONFIG_JSON", raising=False)
+    monkeypatch.delenv("MEM0_API_KEY", raising=False)
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_settings_accepts_mem0_with_local_runtime_config(monkeypatch) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "mem0")
+    monkeypatch.setenv("MEM0_IS_CLOUD", "false")
+    monkeypatch.setenv("MEM0_LOCAL_CONFIG_JSON", "{\"path\":\"./data/mem0\"}")
+    settings = Settings()
+    assert settings.timeboxing_memory_backend == "mem0"
+
+
+def test_settings_rejects_invalid_notion_mcp_url(monkeypatch) -> None:
+    monkeypatch.setenv("NOTION_MCP_URL", "localhost:3001")
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_settings_rejects_invalid_ticktick_mcp_url(monkeypatch) -> None:
+    monkeypatch.setenv("TICKTICK_MCP_URL", "ticktick-mcp:8000/mcp")
+    with pytest.raises(ValueError):
+        Settings()

@@ -9,17 +9,16 @@ import re
 import time
 from dataclasses import dataclass
 from hashlib import sha256
+from json import JSONDecodeError
 from typing import Any, Sequence
 
 from pydantic import BaseModel, Field
-from yarl import URL
 
-from fateforger.tools.mcp_url_validation import rewrite_mcp_host
 from fateforger.tools.notion_mcp import (
     get_notion_mcp_headers,
     get_notion_mcp_url,
-    normalize_notion_mcp_url,
     probe_notion_mcp_endpoint,
+    validate_notion_mcp_url,
 )
 
 
@@ -50,6 +49,22 @@ class _Candidate:
     block_text: str
 
 
+class NotionSprintError(RuntimeError):
+    """Base runtime error for sprint MCP operations."""
+
+
+class NotionSprintDependencyError(NotionSprintError):
+    """Raised when required optional dependencies are missing."""
+
+
+class NotionSprintToolCallError(NotionSprintError):
+    """Raised when an MCP tool call fails."""
+
+
+class NotionSprintToolUnavailableError(NotionSprintError):
+    """Raised when MCP connectivity/configuration is invalid."""
+
+
 class NotionSprintManager:
     """Executes sprint-focused Notion operations via MCP tools."""
 
@@ -66,7 +81,7 @@ class NotionSprintManager:
         default_source_resolution_parallelism: int = 4,
         dry_run_patch_parallelism: int = 4,
     ) -> None:
-        self._server_url = normalize_notion_mcp_url(
+        self._server_url = validate_notion_mcp_url(
             server_url or get_notion_mcp_url()
         ).strip()
         self._timeout = timeout
@@ -129,7 +144,7 @@ class NotionSprintManager:
                 result = await self._call_tool_alias(SEARCH_TOOL_ALIASES, arguments)
                 payload = self._decode_payload(result)
                 raw_payloads[resolved_data_source_url] = payload
-            except Exception as exc:
+            except NotionSprintError as exc:
                 source_errors.append(
                     f"{resolved_data_source_url}: {type(exc).__name__}: {exc}"
                 )
@@ -201,7 +216,7 @@ class NotionSprintManager:
                     {"data": json.dumps(payload, ensure_ascii=True)},
                 )
                 updated += 1
-            except Exception as exc:  # pragma: no cover - defensive
+            except NotionSprintError as exc:  # pragma: no cover - defensive
                 errors.append(
                     f"Failed to update relation for {child_page_id}: {type(exc).__name__}"
                 )
@@ -520,7 +535,7 @@ class NotionSprintManager:
                     result = await self._call_tool_alias(FETCH_TOOL_ALIASES, {"id": database_id})
                     payload = self._decode_payload(result)
                     batches[index] = self._extract_data_source_urls(payload)
-                except Exception as exc:
+                except NotionSprintError as exc:
                     logger.warning(
                         "Notion sprint data-source resolution failed for database id",
                         extra={
@@ -604,14 +619,19 @@ class NotionSprintManager:
             try:
                 result = await self._call_tool(name, arguments)
                 return result
-            except Exception as exc:
+            except NotionSprintError as exc:
                 errors.append(f"{name}: {type(exc).__name__}: {exc}")
                 continue
-        raise RuntimeError("All tool aliases failed: " + " | ".join(errors))
+        raise NotionSprintToolCallError("All tool aliases failed: " + " | ".join(errors))
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> str | dict | list:
         workbench = self._ensure_workbench()
-        result = await workbench.call_tool(name, arguments=arguments)
+        try:
+            result = await workbench.call_tool(name, arguments=arguments)
+        except Exception as exc:  # pragma: no cover - workbench transport error
+            raise NotionSprintToolCallError(
+                f"Tool '{name}' call failed: {type(exc).__name__}: {exc}"
+            ) from exc
         if isinstance(result, (dict, list)):
             return result
         to_text = getattr(result, "to_text", None)
@@ -625,37 +645,19 @@ class NotionSprintManager:
             return self._workbench
         try:
             from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError(
+        except ImportError as exc:  # pragma: no cover
+            raise NotionSprintDependencyError(
                 "autogen_ext tools are required for Notion MCP access"
             ) from exc
         if not self._server_url:
-            raise RuntimeError("Notion MCP URL is not configured.")
+            raise NotionSprintToolUnavailableError("Notion MCP URL is not configured.")
         ok, reason = probe_notion_mcp_endpoint(
             self._server_url, connect_timeout_s=min(self._timeout, 1.5)
         )
         if not ok:
-            parsed = URL(self._server_url)
-            if parsed.host == "notion-mcp":
-                fallback = rewrite_mcp_host(
-                    self._server_url, "localhost", default_path="/mcp"
-                )
-                fallback_ok, fallback_reason = probe_notion_mcp_endpoint(
-                    fallback, connect_timeout_s=min(self._timeout, 1.5)
-                )
-                if fallback_ok:
-                    logger.warning(
-                        "Notion MCP endpoint '%s' is unavailable (%s); using '%s'.",
-                        self._server_url,
-                        reason,
-                        fallback,
-                    )
-                    self._server_url = fallback
-                    ok = True
-                else:
-                    reason = fallback_reason or reason
-            if not ok:
-                raise RuntimeError(reason or "Notion MCP endpoint is unavailable.")
+            raise NotionSprintToolUnavailableError(
+                reason or "Notion MCP endpoint is unavailable."
+            )
         params = StreamableHttpServerParams(
             url=self._server_url,
             headers=get_notion_mcp_headers(),
@@ -673,7 +675,7 @@ class NotionSprintManager:
             return ""
         try:
             return json.loads(text)
-        except Exception:
+        except JSONDecodeError:
             return text
 
     @staticmethod
@@ -743,8 +745,8 @@ class NotionSprintManager:
     def _new_dmp(self, *, match_threshold: float, match_distance: int):
         try:
             import diff_match_patch as dmp_module
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError(
+        except ImportError as exc:  # pragma: no cover
+            raise NotionSprintDependencyError(
                 "diff-match-patch is required for sprint page patching."
             ) from exc
         dmp = dmp_module.diff_match_patch()
@@ -756,8 +758,10 @@ class NotionSprintManager:
     def _parse_langdiff_plan(plan_json: str) -> tuple[str, str]:
         try:
             from langdiff import Object, Parser, String
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError("langdiff is required to parse langdiff_plan_json.") from exc
+        except ImportError as exc:  # pragma: no cover
+            raise NotionSprintDependencyError(
+                "langdiff is required to parse langdiff_plan_json."
+            ) from exc
 
         class _EditPlan(Object):
             pass

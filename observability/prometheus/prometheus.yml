@@ -7,6 +7,17 @@ scrape_configs:
     static_configs:
       - targets: ["prometheus:9090"]
 
+  # OTel Collector internal metrics
+  - job_name: otel_collector_internal
+    static_configs:
+      - targets: ["otel-collector:8888"]
+
+  # Metrics forwarded from app via OTLP → Collector → Prometheus exporter
+  - job_name: otel_collector_exported
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  # App Prometheus client (prometheus_client HTTP server on host)
   - job_name: fateforger_app
     static_configs:
       - targets: ["host.docker.internal:9464"]

@@ -54,6 +54,8 @@ class ConstraintReviewItem(BaseModel):
     necessity: object | None = None
     status: object | None = None
     scope: object | None = None
+    source: object | None = None
+    used_this_session: bool = False
 
     @classmethod
     def coerce(cls, constraint: "ConstraintReviewItem | uno.Page | object") -> "ConstraintReviewItem":
@@ -202,6 +204,8 @@ def build_memory_tool_result_blocks(
             "necessity": item.necessity or "should",
             "status": item.status or "proposed",
             "scope": item.scope or "session",
+            "source": item.source or "unknown",
+            "used_this_session": bool(item.used_this_session),
         }
         for item in result.constraints[:limit]
     ]
@@ -426,9 +430,20 @@ def _constraint_row_text(constraint: ConstraintReviewItem) -> str:
     name = _single_line(constraint.name or "Constraint")
     description = _single_line(constraint.description or "")
     scope_label = _constraint_scope_label(constraint)
+    status_label = _constraint_status_label(constraint)
+    source_label = _single_line(str(constraint.source or "unknown")).lower()
+    used_label = "used: this session" if bool(constraint.used_this_session) else None
+    meta_parts = [
+        f"scope: {scope_label}",
+        f"status: {status_label}",
+        f"source: {source_label}",
+    ]
+    if used_label:
+        meta_parts.append(used_label)
+    meta_text = "; ".join(meta_parts)
     if description:
-        return f"*{name}* - {description} _(scope: {scope_label})_"
-    return f"*{name}* _(scope: {scope_label})_"
+        return f"*{name}* - {description} _({meta_text})_"
+    return f"*{name}* _({meta_text})_"
 
 
 def _constraint_scope_label(constraint: ConstraintReviewItem) -> str:
@@ -439,6 +454,16 @@ def _constraint_scope_label(constraint: ConstraintReviewItem) -> str:
     if scope == ConstraintScope.DATESPAN:
         return "datespan"
     return "session"
+
+
+def _constraint_status_label(constraint: ConstraintReviewItem) -> str:
+    """Return a human-friendly status label for the constraint."""
+    status = constraint.status_enum()
+    if status == ConstraintStatus.LOCKED:
+        return "locked"
+    if status == ConstraintStatus.DECLINED:
+        return "declined"
+    return "proposed"
 
 
 def _default_memory_result_message(result: MemoryToolResult) -> str:

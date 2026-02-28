@@ -40,6 +40,9 @@ _METRIC_TOOL_CALLS = None
 _METRIC_ERRORS = None
 _METRIC_STAGE_DURATION = None
 
+_CHANNEL_ID_RE = re.compile(r"^[CDG][A-Z0-9]+$")
+_STAGE_AGENT_RE = re.compile(r"^Stage(?P<stage>[A-Za-z]+)Node(?:_|$)")
+
 
 def observe_stage_duration(*, stage: str, duration_s: float) -> None:
     """Observe stage duration in seconds (no-op when metrics are disabled)."""
@@ -72,7 +75,10 @@ def record_llm_call(
     safe_label = _bounded_label(call_label, fallback="unknown")
     if _METRIC_LLM_CALLS is not None:
         _METRIC_LLM_CALLS.labels(
-            agent=safe_agent, model=safe_model, status=safe_status, call_label=safe_label
+            agent=safe_agent,
+            model=safe_model,
+            status=safe_status,
+            call_label=safe_label,
         ).inc()
     if _METRIC_LLM_TOKENS is not None:
         if isinstance(prompt_tokens, int) and prompt_tokens >= 0:
@@ -81,7 +87,10 @@ def record_llm_call(
             ).inc(prompt_tokens)
         if isinstance(completion_tokens, int) and completion_tokens >= 0:
             _METRIC_LLM_TOKENS.labels(
-                agent=safe_agent, model=safe_model, type="completion", call_label=safe_label
+                agent=safe_agent,
+                model=safe_model,
+                type="completion",
+                call_label=safe_label,
             ).inc(completion_tokens)
 
 
@@ -115,6 +124,135 @@ def record_error(*, component: str, error_type: str) -> None:
     ).inc()
 
 
+# ---------------------------------------------------------------------------
+# StructuredJsonFormatter
+# ---------------------------------------------------------------------------
+
+# Fields promoted from a JSON event payload into the top-level Loki envelope.
+# Bounded / low-cardinality fields become Loki index labels (configured in
+# promtail.yml).  High-cardinality fields stay as JSON keys queried with
+# LogQL `| json`.
+_STRUCTURED_EXTRACT_FIELDS: frozenset[str] = frozenset(
+    {
+        "type",         # → "event" in envelope
+        "agent_id",     # → "agent" in envelope
+        "stage",
+        "model",
+        "tool_name",
+        "call_label",
+        "session_key",
+        "thread_ts",
+        "channel_id",
+    }
+)
+
+
+class StructuredJsonFormatter(logging.Formatter):
+    """Format log records as a normalized JSON envelope for Loki ingestion.
+
+    Every line is a single JSON object with:
+    - ``ts``       – RFC3339 UTC timestamp
+    - ``level``    – lowercase level name
+    - ``logger``   – logger name
+    - ``message``  – human-readable message (or raw JSON if not an event)
+    - Structured fields extracted from AutoGen event payloads (``event``,
+      ``agent``, ``stage``, ``model``, ``tool_name``, ``session_key``, …)
+    - ``exc``      – formatted exception traceback (when present)
+
+    Sensitive keys (``api_key``, ``authorization``, ``secret``, …) are always
+    redacted via :func:`_key_is_sensitive`.
+
+    Enable for the root logger by setting ``OBS_LOG_FORMAT=json`` — done
+    automatically by :func:`configure_logging`.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Serialize the log record as a JSON envelope string."""
+        try:
+            msg = record.getMessage()
+        except Exception as exc:
+            msg = f"[coerced-log-payload:{type(exc).__name__}] {record.msg!r}"
+
+        ts = datetime.utcfromtimestamp(record.created).isoformat(timespec="milliseconds") + "Z"
+
+        envelope: dict[str, Any] = {
+            "ts": ts,
+            "level": record.levelname.lower(),
+            "logger": record.name,
+            "message": msg,
+        }
+
+        # Try to extract structured fields from JSON message payloads
+        # (AutoGen events, structured log records, etc.)
+        if msg and msg[0] == "{":
+            try:
+                payload = json.loads(msg)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                self._extract_into_envelope(envelope, payload)
+                # Re-serialize message with sensitive keys stripped so the raw
+                # message field in Loki never stores secrets.
+                envelope["message"] = json.dumps(
+                    self._redact_dict(payload), ensure_ascii=False, default=str
+                )
+
+        # Also check record.__dict__ extras (set via logger.extra={...})
+        for field in _STRUCTURED_EXTRACT_FIELDS:
+            target = "event" if field == "type" else ("agent" if field == "agent_id" else field)
+            if target not in envelope:
+                val = getattr(record, field, None)
+                if val is not None:
+                    envelope[target] = str(val)
+
+        if record.exc_info:
+            envelope["exc"] = self.formatException(record.exc_info)
+
+        return json.dumps(envelope, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _extract_into_envelope(
+        envelope: dict[str, Any], payload: dict[str, Any]
+    ) -> None:
+        """Extract structured fields from an AutoGen event payload dict."""
+        field_map = {
+            "type": "event",
+            "agent_id": "agent",
+            "stage": "stage",
+            "model": "model",
+            "tool_name": "tool_name",
+            "call_label": "call_label",
+            "session_key": "session_key",
+            "thread_ts": "thread_ts",
+            "channel_id": "channel_id",
+        }
+        for src_key, dest_key in field_map.items():
+            if dest_key in envelope:
+                continue  # don't overwrite already-set fields
+            val = payload.get(src_key)
+            if val is None:
+                continue
+            # Redact sensitive source keys — shouldn't appear here in
+            # practice, but guard anyway.
+            if _key_is_sensitive(src_key):
+                continue
+            envelope[dest_key] = val
+
+        # Redact any sensitive top-level keys that leak into the payload
+        for key in list(payload.keys()):
+            if _key_is_sensitive(key) and key not in envelope:
+                # Don't add sensitive fields to the envelope at all.
+                pass
+
+    @staticmethod
+    def _redact_dict(payload: dict[str, Any]) -> dict[str, Any]:
+        """Return a shallow copy of *payload* with sensitive keys replaced by ``"[REDACTED]"``."""
+        return {
+            k: "[REDACTED]" if _key_is_sensitive(k) else v
+            for k, v in payload.items()
+        }
+
+
 def configure_logging(*, default_level: str | int = "INFO") -> None:
     """
     Configure application logging with sane defaults.
@@ -124,6 +262,7 @@ def configure_logging(*, default_level: str | int = "INFO") -> None:
 
     logging.basicConfig(level=_coerce_level(os.getenv("LOG_LEVEL", default_level)))
     _configure_prometheus_exporter()
+    _configure_json_stdout()
     _configure_llm_audit_file_logging()
 
     mode = (os.getenv("AUTOGEN_EVENTS_LOG", "summary") or "summary").strip().lower()
@@ -195,6 +334,25 @@ def _configure_prometheus_exporter() -> None:
     logging.getLogger(__name__).info("Prometheus exporter enabled on :%s", port)
 
 
+def _configure_json_stdout() -> None:
+    """Replace root stream handler formatter with StructuredJsonFormatter.
+
+    Activated when ``OBS_LOG_FORMAT=json`` is set.  In containerised
+    deployments (Docker / Kubernetes) this produces one JSON object per line
+    on stdout, which Promtail / Fluentd / any LGTM-compatible collector can
+    ingest directly for Loki without a sidecar parser.
+
+    Safe to call multiple times — idempotent.
+    """
+    if (os.getenv("OBS_LOG_FORMAT") or "").strip().lower() != "json":
+        return
+    formatter = StructuredJsonFormatter()
+    for handler in logging.root.handlers:
+        if hasattr(handler, "stream"):
+            if not isinstance(handler.formatter, StructuredJsonFormatter):
+                handler.setFormatter(formatter)
+
+
 def _configure_llm_audit_file_logging() -> None:
     global _LLM_AUDIT_LOGGER
     if not _is_truthy(os.getenv("OBS_LLM_AUDIT_ENABLED", "1")):
@@ -219,7 +377,8 @@ def _configure_llm_audit_file_logging() -> None:
     _LLM_AUDIT_LOGGER = llm_logger
 
     append_index_entry(
-        index_path=log_dir / os.getenv("OBS_LLM_AUDIT_INDEX_FILE", "llm_io_index.jsonl"),
+        index_path=log_dir
+        / os.getenv("OBS_LLM_AUDIT_INDEX_FILE", "llm_io_index.jsonl"),
         entry={
             "type": "llm_io",
             "created_at": datetime.utcnow().isoformat() + "Z",
@@ -235,9 +394,10 @@ def _configure_timebox_patcher_debug_file_logging() -> None:
     """Enable a dedicated patcher file logger when debug mode is enabled."""
     explicit = os.getenv("TIMEBOX_PATCHER_DEBUG_LOG")
     if explicit is None:
-        enabled = _is_truthy(
-            os.getenv("DEBUG") or os.getenv("FATEFORGER_DEBUG")
-        ) or _debugger_attached()
+        enabled = (
+            _is_truthy(os.getenv("DEBUG") or os.getenv("FATEFORGER_DEBUG"))
+            or _debugger_attached()
+        )
     else:
         enabled = _is_truthy(explicit)
     if not enabled:
@@ -264,7 +424,8 @@ def _configure_timebox_patcher_debug_file_logging() -> None:
     patcher_logger.setLevel(logging.DEBUG)
     patcher_logger.propagate = False
     append_index_entry(
-        index_path=log_dir / os.getenv("TIMEBOX_PATCHER_INDEX_FILE", "timebox_patcher_index.jsonl"),
+        index_path=log_dir
+        / os.getenv("TIMEBOX_PATCHER_INDEX_FILE", "timebox_patcher_index.jsonl"),
         entry={
             "type": "timebox_patcher",
             "created_at": datetime.utcnow().isoformat() + "Z",
@@ -353,6 +514,83 @@ def _bounded_label(value: Any, *, fallback: str) -> str:
     return compact[:80] or fallback
 
 
+def _extract_context_from_agent_id(
+    agent_id: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Derive session/channel/thread context from standard agent id shapes."""
+    raw = str(agent_id or "").strip()
+    if not raw or "/" not in raw:
+        return None, None, None
+    _, _, key = raw.partition("/")
+    if not key:
+        return None, None, None
+    channel, sep, thread = key.partition(":")
+    if not sep or not channel or not thread:
+        return key, None, None
+    if _CHANNEL_ID_RE.match(channel):
+        return f"{channel}:{thread}", channel, thread
+    return key, None, None
+
+
+def _extract_stage_from_agent_id(agent_id: str | None) -> str | None:
+    base = str(agent_id or "").split("/", 1)[0].strip()
+    if not base:
+        return None
+    match = _STAGE_AGENT_RE.match(base)
+    if not match:
+        return None
+    return match.group("stage")
+
+
+def _derive_call_label(
+    *,
+    call_label: str | None,
+    stage: str | None,
+    agent_id: str | None,
+    event_type: str,
+) -> str:
+    if call_label and call_label.strip():
+        return call_label.strip()
+    if stage and stage.strip():
+        return stage.strip()
+    stage_from_agent = _extract_stage_from_agent_id(agent_id)
+    if stage_from_agent:
+        return stage_from_agent
+    base_agent = str(agent_id or "").split("/", 1)[0].strip()
+    if base_agent:
+        return base_agent
+    return event_type
+
+
+def _extract_model_from_response(raw_response: Any) -> str | None:
+    if isinstance(raw_response, dict):
+        model = raw_response.get("model")
+        return str(model).strip() if isinstance(model, str) and model.strip() else None
+    model = getattr(raw_response, "model", None)
+    return str(model).strip() if isinstance(model, str) and model.strip() else None
+
+
+def _extract_usage_tokens_from_response(
+    raw_response: Any,
+) -> tuple[int | None, int | None]:
+    usage = None
+    if isinstance(raw_response, dict):
+        usage = raw_response.get("usage")
+    else:
+        usage = getattr(raw_response, "usage", None)
+    if isinstance(usage, dict):
+        prompt = usage.get("prompt_tokens")
+        completion = usage.get("completion_tokens")
+    else:
+        prompt = getattr(usage, "prompt_tokens", None)
+        completion = getattr(usage, "completion_tokens", None)
+    prompt_int = prompt if isinstance(prompt, int) and prompt >= 0 else None
+    completion_int = (
+        completion if isinstance(completion, int) and completion >= 0 else None
+    )
+    return prompt_int, completion_int
+
+
 def _emit_llm_audit_event(event: dict[str, Any]) -> None:
     if not _is_truthy(os.getenv("OBS_LLM_AUDIT_ENABLED", "1")):
         return
@@ -384,9 +622,13 @@ def _sanitize_for_audit(value: Any, *, max_chars: int, key: str | None = None) -
             )
         return out
     if isinstance(value, list):
-        return [_sanitize_for_audit(item, max_chars=max_chars, key=key) for item in value]
+        return [
+            _sanitize_for_audit(item, max_chars=max_chars, key=key) for item in value
+        ]
     if isinstance(value, tuple):
-        return [_sanitize_for_audit(item, max_chars=max_chars, key=key) for item in value]
+        return [
+            _sanitize_for_audit(item, max_chars=max_chars, key=key) for item in value
+        ]
     if key and _key_is_sensitive(key):
         return "***REDACTED***"
     if isinstance(value, str):
@@ -418,33 +660,54 @@ def _extract_event_payload(msg_obj: Any, msg_text: str) -> dict[str, Any] | None
     return None
 
 
-def _extract_response_usage(response: Any) -> dict[str, Any]:
-    if not isinstance(response, dict):
-        return {}
-    usage = response.get("usage")
-    if isinstance(usage, dict):
-        return usage
-    return {}
-
-
 def _record_observability_event(payload: dict[str, Any], *, record_level: int) -> None:
-    _ensure_metrics_initialized()
-    event_type = str(payload.get("type", "")).strip()
-    agent = _bounded_label(payload.get("agent_id"), fallback="unknown")
-    call_label = _bounded_label(
-        payload.get("call_label") or payload.get("stage"), fallback="unknown"
+    """Record Prometheus metrics and LLM audit events for an AutoGen event payload.
+
+    Dispatches on the typed Pydantic model returned by :func:`parse_autogen_event`;
+    unknown or invalid payloads are silently ignored.
+    """
+    from fateforger.core.autogen_event_models import (  # noqa: PLC0415
+        ExceptionPayload,
+        LLMEventPayload,
+        ToolCallPayload,
+        parse_autogen_event,
     )
 
-    if event_type in {"LLMCall", "LLMStreamEnd"}:
-        response = payload.get("response")
-        model = _bounded_label(
-            payload.get("model") or (response.get("model") if isinstance(response, dict) else None),
-            fallback="unknown",
+    _ensure_metrics_initialized()
+    event = parse_autogen_event(payload)
+    if event is None:
+        return
+
+    derived_session_key, derived_channel_id, derived_thread_ts = (
+        _extract_context_from_agent_id(event.agent_id)
+    )
+    session_key = event.session_key or derived_session_key
+    thread_ts = event.thread_ts or derived_thread_ts
+    channel_id = event.channel_id or derived_channel_id
+    agent = _bounded_label(event.agent_id, fallback="unknown")
+    call_label = _bounded_label(
+        _derive_call_label(
+            call_label=event.call_label,
+            stage=event.stage,
+            agent_id=event.agent_id,
+            event_type=event.type,
+        ),
+        fallback="unknown",
+    )
+
+    if isinstance(event, LLMEventPayload):
+        raw_response = payload.get("response")
+        model_candidate = event.response_model
+        if model_candidate == "unknown":
+            model_candidate = _extract_model_from_response(raw_response) or _extract_model_from_response(
+                event.response
+            ) or "unknown"
+        model = _bounded_label(model_candidate, fallback="unknown")
+        status = (
+            "error"
+            if (record_level >= logging.ERROR or event.response_error)
+            else event.response_status
         )
-        response_error = (
-            isinstance(response, dict) and response.get("error") not in (None, "")
-        )
-        status = "error" if (record_level >= logging.ERROR or response_error) else "ok"
         if _METRIC_LLM_CALLS is not None:
             _METRIC_LLM_CALLS.labels(
                 agent=agent,
@@ -452,13 +715,13 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
                 status=status,
                 call_label=call_label,
             ).inc()
-        prompt_tokens = payload.get("prompt_tokens")
-        completion_tokens = payload.get("completion_tokens")
-        usage = _extract_response_usage(response)
+        prompt_tokens = event.prompt_tokens or event.prompt_tokens_from_response()
+        completion_tokens = event.completion_tokens or event.completion_tokens_from_response()
+        extra_prompt, extra_completion = _extract_usage_tokens_from_response(raw_response)
         if prompt_tokens is None:
-            prompt_tokens = usage.get("prompt_tokens")
+            prompt_tokens = extra_prompt
         if completion_tokens is None:
-            completion_tokens = usage.get("completion_tokens")
+            completion_tokens = extra_completion
         if _METRIC_LLM_TOKENS is not None:
             if isinstance(prompt_tokens, int) and prompt_tokens >= 0:
                 _METRIC_LLM_TOKENS.labels(
@@ -476,47 +739,53 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
                 ).inc(completion_tokens)
         _emit_llm_audit_event(
             {
-                "event_type": event_type,
-                "agent": payload.get("agent_id"),
+                "event_type": event.type,
+                "agent": event.agent_id,
                 "model": model,
                 "status": status,
-                "call_label": payload.get("call_label"),
-                "stage": payload.get("stage"),
-                "session_key": payload.get("session_key"),
-                "thread_ts": payload.get("thread_ts"),
-                "channel_id": payload.get("channel_id"),
+                "call_label": call_label,
+                "stage": event.stage,
+                "session_key": session_key,
+                "thread_ts": thread_ts,
+                "channel_id": channel_id,
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
-                "request_excerpt": payload.get("messages"),
-                "response_excerpt": response,
-                "error": response.get("error") if isinstance(response, dict) else None,
+                "request_excerpt": event.model_extra.get("messages"),
+                "response_excerpt": event.response,
+                "error": event.response_error,
             }
         )
         return
 
-    if event_type == "ToolCall":
+    if isinstance(event, ToolCallPayload):
         if _METRIC_TOOL_CALLS is not None:
             _METRIC_TOOL_CALLS.labels(
                 agent=agent,
-                tool=_bounded_label(payload.get("tool_name"), fallback="unknown"),
+                tool=_bounded_label(event.tool_name, fallback="unknown"),
                 status="ok" if record_level < logging.ERROR else "error",
             ).inc()
         return
 
-    if event_type in {"MessageHandlerException", "AgentConstructionException"}:
+    if isinstance(event, ExceptionPayload):
+        exc_session_key, exc_channel_id, exc_thread_ts = _extract_context_from_agent_id(
+            event.component
+        )
         if _METRIC_ERRORS is not None:
             _METRIC_ERRORS.labels(
-                component=_bounded_label(payload.get("handling_agent") or payload.get("agent_id"), fallback="unknown"),
-                error_type=_bounded_label(payload.get("error_type") or event_type, fallback="error"),
+                component=_bounded_label(event.component, fallback="unknown"),
+                error_type=_bounded_label(
+                    event.error_type or event.type, fallback="error"
+                ),
             ).inc()
         _emit_llm_audit_event(
             {
-                "event_type": event_type,
-                "component": payload.get("handling_agent") or payload.get("agent_id"),
-                "error": payload.get("exception"),
-                "session_key": payload.get("session_key"),
-                "thread_ts": payload.get("thread_ts"),
-                "stage": payload.get("stage"),
+                "event_type": event.type,
+                "component": event.component,
+                "error": event.exception,
+                "session_key": event.session_key or exc_session_key,
+                "thread_ts": event.thread_ts or exc_thread_ts,
+                "channel_id": event.channel_id or exc_channel_id,
+                "stage": event.stage,
             }
         )
 
@@ -616,16 +885,19 @@ def _safe_get_record_message(record: logging.LogRecord) -> str:
 def _summarize_autogen_event_message(
     msg: str, *, max_chars: int, max_tools: int
 ) -> str:
+    """Return a compact human-readable summary of an AutoGen event message string.
+
+    Dispatches on the typed Pydantic model returned by :func:`parse_autogen_event`
+    so there are no brittle substring probes or ``dict.get``-chains for type detection.
+    """
     if not msg:
         return msg
 
-    # TODO(refactor,typed-events): Remove substring probes for "tools"/"payload"
-    # by relying on structured event objects instead of raw message text.
-    if len(msg) <= max_chars and "\"tools\"" not in msg and "\"payload\"" not in msg:
+    # Quick return: short message without structured JSON content.
+    if len(msg) <= max_chars and msg[:1] != "{":
         return msg
 
-    payload: Any | None = None
-    # TODO(refactor): Parse autogen event payloads with a Pydantic schema.
+    payload: dict[str, Any] | None = None
     if msg[:1] == "{" and msg[-1:] == "}":
         try:
             payload = json.loads(msg)
@@ -635,72 +907,61 @@ def _summarize_autogen_event_message(
     if not isinstance(payload, dict):
         return _truncate(msg, max_chars=max_chars)
 
-    if "payload" in payload:
-        return _summarize_autogen_message_event(payload, max_chars=max_chars)
+    from fateforger.core.autogen_event_models import (  # noqa: PLC0415
+        LLMEventPayload,
+        MessageEventPayload,
+        parse_autogen_event,
+    )
 
-    event_type = payload.get("type") or "event"
-    agent_id = payload.get("agent_id")
-    tools = payload.get("tools") or []
-    tool_names = []
-    if isinstance(tools, list):
-        for t in tools:
-            if not isinstance(t, dict):
-                continue
+    event = parse_autogen_event(payload)
+
+    if isinstance(event, MessageEventPayload):
+        return _summarize_autogen_message_event(event, max_chars=max_chars)
+
+    if not isinstance(event, LLMEventPayload):
+        # ToolCall, ExceptionPayload, or unknown: fall back to simple truncation.
+        return _truncate(msg, max_chars=max_chars)
+
+    # LLMEventPayload: build a structured single-line summary via typed sub-model.
+    summary_parts: list[str] = [f"autogen type={event.type}"]
+    if event.agent_id:
+        summary_parts.append(f"agent_id={event.agent_id}")
+    model_name = event.response_model
+    if model_name and model_name != "unknown":
+        summary_parts.append(f"model={model_name}")
+
+    # Typed access via LLMResponse — no more isinstance chains.
+    resp = event.response_obj
+    finish_reason = resp.finish_reason if resp else None
+    tool_calls = resp.tool_call_names if resp else []
+
+    # Available tools from the request payload (extra field, high-cardinality)
+    tool_names: list[str] = []
+    for t in (event.model_extra.get("tools") or []):
+        if isinstance(t, dict):
             fn = t.get("function") or {}
-            if isinstance(fn, dict):
-                name = fn.get("name")
-                if isinstance(name, str) and name:
-                    tool_names.append(name)
+            name = fn.get("name") if isinstance(fn, dict) else None
+            if isinstance(name, str) and name:
+                tool_names.append(name)
 
-    response = payload.get("response") or {}
-    model = response.get("model") if isinstance(response, dict) else None
-    usage = response.get("usage") if isinstance(response, dict) else None
-
-    finish_reason = None
-    tool_calls = []
-    if isinstance(response, dict):
-        choices = response.get("choices") or []
-        if isinstance(choices, list) and choices:
-            first = choices[0] if isinstance(choices[0], dict) else {}
-            finish_reason = first.get("finish_reason")
-            message = first.get("message") if isinstance(first, dict) else None
-            if isinstance(message, dict):
-                tc = message.get("tool_calls") or []
-                if isinstance(tc, list):
-                    for call in tc:
-                        if not isinstance(call, dict):
-                            continue
-                        fn = call.get("function") or {}
-                        if isinstance(fn, dict):
-                            name = fn.get("name")
-                            if isinstance(name, str) and name:
-                                tool_calls.append(name)
-
-    summary_parts: list[str] = [f"autogen type={event_type}"]
-    if isinstance(agent_id, str) and agent_id:
-        summary_parts.append(f"agent_id={agent_id}")
-    if isinstance(model, str) and model:
-        summary_parts.append(f"model={model}")
     if finish_reason:
         summary_parts.append(f"finish={finish_reason}")
-
     if tool_calls:
         summary_parts.append(f"tool_calls={_format_list(tool_calls, max_items=5)}")
-
     if tool_names:
         summary_parts.append(
             f"tools={len(tool_names)} {_format_list(tool_names, max_items=max_tools)}"
         )
 
-    if isinstance(usage, dict):
-        pt = usage.get("prompt_tokens")
-        ct = usage.get("completion_tokens")
-        tt = usage.get("total_tokens")
-        if pt is not None or ct is not None or tt is not None:
-            summary_parts.append(f"tokens={pt}/{ct}/{tt}")
+    usage = resp.usage if resp else None
+    if usage and any(
+        v is not None for v in (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
+    ):
+        summary_parts.append(
+            f"tokens={usage.prompt_tokens}/{usage.completion_tokens}/{usage.total_tokens}"
+        )
 
-    out = " ".join(summary_parts)
-    return _truncate(out, max_chars=max_chars)
+    return _truncate(" ".join(summary_parts), max_chars=max_chars)
 
 
 def _format_list(items: list[str], *, max_items: int) -> str:
@@ -717,30 +978,30 @@ def _truncate(value: str, *, max_chars: int) -> str:
     return value[: max(0, max_chars - 16)] + f" …(truncated,{len(value)})"
 
 
-def _summarize_autogen_message_event(event: dict[str, Any], *, max_chars: int) -> str:
-    # Example shape:
-    # {"payload":"{...TextMessage...}","sender":"planner_agent/...","receiver":null,
-    #  "kind":"MessageKind.RESPOND","delivery_stage":"DeliveryStage.SEND","type":"Message"}
-    sender = event.get("sender")
-    receiver = event.get("receiver")
-    kind = event.get("kind")
-    stage = event.get("delivery_stage")
+def _summarize_autogen_message_event(
+    event: "MessageEventPayload", *, max_chars: int
+) -> str:
+    """Render a compact summary of a Message routing event.
 
-    payload_raw = event.get("payload")
-    payload_obj: Any | None = None
-    # TODO(refactor): Validate payload with a structured Pydantic model.
-    if isinstance(payload_raw, str) and payload_raw:
-        try:
-            payload_obj = json.loads(payload_raw)
-        except Exception:
-            payload_obj = None
+    Accepts a typed :class:`MessageEventPayload` so we avoid re-parsing the JSON
+    payload string and the ``isinstance(payload_obj, dict)`` chain.
+    """
+    from fateforger.core.autogen_event_models import MessageEventPayload  # noqa: PLC0415
+
+    sender = event.sender
+    receiver = event.receiver
+    kind = event.kind
+    stage = event.delivery_stage
+
+    # parsed_payload already handles json.loads + type-check for us.
+    payload_obj = event.parsed_payload
 
     payload_type = None
     msg_id = None
     source = None
     content = None
     usage = None
-    if isinstance(payload_obj, dict):
+    if payload_obj is not None:
         payload_type = payload_obj.get("type")
         msg_id = payload_obj.get("id")
         source = payload_obj.get("source")
@@ -767,10 +1028,10 @@ def _summarize_autogen_message_event(event: dict[str, Any], *, max_chars: int) -
         parts.append(f"source={source}")
 
     if isinstance(usage, dict):
-        pt = usage.get("prompt_tokens")
-        ct = usage.get("completion_tokens")
-        if pt is not None or ct is not None:
-            parts.append(f"tokens={pt}/{ct}")
+        from fateforger.core.autogen_event_models import LLMUsage  # noqa: PLC0415
+        u = LLMUsage.model_validate(usage)
+        if u.prompt_tokens is not None or u.completion_tokens is not None:
+            parts.append(f"tokens={u.prompt_tokens}/{u.completion_tokens}")
 
     if isinstance(content, str) and content:
         content_one_line = " ".join(content.splitlines())

@@ -224,6 +224,21 @@ class TransitionNode(BaseChatAgent):
                 self.stage_user_message = ""
                 signal = FlowSignal(kind="transition", note="proceed")
             case "assist":
+                memory_reply = await self._orchestrator._maybe_handle_memory_review_turn(  # noqa: SLF001
+                    session=self._session,
+                    user_message=user_text,
+                )
+                if memory_reply is not None:
+                    self._session.last_response = str(memory_reply.content or "").strip()
+                    self._session.skip_stage_execution = True
+                    self.stage_user_message = ""
+                    signal = FlowSignal(kind="transition", note="memory_review")
+                    return Response(
+                        chat_message=StructuredMessage(
+                            source=self.name,
+                            content=signal,
+                        )
+                    )
                 assist_reply = await self._orchestrator._run_assist_turn(  # noqa: SLF001
                     session=self._session,
                     user_message=user_text,

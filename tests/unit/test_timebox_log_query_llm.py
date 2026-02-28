@@ -82,3 +82,49 @@ def test_llm_query_returns_nonzero_when_no_logs(tmp_path: Path) -> None:
     result = _run_llm_query("--session-key", "missing", env=env)
 
     assert result.returncode == 1
+
+
+def test_llm_query_scans_all_logs_when_no_log_path(tmp_path: Path) -> None:
+    """Without --log-path, command should filter across all indexed/discovered log files."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    older = log_dir / "llm_io_20260227_120000_11111.jsonl"
+    newer = log_dir / "llm_io_20260227_121000_22222.jsonl"
+
+    older_rows = [
+        {
+            "session_key": "s-older",
+            "thread_ts": "100.1",
+            "call_label": "collect",
+            "model": "google/gemini-3",
+            "status": "ok",
+        }
+    ]
+    newer_rows = [
+        {
+            "session_key": "s-newer",
+            "thread_ts": "100.2",
+            "call_label": "collect",
+            "model": "google/gemini-3",
+            "status": "ok",
+        }
+    ]
+    older.write_text(
+        "\n".join(json.dumps(row) for row in older_rows) + "\n", encoding="utf-8"
+    )
+    newer.write_text(
+        "\n".join(json.dumps(row) for row in newer_rows) + "\n", encoding="utf-8"
+    )
+
+    env = os.environ.copy()
+    env["OBS_LLM_AUDIT_LOG_DIR"] = str(log_dir)
+    env["OBS_LLM_AUDIT_INDEX_FILE"] = "llm_io_index.jsonl"
+
+    result = _run_llm_query("--call-label", "collect", "--limit", "10", env=env)
+
+    assert result.returncode == 0
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(lines) == 2
+    parsed = [json.loads(line) for line in lines]
+    assert {row["session_key"] for row in parsed} == {"s-older", "s-newer"}
+    assert all("log_path" in row for row in parsed)
