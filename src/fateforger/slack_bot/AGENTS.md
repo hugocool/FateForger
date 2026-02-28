@@ -15,6 +15,8 @@
 - **Never** add regex/keyword-based intent routing in `handlers.py`. Use LLM classification or explicit slash commands.
 - Thread focus (`focus.py`) is the mechanism for routing follow-up messages to the owning agent without re-triage.
 - Suppress planning nudges while a timeboxing session is active (handled by `PlanningReconciler`).
+- Tasks guided refinement entrypoint is `/task-refine`; the command should dispatch a deterministic session start message to `tasks_agent`.
+- After `/task-refine`, follow-up thread messages must continue on `tasks_agent` via focus routing instead of re-triage.
 
 ## Action Handlers
 

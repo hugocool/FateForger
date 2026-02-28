@@ -205,6 +205,9 @@ class Settings(BaseSettings):
     obs_llm_audit_enabled: bool = Field(default=True)
     obs_llm_audit_mode: str = Field(default="sanitized")
     obs_llm_audit_max_chars: int = Field(default=2000)
+    autogen_events_log: str = Field(default="summary")
+    autogen_events_output_target: str = Field(default="stdout")
+    autogen_events_full_payload_mode: str = Field(default="sanitized")
 
     @field_validator("slack_user_token", "slack_test_user_token")
     @classmethod
@@ -257,6 +260,43 @@ class Settings(BaseSettings):
             return backend
         raise ValueError(
             "TIMEBOXING_MEMORY_BACKEND must be one of: constraint_mcp, mem0"
+        )
+
+    @field_validator("autogen_events_log")
+    @classmethod
+    def _validate_autogen_events_log(cls, value: str) -> str:
+        mode = (value or "").strip().lower()
+        alias = {
+            "0": "off",
+            "false": "off",
+            "none": "off",
+            "1": "full",
+            "true": "full",
+            "on": "full",
+        }
+        normalized = alias.get(mode, mode)
+        if normalized in {"summary", "full", "off"}:
+            return normalized
+        raise ValueError("AUTOGEN_EVENTS_LOG must be one of: summary, full, off")
+
+    @field_validator("autogen_events_output_target")
+    @classmethod
+    def _validate_autogen_events_output_target(cls, value: str) -> str:
+        target = (value or "").strip().lower()
+        if target in {"stdout", "audit"}:
+            return target
+        raise ValueError(
+            "AUTOGEN_EVENTS_OUTPUT_TARGET must be one of: stdout, audit"
+        )
+
+    @field_validator("autogen_events_full_payload_mode")
+    @classmethod
+    def _validate_autogen_events_full_payload_mode(cls, value: str) -> str:
+        mode = (value or "").strip().lower()
+        if mode in {"sanitized", "raw"}:
+            return mode
+        raise ValueError(
+            "AUTOGEN_EVENTS_FULL_PAYLOAD_MODE must be one of: sanitized, raw"
         )
 
     @model_validator(mode="after")

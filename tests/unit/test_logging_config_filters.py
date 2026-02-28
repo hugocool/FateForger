@@ -47,7 +47,7 @@ def test_autogen_events_filter_handles_unserializable_message() -> None:
 
     assert allowed is True
     assert isinstance(record.msg, str)
-    assert "coerced-log-payload" in record.msg
+    assert "planned_date" in record.msg
 
 
 def test_autogen_events_filter_full_mode_handles_unserializable_message() -> None:
@@ -59,7 +59,61 @@ def test_autogen_events_filter_full_mode_handles_unserializable_message() -> Non
 
     assert allowed is True
     assert isinstance(record.msg, str)
-    assert "coerced-log-payload" in record.msg
+    assert "planned_date" in record.msg
+
+
+def test_autogen_events_filter_summary_mode_sanitizes_dict_payload() -> None:
+    """Summary mode should not leak raw payload content from dict messages."""
+    filt = _AutogenEventsFilter(mode="summary", max_chars=900, max_tools=10)
+    record = _record(
+        logger_name="autogen_core.events",
+        msg={
+            "type": "LLMCall",
+            "agent_id": "tasks_agent",
+            "messages": [{"role": "user", "content": "my secret token"}],
+            "response": {
+                "model": "openrouter/google/gemini-2.5-pro",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            },
+        },
+    )
+
+    allowed = filt.filter(record)
+
+    assert allowed is True
+    assert isinstance(record.msg, str)
+    assert "autogen type=LLMCall" in record.msg
+    assert "my secret token" not in record.msg
+
+
+def test_autogen_events_filter_full_mode_sanitized_default() -> None:
+    """Full mode defaults to sanitized payload output."""
+    filt = _AutogenEventsFilter(mode="full", max_chars=900, max_tools=10)
+    record = _record(
+        logger_name="autogen_core.events",
+        msg={"type": "Message", "api_key": "abc123", "channel_id": "C123"},
+    )
+
+    allowed = filt.filter(record)
+
+    assert allowed is True
+    assert isinstance(record.msg, str)
+    assert "***REDACTED***" in record.msg
+    assert "abc123" not in record.msg
+
+
+def test_autogen_events_filter_audit_target_suppresses_stdout() -> None:
+    """Audit target should suppress stdout while keeping observability side effects."""
+    filt = _AutogenEventsFilter(
+        mode="summary", max_chars=900, max_tools=10, output_target="audit"
+    )
+    record = _record(
+        logger_name="autogen_core.events",
+        msg={"type": "Message", "payload": '{"type":"TextMessage","content":"hello"}'},
+    )
+
+    allowed = filt.filter(record)
+    assert allowed is False
 
 
 def test_autogen_core_filter_handles_unserializable_message() -> None:

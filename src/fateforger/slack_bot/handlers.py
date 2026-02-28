@@ -672,6 +672,66 @@ async def _handle_timebox_command(
             )
 
 
+async def _handle_task_refine_command(
+    *,
+    runtime,
+    focus: FocusManager,
+    body: dict,
+    client: AsyncWebClient,
+    respond: Callable | None,
+    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]],
+) -> None:
+    user_id = body.get("user_id") or ""
+    channel_id = body.get("channel_id") or ""
+    text = (body.get("text") or "").strip()
+
+    if not user_id or not channel_id:
+        if respond:
+            await respond(
+                text="Task refinement command failed: missing user or channel.",
+                response_type="ephemeral",
+            )
+        return
+
+    if respond:
+        await respond(
+            text="Starting guided task refinement…",
+            response_type="ephemeral",
+        )
+
+    channel_type = "im" if channel_id.startswith(("D", "G")) else "channel"
+    event = {
+        "type": "message",
+        "text": text or "start guided task refinement session",
+        "user": user_id,
+        "channel": channel_id,
+        "ts": f"{time.time():.6f}",
+        "channel_type": channel_type,
+    }
+
+    async def _noop_say(**_kwargs):
+        return {"channel": channel_id, "ts": "unused"}
+
+    try:
+        await route_slack_event(
+            runtime=runtime,
+            focus=focus,
+            default_agent="tasks_agent",
+            event=event,
+            bot_user_id=None,
+            say=_noop_say,
+            client=client,
+            get_constraint_store=get_constraint_store,
+        )
+    except Exception as e:
+        logger.exception("Task refinement command route_slack_event failed")
+        if respond:
+            await respond(
+                text=f":warning: Failed to start guided task refinement: {type(e).__name__}",
+                response_type="ephemeral",
+            )
+
+
 def _auto_recover_timeboxing_focus_for_thread(
     *, focus: FocusManager, event: dict, user_id: str
 ) -> None:
@@ -1565,6 +1625,20 @@ def register_handlers(
                 runtime=runtime,
                 focus=focus,
                 default_agent=default_agent,
+                body=body,
+                client=client,
+                respond=respond,
+                get_constraint_store=_get_constraint_store,
+            )
+        )
+
+    @app.command("/task-refine")
+    async def cmd_task_refine(ack, body, respond, client, logger):
+        await ack()
+        asyncio.create_task(
+            _handle_task_refine_command(
+                runtime=runtime,
+                focus=focus,
                 body=body,
                 client=client,
                 respond=respond,
