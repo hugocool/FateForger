@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     # Core Configuration
     slack_bot_token: str = Field(default="x", env="SLACK_BOT_TOKEN")
+    slack_user_token: str = Field(default="", env="SLACK_USER_TOKEN")
     slack_signing_secret: str = Field(default="x")
     # Slack Configuration
     slack_app_token: str = Field(default="your_slack_app_token_here")
@@ -18,8 +19,6 @@ class Settings(BaseSettings):
     slack_port: int = Field(default=3000, env="SLACK_PORT")
     slack_focus_ttl_seconds: int = Field(default=60 * 60, env="SLACK_FOCUS_TTL_SECONDS")
     slack_app_name: str = Field(default="FateForger")
-    slack_user_token: str = Field(default="", env="SLACK_USER_TOKEN")
-    slack_test_user_token: str = Field(default="", env="SLACK_TEST_USER_TOKEN")
     slack_timeboxing_channel_id: str = Field(
         default="", env="SLACK_TIMEBOXING_CHANNEL_ID"
     )
@@ -97,11 +96,6 @@ class Settings(BaseSettings):
     llm_reasoning_effort_timebox_patcher: str = Field(
         default="", env="LLM_REASONING_EFFORT_TIMEBOX_PATCHER"
     )
-    # Per-agent max output token caps (0 means "provider default")
-    llm_max_tokens: int = Field(default=0, env="LLM_MAX_TOKENS")
-    llm_max_tokens_timebox_patcher: int = Field(
-        default=0, env="LLM_MAX_TOKENS_TIMEBOX_PATCHER"
-    )
 
     # MCP Server Configuration
     mcp_version: str = Field(default="v1.4.8")
@@ -132,22 +126,6 @@ class Settings(BaseSettings):
     notion_timeboxing_parent_page_id: str = Field(
         default="", env="NOTION_TIMEBOXING_PARENT_PAGE_ID"
     )
-    notion_sprint_db_id: str = Field(default="", env="NOTION_SPRINT_DB_ID")
-    notion_sprint_data_source_url: str = Field(
-        default="", env="NOTION_SPRINT_DATA_SOURCE_URL"
-    )
-    notion_sprint_db_ids: str = Field(default="", env="NOTION_SPRINT_DB_IDS")
-    notion_sprint_data_source_urls: str = Field(
-        default="", env="NOTION_SPRINT_DATA_SOURCE_URLS"
-    )
-    timeboxing_memory_backend: str = Field(
-        default="mem0", env="TIMEBOXING_MEMORY_BACKEND"
-    )
-    mem0_user_id: str = Field(default="timeboxing", env="MEM0_USER_ID")
-    mem0_api_key: str = Field(default="", env="MEM0_API_KEY")
-    mem0_is_cloud: bool = Field(default=False, env="MEM0_IS_CLOUD")
-    mem0_local_config_json: str = Field(default="", env="MEM0_LOCAL_CONFIG_JSON")
-    mem0_query_limit: int = Field(default=200, env="MEM0_QUERY_LIMIT")
 
     # Database Configuration
     alembic_database_url: str = Field(default="sqlite:///data/admonish.db")
@@ -165,13 +143,6 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     environment: str = Field(default="development")
     development: str = Field(default="true")
-    obs_prometheus_enabled: bool = Field(default=True, env="OBS_PROMETHEUS_ENABLED")
-    obs_prometheus_port: int = Field(default=9464, env="OBS_PROMETHEUS_PORT")
-    obs_llm_audit_enabled: bool = Field(default=True, env="OBS_LLM_AUDIT_ENABLED")
-    obs_llm_audit_mode: str = Field(default="sanitized", env="OBS_LLM_AUDIT_MODE")
-    obs_llm_audit_max_chars: int = Field(
-        default=2000, env="OBS_LLM_AUDIT_MAX_CHARS"
-    )
 
     wizard_admin_token: str = Field(default="admin_token", env="WIZARD_ADMIN_TOKEN")
     wizard_session_secret: str = Field(default="", env="WIZARD_SESSION_SECRET")
