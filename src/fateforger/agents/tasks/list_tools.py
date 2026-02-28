@@ -12,13 +12,11 @@ from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
-from yarl import URL
 
 from fateforger.tools.ticktick_mcp import (
     get_ticktick_mcp_url,
-    normalize_ticktick_mcp_url,
     probe_ticktick_mcp_endpoint,
-    ticktick_localhost_fallback_urls,
+    validate_ticktick_mcp_url,
 )
 
 
@@ -135,7 +133,7 @@ class TickTickListManager:
         workbench: Any = None,
         pending_snapshot_parallelism: int = 4,
     ) -> None:
-        self._server_url = normalize_ticktick_mcp_url(
+        self._server_url = validate_ticktick_mcp_url(
             server_url or get_ticktick_mcp_url()
         ).strip()
         self._timeout = timeout
@@ -1117,26 +1115,7 @@ class TickTickListManager:
             self._server_url, connect_timeout_s=min(self._timeout, 1.5)
         )
         if not ok:
-            parsed = URL(self._server_url)
-            if parsed.host == "ticktick-mcp":
-                for fallback in ticktick_localhost_fallback_urls(self._server_url):
-                    fallback_ok, fallback_reason = probe_ticktick_mcp_endpoint(
-                        fallback, connect_timeout_s=min(self._timeout, 1.5)
-                    )
-                    if not fallback_ok:
-                        reason = fallback_reason or reason
-                        continue
-                    logger.warning(
-                        "TickTick MCP endpoint '%s' is unavailable (%s); using '%s'.",
-                        self._server_url,
-                        reason,
-                        fallback,
-                    )
-                    self._server_url = fallback
-                    ok = True
-                    break
-            if not ok:
-                raise RuntimeError(reason or "TickTick MCP endpoint is unavailable.")
+            raise RuntimeError(reason or "TickTick MCP endpoint is unavailable.")
         params = StreamableHttpServerParams(url=self._server_url, timeout=self._timeout)
         self._workbench = McpWorkbench(params)
         return self._workbench

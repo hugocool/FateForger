@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
+from urllib.parse import urlparse
 
 
 logger = logging.getLogger(__name__)
@@ -18,6 +20,47 @@ def get_ticktick_mcp_url() -> str:
         or "http://ticktick-mcp:8000/mcp"
     )
     return value.strip()
+
+
+def validate_ticktick_mcp_url(value: str) -> str:
+    """Validate TickTick MCP endpoint URL and return it unchanged."""
+    raw = (value or "").strip()
+    if not raw:
+        raise ValueError("TickTick MCP URL is empty")
+    if "://" not in raw:
+        raise ValueError(
+            "TickTick MCP URL must include scheme (e.g. http://ticktick-mcp:8000/mcp)"
+        )
+    candidate = raw
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("TickTick MCP URL must use http or https scheme")
+    if not parsed.netloc or not parsed.hostname:
+        raise ValueError("TickTick MCP URL must include a host")
+    if not parsed.path or parsed.path == "/":
+        raise ValueError("TickTick MCP URL must include explicit path (e.g. /mcp)")
+    return raw
+
+
+def probe_ticktick_mcp_endpoint(
+    server_url: str,
+    *,
+    connect_timeout_s: float = 1.5,
+) -> tuple[bool, str]:
+    """Cheap connectivity probe used before opening an MCP workbench."""
+    try:
+        parsed = urlparse(validate_ticktick_mcp_url(server_url))
+    except ValueError as exc:
+        return False, str(exc)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not host:
+        return False, f"Invalid TickTick MCP URL: '{server_url}'"
+    try:
+        with socket.create_connection((host, port), timeout=connect_timeout_s):
+            return True, ""
+    except OSError as exc:
+        return False, f"TickTick MCP endpoint '{server_url}' is unreachable: {exc}"
 
 
 class TickTickMcpClient:
@@ -44,4 +87,9 @@ class TickTickMcpClient:
             raise RuntimeError("Failed to load TickTick MCP tools") from exc
 
 
-__all__ = ["TickTickMcpClient", "get_ticktick_mcp_url"]
+__all__ = [
+    "TickTickMcpClient",
+    "get_ticktick_mcp_url",
+    "validate_ticktick_mcp_url",
+    "probe_ticktick_mcp_endpoint",
+]
