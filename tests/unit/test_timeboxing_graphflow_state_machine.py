@@ -11,7 +11,11 @@ from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
 from fateforger.agents.timeboxing.flow_graph import build_timeboxing_graphflow
 from fateforger.agents.timeboxing.nodes.nodes import TransitionNode
 from fateforger.agents.timeboxing.patching import TimeboxPatcher
-from fateforger.agents.timeboxing.stage_gating import StageDecision, StageGateOutput, TimeboxingStage
+from fateforger.agents.timeboxing.stage_gating import (
+    StageDecision,
+    StageGateOutput,
+    TimeboxingStage,
+)
 
 
 @pytest.mark.asyncio
@@ -20,13 +24,17 @@ async def test_graphflow_routes_by_session_stage_and_decision():
     agent._timebox_patcher = TimeboxPatcher()
     agent._durable_constraint_prefetch_tasks = {}
 
-    async def _noop_calendar(_self, _session: Session, *, timeout_s: float = 0.0) -> None:
+    async def _noop_calendar(
+        _self, _session: Session, *, timeout_s: float = 0.0
+    ) -> None:
         return None
 
     def _noop_queue_extract(**_kwargs):
         return None
 
-    async def _fake_decide(_self, _session: Session, *, user_message: str) -> StageDecision:
+    async def _fake_decide(
+        _self, _session: Session, *, user_message: str
+    ) -> StageDecision:
         assert user_message == "hello"
         return StageDecision(action="provide_info")
 
@@ -76,13 +84,17 @@ async def test_graphflow_proceed_advances_to_next_stage():
     agent._timebox_patcher = TimeboxPatcher()
     agent._durable_constraint_prefetch_tasks = {}
 
-    async def _noop_calendar(_self, _session: Session, *, timeout_s: float = 0.0) -> None:
+    async def _noop_calendar(
+        _self, _session: Session, *, timeout_s: float = 0.0
+    ) -> None:
         return None
 
     def _noop_queue_extract(**_kwargs):
         return None
 
-    async def _fake_decide(_self, _session: Session, *, user_message: str) -> StageDecision:
+    async def _fake_decide(
+        _self, _session: Session, *, user_message: str
+    ) -> StageDecision:
         return StageDecision(action="proceed")
 
     async def _fake_stage_gate(
@@ -131,13 +143,17 @@ async def test_graphflow_cancel_terminates_without_stage_run():
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     agent._timebox_patcher = TimeboxPatcher()
 
-    async def _noop_calendar(_self, _session: Session, *, timeout_s: float = 0.0) -> None:
+    async def _noop_calendar(
+        _self, _session: Session, *, timeout_s: float = 0.0
+    ) -> None:
         return None
 
     def _noop_queue_extract(**_kwargs):
         return None
 
-    async def _fake_decide(_self, _session: Session, *, user_message: str) -> StageDecision:
+    async def _fake_decide(
+        _self, _session: Session, *, user_message: str
+    ) -> StageDecision:
         return StageDecision(action="cancel")
 
     agent._ensure_calendar_immovables = types.MethodType(_noop_calendar, agent)
@@ -182,6 +198,10 @@ async def test_transition_routes_reviewcommit_edits_back_to_refine():
     )
     node = TransitionNode(orchestrator=agent, session=session, turn_init=turn_init)
 
+    await node.on_messages([], cancellation_token=types.SimpleNamespace())
+
+    assert session.stage == TimeboxingStage.REFINE
+    assert node.stage_user_message == "please add a lunch block and a buffer"
     await node.on_messages([], cancellation_token=types.SimpleNamespace())
 
     assert session.stage == TimeboxingStage.REFINE

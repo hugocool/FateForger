@@ -297,7 +297,9 @@ async def execute_search_plan(
 
     async def _run(query: ConstraintSearchQuery):
         try:
-            results = await _execute_single_query(client, query, as_of=as_of, stage=plan.stage)
+            results = await _execute_single_query(
+                client, query, as_of=as_of, stage=plan.stage
+            )
             return query.label, results
         except Exception as exc:
             return query.label, exc

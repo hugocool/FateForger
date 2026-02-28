@@ -93,4 +93,3 @@ __all__ = [
     "tasks_rows",
     "timebox_events_rows",
 ]
-

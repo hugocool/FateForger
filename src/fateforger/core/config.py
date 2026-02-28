@@ -1,7 +1,7 @@
 import os
 import sys
-from urllib.parse import urlparse
 from typing import Optional
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -186,9 +186,7 @@ class Settings(BaseSettings):
     obs_prometheus_port: int = Field(default=9464, env="OBS_PROMETHEUS_PORT")
     obs_llm_audit_enabled: bool = Field(default=True, env="OBS_LLM_AUDIT_ENABLED")
     obs_llm_audit_mode: str = Field(default="sanitized", env="OBS_LLM_AUDIT_MODE")
-    obs_llm_audit_max_chars: int = Field(
-        default=2000, env="OBS_LLM_AUDIT_MAX_CHARS"
-    )
+    obs_llm_audit_max_chars: int = Field(default=2000, env="OBS_LLM_AUDIT_MAX_CHARS")
 
     class Config:
         env_file = (

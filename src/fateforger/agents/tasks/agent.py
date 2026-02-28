@@ -18,7 +18,6 @@ from .list_tools import TickTickListManager
 from .messages import PendingTaskItem, PendingTaskSnapshot, PendingTaskSnapshotRequest
 from .notion_sprint_tools import NotionSprintManager
 
-
 logger = logging.getLogger(__name__)
 
 # TODO(refactor): centralize MCP client/tool loading + timeouts in shared helpers (see `fateforger.agents.timeboxing.mcp_clients`)
@@ -133,7 +132,9 @@ class TasksAgent(RoutedAgent):
         )
 
     @message_handler
-    async def handle_text(self, message: TextMessage, ctx: MessageContext) -> TextMessage:
+    async def handle_text(
+        self, message: TextMessage, ctx: MessageContext
+    ) -> TextMessage:
         response = await with_timeout(
             "tasks:on_messages",
             self._assistant.on_messages([message], ctx.cancellation_token),

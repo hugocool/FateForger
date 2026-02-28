@@ -9,12 +9,12 @@ import logging
 import os
 import re
 import sys
-from time import perf_counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
 from functools import wraps
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, Dict, List, Literal, ParamSpec, Type, TypeVar
 from zoneinfo import ZoneInfo
 
@@ -30,8 +30,9 @@ from autogen_core import (
 )
 from autogen_core.tools import FunctionTool
 from dateutil import parser as date_parser
-from pydantic import BaseModel, TypeAdapter, ValidationError, model_validator
+from pydantic import BaseModel
 from pydantic import Field as PydanticField
+from pydantic import TypeAdapter, ValidationError, model_validator
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from fateforger.agents.schedular.models.calendar import CalendarEvent, EventType
@@ -44,8 +45,10 @@ from fateforger.core.logging_config import observe_stage_duration
 from fateforger.debug.diag import with_timeout
 from fateforger.debug.log_index import append_index_entry
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
-from fateforger.llm import build_autogen_chat_client
-from fateforger.llm import assert_strict_tools_for_structured_output
+from fateforger.llm import (
+    assert_strict_tools_for_structured_output,
+    build_autogen_chat_client,
+)
 from fateforger.llm.toon import toon_encode
 from fateforger.slack_bot.constraint_review import (
     CONSTRAINT_REVIEW_ALL_ACTION_ID,
@@ -67,9 +70,8 @@ from fateforger.tools.ticktick_mcp import TickTickMcpClient, get_ticktick_mcp_ur
 
 from .actions import TimeboxAction
 from .constants import TIMEBOXING_FALLBACK, TIMEBOXING_LIMITS, TIMEBOXING_TIMEOUTS
-from .constraint_retriever import ConstraintRetriever
-from .constraint_retriever import STARTUP_PREFETCH_TAG
 from .constraint_memory_component import ConstraintPlanningMemory
+from .constraint_retriever import STARTUP_PREFETCH_TAG, ConstraintRetriever
 from .contracts import (
     BlockPlan,
     CaptureInputsContext,
@@ -81,13 +83,13 @@ from .contracts import (
     TaskCandidate,
     WorkWindow,
 )
-from .flow_graph import build_timeboxing_graphflow
 from .durable_constraint_store import (
     DurableConstraintStore,
     build_durable_constraint_store,
 )
-from .mem0_constraint_memory import build_mem0_client_from_settings
+from .flow_graph import build_timeboxing_graphflow
 from .mcp_clients import McpCalendarClient
+from .mem0_constraint_memory import build_mem0_client_from_settings
 from .messages import (
     StartTimeboxing,
     TimeboxingCancelSubmit,
@@ -105,6 +107,7 @@ from .nlu import (
     build_constraint_interpreter,
     build_planned_date_interpreter,
 )
+from .notion_constraint_extractor import NotionConstraintExtractor
 from .patching import TimeboxPatcher
 from .planning_policy import QUALITY_RUBRIC_PROMPT
 from .preferences import (
@@ -119,26 +122,29 @@ from .preferences import (
     ConstraintStore,
     ensure_constraint_schema,
 )
-from .notion_constraint_extractor import NotionConstraintExtractor
 from .prompt_rendering import render_skeleton_draft_system_prompt
 from .pydantic_parsing import parse_chat_content, parse_model_list, parse_model_optional
+from .scheduler_prefetch_capability import SchedulerPrefetchCapability
 from .stage_gating import (
     CAPTURE_INPUTS_PROMPT,
     COLLECT_CONSTRAINTS_PROMPT,
-    ConstraintsSection,
     DECISION_PROMPT,
+    REVIEW_COMMIT_PROMPT,
+    TIMEBOX_SUMMARY_PROMPT,
+    ConstraintsSection,
     FreeformSection,
     NextStepsSection,
-    REVIEW_COMMIT_PROMPT,
     SessionMessage,
-    TIMEBOX_SUMMARY_PROMPT,
     StageDecision,
     StageGateOutput,
     TimeboxingStage,
 )
 from .submitter import CalendarSubmitter
-from .sync_engine import FFTB_PREFIX, SyncTransaction, gcal_response_to_tb_plan_with_identity
-from .scheduler_prefetch_capability import SchedulerPrefetchCapability
+from .sync_engine import (
+    FFTB_PREFIX,
+    SyncTransaction,
+    gcal_response_to_tb_plan_with_identity,
+)
 from .task_marshalling_capability import TaskMarshallingCapability
 from .tb_models import TBEvent, TBPlan
 from .timebox import Timebox, tb_plan_to_timebox, timebox_to_tb_plan
@@ -6518,6 +6524,12 @@ def _coerce_async_database_url(database_url: str) -> str:
     """Ensure a database URL uses an async driver when needed."""
     if database_url.startswith("sqlite+aiosqlite://"):
         return database_url
+    if database_url.startswith("sqlite://"):
+        return database_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    return database_url
+
+
+__all__ = ["TimeboxingFlowAgent"]
     if database_url.startswith("sqlite://"):
         return database_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
     return database_url

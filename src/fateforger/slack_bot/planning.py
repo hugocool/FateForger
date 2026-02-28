@@ -824,8 +824,16 @@ def _card_payload(
     cur_dur = int(draft.duration_min)
     # Ensure current duration appears in the list
     if str(cur_dur) not in {o["value"] for o in dur_options}:
-        dur_options.insert(0, {"text": {"type": "plain_text", "text": f"{cur_dur} min"}, "value": str(cur_dur)})
-    dur_initial = next((o for o in dur_options if o["value"] == str(cur_dur)), dur_options[0])
+        dur_options.insert(
+            0,
+            {
+                "text": {"type": "plain_text", "text": f"{cur_dur} min"},
+                "value": str(cur_dur),
+            },
+        )
+    dur_initial = next(
+        (o for o in dur_options if o["value"] == str(cur_dur)), dur_options[0]
+    )
 
     # --- Blocks ---
     blocks: list[dict[str, Any]] = [
