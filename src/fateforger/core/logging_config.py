@@ -51,6 +51,70 @@ def observe_stage_duration(*, stage: str, duration_s: float) -> None:
     metric.labels(stage=safe_stage).observe(max(0.0, float(duration_s)))
 
 
+def record_llm_call(
+    *,
+    agent: str,
+    model: str,
+    status: str,
+    call_label: str,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+) -> None:
+    """Increment LLM call + token counters from outside the AutoGen event pipeline.
+
+    Use this for LLM calls that don't flow through autogen_core.events (e.g.
+    direct OpenAI calls in utilities or MCP-facing code).
+    """
+    _ensure_metrics_initialized()
+    safe_agent = _bounded_label(agent, fallback="unknown")
+    safe_model = _bounded_label(model, fallback="unknown")
+    safe_status = _bounded_label(status, fallback="unknown")
+    safe_label = _bounded_label(call_label, fallback="unknown")
+    if _METRIC_LLM_CALLS is not None:
+        _METRIC_LLM_CALLS.labels(
+            agent=safe_agent, model=safe_model, status=safe_status, call_label=safe_label
+        ).inc()
+    if _METRIC_LLM_TOKENS is not None:
+        if isinstance(prompt_tokens, int) and prompt_tokens >= 0:
+            _METRIC_LLM_TOKENS.labels(
+                agent=safe_agent, model=safe_model, type="prompt", call_label=safe_label
+            ).inc(prompt_tokens)
+        if isinstance(completion_tokens, int) and completion_tokens >= 0:
+            _METRIC_LLM_TOKENS.labels(
+                agent=safe_agent, model=safe_model, type="completion", call_label=safe_label
+            ).inc(completion_tokens)
+
+
+def record_tool_call(*, agent: str, tool: str, status: str) -> None:
+    """Increment tool call counter from outside the AutoGen event pipeline.
+
+    Use this for MCP/tool calls not observed via autogen_core.events.
+    """
+    _ensure_metrics_initialized()
+    if _METRIC_TOOL_CALLS is None:
+        return
+    _METRIC_TOOL_CALLS.labels(
+        agent=_bounded_label(agent, fallback="unknown"),
+        tool=_bounded_label(tool, fallback="unknown"),
+        status=_bounded_label(status, fallback="unknown"),
+    ).inc()
+
+
+def record_error(*, component: str, error_type: str) -> None:
+    """Increment the error counter (no-op when metrics are disabled).
+
+    Use this in any component (MCP clients, adapters, etc.) to surface errors
+    to the fateforger_errors_total Prometheus counter.
+    """
+    _ensure_metrics_initialized()
+    if _METRIC_ERRORS is None:
+        return
+    _METRIC_ERRORS.labels(
+        component=_bounded_label(component, fallback="unknown"),
+        error_type=_bounded_label(error_type, fallback="error"),
+    ).inc()
+
+
 def configure_logging(*, default_level: str | int = "INFO") -> None:
     """
     Configure application logging with sane defaults.

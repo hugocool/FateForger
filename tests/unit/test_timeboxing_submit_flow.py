@@ -22,7 +22,11 @@ from fateforger.agents.timeboxing.messages import (
 from fateforger.agents.timeboxing.stage_gating import TimeboxingStage
 from fateforger.agents.timeboxing.sync_engine import SyncOp, SyncOpType, SyncTransaction
 from fateforger.agents.timeboxing.tb_models import TBPlan
-from fateforger.agents.timeboxing.timebox import Timebox, timebox_to_tb_plan
+from fateforger.agents.timeboxing.timebox import (
+    Timebox,
+    tb_plan_to_timebox,
+    timebox_to_tb_plan,
+)
 from fateforger.slack_bot.messages import SlackBlockMessage
 from fateforger.slack_bot.timeboxing_submit import FF_TIMEBOX_UNDO_SUBMIT_ACTION_ID
 
@@ -269,3 +273,38 @@ async def test_submit_current_plan_refreshes_remote_baseline(
     assert session.base_snapshot is not None
     assert session.base_snapshot.events[0].n == "Remote-1"
     assert session.remote_event_ids_by_index == ["fftb123"]
+
+
+@pytest.mark.asyncio
+async def test_refine_patch_path_stages_locally_without_remote_submit() -> None:
+    """Stage 4 patching should keep edits local and defer remote writes to Stage 5 submit."""
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    agent._collect_constraints = AsyncMock(return_value=[])
+    agent._submit_current_plan = AsyncMock(return_value=None)
+    patched_plan = _build_plan(summary="Patched Focus")
+
+    async def _apply_patch(**kwargs):
+        kwargs["plan_validator"](patched_plan)
+        return patched_plan, object()
+
+    agent._timebox_patcher = SimpleNamespace(
+        apply_patch=AsyncMock(side_effect=_apply_patch)
+    )
+
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.tb_plan = _build_plan(summary="Original Focus")
+    session.timebox = tb_plan_to_timebox(session.tb_plan)
+
+    outcome = await TimeboxingFlowAgent._execute_refine_patch_and_sync(
+        agent,
+        session=session,
+        patch_message="Shift deep work later.",
+    )
+
+    assert outcome.status == "staged"
+    assert outcome.changed is True
+    assert "Review Stage 5" in outcome.note
+    assert session.tb_plan is patched_plan
+    assert session.timebox is not None
+    assert session.timebox.events[0].summary == "Patched Focus"
+    agent._submit_current_plan.assert_not_awaited()

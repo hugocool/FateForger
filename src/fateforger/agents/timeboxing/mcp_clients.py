@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
 import sys
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from dateutil import parser as date_parser
 
 from fateforger.adapters.calendar.models import GCalEventsResponse
+from fateforger.core.logging_config import record_error, record_tool_call
 from fateforger.tools.constraint_mcp import (
     build_constraint_server_env,
     resolve_constraint_repo_root,
@@ -55,7 +56,9 @@ class ConstraintMemoryClient:
         if not text:
             if allow_empty:
                 return []
-            raise RuntimeError(f"constraint-memory tool {tool_name} returned empty text")
+            raise RuntimeError(
+                f"constraint-memory tool {tool_name} returned empty text"
+            )
         if text.startswith("Error executing tool "):
             raise RuntimeError(f"constraint-memory tool {tool_name} failed: {text}")
         if text.startswith("```"):
@@ -142,9 +145,7 @@ class ConstraintMemoryClient:
                     continue
                 content = getattr(item, "content", None)
                 if isinstance(content, str):
-                    parsed = cls._parse_json_text(
-                        tool_name, content, allow_empty=True
-                    )
+                    parsed = cls._parse_json_text(tool_name, content, allow_empty=True)
                     if isinstance(parsed, list):
                         parsed_items.extend(parsed)
                     elif parsed != []:
@@ -202,7 +203,9 @@ class ConstraintMemoryClient:
         )
         self._workbench = McpWorkbench(params)
 
-    async def _call_tool_json(self, tool_name: str, *, arguments: dict[str, Any]) -> Any:
+    async def _call_tool_json(
+        self, tool_name: str, *, arguments: dict[str, Any]
+    ) -> Any:
         attempts = 2
         for attempt in range(1, attempts + 1):
             try:
@@ -296,7 +299,9 @@ class ConstraintMemoryClient:
             Tool payload as a dict when available; otherwise an empty dict.
         """
         payload = {"record": record, "event": event or None}
-        data = await self._call_tool_json("constraint_upsert_constraint", arguments=payload)
+        data = await self._call_tool_json(
+            "constraint_upsert_constraint", arguments=payload
+        )
         if not isinstance(data, dict):
             raise RuntimeError(
                 "constraint-memory tool constraint_upsert_constraint returned non-dict JSON"
@@ -388,6 +393,13 @@ class McpCalendarClient:
                             "error": (str(exc) or type(exc).__name__)[:300],
                         }
                     )
+                error_type = "transport_recoverable" if recoverable else "transport_fatal"
+                record_error(component="McpCalendarClient", error_type=error_type)
+                record_tool_call(
+                    agent="mcp_calendar",
+                    tool=tool_name,
+                    status="error",
+                )
                 if attempt >= attempts or not recoverable:
                     raise
                 await self._reset_workbench()
@@ -496,9 +508,7 @@ class McpCalendarClient:
             if not dict_items:
                 return []
             direct_events = [
-                item
-                for item in dict_items
-                if "start" in item and "end" in item
+                item for item in dict_items if "start" in item and "end" in item
             ]
             if direct_events:
                 return direct_events

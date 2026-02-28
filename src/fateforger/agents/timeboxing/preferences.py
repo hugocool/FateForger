@@ -86,7 +86,10 @@ class Constraint(ConstraintBase, table=True):
     )
     updated_at: datetime = Field(
         sa_column=Column(
-            SQLDateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+            SQLDateTime,
+            default=datetime.utcnow,
+            onupdate=datetime.utcnow,
+            nullable=False,
         )
     )
 
