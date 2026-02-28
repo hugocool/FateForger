@@ -6,6 +6,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -35,6 +36,7 @@ from fateforger.haunt.planning_store import (
 )
 from fateforger.haunt.reconcile import PlanningReconciler, PlanningReminder
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
+from fateforger.core.logging_config import observe_stage_duration, record_error
 from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.workspace import DEFAULT_PERSONAS, WorkspaceRegistry
 
@@ -143,15 +145,56 @@ class PlanningCoordinator:
     ) -> None:
         if not user_id:
             return
+        total_started = perf_counter()
         preferred_channel = channel_id if channel_type == "im" else None
-        await self.ensure_anchor(user_id=user_id, channel_id=preferred_channel)
+        ensure_anchor_started = perf_counter()
+        try:
+            await self.ensure_anchor(user_id=user_id, channel_id=preferred_channel)
+        except asyncio.CancelledError:
+            observe_stage_duration(
+                stage="planning_register_ensure_anchor_cancelled",
+                duration_s=perf_counter() - ensure_anchor_started,
+            )
+            record_error(component="planning_register", error_type="ensure_anchor_cancelled")
+            raise
+        else:
+            observe_stage_duration(
+                stage="planning_register_ensure_anchor",
+                duration_s=perf_counter() - ensure_anchor_started,
+            )
+
         if self._guardian:
+            reconcile_started = perf_counter()
             try:
                 await self._guardian.reconcile_user(user_id=user_id)
+            except asyncio.CancelledError:
+                observe_stage_duration(
+                    stage="planning_guardian_reconcile_cancelled",
+                    duration_s=perf_counter() - reconcile_started,
+                )
+                record_error(
+                    component="planning_guardian", error_type="reconcile_cancelled"
+                )
+                raise
             except Exception:
+                observe_stage_duration(
+                    stage="planning_guardian_reconcile_error",
+                    duration_s=perf_counter() - reconcile_started,
+                )
+                record_error(component="planning_guardian", error_type="reconcile_error")
                 logger.exception(
                     "Planning guardian reconcile_user failed for %s", user_id
                 )
+            else:
+                observe_stage_duration(
+                    stage="planning_guardian_reconcile",
+                    duration_s=perf_counter() - reconcile_started,
+                )
+
+        observe_stage_duration(
+            stage="planning_register_user_total",
+            duration_s=perf_counter() - total_started,
+        )
 
     async def dispatch_planning_reminder(self, reminder: PlanningReminder) -> None:
         if not reminder.user_id:

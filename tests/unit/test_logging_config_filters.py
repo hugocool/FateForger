@@ -157,6 +157,7 @@ def test_configure_logging_adds_timebox_patcher_file_handler(
     monkeypatch.setenv("TIMEBOX_PATCHER_LOG_DIR", str(tmp_path))
     monkeypatch.setenv("TIMEBOX_PATCHER_INDEX_FILE", "patcher.index.jsonl")
     monkeypatch.setenv("OBS_PROMETHEUS_ENABLED", "0")
+    monkeypatch.setenv("OBS_LLM_AUDIT_ENABLED", "0")
 
     try:
         configure_logging(default_level="INFO")
@@ -197,6 +198,7 @@ def test_configure_logging_adds_openai_safe_filter(monkeypatch) -> None:
         openai_logger.removeFilter(existing)
     monkeypatch.delenv("TIMEBOX_PATCHER_DEBUG_LOG", raising=False)
     monkeypatch.setenv("OBS_PROMETHEUS_ENABLED", "0")
+    monkeypatch.setenv("OBS_LLM_AUDIT_ENABLED", "0")
 
     try:
         configure_logging(default_level="INFO")

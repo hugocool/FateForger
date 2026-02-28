@@ -1,12 +1,16 @@
 import json
 import logging
 import os
+import queue
 import re
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib import error as url_error
+from urllib import request as url_request
 
 from fateforger.debug.log_index import append_index_entry
 
@@ -22,8 +26,14 @@ _PROM_LOCK = threading.Lock()
 _PROM_STARTED_PORT: int | None = None
 _METRICS_READY = False
 
-_LLM_AUDIT_LOGGER_NAME = "fateforger.observability.llm_io"
-_LLM_AUDIT_LOGGER: logging.Logger | None = None
+_LLM_AUDIT_QUEUE: queue.Queue[dict[str, Any]] | None = None
+_LLM_AUDIT_THREAD: threading.Thread | None = None
+_LLM_AUDIT_STOP = threading.Event()
+_LLM_AUDIT_SINK: str = "off"
+_LLM_AUDIT_FILE_PATH: Path | None = None
+_LLM_AUDIT_LOKI_URL: str | None = None
+_LLM_AUDIT_BATCH_SIZE: int = 128
+_LLM_AUDIT_FLUSH_S: float = 0.25
 
 _REDACT_KEYS = {
     "token",
@@ -39,6 +49,7 @@ _METRIC_LLM_TOKENS = None
 _METRIC_TOOL_CALLS = None
 _METRIC_ERRORS = None
 _METRIC_STAGE_DURATION = None
+_METRIC_OBS_DROPPED = None
 
 _CHANNEL_ID_RE = re.compile(r"^[CDG][A-Z0-9]+$")
 _STAGE_AGENT_RE = re.compile(r"^Stage(?P<stage>[A-Za-z]+)Node(?:_|$)")
@@ -60,6 +71,7 @@ def record_llm_call(
     model: str,
     status: str,
     call_label: str,
+    function: str | None = None,
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
 ) -> None:
@@ -73,17 +85,23 @@ def record_llm_call(
     safe_model = _bounded_label(model, fallback="unknown")
     safe_status = _bounded_label(status, fallback="unknown")
     safe_label = _bounded_label(call_label, fallback="unknown")
+    safe_function = _bounded_label(function, fallback="unknown")
     if _METRIC_LLM_CALLS is not None:
         _METRIC_LLM_CALLS.labels(
             agent=safe_agent,
             model=safe_model,
             status=safe_status,
             call_label=safe_label,
+            function=safe_function,
         ).inc()
     if _METRIC_LLM_TOKENS is not None:
         if isinstance(prompt_tokens, int) and prompt_tokens >= 0:
             _METRIC_LLM_TOKENS.labels(
-                agent=safe_agent, model=safe_model, type="prompt", call_label=safe_label
+                agent=safe_agent,
+                model=safe_model,
+                type="prompt",
+                call_label=safe_label,
+                function=safe_function,
             ).inc(prompt_tokens)
         if isinstance(completion_tokens, int) and completion_tokens >= 0:
             _METRIC_LLM_TOKENS.labels(
@@ -91,6 +109,7 @@ def record_llm_call(
                 model=safe_model,
                 type="completion",
                 call_label=safe_label,
+                function=safe_function,
             ).inc(completion_tokens)
 
 
@@ -145,6 +164,8 @@ _STRUCTURED_EXTRACT_FIELDS: frozenset[str] = frozenset(
         "model",
         "tool_name",
         "call_label",
+        "function",
+        "function_name",
         "session_key",
         "thread_ts",
         "channel_id",
@@ -234,6 +255,8 @@ class StructuredJsonFormatter(logging.Formatter):
             "model": "model",
             "tool_name": "tool_name",
             "call_label": "call_label",
+            "function": "function",
+            "function_name": "function",
             "session_key": "session_key",
             "thread_ts": "thread_ts",
             "channel_id": "channel_id",
@@ -274,7 +297,7 @@ def configure_logging(*, default_level: str | int = "INFO") -> None:
     logging.basicConfig(level=_coerce_level(os.getenv("LOG_LEVEL", default_level)))
     _configure_prometheus_exporter()
     _configure_json_stdout()
-    _configure_llm_audit_file_logging()
+    _configure_llm_audit_pipeline()
 
     mode = _coerce_autogen_events_mode(os.getenv("AUTOGEN_EVENTS_LOG", "summary"))
     output_target = _coerce_autogen_events_output_target(
@@ -376,41 +399,167 @@ def _configure_json_stdout() -> None:
                 handler.setFormatter(formatter)
 
 
-def _configure_llm_audit_file_logging() -> None:
-    global _LLM_AUDIT_LOGGER
+def _configure_llm_audit_pipeline() -> None:
+    global _LLM_AUDIT_QUEUE, _LLM_AUDIT_THREAD, _LLM_AUDIT_SINK
+    global _LLM_AUDIT_FILE_PATH, _LLM_AUDIT_LOKI_URL, _LLM_AUDIT_BATCH_SIZE, _LLM_AUDIT_FLUSH_S
+
     if not _is_truthy(os.getenv("OBS_LLM_AUDIT_ENABLED", "1")):
+        _LLM_AUDIT_SINK = "off"
         return
-    if _LLM_AUDIT_LOGGER is not None and any(
-        getattr(h, "_fftb_llm_io_file", False) for h in _LLM_AUDIT_LOGGER.handlers
-    ):
+    sink = _coerce_llm_audit_sink(os.getenv("OBS_LLM_AUDIT_SINK", "loki"))
+    if sink == "off":
+        _LLM_AUDIT_SINK = "off"
         return
+
+    if _LLM_AUDIT_THREAD is not None and _LLM_AUDIT_THREAD.is_alive():
+        return
+
+    _LLM_AUDIT_SINK = sink
+    _LLM_AUDIT_BATCH_SIZE = max(
+        1, _coerce_int(os.getenv("OBS_LLM_AUDIT_BATCH_SIZE", "128"), default=128)
+    )
+    _LLM_AUDIT_FLUSH_S = max(
+        0.01,
+        _coerce_int(os.getenv("OBS_LLM_AUDIT_FLUSH_INTERVAL_MS", "250"), default=250)
+        / 1000.0,
+    )
+    queue_size = max(
+        1, _coerce_int(os.getenv("OBS_LLM_AUDIT_QUEUE_MAX", "4096"), default=4096)
+    )
+    _LLM_AUDIT_QUEUE = queue.Queue(maxsize=queue_size)
+    _LLM_AUDIT_STOP.clear()
+
     log_dir = Path(os.getenv("OBS_LLM_AUDIT_LOG_DIR", "logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    file_path = log_dir / f"llm_io_{ts}_{os.getpid()}.jsonl"
+    _LLM_AUDIT_FILE_PATH = None
+    _LLM_AUDIT_LOKI_URL = None
 
-    llm_logger = logging.getLogger(_LLM_AUDIT_LOGGER_NAME)
-    handler = logging.FileHandler(file_path, encoding="utf-8")
-    handler.setLevel(logging.INFO)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    setattr(handler, "_fftb_llm_io_file", True)
-    llm_logger.addHandler(handler)
-    llm_logger.setLevel(logging.INFO)
-    llm_logger.propagate = False
-    _LLM_AUDIT_LOGGER = llm_logger
+    if sink in {"file", "both"}:
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        _LLM_AUDIT_FILE_PATH = log_dir / f"llm_io_{ts}_{os.getpid()}.jsonl"
+        append_index_entry(
+            index_path=log_dir / os.getenv("OBS_LLM_AUDIT_INDEX_FILE", "llm_io_index.jsonl"),
+            entry={
+                "type": "llm_io",
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "log_path": str(_LLM_AUDIT_FILE_PATH),
+                "pid": os.getpid(),
+                "mode": os.getenv("OBS_LLM_AUDIT_MODE", "sanitized"),
+                "sink": sink,
+            },
+        )
 
-    append_index_entry(
-        index_path=log_dir
-        / os.getenv("OBS_LLM_AUDIT_INDEX_FILE", "llm_io_index.jsonl"),
-        entry={
-            "type": "llm_io",
-            "created_at": datetime.utcnow().isoformat() + "Z",
-            "log_path": str(file_path),
-            "pid": os.getpid(),
-            "mode": os.getenv("OBS_LLM_AUDIT_MODE", "sanitized"),
-        },
+    if sink in {"loki", "both"}:
+        _LLM_AUDIT_LOKI_URL = (
+            os.getenv("OBS_LLM_AUDIT_LOKI_URL", "http://localhost:3100/loki/api/v1/push")
+            or "http://localhost:3100/loki/api/v1/push"
+        ).strip()
+
+    _LLM_AUDIT_THREAD = threading.Thread(
+        target=_llm_audit_worker_loop,
+        name="fateforger-llm-audit",
+        daemon=True,
     )
-    logging.getLogger(__name__).info("LLM I/O audit logging enabled: %s", file_path)
+    _LLM_AUDIT_THREAD.start()
+    logging.getLogger(__name__).info(
+        "LLM I/O audit pipeline enabled (sink=%s queue=%s batch=%s flush_s=%.3f)",
+        sink,
+        queue_size,
+        _LLM_AUDIT_BATCH_SIZE,
+        _LLM_AUDIT_FLUSH_S,
+    )
+
+
+def _llm_audit_worker_loop() -> None:
+    file_handle = None
+    try:
+        if _LLM_AUDIT_FILE_PATH is not None:
+            file_handle = _LLM_AUDIT_FILE_PATH.open("a", encoding="utf-8")
+        while not _LLM_AUDIT_STOP.is_set():
+            batch = _drain_llm_audit_queue()
+            if not batch:
+                continue
+            if _LLM_AUDIT_SINK in {"file", "both"} and file_handle is not None:
+                _write_llm_events_to_file(file_handle, batch)
+            if _LLM_AUDIT_SINK in {"loki", "both"} and _LLM_AUDIT_LOKI_URL:
+                _push_llm_events_to_loki(_LLM_AUDIT_LOKI_URL, batch)
+    except Exception:
+        logging.getLogger(__name__).exception("LLM audit worker crashed")
+        record_error(component="observability", error_type="llm_audit_worker_crash")
+    finally:
+        if file_handle is not None:
+            file_handle.close()
+
+
+def _drain_llm_audit_queue() -> list[dict[str, Any]]:
+    q = _LLM_AUDIT_QUEUE
+    if q is None:
+        return []
+    try:
+        first = q.get(timeout=_LLM_AUDIT_FLUSH_S)
+    except queue.Empty:
+        return []
+    items = [first]
+    remaining = _LLM_AUDIT_BATCH_SIZE - 1
+    while remaining > 0:
+        try:
+            items.append(q.get_nowait())
+        except queue.Empty:
+            break
+        remaining -= 1
+    return items
+
+
+def _write_llm_events_to_file(file_handle: Any, events: list[dict[str, Any]]) -> None:
+    for event in events:
+        file_handle.write(json.dumps(event, ensure_ascii=False, default=str))
+        file_handle.write("\n")
+    file_handle.flush()
+
+
+def _push_llm_events_to_loki(loki_url: str, events: list[dict[str, Any]]) -> None:
+    if not events:
+        return
+    values: list[list[str]] = []
+    for event in events:
+        ts_ns = str(int(time.time() * 1_000_000_000))
+        values.append([ts_ns, json.dumps(event, ensure_ascii=False, default=str)])
+
+    representative = events[-1]
+    stream_labels = {
+        "service": "fateforger",
+        "source": "llm_io",
+        "agent": _bounded_label(representative.get("agent"), fallback="unknown"),
+        "call_label": _bounded_label(representative.get("call_label"), fallback="unknown"),
+        "function": _bounded_label(representative.get("function"), fallback="unknown"),
+        "model": _bounded_label(representative.get("model"), fallback="unknown"),
+        "status": _bounded_label(representative.get("status"), fallback="unknown"),
+    }
+    payload = {"streams": [{"stream": stream_labels, "values": values}]}
+    req = url_request.Request(
+        loki_url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with url_request.urlopen(req, timeout=2.0) as resp:
+            if resp.status >= 300:
+                raise RuntimeError(f"loki_push_status_{resp.status}")
+    except (url_error.URLError, RuntimeError, TimeoutError):
+        record_error(component="observability", error_type="llm_audit_delivery_error")
+
+
+def _enqueue_llm_audit_event(payload: dict[str, Any]) -> None:
+    q = _LLM_AUDIT_QUEUE
+    if q is None:
+        return
+    try:
+        q.put_nowait(payload)
+    except queue.Full:
+        if _METRIC_OBS_DROPPED is not None:
+            _METRIC_OBS_DROPPED.labels(source="llm_io", reason="queue_full").inc()
+        record_error(component="observability", error_type="llm_audit_queue_full")
 
 
 def _configure_timebox_patcher_debug_file_logging() -> None:
@@ -525,22 +674,29 @@ def _coerce_autogen_events_full_payload_mode(value: str | None) -> str:
     return mode
 
 
+def _coerce_llm_audit_sink(value: str | None) -> str:
+    sink = (value or "loki").strip().lower()
+    if sink not in {"off", "loki", "file", "both"}:
+        raise ValueError("OBS_LLM_AUDIT_SINK must be one of: off, loki, file, both")
+    return sink
+
+
 def _ensure_metrics_initialized() -> None:
     global _METRICS_READY
     global _METRIC_LLM_CALLS, _METRIC_LLM_TOKENS, _METRIC_TOOL_CALLS
-    global _METRIC_ERRORS, _METRIC_STAGE_DURATION
+    global _METRIC_ERRORS, _METRIC_STAGE_DURATION, _METRIC_OBS_DROPPED
 
     if _METRICS_READY or Counter is None or Histogram is None:
         return
     _METRIC_LLM_CALLS = Counter(
         "fateforger_llm_calls_total",
         "LLM calls observed by logging pipeline",
-        ["agent", "model", "status", "call_label"],
+        ["agent", "model", "status", "call_label", "function"],
     )
     _METRIC_LLM_TOKENS = Counter(
         "fateforger_llm_tokens_total",
         "LLM token usage observed by logging pipeline",
-        ["agent", "model", "type", "call_label"],
+        ["agent", "model", "type", "call_label", "function"],
     )
     _METRIC_TOOL_CALLS = Counter(
         "fateforger_tool_calls_total",
@@ -557,6 +713,11 @@ def _ensure_metrics_initialized() -> None:
         "Stage duration in seconds",
         ["stage"],
         buckets=(0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 30, 60, 120),
+    )
+    _METRIC_OBS_DROPPED = Counter(
+        "fateforger_observability_dropped_events_total",
+        "Events dropped by observability pipelines",
+        ["source", "reason"],
     )
     _METRICS_READY = True
 
@@ -617,6 +778,16 @@ def _derive_call_label(
     return event_type
 
 
+def _derive_function_name(
+    *, function_name: str | None, stage: str | None, call_label: str
+) -> str:
+    if function_name and function_name.strip():
+        return function_name.strip()
+    if stage and stage.strip():
+        return stage.strip()
+    return call_label
+
+
 def _extract_model_from_response(raw_response: Any) -> str | None:
     if isinstance(raw_response, dict):
         model = raw_response.get("model")
@@ -649,19 +820,20 @@ def _extract_usage_tokens_from_response(
 def _emit_llm_audit_event(event: dict[str, Any]) -> None:
     if not _is_truthy(os.getenv("OBS_LLM_AUDIT_ENABLED", "1")):
         return
-    logger = _LLM_AUDIT_LOGGER
-    if logger is None:
+    if _LLM_AUDIT_SINK == "off":
         return
     mode = (os.getenv("OBS_LLM_AUDIT_MODE", "sanitized") or "sanitized").strip().lower()
+    if mode == "off":
+        return
     max_chars = _coerce_int(os.getenv("OBS_LLM_AUDIT_MAX_CHARS", "2000"), default=2000)
     payload = dict(event)
     payload.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
     serialized = (
         payload
-        if mode in {"raw", "off"}
+        if mode == "raw"
         else _sanitize_for_audit(payload, max_chars=max_chars)
     )
-    logger.info(json.dumps(serialized, ensure_ascii=False, default=str))
+    _enqueue_llm_audit_event(serialized)
 
 
 def _sanitize_for_audit(value: Any, *, max_chars: int, key: str | None = None) -> Any:
@@ -749,6 +921,15 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
         ),
         fallback="unknown",
     )
+    function_name = _bounded_label(
+        _derive_function_name(
+            function_name=str(payload.get("function_name") or payload.get("function") or "").strip()
+            or None,
+            stage=event.stage,
+            call_label=call_label,
+        ),
+        fallback="unknown",
+    )
 
     if isinstance(event, LLMEventPayload):
         raw_response = payload.get("response")
@@ -771,6 +952,7 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
                 model=model,
                 status=status,
                 call_label=call_label,
+                function=function_name,
             ).inc()
         prompt_tokens = event.prompt_tokens or event.prompt_tokens_from_response()
         completion_tokens = (
@@ -790,6 +972,7 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
                     model=model,
                     type="prompt",
                     call_label=call_label,
+                    function=function_name,
                 ).inc(prompt_tokens)
             if isinstance(completion_tokens, int) and completion_tokens >= 0:
                 _METRIC_LLM_TOKENS.labels(
@@ -797,6 +980,7 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
                     model=model,
                     type="completion",
                     call_label=call_label,
+                    function=function_name,
                 ).inc(completion_tokens)
         _emit_llm_audit_event(
             {
@@ -805,6 +989,7 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
                 "model": model,
                 "status": status,
                 "call_label": call_label,
+                "function": function_name,
                 "stage": event.stage,
                 "session_key": session_key,
                 "thread_ts": thread_ts,

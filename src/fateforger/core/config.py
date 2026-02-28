@@ -186,6 +186,8 @@ class Settings(BaseSettings):
     agent_mcp_discovery_timeout_seconds: int = Field(
         default=10
     )
+    slack_register_user_timeout_seconds: float = Field(default=3.0, gt=0.0)
+    slack_route_dispatch_timeout_seconds: float = Field(default=75.0, gt=0.0)
 
     # Timeboxing feature flags
     timeboxing_memory_backend: str = Field(
@@ -203,8 +205,13 @@ class Settings(BaseSettings):
     obs_prometheus_enabled: bool = Field(default=True)
     obs_prometheus_port: int = Field(default=9464)
     obs_llm_audit_enabled: bool = Field(default=True)
+    obs_llm_audit_sink: str = Field(default="loki")
     obs_llm_audit_mode: str = Field(default="sanitized")
     obs_llm_audit_max_chars: int = Field(default=2000)
+    obs_llm_audit_loki_url: str = Field(default="http://localhost:3100/loki/api/v1/push")
+    obs_llm_audit_queue_max: int = Field(default=4096, ge=1, le=200000)
+    obs_llm_audit_batch_size: int = Field(default=128, ge=1, le=10000)
+    obs_llm_audit_flush_interval_ms: int = Field(default=250, ge=10, le=60000)
     autogen_events_log: str = Field(default="summary")
     autogen_events_output_target: str = Field(default="stdout")
     autogen_events_full_payload_mode: str = Field(default="sanitized")
@@ -298,6 +305,36 @@ class Settings(BaseSettings):
         raise ValueError(
             "AUTOGEN_EVENTS_FULL_PAYLOAD_MODE must be one of: sanitized, raw"
         )
+
+    @field_validator("obs_llm_audit_sink")
+    @classmethod
+    def _validate_obs_llm_audit_sink(cls, value: str) -> str:
+        sink = (value or "").strip().lower()
+        if sink in {"off", "loki", "file", "both"}:
+            return sink
+        raise ValueError("OBS_LLM_AUDIT_SINK must be one of: off, loki, file, both")
+
+    @field_validator("obs_llm_audit_mode")
+    @classmethod
+    def _validate_obs_llm_audit_mode(cls, value: str) -> str:
+        mode = (value or "").strip().lower()
+        if mode in {"off", "sanitized", "raw"}:
+            return mode
+        raise ValueError("OBS_LLM_AUDIT_MODE must be one of: off, sanitized, raw")
+
+    @field_validator("obs_llm_audit_loki_url")
+    @classmethod
+    def _validate_obs_llm_audit_loki_url(cls, value: str) -> str:
+        parsed = urlparse((value or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(
+                "OBS_LLM_AUDIT_LOKI_URL must be absolute and start with http:// or https://"
+            )
+        if not parsed.path or parsed.path == "/":
+            raise ValueError(
+                "OBS_LLM_AUDIT_LOKI_URL must include explicit push path (e.g. /loki/api/v1/push)"
+            )
+        return value
 
     @model_validator(mode="after")
     def _validate_runtime_invariants(self) -> "Settings":

@@ -45,12 +45,14 @@ def test_record_observability_event_updates_metrics(monkeypatch) -> None:
         "model": "google_gemini-3",
         "status": "ok",
         "call_label": "planning_date",
+        "function": "planning_date",
     }
     token_labels = {
         "agent": "timeboxing_agent",
         "model": "google_gemini-3",
         "type": "prompt",
         "call_label": "planning_date",
+        "function": "planning_date",
     }
     tool_labels = {
         "agent": "timeboxing_agent",
@@ -147,6 +149,7 @@ def test_record_observability_event_derives_timeboxing_context(monkeypatch) -> N
     assert event["thread_ts"] == "1772248936.310119"
     assert event["model"] == "google_gemini-3-flash-preview"
     assert event["call_label"] == "timeboxing_agent"
+    assert event["function"] == "timeboxing_agent"
 
 
 def test_record_observability_event_derives_stage_call_label(monkeypatch) -> None:
@@ -167,3 +170,4 @@ def test_record_observability_event_derives_stage_call_label(monkeypatch) -> Non
 
     assert captured
     assert captured[-1]["call_label"] == "CollectConstraints"
+    assert captured[-1]["function"] == "CollectConstraints"

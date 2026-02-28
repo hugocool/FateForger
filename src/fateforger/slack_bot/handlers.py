@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import time
+from time import perf_counter
 from typing import Awaitable, Callable
 
 from autogen_agentchat.messages import TextMessage
@@ -20,6 +21,7 @@ from fateforger.agents.timeboxing.preferences import (
     ensure_constraint_schema,
 )
 from fateforger.core.config import settings
+from fateforger.core.logging_config import observe_stage_duration, record_error
 from fateforger.slack_bot.bootstrap import ensure_workspace_ready
 from fateforger.slack_bot.constraint_review import (
     CONSTRAINT_REVIEW_VIEW_CALLBACK_ID,
@@ -1504,6 +1506,114 @@ def register_handlers(
         except Exception:
             pass
 
+    async def _maybe_register_user_with_guard(
+        *, user_id: str, channel_id: str, channel_type: str, origin: str
+    ) -> None:
+        if not user_id or not channel_id:
+            return
+        timeout_s = float(getattr(settings, "slack_register_user_timeout_seconds", 3.0))
+        started = perf_counter()
+        try:
+            await asyncio.wait_for(
+                planning.maybe_register_user(
+                    user_id=user_id,
+                    channel_id=channel_id,
+                    channel_type=channel_type,
+                ),
+                timeout=timeout_s,
+            )
+        except asyncio.TimeoutError:
+            duration_s = perf_counter() - started
+            observe_stage_duration(
+                stage="slack_preroute_register_timeout", duration_s=duration_s
+            )
+            record_error(component="slack_routing", error_type="register_timeout")
+            logger.warning(
+                "Slack pre-route register timed out origin=%s user=%s channel=%s timeout_s=%.2f",
+                origin,
+                user_id,
+                channel_id,
+                timeout_s,
+            )
+        except Exception:
+            duration_s = perf_counter() - started
+            observe_stage_duration(
+                stage="slack_preroute_register_error", duration_s=duration_s
+            )
+            record_error(component="slack_routing", error_type="register_error")
+            logger.exception(
+                "Slack pre-route register failed origin=%s user=%s channel=%s",
+                origin,
+                user_id,
+                channel_id,
+            )
+        else:
+            observe_stage_duration(
+                stage="slack_preroute_register", duration_s=perf_counter() - started
+            )
+            logger.debug(
+                "Slack pre-route register done origin=%s user=%s channel=%s",
+                origin,
+                user_id,
+                channel_id,
+            )
+
+    async def _route_slack_event_with_guard(
+        *,
+        event: dict,
+        say: Callable,
+        bot_user_id: str | None,
+        client: AsyncWebClient,
+        origin: str,
+    ) -> None:
+        timeout_s = float(
+            getattr(settings, "slack_route_dispatch_timeout_seconds", 75.0)
+        )
+        started = perf_counter()
+        try:
+            await asyncio.wait_for(
+                route_slack_event(
+                    runtime=runtime,
+                    focus=focus,
+                    default_agent=default_agent,
+                    event=event,
+                    bot_user_id=bot_user_id,
+                    say=say,
+                    client=client,
+                    get_constraint_store=_get_constraint_store,
+                ),
+                timeout=timeout_s,
+            )
+        except asyncio.TimeoutError:
+            duration_s = perf_counter() - started
+            observe_stage_duration(
+                stage="slack_route_dispatch_timeout", duration_s=duration_s
+            )
+            record_error(component="slack_routing", error_type="route_timeout")
+            logger.warning(
+                "Slack route dispatch timed out origin=%s channel=%s ts=%s timeout_s=%.2f",
+                origin,
+                event.get("channel"),
+                event.get("ts"),
+                timeout_s,
+            )
+        except Exception:
+            duration_s = perf_counter() - started
+            observe_stage_duration(
+                stage="slack_route_dispatch_error", duration_s=duration_s
+            )
+            record_error(component="slack_routing", error_type="route_exception")
+            logger.exception(
+                "Slack route dispatch failed origin=%s channel=%s ts=%s",
+                origin,
+                event.get("channel"),
+                event.get("ts"),
+            )
+        else:
+            observe_stage_duration(
+                stage="slack_route_dispatch", duration_s=perf_counter() - started
+            )
+
     # --- Slash Commands ---
 
     @app.command("/ff-focus")
@@ -2148,18 +2258,18 @@ def register_handlers(
         channel_type = event.get("channel_type") or "channel"
         if user_id and channel_id:
             await _ensure_user_invited(client, user_id=user_id)
-            await planning.maybe_register_user(
-                user_id=user_id, channel_id=channel_id, channel_type=channel_type
+            await _maybe_register_user_with_guard(
+                user_id=user_id,
+                channel_id=channel_id,
+                channel_type=channel_type,
+                origin="app_mention",
             )
-        await route_slack_event(
-            runtime=runtime,
-            focus=focus,
-            default_agent=default_agent,
+        await _route_slack_event_with_guard(
             event=event,
-            bot_user_id=context.get("bot_user_id"),
             say=say,
+            bot_user_id=context.get("bot_user_id"),
             client=client,
-            get_constraint_store=_get_constraint_store,
+            origin="app_mention",
         )
 
     @app.event("reaction_added")
@@ -2204,10 +2314,11 @@ def register_handlers(
         user_id = event.get("user") or ""
         if user_id:
             await _ensure_user_invited(client, user_id=user_id)
-            await planning.maybe_register_user(
+            await _maybe_register_user_with_guard(
                 user_id=user_id,
                 channel_id=channel_id,
                 channel_type=event.get("channel_type") or "channel",
+                origin="message",
             )
         thread_ts = event.get("thread_ts")
         key = FocusManager.thread_key(channel_id, thread_ts, ts)
@@ -2232,15 +2343,12 @@ def register_handlers(
                     channel_id,
                 )
                 return
-        await route_slack_event(
-            runtime=runtime,
-            focus=focus,
-            default_agent=default_agent,
+        await _route_slack_event_with_guard(
             event=event,
-            bot_user_id=context.get("bot_user_id"),
             say=say,
+            bot_user_id=context.get("bot_user_id"),
             client=client,
-            get_constraint_store=_get_constraint_store,
+            origin="message",
         )
 
 
