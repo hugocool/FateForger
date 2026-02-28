@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone, time
+from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -17,6 +17,7 @@ class TestEventDateTimeToDatetime:
 
     def _parse(self, raw: dict | None, tz=UTC) -> datetime | None:
         from fateforger.contracts import EventDateTime
+
         if raw is None:
             return None
         model = EventDateTime.model_validate(raw)
@@ -82,16 +83,21 @@ class TestEventDateTimeModelValidate:
 
     def test_camel_case_alias(self):
         from fateforger.contracts import EventDateTime
-        m = EventDateTime.model_validate({"dateTime": "2025-03-01T09:00:00Z", "timeZone": "UTC"})
+
+        m = EventDateTime.model_validate(
+            {"dateTime": "2025-03-01T09:00:00Z", "timeZone": "UTC"}
+        )
         assert m.date_time is not None
         assert m.time_zone == "UTC"
 
     def test_snake_case_direct(self):
         from fateforger.contracts import EventDateTime
+
         m = EventDateTime(date_time=datetime(2025, 3, 1, 9, 0, tzinfo=UTC))
         assert m.date_time is not None
 
     def test_date_field_parsed_from_string(self):
         from fateforger.contracts import EventDateTime
+
         m = EventDateTime.model_validate({"date": "2025-03-01"})
         assert m.date == date(2025, 3, 1)

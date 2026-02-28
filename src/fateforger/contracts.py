@@ -36,6 +36,7 @@ class EventDateTime(BaseModel):
         """Accept ISO strings in addition to datetime objects."""
         if isinstance(v, str) and v:
             from dateutil import parser as date_parser  # noqa: PLC0415
+
             return date_parser.isoparse(v)
         return v
 
@@ -45,6 +46,7 @@ class EventDateTime(BaseModel):
         """Accept ISO date strings in addition to _DateOnly objects."""
         if isinstance(v, str) and v:
             from dateutil import parser as date_parser  # noqa: PLC0415
+
             return date_parser.isoparse(v).date()
         return v
 

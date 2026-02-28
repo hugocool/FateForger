@@ -530,13 +530,13 @@ class McpCalendarClient:
             return nested or dict_items
         return []
 
-
     @staticmethod
     def _parse_event_dt(raw: dict[str, Any] | None, *, tz: ZoneInfo) -> datetime | None:
         """Parse a calendar event datetime payload into a timezone-aware datetime."""
         if not raw:
             return None
         from fateforger.contracts import EventDateTime  # noqa: PLC0415
+
         return EventDateTime.model_validate(raw).to_datetime(tz)
 
     @staticmethod

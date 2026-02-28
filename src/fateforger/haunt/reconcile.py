@@ -286,7 +286,9 @@ class PlanningSessionRule:
                 statuses=statuses,
             )
         except Exception:
-            logger.exception("Stored planning session lookup failed for user=%s", user_id)
+            logger.exception(
+                "Stored planning session lookup failed for user=%s", user_id
+            )
             return None
 
         seen: set[tuple[str, str]] = set()
@@ -351,7 +353,9 @@ class PlanningSessionRule:
         event_id = str(event.get("id") or "").strip()
         if not event_id:
             return
-        parsed_start = _parse_event_dt(event.get("start"), tz=start.tzinfo or timezone.utc)
+        parsed_start = _parse_event_dt(
+            event.get("start"), tz=start.tzinfo or timezone.utc
+        )
         if not parsed_start:
             return
         try:
@@ -362,7 +366,9 @@ class PlanningSessionRule:
                 event_id=event_id,
                 status="planned",
                 title=event.get("summary"),
-                event_url=event.get("htmlLink") or event.get("html_link") or event.get("url"),
+                event_url=event.get("htmlLink")
+                or event.get("html_link")
+                or event.get("url"),
                 source="calendar_fallback_scan",
                 channel_id=None,
                 thread_ts=None,
@@ -376,7 +382,9 @@ class PlanningSessionRule:
 
     def _planning_event_score(self, event: dict) -> int:
         event_id = str(event.get("id") or "").lower()
-        summary = _normalize_summary_text(event.get("summary") or event.get("title") or "")
+        summary = _normalize_summary_text(
+            event.get("summary") or event.get("title") or ""
+        )
         score = 0
 
         if event_id.startswith("ffplanning"):
@@ -618,6 +626,7 @@ def _parse_event_dt(raw: Any, *, tz: timezone) -> datetime | None:
         return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=tz)
     if isinstance(raw, dict):
         from fateforger.contracts import EventDateTime  # noqa: PLC0415
+
         return EventDateTime.model_validate(raw).to_datetime(tz)
     return None
 
