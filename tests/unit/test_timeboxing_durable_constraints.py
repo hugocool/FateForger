@@ -123,6 +123,52 @@ async def test_collect_constraints_merges_durable_with_session():
 
 
 @pytest.mark.asyncio
+async def test_collect_constraints_local_decline_suppresses_durable_uid():
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    durable = Constraint(
+        user_id="u1",
+        channel_id=None,
+        thread_ts=None,
+        name="No meetings after 17:00",
+        description="Protect evenings.",
+        necessity=ConstraintNecessity.SHOULD,
+        status=ConstraintStatus.LOCKED,
+        source=ConstraintSource.USER,
+        scope=ConstraintScope.PROFILE,
+        hints={"uid": "tb:evening:1"},
+    )
+    local_decline = Constraint(
+        user_id="u1",
+        channel_id="c1",
+        thread_ts="t1",
+        name="No meetings after 17:00",
+        description="Protect evenings.",
+        necessity=ConstraintNecessity.SHOULD,
+        status=ConstraintStatus.DECLINED,
+        source=ConstraintSource.USER,
+        scope=ConstraintScope.SESSION,
+        hints={"uid": "tb:evening:1"},
+    )
+
+    class _Store:
+        async def list_constraints(self, **_kwargs):
+            return [local_decline]
+
+    agent._constraint_store = _Store()
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.durable_constraints_by_stage[TimeboxingStage.COLLECT_CONSTRAINTS.value] = [
+        durable
+    ]
+
+    combined = await agent._collect_constraints(session)
+
+    assert "tb:evening:1" in session.suppressed_durable_uids
+    assert durable not in combined
+    assert combined == []
+    assert session.active_constraints == []
+
+
+@pytest.mark.asyncio
 async def test_profile_constraints_auto_upsert_to_durable_store(monkeypatch):
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     monkeypatch.setattr(settings, "notion_timeboxing_parent_page_id", "parent")

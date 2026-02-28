@@ -5582,6 +5582,15 @@ class TimeboxingFlowAgent(RoutedAgent):
                 channel_id=session.channel_id,
                 thread_ts=session.thread_ts,
             )
+        local_declined_uids = {
+            uid
+            for constraint in (local_constraints or [])
+            if constraint.status == ConstraintStatus.DECLINED
+            for uid in [self._constraint_uid(constraint)]
+            if uid
+        }
+        if local_declined_uids:
+            session.suppressed_durable_uids.update(local_declined_uids)
         durable_constraints = [
             c
             for stage_constraints in session.durable_constraints_by_stage.values()
@@ -5590,7 +5599,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             or uid not in session.suppressed_durable_uids
         ]
         combined = _dedupe_constraints(
-            durable_constraints + list(local_constraints or [])
+            list(local_constraints or []) + durable_constraints
         )
         session.active_constraints = [
             c for c in combined if c.status != ConstraintStatus.DECLINED
