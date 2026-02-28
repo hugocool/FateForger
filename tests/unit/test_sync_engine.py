@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+import re
 from datetime import date, time, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -293,6 +294,14 @@ class TestPlanSync:
         assert ops[0].op_type == SyncOpType.CREATE
         assert ops[0].gcal_event_id.startswith(FFTB_PREFIX)
         assert ops[0].after_payload["summary"] == "New"
+        assert re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", ops[0].after_payload["start"]
+        )
+        assert re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", ops[0].after_payload["end"]
+        )
+        assert "+" not in ops[0].after_payload["start"]
+        assert "+" not in ops[0].after_payload["end"]
 
     def test_removed_owned_events_delete_ops(self) -> None:
         """Owned events in remote but not desired → deletes."""
@@ -368,6 +377,14 @@ class TestPlanSync:
         assert ops[0].after_payload["description"] == "new desc"
         assert ops[0].before_payload is not None
         assert ops[0].before_payload["description"] == "old desc"
+        assert re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", ops[0].after_payload["start"]
+        )
+        assert re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", ops[0].after_payload["end"]
+        )
+        assert "+" not in ops[0].after_payload["start"]
+        assert "+" not in ops[0].after_payload["end"]
 
     def test_creates_before_deletes_ordering(self) -> None:
         """Creates should come before deletes in the ops list."""

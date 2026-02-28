@@ -33,22 +33,40 @@ def tasks_rows(items: list[TaskCandidate]) -> list[dict[str, Any]]:
     ]
 
 
-def constraints_rows(items: list[Constraint]) -> list[dict[str, Any]]:
+def constraints_rows(items: list[Constraint | dict]) -> list[dict[str, Any]]:
     """Return minimal TOON rows for constraints.
+
+    Accepts both ``Constraint`` instances and plain dicts (e.g. from deserialized
+    LLM context payloads) so that prompt-context injection is uniform regardless
+    of whether the upstream code holds live ORM objects or raw dicts.
 
     We intentionally avoid DB-only fields and large nested dicts (selector/hints).
     """
-    return [
-        {
-            "name": c.name,
-            "necessity": getattr(c.necessity, "value", c.necessity),
-            "scope": getattr(c.scope, "value", c.scope),
-            "status": getattr(c.status, "value", c.status),
-            "source": getattr(c.source, "value", c.source),
-            "description": c.description,
-        }
-        for c in items
-    ]
+    result: list[dict[str, Any]] = []
+    for c in items:
+        if isinstance(c, dict):
+            result.append(
+                {
+                    "name": c.get("name", ""),
+                    "necessity": c.get("necessity", ""),
+                    "scope": c.get("scope", ""),
+                    "status": c.get("status", ""),
+                    "source": c.get("source", ""),
+                    "description": c.get("description", ""),
+                }
+            )
+        else:
+            result.append(
+                {
+                    "name": c.name,
+                    "necessity": getattr(c.necessity, "value", c.necessity),
+                    "scope": getattr(c.scope, "value", c.scope),
+                    "status": getattr(c.status, "value", c.status),
+                    "source": getattr(c.source, "value", c.source),
+                    "description": c.description,
+                }
+            )
+    return result
 
 
 def timebox_events_rows(items: list[CalendarEvent]) -> list[dict[str, Any]]:

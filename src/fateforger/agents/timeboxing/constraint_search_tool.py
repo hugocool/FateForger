@@ -40,6 +40,7 @@ class ConstraintSearchQuery(BaseModel):
     """A single search facet within a search plan."""
 
     label: str = Field(
+        default="",
         description="Short human-readable label for this query (e.g. 'deep work rules').",
     )
     text_query: Optional[str] = Field(

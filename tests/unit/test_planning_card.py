@@ -45,6 +45,11 @@ def test_card_initial_has_controls_and_add():
     assert FF_EVENT_START_AT_ACTION_ID in action_ids
     assert FF_EVENT_DURATION_ACTION_ID in action_ids
     assert FF_EVENT_ADD_ACTION_ID in action_ids
+    datetime_picker = next(
+        e for e in actions["elements"] if e["action_id"] == FF_EVENT_START_AT_ACTION_ID
+    )
+    assert datetime_picker["type"] == "datetimepicker"
+    assert "placeholder" not in datetime_picker
 
 
 def test_card_pending_swaps_button():

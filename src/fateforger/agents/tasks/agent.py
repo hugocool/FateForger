@@ -15,6 +15,7 @@ from fateforger.llm import build_autogen_chat_client
 from fateforger.tools.ticktick_mcp import get_ticktick_mcp_url
 
 from .list_tools import TickTickListManager
+from .messages import PendingTaskItem, PendingTaskSnapshot, PendingTaskSnapshotRequest
 from .notion_sprint_tools import NotionSprintManager
 
 
@@ -100,6 +101,35 @@ class TasksAgent(RoutedAgent):
             tools=tools,
             reflect_on_tool_use=False,
             max_tool_iterations=2,
+        )
+
+    async def handle_pending_snapshot(
+        self,
+        request: PendingTaskSnapshotRequest,
+        *,
+        ctx: object,
+    ) -> PendingTaskSnapshot:
+        """Return a bounded snapshot of pending tasks for planning assistance.
+
+        Delegates to :meth:`TickTickListManager.list_pending_tasks` and maps
+        the raw vendor objects to typed :class:`PendingTaskItem` records.
+        """
+        tasks = await self._list_manager.list_pending_tasks(
+            limit=request.limit,
+            per_project_limit=request.per_project_limit,
+        )
+        items = [
+            PendingTaskItem(
+                id=t.id,
+                title=t.title,
+                project_id=getattr(t, "project_id", None),
+                project_name=getattr(t, "project_name", None),
+            )
+            for t in tasks
+        ]
+        return PendingTaskSnapshot(
+            items=items,
+            summary=f"Found {len(items)} pending task(s).",
         )
 
     @message_handler

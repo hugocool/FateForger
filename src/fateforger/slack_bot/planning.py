@@ -779,8 +779,6 @@ def _card_payload(
     when = f"{start.strftime('%a %H:%M')}"
     end_str = f"{end.strftime('%H:%M')}"
     duration_label = f"{int(draft.duration_min)} min"
-    date_str = start.strftime("%Y-%m-%d")
-    time_str = start.strftime("%H:%M")
 
     text = f"{draft.title} • {when} ({duration_label})"
     status_text = status_override or _status_text(draft)
@@ -818,6 +816,17 @@ def _card_payload(
             "value": json.dumps({"draft_id": draft.draft_id}),
         }
 
+    # --- Duration options for inline selector ---
+    dur_options = [
+        {"text": {"type": "plain_text", "text": f"{m} min"}, "value": str(m)}
+        for m in DEFAULT_DURATION_OPTIONS
+    ]
+    cur_dur = int(draft.duration_min)
+    # Ensure current duration appears in the list
+    if str(cur_dur) not in {o["value"] for o in dur_options}:
+        dur_options.insert(0, {"text": {"type": "plain_text", "text": f"{cur_dur} min"}, "value": str(cur_dur)})
+    dur_initial = next((o for o in dur_options if o["value"] == str(cur_dur)), dur_options[0])
+
     # --- Blocks ---
     blocks: list[dict[str, Any]] = [
         {"type": "header", "text": {"type": "plain_text", "text": draft.title}},
@@ -826,37 +835,26 @@ def _card_payload(
             "block_id": FF_EVENT_BLOCK_DESC,
             "text": {"type": "mrkdwn", "text": draft.description or ""},
         },
-        # Date picker — section+accessory renders as a tappable row on mobile
-        {
-            "type": "section",
-            "block_id": FF_EVENT_BLOCK_PICK_DATE,
-            "text": {"type": "mrkdwn", "text": "*Date*"},
-            "accessory": {
-                "type": "datepicker",
-                "action_id": FF_EVENT_START_DATE_ACTION_ID,
-                "initial_date": date_str,
-                "placeholder": {"type": "plain_text", "text": "Select date"},
-            },
-        },
-        # Time picker — prominently displayed; caption shows full range + duration
-        {
-            "type": "section",
-            "block_id": FF_EVENT_BLOCK_PICK_TIME,
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*Time*  _{when}–{end_str} ({duration_label})_",
-            },
-            "accessory": {
-                "type": "timepicker",
-                "action_id": FF_EVENT_START_TIME_ACTION_ID,
-                "initial_time": time_str,
-                "placeholder": {"type": "plain_text", "text": "Select time"},
-            },
-        },
     ]
 
-    # --- Actions row ---
-    action_elements: list[dict[str, Any]] = [primary_button]
+    # --- Actions row: primary button first, then datetimepicker + duration ---
+    action_elements: list[dict[str, Any]] = [
+        primary_button,
+        # Combined date+time picker (primary interactive element)
+        {
+            "type": "datetimepicker",
+            "action_id": FF_EVENT_START_AT_ACTION_ID,
+            "initial_date_time": int(start.timestamp()),
+        },
+        # Inline duration selector
+        {
+            "type": "static_select",
+            "action_id": FF_EVENT_DURATION_ACTION_ID,
+            "placeholder": {"type": "plain_text", "text": "Duration"},
+            "initial_option": dur_initial,
+            "options": dur_options,
+        },
+    ]
     if draft.status is not DraftStatus.SUCCESS:
         action_elements.append(
             {

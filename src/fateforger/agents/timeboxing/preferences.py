@@ -18,6 +18,7 @@ from sqlalchemy import select
 class ConstraintNecessity(str, Enum):
     MUST = "must"
     SHOULD = "should"
+    PREFER = "prefer"
 
 
 class ConstraintStatus(str, Enum):

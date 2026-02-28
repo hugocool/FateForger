@@ -119,6 +119,7 @@ from .preferences import (
     ConstraintStore,
     ensure_constraint_schema,
 )
+from .notion_constraint_extractor import NotionConstraintExtractor
 from .prompt_rendering import render_skeleton_draft_system_prompt
 from .pydantic_parsing import parse_chat_content, parse_model_list, parse_model_optional
 from .stage_gating import (
@@ -358,7 +359,26 @@ class RefineToolExecutionOutcome:
     memory_queued: bool
     fallback_patch_used: bool
     calendar: CalendarSyncOutcome
+    memory_selected: bool = False
     memory_operations: list[str] = field(default_factory=list)
+
+
+async def get_constraint_mcp_tools() -> list:
+    """Acquire constraint MCP tools from the Notion constraint MCP server.
+
+    Returns the raw tool list from :func:`mcp_server_tools` for the configured
+    Notion constraint endpoint.  Callers must handle connection errors.
+    """
+    from autogen_ext.tools.mcp import StreamableHttpServerParams, mcp_server_tools
+
+    from fateforger.tools.notion_mcp import get_notion_mcp_url
+
+    params = StreamableHttpServerParams(
+        url=get_notion_mcp_url(),
+        headers={},
+        timeout=10.0,
+    )
+    return await mcp_server_tools(params)
 
 
 class TimeboxingFlowAgent(RoutedAgent):
@@ -421,6 +441,9 @@ class TimeboxingFlowAgent(RoutedAgent):
         self._summary_agent: AssistantAgent | None = None
         self._review_commit_agent: AssistantAgent | None = None
         self._session_debug_loggers: dict[str, logging.Logger] = {}
+        self._constraint_mcp_tools: list | None = None
+        self._notion_extractor: NotionConstraintExtractor | None = None
+        self._constraint_extractor_tool: FunctionTool | None = None
 
     # region helpers
 
@@ -2187,7 +2210,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 stage=stage,
                 context=context,
                 error=error,
-                missing="stage retry required",
+                missing="stage response parse failure",
                 question="Reply in thread with `Redo` to retry this stage, or provide any updates and continue.",
             )
 
@@ -3637,6 +3660,21 @@ class TimeboxingFlowAgent(RoutedAgent):
         return await self._submit_current_plan(session)
 
     @staticmethod
+    def _select_refine_tool_intents(
+        intents: list[tuple[int, str, str]],
+    ) -> tuple[str | None, str | None]:
+        """Select highest-priority patch intent and highest-priority memory intent.
+
+        Intents are ``(priority, kind, text)`` tuples where lower priority numbers
+        are preferred.  Returns ``(patch_text, memory_text)`` — either may be ``None``
+        when no intent of that kind is present.
+        """
+        sorted_intents = sorted(intents, key=lambda x: x[0])
+        patch = next((text for _, kind, text in sorted_intents if kind == "patch"), None)
+        memory = next((text for _, kind, text in sorted_intents if kind == "memory"), None)
+        return patch, memory
+
+    @staticmethod
     def _build_refine_noop_execution(*, note: str) -> RefineToolExecutionOutcome:
         """Build a no-op refine outcome when no user edits were requested."""
         return RefineToolExecutionOutcome(
@@ -3649,6 +3687,54 @@ class TimeboxingFlowAgent(RoutedAgent):
                 note=note,
             ),
             memory_operations=[],
+        )
+
+    async def _ensure_constraint_mcp_tools(self) -> None:
+        """Lazily initialise constraint MCP tools, extractor, and extraction tool.
+
+        Idempotent — safe to call multiple times; initialisation only runs once.
+        """
+        if self._constraint_mcp_tools is not None:
+            return
+        tools = await get_constraint_mcp_tools()
+        self._constraint_mcp_tools = tools
+        self._notion_extractor = NotionConstraintExtractor(
+            model_client=self._model_client,
+            tools=tools,
+        )
+        extractor = self._notion_extractor
+
+        async def _extract_and_queue(
+            *,
+            planned_date: str,
+            timezone: str,
+            stage_id: str,
+            user_utterance: str,
+            triggering_suggestion: str,
+            impacted_event_types: list[str],
+            suggested_tags: list[str],
+            decision_scope: str,
+        ) -> dict:
+            """Queue a durable constraint extraction without blocking the stage gate."""
+            asyncio.create_task(
+                extractor.extract_and_upsert_constraint(
+                    planned_date=planned_date,
+                    timezone=timezone,
+                    stage_id=stage_id,
+                    user_utterance=user_utterance,
+                    triggering_suggestion=triggering_suggestion,
+                    impacted_event_types=list(impacted_event_types),
+                    suggested_tags=list(suggested_tags),
+                    decision_scope=decision_scope,
+                )
+            )
+            return {"queued": True}
+
+        self._constraint_extractor_tool = FunctionTool(
+            _extract_and_queue,
+            name="extract_and_upsert_constraint",
+            description="Queue a durable constraint extraction from user utterance.",
+            strict=True,
         )
 
     @staticmethod
@@ -4832,8 +4918,8 @@ class TimeboxingFlowAgent(RoutedAgent):
         if not gate.ready:
             sections.extend(
                 [
-                    FreeformSection(heading="Need before proceeding", content=missing),
-                    FreeformSection(heading="What I have so far", content=bullets),
+                    FreeformSection(heading="Need Before Proceeding:", content=missing),
+                    FreeformSection(heading="What I Have So Far:", content=bullets),
                 ]
             )
         else:

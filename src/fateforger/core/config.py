@@ -1,8 +1,9 @@
 import os
 import sys
+from urllib.parse import urlparse
 from typing import Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -12,6 +13,7 @@ class Settings(BaseSettings):
     # Core Configuration
     slack_bot_token: str = Field(default="x", env="SLACK_BOT_TOKEN")
     slack_user_token: str = Field(default="", env="SLACK_USER_TOKEN")
+    slack_test_user_token: str = Field(default="", env="SLACK_TEST_USER_TOKEN")
     slack_signing_secret: str = Field(default="x")
     # Slack Configuration
     slack_app_token: str = Field(default="your_slack_app_token_here")
@@ -96,6 +98,10 @@ class Settings(BaseSettings):
     llm_reasoning_effort_timebox_patcher: str = Field(
         default="", env="LLM_REASONING_EFFORT_TIMEBOX_PATCHER"
     )
+    llm_max_tokens: int = Field(default=0, env="LLM_MAX_TOKENS")
+    llm_max_tokens_timebox_patcher: int = Field(
+        default=0, env="LLM_MAX_TOKENS_TIMEBOX_PATCHER"
+    )
 
     # MCP Server Configuration
     mcp_version: str = Field(default="v1.4.8")
@@ -125,6 +131,14 @@ class Settings(BaseSettings):
     work_notion_token: str = Field(default="", env="WORK_NOTION_TOKEN")
     notion_timeboxing_parent_page_id: str = Field(
         default="", env="NOTION_TIMEBOXING_PARENT_PAGE_ID"
+    )
+    notion_sprint_db_id: str = Field(default="", env="NOTION_SPRINT_DB_ID")
+    notion_sprint_data_source_url: str = Field(
+        default="", env="NOTION_SPRINT_DATA_SOURCE_URL"
+    )
+    notion_sprint_db_ids: str = Field(default="", env="NOTION_SPRINT_DB_IDS")
+    notion_sprint_data_source_urls: str = Field(
+        default="", env="NOTION_SPRINT_DATA_SOURCE_URLS"
     )
 
     # Database Configuration
@@ -156,6 +170,25 @@ class Settings(BaseSettings):
     )
 
     # Timeboxing feature flags
+    timeboxing_memory_backend: str = Field(
+        default="mem0", env="TIMEBOXING_MEMORY_BACKEND"
+    )
+
+    # Mem0 Memory Configuration
+    mem0_user_id: str = Field(default="timeboxing", env="MEM0_USER_ID")
+    mem0_api_key: str = Field(default="", env="MEM0_API_KEY")
+    mem0_is_cloud: bool = Field(default=False, env="MEM0_IS_CLOUD")
+    mem0_local_config_json: str = Field(default="", env="MEM0_LOCAL_CONFIG_JSON")
+    mem0_query_limit: int = Field(default=200, env="MEM0_QUERY_LIMIT")
+
+    # Observability Configuration
+    obs_prometheus_enabled: bool = Field(default=True, env="OBS_PROMETHEUS_ENABLED")
+    obs_prometheus_port: int = Field(default=9464, env="OBS_PROMETHEUS_PORT")
+    obs_llm_audit_enabled: bool = Field(default=True, env="OBS_LLM_AUDIT_ENABLED")
+    obs_llm_audit_mode: str = Field(default="sanitized", env="OBS_LLM_AUDIT_MODE")
+    obs_llm_audit_max_chars: int = Field(
+        default=2000, env="OBS_LLM_AUDIT_MAX_CHARS"
+    )
 
     class Config:
         env_file = (
@@ -164,6 +197,39 @@ class Settings(BaseSettings):
             else os.getenv("FATEFORGER_ENV_FILE", ".env")
         )
         case_sensitive = False
+
+    @field_validator("slack_user_token")
+    @classmethod
+    def _validate_slack_user_token(cls, value: str) -> str:
+        token = (value or "").strip()
+        if not token:
+            return ""
+        if token.startswith("xoxp-"):
+            return token
+        raise ValueError("SLACK_USER_TOKEN must start with 'xoxp-' when provided")
+
+    @field_validator("mcp_calendar_server_url", "mcp_calendar_server_url_docker")
+    @classmethod
+    def _validate_mcp_calendar_url(cls, value: str) -> str:
+        parsed = urlparse((value or "").strip())
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return value
+        raise ValueError(
+            "MCP calendar URL must be absolute and start with http:// or https://"
+        )
+
+    @field_validator("llm_max_tokens", "llm_max_tokens_timebox_patcher")
+    @classmethod
+    def _validate_non_negative_tokens(cls, value: int) -> int:
+        if value >= 0:
+            return value
+        raise ValueError("LLM max token limits must be >= 0")
+
+    @model_validator(mode="after")
+    def _validate_runtime_invariants(self) -> "Settings":
+        if not self.slack_socket_mode:
+            raise ValueError("SLACK_SOCKET_MODE must remain enabled")
+        return self
 
 
 settings = Settings()

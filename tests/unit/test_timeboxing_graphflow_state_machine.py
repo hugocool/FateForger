@@ -18,6 +18,7 @@ from fateforger.agents.timeboxing.stage_gating import StageDecision, StageGateOu
 async def test_graphflow_routes_by_session_stage_and_decision():
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     agent._timebox_patcher = TimeboxPatcher()
+    agent._durable_constraint_prefetch_tasks = {}
 
     async def _noop_calendar(_self, _session: Session, *, timeout_s: float = 0.0) -> None:
         return None
@@ -73,6 +74,7 @@ async def test_graphflow_routes_by_session_stage_and_decision():
 async def test_graphflow_proceed_advances_to_next_stage():
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     agent._timebox_patcher = TimeboxPatcher()
+    agent._durable_constraint_prefetch_tasks = {}
 
     async def _noop_calendar(_self, _session: Session, *, timeout_s: float = 0.0) -> None:
         return None
@@ -113,6 +115,7 @@ async def test_graphflow_proceed_advances_to_next_stage():
 
     session = Session(thread_ts="t1", channel_id="c1", user_id="u1", committed=True)
     session.stage = TimeboxingStage.COLLECT_CONSTRAINTS
+    session.stage_ready = True  # allow proceed without override
 
     flow = build_timeboxing_graphflow(orchestrator=agent, session=session)
     out: TextMessage | None = None

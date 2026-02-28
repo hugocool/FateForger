@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+from urllib.parse import urlparse
 
 from pydantic import ValidationError
 from yarl import URL
@@ -57,9 +58,35 @@ def normalize_notion_mcp_url(raw_url: str) -> str:
         return raw_url.strip()
 
 
+def validate_notion_mcp_url(value: str) -> str:
+    """Validate Notion MCP endpoint URL and return it unchanged.
+
+    Raises ValueError if the URL is missing required components.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        raise ValueError("Notion MCP URL is empty")
+    if "://" not in raw:
+        raise ValueError(
+            "Notion MCP URL must include scheme (e.g. http://notion-mcp:3001/mcp)"
+        )
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Notion MCP URL must use http or https scheme")
+    if not parsed.netloc or not parsed.hostname:
+        raise ValueError("Notion MCP URL must include a host")
+    if not parsed.path or parsed.path == "/":
+        raise ValueError("Notion MCP URL must include explicit path (e.g. /mcp)")
+    return raw
+
+
 def probe_notion_mcp_endpoint(
     server_url: str, *, connect_timeout_s: float = 1.0
 ) -> tuple[bool, str | None]:
+    try:
+        validate_notion_mcp_url(server_url)
+    except ValueError as exc:
+        return False, str(exc)
     try:
         normalized = canonical_mcp_url(server_url, default_path="/mcp")
     except ValidationError as exc:
@@ -130,9 +157,6 @@ class NotionMcpClient:
             logger.error("Failed to get Notion MCP tools", exc_info=True)
             raise RuntimeError("Failed to load Notion MCP tools") from exc
 
-
-# Stable alias used by HEAD-based callers after the normalize→validate rename.
-validate_notion_mcp_url = normalize_notion_mcp_url
 
 __all__ = [
     "NotionMcpClient",

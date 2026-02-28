@@ -74,6 +74,11 @@ def is_owned_event(event_id: str) -> bool:
     return event_id.startswith(FFTB_PREFIX)
 
 
+def _calendar_mcp_datetime(value: datetime) -> str:
+    """Format datetimes to MCP-required ISO8601 without timezone suffix."""
+    return value.replace(tzinfo=None, microsecond=0).isoformat()
+
+
 # ── Canonical representation (for DeepDiff) ──────────────────────────────
 
 
@@ -533,8 +538,8 @@ def _build_mcp_payload(
         "eventId": event_id,
         "summary": resolved["n"],
         "description": resolved.get("d", ""),
-        "start": start_dt.isoformat(),
-        "end": end_dt.isoformat(),
+        "start": _calendar_mcp_datetime(start_dt),
+        "end": _calendar_mcp_datetime(end_dt),
         "timeZone": tz_name,
         "colorId": ET_COLOR_MAP.get(resolved["t"], "0"),
     }
