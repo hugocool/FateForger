@@ -311,6 +311,14 @@ class ConstraintMemoryClient:
 class McpCalendarClient:
     """Client for Google Calendar MCP server (streamable HTTP workbench)."""
 
+    _RECOVERABLE_ERROR_MARKERS = (
+        "mcp actor not running",
+        "all connection attempts failed",
+        "timed out while waiting for response to clientrequest",
+        "connection refused",
+        "server disconnected",
+    )
+
     def __init__(self, *, server_url: str, timeout: float = 10.0) -> None:
         """Initialize the calendar MCP workbench.
 
@@ -318,10 +326,71 @@ class McpCalendarClient:
             server_url: MCP server base URL.
             timeout: HTTP timeout seconds.
         """
-        from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
+        self._server_url = server_url
+        self._timeout = timeout
+        self._params = self._build_params()
+        self._workbench = self._build_workbench()
 
-        self._params = StreamableHttpServerParams(url=server_url, timeout=timeout)
-        self._workbench = McpWorkbench(self._params)
+    def _build_params(self):
+        """Build MCP server params from current server_url and timeout."""
+        from autogen_ext.tools.mcp import StreamableHttpServerParams
+
+        return StreamableHttpServerParams(url=self._server_url, timeout=self._timeout)
+
+    def _build_workbench(self):
+        """Build a fresh MCP workbench from current params."""
+        from autogen_ext.tools.mcp import McpWorkbench
+
+        return McpWorkbench(self._params)
+
+    @classmethod
+    def _is_recoverable_transport_error(cls, exc: Exception) -> bool:
+        """Return True when the exception is a known transient MCP transport failure."""
+        text = str(exc or "").strip().lower()
+        if not text:
+            return False
+        return any(marker in text for marker in cls._RECOVERABLE_ERROR_MARKERS)
+
+    async def _reset_workbench(self) -> None:
+        """Close the current workbench and create a fresh one for retry."""
+        current = self._workbench
+        close = getattr(current, "close", None)
+        if callable(close):
+            maybe = close()
+            if hasattr(maybe, "__await__"):
+                await maybe
+        self._params = self._build_params()
+        self._workbench = self._build_workbench()
+
+    async def _call_tool_payload(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        diagnostics: dict[str, Any] | None = None,
+    ) -> Any:
+        """Call an MCP tool and extract its payload, retrying once on recoverable errors."""
+        attempts = 2
+        for attempt in range(1, attempts + 1):
+            try:
+                result = await self._workbench.call_tool(tool_name, arguments=arguments)
+                if diagnostics is not None:
+                    diagnostics["result_type"] = type(result).__name__
+                return self._extract_tool_payload(result)
+            except Exception as exc:
+                recoverable = self._is_recoverable_transport_error(exc)
+                if diagnostics is not None:
+                    attempt_errors = diagnostics.setdefault("attempt_errors", [])
+                    attempt_errors.append(
+                        {
+                            "attempt": attempt,
+                            "recoverable": recoverable,
+                            "error": (str(exc) or type(exc).__name__)[:300],
+                        }
+                    )
+                if attempt >= attempts or not recoverable:
+                    raise
+                await self._reset_workbench()
 
     async def get_tools(self) -> list:
         """Return MCP tool definitions for AutoGen tool wiring."""
@@ -463,21 +532,23 @@ class McpCalendarClient:
         return dt_val.astimezone(tz).strftime("%H:%M")
 
     @staticmethod
-    def _list_events_args(*, calendar_id: str, day: date, tz: ZoneInfo) -> dict[str, Any]:
-        start = (
-            datetime.combine(day, datetime.min.time(), tz)
-            .astimezone(timezone.utc)
-            .isoformat()
+    def _list_events_args(
+        *, calendar_id: str, day: date, tz: ZoneInfo
+    ) -> dict[str, Any]:
+        start = datetime.combine(day, datetime.min.time(), tz).replace(
+            tzinfo=None,
+            microsecond=0,
         )
         end = (
-            (datetime.combine(day, datetime.min.time(), tz) + timedelta(days=1))
-            .astimezone(timezone.utc)
-            .isoformat()
+            datetime.combine(day, datetime.min.time(), tz) + timedelta(days=1)
+        ).replace(
+            tzinfo=None,
+            microsecond=0,
         )
         return {
             "calendarId": calendar_id,
-            "timeMin": start,
-            "timeMax": end,
+            "timeMin": start.isoformat(timespec="seconds"),
+            "timeMax": end.isoformat(timespec="seconds"),
             "singleEvents": True,
             "orderBy": "startTime",
         }
@@ -520,10 +591,11 @@ class McpCalendarClient:
         args = self._list_events_args(calendar_id=calendar_id, day=day, tz=tz)
         if diagnostics is not None:
             diagnostics["request"] = args
-        result = await self._workbench.call_tool("list-events", arguments=args)
-        if diagnostics is not None:
-            diagnostics["result_type"] = type(result).__name__
-        payload = self._extract_tool_payload(result)
+        payload = await self._call_tool_payload(
+            tool_name="list-events",
+            arguments=args,
+            diagnostics=diagnostics,
+        )
         if diagnostics is not None:
             diagnostics["payload_type"] = type(payload).__name__
             if isinstance(payload, dict):

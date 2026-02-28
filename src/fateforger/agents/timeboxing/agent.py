@@ -2216,7 +2216,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 stage=stage,
                 context=context,
                 error=error,
-                missing="stage response parse failure",
+                missing="stage retry required",
                 question="Reply in thread with `Redo` to retry this stage, or provide any updates and continue.",
             )
 
@@ -6524,12 +6524,6 @@ def _coerce_async_database_url(database_url: str) -> str:
     """Ensure a database URL uses an async driver when needed."""
     if database_url.startswith("sqlite+aiosqlite://"):
         return database_url
-    if database_url.startswith("sqlite://"):
-        return database_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
-    return database_url
-
-
-__all__ = ["TimeboxingFlowAgent"]
     if database_url.startswith("sqlite://"):
         return database_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
     return database_url

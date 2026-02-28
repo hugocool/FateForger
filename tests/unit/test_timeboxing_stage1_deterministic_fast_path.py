@@ -23,6 +23,7 @@ async def test_stage_collect_constraints_agent_keeps_search_tool(
     agent._constraint_search_tool = None
 
     captured_tools: dict[str, object] = {}
+    captured_output_types: dict[str, object] = {}
 
     class _FakeAssistantAgent:
         def __init__(
@@ -38,12 +39,12 @@ async def test_stage_collect_constraints_agent_keeps_search_tool(
         ) -> None:
             _ = (
                 model_client,
-                output_content_type,
                 system_message,
                 reflect_on_tool_use,
                 max_tool_iterations,
             )
             captured_tools[name] = tools
+            captured_output_types[name] = output_content_type
 
     monkeypatch.setattr(timeboxing_agent_mod, "AssistantAgent", _FakeAssistantAgent)
     monkeypatch.setattr(
@@ -62,3 +63,8 @@ async def test_stage_collect_constraints_agent_keeps_search_tool(
 
     assert captured_tools["StageCollectConstraints"] == ["search_constraints_tool"]
     assert captured_tools["StageCaptureInputs"] == ["search_constraints_tool"]
+    assert captured_output_types["StageCollectConstraints"] is not None
+    assert captured_output_types["StageCaptureInputs"] is not None
+    assert captured_output_types["StageTimeboxSummary"] is None
+    assert captured_output_types["StageReviewCommit"] is None
+    assert captured_output_types["StageDecision"] is not None

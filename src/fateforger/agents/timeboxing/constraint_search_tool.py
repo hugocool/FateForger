@@ -24,7 +24,7 @@ import logging
 from datetime import date
 from typing import Any, Dict, List, Optional, Sequence
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from fateforger.agents.timeboxing.mcp_clients import ConstraintMemoryClient
 
@@ -39,16 +39,15 @@ logger = logging.getLogger(__name__)
 class ConstraintSearchQuery(BaseModel):
     """A single search facet within a search plan."""
 
+    model_config = ConfigDict(extra="forbid")
+
     label: str = Field(
-        default="",
         description="Short human-readable label for this query (e.g. 'deep work rules').",
     )
     text_query: Optional[str] = Field(
-        default=None,
         description="Free-text substring to match against constraint Name or Description.",
     )
     event_types: Optional[List[str]] = Field(
-        default=None,
         description=(
             "Notion event-type codes to filter by. "
             "Options: M (meeting), C (commute), DW (deep work), SW (shallow work), "
@@ -56,29 +55,26 @@ class ConstraintSearchQuery(BaseModel):
         ),
     )
     tags: Optional[List[str]] = Field(
-        default=None,
         description="Topic tag names to filter by (e.g. ['focus', 'meals']).",
     )
     statuses: Optional[List[str]] = Field(
-        default=None,
         description="Constraint statuses to include. Options: 'locked', 'proposed'. Default: both.",
     )
     scopes: Optional[List[str]] = Field(
-        default=None,
         description="Constraint scopes to include. Options: 'session', 'profile', 'datespan'.",
     )
     necessities: Optional[List[str]] = Field(
-        default=None,
         description="Necessity levels to include. Options: 'must', 'should'.",
     )
     limit: int = Field(
-        default=20,
         description="Maximum number of results for this query.",
     )
 
 
 class ConstraintSearchPlan(BaseModel):
     """A set of parallel search queries the agent wants to execute."""
+
+    model_config = ConfigDict(extra="forbid")
 
     queries: List[ConstraintSearchQuery] = Field(
         min_length=1,

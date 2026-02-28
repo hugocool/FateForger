@@ -562,16 +562,20 @@ class PlanningCoordinator:
         except Exception:
             tz = ZoneInfo(DEFAULT_TIMEZONE)
 
-        start = date_parser.isoparse(draft.start_at_utc).astimezone(timezone.utc)
-        end = start + timedelta(minutes=int(draft.duration_min))
+        start_utc = date_parser.isoparse(draft.start_at_utc).astimezone(timezone.utc)
+        end_utc = start_utc + timedelta(minutes=int(draft.duration_min))
+        start_local = start_utc.astimezone(tz).replace(tzinfo=None, microsecond=0)
+        end_local = end_utc.astimezone(tz).replace(tzinfo=None, microsecond=0)
+        start_arg = start_local.isoformat()
+        end_arg = end_local.isoformat()
         logger.info(
             "_add_to_calendar_async: dispatching upsert (draft_id=%s user_id=%s calendar_id=%s event_id=%s start=%s end=%s tz=%s)",
             draft.draft_id,
             draft.user_id,
             draft.calendar_id,
             draft.event_id,
-            start.isoformat(),
-            end.isoformat(),
+            start_arg,
+            end_arg,
             tz.key,
         )
 
@@ -584,8 +588,8 @@ class PlanningCoordinator:
                 event_id=draft.event_id,
                 summary=draft.title,
                 description=draft.description,
-                start=start.isoformat(),
-                end=end.isoformat(),
+                start=start_arg,
+                end=end_arg,
                 time_zone=tz.key,
                 color_id="10",
             ),
@@ -639,7 +643,7 @@ class PlanningCoordinator:
                 )
             if self._planning_session_store:
                 try:
-                    planned_day = start.astimezone(tz).date()
+                    planned_day = start_utc.astimezone(tz).date()
                     await self._planning_session_store.upsert(
                         user_id=draft.user_id,
                         planned_date=planned_day,
