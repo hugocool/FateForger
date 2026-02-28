@@ -28,7 +28,11 @@ docker compose -f observability/docker-compose.yml up -d
 2. App metrics are enabled (default on):
 - `OBS_PROMETHEUS_ENABLED=1` (default)
 - `OBS_PROMETHEUS_PORT=9464` (default)
-3. Prometheus MCP active in VS Code (`.vscode/mcp.json` entry `prometheus` — uses `ghcr.io/pab1it0/prometheus-mcp-server:latest` via Docker stdio, `PROMETHEUS_URL=http://host.docker.internal:9090`).
+3. AutoGen event log direction is configured:
+- `AUTOGEN_EVENTS_LOG=summary|full|off`
+- `AUTOGEN_EVENTS_OUTPUT_TARGET=stdout|audit`
+- `AUTOGEN_EVENTS_FULL_PAYLOAD_MODE=sanitized|raw`
+4. Prometheus MCP active in VS Code (`.vscode/mcp.json` entry `prometheus` — uses `ghcr.io/pab1it0/prometheus-mcp-server:latest` via Docker stdio, `PROMETHEUS_URL=http://host.docker.internal:9090`).
 
 ## Query Guardrails
 - Default range window: last 15m to 60m.

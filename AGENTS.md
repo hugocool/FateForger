@@ -126,11 +126,13 @@ After implementation:
 - Prometheus audit protocol (local dev):
   - run the standalone stack in `observability/` (`docker compose -f observability/docker-compose.yml up -d`).
   - expose app metrics with `OBS_PROMETHEUS_ENABLED=1` and `OBS_PROMETHEUS_PORT` (default `9464`).
+  - before audit queries, verify scrape health (`up{job="fateforger_app"} == 1`) and fix target health first when down.
   - treat metrics as detection only and logs as payload-level diagnosis:
     - detection: `fateforger_llm_calls_total`, `fateforger_llm_tokens_total`, `fateforger_tool_calls_total`, `fateforger_errors_total`, `fateforger_stage_duration_seconds_*`
     - diagnosis: `scripts/dev/timebox_log_query.py events` + `scripts/dev/timebox_log_query.py llm`
   - correlate by `session_key`, `thread_ts`, `call_label`, and stage markers.
   - use the repo skill `.codex/skills/prometheus-agent-audit/SKILL.md` for standard query windows/playbook.
+  - if Prometheus MCP tool execution is unavailable in the current Codex runtime, use direct Prometheus HTTP API queries as an explicit fallback and document that fallback in the checkpoint.
 
 ## Slack capability audit loop (critical)
 - Use the Slack skill as the primary operator surface for live end-to-end audits of agent behavior in Slack.
@@ -139,6 +141,7 @@ After implementation:
   - send the agreed seed prompt,
   - progress through all stages (including Stage 4/5 loops) until terminal state,
   - capture both rendered responses and raw block/action payload behavior.
+  - for task-refinement flow, use `/task-refine` and verify gated progression (`scope` -> `scan` -> `refine` -> `close`) with recap persistence.
 - During the audit, continuously correlate Slack thread activity with runtime logs:
   - map `thread_ts` to `session_key`,
   - inspect `logs/timeboxing_session_*.log` and `logs/timebox_patcher_*.log`,

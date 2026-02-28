@@ -96,3 +96,31 @@ def test_settings_rejects_invalid_ticktick_mcp_url(monkeypatch) -> None:
     monkeypatch.setenv("TICKTICK_MCP_URL", "ticktick-mcp:8000/mcp")
     with pytest.raises(ValueError):
         Settings()
+
+
+def test_settings_accepts_autogen_event_logging_directives(monkeypatch) -> None:
+    monkeypatch.setenv("AUTOGEN_EVENTS_LOG", "summary")
+    monkeypatch.setenv("AUTOGEN_EVENTS_OUTPUT_TARGET", "audit")
+    monkeypatch.setenv("AUTOGEN_EVENTS_FULL_PAYLOAD_MODE", "sanitized")
+    settings = Settings()
+    assert settings.autogen_events_log == "summary"
+    assert settings.autogen_events_output_target == "audit"
+    assert settings.autogen_events_full_payload_mode == "sanitized"
+
+
+def test_settings_rejects_invalid_autogen_events_log(monkeypatch) -> None:
+    monkeypatch.setenv("AUTOGEN_EVENTS_LOG", "verbose")
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_settings_rejects_invalid_autogen_events_output_target(monkeypatch) -> None:
+    monkeypatch.setenv("AUTOGEN_EVENTS_OUTPUT_TARGET", "file")
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_settings_rejects_invalid_autogen_events_full_payload_mode(monkeypatch) -> None:
+    monkeypatch.setenv("AUTOGEN_EVENTS_FULL_PAYLOAD_MODE", "safe")
+    with pytest.raises(ValueError):
+        Settings()

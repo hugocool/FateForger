@@ -191,6 +191,20 @@ Verify:
 2. Grafana: http://localhost:3000 (`admin` / `admin`)
 3. FateForger metrics endpoint: `http://localhost:9464/metrics` (when app runs with `OBS_PROMETHEUS_ENABLED=1`)
 
+Autogen event logging direction (set in `.env`):
+
+- `AUTOGEN_EVENTS_LOG=summary|full|off`
+- `AUTOGEN_EVENTS_OUTPUT_TARGET=stdout|audit`
+- `AUTOGEN_EVENTS_FULL_PAYLOAD_MODE=sanitized|raw` (used when `AUTOGEN_EVENTS_LOG=full`)
+
+Recommended secure default:
+
+```bash
+AUTOGEN_EVENTS_LOG=summary
+AUTOGEN_EVENTS_OUTPUT_TARGET=audit
+AUTOGEN_EVENTS_FULL_PAYLOAD_MODE=sanitized
+```
+
 Prometheus MCP server (Codex local config):
 
 - Server image: `ghcr.io/pab1it0/prometheus-mcp-server:latest`

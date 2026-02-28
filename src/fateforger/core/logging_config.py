@@ -134,8 +134,8 @@ def record_error(*, component: str, error_type: str) -> None:
 # LogQL `| json`.
 _STRUCTURED_EXTRACT_FIELDS: frozenset[str] = frozenset(
     {
-        "type",         # → "event" in envelope
-        "agent_id",     # → "agent" in envelope
+        "type",  # → "event" in envelope
+        "agent_id",  # → "agent" in envelope
         "stage",
         "model",
         "tool_name",
@@ -173,7 +173,10 @@ class StructuredJsonFormatter(logging.Formatter):
         except Exception as exc:
             msg = f"[coerced-log-payload:{type(exc).__name__}] {record.msg!r}"
 
-        ts = datetime.utcfromtimestamp(record.created).isoformat(timespec="milliseconds") + "Z"
+        ts = (
+            datetime.utcfromtimestamp(record.created).isoformat(timespec="milliseconds")
+            + "Z"
+        )
 
         envelope: dict[str, Any] = {
             "ts": ts,
@@ -199,7 +202,11 @@ class StructuredJsonFormatter(logging.Formatter):
 
         # Also check record.__dict__ extras (set via logger.extra={...})
         for field in _STRUCTURED_EXTRACT_FIELDS:
-            target = "event" if field == "type" else ("agent" if field == "agent_id" else field)
+            target = (
+                "event"
+                if field == "type"
+                else ("agent" if field == "agent_id" else field)
+            )
             if target not in envelope:
                 val = getattr(record, field, None)
                 if val is not None:
@@ -248,8 +255,7 @@ class StructuredJsonFormatter(logging.Formatter):
     def _redact_dict(payload: dict[str, Any]) -> dict[str, Any]:
         """Return a shallow copy of *payload* with sensitive keys replaced by ``"[REDACTED]"``."""
         return {
-            k: "[REDACTED]" if _key_is_sensitive(k) else v
-            for k, v in payload.items()
+            k: "[REDACTED]" if _key_is_sensitive(k) else v for k, v in payload.items()
         }
 
 
@@ -265,14 +271,26 @@ def configure_logging(*, default_level: str | int = "INFO") -> None:
     _configure_json_stdout()
     _configure_llm_audit_file_logging()
 
-    mode = (os.getenv("AUTOGEN_EVENTS_LOG", "summary") or "summary").strip().lower()
+    mode = _coerce_autogen_events_mode(os.getenv("AUTOGEN_EVENTS_LOG", "summary"))
+    output_target = _coerce_autogen_events_output_target(
+        os.getenv("AUTOGEN_EVENTS_OUTPUT_TARGET", "stdout")
+    )
+    full_payload_mode = _coerce_autogen_events_full_payload_mode(
+        os.getenv("AUTOGEN_EVENTS_FULL_PAYLOAD_MODE", "sanitized")
+    )
     max_chars = _coerce_int(os.getenv("AUTOGEN_EVENTS_MAX_CHARS", "900"), default=900)
     max_tools = _coerce_int(os.getenv("AUTOGEN_EVENTS_MAX_TOOLS", "10"), default=10)
 
     autogen_logger = logging.getLogger("autogen_core.events")
     if not any(isinstance(f, _AutogenEventsFilter) for f in autogen_logger.filters):
         autogen_logger.addFilter(
-            _AutogenEventsFilter(mode=mode, max_chars=max_chars, max_tools=max_tools)
+            _AutogenEventsFilter(
+                mode=mode,
+                max_chars=max_chars,
+                max_tools=max_tools,
+                output_target=output_target,
+                full_payload_mode=full_payload_mode,
+            )
         )
 
     core_logger = logging.getLogger("autogen_core")
@@ -468,6 +486,38 @@ def _coerce_int(value: str | None, *, default: int) -> int:
         return int(str(value).strip())
     except Exception:
         return default
+
+
+def _coerce_autogen_events_mode(value: str | None) -> str:
+    raw = (value or "summary").strip().lower()
+    alias = {
+        "0": "off",
+        "false": "off",
+        "none": "off",
+        "1": "full",
+        "true": "full",
+        "on": "full",
+    }
+    mode = alias.get(raw, raw)
+    if mode not in {"summary", "full", "off"}:
+        raise ValueError("AUTOGEN_EVENTS_LOG must be one of: summary, full, off")
+    return mode
+
+
+def _coerce_autogen_events_output_target(value: str | None) -> str:
+    target = (value or "stdout").strip().lower()
+    if target not in {"stdout", "audit"}:
+        raise ValueError("AUTOGEN_EVENTS_OUTPUT_TARGET must be one of: stdout, audit")
+    return target
+
+
+def _coerce_autogen_events_full_payload_mode(value: str | None) -> str:
+    mode = (value or "sanitized").strip().lower()
+    if mode not in {"sanitized", "raw"}:
+        raise ValueError(
+            "AUTOGEN_EVENTS_FULL_PAYLOAD_MODE must be one of: sanitized, raw"
+        )
+    return mode
 
 
 def _ensure_metrics_initialized() -> None:
@@ -699,9 +749,11 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
         raw_response = payload.get("response")
         model_candidate = event.response_model
         if model_candidate == "unknown":
-            model_candidate = _extract_model_from_response(raw_response) or _extract_model_from_response(
-                event.response
-            ) or "unknown"
+            model_candidate = (
+                _extract_model_from_response(raw_response)
+                or _extract_model_from_response(event.response)
+                or "unknown"
+            )
         model = _bounded_label(model_candidate, fallback="unknown")
         status = (
             "error"
@@ -716,8 +768,12 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
                 call_label=call_label,
             ).inc()
         prompt_tokens = event.prompt_tokens or event.prompt_tokens_from_response()
-        completion_tokens = event.completion_tokens or event.completion_tokens_from_response()
-        extra_prompt, extra_completion = _extract_usage_tokens_from_response(raw_response)
+        completion_tokens = (
+            event.completion_tokens or event.completion_tokens_from_response()
+        )
+        extra_prompt, extra_completion = _extract_usage_tokens_from_response(
+            raw_response
+        )
         if prompt_tokens is None:
             prompt_tokens = extra_prompt
         if completion_tokens is None:
@@ -791,11 +847,23 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
 
 
 class _AutogenEventsFilter(logging.Filter):
-    def __init__(self, *, mode: str, max_chars: int, max_tools: int) -> None:
+    def __init__(
+        self,
+        *,
+        mode: str,
+        max_chars: int,
+        max_tools: int,
+        output_target: str = "stdout",
+        full_payload_mode: str = "sanitized",
+    ) -> None:
         super().__init__(name="autogen_core.events")
-        self._mode = mode
+        self._mode = _coerce_autogen_events_mode(mode)
         self._max_chars = max(200, max_chars)
         self._max_tools = max(1, max_tools)
+        self._output_target = _coerce_autogen_events_output_target(output_target)
+        self._full_payload_mode = _coerce_autogen_events_full_payload_mode(
+            full_payload_mode
+        )
 
     def filter(self, record: logging.LogRecord) -> bool:
         if record.name != "autogen_core.events":
@@ -807,20 +875,53 @@ class _AutogenEventsFilter(logging.Filter):
         payload = _extract_event_payload(raw_obj, msg)
         if payload is not None:
             _record_observability_event(payload, record_level=record.levelno)
-        if mode in ("off", "false", "0", "none"):
+        if self._output_target == "audit":
+            return False
+        if mode == "off":
             return False
         record.msg = msg
         record.args = ()
-        if mode in ("full", "on", "true", "1"):
+        if mode == "full":
+            if payload is not None:
+                record.msg = _serialize_autogen_payload_for_stdout(
+                    payload=payload,
+                    full_payload_mode=self._full_payload_mode,
+                    max_chars=self._max_chars,
+                )
             return True
 
         # "summary" (default)
-        summarized = _summarize_autogen_event_message(
-            msg, max_chars=self._max_chars, max_tools=self._max_tools
-        )
+        if payload is not None:
+            summarized = _summarize_autogen_event_payload(
+                payload, max_chars=self._max_chars, max_tools=self._max_tools
+            )
+        else:
+            summarized = _summarize_autogen_event_message(
+                msg, max_chars=self._max_chars, max_tools=self._max_tools
+            )
         record.msg = summarized
         record.args = ()
         return True
+
+
+def _serialize_autogen_payload_for_stdout(
+    *,
+    payload: dict[str, Any],
+    full_payload_mode: str,
+    max_chars: int,
+) -> str:
+    if full_payload_mode == "raw":
+        return _truncate(
+            json.dumps(payload, ensure_ascii=False, default=str), max_chars=max_chars
+        )
+    return _truncate(
+        json.dumps(
+            _sanitize_for_audit(payload, max_chars=max_chars),
+            ensure_ascii=False,
+            default=str,
+        ),
+        max_chars=max_chars,
+    )
 
 
 class _AutogenCoreFilter(logging.Filter):
@@ -907,6 +1008,14 @@ def _summarize_autogen_event_message(
     if not isinstance(payload, dict):
         return _truncate(msg, max_chars=max_chars)
 
+    return _summarize_autogen_event_payload(
+        payload, max_chars=max_chars, max_tools=max_tools
+    )
+
+
+def _summarize_autogen_event_payload(
+    payload: dict[str, Any], *, max_chars: int, max_tools: int
+) -> str:
     from fateforger.core.autogen_event_models import (  # noqa: PLC0415
         LLMEventPayload,
         MessageEventPayload,
@@ -914,15 +1023,18 @@ def _summarize_autogen_event_message(
     )
 
     event = parse_autogen_event(payload)
-
     if isinstance(event, MessageEventPayload):
         return _summarize_autogen_message_event(event, max_chars=max_chars)
-
     if not isinstance(event, LLMEventPayload):
-        # ToolCall, ExceptionPayload, or unknown: fall back to simple truncation.
-        return _truncate(msg, max_chars=max_chars)
+        return _truncate(
+            json.dumps(
+                _sanitize_for_audit(payload, max_chars=max_chars),
+                ensure_ascii=False,
+                default=str,
+            ),
+            max_chars=max_chars,
+        )
 
-    # LLMEventPayload: build a structured single-line summary via typed sub-model.
     summary_parts: list[str] = [f"autogen type={event.type}"]
     if event.agent_id:
         summary_parts.append(f"agent_id={event.agent_id}")
@@ -930,14 +1042,12 @@ def _summarize_autogen_event_message(
     if model_name and model_name != "unknown":
         summary_parts.append(f"model={model_name}")
 
-    # Typed access via LLMResponse — no more isinstance chains.
     resp = event.response_obj
     finish_reason = resp.finish_reason if resp else None
     tool_calls = resp.tool_call_names if resp else []
 
-    # Available tools from the request payload (extra field, high-cardinality)
     tool_names: list[str] = []
-    for t in (event.model_extra.get("tools") or []):
+    for t in event.model_extra.get("tools") or []:
         if isinstance(t, dict):
             fn = t.get("function") or {}
             name = fn.get("name") if isinstance(fn, dict) else None
@@ -955,7 +1065,8 @@ def _summarize_autogen_event_message(
 
     usage = resp.usage if resp else None
     if usage and any(
-        v is not None for v in (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
+        v is not None
+        for v in (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
     ):
         summary_parts.append(
             f"tokens={usage.prompt_tokens}/{usage.completion_tokens}/{usage.total_tokens}"
@@ -986,7 +1097,9 @@ def _summarize_autogen_message_event(
     Accepts a typed :class:`MessageEventPayload` so we avoid re-parsing the JSON
     payload string and the ``isinstance(payload_obj, dict)`` chain.
     """
-    from fateforger.core.autogen_event_models import MessageEventPayload  # noqa: PLC0415
+    from fateforger.core.autogen_event_models import (  # noqa: PLC0415
+        MessageEventPayload,
+    )
 
     sender = event.sender
     receiver = event.receiver
@@ -1029,6 +1142,7 @@ def _summarize_autogen_message_event(
 
     if isinstance(usage, dict):
         from fateforger.core.autogen_event_models import LLMUsage  # noqa: PLC0415
+
         u = LLMUsage.model_validate(usage)
         if u.prompt_tokens is not None or u.completion_tokens is not None:
             parts.append(f"tokens={u.prompt_tokens}/{u.completion_tokens}")
@@ -1036,5 +1150,7 @@ def _summarize_autogen_message_event(
     if isinstance(content, str) and content:
         content_one_line = " ".join(content.splitlines())
         parts.append(f"content={_truncate(content_one_line, max_chars=220)}")
+
+    return _truncate(" ".join(parts), max_chars=max_chars)
 
     return _truncate(" ".join(parts), max_chars=max_chars)
