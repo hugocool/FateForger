@@ -1,4 +1,3 @@
-import asyncio
 import types
 
 import pytest
@@ -276,7 +275,41 @@ async def test_transition_routes_reviewcommit_edits_back_to_refine():
 
     assert session.stage == TimeboxingStage.REFINE
     assert node.stage_user_message == "please add a lunch block and a buffer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "start_stage",
+    [TimeboxingStage.COLLECT_CONSTRAINTS, TimeboxingStage.CAPTURE_INPUTS],
+)
+async def test_transition_routes_target_stage_refine_for_edit_intents(start_stage):
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+
+    async def _advance_stage(
+        _self,
+        session: Session,
+        *,
+        next_stage: TimeboxingStage,
+    ) -> None:
+        session.stage = next_stage
+
+    agent._advance_stage = types.MethodType(_advance_stage, agent)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1", committed=True)
+    session.stage = start_stage
+
+    turn_init = types.SimpleNamespace(
+        turn=types.SimpleNamespace(
+            decision=StageDecision(
+                action="provide_info",
+                target_stage=TimeboxingStage.REFINE,
+                note="user requested schedule edit",
+            ),
+            user_text="move deep work to 12:30 and keep shutdown at 22:30",
+        )
+    )
+    node = TransitionNode(orchestrator=agent, session=session, turn_init=turn_init)
+
     await node.on_messages([], cancellation_token=types.SimpleNamespace())
 
     assert session.stage == TimeboxingStage.REFINE
-    assert node.stage_user_message == "please add a lunch block and a buffer"
+    assert node.stage_user_message == "move deep work to 12:30 and keep shutdown at 22:30"

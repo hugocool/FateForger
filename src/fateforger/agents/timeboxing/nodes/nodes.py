@@ -252,14 +252,21 @@ class TransitionNode(BaseChatAgent):
                 else:
                     signal = FlowSignal(kind="transition", note="rerun")
             case "provide_info":
-                # In Stage 5, user corrections must return to Stage 4 patching.
-                if self._session.stage == TimeboxingStage.REVIEW_COMMIT:
+                # Honor explicit typed reroutes from the decision model first.
+                target_stage = decision.target_stage
+                if (
+                    isinstance(target_stage, TimeboxingStage)
+                    and target_stage != self._session.stage
+                ):
                     await self._orchestrator._advance_stage(  # noqa: SLF001
                         self._session,
-                        next_stage=TimeboxingStage.REFINE,
+                        next_stage=target_stage,
                     )
-                # In Stage 3, user edits should move into Stage 4 patching.
-                if self._session.stage == TimeboxingStage.SKELETON:
+                # Backward-compatible defaults for older decisions that omit target_stage.
+                elif self._session.stage in (
+                    TimeboxingStage.REVIEW_COMMIT,
+                    TimeboxingStage.SKELETON,
+                ):
                     await self._orchestrator._advance_stage(  # noqa: SLF001
                         self._session,
                         next_stage=TimeboxingStage.REFINE,
