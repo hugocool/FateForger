@@ -27,6 +27,7 @@ class MemoryConstraintItem(BaseModel):
     source: str | None = None
     confidence: float | None = None
     needs_confirmation: bool = False
+    used_this_session: bool = False
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "MemoryConstraintItem | None":
@@ -63,6 +64,10 @@ class MemoryConstraintItem(BaseModel):
             or selector.get("needs_confirmation")
             or hints.get("needs_confirmation")
         )
+        used_this_session = bool(
+            payload.get("used_this_session")
+            or hints.get("used_this_session")
+        )
         if confidence is not None and confidence < 0.7:
             needs_confirmation = True
         return cls(
@@ -80,6 +85,7 @@ class MemoryConstraintItem(BaseModel):
             source=_as_optional_text(payload.get("source", constraint.get("source"))),
             confidence=confidence,
             needs_confirmation=needs_confirmation,
+            used_this_session=used_this_session,
         )
 
 

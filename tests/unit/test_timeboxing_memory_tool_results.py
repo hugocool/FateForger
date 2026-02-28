@@ -26,6 +26,9 @@ def test_memory_constraint_item_from_nested_constraint_record() -> None:
     assert item.uid == "tb_1"
     assert item.needs_confirmation is True
     assert item.status == "proposed"
+    assert item.scope == "profile"
+    assert item.source == "system"
+    assert item.used_this_session is False
 
 
 def test_memory_tool_result_serializes_constraints() -> None:
@@ -39,6 +42,9 @@ def test_memory_tool_result_serializes_constraints() -> None:
                 name="No late calls",
                 description="Avoid calls after 18:00",
                 status="locked",
+                scope="profile",
+                source="user",
+                used_this_session=True,
             )
         ],
     )
@@ -46,3 +52,4 @@ def test_memory_tool_result_serializes_constraints() -> None:
     assert payload["action"] == "get"
     assert payload["ok"] is True
     assert payload["constraints"][0]["uid"] == "tb_2"
+    assert payload["constraints"][0]["used_this_session"] is True

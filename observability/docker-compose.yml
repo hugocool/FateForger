@@ -1,3 +1,7 @@
+networks:
+  obs:
+    name: ff-obs
+
 services:
   prometheus:
     image: prom/prometheus:latest
@@ -12,6 +16,8 @@ services:
       - prometheus_data:/prometheus
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - obs
 
   grafana:
     image: grafana/grafana:latest
@@ -27,7 +33,73 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
+      - loki
+      - tempo
+    networks:
+      - obs
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: ff-obs-tempo
+    command: ["-config.file=/etc/tempo.yml"]
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo.yml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "${OBS_TEMPO_HTTP_PORT:-3200}:3200"
+      - "4317:4317" # OTLP gRPC direct to Tempo
+      - "4318:4318" # OTLP HTTP direct to Tempo
+    networks:
+      - obs
+
+  loki:
+    image: grafana/loki:latest
+    container_name: ff-obs-loki
+    command: ["-config.file=/etc/loki.yml"]
+    volumes:
+      - ./loki/loki.yml:/etc/loki.yml:ro
+      - loki_data:/loki
+    ports:
+      - "${OBS_LOKI_PORT:-3100}:3100"
+    networks:
+      - obs
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: ff-obs-promtail
+    command: ["-config.file=/etc/promtail.yml"]
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - promtail_positions:/var/lib/promtail
+    depends_on:
+      - loki
+    networks:
+      - obs
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: ff-obs-otel-collector
+    command: ["--config=/etc/otel-collector.yml"]
+    volumes:
+      - ./otel/otel-collector.yml:/etc/otel-collector.yml:ro
+    ports:
+      - "4319:4317" # OTLP gRPC via collector (use this from app)
+      - "4320:4318" # OTLP HTTP via collector (use this from app)
+      - "8888:8888" # collector internal metrics
+      - "8889:8889" # collector-exported Prometheus metrics
+    depends_on:
+      - tempo
+      - loki
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - obs
 
 volumes:
   prometheus_data:
   grafana_data:
+  tempo_data:
+  loki_data:
+  promtail_positions:

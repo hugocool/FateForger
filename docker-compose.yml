@@ -77,6 +77,10 @@ services:
     networks:
       - admonish-network
     restart: unless-stopped
+    labels:
+      # Enable Promtail docker discovery for structured log shipping to Loki.
+      logging: "promtail"
+      logging_jobname: "fateforger"
     depends_on:
       - calendar-mcp
 

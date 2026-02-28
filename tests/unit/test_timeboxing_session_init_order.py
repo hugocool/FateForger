@@ -45,9 +45,13 @@ def _build_agent() -> TimeboxingFlowAgent:
     async def _publish_update(*, session, user_message, actions):  # noqa: ARG001
         return None
 
+    async def _maybe_handle_memory_review_turn(*, session, user_message):  # noqa: ARG001
+        return None
+
     agent._prime_collect_prefetch_non_blocking = _prime_collect_prefetch_non_blocking
     agent._run_graph_turn = _run_graph_turn
     agent._maybe_wrap_constraint_review = _maybe_wrap_constraint_review
+    agent._maybe_handle_memory_review_turn = _maybe_handle_memory_review_turn
     agent._attach_presenter_blocks = lambda *, reply, session: reply
     agent._publish_update = _publish_update
 
@@ -326,4 +330,46 @@ async def test_on_user_reply_review_commit_proceed_submits_without_button() -> N
     assert isinstance(out, TextMessage)
     assert out.content == "submitted-from-nl"
     assert calls["submit"] == 1
+    assert calls["run_graph"] == 0
+
+
+@pytest.mark.asyncio
+async def test_on_user_reply_memory_review_bypasses_stage_progression() -> None:
+    agent = _build_agent()
+    session = Session(
+        thread_ts="thread-memory",
+        channel_id="C1",
+        user_id="U1",
+        committed=True,
+        planned_date="2026-02-27",
+        tz_name="UTC",
+        session_key="thread-memory",
+    )
+    session.stage = TimeboxingStage.COLLECT_CONSTRAINTS
+    agent._sessions["thread-memory"] = session
+    calls = {"run_graph": 0}
+
+    async def _run_graph_turn(*, session: Session, user_text: str):  # noqa: ARG001
+        calls["run_graph"] += 1
+        return TextMessage(content="graph-progressed", source="timeboxing_agent")
+
+    async def _memory_turn(*, session: Session, user_message: str):  # noqa: ARG001
+        return TextMessage(content="memory-reviewed", source="timeboxing_agent")
+
+    agent._run_graph_turn = _run_graph_turn
+    agent._maybe_handle_memory_review_turn = _memory_turn
+
+    out = await TimeboxingFlowAgent.on_user_reply(
+        agent,
+        TimeboxingUserReply(
+            channel_id="C1",
+            thread_ts="thread-memory",
+            user_id="U1",
+            text="Which memories are active right now?",
+        ),
+        SimpleNamespace(),
+    )
+
+    assert isinstance(out, TextMessage)
+    assert out.content == "memory-reviewed"
     assert calls["run_graph"] == 0

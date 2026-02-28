@@ -62,6 +62,49 @@ class ConstraintInterpretation(BaseModel):
     explanation: Optional[str] = Field(default=None)
 
 
+class MemoryReviewDecision(BaseModel):
+    """Structured routing decision for in-thread memory review turns."""
+
+    action: Literal["memory_review", "none"] = Field(
+        description=(
+            "memory_review when the user asks to inspect remembered "
+            "constraints/preferences; otherwise none."
+        )
+    )
+    text_query: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional focused search text for memory review. Null to list all "
+            "currently relevant remembered constraints."
+        ),
+    )
+    statuses: list[str] = Field(
+        default_factory=list,
+        description="Optional status filters (locked, proposed, declined).",
+    )
+    scopes: list[str] = Field(
+        default_factory=list,
+        description="Optional scope filters (session, profile, datespan).",
+    )
+    necessities: list[str] = Field(
+        default_factory=list,
+        description="Optional necessity filters (must, should, prefer).",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Optional topic tags for narrowing results.",
+    )
+    limit: int = Field(
+        default=20,
+        ge=1,
+        le=50,
+        description="Maximum number of remembered constraints to list.",
+    )
+    explanation: Optional[str] = Field(
+        default=None, description="Short debug-only reasoning."
+    )
+
+
 PLANNED_DATE_INTERPRETER_PROMPT = """
 You are Schedular, interpreting which DATE the user wants to plan.
 
@@ -98,6 +141,30 @@ Rules
 - Default to scope=session unless the user explicitly indicates durable or bounded-period intent.
 - Return constraints=[] if should_extract=false.
 - If scope=datespan, include start_date/end_date as ISO dates if the user provided enough info; otherwise keep them null.
+""".strip()
+
+
+MEMORY_REVIEW_ROUTER_PROMPT = """
+You are Schedular, deciding whether a user reply should trigger memory review.
+
+Task
+- Interpret the user message in ANY language.
+- Output STRICT JSON matching MemoryReviewDecision.
+
+Choose action="memory_review" when the user asks to inspect remembered
+constraints/preferences/defaults/assumptions, for example:
+- "which memories are you using?"
+- "show my remembered constraints"
+- "what defaults are active right now?"
+- "show scope/source/status"
+
+Choose action="none" when the user is primarily asking for schedule edits,
+stage progression, or unrelated questions.
+
+Rules
+- If the message mixes schedule edits with memory review, choose action="none".
+- Use optional filters only when explicitly implied by the user.
+- Keep text_query concise and useful.
 """.strip()
 
 
@@ -147,10 +214,26 @@ def build_constraint_interpreter(
     )
 
 
+def build_memory_review_router(
+    *, model_client: OpenAIChatCompletionClient
+) -> AssistantAgent:
+    """Build the in-thread memory review routing agent."""
+    return AssistantAgent(
+        name="MemoryReviewRouter",
+        model_client=model_client,
+        output_content_type=MemoryReviewDecision,
+        system_message=MEMORY_REVIEW_ROUTER_PROMPT,
+        reflect_on_tool_use=False,
+        max_tool_iterations=1,
+    )
+
+
 __all__ = [
     "ConstraintInterpretation",
     "ConstraintScopeLiteral",
+    "MemoryReviewDecision",
     "PlannedDateResult",
     "build_constraint_interpreter",
+    "build_memory_review_router",
     "build_planned_date_interpreter",
 ]

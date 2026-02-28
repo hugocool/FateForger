@@ -36,6 +36,10 @@ def test_present_memory_tool_result_slack_mode() -> None:
                 uid="tb_1",
                 name="Protect mornings",
                 description="No meetings before noon",
+                status="locked",
+                scope="profile",
+                source="user",
+                used_this_session=True,
                 needs_confirmation=True,
             )
         ],
@@ -52,3 +56,10 @@ def test_present_memory_tool_result_slack_mode() -> None:
     assert presentation.text_update is None
     assert presentation.blocks
     assert any("Memory" in block.get("text", {}).get("text", "") for block in presentation.blocks)
+    block_texts = [
+        block.get("text", {}).get("text", "")
+        for block in presentation.blocks
+        if isinstance(block, dict) and isinstance(block.get("text"), dict)
+    ]
+    assert any("source: user" in text for text in block_texts)
+    assert any("used: this session" in text for text in block_texts)

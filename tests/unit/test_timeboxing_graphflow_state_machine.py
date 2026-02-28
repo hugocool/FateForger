@@ -175,6 +175,80 @@ async def test_graphflow_cancel_terminates_without_stage_run():
 
 
 @pytest.mark.asyncio
+async def test_transition_assist_prioritizes_memory_review_over_task_assist():
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1", committed=True)
+    session.stage = TimeboxingStage.COLLECT_CONSTRAINTS
+    calls = {"assist": 0}
+
+    async def _memory_review(
+        _self, *, session: Session, user_message: str
+    ):  # noqa: ARG001
+        return TextMessage(content="memory-reviewed", source="timeboxing_agent")
+
+    async def _assist_turn(
+        _self, *, session: Session, user_message: str, note: str | None
+    ):  # noqa: ARG001
+        calls["assist"] += 1
+        return "assist"
+
+    agent._maybe_handle_memory_review_turn = types.MethodType(_memory_review, agent)
+    agent._run_assist_turn = types.MethodType(_assist_turn, agent)
+    turn_init = types.SimpleNamespace(
+        turn=types.SimpleNamespace(
+            decision=StageDecision(action="assist", note="adjacent"),
+            user_text="Which constraints are currently active?",
+        )
+    )
+    node = TransitionNode(orchestrator=agent, session=session, turn_init=turn_init)
+
+    out = await node.on_messages([], cancellation_token=types.SimpleNamespace())
+
+    assert session.last_response == "memory-reviewed"
+    assert session.skip_stage_execution is True
+    assert node.stage_user_message == ""
+    assert out.chat_message.content.note == "memory_review"
+    assert calls["assist"] == 0
+
+
+@pytest.mark.asyncio
+async def test_transition_assist_falls_through_when_memory_review_not_selected():
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1", committed=True)
+    session.stage = TimeboxingStage.COLLECT_CONSTRAINTS
+    calls = {"assist": 0}
+
+    async def _memory_review(
+        _self, *, session: Session, user_message: str
+    ):  # noqa: ARG001
+        return None
+
+    async def _assist_turn(
+        _self, *, session: Session, user_message: str, note: str | None
+    ):  # noqa: ARG001
+        calls["assist"] += 1
+        return "assist-routed"
+
+    agent._maybe_handle_memory_review_turn = types.MethodType(_memory_review, agent)
+    agent._run_assist_turn = types.MethodType(_assist_turn, agent)
+    turn_init = types.SimpleNamespace(
+        turn=types.SimpleNamespace(
+            decision=StageDecision(action="assist", note="adjacent"),
+            user_text="show pending tasks",
+        )
+    )
+    node = TransitionNode(orchestrator=agent, session=session, turn_init=turn_init)
+
+    out = await node.on_messages([], cancellation_token=types.SimpleNamespace())
+
+    assert session.last_response == "assist-routed"
+    assert session.skip_stage_execution is True
+    assert node.stage_user_message == ""
+    assert out.chat_message.content.note == "assist"
+    assert calls["assist"] == 1
+
+
+@pytest.mark.asyncio
 async def test_transition_routes_reviewcommit_edits_back_to_refine():
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
 

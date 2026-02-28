@@ -1,0 +1,64 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 2s
+        filters:
+          - name: label
+            values: ["logging=promtail"]
+
+    relabel_configs:
+      # Container name (strip leading /)
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: container
+
+      # Compose project + service
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_project"]
+        target_label: compose_project
+
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: compose_service
+
+      # Use logging_jobname label as the Loki job name
+      - source_labels: ["__meta_docker_container_label_logging_jobname"]
+        target_label: job
+
+    pipeline_stages:
+      # Try to parse each line as JSON (our StructuredJsonFormatter output)
+      - json:
+          expressions:
+            level: level
+            event: event
+            stage: stage
+            agent: agent
+            model: model
+            tool_name: tool_name
+            session_key: session_key
+            thread_ts: thread_ts
+
+      # Promote bounded, low-cardinality fields to Loki index labels.
+      # High-cardinality fields (session_key, thread_ts, run_id, tool_name)
+      # stay in the JSON payload and are queried with LogQL `| json`.
+      - labels:
+          level:
+          event:
+          stage:
+          agent:
+          model:
+
+      # Set the log timestamp from the structured ts field if present
+      - timestamp:
+          source: ts
+          format: RFC3339Nano
+          action_on_failure: skip

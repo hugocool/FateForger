@@ -393,7 +393,9 @@ class McpCalendarClient:
                             "error": (str(exc) or type(exc).__name__)[:300],
                         }
                     )
-                error_type = "transport_recoverable" if recoverable else "transport_fatal"
+                error_type = (
+                    "transport_recoverable" if recoverable else "transport_fatal"
+                )
                 record_error(component="McpCalendarClient", error_type=error_type)
                 record_tool_call(
                     agent="mcp_calendar",
@@ -493,12 +495,18 @@ class McpCalendarClient:
 
     @staticmethod
     def _normalize_events(payload: Any) -> list[dict[str, Any]]:
-        """Coerce raw MCP payloads into a list of event dicts."""
-        # TODO(refactor): Replace dict filtering with Pydantic CalendarEvent parsing.
+        """Coerce raw MCP payloads into a list of event dicts.
+
+        Handles the four shapes returned by the calendar MCP server:
+        - ``{"events": [...]}`` / ``{"items": [...]}`` — wrapped list
+        - ``{"event": {...}}`` — single event wrapper
+        - ``[{...}, ...]`` — bare event list (with optional recursive nesting)
+        """
         if isinstance(payload, dict):
-            items = payload.get("events") or payload.get("items")
-            if isinstance(items, list):
-                return [item for item in items if isinstance(item, dict)]
+            for key in ("events", "items"):
+                val = payload.get(key)
+                if isinstance(val, list):
+                    return [item for item in val if isinstance(item, dict)]
             event = payload.get("event")
             if isinstance(event, dict):
                 return [event]
@@ -507,32 +515,25 @@ class McpCalendarClient:
             dict_items = [item for item in payload if isinstance(item, dict)]
             if not dict_items:
                 return []
-            direct_events = [
-                item for item in dict_items if "start" in item and "end" in item
+            direct = [item for item in dict_items if "start" in item and "end" in item]
+            if direct:
+                return direct
+            nested = [
+                norm
+                for item in dict_items
+                for norm in McpCalendarClient._normalize_events(item)
             ]
-            if direct_events:
-                return direct_events
-            nested: list[dict[str, Any]] = []
-            for item in dict_items:
-                nested.extend(McpCalendarClient._normalize_events(item))
-            if nested:
-                return nested
-            return dict_items
+            return nested or dict_items
         return []
+
 
     @staticmethod
     def _parse_event_dt(raw: dict[str, Any] | None, *, tz: ZoneInfo) -> datetime | None:
         """Parse a calendar event datetime payload into a timezone-aware datetime."""
-        # TODO(refactor): Use a Pydantic date-time parser instead of raw dict reads.
         if not raw:
             return None
-        if raw.get("dateTime"):
-            dt_val = date_parser.isoparse(raw["dateTime"])
-            return dt_val.astimezone(tz)
-        if raw.get("date"):
-            day_val = date_parser.isoparse(raw["date"]).date()
-            return datetime.combine(day_val, datetime.min.time(), tz)
-        return None
+        from fateforger.contracts import EventDateTime  # noqa: PLC0415
+        return EventDateTime.model_validate(raw).to_datetime(tz)
 
     @staticmethod
     def _to_hhmm(dt_val: datetime | None, *, tz: ZoneInfo) -> str | None:
