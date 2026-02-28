@@ -124,6 +124,11 @@ def record_error(*, component: str, error_type: str) -> None:
     ).inc()
 
 
+def emit_llm_audit_event(event: dict[str, Any]) -> None:
+    """Emit one structured LLM I/O audit event through the configured audit sink."""
+    _emit_llm_audit_event(event)
+
+
 # ---------------------------------------------------------------------------
 # StructuredJsonFormatter
 # ---------------------------------------------------------------------------
