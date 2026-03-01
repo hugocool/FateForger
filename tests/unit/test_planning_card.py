@@ -6,6 +6,7 @@ from fateforger.slack_bot.planning import (
     FF_EVENT_ADD_DISABLED_ACTION_ID,
     FF_EVENT_BLOCK_PICK_TIME,
     FF_EVENT_EDIT_ACTION_ID,
+    FF_EVENT_OPEN_URL_ACTION_ID,
     FF_EVENT_RETRY_ACTION_ID,
     FF_EVENT_START_TIME_ACTION_ID,
     _card_payload,
@@ -76,7 +77,15 @@ def test_card_failure_has_retry():
 
 def test_card_success_has_open_url_no_timepicker():
     """After booking the event, the timepicker is hidden and no Edit button is shown."""
-    payload = _card_payload(_draft(status=DraftStatus.SUCCESS, event_url="https://example.com"))
+    payload = _card_payload(
+        _draft(
+            status=DraftStatus.SUCCESS,
+            event_url=(
+                "https://www.google.com/calendar/event?eid="
+                "ZmZwbGFubmluZ3h5eiBodWdvLmV2ZXJzQGV4YW1wbGUuY29t"
+            ),
+        )
+    )
     blocks = payload["blocks"]
 
     # No timepicker section on a committed card
@@ -84,7 +93,8 @@ def test_card_success_has_open_url_no_timepicker():
 
     actions = next(b for b in blocks if b["type"] == "actions")
     button = actions["elements"][0]
-    assert button.get("url") == "https://example.com"
+    assert button.get("action_id") == FF_EVENT_OPEN_URL_ACTION_ID
+    assert button.get("url", "").startswith("https://www.google.com/calendar/event")
     # No Edit button on a committed card
     assert not any(e.get("action_id") == FF_EVENT_EDIT_ACTION_ID for e in actions["elements"])
 
@@ -93,4 +103,4 @@ def test_card_success_has_open_url_no_timepicker():
     )
     text = status_context["elements"][0]["text"]
     assert "Open in Google Calendar" in text
-    assert "https://example.com" in text
+    assert "https://www.google.com/calendar/event" in text

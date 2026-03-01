@@ -1839,7 +1839,12 @@ def register_handlers(
 
     @app.action(FF_EVENT_OPEN_URL_ACTION_ID)
     async def on_event_open_url_action(ack, body, logger):
-        """Acknowledge the open_event_url button click; Slack opens the URL natively."""
+        """Acknowledge planning-card URL button clicks; Slack opens the URL natively."""
+        await ack()
+
+    @app.action("open_event_url")
+    async def on_event_open_url_action_legacy(ack, body, logger):
+        """Backward-compatible ack for cards rendered before action-ID normalization."""
         await ack()
 
     @app.action(FF_EVENT_ADD_DISABLED_ACTION_ID)
@@ -2330,7 +2335,6 @@ def register_handlers(
     async def on_constraint_review_all_action_legacy(ack, body, client, logger):
         await ack()
         await _handle_constraint_review_all_action(body, client)
-
     @app.action(CONSTRAINT_ROW_REVIEW_ACTION_ID)
     async def on_constraint_review_action(ack, body, client, logger):
         await ack()
