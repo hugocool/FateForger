@@ -58,7 +58,7 @@ FF_EVENT_DURATION_ACTION_ID = "duration_min"
 FF_EVENT_ADD_ACTION_ID = "add_to_calendar"
 FF_EVENT_ADD_DISABLED_ACTION_ID = "add_to_calendar_disabled"
 FF_EVENT_RETRY_ACTION_ID = "retry_add_to_calendar"
-FF_EVENT_OPEN_URL_ACTION_ID = "ff_open_google_calendar_event"
+FF_EVENT_OPEN_URL_ACTION_ID = "open_event_url"
 FF_EVENT_EDIT_ACTION_ID = "edit_event_details"
 FF_EVENT_EDIT_MODAL_CALLBACK_ID = "ff_event_edit_modal"
 
