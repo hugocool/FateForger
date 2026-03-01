@@ -787,7 +787,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 )
             return TextMessage(content=content, source=self.id.type)
 
-# TODO: this should be build into the agent itself using the autogen message in that stage, not bolted on like this
+    # TODO: this should be build into the agent itself using the autogen message in that stage, not bolted on like this
     async def _interpret_planned_date(
         self, text: str, *, now: datetime, tz_name: str
     ) -> str:
@@ -2042,7 +2042,9 @@ class TimeboxingFlowAgent(RoutedAgent):
         ).lower()
         sleep_tokens = ("sleep", "bed", "wake")
         work_tokens = ("work window", "work hours", "availability")
-        return any(t in text for t in sleep_tokens) or any(t in text for t in work_tokens)
+        return any(t in text for t in sleep_tokens) or any(
+            t in text for t in work_tokens
+        )
 
     async def _await_pending_constraint_extractions(
         self,
