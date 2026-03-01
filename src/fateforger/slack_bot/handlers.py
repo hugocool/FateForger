@@ -24,8 +24,10 @@ from fateforger.core.config import settings
 from fateforger.core.logging_config import observe_stage_duration, record_error
 from fateforger.slack_bot.bootstrap import ensure_workspace_ready
 from fateforger.slack_bot.constraint_review import (
+    CONSTRAINT_REVIEW_ALL_ACTION_ID,
     CONSTRAINT_REVIEW_VIEW_CALLBACK_ID,
     CONSTRAINT_ROW_REVIEW_ACTION_ID,
+    build_constraint_review_list_view,
     build_constraint_review_view,
     build_constraint_row_blocks,
     decode_metadata,
@@ -1823,7 +1825,12 @@ def register_handlers(
 
     @app.action(FF_EVENT_OPEN_URL_ACTION_ID)
     async def on_event_open_url_action(ack, body, logger):
-        """Acknowledge the open_event_url button click; Slack opens the URL natively."""
+        """Acknowledge planning-card URL button clicks; Slack opens the URL natively."""
+        await ack()
+
+    @app.action("open_event_url")
+    async def on_event_open_url_action_legacy(ack, body, logger):
+        """Backward-compatible ack for cards rendered before action-ID normalization."""
         await ack()
 
     @app.action(FF_EVENT_ADD_DISABLED_ACTION_ID)
@@ -2121,6 +2128,45 @@ def register_handlers(
             payload=payload,
             action="cancel",
         )
+
+    @app.action(CONSTRAINT_REVIEW_ALL_ACTION_ID)
+    async def on_constraint_review_all_action(ack, body, client, logger):
+        await ack()
+        action = (body.get("actions") or [{}])[0]
+        value = action.get("value") or ""
+        metadata = decode_metadata(value)
+        thread_ts = (
+            metadata.get("thread_ts")
+            or (body.get("message") or {}).get("thread_ts")
+            or (body.get("message") or {}).get("ts")
+            or ""
+        )
+        user_id = metadata.get("user_id") or (body.get("user") or {}).get("id") or ""
+        channel_id = body.get("channel", {}).get("id") or metadata.get("channel_id") or ""
+        trigger_id = body.get("trigger_id") or ""
+        if not (thread_ts and user_id and channel_id and trigger_id):
+            return
+
+        store = await _get_constraint_store()
+        if not store:
+            return
+        constraints = await store.list_constraints(
+            user_id=user_id,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+        )
+        active_constraints = [
+            constraint
+            for constraint in constraints
+            if constraint.status != ConstraintStatus.DECLINED
+        ]
+        view = build_constraint_review_list_view(
+            active_constraints,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            user_id=user_id,
+        )
+        await client.views_open(trigger_id=trigger_id, view=view)
 
     @app.action(CONSTRAINT_ROW_REVIEW_ACTION_ID)
     async def on_constraint_review_action(ack, body, client, logger):

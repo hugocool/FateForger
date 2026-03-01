@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import uuid
@@ -8,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 from autogen_core import AgentId
@@ -19,6 +22,12 @@ from fateforger.agents.schedular.messages import (
     SuggestNextSlot,
     UpsertCalendarEvent,
     UpsertCalendarEventResult,
+)
+from fateforger.core.logging_config import (
+    observe_stage_duration,
+    record_admonishment_event,
+    record_error,
+    record_tool_call,
 )
 from fateforger.haunt.event_draft_store import (
     DraftStatus,
@@ -36,12 +45,6 @@ from fateforger.haunt.planning_store import (
 )
 from fateforger.haunt.reconcile import PlanningReconciler, PlanningReminder
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
-from fateforger.core.logging_config import (
-    observe_stage_duration,
-    record_admonishment_event,
-    record_error,
-    record_tool_call,
-)
 from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.workspace import DEFAULT_PERSONAS, WorkspaceRegistry
 
@@ -55,7 +58,7 @@ FF_EVENT_DURATION_ACTION_ID = "duration_min"
 FF_EVENT_ADD_ACTION_ID = "add_to_calendar"
 FF_EVENT_ADD_DISABLED_ACTION_ID = "add_to_calendar_disabled"
 FF_EVENT_RETRY_ACTION_ID = "retry_add_to_calendar"
-FF_EVENT_OPEN_URL_ACTION_ID = "open_event_url"
+FF_EVENT_OPEN_URL_ACTION_ID = "ff_open_google_calendar_event"
 FF_EVENT_EDIT_ACTION_ID = "edit_event_details"
 FF_EVENT_EDIT_MODAL_CALLBACK_ID = "ff_event_edit_modal"
 
@@ -160,7 +163,9 @@ class PlanningCoordinator:
                 stage="planning_register_ensure_anchor_cancelled",
                 duration_s=perf_counter() - ensure_anchor_started,
             )
-            record_error(component="planning_register", error_type="ensure_anchor_cancelled")
+            record_error(
+                component="planning_register", error_type="ensure_anchor_cancelled"
+            )
             raise
         else:
             observe_stage_duration(
@@ -186,7 +191,9 @@ class PlanningCoordinator:
                     stage="planning_guardian_reconcile_error",
                     duration_s=perf_counter() - reconcile_started,
                 )
-                record_error(component="planning_guardian", error_type="reconcile_error")
+                record_error(
+                    component="planning_guardian", error_type="reconcile_error"
+                )
                 logger.exception(
                     "Planning guardian reconcile_user failed for %s", user_id
                 )
@@ -665,6 +672,11 @@ class PlanningCoordinator:
             if isinstance(result, UpsertCalendarEventResult)
             else ""
         )
+        result_event_url_error = (
+            _validate_google_calendar_event_url(result_event_url)
+            if result_event_url
+            else "Calendar upsert returned no event URL; insertion not confirmed. Please retry."
+        )
         result_error = (
             (result.error or "").strip()
             if isinstance(result, UpsertCalendarEventResult)
@@ -676,16 +688,18 @@ class PlanningCoordinator:
             type(result).__name__,
             result_ok,
             result_event_id,
-            bool(result_event_url),
+            result_event_url_error is None,
             result_error or None,
         )
 
         if (
             isinstance(result, UpsertCalendarEventResult)
             and result_ok
-            and bool(result_event_url)
+            and result_event_url_error is None
         ):
-            record_tool_call(agent="planning_card", tool="upsert_calendar_event", status="ok")
+            record_tool_call(
+                agent="planning_card", tool="upsert_calendar_event", status="ok"
+            )
             record_admonishment_event(
                 component="planning_card", event="add_to_calendar", status="ok"
             )
@@ -733,20 +747,25 @@ class PlanningCoordinator:
             return
 
         error = result_error if result_error else None
-        if result_ok and not result_event_url:
-            error = "Calendar upsert returned no event URL; insertion not confirmed. Please retry."
+        if result_ok and result_event_url_error:
+            error = result_event_url_error
             logger.warning(
-                "_add_to_calendar_async strict-success failure: missing event URL despite ok=true (draft_id=%s event_id=%s)",
+                "_add_to_calendar_async strict-success failure: unusable event URL despite ok=true (draft_id=%s event_id=%s reason=%s)",
                 draft.draft_id,
                 result_event_id or draft.event_id,
+                result_event_url_error,
             )
         if not error:
             error = "Calendar operation failed"
         _cal_error_type = (
-            "calendar_no_event_url" if (result_ok and not result_event_url) else "calendar_upsert_failed"
+            "calendar_invalid_event_url"
+            if (result_ok and result_event_url_error)
+            else "calendar_upsert_failed"
         )
         record_error(component="planning_card", error_type=_cal_error_type)
-        record_tool_call(agent="planning_card", tool="upsert_calendar_event", status="error")
+        record_tool_call(
+            agent="planning_card", tool="upsert_calendar_event", status="error"
+        )
         record_admonishment_event(
             component="planning_card", event="add_to_calendar", status="error"
         )
@@ -831,6 +850,52 @@ def _status_text(draft: EventDraftPayload) -> str:
     if draft.status is DraftStatus.PENDING:
         return "⏳ Adding to calendar…"
     return "Not added yet"
+
+
+def _validate_google_calendar_event_url(url: str) -> str | None:
+    candidate = (url or "").strip()
+    if not candidate:
+        return "Calendar upsert returned no event URL; insertion not confirmed. Please retry."
+    if any(ch.isspace() for ch in candidate):
+        return "Calendar upsert returned an invalid event URL; please retry."
+
+    parsed = urlsplit(candidate)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return "Calendar upsert returned a non-HTTPS event URL; please retry."
+
+    host = parsed.netloc.lower()
+    if host not in {
+        "www.google.com",
+        "calendar.google.com",
+        "google.com",
+    } and not host.endswith(".google.com"):
+        return "Calendar upsert returned a non-Google Calendar event URL; please retry."
+    if "/calendar/" not in parsed.path and not parsed.path.startswith("/calendar"):
+        return "Calendar upsert returned an unexpected calendar URL path; please retry."
+
+    eid_values = parse_qs(parsed.query).get("eid")
+    if not eid_values:
+        return None
+    eid = (eid_values[0] or "").strip()
+    if not eid:
+        return "Calendar upsert returned an invalid event URL token; please retry."
+
+    try:
+        padding = "=" * (-len(eid) % 4)
+        decoded = base64.urlsafe_b64decode(f"{eid}{padding}").decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return "Calendar upsert returned an unreadable event URL token; please retry."
+
+    parts = decoded.split(" ")
+    if len(parts) < 2:
+        return "Calendar upsert returned an incomplete event URL token; please retry."
+    calendar_ref = parts[-1].strip()
+    local, sep, domain = calendar_ref.partition("@")
+    if not local or not sep or not domain or "." not in domain:
+        return (
+            "Calendar upsert returned an incomplete calendar reference; please retry."
+        )
+    return None
 
 
 def _card_payload(
