@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import types
 
 import pytest
 
@@ -22,10 +21,14 @@ async def test_interpret_planned_date_disables_timeout_dumps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
-    agent._planning_date_interpreter_agent = _FakePlanningDateInterpreter()
+    agent._model_client = object()
 
-    async def _noop_ensure(_self) -> None:
-        return None
+    # Patch the factory so _interpret_planned_date gets our stub instead of a real LLM.
+    monkeypatch.setattr(
+        timeboxing_agent_mod,
+        "build_planned_date_interpreter",
+        lambda *, model_client: _FakePlanningDateInterpreter(),
+    )
 
     captured: dict[str, object] = {}
 
@@ -35,11 +38,6 @@ async def test_interpret_planned_date_disables_timeout_dumps(
         captured.update(kwargs)
         return await awaitable
 
-    monkeypatch.setattr(
-        agent,
-        "_ensure_planning_date_interpreter_agent",
-        types.MethodType(_noop_ensure, agent),
-    )
     monkeypatch.setattr(timeboxing_agent_mod, "with_timeout", _fake_with_timeout)
     monkeypatch.setattr(
         timeboxing_agent_mod,

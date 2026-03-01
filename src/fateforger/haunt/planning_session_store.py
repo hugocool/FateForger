@@ -5,7 +5,16 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import Date, DateTime, Integer, String, UniqueConstraint, select
+from sqlalchemy import (
+    Date,
+    DateTime,
+    Integer,
+    String,
+    UniqueConstraint,
+    and_,
+    or_,
+    select,
+)
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column
 
@@ -85,11 +94,26 @@ class SqlAlchemyPlanningSessionStore:
     ) -> PlanningSessionRefPayload:
         status_value = _status_value(status)
         async with self._sessionmaker() as session:
+            # Single query covering both unique constraints:
+            #   uq_planning_session_ref_user_date   → (user_id, planned_date)
+            #   uq_planning_session_ref_calendar_event → (calendar_id, event_id)
+            # This eliminates the TOCTOU window of two sequential SELECTs and
+            # halves the round-trips on a cache miss.
             result = await session.execute(
-                select(PlanningSessionRef).where(
-                    PlanningSessionRef.user_id == user_id,
-                    PlanningSessionRef.planned_date == planned_date,
+                select(PlanningSessionRef)
+                .where(
+                    or_(
+                        and_(
+                            PlanningSessionRef.user_id == user_id,
+                            PlanningSessionRef.planned_date == planned_date,
+                        ),
+                        and_(
+                            PlanningSessionRef.calendar_id == calendar_id,
+                            PlanningSessionRef.event_id == event_id,
+                        ),
+                    )
                 )
+                .limit(1)
             )
             row = result.scalar_one_or_none()
             if row is None:
@@ -186,6 +210,15 @@ def _to_payload(row: PlanningSessionRef) -> PlanningSessionRefPayload:
         channel_id=row.channel_id,
         thread_ts=row.thread_ts,
     )
+
+
+__all__ = [
+    "PlanningSessionRefPayload",
+    "PlanningSessionRef",
+    "PlanningSessionStatus",
+    "SqlAlchemyPlanningSessionStore",
+    "ensure_planning_session_schema",
+]
 
 
 __all__ = [

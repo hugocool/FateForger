@@ -18,6 +18,22 @@
 - Tasks guided refinement entrypoint is `/task-refine`; the command should dispatch a deterministic session start message to `tasks_agent`.
 - After `/task-refine`, follow-up thread messages must continue on `tasks_agent` via focus routing instead of re-triage.
 
+## Routing Timeout Diagnostics
+
+- Operator path rule for live audits:
+  - when sending test/user messages into Slack threads, use Slack MCP (`agent-slack`) as first choice.
+  - use `scripts/dev/slack_user_timeboxing_driver.py` only as deterministic fallback when MCP access/auth is unavailable.
+- `slack_route_dispatch_timeout` in `handlers.py` is a **delivery guard**, not proof that stage logic failed.
+- If timeout fallback text appears in Slack, correlate in this order:
+  - session log: `graph_turn_start` / `graph_turn_end` for same `thread_ts` and stage
+  - session log: `graph_turn_slow` for long stage duration context
+  - metrics: `fateforger_errors_total{component="slack_routing",error_type="route_timeout"}`
+- Classification rule:
+  - timeout + later `graph_turn_end` => delivery timeout (response computed but missed dispatch window)
+  - timeout + no `graph_turn_end` => stage still failing/hanging
+- During audits, preserve thread identity:
+  - if a bot-created root thread differs from the seed thread, use the bot-created `thread_ts` as canonical for log queries.
+
 ## Action Handlers
 
 - All Slack button/action callbacks must be registered in `handlers.py` as Bolt listeners.

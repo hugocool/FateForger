@@ -68,7 +68,9 @@ async def test_run_stage_gate_sends_strict_json_context(monkeypatch: pytest.Monk
     monkeypatch.setattr(TimeboxingFlowAgent, "_ensure_stage_agents", _noop_ensure_stage_agents)
 
     capturing = _CapturingStageAgent()
-    agent._stage_agents = {TimeboxingStage.COLLECT_CONSTRAINTS: capturing}  # type: ignore[attr-defined]
+    # _build_one_shot_agent is called per invocation — return our capturing stub.
+    agent._build_one_shot_agent = lambda *_a, **_kw: capturing
+    agent._constraint_search_tool = None  # accessed directly in _run_stage_gate
 
     context = {
         "stage_id": "CollectConstraints",
@@ -115,9 +117,9 @@ async def test_run_stage_gate_returns_safe_fallback_on_parse_failure(
         return None
 
     monkeypatch.setattr(TimeboxingFlowAgent, "_ensure_stage_agents", _noop_ensure_stage_agents)
-    agent._stage_agents = {  # type: ignore[attr-defined]
-        TimeboxingStage.COLLECT_CONSTRAINTS: _MalformedStageAgent()
-    }
+    # _build_one_shot_agent is called per invocation — return our malformed stub.
+    agent._build_one_shot_agent = lambda *_a, **_kw: _MalformedStageAgent()
+    agent._constraint_search_tool = None  # accessed directly in _run_stage_gate
 
     context = {"facts": {"timezone": "Europe/Amsterdam"}}
     out = await TimeboxingFlowAgent._run_stage_gate(  # type: ignore[misc]

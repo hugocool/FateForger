@@ -6,13 +6,13 @@ timeboxing agent while replacing the backing store/retrieval path with Mem0.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
 import hashlib
 import json
+from datetime import date, datetime, timezone
 from typing import Any, Sequence
 
-from autogen_core.memory import MemoryContent, MemoryQueryResult
 import jsonpatch
+from autogen_core.memory import MemoryContent, MemoryQueryResult
 from pydantic import TypeAdapter, ValidationError
 
 from fateforger.core.config import settings
@@ -145,7 +145,10 @@ class Mem0ConstraintMemoryClient:
 
         try:
             from autogen_ext.memory.mem0 import Mem0Memory
-        except (ImportError, ModuleNotFoundError) as exc:  # pragma: no cover - env dependent
+        except (
+            ImportError,
+            ModuleNotFoundError,
+        ) as exc:  # pragma: no cover - env dependent
             raise RuntimeError(
                 "Mem0 backend selected but Mem0 dependencies are missing. "
                 "Install autogen-ext[mem0] and configure MEM0_API_KEY."
@@ -170,13 +173,19 @@ class Mem0ConstraintMemoryClient:
 
     @staticmethod
     def _build_content_text(constraint: dict[str, Any], uid: str) -> str:
-        """Build searchable content text for Mem0 semantic retrieval."""
+        """Build searchable content text for Mem0 semantic retrieval.
+
+        Includes aspect classification fields (aspect_id, aspect_label, category,
+        frame_slot) so that semantic queries like "what are my sleep constraints?"
+        match on structured domain labels rather than only free-text descriptions.
+        """
         applicability = constraint.get("applicability") or {}
         payload = constraint.get("payload") or {}
         scalar = payload.get("scalar_params") or {}
         topics = ", ".join(_to_text_list(constraint.get("topics")))
         stages = ", ".join(_to_text_list(constraint.get("applies_stages")))
         event_types = ", ".join(_to_text_list(constraint.get("applies_event_types")))
+        aspect_cls = constraint.get("aspect_classification") or {}
         return (
             f"uid:{uid}\n"
             f"name:{constraint.get('name') or ''}\n"
@@ -194,7 +203,11 @@ class Mem0ConstraintMemoryClient:
             f"timezone:{applicability.get('timezone') or ''}\n"
             f"duration_min:{scalar.get('duration_min')}\n"
             f"duration_max:{scalar.get('duration_max')}\n"
-            f"contiguity:{scalar.get('contiguity') or ''}"
+            f"contiguity:{scalar.get('contiguity') or ''}\n"
+            f"aspect_id:{aspect_cls.get('aspect_id') or ''}\n"
+            f"aspect_label:{aspect_cls.get('aspect_label') or ''}\n"
+            f"category:{aspect_cls.get('category') or ''}\n"
+            f"frame_slot:{aspect_cls.get('frame_slot') or ''}"
         )
 
     @staticmethod
@@ -203,8 +216,10 @@ class Mem0ConstraintMemoryClient:
         applicability = constraint.get("applicability") or {}
         payload = constraint.get("payload") or {}
         now_iso = datetime.now(timezone.utc).isoformat()
-        type_id = constraint.get("type_id") or payload.get("type_id") or payload.get(
-            "rule_kind"
+        type_id = (
+            constraint.get("type_id")
+            or payload.get("type_id")
+            or payload.get("rule_kind")
         )
         return {
             "kind": "timeboxing_constraint",
@@ -277,7 +292,9 @@ class Mem0ConstraintMemoryClient:
         user_id = str(metadata.get("user_id") or self._user_id).strip() or self._user_id
         payload_metadata = dict(metadata)
         payload_metadata.pop("user_id", None)
-        if client is not None and callable(getattr(client, "_add_to_vector_store", None)):
+        if client is not None and callable(
+            getattr(client, "_add_to_vector_store", None)
+        ):
             # Keep direct-import writes on the current thread. Local mem0 backends
             # may hold SQLite connections that are thread-affine.
             client._add_to_vector_store(
@@ -334,7 +351,9 @@ class Mem0ConstraintMemoryClient:
         if filters.get("stage"):
             parts.append(f"stage {filters['stage']}")
         if filters.get("event_types_any"):
-            parts.append("event types " + " ".join(_to_text_list(filters["event_types_any"])))
+            parts.append(
+                "event types " + " ".join(_to_text_list(filters["event_types_any"]))
+            )
         if type_ids:
             parts.append("types " + " ".join(_to_text_list(type_ids)))
         if tags:
@@ -357,7 +376,9 @@ class Mem0ConstraintMemoryClient:
             row_type = str(row.get("type_id") or row.get("rule_kind") or "").lower()
             if row_type not in allowed:
                 return False
-        if tags and not _match_any(_to_text_list(row.get("topics")), _to_text_list(tags)):
+        if tags and not _match_any(
+            _to_text_list(row.get("topics")), _to_text_list(tags)
+        ):
             return False
 
         as_of = _parse_iso_date(filters.get("as_of")) or datetime.utcnow().date()
@@ -420,7 +441,11 @@ class Mem0ConstraintMemoryClient:
         """Run a Mem0 query with graceful fallback."""
         query_limit = max(limit, self._limit)
         result = await self._memory.query(query_text, limit=query_limit)
-        return result if isinstance(result, MemoryQueryResult) else MemoryQueryResult(results=[])
+        return (
+            result
+            if isinstance(result, MemoryQueryResult)
+            else MemoryQueryResult(results=[])
+        )
 
     async def _latest_constraint_metadata(self, uid: str) -> dict[str, Any] | None:
         """Return the latest stored metadata payload for a constraint uid."""
@@ -444,7 +469,9 @@ class Mem0ConstraintMemoryClient:
                 break
         if not candidates:
             return None
-        candidates.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        candidates.sort(
+            key=lambda item: str(item.get("updated_at") or ""), reverse=True
+        )
         return candidates[0]
 
     async def get_constraint(self, *, uid: str) -> dict[str, Any] | None:
@@ -524,7 +551,9 @@ class Mem0ConstraintMemoryClient:
         if "windows" in updates and isinstance(updates["windows"], list):
             payload["windows"] = list(updates["windows"])
 
-        if "supersedes_uids" in updates and isinstance(updates["supersedes_uids"], list):
+        if "supersedes_uids" in updates and isinstance(
+            updates["supersedes_uids"], list
+        ):
             lifecycle["supersedes_uids"] = list(updates["supersedes_uids"])
         if "ttl_days" in updates:
             lifecycle["ttl_days"] = updates["ttl_days"]
@@ -645,7 +674,9 @@ class Mem0ConstraintMemoryClient:
     ) -> list[dict[str, Any]]:
         """Query constraint rows with deterministic post-filtering."""
         query_text = self._query_text(filters=filters, type_ids=type_ids, tags=tags)
-        search = await self._search_memories(query_text=query_text, limit=max(limit * 5, 100))
+        search = await self._search_memories(
+            query_text=query_text, limit=max(limit * 5, 100)
+        )
 
         deduped: dict[str, tuple[str, dict[str, Any]]] = {}
         for memory in search.results:

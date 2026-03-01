@@ -20,6 +20,11 @@ from autogen_agentchat.messages import BaseChatMessage, StructuredMessage, TextM
 from autogen_core import CancellationToken
 from pydantic import BaseModel
 
+from fateforger.agents.shared.handoff_policy import (
+    HandoffIntent,
+    HandoffPolicy,
+    HandoffRoute,
+)
 from fateforger.agents.timeboxing.stage_gating import (
     StageDecision,
     StageGateOutput,
@@ -239,10 +244,27 @@ class TransitionNode(BaseChatAgent):
                             content=signal,
                         )
                     )
+                assist_policy = HandoffPolicy(allowed_targets={"tasks_agent"})
+                route = assist_policy.resolve(
+                    HandoffIntent(
+                        action=decision.action,
+                        target=decision.assist_target,
+                        confidence=decision.assist_confidence,
+                    )
+                )
+                if route != HandoffRoute.HANDOFF:
+                    signal = FlowSignal(kind="transition", note="rerun")
+                    return Response(
+                        chat_message=StructuredMessage(
+                            source=self.name,
+                            content=signal,
+                        )
+                    )
                 assist_reply = await self._orchestrator._run_assist_turn(  # noqa: SLF001
                     session=self._session,
                     user_message=user_text,
                     note=decision.note,
+                    assist_target=decision.assist_target,
                 )
                 if assist_reply:
                     self._session.last_response = assist_reply
@@ -490,16 +512,28 @@ class StageRefineNode(_StageNodeBase):
         self, messages: Sequence[BaseChatMessage], cancellation_token: CancellationToken
     ) -> Response:
         if self._session.timebox is None and self._session.tb_plan is None:
-            self._session.last_response = (
-                "Stage 4/5 (Refine)\nNo draft timebox yet. Proceed from Skeleton first."
-            )
-            self.last_gate = None
-            return Response(
-                chat_message=StructuredMessage(
-                    source=self.name,
-                    content=FlowSignal(kind="stage", note="missing-timebox"),
+            try:
+                drafted_timebox, markdown, drafted_plan = (
+                    await self._orchestrator._consume_pre_generated_skeleton(  # noqa: SLF001
+                        self._session
+                    )
                 )
-            )
+                self._session.timebox = drafted_timebox
+                self._session.tb_plan = drafted_plan
+                self._session.base_snapshot = None
+                if markdown and not self._session.skeleton_overview_markdown:
+                    self._session.skeleton_overview_markdown = markdown
+            except Exception:
+                self._session.last_response = (
+                    "Stage 4/5 (Refine)\nNo draft timebox yet. Proceed from Skeleton first."
+                )
+                self.last_gate = None
+                return Response(
+                    chat_message=StructuredMessage(
+                        source=self.name,
+                        content=FlowSignal(kind="stage", note="missing-timebox"),
+                    )
+                )
         await self._orchestrator._ensure_calendar_immovables(self._session)  # noqa: SLF001
         try:
             preflight = self._orchestrator._ensure_refine_plan_state(  # noqa: SLF001

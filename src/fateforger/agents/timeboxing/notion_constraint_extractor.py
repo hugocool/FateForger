@@ -1,7 +1,12 @@
+# TODO(deprecate): This entire module is dead code. The Notion-MCP extraction path
+# (_ensure_constraint_mcp_tools / NotionConstraintExtractor) is never reached at
+# runtime. The live write path goes through _upsert_constraints_to_durable_store →
+# _build_durable_constraint_record → DurableConstraintStore (mem0). Do not import
+# this module from new code. Remove once the agent.py dead-code block is cleaned up.
 from __future__ import annotations
 
 import json
-from datetime import datetime, date
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from autogen_agentchat.agents import AssistantAgent
@@ -10,8 +15,8 @@ from autogen_core import CancellationToken
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from pydantic import BaseModel, Field
 
-from fateforger.debug.diag import with_timeout
 from fateforger.agents.timeboxing.constants import TIMEBOXING_TIMEOUTS
+from fateforger.debug.diag import with_timeout
 
 
 class ConstraintWindow(BaseModel):
@@ -23,7 +28,9 @@ class ConstraintWindow(BaseModel):
 class ScalarParams(BaseModel):
     duration_min: Optional[int] = None
     duration_max: Optional[int] = None
-    contiguity: Optional[str] = Field(default=None, description="prefer|require|irrelevant")
+    contiguity: Optional[str] = Field(
+        default=None, description="prefer|require|irrelevant"
+    )
 
 
 class ConstraintPayload(BaseModel):
@@ -46,6 +53,56 @@ class ConstraintLifecycle(BaseModel):
     ttl_days: Optional[int] = None
 
 
+class AspectClassificationPayload(BaseModel):
+    """Structured semantic metadata the LLM assigns to a constraint at extraction time.
+
+    Stored as ``constraint_record.aspect_classification`` in the durable record and
+    forwarded into ``Constraint.hints["aspect_classification"]`` when the record is
+    loaded back from the constraint-memory store. Agent code that needs to know the
+    scheduling domain of a constraint MUST read this field instead of scanning names
+    or descriptions with keywords or regex.
+    """
+
+    aspect_id: str = Field(
+        description="Stable lower_snake_case slug for this planning aspect, e.g. sleep_window, gym_training"
+    )
+    aspect_label: str = Field(
+        description="Human-readable display name, e.g. Sleep window"
+    )
+    category: str = Field(
+        description="Open category string. Well-known values: sleep|work|exercise|family|pet|social|transport|hobby|nutrition|health|learning"
+    )
+    frame_slot: Optional[str] = Field(
+        default=None,
+        description="Legacy slot: sleep_target or work_window. Null otherwise.",
+    )
+    is_startup_prefetch: bool = Field(
+        default=False,
+        description="True when this anchors the day and must be loaded before the user speaks (sleep schedule, work window)",
+    )
+    schedule_start: Optional[str] = Field(default=None, description="HH:MM if stated")
+    schedule_end: Optional[str] = Field(default=None, description="HH:MM if stated")
+    duration_min: Optional[int] = Field(
+        default=None, description="Duration in minutes if stated"
+    )
+    is_conditional: bool = Field(
+        default=False,
+        description="True when only applies given another aspect being present/absent",
+    )
+    conditional_on_absent: List[str] = Field(
+        default_factory=list,
+        description="aspect_id values that must be absent for this to apply",
+    )
+    conditional_on_present: List[str] = Field(
+        default_factory=list,
+        description="aspect_id values that must be present for this to apply",
+    )
+    excludes_aspect_ids: List[str] = Field(
+        default_factory=list,
+        description="aspect_id values excluded when this aspect is confirmed",
+    )
+
+
 class ExtractedConstraintRecord(BaseModel):
     name: str
     description: str
@@ -54,9 +111,15 @@ class ExtractedConstraintRecord(BaseModel):
     source: str = Field(description="user|calendar|system|feedback")
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     scope: str = Field(description="session|profile|datespan")
-    applicability: ConstraintApplicability = Field(default_factory=ConstraintApplicability)
+    applicability: ConstraintApplicability = Field(
+        default_factory=ConstraintApplicability
+    )
     lifecycle: ConstraintLifecycle = Field(default_factory=ConstraintLifecycle)
     payload: ConstraintPayload
+    aspect_classification: Optional[AspectClassificationPayload] = Field(
+        default=None,
+        description="Semantic aspect metadata required by agent code. Must be populated for every constraint.",
+    )
 
     applies_stages: List[str] = Field(default_factory=list)
     applies_event_types: List[str] = Field(default_factory=list)
@@ -129,6 +192,40 @@ Record guidelines:
 - `description`: one sentence operational meaning.
 - `topics`: small list of stable routing tags (create if new); prefer concise nouns.
 - `uid`: leave null if unsure; the caller will derive an idempotency key.
+
+Aspect classification (REQUIRED — populate aspect_classification for every record)
+The `aspect_classification` field tells the agent which planning domain this constraint belongs to
+without any keyword or regex scanning. You MUST always populate it. Fields:
+
+- aspect_id (string): stable lower_snake_case slug for the planning aspect. Reuse the same slug
+  for the same life-area across turns, e.g. "sleep_window", "work_window", "gym_training",
+  "field_hockey", "morning_commute", "dog_walk", "school_run".
+- aspect_label (string): human-readable display name.
+- category (string): use one of the well-known values when applicable:
+    sleep | work | exercise | family | pet | social | transport | hobby | nutrition | health | learning
+  Any other lowercase slug is valid for domains not in this list.
+- frame_slot (string or null): ONLY set when the constraint maps to a legacy planning slot.
+  Valid values: "sleep_target" (sleep-window constraints) or "work_window" (work-hours constraints).
+  Null for everything else.
+- is_startup_prefetch (bool): true when this constraint anchors the whole day and must be fetched
+  before the user speaks — sleep schedule, work window, or primary transport commitment.
+  False for optional activities and session-specific overrides.
+- schedule_start (string or null): HH:MM extracted from the utterance, if present.
+- schedule_end (string or null): HH:MM extracted from the utterance, if present.
+- duration_min (integer or null): duration in minutes if stated.
+- is_conditional (bool): true when the constraint only applies given another aspect being present
+  or absent.
+- conditional_on_absent (list[string]): aspect_id values that must be absent for this to apply.
+- conditional_on_present (list[string]): aspect_id values that must be present.
+- excludes_aspect_ids (list[string]): aspect_id values that should not be scheduled when this
+  aspect is confirmed (e.g. long commute excludes the gym).
+
+Examples:
+  Sleep:   aspect_id=sleep_window, category=sleep, frame_slot=sleep_target, is_startup_prefetch=true
+  Work:    aspect_id=work_window,  category=work,  frame_slot=work_window,  is_startup_prefetch=true
+  Gym:     aspect_id=gym_training, category=exercise, frame_slot=null, is_startup_prefetch=false
+  Commute: aspect_id=morning_commute, category=transport, frame_slot=null, is_startup_prefetch=true
+  Dog:     aspect_id=dog_walk, category=pet, frame_slot=null, is_startup_prefetch=false
 
 Procedure:
 1) If needed, call constraint_query_types to shortlist types for the stage/event_types.
@@ -204,7 +301,9 @@ class NotionConstraintExtractor:
         self._agent = build_constraint_extractor_agent(
             model_client=model_client, tools=tools
         )
-        self._agent_tool = AgentTool(agent=self._agent, return_value_as_last_message=True)
+        self._agent_tool = AgentTool(
+            agent=self._agent, return_value_as_last_message=True
+        )
 
     async def extract_and_upsert(
         self,
@@ -266,6 +365,7 @@ class NotionConstraintExtractor:
 
 
 __all__ = [
+    "AspectClassificationPayload",
     "CONSTRAINT_EXTRACTOR_SYSTEM_PROMPT",
     "ConstraintExtractionOutput",
     "ConstraintHandoff",

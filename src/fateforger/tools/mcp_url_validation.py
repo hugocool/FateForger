@@ -114,16 +114,25 @@ class NotionMcpEndpointResolver(McpEndpointResolver):
 
 
 class TickTickMcpEndpointResolver(McpEndpointResolver):
-    """TickTick endpoint policy with strict non-normalizing validation."""
+    """TickTick endpoint policy with dynamic localhost default.
+
+    The host-mapped port is read from ``TICKTICK_HOST_PORT`` (default ``8002``)
+    so the resolver works out-of-the-box when the bot runs on the host during
+    local development, matching the same pattern as ``NotionMcpEndpointResolver``.
+    """
 
     def __init__(self) -> None:
         super().__init__(
             McpEndpointPolicy(
                 name="TickTick MCP",
                 env_vars=("TICKTICK_MCP_URL", "WIZARD_TICKTICK_MCP_URL"),
-                default_url="http://ticktick-mcp:8000/mcp",
+                default_url="http://localhost:8002/mcp",
             )
         )
+
+    def _default_url(self, env: Mapping[str, str]) -> str:
+        port = (env.get("TICKTICK_HOST_PORT") or "8002").strip() or "8002"
+        return f"http://localhost:{port}/mcp"
 
 
 __all__ = [

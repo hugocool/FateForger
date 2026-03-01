@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import types
-
 import pytest
 
 from fateforger.agents.timeboxing import agent as timeboxing_agent_module
@@ -21,11 +19,9 @@ async def test_decide_next_action_timeout_returns_provide_info(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
-    agent._decision_agent = _DecisionAgentStub()
-
-    async def _noop_ensure(self):
-        _ = self
-        return None
+    # _build_one_shot_agent is called per-turn; point it at a stub instead of a real LLM.
+    agent._build_one_shot_agent = lambda *_a, **_kw: _DecisionAgentStub()
+    agent._session_debug_loggers = {}
 
     async def _raise_timeout(_label, awaitable, *, timeout_s, **_kwargs):
         _ = timeout_s
@@ -34,10 +30,7 @@ async def test_decide_next_action_timeout_returns_provide_info(
             close()
         raise TimeoutError("decision timeout")
 
-    monkeypatch.setattr(
-        timeboxing_agent_module, "with_timeout", _raise_timeout
-    )
-    agent._ensure_stage_agents = types.MethodType(_noop_ensure, agent)
+    monkeypatch.setattr(timeboxing_agent_module, "with_timeout", _raise_timeout)
 
     session = Session(thread_ts="t1", channel_id="c1", user_id="u1", committed=True)
     session.stage = TimeboxingStage.CAPTURE_INPUTS
@@ -57,11 +50,9 @@ async def test_decide_next_action_parse_error_returns_provide_info(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
-    agent._decision_agent = _DecisionAgentStub()
-
-    async def _noop_ensure(self):
-        _ = self
-        return None
+    # _build_one_shot_agent is called per-turn; point it at a stub instead of a real LLM.
+    agent._build_one_shot_agent = lambda *_a, **_kw: _DecisionAgentStub()
+    agent._session_debug_loggers = {}
 
     async def _return_dummy(_label, awaitable, *, timeout_s, **_kwargs):
         _ = timeout_s
@@ -75,7 +66,6 @@ async def test_decide_next_action_parse_error_returns_provide_info(
 
     monkeypatch.setattr(timeboxing_agent_module, "with_timeout", _return_dummy)
     monkeypatch.setattr(timeboxing_agent_module, "parse_chat_content", _raise_parse)
-    agent._ensure_stage_agents = types.MethodType(_noop_ensure, agent)
 
     session = Session(thread_ts="t1", channel_id="c1", user_id="u1", committed=True)
     session.stage = TimeboxingStage.CAPTURE_INPUTS

@@ -16,6 +16,7 @@ from autogen_agentchat.agents import AssistantAgent
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from pydantic import BaseModel, Field, TypeAdapter
 
+from fateforger.agents.timeboxing.planning_aspects import ConstraintAspectClassification
 from fateforger.agents.timeboxing.preferences import ConstraintBase
 
 
@@ -141,6 +142,58 @@ Rules
 - Default to scope=session unless the user explicitly indicates durable or bounded-period intent.
 - Return constraints=[] if should_extract=false.
 - If scope=datespan, include start_date/end_date as ISO dates if the user provided enough info; otherwise keep them null.
+
+Aspect classification (REQUIRED for every extracted constraint)
+For every constraint in the constraints list, always set hints.aspect_classification to a JSON
+object with the following fields:
+- aspect_id (string): stable slug for the planning aspect, lower_snake_case, e.g. "sleep_window",
+  "gym_training", "field_hockey", "morning_commute", "dog_walk". Reuse the same slug across turns
+  for the same life-area.
+- aspect_label (string): human-readable display name, e.g. "Sleep window", "Gym training".
+- category (string): open category string. Use one of these well-known values when applicable:
+    sleep | work | exercise | family | pet | social | transport | hobby | nutrition | health | learning
+  Use any other meaningful string for categories not in this list.
+- frame_slot (string or null): set ONLY when the constraint maps to a legacy slot used by the
+  planning agent. Valid values: "sleep_target" or "work_window". Null otherwise.
+- is_startup_prefetch (bool): true when this constraint anchors the day and should be loaded at
+  session start BEFORE the user has said anything (sleep schedule, work window, primary transport).
+  False for activity preferences that are only needed during planning.
+- schedule_start (string or null): HH:MM if a concrete start time was stated. Null otherwise.
+- schedule_end (string or null): HH:MM if a concrete end time was stated. Null otherwise.
+- duration_min (integer or null): typical or minimum duration in minutes if stated. Null otherwise.
+- is_conditional (bool): true when this constraint only applies given another aspect being present
+  or absent (e.g. "only if I don't have an evening meeting").
+- conditional_on_absent (list[string]): aspect_id values that must be absent for this to apply.
+- conditional_on_present (list[string]): aspect_id values that must be present for this to apply.
+- excludes_aspect_ids (list[string]): aspect_id values that should not be scheduled when this
+  aspect is confirmed (e.g. a long commute day excludes the gym).
+
+Example hints for a sleep constraint:
+  "hints": {
+    "aspect_classification": {
+      "aspect_id": "sleep_window", "aspect_label": "Sleep window",
+      "category": "sleep", "frame_slot": "sleep_target",
+      "is_startup_prefetch": true,
+      "schedule_start": "23:00", "schedule_end": "07:00",
+      "duration_min": 480, "is_conditional": false,
+      "conditional_on_absent": [], "conditional_on_present": [],
+      "excludes_aspect_ids": []
+    }
+  }
+
+Example hints for a conditional exercise constraint:
+  "hints": {
+    "aspect_classification": {
+      "aspect_id": "gym_training", "aspect_label": "Gym training",
+      "category": "exercise", "frame_slot": null,
+      "is_startup_prefetch": false,
+      "schedule_start": "07:00", "schedule_end": "08:30",
+      "duration_min": 90, "is_conditional": true,
+      "conditional_on_absent": ["late_meeting"],
+      "conditional_on_present": [],
+      "excludes_aspect_ids": []
+    }
+  }
 """.strip()
 
 
@@ -229,6 +282,7 @@ def build_memory_review_router(
 
 
 __all__ = [
+    "ConstraintAspectClassification",
     "ConstraintInterpretation",
     "ConstraintScopeLiteral",
     "MemoryReviewDecision",

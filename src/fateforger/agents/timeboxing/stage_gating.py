@@ -75,6 +75,8 @@ class StageDecision(BaseModel):
     action: StageAction
     target_stage: Optional[TimeboxingStage] = None
     note: Optional[str] = None
+    assist_target: Optional[str] = None
+    assist_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 def format_stage_prompt_context(
@@ -252,11 +254,15 @@ Decision rules
 - If the user asks to revisit earlier stages, use action="back" and set target_stage.
 - If the user asks to redo the current stage, use action="redo".
 - If the user wants to stop, use action="cancel".
-- If the user asks an adjacent question (e.g. "what's on my calendar?", "show my tasks", "what did I plan yesterday?", "show my TickTick lists", "link sprint subtasks in Notion"), use action="assist" with a note describing what they need. This lets you help them with info that feeds back into timeboxing.
+- If the user asks an adjacent question that clearly requires another specialist, use action="assist".
+- For action="assist", you must also set:
+  - `assist_target`: the specialist to route to (currently only `"tasks_agent"` is available from this flow)
+  - `assist_confidence`: confidence 0.0-1.0 that handoff is the right route
+- If intent is ambiguous, keep the user in the current timeboxing flow: use action="provide_info" (or other in-flow action), not assist.
 
 Constraints
 - Never output prose.
-- Prefer keeping the user on track; use assist sparingly for genuinely helpful adjacent queries.
+- Prefer keeping the user on track; use assist only for clear, explicit specialist intent.
 """.strip()
 
 

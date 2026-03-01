@@ -23,9 +23,9 @@ class TimeboxingTimeouts:
     constraint_interpret_s: float = 20.0
     constraint_extract_s: float = 25.0
     planning_date_interpret_s: float = 10.0
-    skeleton_draft_s: float = 90.0
-    summary_s: float = 20.0
-    review_commit_s: float = 20.0
+    skeleton_draft_s: float = 120.0
+    summary_s: float = 120.0
+    review_commit_s: float = 120.0
     notion_extract_s: float = 25.0
     notion_upsert_s: float = 20.0
     calendar_prefetch_wait_s: float = 2.0
@@ -49,6 +49,7 @@ class TimeboxingLimits:
 
     durable_constraint_type_ids_limit: int = 12
     durable_constraint_query_limit: int = 50
+    refine_patcher_constraint_limit: int = 24
 
 
 @dataclass(frozen=True, slots=True)

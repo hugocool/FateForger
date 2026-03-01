@@ -267,6 +267,131 @@ class TestRefineNodeUsesTBPlan:
         assert "_run_refine_tool_orchestration" in source
 
     @pytest.mark.asyncio
+    async def test_refine_node_bootstraps_skeleton_when_draft_missing(self) -> None:
+        """Refine should seed TBPlan/Timebox from Skeleton when both are missing."""
+        from autogen_agentchat.messages import TextMessage
+        from autogen_core import CancellationToken
+
+        from fateforger.agents.timeboxing.nodes.nodes import StageRefineNode, TransitionNode
+
+        agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+        seed_timebox = Timebox(
+            events=[
+                CalendarEvent(
+                    summary="Focus Block",
+                    event_type=EventType.DEEP_WORK,
+                    start_time=time(9, 0),
+                    duration=timedelta(minutes=90),
+                )
+            ],
+            date=date(2026, 2, 13),
+            timezone="Europe/Amsterdam",
+        )
+        seed_plan = timebox_to_tb_plan(seed_timebox)
+        consume_calls: list[Session] = []
+
+        async def _consume(_self, session: Session) -> tuple[Timebox, str, TBPlan]:
+            consume_calls.append(session)
+            return seed_timebox, "## Day Overview\n- Focus Block", seed_plan
+
+        def _ensure_refine(_self, session: Session) -> RefinePreflight:
+            session.tb_plan = seed_plan
+            session.base_snapshot = seed_plan.model_copy(deep=True)
+            return RefinePreflight()
+
+        async def _run_summary(*, stage, timebox, session=None) -> StageGateOutput:
+            _ = (timebox, session)
+            return StageGateOutput(
+                stage_id=stage,
+                ready=True,
+                summary=["Updated schedule."],
+                missing=[],
+                question="Proceed?",
+                facts={},
+            )
+
+        async def _run_orchestration(
+            *,
+            session: Session,
+            patch_message: str,
+            user_message: str,
+        ) -> RefineToolExecutionOutcome:
+            _ = (patch_message, user_message)
+            session.tb_plan = seed_plan
+            session.timebox = seed_timebox
+            return RefineToolExecutionOutcome(
+                patch_selected=True,
+                memory_selected=False,
+                memory_queued=False,
+                fallback_patch_used=False,
+                calendar=CalendarSyncOutcome(
+                    status="committed",
+                    changed=False,
+                    note="Calendar unchanged: no sync operations were needed.",
+                ),
+            )
+
+        agent._consume_pre_generated_skeleton = types.MethodType(  # type: ignore[attr-defined]
+            _consume,
+            agent,
+        )
+        agent._ensure_refine_plan_state = types.MethodType(  # type: ignore[attr-defined]
+            _ensure_refine,
+            agent,
+        )
+        agent._run_refine_tool_orchestration = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: _run_orchestration(**kwargs),
+            agent,
+        )
+        agent._run_timebox_summary = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: _run_summary(**kwargs),
+            agent,
+        )
+        agent._ensure_calendar_immovables = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, session: asyncio.sleep(0),
+            agent,
+        )
+        agent._compose_patcher_message = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: kwargs["base_message"],
+            agent,
+        )
+        agent._quality_snapshot_for_prompt = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, session: {},
+            agent,
+        )
+        agent._materialize_timebox_from_tb_plan = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, session: seed_timebox,
+            agent,
+        )
+
+        session = Session(
+            thread_ts="t1",
+            channel_id="c1",
+            user_id="u1",
+            stage=TimeboxingStage.REFINE,
+        )
+        transition = TransitionNode.__new__(TransitionNode)
+        transition.stage_user_message = "swap deep and shallow blocks"
+        transition.decision = None
+
+        node = StageRefineNode(
+            orchestrator=agent,
+            session=session,
+            transition=transition,
+        )
+
+        await node.on_messages(
+            [TextMessage(content="swap deep and shallow blocks", source="user")],
+            CancellationToken(),
+        )
+
+        assert len(consume_calls) == 1
+        assert session.timebox is not None
+        assert session.tb_plan is not None
+        assert node.last_gate is not None
+        assert node.last_gate.ready is True
+
+    @pytest.mark.asyncio
     async def test_refine_node_runs_repair_patch_when_preflight_reports_issue(self) -> None:
         """Preflight issues should be injected into patch-loop context."""
         from autogen_agentchat.messages import TextMessage

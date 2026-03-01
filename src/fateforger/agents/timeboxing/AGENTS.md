@@ -10,6 +10,7 @@ For file index, architecture, and status, see `README.md` in this folder.
 - Prefetch durable constraints from Notion (via constraint-memory MCP) before Stage 1 so the cache is warm (uses the gap-driven `ConstraintRetriever`).
 - Stage-gating LLMs must not call tools; the coordinator handles all tool IO in background tasks.
 - Intent classification and natural-language interpretation must use LLMs (AutoGen agents) or explicit Slack slash commands; do not use regex/keyword matching.
+- Handoffs are gated by typed intent fields (`assist_target`, `assist_confidence`): if unclear, stay in the current agent/stage by default.
 - Plan in block-based terms (deep/shallow blocks, energy windows); time estimates are optional.
 - Each stage agent has a single responsibility and a typed input/output contract; avoid prompt overlap.
 - The coordinator is the only place that assembles context (facts + constraints + immovables) and passes it forward.
@@ -75,6 +76,7 @@ For file index, architecture, and status, see `README.md` in this folder.
 
 - Local constraint extraction + persistence should run in background tasks.
 - Durable (Notion) preference upserts should be fire-and-forget with dedupe + timeout.
+- Durable semantic dedupe must batch candidate retrieval/matching; avoid per-constraint equivalent lookups.
 - Durable constraint reads should run in the background and be merged with session-scoped constraints.
 - Use a separate LLM client for background extraction/intent so it cannot block stage responses.
 - MCP tool names are sanitized to OpenAI-safe versions (e.g., `constraint_query_constraints`).

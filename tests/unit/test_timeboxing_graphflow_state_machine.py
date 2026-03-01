@@ -186,7 +186,12 @@ async def test_transition_assist_prioritizes_memory_review_over_task_assist():
         return TextMessage(content="memory-reviewed", source="timeboxing_agent")
 
     async def _assist_turn(
-        _self, *, session: Session, user_message: str, note: str | None
+        _self,
+        *,
+        session: Session,
+        user_message: str,
+        note: str | None,
+        assist_target: str | None,
     ):  # noqa: ARG001
         calls["assist"] += 1
         return "assist"
@@ -223,7 +228,12 @@ async def test_transition_assist_falls_through_when_memory_review_not_selected()
         return None
 
     async def _assist_turn(
-        _self, *, session: Session, user_message: str, note: str | None
+        _self,
+        *,
+        session: Session,
+        user_message: str,
+        note: str | None,
+        assist_target: str | None,
     ):  # noqa: ARG001
         calls["assist"] += 1
         return "assist-routed"
@@ -233,6 +243,54 @@ async def test_transition_assist_falls_through_when_memory_review_not_selected()
     turn_init = types.SimpleNamespace(
         turn=types.SimpleNamespace(
             decision=StageDecision(action="assist", note="adjacent"),
+            user_text="show pending tasks",
+        )
+    )
+    node = TransitionNode(orchestrator=agent, session=session, turn_init=turn_init)
+
+    out = await node.on_messages([], cancellation_token=types.SimpleNamespace())
+
+    assert session.last_response is None
+    assert session.skip_stage_execution is False
+    assert node.stage_user_message == "show pending tasks"
+    assert out.chat_message.content.note == "rerun"
+    assert calls["assist"] == 0
+
+
+@pytest.mark.asyncio
+async def test_transition_assist_routes_only_on_explicit_target_and_confidence():
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1", committed=True)
+    session.stage = TimeboxingStage.COLLECT_CONSTRAINTS
+    calls = {"assist": 0}
+
+    async def _memory_review(
+        _self, *, session: Session, user_message: str
+    ):  # noqa: ARG001
+        return None
+
+    async def _assist_turn(
+        _self,
+        *,
+        session: Session,
+        user_message: str,
+        note: str | None,
+        assist_target: str | None,
+    ):  # noqa: ARG001
+        calls["assist"] += 1
+        assert assist_target == "tasks_agent"
+        return "assist-routed"
+
+    agent._maybe_handle_memory_review_turn = types.MethodType(_memory_review, agent)
+    agent._run_assist_turn = types.MethodType(_assist_turn, agent)
+    turn_init = types.SimpleNamespace(
+        turn=types.SimpleNamespace(
+            decision=StageDecision(
+                action="assist",
+                assist_target="tasks_agent",
+                assist_confidence=0.95,
+                note="adjacent",
+            ),
             user_text="show pending tasks",
         )
     )

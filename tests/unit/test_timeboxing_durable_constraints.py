@@ -286,7 +286,20 @@ def _durable_sleep_constraint(*, uid: str = "tb:sleep:default") -> Constraint:
         source=ConstraintSource.USER,
         scope=ConstraintScope.PROFILE,
         tags=["sleep"],
-        hints={"uid": uid, "rule_kind": "fixed_bedtime"},
+        hints={
+            "uid": uid,
+            "rule_kind": "fixed_bedtime",
+            # aspect_classification required by _classify_collect_default_domain
+            # (refactored away from keyword scanning towards structured frame_slot).
+            "aspect_classification": {
+                "aspect_id": "sleep",
+                "aspect_label": "Sleep schedule",
+                "category": "recovery",
+                "frame_slot": "sleep_target",
+                "schedule_start": "23:00",
+                "schedule_end": "07:00",
+            },
+        },
     )
 
 

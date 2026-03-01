@@ -34,6 +34,7 @@ async def test_build_skeleton_context_includes_constraints_and_immovables() -> N
     session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
     session.planned_date = "2026-01-21"
     session.tz_name = "Europe/Amsterdam"
+    session.stage = TimeboxingStage.SKELETON  # constraints are scoped to active stage
     session.frame_facts = {
         "immovables": [{"title": "Gym", "start": "18:00", "end": "19:30"}]
     }

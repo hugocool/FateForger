@@ -48,6 +48,8 @@ class _ClientWithCoreMethods:
 
 class _EquivalenceClient:
     def __init__(self) -> None:
+        self.query_calls = 0
+        self.get_calls = 0
         self.items: dict[str, dict] = {
             "uid_existing": {
                 "uid": "uid_existing",
@@ -128,6 +130,7 @@ class _EquivalenceClient:
 
     async def query_constraints(self, *, filters, type_ids=None, tags=None, sort=None, limit=50):
         _ = (filters, type_ids, tags, sort, limit)
+        self.query_calls += 1
         return [{"uid": uid, **item} for uid, item in self.items.items()]
 
     async def upsert_constraint(self, *, record, event=None) -> dict:
@@ -135,6 +138,7 @@ class _EquivalenceClient:
         return {"uid": "uid_created"}
 
     async def get_constraint(self, *, uid) -> dict | None:
+        self.get_calls += 1
         item = self.items.get(uid)
         if item is None:
             return None
@@ -222,6 +226,51 @@ async def test_store_adapter_finds_equivalent_constraint_from_semantic_identity(
     match = await store.find_equivalent_constraint(record=incoming)
     assert match is not None
     assert match["uid"] == "uid_existing"
+
+
+async def test_store_adapter_batch_equivalent_lookup_scans_candidates_once() -> None:
+    client = _EquivalenceClient()
+    store = ClientBackedDurableConstraintStore(client=client)
+    incoming = {
+        "constraint_record": {
+            "name": "No calls after 17:00",
+            "description": "Please avoid meetings after five.",
+            "necessity": "should",
+            "status": "proposed",
+            "scope": "profile",
+            "topics": ["meetings"],
+            "applies_stages": ["CollectConstraints"],
+            "applies_event_types": ["M"],
+            "applicability": {"days_of_week": ["MO", "TU"], "timezone": "Europe/Amsterdam"},
+            "payload": {
+                "rule_kind": "avoid_window",
+                "scalar_params": {"duration_min": 30},
+                "windows": [
+                    {
+                        "kind": "avoid",
+                        "start_time_local": "17:00",
+                        "end_time_local": "23:59",
+                    }
+                ],
+            },
+            "lifecycle": {"uid": "incoming-1"},
+        }
+    }
+    incoming_two = {
+        "constraint_record": {
+            **incoming["constraint_record"],
+            "lifecycle": {"uid": "incoming-2"},
+        }
+    }
+
+    matches = await store.find_equivalent_constraints(
+        records=[incoming, incoming_two],
+        limit=200,
+    )
+    assert matches["incoming-1"]["uid"] == "uid_existing"
+    assert matches["incoming-2"]["uid"] == "uid_existing"
+    assert client.query_calls == 1
+    assert client.get_calls <= len(client.items)
 
 
 async def test_store_adapter_dedupe_archives_non_canonical_duplicates() -> None:

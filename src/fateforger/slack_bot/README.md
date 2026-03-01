@@ -14,6 +14,7 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | Haunt delivery (nudges) | Implemented |
 | Sync engine confirm/cancel/undo buttons | Implemented, Tested |
 | Dispatch timeout fallback reply | Implemented, Tested |
+| MCP startup dependency checks | Implemented (fail-fast on unreachable calendar/notion/ticktick MCP servers) |
 
 ## File Index
 
@@ -105,3 +106,5 @@ poetry run python -m fateforger.slack_bot.bot
 # Docker (production)
 docker compose up -d slack-bot calendar-mcp
 ```
+
+If any required MCP dependency is unreachable at startup, the app now exits with a `RuntimeError` that lists each failing server and endpoint URL.
