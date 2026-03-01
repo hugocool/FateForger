@@ -109,8 +109,13 @@ from .nlu import (
     build_memory_review_router,
     build_planned_date_interpreter,
 )
+
+# TODO(deprecate): NotionConstraintExtractor and the Notion constraint MCP path are
+# dead code. The live write path is _upsert_constraints_to_durable_store → mem0.
+# Remove this import together with _ensure_constraint_mcp_tools below.
 from .notion_constraint_extractor import NotionConstraintExtractor
 from .patching import TimeboxPatcher
+from .planning_aspects import ConstraintAspectClassification
 from .planning_policy import QUALITY_RUBRIC_PROMPT
 from .preferences import (
     Constraint,
@@ -373,6 +378,9 @@ class RefineToolExecutionOutcome:
     memory_operations: list[str] = field(default_factory=list)
 
 
+# TODO(deprecate): get_constraint_mcp_tools connects to the Notion constraint MCP
+# server and is only used by _ensure_constraint_mcp_tools, which is itself never
+# called. Remove together with NotionConstraintExtractor.
 async def get_constraint_mcp_tools() -> list:
     """Acquire constraint MCP tools from the Notion constraint MCP server.
 
@@ -444,15 +452,15 @@ class TimeboxingFlowAgent(RoutedAgent):
         self._constraint_extraction_semaphore = asyncio.Semaphore(
             TIMEBOXING_LIMITS.constraint_extract_concurrency
         )
-        self._constraint_interpreter_agent: AssistantAgent | None = None
-        self._planning_date_interpreter_agent: AssistantAgent | None = None
-        self._memory_review_agent: AssistantAgent | None = None
-        self._stage_agents: Dict[TimeboxingStage, AssistantAgent] = {}
-        self._decision_agent: AssistantAgent | None = None
-        self._summary_agent: AssistantAgent | None = None
-        self._review_commit_agent: AssistantAgent | None = None
+        # NLU agents (_constraint_interpreter_agent, _planning_date_interpreter_agent,
+        # _memory_review_agent) intentionally removed: each call site builds a fresh
+        # agent via the factory function so no multi-turn history accumulates.
+        # Stage-gating agents (_stage_agents, _decision_agent, _summary_agent,
+        # _review_commit_agent) similarly removed for the same reason.
         self._session_debug_loggers: dict[str, logging.Logger] = {}
         self._constraint_mcp_tools: list | None = None
+        # TODO(deprecate): _notion_extractor and _constraint_extractor_tool are part
+        # of the dead Notion-MCP extraction path. Remove with _ensure_constraint_mcp_tools.
         self._notion_extractor: NotionConstraintExtractor | None = None
         self._constraint_extractor_tool: FunctionTool | None = None
 
@@ -779,33 +787,19 @@ class TimeboxingFlowAgent(RoutedAgent):
                 )
             return TextMessage(content=content, source=self.id.type)
 
-    # TODO: why is this even here?!?
-    async def _ensure_planning_date_interpreter_agent(self) -> None:
-        """Initialize the multilingual planned-date interpreter agent if needed."""
-        if self._planning_date_interpreter_agent:
-            return
-        self._planning_date_interpreter_agent = build_planned_date_interpreter(
-            model_client=self._model_client
-        )
-
-    async def _ensure_memory_review_agent(self) -> None:
-        """Initialize the memory-review router agent if needed."""
-        if self._memory_review_agent:
-            return
-        self._memory_review_agent = build_memory_review_router(
-            model_client=self._model_client
-        )
-
     # TODO: this should be build into the agent itself using the autogen message in that stage, not bolted on like this
     async def _interpret_planned_date(
         self, text: str, *, now: datetime, tz_name: str
     ) -> str:
-        """Interpret the user's intended planning date using structured multilingual parsing."""
+        """Interpret the user's intended planning date using structured multilingual parsing.
+
+        A fresh ``AssistantAgent`` is created on every call so no prior-turn
+        message history accumulates inside the interpreter.
+        """
         tz = ZoneInfo(tz_name)
         if not (text or "").strip():
             return self._default_planned_date(now=now, tz=tz)
-        await self._ensure_planning_date_interpreter_agent()
-        assert self._planning_date_interpreter_agent is not None
+        date_agent = build_planned_date_interpreter(model_client=self._model_client)
         payload = {
             "text": text,
             "now_utc": now.isoformat(),
@@ -814,7 +808,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         try:
             response = await with_timeout(
                 "timeboxing:planning-date",
-                self._planning_date_interpreter_agent.on_messages(
+                date_agent.on_messages(
                     [
                         TextMessage(
                             content=json.dumps(payload, ensure_ascii=False),
@@ -848,8 +842,8 @@ class TimeboxingFlowAgent(RoutedAgent):
             return MemoryReviewDecision(action="none")
         if getattr(self, "_model_client", None) is None:
             return MemoryReviewDecision(action="none")
-        await self._ensure_memory_review_agent()
-        assert self._memory_review_agent is not None
+        # Fresh agent per call — no accumulated multi-turn history.
+        memory_agent = build_memory_review_router(model_client=self._model_client)
         payload = {
             "stage": session.stage.value if session.stage else None,
             "stage_ready": bool(session.stage_ready),
@@ -859,7 +853,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         try:
             response = await with_timeout(
                 "timeboxing:memory-review-decision",
-                self._memory_review_agent.on_messages(
+                memory_agent.on_messages(
                     [
                         TextMessage(
                             content=json.dumps(payload, ensure_ascii=False),
@@ -942,7 +936,9 @@ class TimeboxingFlowAgent(RoutedAgent):
         backend = str(getattr(settings, "timeboxing_memory_backend", "constraint_mcp"))
         backend = backend.strip().lower()
         try:
-            timeout = float(getattr(settings, "agent_mcp_discovery_timeout_seconds", 10))
+            timeout = float(
+                getattr(settings, "agent_mcp_discovery_timeout_seconds", 10)
+            )
             match backend:
                 case "constraint_mcp":
                     self._constraint_memory_client = ConstraintMemoryClient(
@@ -1020,29 +1016,53 @@ class TimeboxingFlowAgent(RoutedAgent):
                 block_plan=block_plan,
                 frame_facts=dict(session.frame_facts or {}),
             )
+            plan_payload = (
+                _plan.model_dump(mode="json") if hasattr(_plan, "model_dump") else {}
+            )
+            self._session_debug(
+                session,
+                "durable_constraints_selected",
+                requested_stage=stage.value,
+                selected_count=len(records),
+                selected_uids=[
+                    str((row or {}).get("uid") or "").strip()
+                    for row in records[:20]
+                    if str((row or {}).get("uid") or "").strip()
+                ],
+                selected_names=[
+                    str((row or {}).get("name") or "").strip()
+                    for row in records[:10]
+                    if str((row or {}).get("name") or "").strip()
+                ],
+                query_plan=plan_payload,
+            )
         except Exception as exc:
             # This is a background prefetch and we want failures to be visible in Slack.
             msg = f"Durable constraints failed to load: {type(exc).__name__}: {exc}"
             session.background_updates.append(msg)
             logger.error(msg, exc_info=True)
+            self._session_debug(
+                session,
+                "durable_constraints_select_error",
+                requested_stage=stage.value,
+                error_type=type(exc).__name__,
+                error=str(exc)[:500],
+            )
             raise
         return _constraints_from_memory(records, user_id=session.user_id)
-
-    async def _ensure_constraint_interpreter_agent(self) -> None:
-        """Initialize the structured constraint interpreter agent if needed."""
-        if self._constraint_interpreter_agent:
-            return
-        self._constraint_interpreter_agent = build_constraint_interpreter(
-            model_client=self._constraint_model_client
-        )
 
     # TODO: this should be leveraging the autogen framework by having a constraints agent that has Constraint as it message type rather than a bolted on message..
     async def _interpret_constraints(
         self, session: Session, *, text: str, is_initial: bool
     ) -> ConstraintInterpretation:
-        """Interpret constraints + scope from user text using a single structured LLM call."""
-        await self._ensure_constraint_interpreter_agent()
-        assert self._constraint_interpreter_agent is not None
+        """Interpret constraints + scope from user text using a single structured LLM call.
+
+        A fresh ``AssistantAgent`` is created on every call so no prior-turn
+        message history accumulates inside the interpreter.
+        """
+        interpreter = build_constraint_interpreter(
+            model_client=self._constraint_model_client
+        )
         payload = _ConstraintInterpretationPayload(
             text=text,
             is_initial=is_initial,
@@ -1052,7 +1072,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         response = await with_timeout(
             "timeboxing:constraint-interpret",
-            self._constraint_interpreter_agent.on_messages(
+            interpreter.on_messages(
                 [TextMessage(content=payload.model_dump_json(), source="user")],
                 CancellationToken(),
             ),
@@ -1156,6 +1176,15 @@ class TimeboxingFlowAgent(RoutedAgent):
                 session.durable_constraints_loaded_stages.add(stage_label)
                 session.durable_constraints_failed_stages.pop(stage_label, None)
                 session.durable_constraints_date = task_planned_date
+                self._session_debug(
+                    session,
+                    "durable_prefetch_stage_loaded",
+                    reason=reason,
+                    prefetched_stage=stage_label,
+                    planned_date=task_planned_date,
+                    count=len(constraints),
+                    names=[c.name for c in constraints[:10] if (c.name or "").strip()],
+                )
                 if constraints:
                     self._append_background_update_once(
                         session,
@@ -1298,6 +1327,20 @@ class TimeboxingFlowAgent(RoutedAgent):
                 interpretation = await self._interpret_constraints(
                     session, text=text, is_initial=is_initial
                 )
+                self._session_debug(
+                    session,
+                    "constraint_extraction_result",
+                    reason=reason,
+                    is_initial=is_initial,
+                    should_extract=bool(interpretation.should_extract),
+                    extracted_count=len(interpretation.constraints or []),
+                    scope=interpretation.scope,
+                    names=[
+                        c.name
+                        for c in (interpretation.constraints or [])[:10]
+                        if (c.name or "").strip()
+                    ],
+                )
                 if not interpretation.should_extract:
                     return None
 
@@ -1344,8 +1387,22 @@ class TimeboxingFlowAgent(RoutedAgent):
                             thread_ts=session.thread_ts,
                             constraints=constraints,
                         )
+                        self._session_debug(
+                            session,
+                            "constraint_local_persisted",
+                            reason=reason,
+                            count=len(constraints),
+                            scope=scope.value,
+                        )
                         await self._collect_constraints(session)
                     if scope in (ConstraintScope.PROFILE, ConstraintScope.DATESPAN):
+                        self._session_debug(
+                            session,
+                            "durable_upsert_enqueued",
+                            reason=reason,
+                            count=len(constraints),
+                            scope=scope.value,
+                        )
                         self._queue_durable_constraint_upsert(
                             session=session,
                             text=text,
@@ -1426,6 +1483,14 @@ class TimeboxingFlowAgent(RoutedAgent):
         ):
             return
         self._durable_constraint_task_keys.add(task_key)
+        self._session_debug(
+            session,
+            "durable_upsert_queued",
+            reason=reason,
+            task_key=task_key,
+            count=len(serialized_constraints),
+            decision_scope=decision_scope,
+        )
 
         async def _background() -> None:
             """Upsert durable constraints on a background task."""
@@ -1441,6 +1506,12 @@ class TimeboxingFlowAgent(RoutedAgent):
                     decision_scope=payload["decision_scope"],
                 )
                 if persisted > 0:
+                    self._session_debug(
+                        session,
+                        "durable_upsert_applied",
+                        task_key=task_key,
+                        persisted=persisted,
+                    )
                     self._append_background_update_once(
                         session,
                         f"Saved {persisted} durable constraint(s).",
@@ -1453,11 +1524,22 @@ class TimeboxingFlowAgent(RoutedAgent):
                     self._queue_durable_constraint_prefetch(
                         session=session, reason="post_upsert"
                     )
+                else:
+                    self._session_debug(
+                        session,
+                        "durable_upsert_noop",
+                        task_key=task_key,
+                    )
             except Exception:
                 logger.warning(
                     "Durable constraint upsert failed (task_key=%s)",
                     task_key,
                     exc_info=True,
+                )
+                self._session_debug(
+                    session,
+                    "durable_upsert_error",
+                    task_key=task_key,
                 )
                 self._append_background_update_once(
                     session,
@@ -1545,11 +1627,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         store = self._ensure_durable_constraint_store()
         if store is None:
             return 0
-        persisted = 0
-        reused_existing = 0
-        created_new = 0
-        merge_conflicts = 0
-        dedupe_matches = 0
+        prepared: list[tuple[ConstraintBase, dict[str, Any], dict[str, Any]]] = []
         for constraint in constraints:
             try:
                 record = self._build_durable_constraint_record(
@@ -1557,19 +1635,58 @@ class TimeboxingFlowAgent(RoutedAgent):
                     constraint=constraint,
                     decision_scope=decision_scope,
                 )
-                event = {
-                    "user_utterance": user_utterance,
-                    "triggering_suggestion": triggering_suggestion,
-                    "stage": session.stage.value if session.stage else None,
-                    "event_types": record.get("applies_event_types") or [],
-                    "decision_scope": decision_scope,
-                    "action": "upsert",
-                    "overrode_planner": False,
-                    "extracted_type_id": None,
-                }
-                equivalent = await store.find_equivalent_constraint(
-                    record=record, limit=200
+                prepared.append(
+                    (
+                        constraint,
+                        record,
+                        {
+                            "user_utterance": user_utterance,
+                            "triggering_suggestion": triggering_suggestion,
+                            "stage": session.stage.value if session.stage else None,
+                            "event_types": record.get("applies_event_types") or [],
+                            "decision_scope": decision_scope,
+                            "action": "upsert",
+                            "overrode_planner": False,
+                            "extracted_type_id": None,
+                        },
+                    )
                 )
+            except Exception:
+                logger.debug(
+                    "Durable record build failed for constraint=%s",
+                    constraint.name,
+                    exc_info=True,
+                )
+        if not prepared:
+            return 0
+
+        equivalents_by_uid: dict[str, dict[str, Any]] = {}
+        batch_matcher = getattr(store, "find_equivalent_constraints", None)
+        if callable(batch_matcher):
+            try:
+                equivalents_by_uid = await batch_matcher(
+                    records=[record for _, record, _ in prepared],
+                    limit=200,
+                )
+            except Exception:
+                logger.debug("Durable equivalent batch match failed", exc_info=True)
+
+        persisted = 0
+        reused_existing = 0
+        created_new = 0
+        merge_conflicts = 0
+        dedupe_matches = 0
+        for constraint, record, event in prepared:
+            try:
+                lifecycle = dict(
+                    dict(record.get("constraint_record") or {}).get("lifecycle") or {}
+                )
+                record_uid = str(lifecycle.get("uid") or "").strip()
+                equivalent = equivalents_by_uid.get(record_uid) if record_uid else None
+                if equivalent is None and not equivalents_by_uid:
+                    equivalent = await store.find_equivalent_constraint(
+                        record=record, limit=200
+                    )
                 equivalent_uid = ""
                 equivalent_record: dict[str, Any] = {}
                 if isinstance(equivalent, dict):
@@ -1641,6 +1758,16 @@ class TimeboxingFlowAgent(RoutedAgent):
             reused_existing,
             dedupe_matches,
             merge_conflicts,
+        )
+        self._session_debug(
+            session,
+            "durable_upsert_summary",
+            processed_count=len(prepared),
+            persisted=persisted,
+            created=created_new,
+            reused=reused_existing,
+            matches=dedupe_matches,
+            merge_conflicts=merge_conflicts,
         )
         return persisted
 
@@ -1724,6 +1851,10 @@ class TimeboxingFlowAgent(RoutedAgent):
                     "scalar_params": scalar_params,
                     "windows": windows,
                 },
+                # Carry the LLM-assigned aspect classification forward so that
+                # _constraints_from_memory can reconstruct hints["aspect_classification"]
+                # without keyword/regex scanning.
+                "aspect_classification": hints.get("aspect_classification"),
                 "applies_stages": self._default_durable_applies_stages(),
                 "applies_event_types": self._default_durable_event_types(),
                 "topics": topics,
@@ -1879,25 +2010,41 @@ class TimeboxingFlowAgent(RoutedAgent):
     def _should_mark_startup_prefetch(
         self, *, constraint: ConstraintBase, rule_kind: str | None
     ) -> bool:
-        """Return whether a durable constraint should be startup-prefetched in Stage 1."""
-        rk = str(rule_kind or "").strip().lower()
-        if rk in {"fixed_bedtime", "min_sleep"}:
-            return True
+        """Return whether a durable constraint should be startup-prefetched in Stage 1.
+
+        Priority order:
+        1. ``hints["aspect_classification"]["is_startup_prefetch"]`` (LLM-assigned).
+        2. Explicit :data:`STARTUP_PREFETCH_TAG` in constraint tags (legacy marker).
+        3. Keyword/rule_kind fallback for constraints that pre-date classification:
+           detects sleep, work-window, and availability patterns.
+
+        The keyword fallback will be removed once all stored constraints carry
+        ``aspect_classification`` with the ``is_startup_prefetch`` flag.
+        TODO(refactor): remove keyword fallback after aspect_classification is
+        backfilled on all stored constraints.
+        """
+        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+        classification = ConstraintAspectClassification.from_hints(hints)
+        if classification is not None:
+            return classification.is_startup_prefetch
+        # Legacy fallback 1: explicit tag marker.
         tags = [str(tag).strip().lower() for tag in (constraint.tags or []) if tag]
         if STARTUP_PREFETCH_TAG in tags:
             return True
-        text = f"{constraint.name or ''} {constraint.description or ''} {' '.join(tags)}".lower()
-        tokens = (
-            "sleep",
-            "bed",
-            "wake",
-            "work window",
-            "work hours",
-            "availability",
-            "commute",
-            "routine",
+        # Legacy fallback 2: keyword/rule_kind detection for pre-classification
+        # constraints that do not yet carry aspect_classification in hints.
+        rk = str(rule_kind or "").strip().lower()
+        if rk in {"fixed_bedtime", "min_sleep"}:
+            return True
+        text = (
+            f"{constraint.name or ''} {constraint.description or ''} "
+            f"{' '.join(tags)} {rk}"
+        ).lower()
+        sleep_tokens = ("sleep", "bed", "wake")
+        work_tokens = ("work window", "work hours", "availability")
+        return any(t in text for t in sleep_tokens) or any(
+            t in text for t in work_tokens
         )
-        return any(token in text for token in tokens)
 
     async def _await_pending_constraint_extractions(
         self,
@@ -2179,93 +2326,59 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
 
     async def _ensure_stage_agents(self) -> None:
-        """Initialize stage-gating agents and their shared model clients."""
-        if (
-            self._stage_agents
-            and self._decision_agent
-            and self._summary_agent
-            and self._review_commit_agent
-        ):
-            return
+        """Ensure shared tooling (constraint search) is initialised.
 
+        Stage-gating ``AssistantAgent`` instances are **not** cached here; each
+        call site creates a fresh agent via ``_build_one_shot_agent`` so that no
+        multi-turn message history accumulates across user turns.
+        """
         # Build the constraint search tool for optional non-Stage-1 lookups.
         if self._constraint_search_tool is None:
             self._constraint_search_tool = self._build_constraint_search_tool()
 
-        optional_constraint_tools: list | None = (
-            [self._constraint_search_tool] if self._constraint_search_tool else None
-        )
+    def _build_one_shot_agent(
+        self,
+        name: str,
+        prompt: str,
+        out_type: Type,
+        *,
+        tools: list[FunctionTool] | None = None,
+        max_tool_iterations: int = 2,
+        structured_output: bool = True,
+    ) -> AssistantAgent:
+        """Create a fresh, stateless stage helper agent for a single LLM call.
 
-        def _schema_prompt(prompt: str, model_type: Type) -> str:
-            """Append a JSON schema for text-mode structured outputs."""
-            schema = TypeAdapter(model_type).json_schema()
+        A new ``AssistantAgent`` is returned on every call so that no prior-turn
+        message history is carried into the next invocation.  Only the shared
+        ``_model_client`` (a connection pool) is reused.
+        """
+        if structured_output:
+            system_message = prompt
+            output_type: Type | None = out_type
+        else:
+            schema = TypeAdapter(out_type).json_schema()
             schema_json = json.dumps(
                 schema, ensure_ascii=False, sort_keys=True, indent=2
             )
-            return (
+            system_message = (
                 f"{prompt}\n\n"
                 "Return ONLY valid JSON matching this schema.\n"
                 f"JSON Schema:\n```json\n{schema_json}\n```"
             )
-
-        def build(
-            name: str,
-            prompt: str,
-            out_type,
-            *,
-            tools: list[FunctionTool] | None = None,
-            max_tool_iterations: int = 2,
-            structured_output: bool = True,
-        ) -> AssistantAgent:
-            """Construct a stage helper agent with shared configuration."""
-            output_type = out_type if structured_output else None
-            assert_strict_tools_for_structured_output(
-                tools=tools,
-                output_content_type=output_type,
-                agent_name=name,
-            )
-            return AssistantAgent(
-                name=name,
-                model_client=self._model_client,
-                tools=tools,
-                output_content_type=output_type,
-                system_message=(
-                    prompt if structured_output else _schema_prompt(prompt, out_type)
-                ),
-                reflect_on_tool_use=False,
-                max_tool_iterations=max_tool_iterations,
-            )
-
-        self._stage_agents = {
-            TimeboxingStage.COLLECT_CONSTRAINTS: build(
-                "StageCollectConstraints",
-                COLLECT_CONSTRAINTS_PROMPT,
-                StageGateOutput,
-                tools=optional_constraint_tools,
-                max_tool_iterations=2,
-                structured_output=True,
-            ),
-            TimeboxingStage.CAPTURE_INPUTS: build(
-                "StageCaptureInputs",
-                CAPTURE_INPUTS_PROMPT,
-                StageGateOutput,
-                tools=optional_constraint_tools,
-                max_tool_iterations=3,
-                structured_output=True,
-            ),
-        }
-        self._decision_agent = build("StageDecision", DECISION_PROMPT, StageDecision)
-        self._summary_agent = build(
-            "StageTimeboxSummary",
-            TIMEBOX_SUMMARY_PROMPT,
-            StageGateOutput,
-            structured_output=False,
+            output_type = None
+        assert_strict_tools_for_structured_output(
+            tools=tools,
+            output_content_type=output_type,
+            agent_name=name,
         )
-        self._review_commit_agent = build(
-            "StageReviewCommit",
-            REVIEW_COMMIT_PROMPT,
-            StageGateOutput,
-            structured_output=False,
+        return AssistantAgent(
+            name=name,
+            model_client=self._model_client,
+            tools=tools,
+            output_content_type=output_type,
+            system_message=system_message,
+            reflect_on_tool_use=False,
+            max_tool_iterations=max_tool_iterations,
         )
 
     async def _run_stage_gate(
@@ -2275,11 +2388,43 @@ class TimeboxingFlowAgent(RoutedAgent):
         user_message: str,
         context: dict[str, Any],
     ) -> StageGateOutput:
-        """Run the stage-gating LLM for the current stage."""
+        """Run the stage-gating LLM for the current stage.
+
+        A fresh ``AssistantAgent`` is created on every call so no prior-turn
+        history accumulates in the stage agent's message buffer.
+        """
         await self._ensure_stage_agents()
-        agent = self._stage_agents.get(stage)
-        if not agent:
+        optional_constraint_tools: list[FunctionTool] | None = (
+            [self._constraint_search_tool] if self._constraint_search_tool else None
+        )
+        _stage_cfg: dict[
+            TimeboxingStage, tuple[str, Type, list[FunctionTool] | None, int]
+        ] = {
+            TimeboxingStage.COLLECT_CONSTRAINTS: (
+                "StageCollectConstraints",
+                COLLECT_CONSTRAINTS_PROMPT,
+                optional_constraint_tools,
+                2,
+            ),
+            TimeboxingStage.CAPTURE_INPUTS: (
+                "StageCaptureInputs",
+                CAPTURE_INPUTS_PROMPT,
+                optional_constraint_tools,
+                3,
+            ),
+        }
+        cfg = _stage_cfg.get(stage)
+        if cfg is None:
             raise ValueError(f"Unsupported stage: {stage}")
+        agent_name, stage_prompt, stage_tools, max_iterations = cfg
+        agent = self._build_one_shot_agent(
+            agent_name,
+            stage_prompt,
+            StageGateOutput,
+            tools=stage_tools,
+            max_tool_iterations=max_iterations,
+            structured_output=True,
+        )
 
         task = self._format_stage_gate_input(stage=stage, context=context)
         try:
@@ -2376,36 +2521,65 @@ class TimeboxingFlowAgent(RoutedAgent):
         return out
 
     @staticmethod
-    def _extract_clock_times(text: str) -> list[str]:
-        """Extract HH:MM values in stable order from arbitrary text."""
-        if not text:
-            return []
-        return [
-            f"{int(hour):02d}:{minute}"
-            for hour, minute in re.findall(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
-        ]
+    def _active_durable_stage_order(stage: TimeboxingStage | None) -> tuple[str, ...]:
+        """Return stage keys to merge into active constraints for the current turn."""
+        if stage is None:
+            return ()
+        match stage:
+            case TimeboxingStage.COLLECT_CONSTRAINTS | TimeboxingStage.CAPTURE_INPUTS:
+                return (TimeboxingStage.COLLECT_CONSTRAINTS.value,)
+            case TimeboxingStage.SKELETON:
+                return (
+                    TimeboxingStage.COLLECT_CONSTRAINTS.value,
+                    TimeboxingStage.SKELETON.value,
+                )
+            case TimeboxingStage.REFINE | TimeboxingStage.REVIEW_COMMIT:
+                return (
+                    TimeboxingStage.COLLECT_CONSTRAINTS.value,
+                    TimeboxingStage.REFINE.value,
+                )
+            case _:
+                return ()
 
     def _extract_collect_default_value(
         self, *, domain: str, constraint: Constraint
     ) -> dict[str, Any] | None:
-        """Derive a deterministic default value for one collect-stage domain."""
-        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
-        text = f"{constraint.name or ''} {constraint.description or ''}".strip()
-        times = self._extract_clock_times(text)
+        """Derive a deterministic default value for one collect-stage domain.
 
-        hint_start = str(
-            hints.get("start_time")
-            or hints.get("bed_time")
-            or hints.get("bedtime")
-            or ""
-        ).strip()
-        hint_end = str(
-            hints.get("end_time") or hints.get("wake_time") or hints.get("wake") or ""
-        ).strip()
+        Reads structured time bounds from ``hints["aspect_classification"]`` first,
+        then falls back to legacy explicit hint keys (``start_time``, ``wake_time``,
+        etc.).  No regex scanning of free-form text is performed.
+        """
+        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+
+        # Prefer structured classification times (set by extraction LLM).
+        classification = ConstraintAspectClassification.from_hints(hints)
+        cls_start = classification.schedule_start if classification else None
+        cls_end = classification.schedule_end if classification else None
+
+        # Legacy explicit hint keys as secondary fallback.
+        legacy_start = (
+            str(
+                hints.get("start_time")
+                or hints.get("bed_time")
+                or hints.get("bedtime")
+                or ""
+            ).strip()
+            or None
+        )
+        legacy_end = (
+            str(
+                hints.get("end_time")
+                or hints.get("wake_time")
+                or hints.get("wake")
+                or ""
+            ).strip()
+            or None
+        )
 
         if domain == "sleep_target":
-            start = hint_start or (times[0] if len(times) > 0 else "")
-            end = hint_end or (times[1] if len(times) > 1 else "")
+            start = cls_start or legacy_start or ""
+            end = cls_end or legacy_end or ""
             if not start or not end:
                 return None
             try:
@@ -2420,8 +2594,8 @@ class TimeboxingFlowAgent(RoutedAgent):
             return {"start": start, "end": end, "hours": hours}
 
         if domain == "work_window":
-            start = hint_start or (times[0] if len(times) > 0 else "")
-            end = hint_end or (times[1] if len(times) > 1 else "")
+            start = cls_start or legacy_start or ""
+            end = cls_end or legacy_end or ""
             if not start or not end:
                 return None
             return {"start": start, "end": end}
@@ -2429,24 +2603,16 @@ class TimeboxingFlowAgent(RoutedAgent):
         return None
 
     def _classify_collect_default_domain(self, constraint: Constraint) -> str | None:
-        """Classify collect-stage default domains from durable constraint metadata."""
+        """Return the collect-stage domain key for a durable constraint.
+
+        Reads ``hints["aspect_classification"]["frame_slot"]`` as assigned by
+        the extraction LLM.  No keyword or regex scanning is performed.
+        Constraints that pre-date classification (no ``aspect_classification``
+        in hints) return ``None`` and are ignored by the defaults pipeline.
+        """
         hints = constraint.hints if isinstance(constraint.hints, dict) else {}
-        rule_kind = str(hints.get("rule_kind") or "").strip().lower()
-        tags = [str(tag).strip().lower() for tag in (constraint.tags or [])]
-        text = (
-            f"{constraint.name or ''} {constraint.description or ''} "
-            f"{' '.join(tags)} {rule_kind}"
-        ).lower()
-        if rule_kind in {"fixed_bedtime", "min_sleep"} or any(
-            token in text for token in ("sleep", "bed", "wake")
-        ):
-            return "sleep_target"
-        if any(
-            token in text
-            for token in ("work window", "start work", "work hours", "availability")
-        ):
-            return "work_window"
-        return None
+        classification = ConstraintAspectClassification.from_hints(hints)
+        return classification.frame_slot if classification is not None else None
 
     @staticmethod
     def _collect_default_priority_key(
@@ -2638,10 +2804,26 @@ class TimeboxingFlowAgent(RoutedAgent):
             parse_model_optional(SleepTarget, facts.get("sleep_target")) is not None
         )
         if sleep_known and gate.missing:
+            # Suppress missing items whose label matches an applied durable default label
+            # OR whose text mentions sleep/routine keywords.
+            # The keyword fallback is required until StageGateOutput.missing carries
+            # per-item domain tags so that LLM-generated missing labels can be matched
+            # to applied defaults without exact-string comparison.
+            # TODO(refactor): when StageGateOutput.missing carries per-item domain
+            # tags, remove the keyword fallback and use only the label-based filter.
+            applied_lines: set[str] = set(session.collect_defaults_applied or [])
+
+            def _sleep_keyword(item: str) -> bool:
+                lower = item.lower()
+                return any(
+                    kw in lower
+                    for kw in ("sleep", "bedtime", "bed time", "wake", "routine")
+                )
+
             gate.missing = [
                 item
                 for item in gate.missing
-                if "sleep" not in item.lower() and "routine" not in item.lower()
+                if item not in applied_lines and not _sleep_keyword(item)
             ]
         if not gate.missing:
             gate.ready = True
@@ -2923,9 +3105,17 @@ class TimeboxingFlowAgent(RoutedAgent):
         timebox: Timebox,
         session: Session | None = None,
     ) -> StageGateOutput:
-        """Generate a summary for a timebox draft via the summary agent."""
-        await self._ensure_stage_agents()
-        assert self._summary_agent is not None
+        """Generate a summary for a timebox draft.
+
+        A fresh agent is built on each call so the LLM only sees the
+        current timebox, never prior-turn message history.
+        """
+        summary_agent = self._build_one_shot_agent(
+            "StageTimeboxSummary",
+            TIMEBOX_SUMMARY_PROMPT,
+            StageGateOutput,
+            structured_output=False,
+        )
         events_toon = toon_encode(
             name="events",
             rows=timebox_events_rows(timebox.events or []),
@@ -2934,7 +3124,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         payload = f"stage_id: {stage.value}\n{events_toon}\n"
         response = await with_timeout(
             f"timeboxing:summary:{stage.value}",
-            self._summary_agent.on_messages(
+            summary_agent.on_messages(
                 [TextMessage(content=payload, source="user")],
                 CancellationToken(),
             ),
@@ -2950,9 +3140,16 @@ class TimeboxingFlowAgent(RoutedAgent):
         return gate
 
     async def _run_review_commit(self, *, timebox: Timebox) -> StageGateOutput:
-        """Generate the final review/commit response."""
-        await self._ensure_stage_agents()
-        assert self._review_commit_agent is not None
+        """Generate the final review/commit response.
+
+        A fresh agent is built on each call so no prior-turn history is sent.
+        """
+        review_agent = self._build_one_shot_agent(
+            "StageReviewCommit",
+            REVIEW_COMMIT_PROMPT,
+            StageGateOutput,
+            structured_output=False,
+        )
         events_toon = toon_encode(
             name="events",
             rows=timebox_events_rows(timebox.events or []),
@@ -2961,7 +3158,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         payload = f"{events_toon}\n"
         response = await with_timeout(
             "timeboxing:review-commit",
-            self._review_commit_agent.on_messages(
+            review_agent.on_messages(
                 [TextMessage(content=payload, source="user")],
                 CancellationToken(),
             ),
@@ -3781,6 +3978,10 @@ class TimeboxingFlowAgent(RoutedAgent):
             raise ValueError("Refine patch requested without TBPlan state.")
         previous_plan = session.tb_plan.model_copy(deep=True)
         constraints = await self._collect_constraints(session)
+        patch_constraints = self._select_constraints_for_refine_patcher(
+            session=session,
+            constraints=constraints,
+        )
         validated_timebox: Timebox | None = None
 
         def _materialize_timebox(plan: TBPlan) -> Timebox:
@@ -3792,7 +3993,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             stage=TimeboxingStage.REFINE.value,
             current=session.tb_plan,
             user_message=patch_message,
-            constraints=constraints,
+            constraints=patch_constraints,
             actions=[],
             plan_validator=_materialize_timebox,
         )
@@ -3847,6 +4048,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             memory_operations=[],
         )
 
+    # TODO(deprecate): _ensure_constraint_mcp_tools is never called at runtime.
+    # The live extraction write path is _upsert_constraints_to_durable_store → mem0.
+    # Remove this method together with get_constraint_mcp_tools and NotionConstraintExtractor.
     async def _ensure_constraint_mcp_tools(self) -> None:
         """Lazily initialise constraint MCP tools, extractor, and extraction tool.
 
@@ -4807,14 +5011,23 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
 
     async def _run_assist_turn(
-        self, *, session: Session, user_message: str, note: str | None
+        self,
+        *,
+        session: Session,
+        user_message: str,
+        note: str | None,
+        assist_target: str | None,
     ) -> str | None:
         """Handle adjacent assist requests without progressing the stage."""
-        return await self._task_marshalling.assist_response(
-            session=session,
-            user_message=user_message,
-            note=note,
-        )
+        match (assist_target or "").strip():
+            case "tasks_agent":
+                return await self._task_marshalling.assist_response(
+                    session=session,
+                    user_message=user_message,
+                    note=note,
+                )
+            case _:
+                return None
 
     async def _maybe_handle_memory_review_turn(
         self, *, session: Session, user_message: str
@@ -4859,9 +5072,14 @@ class TimeboxingFlowAgent(RoutedAgent):
     async def _decide_next_action(
         self, session: Session, *, user_message: str
     ) -> StageDecision:
-        """Decide how to advance the timeboxing stage based on user input."""
-        await self._ensure_stage_agents()
-        assert self._decision_agent is not None
+        """Decide how to advance the timeboxing stage based on user input.
+
+        A fresh agent is built on each call so no prior-turn message history
+        is carried into the decision LLM.
+        """
+        decision_agent = self._build_one_shot_agent(
+            "StageDecision", DECISION_PROMPT, StageDecision
+        )
         decision_ctx = toon_encode(
             name="decision_ctx",
             rows=[
@@ -4883,7 +5101,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         try:
             response = await with_timeout(
                 "timeboxing:stage-decision",
-                self._decision_agent.on_messages(
+                decision_agent.on_messages(
                     [TextMessage(content=payload, source="user")],
                     CancellationToken(),
                 ),
@@ -5528,6 +5746,10 @@ class TimeboxingFlowAgent(RoutedAgent):
             timezone=session.tz_name or "UTC",
         )
         constraints = await self._collect_constraints(session)
+        patch_constraints = self._select_constraints_for_refine_patcher(
+            session=session,
+            constraints=constraints,
+        )
 
         # Use TBPlan path if available, fall back to legacy Timebox path
         if session.tb_plan is not None:
@@ -5548,7 +5770,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 stage=TimeboxingStage.REFINE.value,
                 current=session.tb_plan,
                 user_message=patch_message,
-                constraints=constraints,
+                constraints=patch_constraints,
                 actions=[],
                 plan_validator=_materialize_timebox,
             )
@@ -5563,7 +5785,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 stage=TimeboxingStage.REFINE.value,
                 current=session.timebox,
                 user_message=text,
-                constraints=constraints,
+                constraints=patch_constraints,
                 actions=[],
             )
 
@@ -5582,20 +5804,102 @@ class TimeboxingFlowAgent(RoutedAgent):
                 channel_id=session.channel_id,
                 thread_ts=session.thread_ts,
             )
+        local_declined_uids = {
+            uid
+            for constraint in (local_constraints or [])
+            if constraint.status == ConstraintStatus.DECLINED
+            for uid in [self._constraint_uid(constraint)]
+            if uid
+        }
+        if local_declined_uids:
+            session.suppressed_durable_uids.update(local_declined_uids)
+        stage_order = self._active_durable_stage_order(session.stage)
+        relevant_stage_keys = (
+            stage_order
+            if stage_order
+            else tuple(session.durable_constraints_by_stage.keys())
+        )
         durable_constraints = [
-            c
-            for stage_constraints in session.durable_constraints_by_stage.values()
-            for c in (stage_constraints or [])
-            if (uid := self._constraint_uid(c)) is None
+            constraint
+            for stage_key in relevant_stage_keys
+            for constraint in (
+                session.durable_constraints_by_stage.get(stage_key) or []
+            )
+            if (uid := self._constraint_uid(constraint)) is None
             or uid not in session.suppressed_durable_uids
         ]
         combined = _dedupe_constraints(
-            durable_constraints + list(local_constraints or [])
+            list(local_constraints or []) + durable_constraints
         )
         session.active_constraints = [
             c for c in combined if c.status != ConstraintStatus.DECLINED
         ]
+        self._session_debug(
+            session,
+            "constraints_active_snapshot",
+            stage=session.stage.value if session.stage else None,
+            local_count=len(local_constraints or []),
+            durable_count=len(durable_constraints),
+            active_count=len(session.active_constraints),
+            durable_stage_keys=list(relevant_stage_keys),
+            top_names=[
+                (constraint.name or "").strip()
+                for constraint in session.active_constraints[:10]
+                if (constraint.name or "").strip()
+            ],
+        )
         return list(session.active_constraints or [])
+
+    def _select_constraints_for_refine_patcher(
+        self,
+        *,
+        session: Session,
+        constraints: list[Constraint],
+    ) -> list[Constraint]:
+        """Keep Stage 4 patching bounded by selecting the highest-priority constraints."""
+        ranked = sorted(constraints or [], key=_constraint_priority)
+        limit = max(1, TIMEBOXING_LIMITS.refine_patcher_constraint_limit)
+        if len(ranked) <= limit:
+            self._session_debug(
+                session,
+                "refine_constraints_selected",
+                total=len(ranked),
+                selected=len(ranked),
+                dropped=0,
+                limit=limit,
+            )
+            return ranked
+
+        must_constraints = [
+            constraint
+            for constraint in ranked
+            if constraint.necessity == ConstraintNecessity.MUST
+        ]
+        selected: list[Constraint] = []
+        seen: set[str] = set()
+        for constraint in [*must_constraints, *ranked]:
+            key = _constraint_identity_key(constraint)
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(constraint)
+            if len(selected) >= limit:
+                break
+
+        self._session_debug(
+            session,
+            "refine_constraints_selected",
+            total=len(ranked),
+            selected=len(selected),
+            dropped=max(0, len(ranked) - len(selected)),
+            limit=limit,
+            selected_names=[
+                (constraint.name or "").strip()
+                for constraint in selected[:10]
+                if (constraint.name or "").strip()
+            ],
+        )
+        return selected
 
     async def _sync_durable_constraints_to_store(
         self, session: Session, *, constraints: list[Constraint]
@@ -6798,6 +7102,11 @@ def _constraints_from_memory(
         rule_kind = record.get("rule_kind") or record.get("type_id")
         if rule_kind:
             hints["rule_kind"] = rule_kind
+        # Restore aspect_classification from the stored record so agent code can read
+        # hints["aspect_classification"] without keyword or regex scanning.
+        aspect_cls = record.get("aspect_classification")
+        if isinstance(aspect_cls, dict) and aspect_cls:
+            hints["aspect_classification"] = aspect_cls
         confidence = record.get("confidence")
         parsed_confidence: float | None = None
         if confidence is not None:
@@ -6871,4 +7180,5 @@ def _coerce_async_database_url(database_url: str) -> str:
     return database_url
 
 
+__all__ = ["TimeboxingFlowAgent"]
 __all__ = ["TimeboxingFlowAgent"]

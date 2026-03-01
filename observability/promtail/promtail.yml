@@ -62,3 +62,80 @@ scrape_configs:
           source: ts
           format: RFC3339Nano
           action_on_failure: skip
+
+  # ──────────────────────────────────────────────────────────────────
+  # LLM IO logs (llm_io_*.jsonl) – written by the app to the host
+  # logs/ directory; mounted read-only into this container as /app/logs
+  # ──────────────────────────────────────────────────────────────────
+  - job_name: llm_io
+    static_configs:
+      - targets: ["localhost"]
+        labels:
+          job: fateforger_llm_io
+          compose_service: slack-bot
+          __path__: /app/logs/llm_io_*.jsonl
+
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            event: event
+            stage: stage
+            model: model
+            call_label: call_label
+            session_key: session_key
+            thread_ts: thread_ts
+            prompt_tokens: prompt_tokens
+            completion_tokens: completion_tokens
+            elapsed_s: elapsed_s
+            direction: direction
+
+      - labels:
+          level:
+          event:
+          stage:
+          model:
+          call_label:
+          direction:
+
+      - timestamp:
+          source: ts
+          format: RFC3339Nano
+          action_on_failure: skip
+
+  # ──────────────────────────────────────────────────────────────────
+  # Timeboxing session event logs (timeboxing_session_*.log)
+  # ──────────────────────────────────────────────────────────────────
+  - job_name: session_events
+    static_configs:
+      - targets: ["localhost"]
+        labels:
+          job: fateforger_session
+          compose_service: slack-bot
+          __path__: /app/logs/timeboxing_session_*.log
+
+    pipeline_stages:
+      # Extract the JSON payload embedded after the Python log level prefix:
+      # "2026-03-01 07:08:13,415 INFO {event: ...}"
+      - regex:
+          expression: '^\d{4}-\d{2}-\d{2} [\d:,]+ \w+ (?P<json_payload>\{.+\})$'
+
+      - json:
+          source: json_payload
+          expressions:
+            level: level
+            event: event
+            stage: stage
+            session_key: session_key
+            thread_ts: thread_ts
+            elapsed_s: elapsed_s
+
+      - labels:
+          level:
+          event:
+          stage:
+
+      - timestamp:
+          source: ts
+          format: RFC3339Nano
+          action_on_failure: skip

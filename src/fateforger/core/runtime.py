@@ -35,13 +35,13 @@ from fateforger.haunt.intervention import HauntingInterventionHandler
 from fateforger.haunt.messages import UserFacingMessage
 from fateforger.haunt.orchestrator import HauntOrchestrator
 from fateforger.haunt.planning_guardian import PlanningGuardian
-from fateforger.haunt.planning_store import (
-    SqlAlchemyPlanningAnchorStore,
-    ensure_planning_anchor_schema,
-)
 from fateforger.haunt.planning_session_store import (
     SqlAlchemyPlanningSessionStore,
     ensure_planning_session_schema,
+)
+from fateforger.haunt.planning_store import (
+    SqlAlchemyPlanningAnchorStore,
+    ensure_planning_anchor_schema,
 )
 from fateforger.haunt.reconcile import (
     McpCalendarClient,
@@ -64,6 +64,140 @@ logger = logging.getLogger(__name__)
 
 _runtime: SingleThreadedAgentRuntime | None = None
 _runtime_lock = asyncio.Lock()
+
+
+@dataclass(frozen=True)
+class _McpStartupServer:
+    name: str
+    url: str
+    headers: dict[str, str] | None = None
+    timeout_s: float = 5.0
+    optional: bool = False
+
+
+@dataclass(frozen=True)
+class _McpStartupProbeResult:
+    server: _McpStartupServer
+    ok: bool
+    tool_count: int
+    error: str | None = None
+
+
+def _runtime_mcp_servers() -> list[_McpStartupServer]:
+    from fateforger.tools.notion_mcp import get_notion_mcp_headers, get_notion_mcp_url
+    from fateforger.tools.ticktick_mcp import get_ticktick_mcp_url
+
+    return [
+        _McpStartupServer(
+            name="calendar-mcp",
+            url=settings.mcp_calendar_server_url.strip(),
+            timeout_s=5.0,
+        ),
+        _McpStartupServer(
+            name="notion-mcp",
+            url=get_notion_mcp_url().strip(),
+            headers=get_notion_mcp_headers(),
+            timeout_s=5.0,
+            optional=True,
+        ),
+        _McpStartupServer(
+            name="ticktick-mcp",
+            url=get_ticktick_mcp_url().strip(),
+            timeout_s=5.0,
+            optional=True,
+        ),
+    ]
+
+
+async def _discover_mcp_tools(
+    *,
+    url: str,
+    headers: dict[str, str] | None,
+    timeout_s: float,
+) -> list:
+    from autogen_ext.tools.mcp import StreamableHttpServerParams, mcp_server_tools
+
+    params_kwargs: dict[str, object] = {
+        "url": url,
+        "headers": headers,
+        "timeout": timeout_s,
+    }
+    try:
+        params = StreamableHttpServerParams(
+            **params_kwargs,
+            sse_read_timeout=timeout_s,
+        )
+    except TypeError:
+        params = StreamableHttpServerParams(**params_kwargs)
+    return await asyncio.wait_for(mcp_server_tools(params), timeout=timeout_s + 0.5)
+
+
+async def _probe_runtime_mcp_server(
+    server: _McpStartupServer,
+) -> _McpStartupProbeResult:
+    try:
+        tools = await _discover_mcp_tools(
+            url=server.url,
+            headers=server.headers,
+            timeout_s=server.timeout_s,
+        )
+    except TimeoutError:
+        return _McpStartupProbeResult(
+            server=server,
+            ok=False,
+            tool_count=0,
+            error=f"timed out after {server.timeout_s:.1f}s during tool discovery",
+        )
+    except Exception as exc:
+        message = str(exc).strip() or repr(exc)
+        return _McpStartupProbeResult(
+            server=server,
+            ok=False,
+            tool_count=0,
+            error=f"{type(exc).__name__}: {message}",
+        )
+    if not tools:
+        return _McpStartupProbeResult(
+            server=server,
+            ok=False,
+            tool_count=0,
+            error="server returned no tools",
+        )
+    return _McpStartupProbeResult(
+        server=server,
+        ok=True,
+        tool_count=len(tools),
+    )
+
+
+async def _assert_mcp_servers_available() -> None:
+    probes = _runtime_mcp_servers()
+    results = await asyncio.gather(
+        *(_probe_runtime_mcp_server(server) for server in probes)
+    )
+    required_failures = [r for r in results if not r.ok and not r.server.optional]
+    optional_failures = [r for r in results if not r.ok and r.server.optional]
+    for result in optional_failures:
+        logger.warning(
+            "Optional MCP server unavailable (skipping): %s [%s] -> %s",
+            result.server.name,
+            result.server.url,
+            result.error,
+        )
+    if required_failures:
+        details = "; ".join(
+            f"{result.server.name} [{result.server.url}] -> {result.error}"
+            for result in required_failures
+        )
+        raise RuntimeError(
+            "MCP startup dependency check failed. "
+            f"Resolve unavailable servers before starting the app. {details}"
+        )
+    ok_results = [r for r in results if r.ok]
+    summary = ", ".join(
+        f"{result.server.name}:{result.tool_count}" for result in ok_results
+    )
+    logger.info("MCP startup dependency checks passed (%s)", summary)
 
 
 async def _run_initial_planning_reconcile(
@@ -103,6 +237,7 @@ def _create_scheduler(database_url: str | None) -> AsyncIOScheduler:
 
 async def _create_runtime() -> SingleThreadedAgentRuntime:
     """Create and start the runtime instance."""
+    await _assert_mcp_servers_available()
     scheduler = _create_scheduler(settings.database_url)
     scheduler.start()
 

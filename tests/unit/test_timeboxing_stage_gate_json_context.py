@@ -31,7 +31,9 @@ class _CapturingStageAgent:
     def __init__(self) -> None:
         self.last_messages: list[TextMessage] = []
 
-    async def on_messages(self, messages: list[TextMessage], _token: Any) -> _DummyResponse:
+    async def on_messages(
+        self, messages: list[TextMessage], _token: Any
+    ) -> _DummyResponse:
         """Capture messages and return a minimal StageGateOutput."""
         self.last_messages = messages
         return _DummyResponse(
@@ -51,13 +53,17 @@ class _CapturingStageAgent:
 class _MalformedStageAgent:
     """Fake stage agent returning malformed payload to test fallback behavior."""
 
-    async def on_messages(self, messages: list[TextMessage], _token: Any) -> _DummyResponse:
+    async def on_messages(
+        self, messages: list[TextMessage], _token: Any
+    ) -> _DummyResponse:
         _ = messages
         return _DummyResponse(chat_message=_DummyChatMessage(content="not-json"))
 
 
 @pytest.mark.asyncio
-async def test_run_stage_gate_sends_strict_json_context(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_run_stage_gate_sends_strict_json_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Ensures `_run_stage_gate` injects list-shaped data via TOON tables."""
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
 
@@ -65,10 +71,14 @@ async def test_run_stage_gate_sends_strict_json_context(monkeypatch: pytest.Monk
         """Avoid building real LLM agents in this unit test."""
         return None
 
-    monkeypatch.setattr(TimeboxingFlowAgent, "_ensure_stage_agents", _noop_ensure_stage_agents)
+    monkeypatch.setattr(
+        TimeboxingFlowAgent, "_ensure_stage_agents", _noop_ensure_stage_agents
+    )
 
     capturing = _CapturingStageAgent()
-    agent._stage_agents = {TimeboxingStage.COLLECT_CONSTRAINTS: capturing}  # type: ignore[attr-defined]
+    # _build_one_shot_agent is called per invocation — return our capturing stub.
+    agent._build_one_shot_agent = lambda *_a, **_kw: capturing
+    agent._constraint_search_tool = None  # accessed directly in _run_stage_gate
 
     context = {
         "stage_id": "CollectConstraints",
@@ -101,7 +111,10 @@ async def test_run_stage_gate_sends_strict_json_context(monkeypatch: pytest.Monk
     assert "facts_json:" in content
     assert '"k": 1' in content
     assert "immovables[0]{title,start,end}:" in content
-    assert "durable_constraints[1]{name,necessity,scope,status,source,description}:" in content
+    assert (
+        "durable_constraints[1]{name,necessity,scope,status,source,description}:"
+        in content
+    )
 
 
 @pytest.mark.asyncio
@@ -114,10 +127,12 @@ async def test_run_stage_gate_returns_safe_fallback_on_parse_failure(
     async def _noop_ensure_stage_agents(self: TimeboxingFlowAgent) -> None:
         return None
 
-    monkeypatch.setattr(TimeboxingFlowAgent, "_ensure_stage_agents", _noop_ensure_stage_agents)
-    agent._stage_agents = {  # type: ignore[attr-defined]
-        TimeboxingStage.COLLECT_CONSTRAINTS: _MalformedStageAgent()
-    }
+    monkeypatch.setattr(
+        TimeboxingFlowAgent, "_ensure_stage_agents", _noop_ensure_stage_agents
+    )
+    # _build_one_shot_agent is called per invocation — return our malformed stub.
+    agent._build_one_shot_agent = lambda *_a, **_kw: _MalformedStageAgent()
+    agent._constraint_search_tool = None  # accessed directly in _run_stage_gate
 
     context = {"facts": {"timezone": "Europe/Amsterdam"}}
     out = await TimeboxingFlowAgent._run_stage_gate(  # type: ignore[misc]

@@ -215,7 +215,18 @@ poetry run python scripts/dev/timebox_log_query.py llm --log-path logs/llm_io_20
 
 ## Slack capability audit loop (critical)
 - Use the Slack skill as the primary operator surface for live end-to-end audits of agent behavior in Slack.
+- For audits that require sending user-facing Slack messages, use Slack MCP (`agent-slack`) first; only use the fallback driver when MCP is unavailable or authentication fails.
 - If the Slack skill is unavailable, use the deterministic fallback driver (`scripts/dev/slack_user_timeboxing_driver.py`) with `SLACK_USER_TOKEN`.
+- Fallback driver thread identity rule:
+  - record both the seed `thread_ts` and the followed bot-created `thread_ts`; audits must use the bot thread as canonical when they differ.
+- Fallback driver output rule:
+  - repeated `:hourglass_flowing_sand:` messages indicate in-flight work only; do not treat them as completion or failure.
+- Slack timeout triage rule:
+  - if Slack shows `Routing timed out before I could finish this reply`, first check session logs for the same thread/stage:
+    - if `graph_turn_end` exists shortly after timeout, classify as **delivery timeout** (Slack route timeout) rather than stage computation failure.
+    - if no matching `graph_turn_end` exists, classify as **stage failure/hang** and debug stage internals.
+- Timeout correlation checklist:
+  - correlate `slack_route_dispatch_timeout` stage duration + `route_timeout` error metrics with session `graph_turn_slow` and patcher logs before changing code.
 - For behavior/debug tickets that affect Slack-facing flows, run an explicit audit conversation:
   - send the agreed seed prompt,
   - progress through all stages (including Stage 4/5 loops) until terminal state,
@@ -457,11 +468,13 @@ poetry run python scripts/dev/timebox_log_query.py llm --log-path logs/llm_io_20
 - `tests/`: pytest suite.
 - `docs/` + `mkdocs.yml`: MkDocs documentation.
 - `notebooks/`: exploratory/dev notebooks (should import from `src/` without bootstrap code).
+- `observability/`: standalone local observability stack + detailed audit operating guide (see `observability/AGENTS.md`).
 - `workflow_config/`: mutable workflow preference parameters (separate from `AGENTS.md` contracts).
 
 ## Subfolder `AGENTS.md` + docs/status workflow (critical)
 - **Separation of concerns:** put “how to operate as an agent” rules in `AGENTS.md`; put “what the system does” (architecture, APIs, behavior, acceptance criteria, runbooks) in `README.md` files or `docs/`.
 - **Nested `AGENTS.md` creation/update:** when you touch a folder with non-trivial workflows/constraints, add or update that folder’s `AGENTS.md` (scoped to that subtree). Keep it short and specific.
+- **Observability detail source:** for stack+MCP+Slack audit operations, use `observability/AGENTS.md` as the detailed operator playbook and keep root `AGENTS.md` concise.
 - **Progressive indexing:** every non-trivial folder should have a `README.md` that acts as an index:
   - what this folder is for, key entry points/classes, how to run the relevant tests, and links to deeper docs.
   - if multiple implementations exist (prod vs archive vs example), enumerate them explicitly (see `DOCS_INDEX.md` style).

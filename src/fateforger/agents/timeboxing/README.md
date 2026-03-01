@@ -74,7 +74,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | `preferences.py` | `ConstraintStore`: SQLite-backed session constraint persistence. |
 | `constraint_retriever.py` | `ConstraintRetriever`: gap-driven durable constraint fetch from Notion MCP. |
 | `constraint_search_tool.py` | Stage-gating Notion search tool (`search_constraints`) with strict FunctionTool schema for structured-output compatibility. |
-| `notion_constraint_extractor.py` | LLM fallback path for durable Notion upserts when deterministic MCP upsert mapping is unavailable. |
+| `notion_constraint_extractor.py` | **TODO(deprecate)** — dead code. The Notion-MCP extraction path is never reached; the live write path is `_upsert_constraints_to_durable_store` → mem0. Do not import from new code. |
 
 ### Utilities
 

@@ -27,7 +27,7 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_AUTH_ANONYMOUS_ENABLED=false
     ports:
-      - "${OBS_GRAFANA_PUBLIC_PORT:-3000}:3000"
+      - "${OBS_GRAFANA_PUBLIC_PORT:-3300}:3000"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
@@ -73,6 +73,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - promtail_positions:/var/lib/promtail
+      # Ship app log files (LLM IO, session events) from host logs/ dir
+      - ../logs:/app/logs:ro
     depends_on:
       - loki
     networks:

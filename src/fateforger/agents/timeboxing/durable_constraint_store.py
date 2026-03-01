@@ -6,6 +6,7 @@ behind one small interface so orchestration code can stay backend-neutral.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -288,6 +289,14 @@ class DurableConstraintStore(Protocol):
     ) -> dict[str, Any] | None:
         """Find the best semantic equivalent already stored."""
 
+    async def find_equivalent_constraints(
+        self,
+        *,
+        records: list[dict[str, Any]],
+        limit: int = 200,
+    ) -> dict[str, dict[str, Any]]:
+        """Find semantic equivalents for many records in one retrieval pass."""
+
     async def dedupe_constraints(
         self,
         *,
@@ -437,70 +446,130 @@ class ClientBackedDurableConstraintStore:
         constraint = _constraint_record(record)
         if not constraint:
             return None
-        _, identity = _semantic_identity(constraint)
-        search_name = _to_text(constraint.get("name"))
+        semantic_key, _ = _semantic_identity(constraint)
+        lifecycle = dict(constraint.get("lifecycle") or {})
+        uid = _to_text(lifecycle.get("uid") or record.get("uid"))
+        lookup_key = uid or f"semantic:{semantic_key}"
+        matches = await self.find_equivalent_constraints(
+            records=[record],
+            limit=limit,
+        )
+        if lookup_key:
+            return matches.get(lookup_key)
+        if not matches:
+            return None
+        return next(iter(matches.values()))
+
+    async def find_equivalent_constraints(
+        self,
+        *,
+        records: list[dict[str, Any]],
+        limit: int = 200,
+    ) -> dict[str, dict[str, Any]]:
+        """Return strongest semantic matches for many records in one candidate scan."""
+        incoming_by_uid: dict[str, dict[str, Any]] = {}
+        search_names: list[str] = []
+        tags: set[str] = set()
+        for record in records:
+            constraint = _constraint_record(record)
+            if not constraint:
+                continue
+            semantic_key, _ = _semantic_identity(constraint)
+            lifecycle = dict(constraint.get("lifecycle") or {})
+            uid = _to_text(lifecycle.get("uid") or record.get("uid")) or f"semantic:{semantic_key}"
+            incoming_by_uid[uid] = constraint
+            name = _to_text(constraint.get("name"))
+            if name:
+                search_names.append(name)
+            tags.update(_to_text(item) for item in _to_list(constraint.get("topics")) if _to_text(item))
+        if not incoming_by_uid:
+            return {}
+
+        row_limit = max(max(1, int(limit)), len(incoming_by_uid) * 50)
         rows = await self.query_constraints(
             filters={
                 "require_active": False,
-                "text_query": search_name or None,
+                "text_query": " ".join(search_names[:6]) or None,
             },
             type_ids=None,
-            tags=_to_list(constraint.get("topics")) or None,
+            tags=sorted(tags) or None,
             sort=[["Status", "descending"]],
-            limit=max(1, int(limit)),
+            limit=row_limit,
         )
-        if not rows and search_name:
+        if not rows and search_names:
             rows = await self.query_constraints(
                 filters={"require_active": False},
                 type_ids=None,
-                tags=_to_list(constraint.get("topics")) or None,
+                tags=sorted(tags) or None,
                 sort=[["Status", "descending"]],
-                limit=max(1, int(limit)),
+                limit=row_limit,
             )
+        candidate_entries = await self._load_constraint_entries(rows=rows)
+        candidate_pool: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for entry in candidate_entries:
+            _, candidate_identity = _semantic_identity(
+                dict(entry.get("constraint_record") or {})
+            )
+            candidate_pool.append((entry, candidate_identity))
 
-        exact_matches: list[dict[str, Any]] = []
-        near_matches: list[tuple[int, dict[str, Any]]] = []
-        for row in rows:
-            uid = _to_text(row.get("uid"))
-            if not uid:
-                continue
-            full = await self.get_constraint(uid=uid)
-            candidate_record = _constraint_record(full or row)
-            _, candidate_identity = _semantic_identity(candidate_record)
-            if candidate_identity != identity:
+        out: dict[str, dict[str, Any]] = {}
+        for uid, constraint in incoming_by_uid.items():
+            _, identity = _semantic_identity(constraint)
+            exact_matches: list[dict[str, Any]] = []
+            near_matches: list[tuple[int, dict[str, Any]]] = []
+            for entry, candidate_identity in candidate_pool:
+                if candidate_identity == identity:
+                    exact_matches.append(entry)
+                    continue
                 similarity = _semantic_similarity_score(identity, candidate_identity)
                 if similarity < 8:
                     continue
-                near_matches.append(
-                    (
-                        similarity,
-                        {
-                            "uid": uid,
-                            "constraint_record": candidate_record,
-                            "metadata": dict((full or {}).get("metadata") or row),
-                        },
+                near_matches.append((similarity, entry))
+
+            if exact_matches:
+                exact_matches.sort(key=_candidate_rank)
+                out[uid] = exact_matches[0]
+                continue
+            if near_matches:
+                near_matches.sort(
+                    key=lambda item: (
+                        -item[0],
+                        *_candidate_rank(item[1]),
                     )
                 )
-                continue
-            exact_matches.append(
+                out[uid] = near_matches[0][1]
+        return out
+
+    async def _load_constraint_entries(
+        self,
+        *,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Hydrate candidate rows once so batch matching avoids repeated lookups."""
+        by_uid: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            uid = _to_text(row.get("uid"))
+            if uid and uid not in by_uid:
+                by_uid[uid] = row
+        if not by_uid:
+            return []
+        uids = list(by_uid)
+        full_payloads = await asyncio.gather(
+            *(self.get_constraint(uid=uid) for uid in uids),
+            return_exceptions=True,
+        )
+        out: list[dict[str, Any]] = []
+        for uid, full in zip(uids, full_payloads, strict=False):
+            row = by_uid[uid]
+            payload = full if isinstance(full, dict) else row
+            out.append(
                 {
                     "uid": uid,
-                    "constraint_record": candidate_record,
-                    "metadata": dict((full or {}).get("metadata") or row),
+                    "constraint_record": _constraint_record(payload),
+                    "metadata": dict((payload or {}).get("metadata") or row),
                 }
             )
-        if exact_matches:
-            exact_matches.sort(key=_candidate_rank)
-            return exact_matches[0]
-        if not near_matches:
-            return None
-        near_matches.sort(
-            key=lambda item: (
-                -item[0],
-                *_candidate_rank(item[1]),
-            )
-        )
-        return near_matches[0][1]
+        return out
 
     async def dedupe_constraints(
         self,
@@ -517,20 +586,11 @@ class ClientBackedDurableConstraintStore:
             limit=max(1, int(limit)),
         )
         groups: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            uid = _to_text(row.get("uid"))
-            if not uid:
-                continue
-            full = await self.get_constraint(uid=uid)
-            constraint = _constraint_record(full or row)
+        for entry in await self._load_constraint_entries(rows=rows):
+            uid = _to_text(entry.get("uid"))
+            constraint = _constraint_record(entry)
             key, _ = _semantic_identity(constraint)
-            groups.setdefault(key, []).append(
-                {
-                    "uid": uid,
-                    "constraint_record": constraint,
-                    "metadata": dict((full or {}).get("metadata") or row),
-                }
-            )
+            groups.setdefault(key, []).append(entry)
 
         duplicates_found = 0
         duplicates_archived = 0

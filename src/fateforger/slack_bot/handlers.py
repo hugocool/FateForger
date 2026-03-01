@@ -38,6 +38,7 @@ from fateforger.slack_bot.planning import (
     FF_EVENT_DURATION_ACTION_ID,
     FF_EVENT_EDIT_ACTION_ID,
     FF_EVENT_EDIT_MODAL_CALLBACK_ID,
+    FF_EVENT_OPEN_URL_ACTION_ID,
     FF_EVENT_RETRY_ACTION_ID,
     FF_EVENT_START_AT_ACTION_ID,
     FF_EVENT_START_DATE_ACTION_ID,
@@ -1818,6 +1819,11 @@ def register_handlers(
 
     @app.action("ff_open_admonishments_log")
     async def on_open_admonishments_log_action(ack, body, logger):
+        await ack()
+
+    @app.action(FF_EVENT_OPEN_URL_ACTION_ID)
+    async def on_event_open_url_action(ack, body, logger):
+        """Acknowledge the open_event_url button click; Slack opens the URL natively."""
         await ack()
 
     @app.action(FF_EVENT_ADD_DISABLED_ACTION_ID)
