@@ -10,7 +10,8 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | Timeboxing slash command + Stage 0 UI | Implemented |
 | Thread-scoped focus routing | Implemented |
 | Constraint review modals | Implemented |
-| Planning/scheduling UI | Implemented, Tested (strict add-to-calendar success verification + explicit link surfacing) |
+| Planning/scheduling UI | Implemented, Tested (strict add-to-calendar success verification, URL integrity checks, explicit link surfacing) |
+| TaskMarshal due-task cards + task edit modal | Implemented, Tested |
 | Haunt delivery (nudges) | Implemented |
 | Sync engine confirm/cancel/undo buttons | Implemented, Tested |
 | Dispatch timeout fallback reply | Implemented, Tested |
@@ -48,6 +49,7 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 |------|---------------|
 | `planning.py` | Planning/scheduling Slack UI: renders suggested calendar slots, processes user date/time edits, upserts events via scheduling agent. Action IDs: `FF_EVENT_*`. |
 | `planning_ids.py` | Generates deterministic, MCP-compatible Google Calendar event IDs (base32hex) for planning sessions. |
+| `task_cards.py` | TaskMarshal card + modal helpers: due-task overview blocks, metadata encoding, detail/edit modal payloads. Action IDs: `ff_tasks_*`. |
 
 ### Shared Utilities
 
@@ -91,7 +93,10 @@ Button/action callbacks registered in `handlers.py`:
 |-----------------|---------|---------|
 | `FF_TIMEBOX_COMMIT_*` | `timeboxing_commit.py` | Stage 0 day selection |
 | `FF_EVENT_*` | `planning.py` | Calendar slot editing |
-| `ff_constraint_*` | `constraint_review.py` | Constraint review modals |
+| `ff_tasks_*` | `handlers.py` + `task_cards.py` | Due-task overview/view-all, per-task details modal, modal-driven task title updates |
+| `ff_open_google_calendar_event` / `open_event_url` | `handlers.py` | Ack URL-button clicks so Slack opens event links without action errors |
+| `timeboxing_constraint_review` | `handlers.py` + `constraint_review.py` | Open single-constraint deny/edit modal |
+| `ff_timeboxing_constraint_review_all` (legacy: `timeboxing_constraint_review_all`) | `handlers.py` + `constraint_review.py` | Open full constraint list modal |
 | `ff_timebox_confirm_submit` | `timeboxing_submit.py` | Submit Stage 5 plan to calendar |
 | `ff_timebox_cancel_submit` | `timeboxing_submit.py` | Cancel pending Stage 5 submit and return to refine |
 | `ff_timebox_undo_submit` | `timeboxing_submit.py` | Undo latest Stage 5 submission |

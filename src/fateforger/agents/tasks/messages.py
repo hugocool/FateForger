@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -91,6 +92,59 @@ class GuidedRefinementRecapResponse(BaseModel):
     recap: GuidedRefinementRecap | None = None
 
 
+class TaskDueActionRequest(BaseModel):
+    """Action request routed from Slack buttons to tasks_agent."""
+
+    action: Literal["view_all_due"] = "view_all_due"
+    user_id: str
+    due_date: str
+    source: str = "ticktick"
+    channel_id: str = ""
+    thread_ts: str = ""
+    ticktick_project_ids: list[str] = Field(default_factory=list)
+
+
+class TaskDetailsModalRequest(BaseModel):
+    """Request to build the task details/edit modal payload."""
+
+    user_id: str
+    channel_id: str
+    thread_ts: str
+    task_id: str
+    project_id: str
+    label: str
+    title: str
+    project_name: str
+    due_date: str = ""
+
+
+class TaskDetailsModalResponse(BaseModel):
+    """Response carrying a fully-built Slack modal view payload."""
+
+    ok: bool = False
+    error: str = ""
+    view: dict[str, Any] | None = None
+
+
+class TaskEditTitleRequest(BaseModel):
+    """Request to update one task title via modal or NL flows."""
+
+    user_id: str
+    channel_id: str
+    thread_ts: str
+    task_id: str
+    project_id: str
+    label: str
+    new_title: str
+
+
+class TaskEditTitleResponse(BaseModel):
+    """Response from task title patching operations."""
+
+    ok: bool = False
+    message: str = ""
+
+
 __all__ = [
     "PendingTaskSnapshotRequest",
     "PendingTaskItem",
@@ -101,4 +155,9 @@ __all__ = [
     "GuidedRefinementTurn",
     "GuidedRefinementRecapRequest",
     "GuidedRefinementRecapResponse",
+    "TaskDueActionRequest",
+    "TaskDetailsModalRequest",
+    "TaskDetailsModalResponse",
+    "TaskEditTitleRequest",
+    "TaskEditTitleResponse",
 ]
