@@ -10,6 +10,15 @@ from fateforger.agents.schedular.messages import UpsertCalendarEvent, UpsertCale
 from fateforger.haunt.event_draft_store import DraftStatus, EventDraftPayload
 from fateforger.slack_bot.planning import PlanningCoordinator
 
+VALID_EVENT_URL = (
+    "https://www.google.com/calendar/event?eid="
+    "ZmZwbGFubmluZ3h5eiBodWdvLmV2ZXJzQGV4YW1wbGUuY29t"
+)
+INVALID_EVENT_URL = (
+    "https://www.google.com/calendar/event?eid="
+    "ZmZwbGFubmluZ3h5eiBodWdvLmV2ZXJzQG0"
+)
+
 
 class _FakeDraftStore:
     def __init__(self, draft: EventDraftPayload):
@@ -67,7 +76,12 @@ async def test_add_to_calendar_success_updates_status_and_returns_url_button():
     )
     store = _FakeDraftStore(draft)
     runtime = _DummyRuntime(
-        UpsertCalendarEventResult(ok=True, calendar_id="primary", event_id="ffplanningxyz", event_url="https://example.invalid")
+        UpsertCalendarEventResult(
+            ok=True,
+            calendar_id="primary",
+            event_id="ffplanningxyz",
+            event_url=VALID_EVENT_URL,
+        )
     )
 
     coordinator = PlanningCoordinator(runtime=runtime, focus=object(), client=object())  # type: ignore[arg-type]
@@ -94,14 +108,14 @@ async def test_add_to_calendar_success_updates_status_and_returns_url_button():
     assert store.status_updates[-1][0] == DraftStatus.SUCCESS
     assert updates
     assert any(
-        el.get("url") == "https://example.invalid"
+        el.get("url") == VALID_EVENT_URL
         for block in updates[-1]["blocks"]
         if block.get("type") == "actions"
         for el in block.get("elements", [])
     )
     assert planning_session_store.upserts
     assert planning_session_store.upserts[-1]["event_id"] == "ffplanningxyz"
-    assert planning_session_store.upserts[-1]["event_url"] == "https://example.invalid"
+    assert planning_session_store.upserts[-1]["event_url"] == VALID_EVENT_URL
 
 
 @pytest.mark.asyncio
@@ -186,4 +200,50 @@ async def test_add_to_calendar_ok_without_url_treated_as_failure():
     status, _event_url, last_error = store.status_updates[-1]
     assert status == DraftStatus.FAILURE
     assert "no event url" in (last_error or "").lower()
+    assert updates
+
+
+@pytest.mark.asyncio
+async def test_add_to_calendar_ok_with_malformed_google_eid_treated_as_failure():
+    draft = EventDraftPayload(
+        draft_id="draft_abc123",
+        user_id="U1",
+        channel_id="D1",
+        message_ts="123.456",
+        calendar_id="primary",
+        event_id="ffplanningxyz",
+        title="Daily planning session",
+        description="Plan tomorrow.",
+        timezone="Europe/Amsterdam",
+        start_at_utc=datetime(2026, 1, 18, 9, 0, tzinfo=timezone.utc).isoformat(),
+        duration_min=30,
+        status=DraftStatus.PENDING,
+        event_url=None,
+        last_error=None,
+    )
+    store = _FakeDraftStore(draft)
+    runtime = _DummyRuntime(
+        UpsertCalendarEventResult(
+            ok=True,
+            calendar_id="primary",
+            event_id="ffplanningxyz",
+            event_url=INVALID_EVENT_URL,
+        )
+    )
+
+    coordinator = PlanningCoordinator(runtime=runtime, focus=object(), client=object())  # type: ignore[arg-type]
+    coordinator._draft_store = store  # type: ignore[attr-defined]
+    coordinator._guardian = None  # type: ignore[attr-defined]
+
+    updates = []
+
+    async def respond(*, text, blocks, replace_original):
+        updates.append({"text": text, "blocks": blocks, "replace_original": replace_original})
+
+    await coordinator._add_to_calendar_async(draft_id=draft.draft_id, respond=respond)
+
+    assert store.status_updates
+    status, _event_url, last_error = store.status_updates[-1]
+    assert status == DraftStatus.FAILURE
+    assert "incomplete calendar reference" in (last_error or "").lower()
     assert updates
