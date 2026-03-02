@@ -20,12 +20,22 @@ from fateforger.agents.timeboxing.preferences import (
     ConstraintStore,
     ensure_constraint_schema,
 )
+from fateforger.agents.tasks.messages import (
+    TaskDetailsModalRequest,
+    TaskDetailsModalResponse,
+    TaskDueActionRequest,
+    TaskEditTitleRequest,
+    TaskEditTitleResponse,
+)
 from fateforger.core.config import settings
 from fateforger.core.logging_config import observe_stage_duration, record_error
 from fateforger.slack_bot.bootstrap import ensure_workspace_ready
 from fateforger.slack_bot.constraint_review import (
     CONSTRAINT_REVIEW_VIEW_CALLBACK_ID,
     CONSTRAINT_ROW_REVIEW_ACTION_ID,
+    FF_CONSTRAINT_REVIEW_ALL_ACTION_ID,
+    LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID,
+    build_constraint_review_list_view,
     build_constraint_review_view,
     build_constraint_row_blocks,
     decode_metadata,
@@ -45,6 +55,12 @@ from fateforger.slack_bot.planning import (
     FF_EVENT_START_TIME_ACTION_ID,
     PlanningCoordinator,
     parse_draft_id_from_value,
+)
+from fateforger.slack_bot.task_cards import (
+    FF_TASK_DETAILS_ACTION_ID,
+    FF_TASK_EDIT_MODAL_CALLBACK_ID,
+    FF_TASK_VIEW_ALL_ACTION_ID,
+    decode_task_metadata,
 )
 from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID,
@@ -1997,6 +2013,152 @@ def register_handlers(
             date_str=date_str or None,
         )
 
+    @app.action(FF_TASK_VIEW_ALL_ACTION_ID)
+    async def on_task_view_all_due_action(ack, body, client, logger):
+        await ack()
+        action = (body.get("actions") or [{}])[0]
+        metadata = decode_task_metadata((action.get("value") or ""))
+        channel_id = (body.get("channel") or {}).get("id") or ""
+        message_ts = (body.get("message") or {}).get("ts") or ""
+        thread_ts = (body.get("message") or {}).get("thread_ts") or message_ts
+        user_id = (body.get("user") or {}).get("id") or ""
+        due_date = metadata.get("due_date") or ""
+        source = metadata.get("source") or "ticktick"
+        project_ids = [
+            item.strip()
+            for item in (metadata.get("project_ids") or "").split(",")
+            if item.strip()
+        ]
+        if not (channel_id and message_ts and thread_ts and user_id and due_date):
+            return
+        try:
+            result = await runtime.send_message(
+                TaskDueActionRequest(
+                    action="view_all_due",
+                    user_id=user_id,
+                    due_date=due_date,
+                    source=source,
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    ticktick_project_ids=project_ids,
+                ),
+                recipient=AgentId("tasks_agent", key=f"{channel_id}:{thread_ts}"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "on_task_view_all_due_action failed (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            return
+        payload = _slack_payload_from_result(result)
+        update: dict[str, str | list[dict]] = {
+            "channel": channel_id,
+            "ts": message_ts,
+            "text": payload.get("text", "") or "",
+        }
+        if payload.get("blocks"):
+            update["blocks"] = payload["blocks"]
+        await client.chat_update(**update)
+
+    @app.action(FF_TASK_DETAILS_ACTION_ID)
+    async def on_task_details_action(ack, body, client, logger):
+        await ack()
+        trigger_id = body.get("trigger_id") or ""
+        action = (body.get("actions") or [{}])[0]
+        metadata = decode_task_metadata((action.get("value") or ""))
+        channel_id = (body.get("channel") or {}).get("id") or ""
+        message_ts = (body.get("message") or {}).get("ts") or ""
+        thread_ts = (body.get("message") or {}).get("thread_ts") or message_ts
+        user_id = (body.get("user") or {}).get("id") or ""
+        if not (
+            trigger_id
+            and channel_id
+            and thread_ts
+            and user_id
+            and metadata.get("task_id")
+            and metadata.get("project_id")
+        ):
+            return
+        try:
+            response = await runtime.send_message(
+                TaskDetailsModalRequest(
+                    user_id=user_id,
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    task_id=metadata.get("task_id", ""),
+                    project_id=metadata.get("project_id", ""),
+                    label=metadata.get("label", ""),
+                    title=metadata.get("title", ""),
+                    project_name=metadata.get("project_name", ""),
+                    due_date=metadata.get("due_date", ""),
+                ),
+                recipient=AgentId("tasks_agent", key=f"{channel_id}:{thread_ts}"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "on_task_details_action runtime call failed (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            return
+        modal = response if isinstance(response, TaskDetailsModalResponse) else None
+        if modal is None:
+            modal = TaskDetailsModalResponse.model_validate(response)
+        if not (modal.ok and isinstance(modal.view, dict)):
+            return
+        await client.views_open(trigger_id=trigger_id, view=modal.view)
+
+    @app.view(FF_TASK_EDIT_MODAL_CALLBACK_ID)
+    async def on_task_edit_modal_submit(ack, body, client, logger):
+        await ack()
+        view = body.get("view") or {}
+        metadata = decode_task_metadata(str(view.get("private_metadata") or ""))
+        channel_id = metadata.get("channel_id") or ""
+        thread_ts = metadata.get("thread_ts") or ""
+        user_id = metadata.get("user_id") or (body.get("user") or {}).get("id") or ""
+        project_id = metadata.get("project_id") or ""
+        task_id = metadata.get("task_id") or ""
+        label = metadata.get("label") or ""
+        values = ((view.get("state") or {}).get("values") or {})
+        title_value = (
+            (values.get("task_title_input") or {})
+            .get("task_title_value", {})
+            .get("value")
+        )
+        new_title = str(title_value or "").strip()
+        if not (channel_id and thread_ts and user_id and project_id and task_id and new_title):
+            return
+        try:
+            result = await runtime.send_message(
+                TaskEditTitleRequest(
+                    user_id=user_id,
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    task_id=task_id,
+                    project_id=project_id,
+                    label=label,
+                    new_title=new_title,
+                ),
+                recipient=AgentId("tasks_agent", key=f"{channel_id}:{thread_ts}"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "on_task_edit_modal_submit runtime call failed (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            return
+        edit_response = result if isinstance(result, TaskEditTitleResponse) else None
+        if edit_response is None:
+            edit_response = TaskEditTitleResponse.model_validate(result)
+        await client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=edit_response.message
+            or ("Task updated." if edit_response.ok else "Task update failed."),
+        )
+
     @app.action(FF_TIMEBOX_COMMIT_START_ACTION_ID)
     async def on_timebox_commit_start_action(ack, body, client, logger):
         await ack()
@@ -2121,6 +2283,53 @@ def register_handlers(
             payload=payload,
             action="cancel",
         )
+
+    async def _handle_constraint_review_all_action(body, client):
+        action = (body.get("actions") or [{}])[0]
+        value = action.get("value") or ""
+        metadata = decode_metadata(value)
+        thread_ts = (
+            metadata.get("thread_ts")
+            or (body.get("message") or {}).get("thread_ts")
+            or (body.get("message") or {}).get("ts")
+            or ""
+        )
+        user_id = metadata.get("user_id") or (body.get("user") or {}).get("id") or ""
+        channel_id = body.get("channel", {}).get("id") or metadata.get("channel_id") or ""
+        trigger_id = body.get("trigger_id") or ""
+        if not (thread_ts and user_id and channel_id and trigger_id):
+            return
+
+        store = await _get_constraint_store()
+        if not store:
+            return
+        constraints = await store.list_constraints(
+            user_id=user_id,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+        )
+        active_constraints = [
+            constraint
+            for constraint in constraints
+            if constraint.status != ConstraintStatus.DECLINED
+        ]
+        view = build_constraint_review_list_view(
+            active_constraints,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            user_id=user_id,
+        )
+        await client.views_open(trigger_id=trigger_id, view=view)
+
+    @app.action(FF_CONSTRAINT_REVIEW_ALL_ACTION_ID)
+    async def on_constraint_review_all_action(ack, body, client, logger):
+        await ack()
+        await _handle_constraint_review_all_action(body, client)
+
+    @app.action(LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID)
+    async def on_constraint_review_all_action_legacy(ack, body, client, logger):
+        await ack()
+        await _handle_constraint_review_all_action(body, client)
 
     @app.action(CONSTRAINT_ROW_REVIEW_ACTION_ID)
     async def on_constraint_review_action(ack, body, client, logger):
