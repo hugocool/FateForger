@@ -19,6 +19,11 @@ def validate_notion_mcp_url(value: str) -> str:
     return _NOTION_ENDPOINT.validate(value)
 
 
+def normalize_notion_mcp_url(value: str) -> str:
+    """Normalize/validate Notion MCP URL used by runtime clients."""
+    return validate_notion_mcp_url(value)
+
+
 def probe_notion_mcp_endpoint(
     server_url: str, *, connect_timeout_s: float = 1.0
 ) -> tuple[bool, str | None]:
@@ -55,6 +60,7 @@ __all__ = [
     "NotionMcpClient",
     "get_notion_mcp_headers",
     "get_notion_mcp_url",
+    "normalize_notion_mcp_url",
     "validate_notion_mcp_url",
     "probe_notion_mcp_endpoint",
 ]

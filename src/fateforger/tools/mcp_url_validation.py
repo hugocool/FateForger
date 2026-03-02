@@ -6,7 +6,7 @@ import os
 import socket
 from dataclasses import dataclass
 from typing import Mapping
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import ParseResult, urlparse, urlunparse
 
 
 def _validate_url(
@@ -29,6 +29,26 @@ def _validate_url(
     if require_explicit_path and (not parsed.path or parsed.path == "/"):
         raise ValueError(f"{label} must include explicit path (e.g. /mcp)")
     return raw, parsed
+
+
+def rewrite_mcp_host(
+    value: str,
+    host: str,
+    *,
+    default_path: str = "/mcp",
+) -> str:
+    """Rewrite only host/port while preserving scheme/query and ensuring a path."""
+    if not (host or "").strip():
+        raise ValueError("rewrite_mcp_host requires a non-empty host")
+    raw, parsed = _validate_url(
+        value,
+        label="MCP URL",
+        require_explicit_path=False,
+    )
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    path = parsed.path if parsed.path and parsed.path != "/" else default_path
+    replaced = parsed._replace(netloc=f"{host.strip()}:{port}", path=path)
+    return urlunparse(replaced)
 
 
 @dataclass(frozen=True)
@@ -140,4 +160,5 @@ __all__ = [
     "McpEndpointResolver",
     "NotionMcpEndpointResolver",
     "TickTickMcpEndpointResolver",
+    "rewrite_mcp_host",
 ]
