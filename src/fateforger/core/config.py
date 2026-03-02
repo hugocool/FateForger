@@ -193,6 +193,7 @@ class Settings(BaseSettings):
     timeboxing_memory_backend: str = Field(
         default="constraint_mcp"
     )
+    tasks_defaults_memory_backend: str = Field(default="constraint_mcp")
 
     # Mem0 Memory Configuration
     mem0_user_id: str = Field(default="timeboxing")
@@ -269,6 +270,17 @@ class Settings(BaseSettings):
             "TIMEBOXING_MEMORY_BACKEND must be one of: constraint_mcp, mem0"
         )
 
+    @field_validator("tasks_defaults_memory_backend")
+    @classmethod
+    def _validate_tasks_defaults_memory_backend(cls, value: str) -> str:
+        backend = (value or "").strip().lower()
+        if backend in {"constraint_mcp", "mem0", "disabled", "inherit_timeboxing"}:
+            return backend
+        raise ValueError(
+            "TASKS_DEFAULTS_MEMORY_BACKEND must be one of: "
+            "constraint_mcp, mem0, disabled, inherit_timeboxing"
+        )
+
     @field_validator("autogen_events_log")
     @classmethod
     def _validate_autogen_events_log(cls, value: str) -> str:
@@ -340,7 +352,14 @@ class Settings(BaseSettings):
     def _validate_runtime_invariants(self) -> "Settings":
         if not self.slack_socket_mode:
             raise ValueError("SLACK_SOCKET_MODE must remain enabled")
-        if self.timeboxing_memory_backend == "mem0":
+        needs_mem0_runtime = self.timeboxing_memory_backend == "mem0" or (
+            self.tasks_defaults_memory_backend == "mem0"
+        )
+        if self.tasks_defaults_memory_backend == "inherit_timeboxing":
+            needs_mem0_runtime = needs_mem0_runtime or (
+                self.timeboxing_memory_backend == "mem0"
+            )
+        if needs_mem0_runtime:
             local_config = (self.mem0_local_config_json or "").strip()
             has_local_runtime = bool(local_config)
             has_cloud_runtime = bool(self.mem0_is_cloud and self.mem0_api_key.strip())

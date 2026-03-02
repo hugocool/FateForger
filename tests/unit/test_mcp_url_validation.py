@@ -3,12 +3,14 @@ from __future__ import annotations
 import pytest
 
 from fateforger.tools.notion_mcp import (
+    normalize_notion_mcp_url,
     probe_notion_mcp_endpoint,
     validate_notion_mcp_url,
 )
 from fateforger.tools.mcp_url_validation import (
     NotionMcpEndpointResolver,
     TickTickMcpEndpointResolver,
+    rewrite_mcp_host,
 )
 from fateforger.tools.ticktick_mcp import (
     probe_ticktick_mcp_endpoint,
@@ -66,6 +68,11 @@ def test_validate_notion_mcp_url_does_not_normalize() -> None:
     assert validate_notion_mcp_url(configured) == configured
 
 
+def test_normalize_notion_mcp_url_matches_validator() -> None:
+    configured = "http://notion-mcp:3001/mcp?transport=sse"
+    assert normalize_notion_mcp_url(configured) == configured
+
+
 def test_probe_notion_mcp_endpoint_reports_validation_error() -> None:
     ok, reason = probe_notion_mcp_endpoint("notion-mcp:3001/mcp")
     assert ok is False
@@ -82,3 +89,20 @@ def test_ticktick_endpoint_resolver_prefers_explicit_env() -> None:
     resolver = TickTickMcpEndpointResolver()
     resolved = resolver.resolve({"TICKTICK_MCP_URL": "http://host:8000/mcp"})
     assert resolved == "http://host:8000/mcp"
+
+
+def test_rewrite_mcp_host_preserves_scheme_port_and_query() -> None:
+    rewritten = rewrite_mcp_host(
+        "https://notion-mcp:3443/mcp?transport=sse",
+        "localhost",
+    )
+    assert rewritten == "https://localhost:3443/mcp?transport=sse"
+
+
+def test_rewrite_mcp_host_adds_default_path_when_missing() -> None:
+    rewritten = rewrite_mcp_host(
+        "http://notion-mcp:3001",
+        "host.docker.internal",
+        default_path="/mcp",
+    )
+    assert rewritten == "http://host.docker.internal:3001/mcp"
