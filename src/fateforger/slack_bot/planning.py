@@ -34,7 +34,12 @@ from fateforger.haunt.planning_store import (
     PlanningAnchorPayload,
     SqlAlchemyPlanningAnchorStore,
 )
-from fateforger.haunt.reconcile import PlanningReconciler, PlanningReminder
+from fateforger.haunt.reconcile import (
+    PlanningReconciler,
+    PlanningReminder,
+    PlanningRuleConfig,
+    PlanningSessionRule,
+)
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
 from fateforger.core.logging_config import (
     observe_stage_duration,
@@ -230,6 +235,16 @@ class PlanningCoordinator:
             anchor = await self.ensure_anchor(
                 user_id=reminder.user_id, channel_id=dm_channel
             )
+            if not await self._planning_still_missing(
+                reminder=reminder,
+                planning_event_id=anchor.event_id,
+                calendar_id=anchor.calendar_id,
+            ):
+                logger.info(
+                    "dispatch_planning_reminder: planning already exists for %s; dropping stale reminder",
+                    reminder.user_id,
+                )
+                return
             logger.debug(
                 "dispatch_planning_reminder: got anchor, suggesting next slot..."
             )
@@ -333,6 +348,39 @@ class PlanningCoordinator:
             logger.exception(
                 "dispatch_planning_reminder failed for user %s", reminder.user_id
             )
+
+    async def _planning_still_missing(
+        self,
+        *,
+        reminder: PlanningReminder,
+        planning_event_id: str,
+        calendar_id: str,
+    ) -> bool:
+        if not self._reconciler:
+            return True
+
+        try:
+            rule = PlanningSessionRule(
+                calendar_client=self._reconciler.calendar_client,
+                planning_session_store=self._planning_session_store,
+                config=PlanningRuleConfig(calendar_id=calendar_id),
+            )
+            now_utc = datetime.now(timezone.utc)
+            desired = await rule.evaluate(
+                now=now_utc,
+                scope=reminder.scope,
+                user_id=reminder.user_id,
+                channel_id=reminder.channel_id,
+                planning_event_id=planning_event_id,
+            )
+            return bool(desired)
+        except Exception:
+            logger.exception(
+                "dispatch_planning_reminder: planning revalidation failed for user %s",
+                reminder.user_id,
+            )
+            # Fail-open so reminders still fire if revalidation is temporarily broken.
+            return True
 
     async def _post_admonishment_log(
         self, reminder: PlanningReminder, *, card_payload: dict[str, Any] | None = None
