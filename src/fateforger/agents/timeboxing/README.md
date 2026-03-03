@@ -111,7 +111,7 @@ Stage 3: Skeleton -> pre-generated draft if available, else synchronous draft ->
 Stage 4: Refine -> prompt-guided tool orchestration (`timebox_patch_and_sync` primary, `memory_extract_and_upsert` optional background) -> advisory quality facts (0-4) -> sync to Google Calendar with explicit changed/unchanged reporting
 Stage 5: ReviewCommit -> final summary; user corrections route back to Stage 4 Refine in the same turn
 Undo action: undo latest sync transaction via session-backed state -> return to Refine
-Each stage response also includes deterministic Slack actions (Proceed when ready, plus Back/Redo/Cancel) that replace the same message when clicked.
+Each stage response also includes deterministic Slack actions (Back/Redo/Cancel, plus Proceed when ready). After a local Refine update is applied, the control row swaps Proceed for "Undo last update" so users can immediately revert without an extra stage-advance click.
 ```
 
 ### Session State
@@ -132,6 +132,7 @@ Session dataclass lives in `agent.py`. Core fields:
 | `skeleton_overview_markdown` | Stage 3 markdown summary rendered to Slack |
 | `last_quality_level`, `last_quality_label`, `last_quality_next_step` | Latest Refine quality snapshot carried into next patch context |
 | `last_sync_transaction` | Session-backed transaction used for deterministic undo |
+| `last_refine_undo_tb_plan`, `last_refine_undo_timebox` | Session-backed local draft snapshot used by "Undo last update" in Refine |
 | `active_constraints` | Merged constraint state |
 | `stage` | Current TimeboxingStage enum |
 | `graphflow` | Per-session GraphFlow instance |

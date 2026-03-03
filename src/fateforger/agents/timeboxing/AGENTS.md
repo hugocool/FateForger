@@ -91,7 +91,10 @@ For file index, architecture, and status, see `README.md` in this folder.
 - Stage 3: use pre-generated skeleton if available; else draft synchronously and present a markdown overview.
 - Stage 4: LLM -> `TBPatch` -> `apply_tb_ops()` -> sync current `TBPlan` to calendar.
 - Stage 5: review summary + optional undo follow-up (no additional submit-confirm gate).
-- Slack stage controls are deterministic and click-driven: always render `Proceed` (except final review/submit stage), plus `Back`/`Redo`/`Cancel`; readiness is enforced server-side when `Proceed` is clicked.
+- Slack stage controls are deterministic and click-driven:
+  - default controls are `Back`/`Redo`/`Cancel`, with `Proceed` shown only when the current stage is ready and there is no pending local Refine undo snapshot.
+  - after a Stage 4 local update is applied, the control row must swap `Proceed` for `Undo last update` (wired through the existing `Redo` action path) so the user can immediately revert without an extra advance click.
+  - readiness is enforced server-side when `Proceed` is clicked.
 
 ## Stage 3/4 Contract (Hard Constraint)
 

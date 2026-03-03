@@ -311,6 +311,8 @@ class Session:
     pending_submit: bool = False
     last_sync_transaction: SyncTransaction | None = None
     last_sync_event_id_map: Dict[str, str] | None = None
+    last_refine_undo_tb_plan: TBPlan | None = None
+    last_refine_undo_timebox: Timebox | None = None
     pending_presenter_blocks: List[dict[str, Any]] | None = None
     stage: TimeboxingStage = TimeboxingStage.COLLECT_CONSTRAINTS
     frame_facts: Dict[str, Any] = field(default_factory=dict)
@@ -986,6 +988,19 @@ class TimeboxingFlowAgent(RoutedAgent):
         """Fetch durable constraints for a stage from the configured memory backend."""
         store = self._ensure_durable_constraint_store()
         if not store:
+            self._session_debug(
+                session,
+                "durable_store_unavailable",
+                requested_stage=stage.value,
+                backend=str(getattr(settings, "timeboxing_memory_backend", "")).strip()
+                or "unknown",
+                unavailable_reason=self._constraint_memory_unavailable_reason
+                or "no_store",
+            )
+            self._append_background_update_once(
+                session,
+                "Saved constraints backend is unavailable; reusing local profile/date defaults if present.",
+            )
             return []
         try:
             planned_day = date.fromisoformat(
@@ -993,6 +1008,21 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
         except Exception:
             planned_day = datetime.utcnow().date()
+        try:
+            store_info = await store.get_store_info()
+        except Exception as exc:
+            store_info = {
+                "backend": "unknown",
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:200],
+            }
+        self._session_debug(
+            session,
+            "durable_fetch_start",
+            requested_stage=stage.value,
+            planned_day=planned_day.isoformat(),
+            store_info=store_info,
+        )
 
         work_window = parse_model_optional(
             WorkWindow, session.frame_facts.get("work_window")
@@ -2507,6 +2537,39 @@ class TimeboxingFlowAgent(RoutedAgent):
             return uid.strip()
         return None
 
+    @staticmethod
+    def _constraint_matches_planned_day(
+        constraint: ConstraintBase, planned_day: date | None
+    ) -> bool:
+        """Return whether a profile/datespan constraint applies on the planned date."""
+        if planned_day is None:
+            return True
+        if constraint.start_date and planned_day < constraint.start_date:
+            return False
+        if constraint.end_date and planned_day > constraint.end_date:
+            return False
+        days = list(constraint.days_of_week or [])
+        if days:
+            day_codes = {
+                value.value if isinstance(value, ConstraintDayOfWeek) else str(value)
+                for value in days
+            }
+            valid_day = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")[planned_day.weekday()]
+            if valid_day not in day_codes:
+                return False
+        return True
+
+    @staticmethod
+    def _parse_session_planned_day(session: Session) -> date | None:
+        """Parse planned date from session state when available."""
+        planned_date = (session.planned_date or "").strip()
+        if not planned_date:
+            return None
+        try:
+            return date.fromisoformat(planned_date)
+        except Exception:
+            return None
+
     def _collect_stage_durable_constraints(
         self, session: Session, *, stage: TimeboxingStage
     ) -> list[Constraint]:
@@ -2518,7 +2581,33 @@ class TimeboxingFlowAgent(RoutedAgent):
             if uid and uid in session.suppressed_durable_uids:
                 continue
             out.append(constraint)
-        return out
+        if out or stage != TimeboxingStage.COLLECT_CONSTRAINTS:
+            return out
+        planned_day = self._parse_session_planned_day(session)
+        fallback: list[Constraint] = []
+        for constraint in session.active_constraints or []:
+            if constraint.scope not in (ConstraintScope.PROFILE, ConstraintScope.DATESPAN):
+                continue
+            if constraint.status == ConstraintStatus.DECLINED:
+                continue
+            if not self._constraint_matches_planned_day(constraint, planned_day):
+                continue
+            uid = self._constraint_uid(constraint)
+            if uid and uid in session.suppressed_durable_uids:
+                continue
+            fallback.append(constraint)
+        if fallback:
+            self._session_debug(
+                session,
+                "collect_defaults_fallback_local",
+                count=len(fallback),
+                names=[
+                    (constraint.name or "").strip()
+                    for constraint in fallback[:10]
+                    if (constraint.name or "").strip()
+                ],
+            )
+        return fallback
 
     @staticmethod
     def _active_durable_stage_order(stage: TimeboxingStage | None) -> tuple[str, ...]:
@@ -3014,6 +3103,18 @@ class TimeboxingFlowAgent(RoutedAgent):
         input_facts = TaskMarshallingCapability.merge_prefetched_tasks(
             input_facts=dict(session.input_facts or {}),
             prefetched=list(session.prefetched_pending_tasks or []),
+        )
+        task_candidates = parse_model_list(TaskCandidate, input_facts.get("tasks"))
+        self._session_debug(
+            session,
+            "capture_inputs_task_context",
+            prefetched_count=len(session.prefetched_pending_tasks or []),
+            merged_task_count=len(task_candidates),
+            top_titles=[
+                (task.title or "").strip()
+                for task in task_candidates[:8]
+                if (task.title or "").strip()
+            ],
         )
         return CaptureInputsContext(
             user_message=user_message,
@@ -3627,9 +3728,14 @@ class TimeboxingFlowAgent(RoutedAgent):
         """Render deterministic stage-control actions for the current session stage."""
         if session.completed or session.thread_state in {"done", "canceled"}:
             return []
+        has_refine_undo = (
+            session.stage == TimeboxingStage.REFINE
+            and session.last_refine_undo_tb_plan is not None
+        )
         can_go_back = session.stage != TimeboxingStage.COLLECT_CONSTRAINTS
         can_proceed = (
             session.stage != TimeboxingStage.REVIEW_COMMIT and session.stage_ready
+            and not has_refine_undo
         )
         meta_value = self._build_stage_action_value(session)
         return [
@@ -3637,6 +3743,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 meta_value=meta_value,
                 can_proceed=can_proceed,
                 can_go_back=can_go_back,
+                redo_label="Undo last update" if has_refine_undo else "Redo",
                 include_cancel=True,
             )
         ]
@@ -3977,6 +4084,9 @@ class TimeboxingFlowAgent(RoutedAgent):
         if session.tb_plan is None:
             raise ValueError("Refine patch requested without TBPlan state.")
         previous_plan = session.tb_plan.model_copy(deep=True)
+        previous_timebox = (
+            session.timebox.model_copy(deep=True) if session.timebox is not None else None
+        )
         constraints = await self._collect_constraints(session)
         patch_constraints = self._select_constraints_for_refine_patcher(
             session=session,
@@ -4005,14 +4115,55 @@ class TimeboxingFlowAgent(RoutedAgent):
             mode="json"
         )
         if plan_changed:
+            session.last_refine_undo_tb_plan = previous_plan
+            session.last_refine_undo_timebox = previous_timebox
             note = "Plan updated locally. Review Stage 5 and click Submit to sync to calendar."
         else:
+            session.last_refine_undo_tb_plan = None
+            session.last_refine_undo_timebox = None
             note = "No local schedule changes were needed. Review Stage 5 and click Submit to sync."
         return CalendarSyncOutcome(
             status="staged",
             changed=plan_changed,
             note=note,
         )
+
+    async def _undo_last_refine_update(
+        self, *, session: Session
+    ) -> TextMessage | None:
+        """Restore the previous local draft after a Stage 4 patch."""
+        if (
+            session.stage != TimeboxingStage.REFINE
+            or session.last_refine_undo_tb_plan is None
+        ):
+            return None
+
+        session.tb_plan = session.last_refine_undo_tb_plan.model_copy(deep=True)
+        restored_timebox = (
+            session.last_refine_undo_timebox.model_copy(deep=True)
+            if session.last_refine_undo_timebox is not None
+            else tb_plan_to_timebox(session.tb_plan)
+        )
+        session.timebox = restored_timebox
+        session.last_refine_undo_tb_plan = None
+        session.last_refine_undo_timebox = None
+        gate = await self._run_timebox_summary(
+            stage=TimeboxingStage.REFINE,
+            timebox=restored_timebox,
+            session=session,
+        )
+        gate.summary.append("Last local update was undone.")
+        session.stage_ready = True
+        session.stage_missing = []
+        session.stage_question = gate.question
+        self._session_debug(session, "refine_update_undone")
+        text = self._format_stage_message(
+            gate,
+            background_notes=self._collect_background_notes(session),
+            constraints=session.active_constraints,
+            immovables=session.frame_facts.get("immovables"),
+        )
+        return TextMessage(content=text, source=self._agent_source())
 
     @staticmethod
     def _select_refine_tool_intents(
@@ -5803,7 +5954,14 @@ class TimeboxingFlowAgent(RoutedAgent):
                 user_id=session.user_id,
                 channel_id=session.channel_id,
                 thread_ts=session.thread_ts,
+                include_shared_scopes=True,
             )
+        local_shared_scope_count = sum(
+            1
+            for constraint in (local_constraints or [])
+            if constraint.scope in (ConstraintScope.PROFILE, ConstraintScope.DATESPAN)
+            and (constraint.thread_ts or "") != (session.thread_ts or "")
+        )
         local_declined_uids = {
             uid
             for constraint in (local_constraints or [])
@@ -5839,6 +5997,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             "constraints_active_snapshot",
             stage=session.stage.value if session.stage else None,
             local_count=len(local_constraints or []),
+            local_shared_scope_count=local_shared_scope_count,
             durable_count=len(durable_constraints),
             active_count=len(session.active_constraints),
             durable_stage_keys=list(relevant_stage_keys),
@@ -6508,6 +6667,21 @@ class TimeboxingFlowAgent(RoutedAgent):
                     await self._proceed(session)
                     should_force_stage_rerun = True
                 case "redo":
+                    undone_reply = await self._undo_last_refine_update(session=session)
+                    if undone_reply is not None:
+                        outgoing = self._attach_presenter_blocks(
+                            reply=undone_reply, session=session
+                        )
+                        await self._publish_update(
+                            session=session,
+                            user_message=(
+                                outgoing.content
+                                if isinstance(outgoing, TextMessage)
+                                else getattr(outgoing, "text", "")
+                            ),
+                            actions=[],
+                        )
+                        return outgoing
                     should_force_stage_rerun = True
                 case _:
                     return TextMessage(

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from autogen_agentchat.agents import AssistantAgent
@@ -12,11 +14,17 @@ from autogen_core import MessageContext, RoutedAgent, message_handler
 from autogen_core.tools import FunctionTool
 from pydantic import TypeAdapter
 
+from fateforger.slack_bot.messages import SlackBlockMessage
+from fateforger.slack_bot.task_cards import (
+    build_due_overview_blocks,
+    build_task_edit_modal,
+)
 from fateforger.core.config import settings
 from fateforger.debug.diag import with_timeout
 from fateforger.llm import build_autogen_chat_client
 from fateforger.tools.ticktick_mcp import get_ticktick_mcp_url
 
+from .defaults_memory import TaskDefaultsMemoryStore, TaskDueDefaults
 from .list_tools import TickTickListManager
 from .messages import (
     GuidedRefinementPhase,
@@ -27,6 +35,11 @@ from .messages import (
     PendingTaskItem,
     PendingTaskSnapshot,
     PendingTaskSnapshotRequest,
+    TaskDetailsModalRequest,
+    TaskDetailsModalResponse,
+    TaskDueActionRequest,
+    TaskEditTitleRequest,
+    TaskEditTitleResponse,
 )
 from .notion_sprint_tools import NotionSprintManager
 
@@ -55,6 +68,17 @@ _PHASE_LABELS = {
     GuidedRefinementPhase.REFINE: "Refine",
     GuidedRefinementPhase.CLOSE: "Close",
 }
+_DUE_TOMORROW_HINTS = ("due tomorrow", "tomorrow due", "tasks tomorrow")
+_TICKTICK_HINTS = ("ticktick", "tick tick")
+_TICKTICK_ALL_LISTS_PATTERN = re.compile(
+    r"^\s*tick\s*tick\s+all\s+lists\s*$|^\s*ticktick\s+all\s+lists\s*$",
+    flags=re.IGNORECASE,
+)
+_TICKTICK_LISTS_PATTERN = re.compile(
+    r"^\s*tick\s*tick\s+these\s+lists\s*:\s*(.+)$|^\s*ticktick\s+these\s+lists\s*:\s*(.+)$",
+    flags=re.IGNORECASE,
+)
+_TASK_LABEL_PATTERN = re.compile(r"\bTT-([A-Za-z0-9]{6,})\b", flags=re.IGNORECASE)
 
 
 @dataclass
@@ -187,6 +211,10 @@ class TasksAgent(RoutedAgent):
         )
         self._guided_session: GuidedRefinementSessionState | None = None
         self._latest_guided_recap_by_user: dict[str, GuidedRefinementRecap] = {}
+        self._defaults_store = TaskDefaultsMemoryStore(
+            timeout_s=float(getattr(settings, "agent_mcp_discovery_timeout_seconds", 10))
+        )
+        self._pending_due_defaults_setup_users: set[str] = set()
 
     @message_handler
     async def handle_pending_snapshot(
@@ -228,9 +256,89 @@ class TasksAgent(RoutedAgent):
         return GuidedRefinementRecapResponse(found=True, recap=recap)
 
     @message_handler
+    async def handle_due_action(
+        self,
+        message: TaskDueActionRequest,
+        ctx: MessageContext,
+    ) -> SlackBlockMessage | TextMessage:
+        _ = ctx
+        due_on = self._parse_iso_date(message.due_date)
+        if due_on is None:
+            return TextMessage(
+                content="Could not parse the due date for that action.",
+                source="tasks_agent",
+            )
+        project_ids = [item for item in (message.ticktick_project_ids or []) if item]
+        tasks = await self._list_manager.list_due_tasks(
+            due_on=due_on,
+            project_ids=project_ids or None,
+            limit=500,
+        )
+        return self._build_due_card(
+            due_on=due_on,
+            tasks=tasks,
+            source_defaults=TaskDueDefaults(
+                user_id=message.user_id,
+                source="ticktick",
+                ticktick_project_ids=project_ids,
+                ticktick_project_names=[],
+                configured_at=datetime.utcnow().isoformat(),
+            ),
+            show_all=True,
+        )
+
+    @message_handler
+    async def handle_task_details_modal(
+        self,
+        message: TaskDetailsModalRequest,
+        ctx: MessageContext,
+    ) -> TaskDetailsModalResponse:
+        _ = ctx
+        if not (message.task_id and message.project_id and message.channel_id and message.thread_ts):
+            return TaskDetailsModalResponse(
+                ok=False,
+                error="missing_fields",
+                view=None,
+            )
+        view = build_task_edit_modal(
+            task_id=message.task_id,
+            project_id=message.project_id,
+            label=message.label,
+            title=message.title,
+            project_name=message.project_name,
+            due_date=message.due_date,
+            channel_id=message.channel_id,
+            thread_ts=message.thread_ts,
+            user_id=message.user_id,
+        )
+        return TaskDetailsModalResponse(ok=True, error="", view=view)
+
+    @message_handler
+    async def handle_task_edit_title(
+        self,
+        message: TaskEditTitleRequest,
+        ctx: MessageContext,
+    ) -> TaskEditTitleResponse:
+        _ = ctx
+        ok, error = await self._list_manager.update_task_title(
+            project_id=message.project_id,
+            task_id=message.task_id,
+            new_title=message.new_title,
+        )
+        if not ok:
+            return TaskEditTitleResponse(
+                ok=False,
+                message=f"Could not update {message.label}: {error or 'update failed'}.",
+            )
+        return TaskEditTitleResponse(
+            ok=True,
+            message=f"Updated {message.label} title to: {message.new_title.strip()}",
+        )
+
+    @message_handler
     async def handle_text(
         self, message: TextMessage, ctx: MessageContext
-    ) -> TextMessage:
+    ) -> TextMessage | SlackBlockMessage:
         content = (message.content or "").strip()
         normalized = content.lower()
         if normalized in _GUIDED_SESSION_CANCEL_COMMANDS and self._guided_session:
@@ -246,6 +354,21 @@ class TasksAgent(RoutedAgent):
 
         if self._guided_session is not None:
             return await self._handle_guided_session_turn(message=message, ctx=ctx)
+
+        configured = await self._try_capture_due_defaults_from_reply(
+            message=message,
+            allow_loose_hint=(message.source in self._pending_due_defaults_setup_users),
+        )
+        if configured is not None:
+            return configured
+
+        due_reply = await self._maybe_handle_due_tomorrow_query(message=message)
+        if due_reply is not None:
+            return due_reply
+
+        edit_reply = await self._maybe_handle_label_title_edit(message=message)
+        if edit_reply is not None:
+            return edit_reply
 
         response = await with_timeout(
             "tasks:on_messages",
@@ -384,6 +507,253 @@ class TasksAgent(RoutedAgent):
                     for item in turn.recap.stuck_or_postponed_signals[:3]
                 )
         return TextMessage(content="\n".join(lines), source="tasks_agent")
+
+    async def _maybe_handle_due_tomorrow_query(
+        self, *, message: TextMessage
+    ) -> SlackBlockMessage | TextMessage | None:
+        text = (message.content or "").strip()
+        normalized = text.lower()
+        if not self._is_due_tomorrow_query(normalized):
+            return None
+        defaults = await self._defaults_store.get_user_defaults(user_id=message.source)
+        if defaults is None:
+            self._pending_due_defaults_setup_users.add(message.source)
+            return self._prompt_for_due_defaults()
+        due_on = date.today() + timedelta(days=1)
+        tasks = await self._list_manager.list_due_tasks(
+            due_on=due_on,
+            project_ids=defaults.ticktick_project_ids or None,
+            limit=200,
+        )
+        return self._build_due_card(
+            due_on=due_on,
+            tasks=tasks,
+            source_defaults=defaults,
+            show_all=False,
+        )
+
+    async def _try_capture_due_defaults_from_reply(
+        self, *, message: TextMessage, allow_loose_hint: bool = False
+    ) -> SlackBlockMessage | TextMessage | None:
+        content = (message.content or "").strip()
+        normalized = content.lower()
+        parsed = self._parse_ticktick_defaults_command(content)
+        if parsed is None and not allow_loose_hint:
+            return None
+        if parsed is None and not any(hint in normalized for hint in _TICKTICK_HINTS):
+            return None
+        explicit_all_lists, explicit_list_names = parsed or (False, [])
+        due_on = date.today() + timedelta(days=1)
+        projects = await self._list_manager.list_projects()
+        selected_projects = []
+        if explicit_list_names:
+            normalized_names = [self._normalize(item) for item in explicit_list_names]
+            selected_projects = [
+                project
+                for project in projects
+                if self._normalize(project.name) in normalized_names
+            ]
+            if not selected_projects:
+                return TextMessage(
+                    content=(
+                        "I could not match those TickTick list names. "
+                        "Use `TickTick all lists` or `TickTick these lists: <list1>, <list2>`."
+                    ),
+                    source="tasks_agent",
+                )
+        elif not explicit_all_lists:
+            selected_projects = [
+                project
+                for project in projects
+                if self._normalize(project.name) in self._normalize(content)
+            ]
+        if explicit_all_lists or ("all" in normalized and "list" in normalized):
+            selected_projects = []
+        defaults = TaskDueDefaults(
+            user_id=message.source,
+            source="ticktick",
+            ticktick_project_ids=[project.id for project in selected_projects],
+            ticktick_project_names=[project.name for project in selected_projects],
+            configured_at=datetime.utcnow().isoformat(),
+        )
+        _ = await self._defaults_store.upsert_user_defaults(defaults)
+        self._pending_due_defaults_setup_users.discard(message.source)
+        tasks = await self._list_manager.list_due_tasks(
+            due_on=due_on,
+            project_ids=defaults.ticktick_project_ids or None,
+            limit=200,
+        )
+        return self._build_due_card(
+            due_on=due_on,
+            tasks=tasks,
+            source_defaults=defaults,
+            show_all=False,
+        )
+
+    @staticmethod
+    def _parse_ticktick_defaults_command(
+        text: str,
+    ) -> tuple[bool, list[str]] | None:
+        stripped = (text or "").strip()
+        if _TICKTICK_ALL_LISTS_PATTERN.match(stripped):
+            return True, []
+        match = _TICKTICK_LISTS_PATTERN.match(stripped)
+        if not match:
+            return None
+        raw = match.group(1) or match.group(2) or ""
+        names = [item.strip() for item in raw.split(",") if item.strip()]
+        if not names:
+            return None
+        return False, names
+
+    async def _maybe_handle_label_title_edit(
+        self, *, message: TextMessage
+    ) -> TextMessage | None:
+        parsed = self._extract_label_title_edit(message.content or "")
+        if parsed is None:
+            return None
+        label, new_title = parsed
+        pending = await self._list_manager.list_all_pending_tasks()
+        matches = [
+            row
+            for row in pending
+            if self._task_label(row.id).lower().startswith(label.lower())
+        ]
+        if not matches:
+            return TextMessage(
+                content=f"I could not resolve `{label}` to a pending TickTick task.",
+                source="tasks_agent",
+            )
+        if len(matches) > 1:
+            hints = ", ".join(self._task_label(row.id) for row in matches[:3])
+            return TextMessage(
+                content=f"`{label}` is ambiguous ({hints}). Please pick one exact label.",
+                source="tasks_agent",
+            )
+        match = matches[0]
+        if not match.project_id:
+            return TextMessage(
+                content=f"Could not update `{label}` because project_id is missing.",
+                source="tasks_agent",
+            )
+        ok, error = await self._list_manager.update_task_title(
+            project_id=match.project_id,
+            task_id=match.id,
+            new_title=new_title,
+        )
+        if not ok:
+            return TextMessage(
+                content=f"Could not update `{label}`: {error or 'update failed'}.",
+                source="tasks_agent",
+            )
+        return TextMessage(
+            content=f"Updated `{label}` title to: {new_title}",
+            source="tasks_agent",
+        )
+
+    @staticmethod
+    def _is_due_tomorrow_query(normalized_text: str) -> bool:
+        if any(phrase in normalized_text for phrase in _DUE_TOMORROW_HINTS):
+            return True
+        return (
+            "tomorrow" in normalized_text
+            and "due" in normalized_text
+            and "task" in normalized_text
+        )
+
+    @staticmethod
+    def _prompt_for_due_defaults() -> TextMessage:
+        return TextMessage(
+            content=(
+                "I can remember this for next time.\n"
+                "Should I use TickTick by default for due-task queries?\n"
+                "Reply with either:\n"
+                "- `TickTick all lists`\n"
+                "- `TickTick these lists: <list1>, <list2>`"
+            ),
+            source="tasks_agent",
+        )
+
+    def _build_due_card(
+        self,
+        *,
+        due_on: date,
+        tasks: list[Any],
+        source_defaults: TaskDueDefaults,
+        show_all: bool,
+    ) -> SlackBlockMessage:
+        source_label = self._source_label(source_defaults)
+        card_rows: list[dict[str, Any]] = []
+        for row in tasks:
+            card_rows.append(
+                {
+                    "id": getattr(row, "id", ""),
+                    "title": getattr(row, "title", ""),
+                    "project_id": getattr(row, "project_id", ""),
+                    "project_name": getattr(row, "project_name", ""),
+                    "due_date": getattr(row, "due_date", "") or due_on.isoformat(),
+                    "label": self._task_label(getattr(row, "id", "")),
+                }
+            )
+        blocks = build_due_overview_blocks(
+            tasks=card_rows,
+            due_date=due_on.isoformat(),
+            source_label=source_label,
+            show_all=show_all,
+            view_all_meta={
+                "action": "view_all_due",
+                "source": source_defaults.source,
+                "due_date": due_on.isoformat(),
+                "project_ids": ",".join(source_defaults.ticktick_project_ids),
+            },
+        )
+        return SlackBlockMessage(
+            text=f"{len(card_rows)} task(s) due on {due_on.isoformat()}",
+            blocks=blocks,
+        )
+
+    @staticmethod
+    def _source_label(defaults: TaskDueDefaults) -> str:
+        names = [item for item in defaults.ticktick_project_names if item]
+        if names:
+            return "TickTick (" + ", ".join(names[:3]) + (", ..." if len(names) > 3 else "") + ")"
+        return "TickTick (all lists)"
+
+    @staticmethod
+    def _task_label(task_id: str) -> str:
+        clean = "".join(ch for ch in (task_id or "").strip() if ch.isalnum())
+        if not clean:
+            return "TT-UNKNOWN"
+        return "TT-" + clean[:8].upper()
+
+    @staticmethod
+    def _extract_label_title_edit(text: str) -> tuple[str, str] | None:
+        normalized = " ".join((text or "").split()).strip()
+        patterns = (
+            r"(?i)^rename\s+(TT-[A-Za-z0-9]{6,})\s+to\s+(.+)$",
+            r"(?i)^set\s+(TT-[A-Za-z0-9]{6,})\s+title\s+to\s+(.+)$",
+            r"(?i)^update\s+(TT-[A-Za-z0-9]{6,})\s+to\s+(.+)$",
+        )
+        for pattern in patterns:
+            match = re.match(pattern, normalized)
+            if not match:
+                continue
+            label = match.group(1).strip().upper()
+            title = match.group(2).strip()
+            if title:
+                return label, title
+        return None
+
+    @staticmethod
+    def _parse_iso_date(value: str) -> date | None:
+        try:
+            return date.fromisoformat((value or "").strip())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize(value: str) -> str:
+        return " ".join((value or "").lower().split()).strip()
 
 
 __all__ = ["TasksAgent"]

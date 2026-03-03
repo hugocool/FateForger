@@ -17,7 +17,9 @@ from fateforger.agents.timeboxing.preferences import (
 )
 
 CONSTRAINT_ROW_REVIEW_ACTION_ID = "timeboxing_constraint_review"
-CONSTRAINT_REVIEW_ALL_ACTION_ID = "timeboxing_constraint_review_all"
+FF_CONSTRAINT_REVIEW_ALL_ACTION_ID = "ff_timeboxing_constraint_review_all"
+LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID = "timeboxing_constraint_review_all"
+CONSTRAINT_REVIEW_ALL_ACTION_ID = FF_CONSTRAINT_REVIEW_ALL_ACTION_ID
 CONSTRAINT_REVIEW_VIEW_CALLBACK_ID = "timeboxing_constraint_review_modal"
 CONSTRAINT_REVIEW_LIST_VIEW_CALLBACK_ID = "timeboxing_constraint_review_list_modal"
 CONSTRAINT_DECISION_ACTION_ID = "constraint_decision"
@@ -497,6 +499,8 @@ def decode_metadata(payload: str) -> dict[str, str]:
 
 __all__ = [
     "CONSTRAINT_ROW_REVIEW_ACTION_ID",
+    "FF_CONSTRAINT_REVIEW_ALL_ACTION_ID",
+    "LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID",
     "CONSTRAINT_REVIEW_ALL_ACTION_ID",
     "CONSTRAINT_REVIEW_LIST_VIEW_CALLBACK_ID",
     "CONSTRAINT_REVIEW_VIEW_CALLBACK_ID",

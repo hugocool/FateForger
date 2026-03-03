@@ -6,6 +6,17 @@ This stack is intentionally standalone from the app compose setup.
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000 (`admin` / `admin`)
 
+## Grafana Dashboards
+- `FateForger — Timeboxing Overview`
+  - Fast health view for `up`, error rate, stage latency p95, and token/call concentration.
+  - Includes one low-key Loki triage panel for quick error/timeout/slow-turn scanning.
+- `FateForger — Timeboxing Deep Dive`
+  - Session/thread drill-down with stage/call-label filters, LLM I/O logs, memory-signal logs, and elapsed-time unwrapped from session events.
+
+Provisioned files:
+- `observability/grafana/provisioning/dashboards/timeboxing_overview.json`
+- `observability/grafana/provisioning/dashboards/timeboxing_deep_dive.json`
+
 ## Start
 ```bash
 docker compose -f observability/docker-compose.yml up -d

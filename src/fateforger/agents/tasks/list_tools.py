@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date, datetime
 import json
 import logging
 import re
@@ -86,6 +87,9 @@ class TickTickTask(BaseModel):
     id: str
     title: str
     project_id: str | None = None
+    due_date: str | None = None
+    priority: int | None = None
+    status: str | None = None
 
 
 class TickTickPendingTask(BaseModel):
@@ -95,6 +99,9 @@ class TickTickPendingTask(BaseModel):
     title: str
     project_id: str | None = None
     project_name: str | None = None
+    due_date: str | None = None
+    priority: int | None = None
+    status: str | None = None
 
 
 class TickTickMentionCandidate(BaseModel):
@@ -772,6 +779,10 @@ class TickTickListManager:
         text = await self._call_tool("get_project_tasks", {"project_id": project_id})
         return self._parse_tasks(text)
 
+    async def list_projects(self) -> list[TickTickProject]:
+        """Public wrapper used by higher-level task flows."""
+        return await self._list_projects()
+
     async def list_pending_tasks(
         self, *, limit: int = 12, per_project_limit: int = 4
     ) -> list[TickTickPendingTask]:
@@ -812,6 +823,9 @@ class TickTickListManager:
                         title=task.title,
                         project_id=project.id,
                         project_name=project.name,
+                        due_date=task.due_date,
+                        priority=task.priority,
+                        status=task.status,
                     )
                 )
                 if len(rows) >= limit:
@@ -843,6 +857,65 @@ class TickTickListManager:
         # High ceiling keeps this bounded for safety while effectively "all"
         # for normal TickTick workspaces.
         return await self.list_pending_tasks(limit=10_000, per_project_limit=10_000)
+
+    async def list_due_tasks(
+        self,
+        *,
+        due_on: date,
+        project_ids: list[str] | None = None,
+        limit: int = 200,
+    ) -> list[TickTickPendingTask]:
+        """Return tasks due on a specific date across selected projects."""
+        due_iso = due_on.isoformat()
+        projects = await self._list_projects()
+        if project_ids:
+            allowed = {project_id.strip() for project_id in project_ids if project_id.strip()}
+            projects = [project for project in projects if project.id in allowed]
+        if not projects:
+            return []
+        task_batches = await self._list_project_task_batches(projects)
+        rows: list[TickTickPendingTask] = []
+        for project, task_batch in zip(projects, task_batches):
+            if isinstance(task_batch, Exception):
+                continue
+            for task in task_batch:
+                task_due = self._coerce_due_iso(task.due_date)
+                if task_due != due_iso:
+                    continue
+                rows.append(
+                    TickTickPendingTask(
+                        id=task.id,
+                        title=task.title,
+                        project_id=project.id,
+                        project_name=project.name,
+                        due_date=task_due,
+                        priority=task.priority,
+                        status=task.status,
+                    )
+                )
+                if len(rows) >= limit:
+                    return rows
+        return rows
+
+    async def update_task_title(
+        self,
+        *,
+        project_id: str,
+        task_id: str,
+        new_title: str,
+    ) -> tuple[bool, str]:
+        """Update one task title via TickTick MCP."""
+        title = " ".join((new_title or "").split()).strip()
+        if not title:
+            return False, "title_empty"
+        try:
+            await self._call_tool(
+                "update_task",
+                {"project_id": project_id, "task_id": task_id, "title": title},
+            )
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+        return True, ""
 
     async def _delete_items(
         self, *, project_id: str, task_ids: list[str]
@@ -1160,6 +1233,11 @@ class TickTickListManager:
             id_keys=("id", "task_id"),
             name_keys=("title", "name"),
             project_keys=("project_id", "projectId"),
+            passthrough_keys={
+                "due_date": ("due_date", "dueDate", "due", "deadline", "startDate"),
+                "priority": ("priority",),
+                "status": ("status",),
+            },
         )
         if parsed:
             return [
@@ -1167,6 +1245,9 @@ class TickTickListManager:
                     id=item["id"],
                     title=item["name"],
                     project_id=item.get("project_id"),
+                    due_date=TickTickListManager._coerce_due_iso(item.get("due_date")),
+                    priority=TickTickListManager._coerce_int(item.get("priority")),
+                    status=(str(item.get("status") or "").strip() or None),
                 )
                 for item in parsed
             ]
@@ -1196,12 +1277,24 @@ class TickTickListManager:
                 continue
             if line.startswith("Project ID:"):
                 current["project_id"] = line.split(":", 1)[1].strip()
+                continue
+            if line.startswith("Due Date:") or line.startswith("Due:"):
+                current["due_date"] = line.split(":", 1)[1].strip()
+                continue
+            if line.startswith("Priority:"):
+                current["priority"] = line.split(":", 1)[1].strip()
+                continue
+            if line.startswith("Status:"):
+                current["status"] = line.split(":", 1)[1].strip()
         if current.get("id") and current.get("title"):
             tasks.append(
                 TickTickTask(
                     id=current["id"],
                     title=current["title"],
                     project_id=current.get("project_id"),
+                    due_date=TickTickListManager._coerce_due_iso(current.get("due_date")),
+                    priority=TickTickListManager._coerce_int(current.get("priority")),
+                    status=(str(current.get("status") or "").strip() or None),
                 )
             )
         return tasks
@@ -1230,7 +1323,8 @@ class TickTickListManager:
         id_keys: tuple[str, ...],
         name_keys: tuple[str, ...],
         project_keys: tuple[str, ...] = (),
-    ) -> list[dict[str, str]]:
+        passthrough_keys: dict[str, tuple[str, ...]] | None = None,
+    ) -> list[dict[str, Any]]:
         try:
             payload = json.loads(text)
         except Exception:
@@ -1261,8 +1355,45 @@ class TickTickListManager:
                     ),
                     "",
                 )
+            for out_key, aliases in (passthrough_keys or {}).items():
+                value = next((row.get(alias) for alias in aliases if row.get(alias) is not None), None)
+                if value is not None:
+                    item[out_key] = value
             out.append(item)
         return out
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(str(value).strip())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _coerce_due_iso(raw: Any) -> str | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        candidate = text.replace("Z", "+00:00")
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+            return candidate
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}[ T].+", candidate):
+            try:
+                return datetime.fromisoformat(candidate.replace(" ", "T")).date().isoformat()
+            except ValueError:
+                pass
+        match = re.match(r"^(\d{4}-\d{2}-\d{2})", candidate)
+        if match:
+            return match.group(1)
+        try:
+            epoch_ms = int(float(candidate))
+            if epoch_ms > 10_000_000_000:
+                epoch_ms = int(epoch_ms / 1000)
+            return datetime.utcfromtimestamp(epoch_ms).date().isoformat()
+        except Exception:
+            return None
 
     @staticmethod
     def _extract_first_id(text: str) -> str | None:

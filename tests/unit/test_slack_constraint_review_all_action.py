@@ -12,6 +12,7 @@ from fateforger.core.config import settings
 from fateforger.slack_bot.constraint_review import (
     CONSTRAINT_REVIEW_ALL_ACTION_ID,
     CONSTRAINT_REVIEW_LIST_VIEW_CALLBACK_ID,
+    LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID,
     encode_metadata,
 )
 from fateforger.slack_bot.focus import FocusManager
@@ -208,3 +209,71 @@ async def test_constraint_review_all_action_acks_and_noops_without_metadata(monk
 
     assert ack_calls == [True]
     assert client.opened == []
+
+
+@pytest.mark.asyncio
+async def test_constraint_review_all_action_legacy_id_remains_supported(monkeypatch) -> None:
+    store = _FakeConstraintStore()
+    monkeypatch.setattr(
+        settings, "database_url", "sqlite+aiosqlite:///:memory:", raising=False
+    )
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.create_async_engine",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("fateforger.slack_bot.handlers.ensure_constraint_schema", _noop)
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.async_sessionmaker",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.ConstraintStore",
+        lambda _sessionmaker: store,
+    )
+
+    client = _FakeClient()
+    app = _FakeApp(client)
+    focus = FocusManager(
+        ttl_seconds=3600,
+        allowed_agents=["receptionist_agent", "revisor_agent", "tasks_agent"],
+    )
+    register_handlers(
+        app=app,
+        runtime=_FakeRuntime(),
+        focus=focus,
+        default_agent="receptionist_agent",
+    )
+
+    assert CONSTRAINT_REVIEW_ALL_ACTION_ID in app.actions
+    assert LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID in app.actions
+
+    handler = app.actions[LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID]
+    ack_calls: list[bool] = []
+
+    async def _ack():
+        ack_calls.append(True)
+
+    await handler(
+        ack=_ack,
+        body={
+            "actions": [
+                {
+                    "action_id": LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID,
+                    "value": encode_metadata({"thread_ts": "T1", "user_id": "U1"}),
+                }
+            ],
+            "channel": {"id": "C1"},
+            "message": {"ts": "T1"},
+            "trigger_id": "TRIGGER-1",
+            "user": {"id": "U1"},
+        },
+        client=client,
+        logger=types.SimpleNamespace(info=lambda *a, **k: None),
+    )
+
+    assert ack_calls == [True]
+    assert client.opened

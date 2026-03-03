@@ -24,7 +24,10 @@
 - `StageRefineNode` calls `TimeboxPatcher` then `apply_tb_ops()`, and then syncs the updated `TBPlan` through `CalendarSubmitter`.
 - `StageSkeletonNode` is presentation-first: it produces the markdown overview and carries forward any pre-generated draft plan; it does not build the remote baseline snapshot.
 - `StageRefineNode` is responsible for preparing missing `TBPlan`/baseline state before patch+sync.
-- Presenter-attached stage controls must remain deterministic: always include `Proceed` (except final review/submit stage), plus `Back`/`Redo`/`Cancel`; readiness checks happen when `Proceed` is clicked.
+- Presenter-attached stage controls must remain deterministic:
+  - default controls are `Back`/`Redo`/`Cancel`, with `Proceed` included only when the stage is ready and no pending local Refine undo snapshot exists.
+  - after a Stage 4 local update, the same control row should present `Undo last update` (via the `Redo` action path) instead of `Proceed`.
+  - readiness checks happen when `Proceed` is clicked.
 - Nodes must never call `sync_engine.py` functions directly; always go through `CalendarSubmitter`.
 
 ## Stage Boundary Rules (Hard)

@@ -81,6 +81,7 @@ def build_stage_actions_block(
     meta_value: str,
     can_proceed: bool,
     can_go_back: bool,
+    redo_label: str = "Redo",
     include_cancel: bool = True,
 ) -> dict[str, Any]:
     """Build deterministic stage-control buttons for a timeboxing stage."""
@@ -108,7 +109,7 @@ def build_stage_actions_block(
         {
             "type": "button",
             "action_id": FF_TIMEBOX_STAGE_REDO_ACTION_ID,
-            "text": {"type": "plain_text", "text": "Redo"},
+            "text": {"type": "plain_text", "text": redo_label},
             "value": meta_value,
         }
     )

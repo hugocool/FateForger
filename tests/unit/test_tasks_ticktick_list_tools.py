@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date
 
 import pytest
 
@@ -175,6 +176,26 @@ async def test_show_list_items_returns_items():
     assert result["ok"] is True
     assert len(result["data"]["items"]) == 2
     assert result["data"]["items"][0]["title"] == "Eggs"
+
+
+@pytest.mark.asyncio
+async def test_list_due_tasks_filters_by_due_date_across_projects():
+    workbench = _FakeWorkbench(
+        {
+            "get_projects": [_project_listing(("Work", "PROJECT1"), ("Home", "PROJECT2"))],
+            "get_project_tasks": [
+                '[{"id":"T1","title":"Ship patch","projectId":"PROJECT1","dueDate":"2026-03-02T09:00:00Z"},'
+                '{"id":"T2","title":"Backlog","projectId":"PROJECT1","dueDate":"2026-03-03T09:00:00Z"}]',
+                '[{"id":"H1","title":"Buy groceries","projectId":"PROJECT2","dueDate":"2026-03-02"}]',
+            ],
+        }
+    )
+    manager = TickTickListManager(server_url="http://example.invalid/mcp", workbench=workbench)
+
+    rows = await manager.list_due_tasks(due_on=date(2026, 3, 2))
+
+    assert [row.title for row in rows] == ["Ship patch", "Buy groceries"]
+    assert all(row.due_date == "2026-03-02" for row in rows)
 
 
 @pytest.mark.asyncio

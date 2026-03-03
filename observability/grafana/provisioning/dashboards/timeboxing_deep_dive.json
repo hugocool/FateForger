@@ -1,0 +1,227 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "datasource", "id": "loki", "name": "Loki", "version": "1.0.0" }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Timeboxing deep-dive: stage-level bottlenecks, session/thread diagnostics, memory/patch visibility, and Loki drill-down.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Deep Dive Metrics",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Stage Duration Sum (range)",
+      "datasource": { "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "uid": "prometheus" },
+          "expr": "sum by (stage) (increase(fateforger_stage_duration_seconds_sum{stage=~\"$stage\"}[$__range]))",
+          "legendFormat": "{{stage}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Stage Invocation Count (range)",
+      "datasource": { "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "uid": "prometheus" },
+          "expr": "sum by (stage) (increase(fateforger_stage_duration_seconds_count{stage=~\"$stage\"}[$__range]))",
+          "legendFormat": "{{stage}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "barchart",
+      "title": "LLM Calls by Call Label (range)",
+      "datasource": { "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "uid": "prometheus" },
+          "expr": "sort_desc(sum by (call_label) (increase(fateforger_llm_calls_total{call_label=~\"$call_label\"}[$__range])))",
+          "legendFormat": "{{call_label}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "barchart",
+      "title": "LLM Tokens by Call Label (range)",
+      "datasource": { "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "uid": "prometheus" },
+          "expr": "sort_desc(sum by (call_label) (increase(fateforger_llm_tokens_total{call_label=~\"$call_label\"}[$__range])))",
+          "legendFormat": "{{call_label}}"
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "type": "row",
+      "title": "Loki Session Drill-down",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 }
+    },
+    {
+      "id": 5,
+      "type": "logs",
+      "title": "Session Events (thread/session filtered)",
+      "datasource": { "uid": "loki" },
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 18 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "uid": "loki" },
+          "expr": "{job=\"fateforger_session\", stage=~\"$stage\"} | json | session_key =~ \"$session_key\" | thread_ts =~ \"$thread_ts\""
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "logs",
+      "title": "LLM I/O (session + call_label)",
+      "datasource": { "uid": "loki" },
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 29 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "uid": "loki" },
+          "expr": "{job=\"fateforger_llm_io\", call_label=~\"$call_label\"} | json | session_key =~ \"$session_key\" | thread_ts =~ \"$thread_ts\""
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "logs",
+      "title": "Memory Signals (constraints_active_snapshot + durable selection)",
+      "datasource": { "uid": "loki" },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 40 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "uid": "loki" },
+          "expr": "{job=\"fateforger_session\"} | json | session_key =~ \"$session_key\" | thread_ts =~ \"$thread_ts\" | event=~\"constraints_active_snapshot|durable_constraints_selected|memory_review_decision\""
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "logs",
+      "title": "Low-key Loki Triage (warnings/errors/timeouts/slow)",
+      "datasource": { "uid": "loki" },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 40 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "uid": "loki" },
+          "expr": "{job=~\"fateforger_session|fateforger_llm_io|docker\"} |~ \"(?i)(warn|error|timeout|slow|failed)\" |~ \"$session_key\""
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Stage Elapsed from Session Logs (unwrap elapsed_s)",
+      "datasource": { "uid": "loki" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 50 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "uid": "loki" },
+          "expr": "{job=\"fateforger_session\", stage=~\"$stage\"} | json | event=\"graph_turn_end\" | session_key =~ \"$session_key\" | thread_ts =~ \"$thread_ts\" | unwrap elapsed_s | __error__=\"\"",
+          "legendFormat": "{{stage}}"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["fateforger", "timeboxing", "deep-dive", "observability", "loki"],
+  "templating": {
+    "list": [
+      {
+        "name": "stage",
+        "label": "Stage",
+        "type": "query",
+        "datasource": { "uid": "prometheus" },
+        "query": "label_values(fateforger_stage_duration_seconds_sum, stage)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "selected": true, "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "call_label",
+        "label": "Call Label",
+        "type": "query",
+        "datasource": { "uid": "prometheus" },
+        "query": "label_values(fateforger_llm_calls_total, call_label)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "selected": true, "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "session_key",
+        "label": "Session Key (regex)",
+        "type": "textbox",
+        "query": ".*",
+        "current": { "selected": false, "text": ".*", "value": ".*" }
+      },
+      {
+        "name": "thread_ts",
+        "label": "Thread TS (regex)",
+        "type": "textbox",
+        "query": ".*",
+        "current": { "selected": false, "text": ".*", "value": ".*" }
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "FateForger — Timeboxing Deep Dive",
+  "uid": "fateforger-timeboxing-deep-dive",
+  "version": 1
+}

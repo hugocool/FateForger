@@ -8,6 +8,8 @@ Task triage and execution agent (Task Marshal).
 - Implemented: Tool-assisted multi-mention task resolution with exhaustive candidate scoring (`resolve_ticktick_task_mentions`).
 - Implemented: sprint-focused Notion tools for search/filter, relation linking, and patch-style page edits (`find_sprint_items`, `link_sprint_subtasks`, `patch_sprint_page_content`).
 - Implemented: opinionated sprint patch commands for single-event and bulk-event flows (`patch_sprint_event`, `patch_sprint_events`).
+- Implemented: durable due-task source defaults via shared memory backend (`TaskDefaultsMemoryStore`) for repeat queries like "due tomorrow".
+- Implemented: due-date task cards with stable labels (`TT-<id>`), `View all` support, task details modal payloads, and title-edit update path (NL + modal submission bridge).
 - Documented: list-management behavior and ownership are documented in this folder.
 - Tested: unit and Slack handoff tests cover tool behavior and routing.
 - User-confirmed working: pending.
@@ -15,6 +17,7 @@ Task triage and execution agent (Task Marshal).
 Key files:
 - `agent.py`: agent logic and prompts.
 - `list_tools.py`: structured TickTick list/item operations and MCP call orchestration.
+- `defaults_memory.py`: durable per-user due-task defaults persisted through the configured memory backend.
 - `notion_sprint_tools.py`: Notion sprint-domain tools and patch preview/apply logic.
 - `AGENTS.md`: operational rules for this subtree.
 
@@ -31,6 +34,7 @@ Notes:
 
 ### 1) TickTick Task Surface
 - Discover projects/lists (`show_lists`) and open tasks per list or across all lists (`show_list_items` with null list selectors).
+- Query tasks due on a specific date (`list_due_tasks`) with explicit date filtering and source-scoped defaults.
 - Resolve ambiguous task mentions across projects (`resolve_ticktick_task_mentions`) for safe follow-up actions.
 - Mutate TickTick state only through explicit operations (`create_list`, `add_items`, `update_items`, `remove_items`, `delete_items`, `delete_list`).
 
@@ -44,6 +48,8 @@ Notes:
 - Provide assist-turn delegation from timeboxing to tasks without changing timeboxing stage ownership.
 
 ### 4) Orchestration and Safety Surface
+- Persist per-user due-task defaults in durable memory (`taskmarshal-defaults:<user_id>`).
+- Expose stable human-readable labels (`TT-<task-id-prefix>`) for deterministic edit targeting.
 - Keep MCP IO bounded inside tool managers (`list_tools.py`, `notion_sprint_tools.py`).
 - Keep tool schemas strict and explicit (`null` for unused optionals).
 - Keep ambiguity non-destructive: ask targeted follow-ups instead of guessing identifiers.
