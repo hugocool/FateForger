@@ -284,6 +284,10 @@ class Session:
         default_factory=dict
     )
     active_constraints: List[Constraint] = field(default_factory=list)
+    active_constraints_raw_count: int = 0
+    active_constraints_applicable_count: int = 0
+    last_extracted_constraints_count: int = 0
+    last_refine_selected_constraints_count: int = 0
     durable_constraints_by_stage: Dict[str, List[Constraint]] = field(
         default_factory=dict
     )
@@ -1356,6 +1360,9 @@ class TimeboxingFlowAgent(RoutedAgent):
                 acquired = True
                 interpretation = await self._interpret_constraints(
                     session, text=text, is_initial=is_initial
+                )
+                session.last_extracted_constraints_count = len(
+                    interpretation.constraints or []
                 )
                 self._session_debug(
                     session,
@@ -3767,6 +3774,11 @@ class TimeboxingFlowAgent(RoutedAgent):
         if not constraints:
             return []
         ranked = sorted(constraints, key=_constraint_priority)
+        summary_line = _constraint_count_summary_line(
+            session=session,
+            review_count=len(ranked),
+            include_newly_extracted_label="Newly extracted",
+        )
         blocks: list[dict[str, Any]] = [
             {"type": "divider"},
             {
@@ -3775,6 +3787,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                     "type": "mrkdwn",
                     "text": (
                         f"*Constraints*\n"
+                        f"{summary_line} "
                         f"Showing the top {min(limit, len(ranked))} of {len(ranked)}."
                     ),
                 },
@@ -5997,9 +6010,23 @@ class TimeboxingFlowAgent(RoutedAgent):
         combined = _dedupe_constraints(
             list(local_constraints or []) + durable_constraints
         )
-        session.active_constraints = [
+        raw_active_constraints = [
             c for c in combined if c.status != ConstraintStatus.DECLINED
         ]
+        applicable_active_constraints = [
+            constraint
+            for constraint in raw_active_constraints
+            if _constraint_is_applicable_for_session(
+                constraint,
+                planned_date=session.planned_date,
+                stage=session.stage,
+            )
+        ]
+        session.active_constraints = applicable_active_constraints
+        session.active_constraints_raw_count = len(raw_active_constraints)
+        session.active_constraints_applicable_count = len(
+            applicable_active_constraints
+        )
         self._session_debug(
             session,
             "constraints_active_snapshot",
@@ -6007,7 +6034,11 @@ class TimeboxingFlowAgent(RoutedAgent):
             local_count=len(local_constraints or []),
             local_shared_scope_count=local_shared_scope_count,
             durable_count=len(durable_constraints),
-            active_count=len(session.active_constraints),
+            active_raw_count=len(raw_active_constraints),
+            active_applicable_count=len(applicable_active_constraints),
+            active_filtered_out_count=max(
+                0, len(raw_active_constraints) - len(applicable_active_constraints)
+            ),
             durable_stage_keys=list(relevant_stage_keys),
             top_names=[
                 (constraint.name or "").strip()
@@ -6027,6 +6058,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         ranked = sorted(constraints or [], key=_constraint_priority)
         limit = max(1, TIMEBOXING_LIMITS.refine_patcher_constraint_limit)
         if len(ranked) <= limit:
+            session.last_refine_selected_constraints_count = len(ranked)
             self._session_debug(
                 session,
                 "refine_constraints_selected",
@@ -6053,6 +6085,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             if len(selected) >= limit:
                 break
 
+        session.last_refine_selected_constraints_count = len(selected)
         self._session_debug(
             session,
             "refine_constraints_selected",
@@ -7216,6 +7249,11 @@ def _wrap_with_constraint_review(
     blocks: list[dict[str, Any]] = [build_markdown_block(text=message.content)]
     if constraints:
         ranked = sorted(constraints, key=_constraint_priority)
+        summary_line = _constraint_count_summary_line(
+            session=session,
+            review_count=len(ranked),
+            include_newly_extracted_label="Newly extracted this turn",
+        )
         blocks.append({"type": "divider"})
         blocks.append(
             {
@@ -7224,6 +7262,7 @@ def _wrap_with_constraint_review(
                     "type": "mrkdwn",
                     "text": (
                         f"*Constraints*\n"
+                        f"{summary_line} "
                         f"Showing the top {min(3, len(ranked))} of {len(ranked)}. "
                         "Use Deny / Edit or open the full list."
                     ),
@@ -7318,6 +7357,9 @@ def _constraints_from_memory(
         rule_kind = record.get("rule_kind") or record.get("type_id")
         if rule_kind:
             hints["rule_kind"] = rule_kind
+        applies_stages = record.get("applies_stages")
+        if isinstance(applies_stages, list) and applies_stages:
+            hints["applies_stages"] = [str(value) for value in applies_stages]
         # Restore aspect_classification from the stored record so agent code can read
         # hints["aspect_classification"] without keyword or regex scanning.
         aspect_cls = record.get("aspect_classification")
@@ -7384,6 +7426,102 @@ def _dedupe_constraints(constraints: list[Constraint]) -> list[Constraint]:
         seen.add(key)
         deduped.append(constraint)
     return deduped
+
+
+def _constraint_applies_to_stage(
+    constraint: Constraint,
+    *,
+    stage: TimeboxingStage,
+) -> bool:
+    """Return whether a constraint is applicable for the current stage."""
+    def _as_list(value: object) -> list[object]:
+        if isinstance(value, list):
+            return value
+        if value in (None, ""):
+            return []
+        return [value]
+
+    hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+    selector = constraint.selector if isinstance(constraint.selector, dict) else {}
+    raw_stages = _as_list(hints.get("applies_stages")) + _as_list(
+        selector.get("applies_stages")
+    )
+    if not raw_stages:
+        return True
+    normalized = {str(value).strip().lower() for value in raw_stages if str(value).strip()}
+    return stage.value.strip().lower() in normalized
+
+
+def _constraint_applies_to_planned_date(
+    constraint: Constraint,
+    *,
+    planned_date: str | None,
+) -> bool:
+    """Return whether a constraint is active for the planned date window/day."""
+    planned = _parse_date_value(planned_date)
+    if planned is None:
+        return True
+    start_date = (
+        constraint.start_date
+        if isinstance(constraint.start_date, date)
+        else _parse_date_value(str(constraint.start_date or ""))
+    )
+    end_date = (
+        constraint.end_date
+        if isinstance(constraint.end_date, date)
+        else _parse_date_value(str(constraint.end_date or ""))
+    )
+    if start_date and planned < start_date:
+        return False
+    if end_date and planned > end_date:
+        return False
+    if constraint.days_of_week:
+        planned_dow = ConstraintDayOfWeek(planned.strftime("%a")[:2].upper())
+        return planned_dow in set(constraint.days_of_week or [])
+    return True
+
+
+def _constraint_is_applicable_for_session(
+    constraint: Constraint,
+    *,
+    planned_date: str | None,
+    stage: TimeboxingStage,
+) -> bool:
+    """Return whether a constraint should count as active for this session turn."""
+    return _constraint_applies_to_planned_date(
+        constraint, planned_date=planned_date
+    ) and _constraint_applies_to_stage(constraint, stage=stage)
+
+
+def _constraint_count_summary_line(
+    *,
+    session: Session,
+    review_count: int,
+    include_newly_extracted_label: str,
+) -> str:
+    """Build explicit count wording for constraint preview/review blocks."""
+    extracted = max(0, int(session.last_extracted_constraints_count or 0))
+    applicable_total = max(
+        0,
+        int(
+            session.active_constraints_applicable_count
+            if session.active_constraints_applicable_count
+            else len(session.active_constraints or [])
+        ),
+    )
+    raw_total = max(0, int(session.active_constraints_raw_count or applicable_total))
+    parts = [
+        f"{include_newly_extracted_label}: {extracted}.",
+        f"Active total (applicable now): {applicable_total}.",
+    ]
+    if raw_total > applicable_total:
+        parts.append(f"Raw active rows before filtering: {raw_total}.")
+    if session.stage == TimeboxingStage.REFINE:
+        parts.append(
+            "Selected for Refine patching: "
+            f"{max(0, int(session.last_refine_selected_constraints_count or 0))}."
+        )
+    return " ".join(parts)
 
 
 # TODO: this should not be neccesary at all

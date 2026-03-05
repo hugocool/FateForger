@@ -11,8 +11,19 @@ pytest.importorskip("autogen_agentchat")
 
 from autogen_agentchat.messages import TextMessage
 
-from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
+from fateforger.agents.timeboxing.agent import (
+    Session,
+    TimeboxingFlowAgent,
+    _wrap_with_constraint_review,
+)
 from fateforger.agents.timeboxing.messages import TimeboxingStageAction
+from fateforger.agents.timeboxing.preferences import (
+    Constraint,
+    ConstraintNecessity,
+    ConstraintScope,
+    ConstraintSource,
+    ConstraintStatus,
+)
 from fateforger.agents.timeboxing.stage_gating import TimeboxingStage
 from fateforger.slack_bot.messages import SlackBlockMessage
 from fateforger.slack_bot.timeboxing_stage_actions import (
@@ -264,3 +275,57 @@ def test_attach_presenter_blocks_appends_stage_actions() -> None:
     assert isinstance(wrapped, SlackBlockMessage)
     action_ids = _collect_action_ids(wrapped.blocks)
     assert FF_TIMEBOX_STAGE_PROCEED_ACTION_ID in action_ids
+
+
+def _preview_constraint(name: str, *, uid: str) -> Constraint:
+    return Constraint(
+        user_id="u1",
+        channel_id="c1",
+        thread_ts="t1",
+        name=name,
+        description=name,
+        necessity=ConstraintNecessity.SHOULD,
+        status=ConstraintStatus.PROPOSED,
+        source=ConstraintSource.USER,
+        scope=ConstraintScope.SESSION,
+        hints={"uid": uid},
+    )
+
+
+def test_render_constraints_preview_blocks_labels_new_active_and_selected_counts() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.stage = TimeboxingStage.REFINE
+    session.active_constraints = [
+        _preview_constraint(f"Constraint {idx}", uid=f"uid-{idx}") for idx in range(6)
+    ]
+    session.active_constraints_raw_count = 20
+    session.active_constraints_applicable_count = 6
+    session.last_extracted_constraints_count = 6
+    session.last_refine_selected_constraints_count = 4
+
+    blocks = agent._render_constraints_preview_blocks(session=session, limit=3)
+    preview_text = str(blocks[1]["text"]["text"])
+
+    assert "Newly extracted: 6." in preview_text
+    assert "Active total (applicable now): 6." in preview_text
+    assert "Selected for Refine patching: 4." in preview_text
+    assert "Showing the top 3 of 6." in preview_text
+
+
+def test_wrap_with_constraint_review_labels_newly_extracted_vs_active_total() -> None:
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.active_constraints_raw_count = 173
+    session.active_constraints_applicable_count = 167
+    session.last_extracted_constraints_count = 6
+    wrapped = _wrap_with_constraint_review(
+        TextMessage(content="Stage 1", source="PresenterNode"),
+        constraints=[_preview_constraint(f"Constraint {idx}", uid=f"uid-{idx}") for idx in range(6)],
+        session=session,
+    )
+
+    assert isinstance(wrapped, SlackBlockMessage)
+    header = str(wrapped.blocks[2]["text"]["text"])
+    assert "Newly extracted this turn: 6." in header
+    assert "Active total (applicable now): 167." in header
+    assert "Raw active rows before filtering: 173." in header
