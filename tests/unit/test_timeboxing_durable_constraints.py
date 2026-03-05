@@ -123,6 +123,25 @@ async def test_collect_constraints_merges_durable_with_session():
 
 
 @pytest.mark.asyncio
+async def test_collect_constraints_requests_shared_scope_fallback() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    captured_kwargs: list[dict[str, object]] = []
+
+    class _Store:
+        async def list_constraints(self, **kwargs):
+            captured_kwargs.append(dict(kwargs))
+            return []
+
+    agent._constraint_store = _Store()
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+
+    await agent._collect_constraints(session)
+
+    assert captured_kwargs
+    assert captured_kwargs[0].get("include_shared_scopes") is True
+
+
+@pytest.mark.asyncio
 async def test_collect_constraints_local_decline_suppresses_durable_uid():
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     durable = Constraint(
@@ -332,6 +351,39 @@ def test_collect_constraints_uses_durable_sleep_default_and_clears_sleep_missing
         "Using your saved defaults. Reply to override for this session, or proceed."
     )
     assert any("Using your saved defaults:" in line for line in normalized.summary)
+
+
+def test_collect_constraints_uses_local_profile_default_when_durable_empty() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(
+        thread_ts="t1",
+        channel_id="c1",
+        user_id="u1",
+        planned_date="2026-03-01",
+    )
+    local_profile = _durable_sleep_constraint(uid="tb:sleep:local")
+    local_profile.thread_ts = "legacy-thread"
+    session.active_constraints = [local_profile]
+
+    gate = StageGateOutput(
+        stage_id=TimeboxingStage.COLLECT_CONSTRAINTS,
+        ready=False,
+        summary=["Starting stage review."],
+        missing=["Sleep schedule or morning/evening routines"],
+        question="What are your sleep times?",
+        facts={},
+    )
+    normalized = agent._normalize_collect_constraints_gate(
+        session=session,
+        gate=gate,
+        user_message="",
+    )
+
+    assert normalized.facts.get("sleep_target", {}).get("start") == "23:00"
+    assert normalized.facts.get("sleep_target", {}).get("end") == "07:00"
+    assert normalized.question == (
+        "Using your saved defaults. Reply to override for this session, or proceed."
+    )
 
 
 @pytest.mark.asyncio

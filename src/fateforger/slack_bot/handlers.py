@@ -2335,6 +2335,7 @@ def register_handlers(
     async def on_constraint_review_all_action_legacy(ack, body, client, logger):
         await ack()
         await _handle_constraint_review_all_action(body, client)
+
     @app.action(CONSTRAINT_ROW_REVIEW_ACTION_ID)
     async def on_constraint_review_action(ack, body, client, logger):
         await ack()

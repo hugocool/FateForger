@@ -10,7 +10,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from pydantic import Field as PydanticField
 from sqlalchemy import Column
 from sqlalchemy import DateTime as SQLDateTime
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.types import JSON as SAJSON
 from sqlmodel import Field, SQLModel
@@ -139,6 +139,7 @@ class ConstraintStore:
         thread_ts: Optional[str] = None,
         status: Optional[ConstraintStatus] = None,
         scope: Optional[ConstraintScope] = None,
+        include_shared_scopes: bool = False,
     ) -> List[Constraint]:
         """List constraints for a user with optional filters."""
         async with self._sessionmaker() as session:
@@ -146,7 +147,16 @@ class ConstraintStore:
             if channel_id:
                 stmt = stmt.where(Constraint.channel_id == channel_id)
             if thread_ts:
-                stmt = stmt.where(Constraint.thread_ts == thread_ts)
+                if include_shared_scopes:
+                    stmt = stmt.where(
+                        or_(
+                            Constraint.thread_ts == thread_ts,
+                            Constraint.scope == ConstraintScope.PROFILE,
+                            Constraint.scope == ConstraintScope.DATESPAN,
+                        )
+                    )
+                else:
+                    stmt = stmt.where(Constraint.thread_ts == thread_ts)
             if status:
                 stmt = stmt.where(Constraint.status == status)
             if scope:

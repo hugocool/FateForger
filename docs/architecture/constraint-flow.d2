@@ -1,0 +1,101 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: dagre
+  }
+}
+
+input: "Slack/User Input" {
+  shape: oval
+  style.fill: "#dbeafe"
+  style.stroke: "#3b82f6"
+}
+
+stage0: "Stage 0: Date Confirm" {
+  shape: diamond
+  style.fill: "#ede9fe"
+  style.stroke: "#7c3aed"
+}
+
+prefetch: "Background Prefetch" {
+  direction: right
+  style.fill: "#faf5ff"
+  style.stroke: "#c4b5fd"
+
+  retriever: "ConstraintRetriever\n(gap-driven query plan)"
+  mcp: "Constraint Memory MCP"
+  notion: "NotionConstraintStore\n(query_constraints)"
+
+  retriever -> mcp: "query_types/query_constraints"
+  mcp -> notion: "filters: date/scope/status/stage/event_type"
+}
+
+local_store: "Session Constraint Store\n(SQLite/thread-scoped)" {
+  shape: cylinder
+  style.fill: "#dcfce7"
+  style.stroke: "#22c55e"
+}
+
+durable_cache: "session.durable_constraints_by_stage" {
+  shape: cylinder
+  style.fill: "#fef3c7"
+  style.stroke: "#f59e0b"
+}
+
+collect: "_collect_constraints()" {
+  style.fill: "#fee2e2"
+  style.stroke: "#ef4444"
+  style.bold: true
+}
+
+active: "session.active_constraints\n(injected into stage prompts)" {
+  style.fill: "#fee2e2"
+  style.stroke: "#f87171"
+}
+
+graphflow: "GraphFlow Stage Loop" {
+  direction: right
+  style.fill: "#f8fafc"
+  style.stroke: "#94a3b8"
+
+  s1: "Stage 1\nCollectConstraints"
+  s2: "Stage 2\nCaptureInputs"
+  s3: "Stage 3\nSkeleton"
+  s4: "Stage 4\nRefine (patch loop)"
+  s5: "Stage 5\nReviewCommit"
+
+  s1 -> s2
+  s2 -> s3
+  s3 -> s4
+  s4 -> s4: "additional patch requests"
+  s4 -> s5
+  s5 -> s4: "user corrections"
+}
+
+memory_bg: "Background memory extraction/persist\n(non-blocking)" {
+  style.fill: "#ecfeff"
+  style.stroke: "#06b6d4"
+}
+
+calendar: "Calendar submit/undo" {
+  style.fill: "#fef9c3"
+  style.stroke: "#eab308"
+}
+
+input -> stage0
+stage0 -> prefetch: "start async"
+stage0 -> graphflow.s1: "enter Stage 1"
+prefetch.notion -> durable_cache
+input -> local_store: "constraint extraction (session scope)"
+
+durable_cache -> collect
+local_store -> collect
+collect -> active
+active -> graphflow.s1: "context"
+active -> graphflow.s2: "context"
+active -> graphflow.s3: "context"
+active -> graphflow.s4: "context"
+active -> graphflow.s5: "context"
+
+graphflow.s4 -> memory_bg: "optional memory_extract_and_upsert"
+graphflow.s5 -> calendar: "approve + commit"

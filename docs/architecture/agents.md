@@ -15,6 +15,7 @@ Related docs:
 
 - `docs/indices/agents_timeboxing.md`
 - `docs/architecture/timeboxing_refactor.md`
+- `docs/architecture/constraint-flow.md`
 
 ## ConstraintExtractorAgent (Notion-backed)
 

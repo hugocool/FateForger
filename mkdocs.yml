@@ -35,6 +35,7 @@ nav:
       - Data Models: architecture/data-models.md
       - Scheduling: architecture/scheduling.md
       - Timeboxing Refactor: architecture/timeboxing_refactor.md
+      - Constraint Flow: architecture/constraint-flow.md
       - Calendar Haunter: calendar-haunter.md
   - Reference:
       - MCP Tools: reference/api/mcp_tools.md

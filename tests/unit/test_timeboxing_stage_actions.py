@@ -58,6 +58,20 @@ def _collect_action_ids(blocks: list[dict]) -> list[str]:
     ]
 
 
+def _action_text_for(blocks: list[dict], action_id: str) -> str | None:
+    """Return button text for an action ID when present."""
+    for block in blocks:
+        for element in (block.get("elements") or []):
+            if not isinstance(element, dict):
+                continue
+            if str(element.get("action_id")) != action_id:
+                continue
+            text = element.get("text")
+            if isinstance(text, dict):
+                return str(text.get("text") or "")
+    return None
+
+
 def test_render_stage_action_blocks_ready_includes_proceed() -> None:
     """Ready stages should include deterministic Proceed button."""
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
@@ -86,6 +100,22 @@ def test_render_stage_action_blocks_not_ready_hides_proceed() -> None:
     assert FF_TIMEBOX_STAGE_BACK_ACTION_ID in action_ids
     assert FF_TIMEBOX_STAGE_REDO_ACTION_ID in action_ids
     assert FF_TIMEBOX_STAGE_CANCEL_ACTION_ID in action_ids
+
+
+def test_render_stage_action_blocks_refine_with_undo_hides_proceed() -> None:
+    """Refine stage with a pending undo should swap Proceed for Undo last update."""
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.stage = TimeboxingStage.REFINE
+    session.stage_ready = True
+    session.tb_plan = _review_plan()
+    session.last_refine_undo_tb_plan = _review_plan()
+
+    blocks = agent._render_stage_action_blocks(session=session)
+    action_ids = _collect_action_ids(blocks)
+    assert FF_TIMEBOX_STAGE_PROCEED_ACTION_ID not in action_ids
+    assert FF_TIMEBOX_STAGE_REDO_ACTION_ID in action_ids
+    assert _action_text_for(blocks, FF_TIMEBOX_STAGE_REDO_ACTION_ID) == "Undo last update"
 
 
 @pytest.mark.asyncio
@@ -161,6 +191,40 @@ async def test_stage_action_proceed_advances_and_replaces_message() -> None:
     assert isinstance(response, TextMessage)
     assert "CaptureInputs" in response.content
     assert session.stage == TimeboxingStage.CAPTURE_INPUTS
+
+
+@pytest.mark.asyncio
+async def test_stage_action_redo_uses_refine_undo_path() -> None:
+    """Redo button should use local refine undo when available."""
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    agent._sessions = {}
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.stage = TimeboxingStage.REFINE
+    session.stage_ready = True
+    session.last_refine_undo_tb_plan = _review_plan()
+    agent._sessions["t1"] = session
+
+    undone_reply = TextMessage(content="Undone update", source="timeboxing_agent")
+    agent._undo_last_refine_update = AsyncMock(return_value=undone_reply)  # type: ignore[attr-defined]
+    agent._attach_presenter_blocks = lambda *, reply, session: reply  # type: ignore[attr-defined]
+    agent._publish_update = AsyncMock()  # type: ignore[attr-defined]
+    agent._run_graph_turn = AsyncMock()  # type: ignore[attr-defined]
+    agent._maybe_wrap_constraint_review = AsyncMock()  # type: ignore[attr-defined]
+
+    response = await agent.on_stage_action(
+        TimeboxingStageAction(
+            channel_id="c1",
+            thread_ts="t1",
+            user_id="u1",
+            action="redo",
+        ),
+        _Ctx(),
+    )
+
+    assert isinstance(response, TextMessage)
+    assert response.content == "Undone update"
+    agent._undo_last_refine_update.assert_awaited_once()  # type: ignore[attr-defined]
+    agent._run_graph_turn.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 def test_attach_presenter_blocks_review_stage_includes_submit_actions() -> None:
