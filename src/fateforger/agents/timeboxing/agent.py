@@ -1411,12 +1411,20 @@ class TimeboxingFlowAgent(RoutedAgent):
                                 except Exception:
                                     pass
                     if self._constraint_store:
-                        await self._constraint_store.add_constraints(
-                            user_id=session.user_id,
-                            channel_id=session.channel_id,
-                            thread_ts=session.thread_ts,
-                            constraints=constraints,
-                        )
+                        if hasattr(self._constraint_store, "upsert_constraints"):
+                            await self._constraint_store.upsert_constraints(
+                                user_id=session.user_id,
+                                channel_id=session.channel_id,
+                                thread_ts=session.thread_ts,
+                                constraints=constraints,
+                            )
+                        else:
+                            await self._constraint_store.add_constraints(
+                                user_id=session.user_id,
+                                channel_id=session.channel_id,
+                                thread_ts=session.thread_ts,
+                                constraints=constraints,
+                            )
                         self._session_debug(
                             session,
                             "constraint_local_persisted",
@@ -6091,13 +6099,47 @@ class TimeboxingFlowAgent(RoutedAgent):
                 }
             )
             to_add.append(ConstraintBase.model_validate(payload))
+        upsert_added = 0
+        upsert_skipped = 0
         if to_add:
-            await self._constraint_store.add_constraints(
+            if hasattr(self._constraint_store, "upsert_constraints"):
+                outcome = await self._constraint_store.upsert_constraints(
+                    user_id=session.user_id,
+                    channel_id=session.channel_id,
+                    thread_ts=session.thread_ts,
+                    constraints=to_add,
+                )
+                upsert_added = int((outcome or {}).get("added") or 0)
+                upsert_skipped = int((outcome or {}).get("skipped") or 0)
+            else:
+                await self._constraint_store.add_constraints(
+                    user_id=session.user_id,
+                    channel_id=session.channel_id,
+                    thread_ts=session.thread_ts,
+                    constraints=to_add,
+                )
+                upsert_added = len(to_add)
+
+        prune_preview: dict[str, Any] = {}
+        if hasattr(self._constraint_store, "prune_shared_constraints"):
+            prune_preview = await self._constraint_store.prune_shared_constraints(
                 user_id=session.user_id,
                 channel_id=session.channel_id,
-                thread_ts=session.thread_ts,
-                constraints=to_add,
+                dry_run=True,
             )
+        self._session_debug(
+            session,
+            "shared_constraint_mirror_snapshot",
+            mirrored_total=len(to_add),
+            mirrored_added=upsert_added,
+            mirrored_skipped=upsert_skipped,
+            raw_shared_rows=int((prune_preview or {}).get("raw_shared_rows") or 0),
+            canonical_shared_rows=int(
+                (prune_preview or {}).get("canonical_shared_rows") or 0
+            ),
+            duplicate_groups=int((prune_preview or {}).get("duplicate_groups") or 0),
+            duplicates_found=int((prune_preview or {}).get("duplicates_found") or 0),
+        )
 
     async def _publish_update(
         self,
