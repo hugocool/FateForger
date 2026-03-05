@@ -308,3 +308,42 @@ async def test_refine_patch_path_stages_locally_without_remote_submit() -> None:
     assert session.timebox is not None
     assert session.timebox.events[0].summary == "Patched Focus"
     agent._submit_current_plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_submit_pending_plan_resubmit_no_delta_returns_noop_success() -> None:
+    """Re-submit with no material delta should succeed as explicit no-op."""
+    submit_plan = AsyncMock(return_value=_build_submit_transaction())
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    agent._calendar_submitter = SimpleNamespace(submit_plan=submit_plan)
+    debug_events: list[tuple[str, dict]] = []
+    agent._session_debug = (
+        lambda _session, event, **kwargs: debug_events.append((event, kwargs))
+    )
+
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.tz_name = "Europe/Amsterdam"
+    session.stage = TimeboxingStage.REVIEW_COMMIT
+    session.pending_submit = True
+    session.tb_plan = _build_plan(summary="Noop")
+    session.base_snapshot = _build_plan(summary="Noop")
+    session.event_id_map = {}
+    session.remote_event_ids_by_index = []
+    session.last_sync_transaction = _build_submit_transaction()
+
+    result = await TimeboxingFlowAgent._submit_pending_plan(
+        agent,
+        session=session,
+        submit_mode="auto_nl",
+        submit_attempt_kind="resubmit",
+    )
+
+    assert isinstance(result, SlackBlockMessage)
+    assert "already up to date" in result.text
+    assert session.pending_submit is False
+    submit_plan.assert_not_awaited()
+    result_events = [payload for name, payload in debug_events if name == "submission_result"]
+    assert result_events
+    assert result_events[-1]["submit_mode"] == "auto_nl"
+    assert result_events[-1]["submit_attempt_kind"] == "resubmit"
+    assert result_events[-1]["no_material_delta"] is True

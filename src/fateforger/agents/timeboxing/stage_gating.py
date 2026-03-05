@@ -75,6 +75,7 @@ class StageDecision(BaseModel):
     action: StageAction
     target_stage: Optional[TimeboxingStage] = None
     note: Optional[str] = None
+    submit_intent: bool = False
     assist_target: Optional[str] = None
     assist_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
@@ -255,6 +256,9 @@ Decision rules
 - If the user asks to redo the current stage, use action="redo".
 - If the user wants to stop, use action="cancel".
 - If the user asks an adjacent question that clearly requires another specialist, use action="assist".
+- If the user explicitly asks to commit/submit/add the schedule to calendar now, set `submit_intent=true`.
+- Set `submit_intent=false` when explicit commit/submit intent is absent.
+- `submit_intent` can be true with any in-flow action when the user wants commit after edits (for example action="provide_info" + commit request).
 - For action="assist", you must also set:
   - `assist_target`: the specialist to route to (currently only `"tasks_agent"` is available from this flow)
   - `assist_confidence`: confidence 0.0-1.0 that handoff is the right route

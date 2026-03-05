@@ -151,6 +151,7 @@ from .sync_engine import (
     FFTB_PREFIX,
     SyncTransaction,
     gcal_response_to_tb_plan_with_identity,
+    plan_sync,
 )
 from .task_marshalling_capability import TaskMarshallingCapability
 from .tb_models import TBEvent, TBPlan
@@ -6449,31 +6450,44 @@ class TimeboxingFlowAgent(RoutedAgent):
                 await self._scheduler_prefetch.ensure_collect_stage_ready(
                     session=session
                 )
-            if (
-                session.stage == TimeboxingStage.REVIEW_COMMIT
-                and session.pending_submit
+            decision: StageDecision | None = None
+            if session.stage in (
+                TimeboxingStage.REFINE,
+                TimeboxingStage.REVIEW_COMMIT,
             ):
                 decision = await self._decide_next_action(
                     session,
                     user_message=message.text,
                 )
-                if decision.action == "proceed":
-                    self._session_debug(
-                        session,
-                        "nl_submit_from_reply",
-                        decision_action=decision.action,
-                    )
-                    submit_reply = await self._submit_pending_plan(session=session)
-                    await self._publish_update(
-                        session=session,
-                        user_message=(
-                            submit_reply.content
-                            if isinstance(submit_reply, TextMessage)
-                            else submit_reply.text
-                        ),
-                        actions=[],
-                    )
-                    return submit_reply
+            if (
+                session.stage == TimeboxingStage.REVIEW_COMMIT
+                and session.pending_submit
+                and decision is not None
+                and decision.action == "proceed"
+                and decision.submit_intent
+            ):
+                self._session_debug(
+                    session,
+                    "nl_submit_from_reply",
+                    decision_action=decision.action,
+                    submit_mode="auto_nl",
+                    submit_attempt_kind=self._submit_attempt_kind(session),
+                )
+                submit_reply = await self._submit_pending_plan(
+                    session=session,
+                    submit_mode="auto_nl",
+                    submit_attempt_kind=self._submit_attempt_kind(session),
+                )
+                await self._publish_update(
+                    session=session,
+                    user_message=(
+                        submit_reply.content
+                        if isinstance(submit_reply, TextMessage)
+                        else submit_reply.text
+                    ),
+                    actions=[],
+                )
+                return submit_reply
             memory_reply = await self._maybe_handle_memory_review_turn(
                 session=session,
                 user_message=message.text,
@@ -6498,6 +6512,45 @@ class TimeboxingFlowAgent(RoutedAgent):
                 reply=reply, session=session
             )
             outgoing = self._attach_presenter_blocks(reply=wrapped, session=session)
+            if (
+                decision is not None
+                and decision.submit_intent
+                and session.stage == TimeboxingStage.REVIEW_COMMIT
+            ):
+                if (
+                    session.pending_submit
+                    and session.tb_plan is not None
+                    and session.base_snapshot is not None
+                ):
+                    self._session_debug(
+                        session,
+                        "nl_submit_from_reply",
+                        decision_action=decision.action,
+                        submit_mode="auto_nl",
+                        submit_attempt_kind=self._submit_attempt_kind(session),
+                    )
+                    submit_reply = await self._submit_pending_plan(
+                        session=session,
+                        submit_mode="auto_nl",
+                        submit_attempt_kind=self._submit_attempt_kind(session),
+                    )
+                    await self._publish_update(
+                        session=session,
+                        user_message=(
+                            submit_reply.content
+                            if isinstance(submit_reply, TextMessage)
+                            else submit_reply.text
+                        ),
+                        actions=[],
+                    )
+                    return submit_reply
+                not_ready_reply = self._build_submit_incomplete_reply()
+                await self._publish_update(
+                    session=session,
+                    user_message=not_ready_reply.content,
+                    actions=[],
+                )
+                return not_ready_reply
             await self._publish_update(
                 session=session,
                 user_message=(
@@ -6739,12 +6792,30 @@ class TimeboxingFlowAgent(RoutedAgent):
                 content="This session has already ended; submission is no longer available.",
                 source=self._agent_source(),
             )
-        return await self._submit_pending_plan(session=session)
+        return await self._submit_pending_plan(
+            session=session,
+            submit_mode="manual_button",
+            submit_attempt_kind=self._submit_attempt_kind(session),
+        )
+
+    @staticmethod
+    def _submit_attempt_kind(session: Session) -> Literal["first_submit", "resubmit"]:
+        """Return submit attempt kind for telemetry and UX clarity."""
+        return "resubmit" if session.last_sync_transaction is not None else "first_submit"
+
+    def _build_submit_incomplete_reply(self) -> TextMessage:
+        """Return deterministic copy when submit is requested before prerequisites exist."""
+        return TextMessage(
+            content="Cannot submit yet because the plan is incomplete. Please refine first.",
+            source=self._agent_source(),
+        )
 
     async def _submit_pending_plan(
         self,
         *,
         session: Session,
+        submit_mode: Literal["auto_nl", "manual_button"],
+        submit_attempt_kind: Literal["first_submit", "resubmit"],
     ) -> TextMessage | SlackBlockMessage:
         """Submit the pending Stage 5 plan to calendar when ready."""
         if not session.pending_submit:
@@ -6752,6 +6823,8 @@ class TimeboxingFlowAgent(RoutedAgent):
                 session,
                 "submission_skipped",
                 reason="not_pending_submit",
+                submit_mode=submit_mode,
+                submit_attempt_kind=submit_attempt_kind,
             )
             return TextMessage(
                 content="There is no pending plan submission right now.",
@@ -6763,21 +6836,52 @@ class TimeboxingFlowAgent(RoutedAgent):
                 session,
                 "submission_skipped",
                 reason="missing_tb_plan",
+                submit_mode=submit_mode,
+                submit_attempt_kind=submit_attempt_kind,
             )
-            return TextMessage(
-                content="Cannot submit yet because the plan is incomplete. Please refine first.",
-                source=self._agent_source(),
-            )
+            return self._build_submit_incomplete_reply()
         if session.base_snapshot is None:
             session.pending_submit = False
             self._session_debug(
                 session,
                 "submission_skipped",
                 reason="missing_base_snapshot",
+                submit_mode=submit_mode,
+                submit_attempt_kind=submit_attempt_kind,
             )
-            return TextMessage(
-                content="Cannot submit yet because the plan is incomplete. Please refine first.",
-                source=self._agent_source(),
+            return self._build_submit_incomplete_reply()
+
+        preview_ops = []
+        if submit_attempt_kind == "resubmit":
+            preview_ops = plan_sync(
+                session.base_snapshot,
+                session.tb_plan,
+                session.event_id_map,
+                remote_event_ids_by_index=session.remote_event_ids_by_index,
+            )
+        if submit_attempt_kind == "resubmit" and not preview_ops:
+            session.pending_submit = False
+            session.committed = True
+            self._session_debug(
+                session,
+                "submission_result",
+                status="committed",
+                changed=False,
+                created=0,
+                updated=0,
+                deleted=0,
+                failed=0,
+                failed_ops=[],
+                ops=0,
+                elapsed_s=0.0,
+                submit_mode=submit_mode,
+                submit_attempt_kind=submit_attempt_kind,
+                no_material_delta=True,
+            )
+            text = "Calendar already up to date. No changes were needed."
+            return SlackBlockMessage(
+                text=text,
+                blocks=[build_markdown_block(text=text)],
             )
 
         submit_started_at = perf_counter()
@@ -6786,6 +6890,8 @@ class TimeboxingFlowAgent(RoutedAgent):
             "submission_start",
             remote_events=len(session.base_snapshot.events),
             event_id_map_size=len(session.event_id_map),
+            submit_mode=submit_mode,
+            submit_attempt_kind=submit_attempt_kind,
         )
         previous_map = dict(session.event_id_map)
         try:
@@ -6803,6 +6909,8 @@ class TimeboxingFlowAgent(RoutedAgent):
                 error_type=type(exc).__name__,
                 error=str(exc)[:2000],
                 elapsed_s=round(perf_counter() - submit_started_at, 3),
+                submit_mode=submit_mode,
+                submit_attempt_kind=submit_attempt_kind,
             )
             return TextMessage(
                 content="Calendar submission failed. Please try again.",
@@ -6831,6 +6939,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             failed_ops=summary.failed_details[:3],
             ops=len(tx.ops),
             elapsed_s=round(perf_counter() - submit_started_at, 3),
+            submit_mode=submit_mode,
+            submit_attempt_kind=submit_attempt_kind,
+            no_material_delta=False,
         )
 
         if tx.status == "committed":
