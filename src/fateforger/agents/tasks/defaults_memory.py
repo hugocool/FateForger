@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 _DEFAULTS_TOPIC = "taskmarshal-defaults"
 _DEFAULTS_NAME_PREFIX = "taskmarshal-defaults:"
 _DEFAULTS_DESC_PREFIX = "task_defaults_json:"
+_TASK_DEFAULTS_BACKENDS = {
+    "constraint_mcp",
+    "mem0",
+    "disabled",
+    "inherit_timeboxing",
+}
 
 
 class TaskDueDefaults(BaseModel):
@@ -47,11 +53,16 @@ class TaskDefaultsMemoryStore:
     """Adapter that stores task defaults in the shared durable-memory backend."""
 
     timeout_s: float = 10.0
+    _backend_mode_lock: ClassVar[threading.Lock] = threading.Lock()
+    _reported_fallback_modes: ClassVar[set[tuple[str, str, str]]] = set()
+    _reported_durable_modes: ClassVar[set[tuple[str, str]]] = set()
 
     def __post_init__(self) -> None:
         self._client: Any | None = None
         self._store: DurableConstraintStore | None = None
+        self._backend = self._resolve_backend()
         self._unavailable_reason: str | None = None
+        self._unavailable_reason_code: str | None = None
         self._fallback_path = Path(
             os.getenv("TASKS_DEFAULTS_CACHE_PATH", "logs/taskmarshal_defaults_cache.json")
         )
@@ -65,27 +76,26 @@ class TaskDefaultsMemoryStore:
             return self._store
         if self._unavailable_reason:
             return None
-        backend = str(getattr(settings, "timeboxing_memory_backend", "constraint_mcp"))
-        backend = backend.strip().lower()
+        if self._backend == "disabled":
+            self._unavailable_reason = "tasks defaults durable backend disabled by configuration"
+            self._unavailable_reason_code = "backend_disabled"
+            return None
         try:
-            if backend == "constraint_mcp":
+            if self._backend == "constraint_mcp":
                 self._client = ConstraintMemoryClient(timeout=self.timeout_s)
-            elif backend == "mem0":
+            elif self._backend == "mem0":
                 user_id = (
                     str(getattr(settings, "mem0_user_id", "") or "").strip()
                     or "timeboxing"
                 )
                 self._client = build_mem0_client_from_settings(user_id=user_id)
             else:
-                raise ValueError(f"Unsupported timeboxing memory backend: {backend}")
+                raise ValueError(f"Unsupported tasks defaults memory backend: {self._backend}")
             self._store = build_durable_constraint_store(self._client)
             self._unavailable_reason = None
+            self._unavailable_reason_code = None
         except Exception as exc:
-            self._unavailable_reason = f"{type(exc).__name__}: {exc}"
-            logger.warning(
-                "Task defaults durable memory unavailable (%s)",
-                self._unavailable_reason,
-            )
+            self._mark_store_unavailable(exc)
             return None
         return self._store
 
@@ -96,8 +106,18 @@ class TaskDefaultsMemoryStore:
             return cached
         store = self._ensure_store()
         if not store:
+            self._report_backend_mode(
+                user_id=user_id,
+                operation="get_user_defaults",
+                mode="fallback_cache",
+            )
             self._refresh_local_cache_from_disk()
             return self._local_defaults_by_user.get(user_id)
+        self._report_backend_mode(
+            user_id=user_id,
+            operation="get_user_defaults",
+            mode="durable",
+        )
         uid = self._uid_for_user(user_id)
         try:
             exact = await store.get_constraint(uid=uid)
@@ -116,10 +136,14 @@ class TaskDefaultsMemoryStore:
                 limit=20,
             )
         except Exception as exc:
-            logger.warning(
-                "Task defaults lookup failed (%s: %s)", type(exc).__name__, exc
+            self._mark_store_unavailable(exc)
+            self._report_backend_mode(
+                user_id=user_id,
+                operation="get_user_defaults",
+                mode="fallback_cache",
             )
-            return None
+            self._refresh_local_cache_from_disk()
+            return self._local_defaults_by_user.get(user_id)
         for row in rows:
             parsed = self._parse_entry_to_defaults(entry=row, user_id=user_id)
             if parsed is not None:
@@ -133,7 +157,17 @@ class TaskDefaultsMemoryStore:
         self._write_defaults_to_disk(defaults)
         store = self._ensure_store()
         if not store:
+            self._report_backend_mode(
+                user_id=defaults.user_id,
+                operation="upsert_user_defaults",
+                mode="fallback_cache",
+            )
             return True
+        self._report_backend_mode(
+            user_id=defaults.user_id,
+            operation="upsert_user_defaults",
+            mode="durable",
+        )
         payload = defaults.model_dump(mode="json")
         record = {
             "constraint_record": {
@@ -176,8 +210,11 @@ class TaskDefaultsMemoryStore:
                 },
             )
         except Exception as exc:
-            logger.warning(
-                "Task defaults upsert failed (%s: %s)", type(exc).__name__, exc
+            self._mark_store_unavailable(exc)
+            self._report_backend_mode(
+                user_id=defaults.user_id,
+                operation="upsert_user_defaults",
+                mode="fallback_cache",
             )
             return True
         return bool((result or {}).get("uid"))
@@ -185,6 +222,85 @@ class TaskDefaultsMemoryStore:
     @staticmethod
     def _uid_for_user(user_id: str) -> str:
         return f"taskmarshal-defaults:{user_id}"
+
+    @staticmethod
+    def _resolve_backend() -> str:
+        configured = str(
+            getattr(settings, "tasks_defaults_memory_backend", "constraint_mcp") or ""
+        ).strip().lower()
+        if not configured:
+            configured = "constraint_mcp"
+        if configured == "inherit_timeboxing":
+            configured = str(
+                getattr(settings, "timeboxing_memory_backend", "constraint_mcp") or ""
+            ).strip().lower() or "constraint_mcp"
+        if configured not in _TASK_DEFAULTS_BACKENDS:
+            return "disabled"
+        if configured == "inherit_timeboxing":
+            return "constraint_mcp"
+        return configured
+
+    @staticmethod
+    def _classify_unavailable_reason(exc: Exception) -> str:
+        message = str(exc).lower()
+        if "openai_api_key" in message:
+            return "missing_openai_api_key"
+        if "mem0_api_key" in message:
+            return "missing_mem0_api_key"
+        if "mem0 backend requires" in message:
+            return "missing_mem0_runtime_config"
+        if "notion_timeboxing_parent_page_id" in message:
+            return "missing_notion_parent_page_id"
+        if "notion_token" in message:
+            return "missing_notion_token"
+        if isinstance(exc, ValueError):
+            return "invalid_backend_config"
+        return "backend_unavailable"
+
+    def _mark_store_unavailable(self, exc: Exception) -> None:
+        self._store = None
+        self._client = None
+        self._unavailable_reason = f"{type(exc).__name__}: {exc}"
+        self._unavailable_reason_code = self._classify_unavailable_reason(exc)
+
+    def _report_backend_mode(
+        self,
+        *,
+        user_id: str,
+        operation: str,
+        mode: Literal["durable", "fallback_cache"],
+    ) -> None:
+        clean_user_id = str(user_id or "").strip()
+        if not clean_user_id:
+            return
+        if mode == "durable":
+            key = (self._backend, clean_user_id)
+            with self._backend_mode_lock:
+                if key in self._reported_durable_modes:
+                    return
+                self._reported_durable_modes.add(key)
+            logger.info(
+                "Task defaults backend mode=durable backend=%s user_id=%s operation=%s",
+                self._backend,
+                clean_user_id,
+                operation,
+            )
+            return
+
+        reason_code = self._unavailable_reason_code or "backend_unavailable"
+        key = (self._backend, reason_code, clean_user_id)
+        with self._backend_mode_lock:
+            if key in self._reported_fallback_modes:
+                return
+            self._reported_fallback_modes.add(key)
+        logger.warning(
+            "Task defaults backend mode=fallback_cache backend=%s reason_code=%s user_id=%s operation=%s reason=%s",
+            self._backend,
+            reason_code,
+            clean_user_id,
+            operation,
+            self._unavailable_reason or "n/a",
+        )
 
     @staticmethod
     def _parse_entry_to_defaults(
