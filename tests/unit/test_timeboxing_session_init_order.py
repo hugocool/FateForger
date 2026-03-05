@@ -300,10 +300,10 @@ async def test_on_user_reply_review_commit_proceed_submits_without_button() -> N
 
     async def _decide_next_action(session_obj: Session, *, user_message: str):  # noqa: ARG001
         _ = session_obj
-        return StageDecision(action="proceed")
+        return StageDecision(action="proceed", submit_intent=True)
 
-    async def _submit_pending_plan(*, session: Session):
-        _ = session
+    async def _submit_pending_plan(*, session: Session, submit_mode: str, submit_attempt_kind: str):  # noqa: ARG001
+        _ = session, submit_mode, submit_attempt_kind
         calls["submit"] += 1
         return TextMessage(content="submitted-from-nl", source="timeboxing_agent")
 
@@ -331,6 +331,243 @@ async def test_on_user_reply_review_commit_proceed_submits_without_button() -> N
     assert out.content == "submitted-from-nl"
     assert calls["submit"] == 1
     assert calls["run_graph"] == 0
+
+
+@pytest.mark.asyncio
+async def test_on_user_reply_refine_explicit_commit_submits_in_same_turn() -> None:
+    agent = _build_agent()
+    session = Session(
+        thread_ts="thread-refine-submit",
+        channel_id="C1",
+        user_id="U1",
+        committed=True,
+        planned_date="2026-02-27",
+        tz_name="UTC",
+        session_key="thread-refine-submit",
+    )
+    session.stage = TimeboxingStage.REFINE
+    session.tb_plan = object()  # type: ignore[assignment]
+    session.base_snapshot = object()  # type: ignore[assignment]
+    agent._sessions["thread-refine-submit"] = session
+    calls = {"submit": 0, "run_graph": 0}
+
+    async def _decide_next_action(session_obj: Session, *, user_message: str):  # noqa: ARG001
+        _ = session_obj
+        return StageDecision(action="provide_info", submit_intent=True)
+
+    async def _submit_pending_plan(*, session: Session, submit_mode: str, submit_attempt_kind: str):  # noqa: ARG001
+        _ = submit_mode, submit_attempt_kind
+        calls["submit"] += 1
+        return TextMessage(content="submitted-from-refine", source="timeboxing_agent")
+
+    async def _run_graph_turn(*, session: Session, user_text: str):  # noqa: ARG001
+        _ = session, user_text
+        calls["run_graph"] += 1
+        return TextMessage(content="graph-progressed", source="timeboxing_agent")
+
+    def _attach_presenter_blocks(*, reply: TextMessage, session: Session):
+        _ = reply
+        session.stage = TimeboxingStage.REVIEW_COMMIT
+        session.pending_submit = True
+        session.tb_plan = object()  # type: ignore[assignment]
+        session.base_snapshot = object()  # type: ignore[assignment]
+        return TextMessage(content="review-ready", source="timeboxing_agent")
+
+    agent._decide_next_action = _decide_next_action
+    agent._submit_pending_plan = _submit_pending_plan
+    agent._run_graph_turn = _run_graph_turn
+    agent._attach_presenter_blocks = _attach_presenter_blocks
+
+    out = await TimeboxingFlowAgent.on_user_reply(
+        agent,
+        TimeboxingUserReply(
+            channel_id="C1",
+            thread_ts="thread-refine-submit",
+            user_id="U1",
+            text="apply those edits and commit to calendar now",
+        ),
+        SimpleNamespace(),
+    )
+
+    assert isinstance(out, TextMessage)
+    assert out.content == "submitted-from-refine"
+    assert calls["submit"] == 1
+    assert calls["run_graph"] == 1
+
+
+@pytest.mark.asyncio
+async def test_on_user_reply_review_commit_explicit_commit_submits_after_review_render() -> None:
+    agent = _build_agent()
+    session = Session(
+        thread_ts="thread-review-submit",
+        channel_id="C1",
+        user_id="U1",
+        committed=True,
+        planned_date="2026-02-27",
+        tz_name="UTC",
+        session_key="thread-review-submit",
+    )
+    session.stage = TimeboxingStage.REVIEW_COMMIT
+    session.pending_submit = False
+    session.tb_plan = object()  # type: ignore[assignment]
+    session.base_snapshot = object()  # type: ignore[assignment]
+    agent._sessions["thread-review-submit"] = session
+    calls = {"submit": 0, "run_graph": 0}
+
+    async def _decide_next_action(session_obj: Session, *, user_message: str):  # noqa: ARG001
+        _ = session_obj
+        return StageDecision(action="proceed", submit_intent=True)
+
+    async def _submit_pending_plan(*, session: Session, submit_mode: str, submit_attempt_kind: str):  # noqa: ARG001
+        _ = submit_mode, submit_attempt_kind
+        calls["submit"] += 1
+        return TextMessage(content="submitted-after-review", source="timeboxing_agent")
+
+    async def _run_graph_turn(*, session: Session, user_text: str):  # noqa: ARG001
+        _ = session, user_text
+        calls["run_graph"] += 1
+        return TextMessage(content="review-progressed", source="timeboxing_agent")
+
+    def _attach_presenter_blocks(*, reply: TextMessage, session: Session):
+        _ = reply
+        session.pending_submit = True
+        session.tb_plan = object()  # type: ignore[assignment]
+        session.base_snapshot = object()  # type: ignore[assignment]
+        return TextMessage(content="review-ready", source="timeboxing_agent")
+
+    agent._decide_next_action = _decide_next_action
+    agent._submit_pending_plan = _submit_pending_plan
+    agent._run_graph_turn = _run_graph_turn
+    agent._attach_presenter_blocks = _attach_presenter_blocks
+
+    out = await TimeboxingFlowAgent.on_user_reply(
+        agent,
+        TimeboxingUserReply(
+            channel_id="C1",
+            thread_ts="thread-review-submit",
+            user_id="U1",
+            text="yes commit it now",
+        ),
+        SimpleNamespace(),
+    )
+
+    assert isinstance(out, TextMessage)
+    assert out.content == "submitted-after-review"
+    assert calls["submit"] == 1
+    assert calls["run_graph"] == 1
+
+
+@pytest.mark.asyncio
+async def test_on_user_reply_review_commit_without_explicit_submit_intent_does_not_submit() -> None:
+    agent = _build_agent()
+    session = Session(
+        thread_ts="thread-review-no-submit",
+        channel_id="C1",
+        user_id="U1",
+        committed=True,
+        planned_date="2026-02-27",
+        tz_name="UTC",
+        session_key="thread-review-no-submit",
+    )
+    session.stage = TimeboxingStage.REVIEW_COMMIT
+    session.pending_submit = True
+    agent._sessions["thread-review-no-submit"] = session
+    calls = {"submit": 0, "run_graph": 0}
+
+    async def _decide_next_action(session_obj: Session, *, user_message: str):  # noqa: ARG001
+        _ = session_obj
+        return StageDecision(action="proceed", submit_intent=False)
+
+    async def _submit_pending_plan(*, session: Session, submit_mode: str, submit_attempt_kind: str):  # noqa: ARG001
+        _ = session, submit_mode, submit_attempt_kind
+        calls["submit"] += 1
+        return TextMessage(content="submitted", source="timeboxing_agent")
+
+    async def _run_graph_turn(*, session: Session, user_text: str):  # noqa: ARG001
+        _ = session, user_text
+        calls["run_graph"] += 1
+        return TextMessage(content="graph-progressed", source="timeboxing_agent")
+
+    agent._decide_next_action = _decide_next_action
+    agent._submit_pending_plan = _submit_pending_plan
+    agent._run_graph_turn = _run_graph_turn
+
+    out = await TimeboxingFlowAgent.on_user_reply(
+        agent,
+        TimeboxingUserReply(
+            channel_id="C1",
+            thread_ts="thread-review-no-submit",
+            user_id="U1",
+            text="looks good, proceed",
+        ),
+        SimpleNamespace(),
+    )
+
+    assert isinstance(out, TextMessage)
+    assert out.content == "graph-progressed"
+    assert calls["submit"] == 0
+    assert calls["run_graph"] == 1
+
+
+@pytest.mark.asyncio
+async def test_on_user_reply_explicit_commit_when_prereqs_missing_returns_actionable_non_submit() -> None:
+    agent = _build_agent()
+    session = Session(
+        thread_ts="thread-review-missing-prereqs",
+        channel_id="C1",
+        user_id="U1",
+        committed=True,
+        planned_date="2026-02-27",
+        tz_name="UTC",
+        session_key="thread-review-missing-prereqs",
+    )
+    session.stage = TimeboxingStage.REVIEW_COMMIT
+    session.pending_submit = False
+    session.tb_plan = None
+    session.base_snapshot = None
+    agent._sessions["thread-review-missing-prereqs"] = session
+    calls = {"submit": 0}
+
+    async def _decide_next_action(session_obj: Session, *, user_message: str):  # noqa: ARG001
+        _ = session_obj
+        return StageDecision(action="proceed", submit_intent=True)
+
+    async def _run_graph_turn(*, session: Session, user_text: str):  # noqa: ARG001
+        _ = session, user_text
+        return TextMessage(content="review-stage", source="timeboxing_agent")
+
+    def _attach_presenter_blocks(*, reply: TextMessage, session: Session):
+        _ = reply
+        session.stage = TimeboxingStage.REVIEW_COMMIT
+        session.pending_submit = False
+        session.tb_plan = None
+        session.base_snapshot = None
+        return TextMessage(content="still-missing", source="timeboxing_agent")
+
+    async def _submit_pending_plan(*, session: Session, submit_mode: str, submit_attempt_kind: str):  # noqa: ARG001
+        _ = session, submit_mode, submit_attempt_kind
+        calls["submit"] += 1
+        return TextMessage(content="submitted", source="timeboxing_agent")
+
+    agent._decide_next_action = _decide_next_action
+    agent._run_graph_turn = _run_graph_turn
+    agent._attach_presenter_blocks = _attach_presenter_blocks
+    agent._submit_pending_plan = _submit_pending_plan
+
+    out = await TimeboxingFlowAgent.on_user_reply(
+        agent,
+        TimeboxingUserReply(
+            channel_id="C1",
+            thread_ts="thread-review-missing-prereqs",
+            user_id="U1",
+            text="commit to calendar now",
+        ),
+        SimpleNamespace(),
+    )
+
+    assert isinstance(out, TextMessage)
+    assert "Cannot submit yet because the plan is incomplete." in out.content
+    assert calls["submit"] == 0
 
 
 @pytest.mark.asyncio
