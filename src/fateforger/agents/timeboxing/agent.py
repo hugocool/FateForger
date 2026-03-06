@@ -286,6 +286,7 @@ class Session:
     active_constraints: List[Constraint] = field(default_factory=list)
     active_constraints_raw_count: int = 0
     active_constraints_applicable_count: int = 0
+    active_constraints_selected_count: int = 0
     last_extracted_constraints_count: int = 0
     last_refine_selected_constraints_count: int = 0
     durable_constraints_by_stage: Dict[str, List[Constraint]] = field(
@@ -6022,11 +6023,16 @@ class TimeboxingFlowAgent(RoutedAgent):
                 stage=session.stage,
             )
         ]
-        session.active_constraints = applicable_active_constraints
+        selected_active_constraints = self._reconcile_constraints_for_stage_context(
+            session=session,
+            constraints=applicable_active_constraints,
+        )
+        session.active_constraints = selected_active_constraints
         session.active_constraints_raw_count = len(raw_active_constraints)
         session.active_constraints_applicable_count = len(
             applicable_active_constraints
         )
+        session.active_constraints_selected_count = len(selected_active_constraints)
         self._session_debug(
             session,
             "constraints_active_snapshot",
@@ -6036,6 +6042,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             durable_count=len(durable_constraints),
             active_raw_count=len(raw_active_constraints),
             active_applicable_count=len(applicable_active_constraints),
+            active_selected_count=len(selected_active_constraints),
             active_filtered_out_count=max(
                 0, len(raw_active_constraints) - len(applicable_active_constraints)
             ),
@@ -6047,6 +6054,151 @@ class TimeboxingFlowAgent(RoutedAgent):
             ],
         )
         return list(session.active_constraints or [])
+
+    def _reconcile_constraints_for_stage_context(
+        self,
+        *,
+        session: Session,
+        constraints: list[Constraint],
+    ) -> list[Constraint]:
+        """Reconcile duplicate families and keep stage-relevant constraints only."""
+        stage = session.stage
+        session_aspect_ids = self._collect_session_aspect_ids(constraints)
+        reconciled_groups: dict[str, list[Constraint]] = {}
+        for constraint in constraints or []:
+            family_key = self._constraint_relevance_family_key(constraint)
+            reconciled_groups.setdefault(family_key, []).append(constraint)
+
+        reconciled: list[Constraint] = []
+        for family_constraints in reconciled_groups.values():
+            selected = min(
+                family_constraints,
+                key=self._constraint_rank_for_stage_reconciliation,
+            )
+            reconciled.append(selected)
+
+        if stage in (TimeboxingStage.REFINE, TimeboxingStage.REVIEW_COMMIT):
+            return sorted(reconciled, key=_constraint_priority)
+
+        relevant = [
+            constraint
+            for constraint in reconciled
+            if self._is_stage_relevant_constraint(
+                constraint=constraint,
+                stage=stage,
+                session_aspect_ids=session_aspect_ids,
+            )
+        ]
+        if relevant:
+            return sorted(relevant, key=_constraint_priority)
+        return sorted(reconciled, key=_constraint_priority)
+
+    @staticmethod
+    def _collect_session_aspect_ids(constraints: list[Constraint]) -> set[str]:
+        """Collect aspect IDs explicitly introduced in the current session."""
+        aspect_ids: set[str] = set()
+        for constraint in constraints or []:
+            if constraint.scope != ConstraintScope.SESSION:
+                continue
+            aspect_id = TimeboxingFlowAgent._constraint_aspect_id(constraint)
+            if aspect_id:
+                aspect_ids.add(aspect_id)
+        return aspect_ids
+
+    @staticmethod
+    def _constraint_rank_for_stage_reconciliation(
+        constraint: Constraint,
+    ) -> tuple[int, int, int, str, float, float]:
+        """Rank candidates inside one relevance family."""
+        priority = _constraint_priority(constraint)
+        scope_rank = _constraint_scope_rank(constraint.scope)
+        updated_at = constraint.updated_at.timestamp() if constraint.updated_at else 0.0
+        created_at = constraint.created_at.timestamp() if constraint.created_at else 0.0
+        return (
+            priority[0],
+            priority[1],
+            scope_rank,
+            priority[2],
+            -updated_at,
+            -created_at,
+        )
+
+    @staticmethod
+    def _constraint_relevance_family_key(constraint: Constraint) -> str:
+        """Build a stage-reconciliation family key for shared constraints."""
+        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+        uid = str(hints.get("uid") or "").strip().lower()
+        if uid:
+            return f"uid:{uid}"
+        aspect = hints.get("aspect_classification")
+        aspect_id = TimeboxingFlowAgent._constraint_aspect_id(constraint)
+        if aspect_id and isinstance(aspect, dict):
+            slot = str(aspect.get("frame_slot") or "").strip().lower()
+            schedule_start = str(aspect.get("schedule_start") or "").strip()
+            schedule_end = str(aspect.get("schedule_end") or "").strip()
+            return f"aspect:{aspect_id}:{slot}:{schedule_start}:{schedule_end}"
+        signature = _constraint_name_signature(constraint.name or "")
+        if signature:
+            return f"name:{signature}"
+        return _constraint_identity_key(constraint)
+
+    @staticmethod
+    def _constraint_aspect_id(constraint: Constraint) -> str:
+        """Extract normalized aspect id from a constraint when available."""
+        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+        aspect = hints.get("aspect_classification")
+        if not isinstance(aspect, dict):
+            return ""
+        return str(aspect.get("aspect_id") or "").strip().lower()
+
+    @staticmethod
+    def _is_stage_relevant_constraint(
+        *,
+        constraint: Constraint,
+        stage: TimeboxingStage,
+        session_aspect_ids: set[str] | None = None,
+    ) -> bool:
+        """Return whether a reconciled constraint is relevant for this stage."""
+        if constraint.scope == ConstraintScope.SESSION:
+            return True
+
+        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+        aspect = hints.get("aspect_classification")
+        aspect_id = TimeboxingFlowAgent._constraint_aspect_id(constraint)
+        if isinstance(aspect, dict) and (
+            aspect_id
+            or str(aspect.get("frame_slot") or "").strip()
+            or str(aspect.get("schedule_start") or "").strip()
+            or aspect.get("duration_min") is not None
+        ):
+            if stage == TimeboxingStage.COLLECT_CONSTRAINTS:
+                if aspect_id and session_aspect_ids and aspect_id in session_aspect_ids:
+                    return True
+                return bool(
+                    aspect.get("is_startup_prefetch")
+                    or str(aspect.get("frame_slot") or "").strip()
+                    or str(aspect.get("schedule_start") or "").strip()
+                    or str(aspect.get("schedule_end") or "").strip()
+                )
+            return True
+
+        if (
+            constraint.necessity == ConstraintNecessity.MUST
+            and constraint.status == ConstraintStatus.LOCKED
+        ):
+            return True
+
+        if stage == TimeboxingStage.COLLECT_CONSTRAINTS:
+            timing_keys = (
+                "start_time",
+                "end_time",
+                "wake_time",
+                "wake",
+                "bed_time",
+                "bedtime",
+            )
+            return any(str(hints.get(key) or "").strip() for key in timing_keys)
+        return False
 
     def _select_constraints_for_refine_patcher(
         self,
@@ -7221,6 +7373,53 @@ def _constraint_necessity_rank() -> dict[ConstraintNecessity | str, int]:
     return rank
 
 
+def _constraint_scope_rank(scope: ConstraintScope | str | None) -> int:
+    """Rank scope precedence for reconciliation, preferring near-session intent."""
+    if scope == ConstraintScope.SESSION:
+        return 0
+    if scope == ConstraintScope.DATESPAN:
+        return 1
+    if scope == ConstraintScope.PROFILE:
+        return 2
+    return 3
+
+
+def _constraint_name_signature(name: str) -> str:
+    """Build a stable normalized signature for family-level reconciliation."""
+    text = str(name or "").strip().lower()
+    if not text:
+        return ""
+    normalized = re.sub(r"[^a-z0-9]+", " ", text)
+    tokens = [token for token in normalized.split() if token]
+    if not tokens:
+        return ""
+    informative_tokens = [t for t in tokens if not re.fullmatch(r"v?\d+", t)]
+    if informative_tokens:
+        tokens = informative_tokens
+    stopwords = {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "for",
+        "to",
+        "of",
+        "in",
+        "on",
+        "at",
+        "with",
+        "this",
+        "that",
+        "always",
+        "should",
+    }
+    filtered = [token for token in tokens if token not in stopwords]
+    if not filtered:
+        filtered = tokens
+    return " ".join(filtered)
+
+
 def _constraint_priority(constraint: Constraint) -> tuple[int, int, str]:
     """Rank constraints so the top rows are the most decision-critical."""
     necessity_rank = _constraint_necessity_rank()
@@ -7509,6 +7708,14 @@ def _constraint_count_summary_line(
             else len(session.active_constraints or [])
         ),
     )
+    selected_total = max(
+        0,
+        int(
+            session.active_constraints_selected_count
+            if session.active_constraints_selected_count
+            else len(session.active_constraints or [])
+        ),
+    )
     raw_total = max(0, int(session.active_constraints_raw_count or applicable_total))
     parts = [
         f"{include_newly_extracted_label}: {extracted}.",
@@ -7521,6 +7728,8 @@ def _constraint_count_summary_line(
             "Selected for Refine patching: "
             f"{max(0, int(session.last_refine_selected_constraints_count or 0))}."
         )
+    elif 0 < selected_total < applicable_total:
+        parts.append(f"Selected for this stage: {selected_total}.")
     return " ".join(parts)
 
 

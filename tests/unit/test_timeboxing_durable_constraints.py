@@ -88,6 +88,13 @@ async def test_collect_constraints_merges_durable_with_session():
         status=ConstraintStatus.LOCKED,
         source=ConstraintSource.USER,
         scope=ConstraintScope.PROFILE,
+        hints={
+            "aspect_classification": {
+                "aspect_id": "deep_work",
+                "duration_min": 120,
+                "is_startup_prefetch": True,
+            }
+        },
     )
     local = Constraint(
         user_id="u1",
