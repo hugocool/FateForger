@@ -299,8 +299,10 @@ class TestRefineNodeUsesTBPlan:
             session.base_snapshot = seed_plan.model_copy(deep=True)
             return RefinePreflight()
 
-        async def _run_summary(*, stage, timebox, session=None) -> StageGateOutput:
-            _ = (timebox, session)
+        async def _run_summary(
+            *, stage, timebox, session=None, allow_quality_enrichment=True
+        ) -> StageGateOutput:
+            _ = (timebox, session, allow_quality_enrichment)
             return StageGateOutput(
                 stage_id=stage,
                 ready=True,
@@ -423,8 +425,10 @@ class TestRefineNodeUsesTBPlan:
                 ]
             )
 
-        async def _run_summary(*, stage, timebox, session=None) -> StageGateOutput:
-            _ = (timebox, session)
+        async def _run_summary(
+            *, stage, timebox, session=None, allow_quality_enrichment=True
+        ) -> StageGateOutput:
+            _ = (timebox, session, allow_quality_enrichment)
             return StageGateOutput(
                 stage_id=stage,
                 ready=True,
@@ -528,8 +532,10 @@ class TestRefineNodeUsesTBPlan:
 
         agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
 
-        async def _run_summary(*, stage, timebox, session=None) -> StageGateOutput:
-            _ = (timebox, session)
+        async def _run_summary(
+            *, stage, timebox, session=None, allow_quality_enrichment=True
+        ) -> StageGateOutput:
+            _ = (timebox, session, allow_quality_enrichment)
             return StageGateOutput(
                 stage_id=stage,
                 ready=True,
@@ -608,6 +614,120 @@ class TestRefineNodeUsesTBPlan:
 
         assert node.last_gate is not None
         assert "Calendar changed: 1 created, 0 updated, 0 deleted." in node.last_gate.summary
+
+    @pytest.mark.asyncio
+    async def test_refine_node_uses_budget_fastpath_when_turn_budget_low(self) -> None:
+        """Refine should skip LLM summary/quality when remaining turn budget is too low."""
+        from autogen_agentchat.messages import TextMessage
+        from autogen_core import CancellationToken
+
+        from fateforger.agents.timeboxing.nodes.nodes import StageRefineNode, TransitionNode
+
+        agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+        session = Session(
+            thread_ts="t1",
+            channel_id="c1",
+            user_id="u1",
+            stage=TimeboxingStage.REFINE,
+        )
+        session.timebox = Timebox(
+            events=[
+                CalendarEvent(
+                    summary="Focus",
+                    event_type=EventType.DEEP_WORK,
+                    start_time=time(9, 0),
+                    duration=timedelta(minutes=90),
+                )
+            ],
+            date=date(2026, 2, 13),
+            timezone="Europe/Amsterdam",
+        )
+        session.tb_plan = timebox_to_tb_plan(session.timebox)
+        session.base_snapshot = session.tb_plan.model_copy(deep=True)
+
+        def _ensure_refine(_self, _session: Session) -> RefinePreflight:
+            return RefinePreflight()
+
+        async def _run_orchestration(
+            *,
+            session: Session,
+            patch_message: str,
+            user_message: str,
+        ) -> RefineToolExecutionOutcome:
+            _ = (patch_message, user_message)
+            return RefineToolExecutionOutcome(
+                patch_selected=True,
+                memory_selected=False,
+                memory_queued=False,
+                fallback_patch_used=False,
+                calendar=CalendarSyncOutcome(
+                    status="staged",
+                    changed=True,
+                    note="Plan updated locally. Review Stage 5 and click Submit to sync to calendar.",
+                ),
+            )
+
+        def _fastpath_gate(_self, *, session: Session) -> StageGateOutput:
+            _ = session
+            return StageGateOutput(
+                stage_id=TimeboxingStage.REFINE,
+                ready=True,
+                summary=["Patch applied locally and staged for review."],
+                missing=[],
+                question="Reply with edits, or say `commit now`.",
+                facts={},
+            )
+
+        agent._ensure_calendar_immovables = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, session: asyncio.sleep(0),
+            agent,
+        )
+        agent._ensure_refine_plan_state = types.MethodType(  # type: ignore[attr-defined]
+            _ensure_refine,
+            agent,
+        )
+        agent._compose_patcher_message = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: kwargs["base_message"],
+            agent,
+        )
+        agent._run_refine_tool_orchestration = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, **kwargs: _run_orchestration(**kwargs),
+            agent,
+        )
+        agent._remaining_graph_turn_budget_s = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, _session: 5.0,
+            agent,
+        )
+        agent._build_refine_budget_fastpath_gate = types.MethodType(  # type: ignore[attr-defined]
+            _fastpath_gate,
+            agent,
+        )
+        agent._session_debug = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, *_args, **_kwargs: None,
+            agent,
+        )
+        agent._run_timebox_summary = AsyncMock()  # type: ignore[attr-defined]
+
+        transition = TransitionNode.__new__(TransitionNode)
+        transition.stage_user_message = "tighten deep work blocks"
+        transition.decision = None
+
+        node = StageRefineNode(
+            orchestrator=agent,
+            session=session,
+            transition=transition,
+        )
+
+        await node.on_messages(
+            [TextMessage(content="tighten deep work blocks", source="user")],
+            CancellationToken(),
+        )
+
+        agent._run_timebox_summary.assert_not_awaited()  # type: ignore[attr-defined]
+        assert node.last_gate is not None
+        assert node.last_gate.ready is True
+        assert "Patch applied locally" in node.last_gate.summary[0]
+        assert any("Plan updated locally" in line for line in node.last_gate.summary)
 
 
 class TestRefineQualityFacts:
