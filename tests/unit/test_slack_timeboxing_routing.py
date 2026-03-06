@@ -50,6 +50,26 @@ class _FakeClient:
         self.updates.append(payload)
         return {"ok": True}
 
+
+class _FakeSlackError(Exception):
+    def __init__(self, error_code: str):
+        super().__init__(error_code)
+        self.response = {"ok": False, "error": error_code}
+
+
+class _FailsFirstUpdateClient(_FakeClient):
+    def __init__(self):
+        super().__init__()
+        self._failed_once = False
+
+    async def chat_update(self, **payload):
+        self.updates.append(payload)
+        if not self._failed_once:
+            self._failed_once = True
+            raise _FakeSlackError("msg_too_long")
+        return {"ok": True}
+
+
 async def _unused_say(**_kwargs):
     return {"channel": "C1", "ts": "unused"}
 
@@ -143,3 +163,83 @@ async def test_routes_thread_reply_to_timeboxing_user_reply():
     msg, _ = runtime.calls[0]
     assert isinstance(msg, TimeboxingUserReply)
     assert msg.thread_ts == "root"
+
+
+@pytest.mark.asyncio
+async def test_route_slack_event_compacts_payload_after_msg_too_long(monkeypatch):
+    focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
+    focus.set_focus("C1:root", "timeboxing_agent", by_user="U1")
+    runtime = _FakeRuntime(
+        [
+            _FakeResult(
+                TextMessage(
+                    content="X" * 7000,
+                    source="bot",
+                )
+            )
+        ]
+    )
+    client = _FailsFirstUpdateClient()
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.record_error",
+        lambda *, component, error_type: errors.append((component, error_type)),
+    )
+
+    await route_slack_event(
+        runtime=runtime,
+        focus=focus,
+        default_agent="receptionist_agent",
+        event={
+            "channel": "C1",
+            "user": "U1",
+            "text": "reply",
+            "thread_ts": "root",
+            "ts": "333",
+        },
+        bot_user_id=None,
+        say=_unused_say,
+        client=client,
+    )
+
+    assert ("slack_routing", "route_exception") in errors
+    assert len(client.updates) >= 2
+    fallback_update = client.updates[-1]
+    assert "Output truncated for Slack delivery" in (fallback_update.get("text") or "")
+    assert "blocks" not in fallback_update
+
+
+@pytest.mark.asyncio
+async def test_route_slack_event_records_stage_compute_failure(monkeypatch):
+    class _FailingRuntime:
+        async def send_message(self, *_args, **_kwargs):
+            raise RuntimeError("compute blew up")
+
+    focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
+    focus.set_focus("C1:root", "timeboxing_agent", by_user="U1")
+    client = _FakeClient()
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.record_error",
+        lambda *, component, error_type: errors.append((component, error_type)),
+    )
+
+    await route_slack_event(
+        runtime=_FailingRuntime(),
+        focus=focus,
+        default_agent="receptionist_agent",
+        event={
+            "channel": "C1",
+            "user": "U1",
+            "text": "reply",
+            "thread_ts": "root",
+            "ts": "444",
+        },
+        bot_user_id=None,
+        say=_unused_say,
+        client=client,
+    )
+
+    assert ("slack_routing", "stage_compute_failure") in errors
+    assert client.updates
+    assert "RuntimeError" in (client.updates[-1].get("text") or "")
