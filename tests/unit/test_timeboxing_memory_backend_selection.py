@@ -8,7 +8,7 @@ from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
 from fateforger.agents.timeboxing.stage_gating import TimeboxingStage
 
 
-def test_ensure_constraint_memory_client_uses_mem0_backend(monkeypatch) -> None:
+def test_ensure_constraint_memory_client_uses_graphiti_backend(monkeypatch) -> None:
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     agent._constraint_memory_client = None
     agent._constraint_memory_unavailable_reason = None
@@ -21,16 +21,16 @@ def test_ensure_constraint_memory_client_uses_mem0_backend(monkeypatch) -> None:
         return sentinel
 
     monkeypatch.setattr(
-        timeboxing_agent_mod.settings, "mem0_user_id", "user-123", raising=False
+        timeboxing_agent_mod.settings, "graphiti_user_id", "user-123", raising=False
     )
     monkeypatch.setattr(
         timeboxing_agent_mod.settings,
         "timeboxing_memory_backend",
-        "mem0",
+        "graphiti",
         raising=False,
     )
     monkeypatch.setattr(
-        timeboxing_agent_mod, "build_mem0_client_from_settings", _fake_build
+        timeboxing_agent_mod, "build_graphiti_client_from_settings", _fake_build
     )
 
     client = TimeboxingFlowAgent._ensure_constraint_memory_client(agent)
@@ -50,18 +50,20 @@ def test_ensure_constraint_memory_client_stops_retrying_after_failure(monkeypatc
     def _boom(*, user_id: str):
         _ = user_id
         calls["count"] += 1
-        raise RuntimeError("mem0 unavailable")
+        raise RuntimeError("graphiti unavailable")
 
     monkeypatch.setattr(
-        timeboxing_agent_mod.settings, "mem0_user_id", "user-123", raising=False
+        timeboxing_agent_mod.settings, "graphiti_user_id", "user-123", raising=False
     )
     monkeypatch.setattr(
         timeboxing_agent_mod.settings,
         "timeboxing_memory_backend",
-        "mem0",
+        "graphiti",
         raising=False,
     )
-    monkeypatch.setattr(timeboxing_agent_mod, "build_mem0_client_from_settings", _boom)
+    monkeypatch.setattr(
+        timeboxing_agent_mod, "build_graphiti_client_from_settings", _boom
+    )
 
     first = TimeboxingFlowAgent._ensure_constraint_memory_client(agent)
     second = TimeboxingFlowAgent._ensure_constraint_memory_client(agent)

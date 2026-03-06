@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import fateforger.agents.tasks.defaults_memory as defaults_memory_mod
 from fateforger.agents.tasks.defaults_memory import TaskDefaultsMemoryStore, TaskDueDefaults
 
 
@@ -30,3 +31,34 @@ async def test_disk_fallback_persists_across_store_instances(
     assert loaded is not None
     assert loaded.ticktick_project_ids == ["P1"]
     assert loaded.ticktick_project_names == ["tasks"]
+
+
+def test_defaults_store_uses_graphiti_backend_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = TaskDefaultsMemoryStore()
+    sentinel_client = object()
+    sentinel_store = object()
+    captured: dict[str, str] = {}
+
+    def _fake_build_graphiti(*, user_id: str):
+        captured["user_id"] = user_id
+        return sentinel_client
+
+    def _fake_build_store(client):
+        assert client is sentinel_client
+        return sentinel_store
+
+    monkeypatch.setattr(
+        defaults_memory_mod.settings, "timeboxing_memory_backend", "graphiti", raising=False
+    )
+    monkeypatch.setattr(
+        defaults_memory_mod.settings, "graphiti_user_id", "user-graphiti", raising=False
+    )
+    monkeypatch.setattr(
+        defaults_memory_mod, "build_graphiti_client_from_settings", _fake_build_graphiti
+    )
+    monkeypatch.setattr(defaults_memory_mod, "build_durable_constraint_store", _fake_build_store)
+
+    resolved = store._ensure_store()
+
+    assert resolved is sentinel_store
+    assert captured["user_id"] == "user-graphiti"

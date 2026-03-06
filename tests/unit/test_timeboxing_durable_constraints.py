@@ -123,9 +123,10 @@ async def test_collect_constraints_merges_durable_with_session():
 
 
 @pytest.mark.asyncio
-async def test_collect_constraints_requests_shared_scope_fallback() -> None:
+async def test_collect_constraints_requests_shared_scope_fallback(monkeypatch) -> None:
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     captured_kwargs: list[dict[str, object]] = []
+    monkeypatch.setattr(settings, "timeboxing_memory_backend", "constraint_mcp")
 
     class _Store:
         async def list_constraints(self, **kwargs):
@@ -139,6 +140,135 @@ async def test_collect_constraints_requests_shared_scope_fallback() -> None:
 
     assert captured_kwargs
     assert captured_kwargs[0].get("include_shared_scopes") is True
+
+
+@pytest.mark.asyncio
+async def test_collect_constraints_skips_local_shared_when_graphiti_stage_durable_loaded(
+    monkeypatch,
+) -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    captured_kwargs: list[dict[str, object]] = []
+
+    durable = Constraint(
+        user_id="u1",
+        channel_id=None,
+        thread_ts=None,
+        name="Durable sleep",
+        description="Sleep at 23:00",
+        necessity=ConstraintNecessity.MUST,
+        status=ConstraintStatus.LOCKED,
+        source=ConstraintSource.USER,
+        scope=ConstraintScope.PROFILE,
+        hints={"uid": "tb:sleep"},
+    )
+    local_session = Constraint(
+        user_id="u1",
+        channel_id="c1",
+        thread_ts="t1",
+        name="Session running",
+        description="Run at 18:30",
+        necessity=ConstraintNecessity.MUST,
+        status=ConstraintStatus.PROPOSED,
+        source=ConstraintSource.USER,
+        scope=ConstraintScope.SESSION,
+    )
+    local_shared = Constraint(
+        user_id="u1",
+        channel_id=None,
+        thread_ts=None,
+        name="Legacy profile noise",
+        description="Generic profile rule",
+        necessity=ConstraintNecessity.SHOULD,
+        status=ConstraintStatus.PROPOSED,
+        source=ConstraintSource.USER,
+        scope=ConstraintScope.PROFILE,
+    )
+
+    class _Store:
+        async def list_constraints(self, **kwargs):
+            captured_kwargs.append(dict(kwargs))
+            if kwargs.get("include_shared_scopes"):
+                return [local_session, local_shared]
+            return [local_session]
+
+    monkeypatch.setattr(settings, "timeboxing_memory_backend", "graphiti")
+    agent._constraint_store = _Store()
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1", planned_date="2026-03-07")
+    session.stage = TimeboxingStage.COLLECT_CONSTRAINTS
+    session.durable_constraints_by_stage[TimeboxingStage.COLLECT_CONSTRAINTS.value] = [
+        durable
+    ]
+
+    combined = await agent._collect_constraints(session)
+
+    assert captured_kwargs
+    assert captured_kwargs[0].get("include_shared_scopes") is False
+    assert durable in combined
+    assert local_session in combined
+    assert local_shared not in combined
+
+
+@pytest.mark.asyncio
+async def test_collect_constraints_filters_irrelevant_local_shared_noise() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+
+    local_noise = Constraint(
+        user_id="u1",
+        channel_id=None,
+        thread_ts=None,
+        name="Old broad profile",
+        description="Generic preference without structure",
+        necessity=ConstraintNecessity.SHOULD,
+        status=ConstraintStatus.PROPOSED,
+        source=ConstraintSource.USER,
+        scope=ConstraintScope.PROFILE,
+    )
+    local_structured = Constraint(
+        user_id="u1",
+        channel_id=None,
+        thread_ts=None,
+        name="Morning commute",
+        description="Commute 30m",
+        necessity=ConstraintNecessity.MUST,
+        status=ConstraintStatus.PROPOSED,
+        source=ConstraintSource.USER,
+        scope=ConstraintScope.PROFILE,
+        hints={
+            "aspect_classification": {
+                "aspect_id": "morning_commute",
+                "aspect_label": "Morning commute",
+                "category": "transport",
+                "frame_slot": "work_window",
+                "is_startup_prefetch": True,
+            }
+        },
+    )
+    local_locked = Constraint(
+        user_id="u1",
+        channel_id=None,
+        thread_ts=None,
+        name="Sleep lock",
+        description="Sleep 23:00-07:00",
+        necessity=ConstraintNecessity.MUST,
+        status=ConstraintStatus.LOCKED,
+        source=ConstraintSource.USER,
+        scope=ConstraintScope.PROFILE,
+    )
+
+    class _Store:
+        async def list_constraints(self, **_kwargs):
+            return [local_noise, local_structured, local_locked]
+
+    agent._constraint_store = _Store()
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1", planned_date="2026-03-07")
+    session.stage = TimeboxingStage.COLLECT_CONSTRAINTS
+
+    combined = await agent._collect_constraints(session)
+
+    names = {item.name for item in combined}
+    assert "Old broad profile" not in names
+    assert "Morning commute" in names
+    assert "Sleep lock" in names
 
 
 @pytest.mark.asyncio

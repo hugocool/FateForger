@@ -1,0 +1,876 @@
+diff --git a/src/fateforger/agents/README.md b/src/fateforger/agents/README.md
+index 926cbdd..4a22730 100644
+--- a/src/fateforger/agents/README.md
++++ b/src/fateforger/agents/README.md
+@@ -8,10 +8,11 @@ Top-level agent registry. Each subfolder owns one specialist agent (AutoGen `Rou
+ |--------|-------|--------|---------|
+ | `receptionist/` | Receptionist | Implemented | LLM-based triage: classifies user intent, routes to specialist via AutoGen handoff tools. |
+ | `timeboxing/` | PlanningCoordinator | Implemented, Tested | Stage-gated daily schedule builder with calendar sync. See `timeboxing/README.md`. |
+-| `admonisher/` | HauntRouter | Implemented | Accountability nudge system ("haunters"): persistent follow-ups on commitments via calendar MCP. |
++| `admonisher/` | HauntRouter | Implemented, Tested | Accountability nudge system ("haunters"): persistent follow-ups on commitments via calendar MCP. |
+ | `schedular/` | SchedularAgent | Implemented | Calendar scheduling: slot finding, event upsert, plan-vs-calendar diffing via Google Calendar MCP. |
+ | `tasks/` | TaskMarshal | Implemented, Documented, Tested | Task capture, prioritization (now/next/later), TickTick list-management, and Notion sprint-domain operations (search/filter, relation linking, patch-style page edits). |
+-| `revisor/` | RevisorAgent | Implemented, Documented | Weekly retros and long-term project review; hands off operational sprint execution requests to `tasks_agent`. |
++| `revisor/` | RevisorAgent | Implemented, Documented, Tested | Weekly retros and long-term project review; hands off operational sprint execution requests to `tasks_agent`. |
++| `shared/` | — | Implemented, Tested | Shared cross-agent utilities (assistant response adapters, source resolution). |
+ | `strategy/` | — | Roadmap | Placeholder for future strategy workflows. No code yet. |
+ | `task_marshal/` | — | Roadmap (stub) | Stub with bare imports only. May be superseded by `tasks/`. |
+ 
+@@ -39,6 +40,7 @@ Routing note:
+ - LLM provider: OpenRouter -> Gemini (see `src/fateforger/llm/` for client config).
+ - Structured output: use `output_content_type` for simple Pydantic models; use **schema-in-system-prompt** for models with `oneOf` / discriminated unions (see `timeboxing/AGENTS.md` for rationale).
+ - TOON tabular format for list-shaped LLM inputs (see `src/fateforger/llm/toon.py`).
++- Response adaptation is centralized via `shared/assistant_response.py` to keep text/handoff fallback behavior consistent across agents.
+ 
+ ## Subfolder Documentation
+ 
+@@ -50,4 +52,5 @@ Currently documented:
+ - `timeboxing/`: full README + AGENTS.
+ - `admonisher/`: AGENTS.md with intent/handoff rules.
+ - `tasks/`: README + AGENTS (TickTick list-management tool contract).
++- `shared/`: README for cross-agent utility contracts.
+ - Others: minimal READMEs, no AGENTS.md.
+diff --git a/src/fateforger/agents/admonisher/agent.py b/src/fateforger/agents/admonisher/agent.py
+index 7b7ae08..1c8aad2 100644
+--- a/src/fateforger/agents/admonisher/agent.py
++++ b/src/fateforger/agents/admonisher/agent.py
+@@ -9,14 +9,16 @@ from autogen_agentchat.base import Handoff as HandoffBase
+ from autogen_agentchat.messages import HandoffMessage, TextMessage
+ from autogen_core import MessageContext, RoutedAgent, message_handler
+ 
++from fateforger.core.config import settings
++from fateforger.debug.diag import with_timeout
+ from fateforger.llm import build_autogen_chat_client
+ 
++from ..shared import TextOrHandoffResponseAdapter, resolve_agent_source
+ from .prompts import ADMONISHER_PERSONA_PROMPT
+ 
+ logger = logging.getLogger(__name__)
+ 
+-# TODO(refactor): add `with_timeout` + structured error handling like ReceptionistAgent to improve Slack responsiveness under slow LLMs.
+-# TODO(refactor): share response parsing helpers across agents (e.g. `parse_chat_content`).
++_TEXT_OR_HANDOFF_ADAPTER = TextOrHandoffResponseAdapter()
+ 
+ ADMONISHER_PROMPT = f"""
+ {ADMONISHER_PERSONA_PROMPT}
+@@ -53,8 +55,11 @@ class AdmonisherAgent(RoutedAgent):
+         self, message: TextMessage, ctx: MessageContext
+     ) -> TextMessage | HandoffMessage:
+         logger.debug("Admonisher received message: %s", message.content)
+-        response = await self._assistant.on_messages([message], ctx.cancellation_token)
++        response = await with_timeout(
++            "admonisher:on_messages",
++            self._assistant.on_messages([message], ctx.cancellation_token),
++            timeout_s=float(getattr(settings, "agent_on_messages_timeout_seconds", 20)),
++        )
+         chat_message = response.chat_message
+-        if isinstance(chat_message, (TextMessage, HandoffMessage)):
+-            return chat_message
+-        return TextMessage(content=str(getattr(chat_message, "content", "")))
++        source = resolve_agent_source(self, default="admonisher_agent")
++        return _TEXT_OR_HANDOFF_ADAPTER.adapt(chat_message, source=source)
+diff --git a/src/fateforger/agents/revisor/agent.py b/src/fateforger/agents/revisor/agent.py
+index 5332f2b..ac23ff6 100644
+--- a/src/fateforger/agents/revisor/agent.py
++++ b/src/fateforger/agents/revisor/agent.py
+@@ -10,9 +10,14 @@ from autogen_agentchat.base import Handoff as HandoffBase
+ from autogen_agentchat.messages import HandoffMessage, TextMessage
+ from autogen_core import MessageContext, RoutedAgent, message_handler
+ 
++from fateforger.core.config import settings
++from fateforger.debug.diag import with_timeout
+ from fateforger.llm import build_autogen_chat_client
+ 
++from ..shared import TextOrHandoffResponseAdapter, resolve_agent_source
++
+ logger = logging.getLogger(__name__)
++_TEXT_OR_HANDOFF_ADAPTER = TextOrHandoffResponseAdapter()
+ 
+ REVISOR_PROMPT = """
+ You are the FateForger Revisor. Your role is long-term optimization and review.
+@@ -59,8 +64,11 @@ class RevisorAgent(RoutedAgent):
+         # In a full implementation, we would integrate with Notion here
+         # and potentially query the history of other agents.
+ 
+-        response = await self._assistant.on_messages([message], ctx.cancellation_token)
++        response = await with_timeout(
++            "revisor:on_messages",
++            self._assistant.on_messages([message], ctx.cancellation_token),
++            timeout_s=float(getattr(settings, "agent_on_messages_timeout_seconds", 20)),
++        )
+         chat_message = response.chat_message
+-        if isinstance(chat_message, (TextMessage, HandoffMessage)):
+-            return chat_message
+-        return TextMessage(content=str(getattr(chat_message, "content", "")))
++        source = resolve_agent_source(self, default="revisor_agent")
++        return _TEXT_OR_HANDOFF_ADAPTER.adapt(chat_message, source=source)
+diff --git a/src/fateforger/agents/tasks/agent.py b/src/fateforger/agents/tasks/agent.py
+index fad2c8e..9f50ce5 100644
+--- a/src/fateforger/agents/tasks/agent.py
++++ b/src/fateforger/agents/tasks/agent.py
+@@ -14,6 +14,7 @@ from fateforger.debug.diag import with_timeout
+ from fateforger.llm import build_autogen_chat_client
+ from fateforger.tools.ticktick_mcp import get_ticktick_mcp_url
+ 
++from ..shared import TextOnlyResponseAdapter, resolve_agent_source
+ from .list_tools import TickTickListManager
+ from .messages import PendingTaskItem, PendingTaskSnapshot, PendingTaskSnapshotRequest
+ from .notion_sprint_tools import NotionSprintManager
+@@ -21,7 +22,7 @@ from .notion_sprint_tools import NotionSprintManager
+ logger = logging.getLogger(__name__)
+ 
+ # TODO(refactor): centralize MCP client/tool loading + timeouts in shared helpers (see `fateforger.agents.timeboxing.mcp_clients`)
+-# TODO(refactor): replace ad-hoc response handling with a shared `parse_chat_content` helper (see `fateforger.agents.timeboxing.pydantic_parsing`)
++_TEXT_RESPONSE_ADAPTER = TextOnlyResponseAdapter()
+ 
+ TASKS_PROMPT = """
+ You are the FateForger Tasks Agent ("Task Marshal").
+@@ -138,13 +139,11 @@ class TasksAgent(RoutedAgent):
+         response = await with_timeout(
+             "tasks:on_messages",
+             self._assistant.on_messages([message], ctx.cancellation_token),
+-            timeout_s=20,
++            timeout_s=float(getattr(settings, "agent_on_messages_timeout_seconds", 20)),
+         )
+         chat_message = getattr(response, "chat_message", None)
+-        if isinstance(chat_message, TextMessage):
+-            return chat_message
+-        content = getattr(chat_message, "content", None) if chat_message else None
+-        return TextMessage(content=str(content or "(no response)"), source=self.id.type)
++        source = resolve_agent_source(self, default="tasks_agent")
++        return _TEXT_RESPONSE_ADAPTER.adapt(chat_message, source=source)
+ 
+ 
+ __all__ = ["TasksAgent"]
+diff --git a/src/fateforger/agents/timeboxing/patching.py b/src/fateforger/agents/timeboxing/patching.py
+index 6497a1c..4bce8b1 100644
+--- a/src/fateforger/agents/timeboxing/patching.py
++++ b/src/fateforger/agents/timeboxing/patching.py
+@@ -17,15 +17,17 @@ from __future__ import annotations
+ 
+ import json
+ import logging
+-import os
+ import time
++from abc import ABC, abstractmethod
+ from collections.abc import Iterator
++from dataclasses import dataclass
+ from typing import Any, Callable, Iterable, List, Literal
+ 
+ from autogen_agentchat.agents import AssistantAgent
+ from autogen_agentchat.messages import TextMessage
+ from autogen_core import CancellationToken
+ 
++from fateforger.core.config import settings
+ from fateforger.debug.diag import with_timeout
+ from fateforger.llm import build_autogen_chat_client
+ from fateforger.llm.toon import toon_encode
+@@ -98,6 +100,154 @@ Return ONLY the TBPatch JSON.
+ """
+ 
+ 
++class PatchContentDecoder(ABC):
++    """Decode TBPatch payloads from typed response content."""
++
++    @abstractmethod
++    def supports(self, content: Any) -> bool:
++        """Return whether this decoder handles the given content type."""
++
++    @abstractmethod
++    def decode(self, content: Any) -> TBPatch:
++        """Decode content into a validated ``TBPatch`` payload."""
++
++
++class TBPatchInstanceDecoder(PatchContentDecoder):
++    """Pass-through decoder for already typed patch objects."""
++
++    def supports(self, content: Any) -> bool:
++        return isinstance(content, TBPatch)
++
++    def decode(self, content: Any) -> TBPatch:
++        return content
++
++
++class TBPatchDictDecoder(PatchContentDecoder):
++    """Decoder for dict payloads returned by model adapters."""
++
++    def supports(self, content: Any) -> bool:
++        return isinstance(content, dict)
++
++    def decode(self, content: Any) -> TBPatch:
++        try:
++            return TBPatch.model_validate(content)
++        except Exception as exc:  # pragma: no cover - delegated by pydantic internals
++            raise ValueError(f"TBPatch validation failed from dict payload: {exc}") from exc
++
++
++class TBPatchJsonStringDecoder(PatchContentDecoder):
++    """Decoder for JSON string payloads with optional code fences."""
++
++    def supports(self, content: Any) -> bool:
++        return isinstance(content, str)
++
++    def decode(self, content: Any) -> TBPatch:
++        raw_text = _strip_markdown_fences(content.strip())
++        try:
++            return TBPatch.model_validate_json(raw_text)
++        except Exception as exc:  # pragma: no cover - delegated by pydantic internals
++            raise ValueError(f"TBPatch parse/validation failed: {exc}") from exc
++
++
++@dataclass(frozen=True)
++class PatchResponseDecoder:
++    """Composable decoder chain for extracting ``TBPatch`` results."""
++
++    decoders: tuple[PatchContentDecoder, ...] = (
++        TBPatchInstanceDecoder(),
++        TBPatchJsonStringDecoder(),
++        TBPatchDictDecoder(),
++    )
++
++    def decode_response(self, response: Any) -> TBPatch:
++        content = getattr(response.chat_message, "content", None)
++        for decoder in self.decoders:
++            if decoder.supports(content):
++                return decoder.decode(content)
++        raise ValueError(f"Could not extract TBPatch from response: {type(content).__name__}")
++
++
++@dataclass(frozen=True)
++class PatchRetryPolicy:
++    """Classify patch failures into retryable/non-retryable outcomes."""
++
++    non_retryable_error_types: frozenset[str] = frozenset(
++        {"AuthenticationError", "PermissionDeniedError", "BadRequestError"}
++    )
++    non_retryable_status_codes: frozenset[int] = frozenset({400, 401, 403, 404, 422})
++    retryable_status_codes: frozenset[int] = frozenset({408, 409, 425, 429})
++
++    def is_retryable(self, error: Exception) -> bool:
++        for item in _iter_exception_chain(error):
++            if type(item).__name__ in self.non_retryable_error_types:
++                return False
++            status = self._status_code(item)
++            if status is None:
++                continue
++            if status in self.non_retryable_status_codes:
++                return False
++            if status in self.retryable_status_codes or status >= 500:
++                return True
++        return True
++
++    @staticmethod
++    def _status_code(error: Exception) -> int | None:
++        for attr in ("status_code", "http_status", "status"):
++            value = getattr(error, attr, None)
++            if isinstance(value, int):
++                return value
++        response = getattr(error, "response", None)
++        value = getattr(response, "status_code", None)
++        if isinstance(value, int):
++            return value
++        return None
++
++
++@dataclass(frozen=True)
++class PatchErrorFeedbackBuilder:
++    """Build concise retry guidance from validator/apply exceptions."""
++
++    max_chars: int = 1200
++    max_detail_items: int = 6
++
++    def build(self, *, error: Exception) -> str:
++        head = str(error).strip() or type(error).__name__
++        details = self._extract_details(error)
++        lines: list[str] = [head]
++        if details:
++            lines.append("Violations:")
++            lines.extend(f"- {item}" for item in details)
++        return _truncate("\n".join(lines), max_chars=self.max_chars)
++
++    def _extract_details(self, error: Exception) -> list[str]:
++        details: list[str] = []
++        for item in _iter_exception_chain(error):
++            extractor = getattr(item, "errors", None)
++            if not callable(extractor):
++                continue
++            raw = extractor()
++            if not isinstance(raw, list):
++                continue
++            for detail in raw[: self.max_detail_items]:
++                if not isinstance(detail, dict):
++                    continue
++                loc = detail.get("loc")
++                loc_text = (
++                    ".".join(str(part) for part in loc)
++                    if isinstance(loc, (list, tuple)) and loc
++                    else "root"
++                )
++                detail_type = str(detail.get("type") or "validation_error")
++                message = str(detail.get("msg") or "").strip()
++                details.append(f"{detail_type} at {loc_text}: {message}".strip(": "))
++        return details
++
++
++_DEFAULT_PATCH_RESPONSE_DECODER = PatchResponseDecoder()
++_DEFAULT_PATCH_RETRY_POLICY = PatchRetryPolicy()
++_DEFAULT_PATCH_ERROR_FEEDBACK = PatchErrorFeedbackBuilder()
++
++
+ class TimeboxPatcher:
+     """Apply user-requested refinements to a ``TBPlan`` via typed domain ops.
+ 
+@@ -114,6 +264,9 @@ class TimeboxPatcher:
+         model_client: Any | None = None,
+         agent_type: str = "timebox_patcher",
+         max_attempts: int | None = None,
++        response_decoder: PatchResponseDecoder = _DEFAULT_PATCH_RESPONSE_DECODER,
++        retry_policy: PatchRetryPolicy = _DEFAULT_PATCH_RETRY_POLICY,
++        error_feedback_builder: PatchErrorFeedbackBuilder = _DEFAULT_PATCH_ERROR_FEEDBACK,
+     ) -> None:
+         """Initialize the patcher.
+ 
+@@ -127,11 +280,16 @@ class TimeboxPatcher:
+             agent_type,
+             parallel_tool_calls=False,
+         )
+-        env_attempts = _coerce_positive_int(
+-            os.getenv("TIMEBOX_PATCHER_MAX_ATTEMPTS"), default=5
++        self._max_attempts = (
++            max_attempts
++            if max_attempts is not None
++            else settings.timebox_patcher_max_attempts
+         )
+-        self._max_attempts = max_attempts if max_attempts is not None else env_attempts
+-        self._max_attempts = max(1, int(self._max_attempts))
++        if self._max_attempts < 1:
++            raise ValueError("timebox_patcher_max_attempts must be >= 1")
++        self._response_decoder = response_decoder
++        self._retry_policy = retry_policy
++        self._error_feedback_builder = error_feedback_builder
+ 
+     async def apply_patch(
+         self,
+@@ -217,7 +375,7 @@ class TimeboxPatcher:
+                     len(raw_content) if isinstance(raw_content, str) else None,
+                     _to_log_string(raw_content),
+                 )
+-                patch = _extract_patch(response)
++                patch = self._response_decoder.decode_response(response)
+                 logger.debug(
+                     "timebox_patcher request_id=%s attempt=%s patch=%s",
+                     request_id,
+@@ -237,9 +395,9 @@ class TimeboxPatcher:
+                 return patched, patch
+             except Exception as exc:
+                 last_error = exc
+-                retryable = _is_retryable_patch_error(exc)
++                retryable = self._retry_policy.is_retryable(exc)
+                 last_retryable = retryable
+-                retry_feedback = _build_retry_feedback(error=exc)
++                retry_feedback = self._error_feedback_builder.build(error=exc)
+                 logger.warning(
+                     "timebox_patcher request_id=%s failed attempt=%s/%s retryable=%s error=%s",
+                     request_id,
+@@ -383,65 +541,19 @@ def _format_actions(actions: Iterable[TimeboxAction]) -> str:
+ 
+ 
+ def _extract_patch(response: Any) -> TBPatch:
+-    """Extract ``TBPatch`` from an AutoGen agent response.
+-
+-    Args:
+-        response: The ``Response`` object from ``agent.on_messages()``.
+-
+-    Returns:
+-        Parsed ``TBPatch``.
+-
+-    Raises:
+-        ValueError: If the response cannot be parsed as ``TBPatch``.
+-    """
+-    msg = response.chat_message
+-    content = getattr(msg, "content", None)
+-
+-    # If AutoGen returned a structured TBPatch directly
+-    if isinstance(content, TBPatch):
+-        return content
+-
+-    # Try parsing from string (strip markdown fences if present)
+-    if isinstance(content, str):
+-        # TODO(refactor,typed-contracts): Remove markdown-fence stripping fallback.
+-        # Enforce strict typed tool/message output so TBPatch is parsed without
+-        # free-text normalization.
+-        text = content.strip()
+-        if text.startswith("```"):
+-            # Remove opening ```json or ``` and closing ```
+-            lines = text.split("\n")
+-            lines = lines[1:]  # drop opening fence
+-            if lines and lines[-1].strip() == "```":
+-                lines = lines[:-1]  # drop closing fence
+-            text = "\n".join(lines)
+-        try:
+-            return TBPatch.model_validate_json(text)
+-        except Exception as exc:
+-            raise ValueError(f"TBPatch parse/validation failed: {exc}") from exc
+-
+-    # Try from dict
+-    if isinstance(content, dict):
+-        try:
+-            return TBPatch.model_validate(content)
+-        except Exception as exc:
+-            raise ValueError(f"TBPatch validation failed from dict payload: {exc}") from exc
+-
+-    raise ValueError(
+-        f"Could not extract TBPatch from response: {type(content).__name__}"
+-    )
++    """Backwards-compatible wrapper around the class-based response decoder."""
++    return _DEFAULT_PATCH_RESPONSE_DECODER.decode_response(response)
+ 
+ 
+-def _coerce_positive_int(value: str | None, *, default: int) -> int:
+-    """Parse a positive integer from env-like input, with safe fallback."""
+-    try:
+-        if value is None:
+-            return default
+-        parsed = int(str(value).strip())
+-        if parsed < 1:
+-            return default
+-        return parsed
+-    except Exception:
+-        return default
++def _strip_markdown_fences(value: str) -> str:
++    """Strip optional markdown code fences from model JSON output."""
++    if not value.startswith("```"):
++        return value
++    lines = value.split("\n")
++    body = lines[1:]
++    if body and body[-1].strip() == "```":
++        body = body[:-1]
++    return "\n".join(body)
+ 
+ 
+ def _iter_exception_chain(error: Exception) -> Iterator[Exception]:
+@@ -456,39 +568,6 @@ def _iter_exception_chain(error: Exception) -> Iterator[Exception]:
+         current = current.__context__
+ 
+ 
+-def _status_code_from_exception(error: Exception) -> int | None:
+-    for attr in ("status_code", "http_status", "status"):
+-        value = getattr(error, attr, None)
+-        if isinstance(value, int):
+-            return value
+-    response = getattr(error, "response", None)
+-    value = getattr(response, "status_code", None)
+-    if isinstance(value, int):
+-        return value
+-    return None
+-
+-
+-def _is_retryable_patch_error(error: Exception) -> bool:
+-    non_retryable_types = {
+-        "AuthenticationError",
+-        "PermissionDeniedError",
+-        "BadRequestError",
+-    }
+-    for item in _iter_exception_chain(error):
+-        if type(item).__name__ in non_retryable_types:
+-            return False
+-        status = _status_code_from_exception(item)
+-        if status is None:
+-            continue
+-        if status in {400, 401, 403, 404, 422}:
+-            return False
+-        if status in {408, 409, 425, 429}:
+-            return True
+-        if status >= 500:
+-            return True
+-    return True
+-
+-
+ def _to_log_string(value: Any) -> str:
+     """Render patcher values as compact log-safe strings."""
+     try:
+@@ -510,47 +589,4 @@ def _truncate(value: str, *, max_chars: int) -> str:
+     return value[: max(0, max_chars - 16)] + f" …(truncated,{len(value)})"
+ 
+ 
+-def _build_retry_feedback(*, error: Exception) -> str:
+-    """Build concise, structured retry guidance from apply/validation exceptions."""
+-    head = str(error).strip() or type(error).__name__
+-    lines: list[str] = [head]
+-    details = _extract_error_details(error)
+-    if details:
+-        lines.append("Violations:")
+-        lines.extend(f"- {item}" for item in details)
+-    return _truncate("\n".join(lines), max_chars=1200)
+-
+-
+-def _extract_error_details(error: Exception) -> list[str]:
+-    """Extract normalized validation/apply details from nested exceptions."""
+-    details: list[str] = []
+-    seen: set[int] = set()
+-    current: Exception | None = error
+-    while current is not None and id(current) not in seen:
+-        seen.add(id(current))
+-        extractor = getattr(current, "errors", None)
+-        if callable(extractor):
+-            try:
+-                raw = extractor()
+-            except Exception:
+-                raw = None
+-            if isinstance(raw, list):
+-                for item in raw[:6]:
+-                    if not isinstance(item, dict):
+-                        continue
+-                    loc = item.get("loc")
+-                    loc_text = (
+-                        ".".join(str(part) for part in loc)
+-                        if isinstance(loc, (list, tuple)) and loc
+-                        else "root"
+-                    )
+-                    typ = str(item.get("type") or "validation_error")
+-                    msg = str(item.get("msg") or "").strip()
+-                    details.append(
+-                        f"{typ} at {loc_text}: {msg}".strip(": ")
+-                    )
+-        current = current.__cause__
+-    return details
+-
+-
+ __all__ = ["TimeboxPatcher"]
+diff --git a/src/fateforger/agents/timeboxing/submitter.py b/src/fateforger/agents/timeboxing/submitter.py
+index 82cddf5..2df9fd1 100644
+--- a/src/fateforger/agents/timeboxing/submitter.py
++++ b/src/fateforger/agents/timeboxing/submitter.py
+@@ -20,6 +20,8 @@ from .tb_models import TBPlan
+ 
+ logger = logging.getLogger(__name__)
+ 
++UNDOABLE_SYNC_STATUSES = frozenset({"committed", "partial", "partial_halted"})
++
+ 
+ class CalendarSubmitter:
+     """Submit ``TBPlan`` changes to Google Calendar via MCP sync engine.
+@@ -113,7 +115,7 @@ class CalendarSubmitter:
+         Returns:
+             The undo ``SyncTransaction``, or ``None`` if no transaction to undo.
+         """
+-        if not self._last_tx or self._last_tx.status not in ("committed", "partial"):
++        if not self._last_tx or self._last_tx.status not in UNDOABLE_SYNC_STATUSES:
+             logger.warning("No transaction to undo.")
+             return None
+ 
+@@ -131,7 +133,7 @@ class CalendarSubmitter:
+         Returns:
+             The undo transaction when undo is possible, else ``None``.
+         """
+-        if tx.status not in ("committed", "partial"):
++        if tx.status not in UNDOABLE_SYNC_STATUSES:
+             logger.warning("Transaction is not undoable (status=%s).", tx.status)
+             return None
+         wb = self._get_workbench()
+diff --git a/src/fateforger/agents/timeboxing/sync_engine.py b/src/fateforger/agents/timeboxing/sync_engine.py
+index 4369120..b33f06b 100644
+--- a/src/fateforger/agents/timeboxing/sync_engine.py
++++ b/src/fateforger/agents/timeboxing/sync_engine.py
+@@ -475,13 +475,20 @@ async def undo_sync(
+     Returns:
+         A new ``SyncTransaction`` representing the undo.
+     """
+-    if len(tx.results) != len(tx.ops):
++    if len(tx.results) == 0:
+         raise ValueError(
+-            "Cannot undo sync transaction without complete per-op execution results."
++            "Cannot undo sync transaction without execution results."
++        )
++    if len(tx.results) > len(tx.ops):
++        raise ValueError(
++            "Cannot undo sync transaction when results exceed planned operations."
+         )
+ 
++    executed_ops = tx.ops[: len(tx.results)]
+     successful_forward_ops = [
+-        op for index, op in enumerate(tx.ops) if bool(tx.results[index].get("ok"))
++        op
++        for index, op in enumerate(executed_ops)
++        if bool(tx.results[index].get("ok"))
+     ]
+     undo_ops: list[SyncOp] = []
+ 
+diff --git a/src/fateforger/core/config.py b/src/fateforger/core/config.py
+index b8d585d..49650e9 100644
+--- a/src/fateforger/core/config.py
++++ b/src/fateforger/core/config.py
+@@ -191,6 +191,7 @@ class Settings(BaseSettings):
+     timeboxing_memory_backend: str = Field(
+         default="constraint_mcp"
+     )
++    timebox_patcher_max_attempts: int = Field(default=5, ge=1)
+ 
+     # Mem0 Memory Configuration
+     mem0_user_id: str = Field(default="timeboxing")
+diff --git a/tests/unit/test_calendar_submitter.py b/tests/unit/test_calendar_submitter.py
+index 0a20b04..1539553 100644
+--- a/tests/unit/test_calendar_submitter.py
++++ b/tests/unit/test_calendar_submitter.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ from datetime import date, time, timedelta
++from unittest.mock import AsyncMock
+ 
+ import pytest
+ 
+@@ -61,3 +62,38 @@ async def test_submit_plan_halts_on_first_sync_error(monkeypatch: pytest.MonkeyP
+ 
+     assert tx.status == "committed"
+     assert captured["halt_on_error"] is True
++
++
++@pytest.mark.asyncio
++async def test_undo_last_accepts_partial_halted(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Partial-halted transactions should remain undoable."""
++    submitter = submitter_module.CalendarSubmitter(server_url="http://localhost:3000")
++    submitter._last_tx = SyncTransaction(status="partial_halted")
++    monkeypatch.setattr(submitter, "_get_workbench", lambda: object())
++    undo_stub = AsyncMock(return_value=SyncTransaction(status="undone"))
++    monkeypatch.setattr(submitter_module, "undo_sync", undo_stub)
++
++    result = await submitter.undo_last()
++
++    assert result is not None
++    assert result.status == "undone"
++    assert submitter.last_transaction is None
++    assert undo_stub.await_count == 1
++
++
++@pytest.mark.asyncio
++async def test_undo_transaction_accepts_partial_halted(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """Direct undo should allow partial-halted transactions."""
++    submitter = submitter_module.CalendarSubmitter(server_url="http://localhost:3000")
++    monkeypatch.setattr(submitter, "_get_workbench", lambda: object())
++    undo_stub = AsyncMock(return_value=SyncTransaction(status="undone"))
++    monkeypatch.setattr(submitter_module, "undo_sync", undo_stub)
++    tx = SyncTransaction(status="partial_halted")
++
++    result = await submitter.undo_transaction(tx)
++
++    assert result is not None
++    assert result.status == "undone"
++    assert undo_stub.await_count == 1
+diff --git a/tests/unit/test_revisor_handoff_wiring.py b/tests/unit/test_revisor_handoff_wiring.py
+index 1132c3b..1561de8 100644
+--- a/tests/unit/test_revisor_handoff_wiring.py
++++ b/tests/unit/test_revisor_handoff_wiring.py
+@@ -57,3 +57,42 @@ async def test_revisor_handle_text_returns_handoff_message():
+ 
+     assert isinstance(result, HandoffMessage)
+     assert result.target == "tasks_agent"
++
++
++@pytest.mark.asyncio
++async def test_revisor_handle_text_uses_configured_timeout(monkeypatch):
++    class _FakeAssistant:
++        async def on_messages(self, _messages, _cancellation_token):
++            return type(
++                "_Resp",
++                (),
++                {"chat_message": TextMessage(content="ok", source="revisor_agent")},
++            )()
++
++    captured: dict[str, float] = {}
++
++    async def _timeout_passthrough(label, awaitable, *, timeout_s):
++        _ = label
++        captured["timeout_s"] = timeout_s
++        return await awaitable
++
++    monkeypatch.setattr(revisor_agent_module, "with_timeout", _timeout_passthrough)
++    monkeypatch.setattr(
++        revisor_agent_module.settings, "agent_on_messages_timeout_seconds", 33
++    )
++
++    agent = revisor_agent_module.RevisorAgent("revisor_agent", allowed_handoffs=[])
++    agent._assistant = _FakeAssistant()
++    ctx = MessageContext(
++        sender=None,
++        topic_id=DefaultTopicId(),
++        is_rpc=False,
++        cancellation_token=CancellationToken(),
++        message_id="m2",
++    )
++
++    result = await agent.handle_text(TextMessage(content="status", source="U1"), ctx)
++
++    assert isinstance(result, TextMessage)
++    assert result.content == "ok"
++    assert captured["timeout_s"] == 33.0
+diff --git a/tests/unit/test_settings_mcp_endpoints.py b/tests/unit/test_settings_mcp_endpoints.py
+index b0cf1fa..d183e4a 100644
+--- a/tests/unit/test_settings_mcp_endpoints.py
++++ b/tests/unit/test_settings_mcp_endpoints.py
+@@ -84,3 +84,15 @@ def test_settings_rejects_invalid_ticktick_mcp_url(monkeypatch) -> None:
+     monkeypatch.setenv("TICKTICK_MCP_URL", "ticktick-mcp:8000/mcp")
+     with pytest.raises(ValueError):
+         Settings()
++
++
++def test_settings_accepts_valid_timebox_patcher_max_attempts(monkeypatch) -> None:
++    monkeypatch.setenv("TIMEBOX_PATCHER_MAX_ATTEMPTS", "7")
++    settings = Settings()
++    assert settings.timebox_patcher_max_attempts == 7
++
++
++def test_settings_rejects_invalid_timebox_patcher_max_attempts(monkeypatch) -> None:
++    monkeypatch.setenv("TIMEBOX_PATCHER_MAX_ATTEMPTS", "0")
++    with pytest.raises(ValueError):
++        Settings()
+diff --git a/tests/unit/test_sync_engine.py b/tests/unit/test_sync_engine.py
+index f173811..28afef9 100644
+--- a/tests/unit/test_sync_engine.py
++++ b/tests/unit/test_sync_engine.py
+@@ -774,6 +774,48 @@ class TestUndoSync:
+         assert calls[0][0][0] == "delete-event"
+         assert calls[0][1]["arguments"]["eventId"] == "fftb-ok"
+ 
++    @pytest.mark.asyncio
++    async def test_undo_partial_halted_uses_executed_subset(
++        self, mock_workbench: AsyncMock
++    ) -> None:
++        """Undo should ignore unexecuted tail ops on partial_halted transactions."""
++        tx = SyncTransaction(
++            ops=[
++                SyncOp(
++                    op_type=SyncOpType.CREATE,
++                    gcal_event_id="fftb-ok",
++                    after_payload={"calendarId": "primary", "eventId": "fftb-ok"},
++                ),
++                SyncOp(
++                    op_type=SyncOpType.UPDATE,
++                    gcal_event_id="fftb-failed",
++                    after_payload={"calendarId": "primary", "eventId": "fftb-failed"},
++                    before_payload={
++                        "calendarId": "primary",
++                        "eventId": "fftb-failed",
++                        "summary": "before",
++                    },
++                ),
++                SyncOp(
++                    op_type=SyncOpType.DELETE,
++                    gcal_event_id="fftb-never-ran",
++                    after_payload={"calendarId": "primary", "eventId": "fftb-never-ran"},
++                ),
++            ],
++            results=[
++                {"ok": True, "event_id": "fftb-ok"},
++                {"ok": False, "event_id": "fftb-failed"},
++            ],
++            status="partial_halted",
++        )
++
++        undo_tx = await undo_sync(tx, mock_workbench)
++        assert undo_tx.status == "undone"
++        calls = mock_workbench.call_tool.call_args_list
++        assert len(calls) == 1
++        assert calls[0][0][0] == "delete-event"
++        assert calls[0][1]["arguments"]["eventId"] == "fftb-ok"
++
+     @pytest.mark.asyncio
+     async def test_undo_raises_when_transaction_results_missing(
+         self, mock_workbench: AsyncMock
+@@ -790,7 +832,30 @@ class TestUndoSync:
+             status="committed",
+         )
+ 
+-        with pytest.raises(ValueError, match="complete per-op execution results"):
++        with pytest.raises(ValueError, match="without execution results"):
++            await undo_sync(tx, mock_workbench)
++
++    @pytest.mark.asyncio
++    async def test_undo_raises_when_results_exceed_planned_ops(
++        self, mock_workbench: AsyncMock
++    ) -> None:
++        """Undo should fail loudly when result cardinality is malformed."""
++        tx = SyncTransaction(
++            ops=[
++                SyncOp(
++                    op_type=SyncOpType.CREATE,
++                    gcal_event_id="fftb-created",
++                    after_payload={"calendarId": "primary", "eventId": "fftb-created"},
++                )
++            ],
++            results=[
++                {"ok": True, "event_id": "fftb-created"},
++                {"ok": False, "event_id": "fftb-extra"},
++            ],
++            status="partial",
++        )
++
++        with pytest.raises(ValueError, match="results exceed planned operations"):
+             await undo_sync(tx, mock_workbench)
+ 
+ 
+diff --git a/tests/unit/test_tasks_agent_tool_wiring.py b/tests/unit/test_tasks_agent_tool_wiring.py
+index e35f2e0..9d699c3 100644
+--- a/tests/unit/test_tasks_agent_tool_wiring.py
++++ b/tests/unit/test_tasks_agent_tool_wiring.py
+@@ -5,6 +5,9 @@ import pytest
+ pytest.importorskip("autogen_core")
+ pytest.importorskip("autogen_agentchat.agents")
+ 
++from autogen_agentchat.messages import TextMessage
++from autogen_core import CancellationToken, DefaultTopicId, MessageContext
++
+ from fateforger.agents.tasks import agent as tasks_agent_module
+ 
+ 
+@@ -27,3 +30,48 @@ def test_tasks_agent_registers_manage_ticktick_lists_tool(monkeypatch):
+     assert "find_sprint_items" in names
+     assert "link_sprint_subtasks" in names
+     assert "patch_sprint_page_content" in names
++
++
++@pytest.mark.asyncio
++async def test_tasks_agent_handle_text_uses_configured_timeout(monkeypatch):
++    class DummyAssistantAgent:
++        def __init__(self, **kwargs):
++            _ = kwargs
++
++    class _FakeAssistant:
++        async def on_messages(self, _messages, _cancellation_token):
++            return type(
++                "_Resp",
++                (),
++                {"chat_message": TextMessage(content="ok", source="tasks_agent")},
++            )()
++
++    captured: dict[str, float] = {}
++
++    async def _timeout_passthrough(label, awaitable, *, timeout_s):
++        _ = label
++        captured["timeout_s"] = timeout_s
++        return await awaitable
++
++    monkeypatch.setattr(tasks_agent_module, "AssistantAgent", DummyAssistantAgent)
++    monkeypatch.setattr(tasks_agent_module, "build_autogen_chat_client", lambda _name: object())
++    monkeypatch.setattr(tasks_agent_module, "with_timeout", _timeout_passthrough)
++    monkeypatch.setattr(
++        tasks_agent_module.settings, "agent_on_messages_timeout_seconds", 37
++    )
++
++    agent = tasks_agent_module.TasksAgent("tasks_agent")
++    agent._assistant = _FakeAssistant()
++    ctx = MessageContext(
++        sender=None,
++        topic_id=DefaultTopicId(),
++        is_rpc=False,
++        cancellation_token=CancellationToken(),
++        message_id="m1",
++    )
++
++    result = await agent.handle_text(TextMessage(content="hello", source="U1"), ctx)
++
++    assert isinstance(result, TextMessage)
++    assert result.content == "ok"
++    assert captured["timeout_s"] == 37.0
