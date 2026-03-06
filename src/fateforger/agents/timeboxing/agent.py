@@ -342,6 +342,8 @@ class Session:
     thread_state: str | None = None
     session_key: str | None = None
     debug_log_path: str | None = None
+    graph_turn_started_at_monotonic: float | None = None
+    graph_turn_deadline_monotonic: float | None = None
 
 
 @dataclass
@@ -712,6 +714,10 @@ class TimeboxingFlowAgent(RoutedAgent):
         async with session.graph_turn_lock:
             turn_started_at = perf_counter()
             turn_elapsed_s = lambda: round(perf_counter() - turn_started_at, 3)
+            session.graph_turn_started_at_monotonic = turn_started_at
+            session.graph_turn_deadline_monotonic = (
+                turn_started_at + TIMEBOXING_TIMEOUTS.graph_turn_s
+            )
             self._refresh_temporal_facts(session)
             self._session_debug(
                 session,
@@ -731,69 +737,73 @@ class TimeboxingFlowAgent(RoutedAgent):
                 return presenter_message
 
             try:
-                presenter = await with_timeout(
-                    "timeboxing:graph-turn",
-                    _run_stream(),
-                    timeout_s=TIMEBOXING_TIMEOUTS.graph_turn_s,
-                    dump_on_timeout=False,
-                    dump_threads_on_timeout=False,
+                try:
+                    presenter = await with_timeout(
+                        "timeboxing:graph-turn",
+                        _run_stream(),
+                        timeout_s=TIMEBOXING_TIMEOUTS.graph_turn_s,
+                        dump_on_timeout=False,
+                        dump_threads_on_timeout=False,
+                    )
+                except TimeoutError as exc:
+                    timeout_message = "This turn hit a processing timeout. Reply `Redo` to retry this stage."
+                    self._session_debug(
+                        session,
+                        "graph_turn_timeout",
+                        error_type=type(exc).__name__,
+                        timeout_s=TIMEBOXING_TIMEOUTS.graph_turn_s,
+                        elapsed_s=turn_elapsed_s(),
+                    )
+                    self._session_debug(
+                        session,
+                        "graph_turn_end",
+                        presenter_found=False,
+                        output_preview=timeout_message[:500],
+                        elapsed_s=turn_elapsed_s(),
+                    )
+                    observe_stage_duration(
+                        stage=session.stage.value if session.stage else "unknown",
+                        duration_s=turn_elapsed_s(),
+                    )
+                    return TextMessage(content=timeout_message, source=self.id.type)
+                except Exception as exc:
+                    self._session_debug(
+                        session,
+                        "graph_turn_error",
+                        error_type=type(exc).__name__,
+                        error=str(exc)[:2000],
+                        elapsed_s=turn_elapsed_s(),
+                    )
+                    raise
+                content = (
+                    presenter.content
+                    if presenter
+                    else "No stage response was generated. Reply `Redo` to retry this stage."
                 )
-            except TimeoutError as exc:
-                timeout_message = "This turn hit a processing timeout. Reply `Redo` to retry this stage."
-                self._session_debug(
-                    session,
-                    "graph_turn_timeout",
-                    error_type=type(exc).__name__,
-                    timeout_s=TIMEBOXING_TIMEOUTS.graph_turn_s,
-                    elapsed_s=turn_elapsed_s(),
-                )
+                elapsed_s = turn_elapsed_s()
                 self._session_debug(
                     session,
                     "graph_turn_end",
-                    presenter_found=False,
-                    output_preview=timeout_message[:500],
-                    elapsed_s=turn_elapsed_s(),
+                    presenter_found=presenter is not None,
+                    output_preview=content[:500],
+                    elapsed_s=elapsed_s,
                 )
                 observe_stage_duration(
                     stage=session.stage.value if session.stage else "unknown",
-                    duration_s=turn_elapsed_s(),
+                    duration_s=elapsed_s,
                 )
-                return TextMessage(content=timeout_message, source=self.id.type)
-            except Exception as exc:
-                self._session_debug(
-                    session,
-                    "graph_turn_error",
-                    error_type=type(exc).__name__,
-                    error=str(exc)[:2000],
-                    elapsed_s=turn_elapsed_s(),
-                )
-                raise
-            content = (
-                presenter.content
-                if presenter
-                else "No stage response was generated. Reply `Redo` to retry this stage."
-            )
-            elapsed_s = turn_elapsed_s()
-            self._session_debug(
-                session,
-                "graph_turn_end",
-                presenter_found=presenter is not None,
-                output_preview=content[:500],
-                elapsed_s=elapsed_s,
-            )
-            observe_stage_duration(
-                stage=session.stage.value if session.stage else "unknown",
-                duration_s=elapsed_s,
-            )
-            if elapsed_s >= TIMEBOXING_TIMEOUTS.slow_turn_warn_s:
-                self._session_debug(
-                    session,
-                    "graph_turn_slow",
-                    elapsed_s=elapsed_s,
-                    threshold_s=TIMEBOXING_TIMEOUTS.slow_turn_warn_s,
-                    user_text_preview=(user_text or "")[:200],
-                )
-            return TextMessage(content=content, source=self.id.type)
+                if elapsed_s >= TIMEBOXING_TIMEOUTS.slow_turn_warn_s:
+                    self._session_debug(
+                        session,
+                        "graph_turn_slow",
+                        elapsed_s=elapsed_s,
+                        threshold_s=TIMEBOXING_TIMEOUTS.slow_turn_warn_s,
+                        user_text_preview=(user_text or "")[:200],
+                    )
+                return TextMessage(content=content, source=self.id.type)
+            finally:
+                session.graph_turn_started_at_monotonic = None
+                session.graph_turn_deadline_monotonic = None
 
     # TODO: this should be build into the agent itself using the autogen message in that stage, not bolted on like this
     async def _interpret_planned_date(
@@ -3151,6 +3161,39 @@ class TimeboxingFlowAgent(RoutedAgent):
             payload["next_suggestion"] = session.last_quality_next_step
         return payload
 
+    @staticmethod
+    def _remaining_graph_turn_budget_s(session: Session) -> float | None:
+        """Return remaining graph-turn budget in seconds for the current turn."""
+        deadline = session.graph_turn_deadline_monotonic
+        if deadline is None:
+            return None
+        return max(0.0, deadline - perf_counter())
+
+    def _build_refine_budget_fastpath_gate(
+        self, *, session: Session
+    ) -> StageGateOutput:
+        """Build a deterministic refine gate when turn budget is nearly exhausted."""
+        summary = [
+            "Patch applied locally and staged for review.",
+            "Skipping extra quality analysis this turn to avoid a timeout.",
+        ]
+        snapshot = self._quality_snapshot_for_prompt(session)
+        if snapshot:
+            level = snapshot.get("quality_level")
+            label = snapshot.get("quality_label")
+            if isinstance(level, int) and isinstance(label, str) and label.strip():
+                summary.append(f"Last known quality: {label.strip()} ({level}/4).")
+        return StageGateOutput(
+            stage_id=TimeboxingStage.REFINE,
+            ready=True,
+            summary=summary,
+            missing=[],
+            question=(
+                "Reply with edits, or say `commit now` to submit this staged patch to calendar."
+            ),
+            facts=snapshot,
+        )
+
     async def _run_refine_quality_assessment(
         self, *, timebox: Timebox
     ) -> RefineQualityFacts:
@@ -3222,6 +3265,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         stage: TimeboxingStage,
         timebox: Timebox,
         session: Session | None = None,
+        allow_quality_enrichment: bool = True,
     ) -> StageGateOutput:
         """Generate a summary for a timebox draft.
 
@@ -3249,12 +3293,20 @@ class TimeboxingFlowAgent(RoutedAgent):
             timeout_s=TIMEBOXING_TIMEOUTS.summary_s,
         )
         gate = parse_chat_content(StageGateOutput, response)
-        if stage == TimeboxingStage.REFINE and session is not None:
+        if (
+            stage == TimeboxingStage.REFINE
+            and session is not None
+            and allow_quality_enrichment
+        ):
             gate = await self._enrich_refine_quality_feedback(
                 session=session,
                 gate=gate,
                 timebox=timebox,
             )
+        elif stage == TimeboxingStage.REFINE and session is not None:
+            snapshot = self._quality_snapshot_for_prompt(session)
+            if snapshot:
+                gate.facts = {**snapshot, **(gate.facts or {})}
         return gate
 
     async def _run_review_commit(self, *, timebox: Timebox) -> StageGateOutput:

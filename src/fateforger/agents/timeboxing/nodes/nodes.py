@@ -25,6 +25,7 @@ from fateforger.agents.shared.handoff_policy import (
     HandoffPolicy,
     HandoffRoute,
 )
+from fateforger.agents.timeboxing.constants import TIMEBOXING_TIMEOUTS
 from fateforger.agents.timeboxing.stage_gating import (
     StageDecision,
     StageGateOutput,
@@ -641,11 +642,40 @@ class StageRefineNode(_StageNodeBase):
             self._session.stage_question = gate.question
             self.last_gate = gate
             return Response(chat_message=StructuredMessage(source=self.name, content=gate))
-        gate = await self._orchestrator._run_timebox_summary(  # noqa: SLF001
-            stage=TimeboxingStage.REFINE,
-            timebox=self._session.timebox,
-            session=self._session,
+        remaining_budget_s = self._orchestrator._remaining_graph_turn_budget_s(  # noqa: SLF001
+            self._session
         )
+        if (
+            remaining_budget_s is not None
+            and remaining_budget_s < TIMEBOXING_TIMEOUTS.refine_summary_min_budget_s
+        ):
+            self._orchestrator._session_debug(  # noqa: SLF001
+                self._session,
+                "refine_summary_fastpath",
+                remaining_budget_s=round(remaining_budget_s, 3),
+                threshold_s=TIMEBOXING_TIMEOUTS.refine_summary_min_budget_s,
+            )
+            gate = self._orchestrator._build_refine_budget_fastpath_gate(  # noqa: SLF001
+                session=self._session
+            )
+        else:
+            allow_quality = (
+                remaining_budget_s is None
+                or remaining_budget_s >= TIMEBOXING_TIMEOUTS.refine_quality_min_budget_s
+            )
+            if not allow_quality:
+                self._orchestrator._session_debug(  # noqa: SLF001
+                    self._session,
+                    "refine_quality_skipped_budget",
+                    remaining_budget_s=round(remaining_budget_s or 0.0, 3),
+                    threshold_s=TIMEBOXING_TIMEOUTS.refine_quality_min_budget_s,
+                )
+            gate = await self._orchestrator._run_timebox_summary(  # noqa: SLF001
+                stage=TimeboxingStage.REFINE,
+                timebox=self._session.timebox,
+                session=self._session,
+                allow_quality_enrichment=allow_quality,
+            )
         if execution.calendar.note:
             gate.summary.append(execution.calendar.note)
         if execution.fallback_patch_used:

@@ -63,6 +63,8 @@ async def test_run_graph_turn_serializes_concurrent_calls_per_session() -> None:
     assert isinstance(out_b, TextMessage)
     assert flow.calls == 2
     assert flow.max_running == 1
+    assert session.graph_turn_started_at_monotonic is None
+    assert session.graph_turn_deadline_monotonic is None
 
 
 @pytest.mark.asyncio
@@ -110,3 +112,5 @@ async def test_run_graph_turn_returns_timeout_message_when_outer_timeout_hits(
     assert "processing timeout" in out.content
     assert events.count("graph_turn_timeout") == 1
     assert events.count("graph_turn_end") == 1
+    assert session.graph_turn_started_at_monotonic is None
+    assert session.graph_turn_deadline_monotonic is None

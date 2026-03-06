@@ -34,6 +34,8 @@ class TimeboxingTimeouts:
     tasks_snapshot_s: float = 12.0
     graph_turn_s: float = 120.0
     slow_turn_warn_s: float = 30.0
+    refine_summary_min_budget_s: float = 25.0
+    refine_quality_min_budget_s: float = 45.0
 
 
 @dataclass(frozen=True, slots=True)
