@@ -72,6 +72,8 @@ class PlanningSessionRefPayload:
     source: str | None
     channel_id: str | None
     thread_ts: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class SqlAlchemyPlanningSessionStore:
@@ -131,6 +133,7 @@ class SqlAlchemyPlanningSessionStore:
                 )
                 session.add(row)
             else:
+                row.planned_date = planned_date
                 row.calendar_id = calendar_id
                 row.event_id = event_id
                 row.status = status_value
@@ -209,6 +212,8 @@ def _to_payload(row: PlanningSessionRef) -> PlanningSessionRefPayload:
         source=row.source,
         channel_id=row.channel_id,
         thread_ts=row.thread_ts,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 

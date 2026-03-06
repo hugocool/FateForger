@@ -68,6 +68,145 @@ class _FakeUpsertWorkbench:
         raise AssertionError(f"Unexpected tool call: {name}")
 
 
+class _FakeCancelledVerificationWorkbench:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self._get_calls = 0
+
+    async def call_tool(self, name: str, arguments: dict):
+        self.calls.append((name, arguments))
+        if name == "get-event":
+            self._get_calls += 1
+            if self._get_calls == 1:
+                return _FakeToolResult(
+                    [
+                        _FakeTextResult(
+                            json.dumps(
+                                {
+                                    "event": {
+                                        "id": "evt-1",
+                                        "summary": "Daily planning session",
+                                        "start": {
+                                            "dateTime": "2026-02-27T18:20:51+01:00"
+                                        },
+                                        "end": {
+                                            "dateTime": "2026-02-27T18:50:51+01:00"
+                                        },
+                                        "htmlLink": "https://example.com/e/evt-1",
+                                    }
+                                }
+                            )
+                        )
+                    ]
+                )
+            return _FakeToolResult(
+                [
+                    _FakeTextResult(
+                        json.dumps(
+                            {
+                                "event": {
+                                    "id": "evt-1",
+                                    "status": "cancelled",
+                                    "summary": "Daily planning session",
+                                    "start": {
+                                        "dateTime": "2026-02-27T18:20:51+01:00"
+                                    },
+                                    "end": {
+                                        "dateTime": "2026-02-27T18:50:51+01:00"
+                                    },
+                                    "htmlLink": "https://example.com/e/evt-1",
+                                }
+                            }
+                        )
+                    )
+                ]
+            )
+        if name == "update-event":
+            return _FakeToolResult([_FakeTextResult(json.dumps({"ok": True}))])
+        raise AssertionError(f"Unexpected tool call: {name}")
+
+
+class _FakeCancelledPreexistingWorkbench:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self._get_calls = 0
+
+    async def call_tool(self, name: str, arguments: dict):
+        self.calls.append((name, arguments))
+        if name == "get-event":
+            self._get_calls += 1
+            if self._get_calls == 1:
+                return _FakeToolResult(
+                    [
+                        _FakeTextResult(
+                            json.dumps(
+                                {
+                                    "event": {
+                                        "id": "evt-1",
+                                        "status": "cancelled",
+                                        "summary": "Daily planning session",
+                                        "start": {
+                                            "dateTime": "2026-02-27T18:20:51+01:00"
+                                        },
+                                        "end": {
+                                            "dateTime": "2026-02-27T18:50:51+01:00"
+                                        },
+                                        "htmlLink": "https://example.com/e/evt-1",
+                                    }
+                                }
+                            )
+                        )
+                    ]
+                )
+            return _FakeToolResult(
+                [
+                    _FakeTextResult(
+                        json.dumps(
+                            {
+                                "event": {
+                                    "id": "evt-new",
+                                    "status": "confirmed",
+                                    "summary": "Daily planning session",
+                                    "start": {
+                                        "dateTime": "2026-02-27T18:20:51+01:00"
+                                    },
+                                    "end": {
+                                        "dateTime": "2026-02-27T18:50:51+01:00"
+                                    },
+                                    "htmlLink": "https://example.com/e/evt-1",
+                                }
+                            }
+                        )
+                    )
+                ]
+            )
+        if name == "delete-event":
+            return _FakeToolResult([_FakeTextResult(json.dumps({"ok": True}))])
+        if name == "create-event":
+            return _FakeToolResult(
+                [
+                    _FakeTextResult(
+                        json.dumps(
+                            {
+                                "event": {
+                                    "id": "evt-new",
+                                    "summary": "Daily planning session",
+                                    "start": {
+                                        "dateTime": "2026-02-27T18:20:51+01:00"
+                                    },
+                                    "end": {
+                                        "dateTime": "2026-02-27T18:50:51+01:00"
+                                    },
+                                    "htmlLink": "https://example.com/e/evt-new",
+                                }
+                            }
+                        )
+                    )
+                ]
+            )
+        raise AssertionError(f"Unexpected tool call: {name}")
+
+
 class _DummyHaunt:
     def register_agent(self, *args, **kwargs):
         return None
@@ -191,6 +330,53 @@ async def test_upsert_calendar_event_normalizes_start_end_for_update_event() -> 
     update_args = update_calls[0][1]
     assert update_args["start"] == "2026-02-27T18:20:51"
     assert update_args["end"] == "2026-02-27T18:50:51"
+
+
+@pytest.mark.asyncio
+async def test_upsert_calendar_event_fails_when_verification_event_is_cancelled() -> None:
+    workbench = _FakeCancelledVerificationWorkbench()
+    agent = PlannerAgent("planner_agent", haunt=_DummyHaunt())
+    agent._workbench = workbench
+    result = await agent.handle_upsert_calendar_event(
+        UpsertCalendarEvent(
+            calendar_id="primary",
+            event_id="evt-1",
+            summary="Daily planning session",
+            description="Plan tomorrow",
+            start="2026-02-27T17:20:51.252588+00:00",
+            end="2026-02-27T17:50:51.252588+00:00",
+            time_zone="Europe/Amsterdam",
+            color_id="10",
+        ),
+        None,
+    )
+    assert result.ok is False
+    assert "cancelled event" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_upsert_calendar_event_recreates_when_preexisting_event_is_cancelled() -> None:
+    workbench = _FakeCancelledPreexistingWorkbench()
+    agent = PlannerAgent("planner_agent", haunt=_DummyHaunt())
+    agent._workbench = workbench
+    result = await agent.handle_upsert_calendar_event(
+        UpsertCalendarEvent(
+            calendar_id="primary",
+            event_id="evt-1",
+            summary="Daily planning session",
+            description="Plan tomorrow",
+            start="2026-02-27T17:20:51.252588+00:00",
+            end="2026-02-27T17:50:51.252588+00:00",
+            time_zone="Europe/Amsterdam",
+            color_id="10",
+        ),
+        None,
+    )
+    assert result.ok is True
+    tool_names = [name for name, _ in workbench.calls]
+    assert "delete-event" in tool_names
+    assert "create-event" in tool_names
+    assert "update-event" not in tool_names
 
 
 def test_extract_tool_error_detects_structured_failure() -> None:

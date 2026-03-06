@@ -12,6 +12,15 @@
 - Avoid editing generated/artifact outputs and local state (e.g. `site/`, `*.db`, `logs/`, token/secret folders) unless explicitly requested.
 - Ask before adding dependencies or changing schemas/DB models; deliver schema changes via Alembic migrations (no runtime “ensure_*” table/column creation in live paths).
 
+## Cross-cutting proposal contract (critical)
+- For Slack-delivered proposed objects (event/task/constraint/etc.), enforce one reusable interaction pattern:
+  - proposal object is typed,
+  - user response is interpreted as typed intent (+ optional typed patch/update),
+  - NL reply and UI action converge to the same submit executor.
+- Never add deterministic free-form NLU (regex/substring/keyword) for proposal intent extraction.
+- Deterministic parsing is only allowed for structured transport fields (IDs, timestamps, encoded metadata).
+- Keep contract details in `docs/architecture/proposal_object_contract.md` and ensure module `AGENTS.md` files reference/apply it where relevant.
+
 ## Git write authority (critical)
 - The agent must not run `git commit` or `git push` unless the user explicitly asks for it in the current turn.
 - Default behavior: implement changes, run validation, and stop at a review-ready working tree.
@@ -215,6 +224,10 @@ poetry run python scripts/dev/timebox_log_query.py llm --log-path logs/llm_io_20
 
 ## Slack capability audit loop (critical)
 - Use the Slack skill as the primary operator surface for live end-to-end audits of agent behavior in Slack.
+- Restart the local Slack bot runtime before each manual audit replay so validation reflects the latest code and avoids stale in-memory state.
+- After restart, verify runtime prerequisites before sending audit prompts:
+  - required MCP dependencies are reachable (especially `calendar-mcp`),
+  - Prometheus scrape is healthy (`up{job="fateforger_app"} == 1`).
 - For audits that require sending user-facing Slack messages, use Slack MCP (`agent-slack`) first; only use the fallback driver when MCP is unavailable or authentication fails.
 - If the Slack skill is unavailable, use the deterministic fallback driver (`scripts/dev/slack_user_timeboxing_driver.py`) with `SLACK_USER_TOKEN`.
 - Fallback driver thread identity rule:

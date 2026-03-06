@@ -9,12 +9,16 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
+from autogen_agentchat.agents import AssistantAgent
+from autogen_agentchat.messages import TextMessage
+from autogen_core import CancellationToken
 from autogen_core import AgentId
 from dateutil import parser as date_parser
+from pydantic import BaseModel, Field, TypeAdapter
 from slack_sdk.web.async_client import AsyncWebClient
 
 from fateforger.agents.schedular.messages import (
@@ -50,6 +54,7 @@ from fateforger.haunt.reconcile import (
     PlanningSessionRule,
 )
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
+from fateforger.llm import build_autogen_chat_client
 from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.workspace import DEFAULT_PERSONAS, WorkspaceRegistry
 
@@ -80,12 +85,57 @@ DEFAULT_DURATION_OPTIONS = (15, 30, 45, 60, 90, 120)
 DEFAULT_DURATION_MINUTES = 30
 DEFAULT_TIMEZONE = "Europe/Amsterdam"
 
+PLANNING_THREAD_REPLY_INTERPRETER_PROMPT = """
+You interpret user replies in a planning-card thread.
+
+Your task:
+- Decide whether the reply should change the draft time and/or add the draft to calendar.
+- Return STRICT JSON matching PlanningThreadReplyDecision.
+
+Action definitions:
+- ignore: no planning-card action should run.
+- update_time: change draft time only (no add yet).
+- add_to_calendar: add draft without changing time.
+- update_time_and_add_to_calendar: change time, then add.
+
+Rules:
+- Understand natural language in any language.
+- If the user gives a clock time (e.g. 17:00, 5pm), normalize to 24h HH:MM.
+- Only set selected_time when user explicitly specifies a time.
+- If uncertain, choose action=ignore.
+- Never invent times.
+""".strip()
+
 
 @dataclass(frozen=True)
 class SlotSuggestion:
     start_utc: datetime
     end_utc: datetime
     tz: str
+
+
+class PlanningThreadReplyDecision(BaseModel):
+    action: Literal[
+        "ignore", "update_time", "add_to_calendar", "update_time_and_add_to_calendar"
+    ] = Field(
+        description="Interpretation action for this planning-card thread reply."
+    )
+    selected_time: str | None = Field(
+        default=None, description="24h time HH:MM when user explicitly requested one."
+    )
+    confidence: float | None = Field(
+        default=None, ge=0.0, le=1.0, description="Confidence score for telemetry."
+    )
+    explanation: str | None = Field(
+        default=None, description="Short debug rationale; not user-facing."
+    )
+
+
+@dataclass(frozen=True)
+class PlanningThreadReplyIntent:
+    should_handle: bool
+    commit: bool
+    selected_time: str | None
 
 
 class PlanningCoordinator:
@@ -108,8 +158,66 @@ class PlanningCoordinator:
         self._reconciler: PlanningReconciler | None = getattr(
             runtime, "planning_reconciler", None
         )
+        self._thread_reply_interpreter: AssistantAgent | None = None
         if self._guardian:
             timeboxing_activity.set_on_idle(self._handle_timeboxing_idle)
+
+    def _ensure_thread_reply_interpreter(self) -> AssistantAgent:
+        if self._thread_reply_interpreter:
+            return self._thread_reply_interpreter
+        self._thread_reply_interpreter = AssistantAgent(
+            name="planning_card_thread_reply_interpreter",
+            model_client=build_autogen_chat_client("planner_agent"),
+            output_content_type=PlanningThreadReplyDecision,
+            system_message=PLANNING_THREAD_REPLY_INTERPRETER_PROMPT,
+            reflect_on_tool_use=False,
+            max_tool_iterations=1,
+        )
+        return self._thread_reply_interpreter
+
+    async def _interpret_planning_thread_reply(
+        self, *, text: str, draft: EventDraftPayload
+    ) -> PlanningThreadReplyIntent:
+        interpreter = self._ensure_thread_reply_interpreter()
+        prompt = (
+            "Planning draft context:\n"
+            f"- title: {draft.title}\n"
+            f"- timezone: {draft.timezone}\n"
+            f"- current_start_utc: {draft.start_at_utc}\n"
+            f"- duration_min: {draft.duration_min}\n\n"
+            f"User reply:\n{text}"
+        )
+        try:
+            response = await interpreter.on_messages(
+                [TextMessage(content=prompt, source=draft.user_id)],
+                CancellationToken(),
+            )
+            content = getattr(getattr(response, "chat_message", None), "content", None)
+            if isinstance(content, PlanningThreadReplyDecision):
+                decision = content
+            else:
+                decision = TypeAdapter(PlanningThreadReplyDecision).validate_python(
+                    content
+                )
+        except Exception:
+            logger.warning("planning thread reply interpretation failed", exc_info=True)
+            return PlanningThreadReplyIntent(
+                should_handle=False, commit=False, selected_time=None
+            )
+
+        selected_time = (decision.selected_time or "").strip() or None
+        commit = decision.action in {
+            "add_to_calendar",
+            "update_time_and_add_to_calendar",
+        }
+        should_handle = decision.action != "ignore"
+        if decision.action in {"update_time", "update_time_and_add_to_calendar"}:
+            should_handle = bool(selected_time)
+        return PlanningThreadReplyIntent(
+            should_handle=should_handle,
+            commit=commit,
+            selected_time=selected_time,
+        )
 
     async def _handle_timeboxing_idle(self, user_id: str) -> None:
         if not self._guardian:
@@ -366,13 +474,13 @@ class PlanningCoordinator:
         if not self._reconciler:
             return True
 
+        now_utc = datetime.now(timezone.utc)
         try:
             rule = PlanningSessionRule(
                 calendar_client=self._reconciler.calendar_client,
                 planning_session_store=self._planning_session_store,
                 config=PlanningRuleConfig(calendar_id=calendar_id),
             )
-            now_utc = datetime.now(timezone.utc)
             desired = await rule.evaluate(
                 now=now_utc,
                 scope=reminder.scope,
@@ -380,14 +488,142 @@ class PlanningCoordinator:
                 channel_id=reminder.channel_id,
                 planning_event_id=planning_event_id,
             )
-            return bool(desired)
+            still_missing = bool(desired)
+            logger.info(
+                "dispatch_planning_reminder: revalidation_result user=%s scope=%s kind=%s attempt=%s calendar_id=%s planning_event_id=%s still_missing=%s desired_jobs=%d",
+                reminder.user_id,
+                reminder.scope,
+                reminder.kind,
+                reminder.attempt,
+                calendar_id,
+                planning_event_id,
+                still_missing,
+                len(desired),
+            )
+            if not still_missing:
+                refs = await self._list_local_upcoming_planning_refs(
+                    user_id=reminder.user_id,
+                    now_utc=now_utc,
+                )
+                await self._maybe_refresh_anchor_from_refs(
+                    reminder=reminder,
+                    calendar_id=calendar_id,
+                    planning_event_id=planning_event_id,
+                    refs=refs,
+                )
+            return still_missing
         except Exception:
             logger.exception(
-                "dispatch_planning_reminder: planning revalidation failed for user %s",
+                "dispatch_planning_reminder: planning revalidation failed for user=%s scope=%s kind=%s attempt=%s calendar_id=%s planning_event_id=%s",
                 reminder.user_id,
+                reminder.scope,
+                reminder.kind,
+                reminder.attempt,
+                calendar_id,
+                planning_event_id,
             )
-            # Fail-open so reminders still fire if revalidation is temporarily broken.
+            refs = await self._list_local_upcoming_planning_refs(
+                user_id=reminder.user_id,
+                now_utc=now_utc,
+            )
+            if refs:
+                await self._maybe_refresh_anchor_from_refs(
+                    reminder=reminder,
+                    calendar_id=calendar_id,
+                    planning_event_id=planning_event_id,
+                    refs=refs,
+                )
+                sampled_ids = ", ".join(
+                    sorted(
+                        {
+                            str(getattr(ref, "event_id", "") or "").strip()
+                            for ref in refs
+                            if str(getattr(ref, "event_id", "") or "").strip()
+                        }
+                    )[:3]
+                )
+                logger.warning(
+                    "dispatch_planning_reminder: fail-soft suppress reminder after revalidation failure user=%s scope=%s local_upcoming_refs=%d sampled_event_ids=%s",
+                    reminder.user_id,
+                    reminder.scope,
+                    len(refs),
+                    sampled_ids or "(none)",
+                )
+                return False
+            # No local evidence; fail-open so reminders still fire if revalidation is broken.
             return True
+
+    async def _list_local_upcoming_planning_refs(
+        self, *, user_id: str | None, now_utc: datetime
+    ) -> list[Any]:
+        if not user_id or not self._planning_session_store:
+            return []
+        horizon_end = now_utc + timedelta(hours=24)
+        try:
+            return await self._planning_session_store.list_for_user_between(
+                user_id=user_id,
+                start_date=now_utc.date(),
+                end_date=horizon_end.date(),
+                statuses=(
+                    PlanningSessionStatus.PLANNED,
+                    PlanningSessionStatus.IN_PROGRESS,
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "dispatch_planning_reminder: local planning-session lookup failed for user=%s",
+                user_id,
+            )
+            return []
+
+    async def _maybe_refresh_anchor_from_refs(
+        self,
+        *,
+        reminder: PlanningReminder,
+        calendar_id: str,
+        planning_event_id: str,
+        refs: list[Any],
+    ) -> None:
+        if not self._anchor_store or not reminder.user_id or not refs:
+            return
+
+        def _sort_key(ref: Any) -> tuple[Any, float]:
+            planned = getattr(ref, "planned_date", None)
+            updated = getattr(ref, "updated_at", None)
+            updated_ts = updated.timestamp() if isinstance(updated, datetime) else 0.0
+            return (planned, -updated_ts)
+
+        ordered = sorted(refs, key=_sort_key)
+        for ref in ordered:
+            event_id = str(getattr(ref, "event_id", "") or "").strip()
+            ref_calendar_id = str(getattr(ref, "calendar_id", "") or "").strip()
+            if not event_id:
+                continue
+            if ref_calendar_id and ref_calendar_id != calendar_id:
+                continue
+            if event_id == planning_event_id:
+                return
+            try:
+                await self._anchor_store.upsert(
+                    user_id=reminder.user_id,
+                    channel_id=reminder.channel_id,
+                    calendar_id=calendar_id,
+                    event_id=event_id,
+                )
+                logger.info(
+                    "dispatch_planning_reminder: refreshed stale planning anchor user=%s old_event_id=%s new_event_id=%s",
+                    reminder.user_id,
+                    planning_event_id,
+                    event_id,
+                )
+            except Exception:
+                logger.exception(
+                    "dispatch_planning_reminder: failed to refresh planning anchor user=%s old_event_id=%s new_event_id=%s",
+                    reminder.user_id,
+                    planning_event_id,
+                    event_id,
+                )
+            return
 
     async def _post_admonishment_log(
         self, reminder: PlanningReminder, *, card_payload: dict[str, Any] | None = None
@@ -656,6 +892,156 @@ class PlanningCoordinator:
             component="planning_card", event="add_to_calendar", status="queued"
         )
 
+    async def maybe_handle_thread_reply(
+        self,
+        *,
+        channel_id: str,
+        thread_ts: str,
+        text: str,
+        thread_respond,
+    ) -> bool:
+        """Handle NL replies on planning-card threads using the same add path as card actions."""
+        if not self._draft_store:
+            return False
+        draft = await self._resolve_thread_draft(channel_id=channel_id, thread_ts=thread_ts)
+        if not draft:
+            return False
+
+        parsed = await self._interpret_planning_thread_reply(text=text, draft=draft)
+        if not parsed.should_handle:
+            return False
+
+        async def _card_respond(*, text: str, blocks, replace_original: bool) -> None:
+            payload: dict[str, Any] = {
+                "channel": channel_id,
+                "ts": thread_ts,
+                "text": text,
+            }
+            if blocks:
+                payload["blocks"] = blocks
+            await self._client.chat_update(**payload)
+
+        if parsed.selected_time:
+            draft_message_ts = (draft.message_ts or "").strip()
+            if not draft_message_ts:
+                return False
+            await self.handle_start_time_changed(
+                channel_id=draft.channel_id,
+                message_ts=draft_message_ts,
+                selected_time=parsed.selected_time,
+            )
+            if not parsed.commit:
+                updated_draft = await self._draft_store.get_by_draft_id(
+                    draft_id=draft.draft_id
+                )
+                if updated_draft:
+                    payload = _card_payload(
+                        updated_draft, status_override=_status_text(updated_draft)
+                    )
+                    await _card_respond(
+                        text=payload["text"],
+                        blocks=payload["blocks"],
+                        replace_original=True,
+                    )
+                await thread_respond(
+                    text=f"Updated draft time to {parsed.selected_time}. Press Add to calendar when ready."
+                )
+                return True
+            updated_draft = await self._draft_store.get_by_draft_id(
+                draft_id=draft.draft_id
+            )
+            if updated_draft:
+                draft = updated_draft
+
+        if parsed.commit:
+            if draft.status is DraftStatus.SUCCESS:
+                payload = _card_payload(draft)
+                await _card_respond(
+                    text=payload["text"],
+                    blocks=payload["blocks"],
+                    replace_original=True,
+                )
+                if draft.event_url:
+                    await thread_respond(
+                        text=(
+                            "This planning session is already on your calendar.\n"
+                            f"{draft.event_url}"
+                        )
+                    )
+                else:
+                    await thread_respond(
+                        text="This planning session is already on your calendar."
+                    )
+                return True
+            if draft.status is DraftStatus.PENDING:
+                await thread_respond(
+                    text="Still adding this planning session to your calendar…"
+                )
+                return True
+            await thread_respond(
+                text=(
+                    f"Applying your update at {parsed.selected_time} and adding to calendar…"
+                    if parsed.selected_time
+                    else "Adding this planning session to your calendar…"
+                )
+            )
+            await self.start_add_to_calendar(draft_id=draft.draft_id, respond=_card_respond)
+            return True
+
+        return False
+
+    async def _resolve_thread_draft(
+        self, *, channel_id: str, thread_ts: str
+    ) -> EventDraftPayload | None:
+        if not self._draft_store:
+            return None
+        direct = await self._draft_store.get_by_message(
+            channel_id=channel_id, message_ts=thread_ts
+        )
+        if direct:
+            return direct
+
+        draft_id = await self._extract_draft_id_from_thread_root(
+            channel_id=channel_id, thread_ts=thread_ts
+        )
+        if not draft_id:
+            return None
+        return await self._draft_store.get_by_draft_id(draft_id=draft_id)
+
+    async def _extract_draft_id_from_thread_root(
+        self, *, channel_id: str, thread_ts: str
+    ) -> str | None:
+        try:
+            response = await self._client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                inclusive=True,
+                limit=1,
+            )
+        except Exception:
+            logger.debug(
+                "planning thread draft-id resolve failed: channel=%s thread_ts=%s",
+                channel_id,
+                thread_ts,
+                exc_info=True,
+            )
+            return None
+
+        messages = response.get("messages") or []
+        if not messages:
+            return None
+        root = messages[0] if isinstance(messages[0], dict) else {}
+        for block in root.get("blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            for element in block.get("elements") or []:
+                if not isinstance(element, dict):
+                    continue
+                draft_id = parse_draft_id_from_value(str(element.get("value") or ""))
+                if draft_id:
+                    return draft_id
+        return None
+
     async def _add_to_calendar_async(self, *, draft_id: str, respond) -> None:
         if not self._draft_store:
             logger.warning(
@@ -783,6 +1169,24 @@ class PlanningCoordinator:
                 except Exception:
                     logger.exception(
                         "Failed to upsert planning_session_ref for draft=%s",
+                        draft.draft_id,
+                    )
+            if (
+                self._anchor_store
+                and result_event_id
+                and result_event_id != draft.event_id
+            ):
+                try:
+                    await self._anchor_store.upsert(
+                        user_id=draft.user_id,
+                        channel_id=draft.channel_id,
+                        calendar_id=draft.calendar_id,
+                        event_id=result_event_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to update planning anchor event_id for user=%s draft=%s",
+                        draft.user_id,
                         draft.draft_id,
                     )
             if self._guardian:
@@ -939,7 +1343,10 @@ def _validate_google_calendar_event_url(url: str) -> str | None:
         return "Calendar upsert returned an incomplete event URL token; please retry."
     calendar_ref = parts[-1].strip()
     local, sep, domain = calendar_ref.partition("@")
-    if not local or not sep or not domain or "." not in domain:
+    # Some providers return abbreviated calendar refs in eid tokens
+    # (for example `user@m`) or aliases without `@` (for example `primary`).
+    # Treat only structurally broken refs as invalid.
+    if sep and (not local or not domain):
         return (
             "Calendar upsert returned an incomplete calendar reference; please retry."
         )

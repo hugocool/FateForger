@@ -53,6 +53,8 @@ class PlanningRuleConfig:
     nudge_backoff_base: timedelta = timedelta(minutes=10)
     nudge_backoff_cap: timedelta = timedelta(hours=8)
     nudge_max_attempts: int = 5
+    # Grace window for eventual-consistency races right after local upsert success.
+    stored_session_consistency_grace: timedelta = timedelta(minutes=5)
     # TODO(refactor,typed-contracts): Remove summary keyword list and use a typed
     # event marker/label schema for planning-session detection.
     summary_keywords: tuple[str, ...] = ("plan", "planning", "review", "timebox")
@@ -158,19 +160,57 @@ class PlanningSessionRule:
     ) -> list[DesiredJob]:
         start = now.astimezone(timezone.utc)
         end = start + self._config.horizon
+        anchor_found = False
+        anchor_in_window = False
+        stored_hit = False
+        fallback_hit = False
+        list_count = 0
 
         if planning_event_id:
             anchor = await self._calendar_client.get_event(
                 calendar_id=self._config.calendar_id,
                 event_id=planning_event_id,
             )
-            if anchor and _event_within_window(anchor, start, end):
+            anchor_found = anchor is not None
+            anchor_in_window = bool(
+                anchor and _event_within_window(anchor, start, end)
+            )
+            if anchor_in_window:
+                self._log_evaluate_outcome(
+                    outcome="anchor_match",
+                    scope=scope,
+                    user_id=user_id,
+                    planning_event_id=planning_event_id,
+                    start=start,
+                    end=end,
+                    anchor_found=anchor_found,
+                    anchor_in_window=anchor_in_window,
+                    stored_hit=stored_hit,
+                    list_count=list_count,
+                    fallback_hit=fallback_hit,
+                    jobs_count=0,
+                )
                 return []
 
         stored = await self._resolve_planning_from_stored_sessions(
             user_id=user_id, start=start, end=end
         )
+        stored_hit = stored is not None
         if stored:
+            self._log_evaluate_outcome(
+                outcome="stored_match",
+                scope=scope,
+                user_id=user_id,
+                planning_event_id=planning_event_id,
+                start=start,
+                end=end,
+                anchor_found=anchor_found,
+                anchor_in_window=anchor_in_window,
+                stored_hit=stored_hit,
+                list_count=list_count,
+                fallback_hit=fallback_hit,
+                jobs_count=0,
+            )
             return []
 
         events = await self._calendar_client.list_events(
@@ -178,11 +218,27 @@ class PlanningSessionRule:
             time_min=start.isoformat(),
             time_max=end.isoformat(),
         )
+        list_count = len(events)
 
         fallback = self._resolve_planning_from_fallback(events, start=start, end=end)
+        fallback_hit = fallback is not None
         if fallback:
             await self._sync_fallback_session_record(
                 user_id=user_id, event=fallback, start=start
+            )
+            self._log_evaluate_outcome(
+                outcome="fallback_match",
+                scope=scope,
+                user_id=user_id,
+                planning_event_id=planning_event_id,
+                start=start,
+                end=end,
+                anchor_found=anchor_found,
+                anchor_in_window=anchor_in_window,
+                stored_hit=stored_hit,
+                list_count=list_count,
+                fallback_hit=fallback_hit,
+                jobs_count=0,
             )
             return []
 
@@ -231,8 +287,53 @@ class PlanningSessionRule:
                 ),
             )
         )
-
+        self._log_evaluate_outcome(
+            outcome="nudges_scheduled",
+            scope=scope,
+            user_id=user_id,
+            planning_event_id=planning_event_id,
+            start=start,
+            end=end,
+            anchor_found=anchor_found,
+            anchor_in_window=anchor_in_window,
+            stored_hit=stored_hit,
+            list_count=list_count,
+            fallback_hit=fallback_hit,
+            jobs_count=len(jobs),
+        )
         return jobs
+
+    def _log_evaluate_outcome(
+        self,
+        *,
+        outcome: str,
+        scope: str,
+        user_id: str | None,
+        planning_event_id: str | None,
+        start: datetime,
+        end: datetime,
+        anchor_found: bool,
+        anchor_in_window: bool,
+        stored_hit: bool,
+        list_count: int,
+        fallback_hit: bool,
+        jobs_count: int,
+    ) -> None:
+        logger.info(
+            "planning_reconcile evaluate outcome=%s scope=%s user_id=%s planning_event_id=%s window_start=%s window_end=%s anchor_found=%s anchor_in_window=%s stored_hit=%s list_count=%d fallback_hit=%s jobs_count=%d",
+            outcome,
+            scope,
+            user_id,
+            planning_event_id,
+            start.isoformat(),
+            end.isoformat(),
+            anchor_found,
+            anchor_in_window,
+            stored_hit,
+            list_count,
+            fallback_hit,
+            jobs_count,
+        )
 
     def _resolve_nudge_offsets(
         self, *, first_nudge_offset: timedelta | None
@@ -308,7 +409,35 @@ class PlanningSessionRule:
             )
             if event and _event_within_window(event, start, end):
                 return event
+            if self._is_recent_local_stored_session(session=session, now=start):
+                logger.info(
+                    "Using recent local planning_session_ref as consistency bridge (user=%s event_id=%s)",
+                    user_id,
+                    event_id,
+                )
+                return {
+                    "id": event_id,
+                    "summary": getattr(session, "title", None)
+                    or "Daily planning session",
+                }
         return None
+
+    def _is_recent_local_stored_session(self, *, session: Any, now: datetime) -> bool:
+        status = str(getattr(session, "status", "") or "").strip().lower()
+        if status not in {"planned", "in_progress"}:
+            return False
+        updated_at = getattr(session, "updated_at", None)
+        if not isinstance(updated_at, datetime):
+            return False
+        updated_utc = (
+            updated_at.replace(tzinfo=timezone.utc)
+            if updated_at.tzinfo is None
+            else updated_at.astimezone(timezone.utc)
+        )
+        delta = now.astimezone(timezone.utc) - updated_utc
+        if delta < timedelta(0):
+            delta = timedelta(0)
+        return delta <= self._config.stored_session_consistency_grace
 
     def _resolve_planning_from_fallback(
         self, events: Iterable[dict], *, start: datetime, end: datetime
