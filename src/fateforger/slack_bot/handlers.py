@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -111,6 +112,11 @@ _TIMEBOXING_STATE_EMOJI = {
 
 logger = logging.getLogger(__name__)
 
+_SLACK_MAX_TEXT_CHARS = 3900
+_SLACK_MAX_BLOCK_TEXT_CHARS = 1600
+_SLACK_MAX_BLOCKS = 40
+_SLACK_MAX_PAYLOAD_CHARS = 28000
+
 
 def _timeboxing_title_from_text(text: str) -> str:
     cleaned = re.sub(r"\\s+", " ", (text or "")).strip()
@@ -119,6 +125,89 @@ def _timeboxing_title_from_text(text: str) -> str:
     if len(cleaned) > 80:
         return cleaned[:77].rstrip() + "…"
     return cleaned
+
+
+def _truncate_slack_text(text: str | None, *, max_chars: int) -> str:
+    value = str(text or "")
+    if len(value) <= max_chars:
+        return value
+    if max_chars <= 1:
+        return "…"
+    return value[: max_chars - 1].rstrip() + "…"
+
+
+def _truncate_slack_block_content(value):
+    if isinstance(value, str):
+        return _truncate_slack_text(value, max_chars=_SLACK_MAX_BLOCK_TEXT_CHARS)
+    if isinstance(value, list):
+        return [_truncate_slack_block_content(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _truncate_slack_block_content(item) for key, item in value.items()
+        }
+    return value
+
+
+def _delivery_fallback_text(text: str | None) -> str:
+    base = _truncate_slack_text(text or "(response)", max_chars=2200)
+    return (
+        f"{base}\n\n"
+        "_Output truncated for Slack delivery. Please continue in thread (or press Redo)._"
+    )
+
+
+def _compact_slack_payload(*, text: str | None, blocks=None) -> dict[str, object]:
+    safe_text = _truncate_slack_text(text or "(no response)", max_chars=_SLACK_MAX_TEXT_CHARS)
+    safe_blocks = None
+    if isinstance(blocks, list) and blocks:
+        clipped = blocks
+        if len(clipped) > _SLACK_MAX_BLOCKS:
+            clipped = list(clipped[: _SLACK_MAX_BLOCKS - 1]) + [
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": "_Additional details were truncated for Slack size limits._",
+                        }
+                    ],
+                }
+            ]
+        safe_blocks = [_truncate_slack_block_content(block) for block in clipped]
+
+    payload: dict[str, object] = {"text": safe_text}
+    if safe_blocks:
+        payload["blocks"] = safe_blocks
+
+    if len(json.dumps(payload, ensure_ascii=False)) > _SLACK_MAX_PAYLOAD_CHARS:
+        return {"text": _delivery_fallback_text(safe_text)}
+    return payload
+
+
+def _slack_error_code(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return ""
+    if isinstance(response, dict):
+        return str(response.get("error") or "").strip().lower()
+    getter = getattr(response, "get", None)
+    if callable(getter):
+        try:
+            return str(getter("error") or "").strip().lower()
+        except Exception:
+            pass
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        return str(data.get("error") or "").strip().lower()
+    return ""
+
+
+def _is_payload_size_error(exc: Exception) -> bool:
+    return _slack_error_code(exc) in {
+        "msg_too_long",
+        "too_many_attachments",
+        "invalid_blocks",
+    }
 
 
 def _timeboxing_excerpt_from_text(text: str) -> str:
@@ -895,14 +984,44 @@ async def route_slack_event(
     origin_processing_msg = await client.chat_postMessage(**origin_processing_payload)
 
     async def _origin_update(*, text: str, blocks=None) -> None:
-        payload = {
+        compact = _compact_slack_payload(text=text, blocks=blocks)
+        payload: dict[str, object] = {
             "channel": origin_processing_msg["channel"],
             "ts": origin_processing_msg["ts"],
-            "text": text,
+            "text": compact.get("text", "") or "",
         }
-        if blocks:
-            payload["blocks"] = blocks
-        await client.chat_update(**payload)
+        if compact.get("blocks"):
+            payload["blocks"] = compact["blocks"]
+        try:
+            await client.chat_update(**payload)
+            return
+        except Exception as exc:
+            record_error(component="slack_routing", error_type="route_exception")
+            error_code = _slack_error_code(exc)
+            logger.warning(
+                "Slack origin update failed channel=%s ts=%s error=%s",
+                origin_processing_msg["channel"],
+                origin_processing_msg["ts"],
+                error_code or type(exc).__name__,
+            )
+            fallback_text = _delivery_fallback_text(str(compact.get("text") or text))
+            try:
+                await client.chat_update(
+                    channel=origin_processing_msg["channel"],
+                    ts=origin_processing_msg["ts"],
+                    text=fallback_text,
+                )
+                return
+            except Exception:
+                thread_root = origin_thread_root_ts
+                fallback_payload = {
+                    "channel": origin_processing_msg["channel"],
+                    "text": fallback_text,
+                }
+                if thread_root:
+                    fallback_payload["thread_ts"] = thread_root
+                await client.chat_postMessage(**fallback_payload)
+                return
 
     async def _permalink(channel_id: str, message_ts: str) -> str | None:
         try:
@@ -965,6 +1084,7 @@ async def route_slack_event(
                 msg, recipient=AgentId(redirect.agent_type, key=redirect.target_key)
             )
         except asyncio.TimeoutError:
+            record_error(component="slack_routing", error_type="stage_compute_failure")
             await client.chat_update(
                 channel=redirect.target_channel,
                 ts=processing["ts"],
@@ -975,6 +1095,7 @@ async def route_slack_event(
             )
             return
         except Exception as e:
+            record_error(component="slack_routing", error_type="stage_compute_failure")
             logger.exception(
                 "runtime.send_message failed (redirect agent=%s key=%s)",
                 redirect.agent_type,
@@ -990,7 +1111,7 @@ async def route_slack_event(
             )
             return
 
-        payload = _slack_payload_from_result(result)
+        payload = _compact_slack_payload(**_slack_payload_from_result(result))
         update = {
             "channel": redirect.target_channel,
             "ts": processing["ts"],
@@ -1046,6 +1167,7 @@ async def route_slack_event(
             msg, recipient=AgentId(agent_type, key=recipient_key)
         )
     except asyncio.TimeoutError:
+        record_error(component="slack_routing", error_type="stage_compute_failure")
         await _origin_update(
             text=(
                 ":hourglass_flowing_sand: Timed out waiting for tools/LLM. "
@@ -1054,6 +1176,7 @@ async def route_slack_event(
         )
         return
     except Exception as e:
+        record_error(component="slack_routing", error_type="stage_compute_failure")
         logger.exception(
             "runtime.send_message failed (agent=%s key=%s)",
             agent_type,
@@ -1353,11 +1476,13 @@ async def route_slack_event(
                 handoff_msg, recipient=AgentId(handoff_target, key=origin_key)
             )
         except asyncio.TimeoutError:
+            record_error(component="slack_routing", error_type="stage_compute_failure")
             await _origin_update(
                 text=":hourglass_flowing_sand: Timed out waiting for tools/LLM. Please try again."
             )
             return
         except Exception as e:
+            record_error(component="slack_routing", error_type="stage_compute_failure")
             logger.exception(
                 "runtime.send_message failed (handoff agent=%s key=%s)",
                 handoff_target,
@@ -1368,7 +1493,8 @@ async def route_slack_event(
             )
             return
         payload = _with_agent_attribution(
-            _slack_payload_from_result(result), handoff_target
+            _compact_slack_payload(**_slack_payload_from_result(result)),
+            handoff_target,
         )
         # chat.update can't change username/icon, so keep the original message as a handoff marker
         # and post the actual reply as the target agent persona.
@@ -1394,7 +1520,9 @@ async def route_slack_event(
         return
 
     focus.set_user_focus(user, agent_type)
-    payload = _with_agent_attribution(_slack_payload_from_result(result), agent_type)
+    payload = _with_agent_attribution(
+        _compact_slack_payload(**_slack_payload_from_result(result)), agent_type
+    )
     await _origin_update(text=payload.get("text", ""), blocks=payload.get("blocks"))
     await _maybe_update_timeboxing_thread_header(
         client=client,
