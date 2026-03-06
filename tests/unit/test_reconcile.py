@@ -1,5 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+import logging
 
 import pytest
 
@@ -46,6 +47,12 @@ class _StoredSession:
     source: str | None = None
     channel_id: str | None = None
     thread_ts: str | None = None
+    created_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
+    )
+    updated_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
+    )
 
 
 class FakePlanningSessionStore:
@@ -193,6 +200,32 @@ async def test_reconcile_uses_anchor_event_id_when_provided():
 
 
 @pytest.mark.asyncio
+async def test_reconcile_logs_outcome_for_anchor_match(caplog):
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    client.event_lookup[("primary", "ff-planning-u1")] = {
+        "id": "ff-planning-u1",
+        "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
+        "end": {"dateTime": "2025-01-01T10:30:00+00:00"},
+    }
+
+    with caplog.at_level(logging.INFO, logger="fateforger.haunt.reconcile"):
+        jobs = await reconciler.reconcile_missing_planning(
+            scope="U1",
+            user_id="U1",
+            channel_id="C1",
+            planning_event_id="ff-planning-u1",
+            now=now,
+        )
+
+    assert jobs == []
+    assert "planning_reconcile evaluate outcome=anchor_match" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_reconcile_ignores_anchor_event_outside_window():
     scheduler = FakeScheduler()
     client = DummyCalendarClient(events=[])
@@ -273,6 +306,26 @@ async def test_reconcile_accepts_timeboxing_fallback_event():
     assert jobs == []
     assert store.upserts
     assert store.upserts[-1]["event_id"] == "evt-timeboxing"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_logs_outcome_for_nudges_scheduled(caplog):
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    with caplog.at_level(logging.INFO, logger="fateforger.haunt.reconcile"):
+        jobs = await reconciler.reconcile_missing_planning(
+            scope="U1",
+            user_id="U1",
+            channel_id="C1",
+            planning_event_id="ff-planning-u1",
+            now=now,
+        )
+
+    assert len(jobs) == 6
+    assert "planning_reconcile evaluate outcome=nudges_scheduled" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -383,3 +436,69 @@ async def test_reconcile_fallback_prefers_deterministic_ffplanning_id():
     assert jobs == []
     assert store.upserts
     assert store.upserts[-1]["event_id"] == "ffplanning-u1"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_trusts_recent_local_stored_session_when_calendar_read_lags():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    store = FakePlanningSessionStore(
+        sessions=[
+            _StoredSession(
+                user_id="U1",
+                planned_date=date(2025, 1, 1),
+                calendar_id="primary",
+                event_id="ffplanningu1",
+                status="planned",
+                source="admonisher_planning_card",
+                updated_at=datetime(2025, 1, 1, 9, 0, 0),
+            )
+        ]
+    )
+    reconciler = PlanningReconciler(
+        scheduler, calendar_client=client, planning_session_store=store
+    )
+
+    now = datetime(2025, 1, 1, 9, 1, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    assert jobs == []
+    assert scheduler.get_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_trust_stale_local_stored_session_without_calendar_event():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    store = FakePlanningSessionStore(
+        sessions=[
+            _StoredSession(
+                user_id="U1",
+                planned_date=date(2025, 1, 1),
+                calendar_id="primary",
+                event_id="ffplanningu1",
+                status="planned",
+                source="admonisher_planning_card",
+                updated_at=datetime(2025, 1, 1, 8, 40, 0),
+            )
+        ]
+    )
+    reconciler = PlanningReconciler(
+        scheduler, calendar_client=client, planning_session_store=store
+    )
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    assert len(jobs) == 6
+    assert scheduler.get_jobs()

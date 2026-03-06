@@ -23,6 +23,7 @@
 - Operator path rule for live audits:
   - when sending test/user messages into Slack threads, use Slack MCP (`agent-slack`) as first choice.
   - use `scripts/dev/slack_user_timeboxing_driver.py` only as deterministic fallback when MCP access/auth is unavailable.
+- Before audit replays, restart the local bot process (`scripts/dev/slack_bot_dev.py`) and verify required MCP dependencies are up so results reflect current code.
 - `slack_route_dispatch_timeout` in `handlers.py` is a **delivery guard**, not proof that stage logic failed.
 - If timeout fallback text appears in Slack, correlate in this order:
   - session log: `graph_turn_start` / `graph_turn_end` for same `thread_ts` and stage
@@ -40,6 +41,14 @@
 - Action IDs must use the `FF_` or `ff_` prefix for discoverability.
 - Use Pydantic models for action payloads; avoid manual dict parsing of `body["actions"]`.
 - Modal submissions route through `handlers.py` view submission listeners.
+
+## Proposal Object Contract
+
+- For any Slack card/modal that represents a proposed object (event, task change, constraint change, etc.), treat Slack as a transport layer over a typed domain object.
+- NL thread replies and UI actions must converge to the same typed intent envelope and same submit executor; do not maintain separate business-logic paths.
+- NL interpretation must be schema-bound (typed AutoGen output or schema-in-prompt JSON contract), not regex/keyword/substring heuristics.
+- If a proposal supports user edits, edits must be represented as typed patch operations (or typed update fields) before execution.
+- Every proposal flow must log correlation fields (`proposal_id`, `intent_source`, `intent`, `submit_mode`) and have parity tests proving NL and UI execute the same backend path.
 
 ## Sync Engine Integration
 
