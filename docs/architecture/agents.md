@@ -16,6 +16,7 @@ Related docs:
 - `docs/indices/agents_timeboxing.md`
 - `docs/architecture/timeboxing_refactor.md`
 - `docs/architecture/constraint-flow.md`
+- `docs/architecture/proposal_object_contract.md`
 
 ## ConstraintExtractorAgent (Notion-backed)
 
@@ -57,6 +58,9 @@ Status: partially implemented; tracked in `lattice_ticket.md`.
 Slack-facing routing + constraint review UI:
 - Extracted constraints can be reviewed and accepted/declined via a Slack modal.
 - Current implementation updates the local SQLite-backed constraint statuses.
+- Proposal interactions should follow the shared contract in
+  `docs/architecture/proposal_object_contract.md`:
+  UI actions and NL replies must converge to the same typed intent + submit path.
 
 Code:
 - `src/fateforger/slack_bot/handlers.py`

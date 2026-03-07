@@ -179,7 +179,9 @@ class SqlAlchemyEventDraftStore:
             row.status = status.value
             if event_url is not None:
                 row.event_url = event_url
-            if last_error is not None:
+            if status is DraftStatus.SUCCESS:
+                row.last_error = None
+            elif last_error is not None:
                 row.last_error = last_error
             row.updated_at = datetime.utcnow()
             await session.commit()
@@ -217,4 +219,3 @@ __all__ = [
     "SqlAlchemyEventDraftStore",
     "ensure_event_draft_schema",
 ]
-

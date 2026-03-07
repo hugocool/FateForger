@@ -12,6 +12,7 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | Constraint review modals | Implemented |
 | Planning/scheduling UI | Implemented, Tested (strict add-to-calendar success verification, URL integrity checks, explicit link surfacing) |
 | TaskMarshal due-task cards + task edit modal | Implemented, Tested |
+| Proposal object NL/UI parity contract | Partially implemented (planning baseline complete; remaining surfaces tracked) |
 | Haunt delivery (nudges) | Implemented |
 | Sync engine confirm/cancel/undo buttons | Implemented, Tested |
 | Dispatch timeout fallback reply | Implemented, Tested |
@@ -100,6 +101,23 @@ Button/action callbacks registered in `handlers.py`:
 | `ff_timebox_confirm_submit` | `timeboxing_submit.py` | Submit Stage 5 plan to calendar |
 | `ff_timebox_cancel_submit` | `timeboxing_submit.py` | Cancel pending Stage 5 submit and return to refine |
 | `ff_timebox_undo_submit` | `timeboxing_submit.py` | Undo latest Stage 5 submission |
+
+## Proposal Object Interaction Contract
+
+Use this reusable pattern for Slack proposal cards/modals:
+
+1. Agent proposes a typed domain object.
+2. User input (button/modal or NL thread reply) resolves to a typed intent envelope.
+3. Optional edits are represented as typed patch/update fields.
+4. Both NL and UI actions call the same domain submit executor.
+
+Canonical baseline implementation:
+- Planning card flow in `planning.py`:
+  - typed NL interpretation (`PlanningThreadReplyDecision`)
+  - shared submit path (`start_add_to_calendar` -> `_add_to_calendar_async`)
+
+Reference spec:
+- `docs/architecture/proposal_object_contract.md`
 
 ## How to Run
 

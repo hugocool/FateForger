@@ -397,6 +397,9 @@ class StageCaptureInputsNode(_StageNodeBase):
         self, messages: Sequence[BaseChatMessage], cancellation_token: CancellationToken
     ) -> Response:
         user_message = self._transition.stage_user_message
+        await self._orchestrator._await_pending_constraint_extractions(  # noqa: SLF001
+            self._session
+        )
         gate = await self._orchestrator._run_stage_gate(  # noqa: SLF001
             stage=TimeboxingStage.CAPTURE_INPUTS,
             user_message=user_message,

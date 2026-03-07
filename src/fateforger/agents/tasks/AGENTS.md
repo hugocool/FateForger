@@ -21,6 +21,9 @@
 - During guided session turns, only advance phase when `gate_met=true`; otherwise remain in current phase and request missing fields.
 - On close gate success, persist a per-user recap in-memory and expose it via `GuidedRefinementRecapRequest`.
 - Keep guided flow focused on refinement quality (state, AC, DoD, sizing, dependencies, next action); do not turn it into scheduling.
+- For proposal-card interactions (task edit/confirm flows), NL and UI actions must converge to the same typed request/update path.
+- Do not add new regex/keyword free-form intent extraction for task mutation commands; use typed LLM interpretation with schema outputs.
+- Deterministic parsing remains allowed for explicit start/cancel command triggers and structured metadata payloads.
 
 ## Testing
 

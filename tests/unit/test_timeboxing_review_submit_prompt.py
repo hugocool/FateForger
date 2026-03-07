@@ -37,6 +37,11 @@ async def test_stage_capture_inputs_queues_skeleton_pre_generation() -> None:
     """Stage 2 should trigger background skeleton pre-generation hook."""
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     agent._queue_skeleton_pre_generation = AsyncMock()
+    await_pending_mock = AsyncMock()
+    agent._await_pending_constraint_extractions = types.MethodType(  # type: ignore[attr-defined]
+        lambda self, session: await_pending_mock(session),
+        agent,
+    )
 
     async def _run_stage_gate(*, stage, user_message, context) -> StageGateOutput:
         return StageGateOutput(
@@ -86,6 +91,7 @@ async def test_stage_capture_inputs_queues_skeleton_pre_generation() -> None:
     )
 
     assert called["value"] is True
+    await_pending_mock.assert_awaited_once_with(session)
 
 
 @pytest.mark.asyncio

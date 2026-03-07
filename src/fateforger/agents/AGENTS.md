@@ -31,6 +31,15 @@ This keeps the schema lock on the backend while producing plain text for Slack/U
 - **Never** add regex/keyword-based intent routing. Use LLM classification or explicit slash commands.
 - Each specialist agent should declare a clear `description` string for the receptionist's handoff tool.
 
+## Proposal Interaction Invariant
+
+- When an agent proposes a domain object that can be confirmed/edited/submitted from Slack, execution must follow a single typed contract:
+  - interpret user response into typed intent (+ typed patch/update fields),
+  - apply patch deterministically,
+  - execute through one shared submit path.
+- NL and UI-triggered confirmations must not diverge in downstream business logic.
+- Deterministic parsing is allowed only for already-structured transport metadata (IDs, ISO timestamps, encoded action values), not free-form user intent.
+
 ## Adding a New Agent
 
 1. Create a new subfolder under `agents/`.

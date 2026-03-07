@@ -252,6 +252,15 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                 return str(payload["error"])
         return None
 
+    @staticmethod
+    def _event_status(event: dict | None) -> str:
+        if not isinstance(event, dict):
+            return ""
+        status = str(event.get("status") or "").strip().lower()
+        if status == "canceled":
+            return "cancelled"
+        return status
+
     @classmethod
     def _event_matches_upsert_request(
         cls,
@@ -474,6 +483,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         )
         workbench = self._ensure_workbench()
         tz = ZoneInfo(message.time_zone or "UTC")
+        preexisting_cancelled = False
 
         # Prefer deterministic upsert (get → update|create) over LLM tool-routing.
         exists = False
@@ -486,7 +496,30 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                 },
             )
             event = self._normalize_event(self._extract_tool_payload(fetched))
-            exists = bool(event)
+            event_status = self._event_status(event)
+            if event_status == "cancelled":
+                preexisting_cancelled = True
+                logger.info(
+                    "Calendar pre-upsert event is cancelled; forcing recreate path: event_id=%s",
+                    message.event_id,
+                )
+                try:
+                    await workbench.call_tool(
+                        "delete-event",
+                        arguments={
+                            "calendarId": message.calendar_id,
+                            "eventId": message.event_id,
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Calendar pre-upsert delete-event failed for cancelled event; continuing with create path: event_id=%s error=%s",
+                        message.event_id,
+                        exc,
+                    )
+                exists = False
+            else:
+                exists = bool(event)
         except Exception as exc:
             logger.warning(
                 "Calendar pre-upsert get-event failed; assuming create path: event_id=%s error=%s",
@@ -502,57 +535,93 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             normalized_end = self._calendar_event_datetime_arg(
                 message.end, time_zone=message.time_zone
             )
-            if exists:
-                upsert_result = await workbench.call_tool(
-                    "update-event",
-                    arguments={
-                        "calendarId": message.calendar_id,
-                        "eventId": message.event_id,
-                        "summary": message.summary,
-                        "start": normalized_start,
-                        "end": normalized_end,
-                        "timeZone": message.time_zone,
-                        "colorId": message.color_id,
-                        "description": message.description,
-                    },
+            target_event_id: str | None = message.event_id
+            if preexisting_cancelled and not exists:
+                target_event_id = None
+                logger.info(
+                    "Calendar upsert switched to server-generated event id for cancelled preexisting event: old=%s",
+                    message.event_id,
                 )
-            else:
-                upsert_result = await workbench.call_tool(
-                    "create-event",
-                    arguments={
-                        "calendarId": message.calendar_id,
-                        "eventId": message.event_id,
-                        "summary": message.summary,
-                        "start": normalized_start,
-                        "end": normalized_end,
-                        "timeZone": message.time_zone,
-                        "colorId": message.color_id,
-                        "description": message.description,
-                    },
-                )
+            upsert_arguments = {
+                "calendarId": message.calendar_id,
+                "summary": message.summary,
+                "start": normalized_start,
+                "end": normalized_end,
+                "timeZone": message.time_zone,
+                "colorId": message.color_id,
+                "description": message.description,
+            }
+            if target_event_id:
+                upsert_arguments["eventId"] = target_event_id
+            upsert_action = "update-event" if exists else "create-event"
+            if upsert_action == "create-event" and preexisting_cancelled:
+                upsert_arguments["allowDuplicates"] = True
+            upsert_result = await workbench.call_tool(
+                upsert_action,
+                arguments=upsert_arguments,
+            )
         except Exception as e:
             logger.error("Failed to upsert calendar event: %s", e, exc_info=True)
             return UpsertCalendarEventResult(
                 ok=False,
                 calendar_id=message.calendar_id,
-                event_id=message.event_id,
+                event_id=target_event_id or message.event_id,
                 error=str(e),
             )
 
         upsert_payload = self._extract_tool_payload(upsert_result)
+        if not target_event_id:
+            created_event = self._normalize_event(upsert_payload) or {}
+            payload_event_id = str(created_event.get("id") or "").strip()
+            if payload_event_id:
+                target_event_id = payload_event_id
         upsert_error = self._extract_tool_error(upsert_payload)
+        if (
+            upsert_error
+            and preexisting_cancelled
+            and not exists
+            and target_event_id
+            and "already exists" in upsert_error.lower()
+        ):
+            logger.info(
+                "Calendar cancelled-event recreate hit id collision; retrying as update: event_id=%s",
+                target_event_id,
+            )
+            try:
+                fallback_result = await workbench.call_tool(
+                    "update-event",
+                    arguments=upsert_arguments,
+                )
+            except Exception as exc:
+                return UpsertCalendarEventResult(
+                    ok=False,
+                    calendar_id=message.calendar_id,
+                    event_id=target_event_id,
+                    error=f"calendar fallback update failed: {exc}",
+                )
+            upsert_payload = self._extract_tool_payload(fallback_result)
+            upsert_error = self._extract_tool_error(upsert_payload)
+
         if upsert_error:
             logger.warning(
                 "Calendar upsert tool reported failure without exception: event_id=%s error=%s payload=%s",
-                message.event_id,
+                target_event_id,
                 upsert_error,
                 upsert_payload,
             )
             return UpsertCalendarEventResult(
                 ok=False,
                 calendar_id=message.calendar_id,
-                event_id=message.event_id,
+                event_id=target_event_id or message.event_id,
                 error=upsert_error,
+            )
+
+        if not target_event_id:
+            return UpsertCalendarEventResult(
+                ok=False,
+                calendar_id=message.calendar_id,
+                event_id=message.event_id,
+                error="calendar upsert returned no event id",
             )
 
         try:
@@ -560,7 +629,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                 "get-event",
                 arguments={
                     "calendarId": message.calendar_id,
-                    "eventId": message.event_id,
+                    "eventId": target_event_id,
                 },
             )
             event = self._normalize_event(self._extract_tool_payload(fetched)) or {}
@@ -573,7 +642,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             return UpsertCalendarEventResult(
                 ok=False,
                 calendar_id=message.calendar_id,
-                event_id=message.event_id,
+                event_id=target_event_id,
                 error=f"calendar verification fetch failed: {exc}",
             )
 
@@ -581,8 +650,16 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             return UpsertCalendarEventResult(
                 ok=False,
                 calendar_id=message.calendar_id,
-                event_id=message.event_id,
+                event_id=target_event_id,
                 error="calendar verification returned no event payload",
+            )
+
+        if self._event_status(event) == "cancelled":
+            return UpsertCalendarEventResult(
+                ok=False,
+                calendar_id=message.calendar_id,
+                event_id=event.get("id") or target_event_id,
+                error="calendar verification returned cancelled event; event was not added",
             )
 
         matches, mismatch_reason = self._event_matches_upsert_request(
@@ -598,7 +675,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             return UpsertCalendarEventResult(
                 ok=False,
                 calendar_id=message.calendar_id,
-                event_id=event.get("id") or message.event_id,
+                event_id=event.get("id") or target_event_id,
                 error=mismatch_reason or "calendar verification mismatch",
             )
 
@@ -607,18 +684,18 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             return UpsertCalendarEventResult(
                 ok=False,
                 calendar_id=message.calendar_id,
-                event_id=event.get("id") or message.event_id,
+                event_id=event.get("id") or target_event_id,
                 error="calendar upsert verification succeeded but no event URL was returned",
             )
         logger.info(
             "Calendar event upserted successfully: event_id=%s, url=%s",
-            event.get("id") or message.event_id,
+            event.get("id") or target_event_id,
             event_url,
         )
         return UpsertCalendarEventResult(
             ok=True,
             calendar_id=message.calendar_id,
-            event_id=event.get("id") or message.event_id,
+            event_id=event.get("id") or target_event_id,
             event_url=str(event_url) if event_url else None,
         )
 

@@ -24,6 +24,7 @@ For file index, architecture, and status, see `README.md` in this folder.
 - Keep MCP wiring out of `agent.py`; use `mcp_clients.py` for calendar/constraint-memory clients.
 - Durable constraint retrieval is centralized in `constraint_retriever.py` (query_types -> type_ids -> query_constraints).
 - Inject list-shaped prompt data via TOON tables (not JSON arrays); see `src/fateforger/llm/toon.py` and `toon_views.py`.
+- Stage 5 submit parity is mandatory: NL submit intent and button submit must converge to the same submission executor path (currently `_submit_pending_plan`).
 
 ## Framework First (Don't Reinvent It)
 

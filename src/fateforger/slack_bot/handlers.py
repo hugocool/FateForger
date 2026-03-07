@@ -925,6 +925,7 @@ async def route_slack_event(
     say: Callable,
     client: AsyncWebClient,
     get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]] | None = None,
+    planning: PlanningCoordinator | None = None,
 ) -> None:
     channel = event["channel"]
     user = event.get("user") or event.get("bot_id") or "unknown"
@@ -938,14 +939,23 @@ async def route_slack_event(
         """Refresh timeboxing constraints in the thread root message."""
         if not get_constraint_store:
             return
-        store = await get_constraint_store()
-        await _maybe_update_timeboxing_thread_constraints(
-            client=client,
-            focus=focus,
-            thread_key=thread_key,
-            user_id=user,
-            store=store,
-        )
+        try:
+            store = await get_constraint_store()
+            await _maybe_update_timeboxing_thread_constraints(
+                client=client,
+                focus=focus,
+                thread_key=thread_key,
+                user_id=user,
+                store=store,
+            )
+        except Exception as exc:
+            record_error(component="slack_routing", error_type="constraint_refresh_error")
+            logger.warning(
+                "Non-fatal constraint refresh failure thread_key=%s user=%s error=%s",
+                thread_key,
+                user,
+                f"{type(exc).__name__}: {_safe_exc_summary(exc)}",
+            )
 
     # In DMs, avoid creating a new "focus thread" per message (ts changes every message).
     # Instead, keep a stable key so multi-turn conversations work without requiring threads.
@@ -1050,6 +1060,24 @@ async def route_slack_event(
         await _origin_update(
             text=f":left_right_arrow: Continuing in <#{channel_id}>.", blocks=blocks
         )
+
+    if planning and thread_ts and cleaned_text.strip():
+        try:
+            handled_planning_reply = await planning.maybe_handle_thread_reply(
+                channel_id=channel,
+                thread_ts=thread_ts,
+                text=cleaned_text,
+                thread_respond=_origin_update,
+            )
+        except Exception:
+            logger.exception(
+                "planning thread-reply handling failed channel=%s thread_ts=%s",
+                channel,
+                thread_ts,
+            )
+            handled_planning_reply = False
+        if handled_planning_reply:
+            return
 
     redirect = focus.get_redirect(origin_key)
     if redirect and agent_type == redirect.agent_type:
@@ -1751,6 +1779,7 @@ def register_handlers(
                     say=say,
                     client=client,
                     get_constraint_store=_get_constraint_store,
+                    planning=planning,
                 ),
                 timeout=timeout_s,
             )

@@ -70,6 +70,18 @@ class _FailsFirstUpdateClient(_FakeClient):
         return {"ok": True}
 
 
+class _PlanningReplyHandler:
+    def __init__(self):
+        self.calls = []
+
+    async def maybe_handle_thread_reply(
+        self, *, channel_id: str, thread_ts: str, text: str, thread_respond
+    ) -> bool:
+        self.calls.append((channel_id, thread_ts, text))
+        await thread_respond(text="planning thread handled")
+        return True
+
+
 async def _unused_say(**_kwargs):
     return {"channel": "C1", "ts": "unused"}
 
@@ -243,3 +255,85 @@ async def test_route_slack_event_records_stage_compute_failure(monkeypatch):
     assert ("slack_routing", "stage_compute_failure") in errors
     assert client.updates
     assert "RuntimeError" in (client.updates[-1].get("text") or "")
+
+
+@pytest.mark.asyncio
+async def test_route_slack_event_constraint_refresh_failure_is_non_fatal(monkeypatch):
+    class _ExplodingConstraintStore:
+        async def list_constraints(self, **_kwargs):
+            raise RuntimeError("constraint store unavailable")
+
+    focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
+    key = "C1:root"
+    focus.set_focus(key, "timeboxing_agent", by_user="U1")
+    focus.set_thread_label(
+        key,
+        title="Timeboxing session",
+        request_excerpt=None,
+        state="pending",
+        by_user="U1",
+    )
+    runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
+    client = _FakeClient()
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.record_error",
+        lambda *, component, error_type: errors.append((component, error_type)),
+    )
+
+    async def _get_constraint_store():
+        return _ExplodingConstraintStore()
+
+    await route_slack_event(
+        runtime=runtime,
+        focus=focus,
+        default_agent="timeboxing_agent",
+        event={
+            "channel": "C1",
+            "user": "U1",
+            "text": "reply",
+            "thread_ts": "root",
+            "ts": "555",
+        },
+        bot_user_id=None,
+        say=_unused_say,
+        client=client,
+        get_constraint_store=_get_constraint_store,
+    )
+
+    assert client.updates
+    assert str(client.updates[-1].get("text") or "").endswith("ok")
+    assert ("slack_routing", "constraint_refresh_error") in errors
+
+
+@pytest.mark.asyncio
+async def test_route_slack_event_uses_planning_thread_reply_handler_before_runtime():
+    focus = FocusManager(
+        ttl_seconds=60, allowed_agents=["receptionist_agent", "planner_agent"]
+    )
+    runtime = _FakeRuntime([_FakeResult(TextMessage(content="should not run", source="bot"))])
+    client = _FakeClient()
+    planning = _PlanningReplyHandler()
+
+    await route_slack_event(
+        runtime=runtime,
+        focus=focus,
+        default_agent="receptionist_agent",
+        event={
+            "channel": "D1",
+            "channel_type": "im",
+            "user": "U1",
+            "text": "yes plan it at 17:00",
+            "thread_ts": "root",
+            "ts": "777",
+        },
+        bot_user_id=None,
+        say=_unused_say,
+        client=client,
+        planning=planning,
+    )
+
+    assert len(planning.calls) == 1
+    assert runtime.calls == []
+    assert client.updates
+    assert "planning thread handled" in (client.updates[-1].get("text") or "")

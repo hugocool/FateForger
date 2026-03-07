@@ -2111,8 +2111,9 @@ class TimeboxingFlowAgent(RoutedAgent):
         """Wait briefly for any pending constraint extraction tasks."""
         if not session.pending_constraint_extractions:
             return
+        task_map = getattr(self, "_constraint_extraction_tasks", {})
         tasks = [
-            self._constraint_extraction_tasks.get(key)
+            task_map.get(key)
             for key in session.pending_constraint_extractions
         ]
         tasks = [task for task in tasks if task]
@@ -3127,16 +3128,27 @@ class TimeboxingFlowAgent(RoutedAgent):
         self, session: Session, *, user_message: str
     ) -> dict[str, Any]:
         """Build the injected context payload for the CaptureInputs stage."""
+        prefetch_scope = self._capture_inputs_prefetch_scope(session)
+        prefetched = (
+            list(session.prefetched_pending_tasks or [])
+            if prefetch_scope["allow_prefetch"]
+            else []
+        )
         input_facts = TaskMarshallingCapability.merge_prefetched_tasks(
             input_facts=dict(session.input_facts or {}),
-            prefetched=list(session.prefetched_pending_tasks or []),
+            prefetched=prefetched,
         )
         task_candidates = parse_model_list(TaskCandidate, input_facts.get("tasks"))
+        filtered_out = max(0, len(session.prefetched_pending_tasks or []) - len(prefetched))
         self._session_debug(
             session,
             "capture_inputs_task_context",
             prefetched_count=len(session.prefetched_pending_tasks or []),
             merged_task_count=len(task_candidates),
+            prefetch_policy=str(prefetch_scope["policy"]),
+            prefetch_scope_signals=list(prefetch_scope["scope_signals"]),
+            prefetch_scope_reasons=list(prefetch_scope["reasons"]),
+            prefetched_filtered_out_count=filtered_out,
             top_titles=[
                 (task.title or "").strip()
                 for task in task_candidates[:8]
@@ -3148,6 +3160,45 @@ class TimeboxingFlowAgent(RoutedAgent):
             frame_facts=dict(session.frame_facts or {}),
             input_facts=input_facts,
         ).model_dump(mode="json")
+
+    def _capture_inputs_prefetch_scope(self, session: Session) -> dict[str, Any]:
+        """Decide whether task-marshalling prefetch should be injected in Stage 2."""
+        explicit_tasks = parse_model_list(
+            TaskCandidate, dict(session.input_facts or {}).get("tasks")
+        )
+        if explicit_tasks:
+            return {
+                "allow_prefetch": False,
+                "policy": "explicit_tasks_present",
+                "scope_signals": [],
+                "reasons": ["user_provided_tasks"],
+            }
+
+        scope_signals: set[str] = set()
+        for constraint in list(session.active_constraints or []):
+            aspect_id = self._constraint_aspect_id(constraint)
+            if aspect_id:
+                scope_signals.add(aspect_id)
+
+        reasons: list[str] = []
+        suppress_signals = {"gtd_admin_exclusion", "daily_one_thing"}
+        matched = sorted(signal for signal in scope_signals if signal in suppress_signals)
+        if matched:
+            reasons.append("scope_first_suppress_prefetch")
+            reasons.extend(matched)
+            return {
+                "allow_prefetch": False,
+                "policy": "scope_first_suppress_prefetch",
+                "scope_signals": sorted(scope_signals),
+                "reasons": reasons,
+            }
+
+        return {
+            "allow_prefetch": True,
+            "policy": "default_prefetch",
+            "scope_signals": sorted(scope_signals),
+            "reasons": [],
+        }
 
     def _quality_snapshot_for_prompt(self, session: Session) -> dict[str, Any]:
         """Return previously captured quality facts for refine-stage prompt context."""
