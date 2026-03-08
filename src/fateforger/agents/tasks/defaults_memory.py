@@ -17,10 +17,10 @@ from fateforger.agents.timeboxing.durable_constraint_store import (
     DurableConstraintStore,
     build_durable_constraint_store,
 )
-from fateforger.agents.timeboxing.mcp_clients import ConstraintMemoryClient
-from fateforger.agents.timeboxing.mem0_constraint_memory import (
-    build_mem0_client_from_settings,
+from fateforger.agents.timeboxing.graphiti_constraint_memory import (
+    build_graphiti_client_from_settings,
 )
+from fateforger.agents.timeboxing.mcp_clients import ConstraintMemoryClient
 from fateforger.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -83,12 +83,12 @@ class TaskDefaultsMemoryStore:
         try:
             if self._backend == "constraint_mcp":
                 self._client = ConstraintMemoryClient(timeout=self.timeout_s)
-            elif self._backend == "mem0":
+            elif self._backend == "graphiti":
                 user_id = (
-                    str(getattr(settings, "mem0_user_id", "") or "").strip()
+                    str(getattr(settings, "graphiti_user_id", "") or "").strip()
                     or "timeboxing"
                 )
-                self._client = build_mem0_client_from_settings(user_id=user_id)
+                self._client = build_graphiti_client_from_settings(user_id=user_id)
             else:
                 raise ValueError(f"Unsupported tasks defaults memory backend: {self._backend}")
             self._store = build_durable_constraint_store(self._client)

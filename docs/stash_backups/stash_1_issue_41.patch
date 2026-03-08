@@ -1,0 +1,611 @@
+diff --git a/scripts/README.md b/scripts/README.md
+index c95934f..1439ea8 100644
+--- a/scripts/README.md
++++ b/scripts/README.md
+@@ -147,6 +147,22 @@ SLACK_USER_TOKEN=xoxp-... \
+   --thread-ts 1772229704.048009 \
+   --limit 50
+ 
++# Query only failing stage-specific events (80/20 triage slice)
++.venv/bin/python scripts/dev/timebox_log_query.py llm \
++  --stage CollectConstraints \
++  --agent timeboxing_agent \
++  --has-error yes \
++  --event-type MessageHandlerException \
++  --error-type MessageHandlerException \
++  --from-ts 2026-02-27T12:00:00Z \
++  --to-ts 2026-02-27T18:00:00Z \
++  --limit 100
++
++# Summarize token/call volume by call label + status
++.venv/bin/python scripts/dev/timebox_log_query.py llm \
++  --summary \
++  --group-by call_label,status
++
+ # Optional override if your upstream MCP endpoint differs
+ SLACK_MCP_UPSTREAM_URL=http://host.docker.internal:3001/mcp scripts/dev/slack_mcp_client.sh cycle
+ 
+@@ -209,5 +225,6 @@ Combined Slack audit loop:
+ 2. Detect anomalies in Prometheus (`fateforger_llm_calls_total`, `fateforger_llm_tokens_total`, `fateforger_tool_calls_total`, `fateforger_errors_total`, `fateforger_stage_duration_seconds_*`).
+ 3. Correlate with indexed logs:
+    - `timebox_log_query.py sessions/events`
+-   - `timebox_log_query.py llm`
++   - `timebox_log_query.py llm` (filters: `--agent --stage --event-type --error-type --has-error --from-ts --to-ts`)
++   - `timebox_log_query.py llm --summary --group-by call_label,model,status`
+ 4. Use `session_key`/`thread_ts`/`call_label` to isolate root cause and patch with tests first.
+diff --git a/scripts/dev/timebox_log_query.py b/scripts/dev/timebox_log_query.py
+index b7d6e6b..453e910 100644
+--- a/scripts/dev/timebox_log_query.py
++++ b/scripts/dev/timebox_log_query.py
+@@ -16,6 +16,22 @@ from dotenv import load_dotenv
+ from fateforger.debug.log_index import newest_existing_entries, read_index_entries
+ 
+ 
++def _validate_timestamp_arg(value: str) -> str:
++    raw = str(value or "").strip()
++    if not raw:
++        raise argparse.ArgumentTypeError("timestamp cannot be empty")
++    try:
++        if re.match(r"^\d{8}_\d{6}$", raw):
++            datetime.strptime(raw, "%Y%m%d_%H%M%S")
++            return raw
++        datetime.fromisoformat(raw.replace("Z", "+00:00"))
++        return raw
++    except ValueError as exc:
++        raise argparse.ArgumentTypeError(
++            "timestamp must be ISO-8601 or YYYYMMDD_HHMMSS"
++        ) from exc
++
++
+ def _build_parser() -> argparse.ArgumentParser:
+     parser = argparse.ArgumentParser(
+         description="Query indexed timeboxing logs without ad-hoc grep."
+@@ -45,8 +61,41 @@ def _build_parser() -> argparse.ArgumentParser:
+     llm.add_argument("--session-key", default=None)
+     llm.add_argument("--thread-ts", default=None)
+     llm.add_argument("--call-label", default=None)
++    llm.add_argument("--agent", default=None)
++    llm.add_argument("--stage", default=None)
++    llm.add_argument("--channel-id", default=None)
++    llm.add_argument("--event-type", default=None)
++    llm.add_argument("--error-type", default=None)
+     llm.add_argument("--model", default=None)
+     llm.add_argument("--status", default=None)
++    llm.add_argument(
++        "--has-error",
++        choices=("yes", "no"),
++        default=None,
++        help="Filter rows with non-empty error field.",
++    )
++    llm.add_argument(
++        "--from-ts",
++        type=_validate_timestamp_arg,
++        default=None,
++        help="Inclusive lower bound (ISO-8601 or YYYYMMDD_HHMMSS).",
++    )
++    llm.add_argument(
++        "--to-ts",
++        type=_validate_timestamp_arg,
++        default=None,
++        help="Inclusive upper bound (ISO-8601 or YYYYMMDD_HHMMSS).",
++    )
++    llm.add_argument(
++        "--summary",
++        action="store_true",
++        help="Emit grouped counts/token totals instead of raw rows.",
++    )
++    llm.add_argument(
++        "--group-by",
++        default="call_label,model,status",
++        help="Comma-separated fields for --summary (for example: stage,call_label,status).",
++    )
+     llm.add_argument("--contains", default=None)
+     llm.add_argument("--log-path", default=None)
+ 
+@@ -301,6 +350,141 @@ def _read_json_lines(path: Path) -> list[dict[str, Any]]:
+     return rows
+ 
+ 
++def _parse_timestamp(value: str | None) -> float | None:
++    raw = str(value or "").strip()
++    if not raw:
++        return None
++    if re.match(r"^\d{8}_\d{6}$", raw):
++        return datetime.strptime(raw, "%Y%m%d_%H%M%S").timestamp()
++    normalized = raw.replace("Z", "+00:00")
++    return datetime.fromisoformat(normalized).timestamp()
++
++
++def _row_timestamp(row: dict[str, Any]) -> float | None:
++    for key in ("created_at", "timestamp", "ts"):
++        try:
++            parsed = _parse_timestamp(row.get(key))
++        except ValueError:
++            parsed = None
++        if parsed is not None:
++            return parsed
++    return None
++
++
++def _non_empty(value: Any) -> bool:
++    if value is None:
++        return False
++    if isinstance(value, str):
++        return bool(value.strip())
++    if isinstance(value, (list, tuple, dict, set)):
++        return bool(value)
++    return True
++
++
++def _filter_rows(rows: list[dict[str, Any]], args: argparse.Namespace) -> list[dict[str, Any]]:
++    filtered = rows
++    session_key = str(args.session_key or "").strip()
++    if session_key:
++        filtered = [row for row in filtered if row.get("session_key") == session_key]
++    thread_ts = str(args.thread_ts or "").strip()
++    if thread_ts:
++        filtered = [row for row in filtered if row.get("thread_ts") == thread_ts]
++    call_label = str(args.call_label or "").strip()
++    if call_label:
++        filtered = [row for row in filtered if row.get("call_label") == call_label]
++    model = str(args.model or "").strip()
++    if model:
++        filtered = [row for row in filtered if row.get("model") == model]
++    status = str(args.status or "").strip()
++    if status:
++        filtered = [row for row in filtered if row.get("status") == status]
++    agent = str(getattr(args, "agent", "") or "").strip()
++    if agent:
++        filtered = [row for row in filtered if row.get("agent") == agent]
++    stage = str(getattr(args, "stage", "") or "").strip()
++    if stage:
++        filtered = [row for row in filtered if row.get("stage") == stage]
++    channel_id = str(getattr(args, "channel_id", "") or "").strip()
++    if channel_id:
++        filtered = [row for row in filtered if row.get("channel_id") == channel_id]
++    event_type = str(getattr(args, "event_type", "") or "").strip()
++    if event_type:
++        filtered = [row for row in filtered if row.get("event_type") == event_type]
++    error_type = str(getattr(args, "error_type", "") or "").strip()
++    if error_type:
++        filtered = [row for row in filtered if row.get("error_type") == error_type]
++    has_error = str(getattr(args, "has_error", "") or "").strip().lower()
++    if has_error == "yes":
++        filtered = [row for row in filtered if _non_empty(row.get("error"))]
++    elif has_error == "no":
++        filtered = [row for row in filtered if not _non_empty(row.get("error"))]
++
++    from_ts_raw = str(getattr(args, "from_ts", "") or "").strip()
++    to_ts_raw = str(getattr(args, "to_ts", "") or "").strip()
++    from_ts = _parse_timestamp(from_ts_raw) if from_ts_raw else None
++    to_ts = _parse_timestamp(to_ts_raw) if to_ts_raw else None
++    if from_ts is not None:
++        filtered = [
++            row
++            for row in filtered
++            if (ts := _row_timestamp(row)) is not None and ts >= from_ts
++        ]
++    if to_ts is not None:
++        filtered = [
++            row
++            for row in filtered
++            if (ts := _row_timestamp(row)) is not None and ts <= to_ts
++        ]
++
++    contains = str(args.contains or "").strip().lower()
++    if contains:
++        filtered = [
++            row for row in filtered if contains in json.dumps(row, ensure_ascii=False).lower()
++        ]
++    return filtered
++
++
++def _safe_int(value: Any) -> int:
++    if isinstance(value, int):
++        return value
++    if isinstance(value, float):
++        return int(value)
++    if isinstance(value, str) and value.strip().isdigit():
++        return int(value.strip())
++    return 0
++
++
++def _summarize_rows(rows: list[dict[str, Any]], *, group_fields: list[str]) -> list[dict[str, Any]]:
++    summary: dict[tuple[Any, ...], dict[str, Any]] = {}
++    for row in rows:
++        key = tuple(row.get(field) for field in group_fields)
++        item = summary.get(key)
++        if item is None:
++            item = {
++                "group": {field: row.get(field) for field in group_fields},
++                "count": 0,
++                "prompt_tokens": 0,
++                "completion_tokens": 0,
++                "total_tokens": 0,
++                "first_created_at": None,
++                "last_created_at": None,
++            }
++            summary[key] = item
++        item["count"] += 1
++        item["prompt_tokens"] += _safe_int(row.get("prompt_tokens"))
++        item["completion_tokens"] += _safe_int(row.get("completion_tokens"))
++        item["total_tokens"] += _safe_int(row.get("total_tokens"))
++        created_at = row.get("created_at")
++        if isinstance(created_at, str) and created_at.strip():
++            if item["first_created_at"] is None or created_at < item["first_created_at"]:
++                item["first_created_at"] = created_at
++            if item["last_created_at"] is None or created_at > item["last_created_at"]:
++                item["last_created_at"] = created_at
++    grouped = list(summary.values())
++    grouped.sort(key=lambda row: (row.get("count", 0), row.get("total_tokens", 0)))
++    return grouped
++
++
+ def _run_llm(args: argparse.Namespace) -> int:
+     selected_path = str(args.log_path or "").strip()
+     if selected_path:
+@@ -324,24 +508,14 @@ def _run_llm(args: argparse.Namespace) -> int:
+                 row.setdefault("log_path", path)
+             rows.extend(file_rows)
+ 
+-    session_key = str(args.session_key or "").strip()
+-    if session_key:
+-        rows = [row for row in rows if row.get("session_key") == session_key]
+-    thread_ts = str(args.thread_ts or "").strip()
+-    if thread_ts:
+-        rows = [row for row in rows if row.get("thread_ts") == thread_ts]
+-    call_label = str(args.call_label or "").strip()
+-    if call_label:
+-        rows = [row for row in rows if row.get("call_label") == call_label]
+-    model = str(args.model or "").strip()
+-    if model:
+-        rows = [row for row in rows if row.get("model") == model]
+-    status = str(args.status or "").strip()
+-    if status:
+-        rows = [row for row in rows if row.get("status") == status]
+-    contains = str(args.contains or "").strip().lower()
+-    if contains:
+-        rows = [row for row in rows if contains in json.dumps(row, ensure_ascii=False).lower()]
++    rows = _filter_rows(rows, args)
++
++    if args.summary:
++        group_fields = [field.strip() for field in str(args.group_by or "").split(",") if field.strip()]
++        if not group_fields:
++            group_fields = ["call_label", "model", "status"]
++        _print_json_lines(_summarize_rows(rows, group_fields=group_fields))
++        return 0
+ 
+     limit = max(1, int(args.limit))
+     _print_json_lines(rows[-limit:])
+diff --git a/src/fateforger/core/config.py b/src/fateforger/core/config.py
+index b8d585d..6eadfba 100644
+--- a/src/fateforger/core/config.py
++++ b/src/fateforger/core/config.py
+@@ -247,6 +247,21 @@ class Settings(BaseSettings):
+             return value
+         raise ValueError("LLM max token limits must be >= 0")
+ 
++    @field_validator("obs_llm_audit_mode")
++    @classmethod
++    def _validate_obs_llm_audit_mode(cls, value: str) -> str:
++        mode = (value or "").strip().lower()
++        if mode in {"sanitized", "raw", "off"}:
++            return mode
++        raise ValueError("OBS_LLM_AUDIT_MODE must be one of: sanitized, raw, off")
++
++    @field_validator("obs_llm_audit_max_chars")
++    @classmethod
++    def _validate_obs_llm_audit_max_chars(cls, value: int) -> int:
++        if value > 0:
++            return value
++        raise ValueError("OBS_LLM_AUDIT_MAX_CHARS must be > 0")
++
+     @field_validator("timeboxing_memory_backend")
+     @classmethod
+     def _validate_timeboxing_memory_backend(cls, value: str) -> str:
+diff --git a/src/fateforger/core/logging_config.py b/src/fateforger/core/logging_config.py
+index 2a3a9f0..6850211 100644
+--- a/src/fateforger/core/logging_config.py
++++ b/src/fateforger/core/logging_config.py
+@@ -598,14 +598,12 @@ def _emit_llm_audit_event(event: dict[str, Any]) -> None:
+     if logger is None:
+         return
+     mode = (os.getenv("OBS_LLM_AUDIT_MODE", "sanitized") or "sanitized").strip().lower()
++    if mode == "off":
++        return
+     max_chars = _coerce_int(os.getenv("OBS_LLM_AUDIT_MAX_CHARS", "2000"), default=2000)
+     payload = dict(event)
+     payload.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
+-    serialized = (
+-        payload
+-        if mode in {"raw", "off"}
+-        else _sanitize_for_audit(payload, max_chars=max_chars)
+-    )
++    serialized = payload if mode == "raw" else _sanitize_for_audit(payload, max_chars=max_chars)
+     logger.info(json.dumps(serialized, ensure_ascii=False, default=str))
+ 
+ 
+@@ -697,6 +695,7 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
+ 
+     if isinstance(event, LLMEventPayload):
+         raw_response = payload.get("response")
++        response_obj = event.response_obj
+         model_candidate = event.response_model
+         if model_candidate == "unknown":
+             model_candidate = _extract_model_from_response(raw_response) or _extract_model_from_response(
+@@ -737,6 +736,13 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
+                     type="completion",
+                     call_label=call_label,
+                 ).inc(completion_tokens)
++        total_tokens = None
++        if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
++            total_tokens = prompt_tokens + completion_tokens
++        elif response_obj and response_obj.usage and isinstance(response_obj.usage.total_tokens, int):
++            total_tokens = response_obj.usage.total_tokens
++        request_excerpt = event.messages
++        response_excerpt = event.response
+         _emit_llm_audit_event(
+             {
+                 "event_type": event.type,
+@@ -750,8 +756,17 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
+                 "channel_id": channel_id,
+                 "prompt_tokens": prompt_tokens,
+                 "completion_tokens": completion_tokens,
+-                "request_excerpt": event.model_extra.get("messages"),
+-                "response_excerpt": event.response,
++                "total_tokens": total_tokens,
++                "finish_reason": response_obj.finish_reason if response_obj else None,
++                "tool_call_names": response_obj.tool_call_names if response_obj else [],
++                "request_chars": len(json.dumps(request_excerpt, ensure_ascii=False, default=str))
++                if request_excerpt is not None
++                else 0,
++                "response_chars": len(json.dumps(response_excerpt, ensure_ascii=False, default=str))
++                if response_excerpt is not None
++                else 0,
++                "request_excerpt": request_excerpt,
++                "response_excerpt": response_excerpt,
+                 "error": event.response_error,
+             }
+         )
+@@ -782,6 +797,7 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
+                 "event_type": event.type,
+                 "component": event.component,
+                 "error": event.exception,
++                "error_type": event.error_type or event.type,
+                 "session_key": event.session_key or exc_session_key,
+                 "thread_ts": event.thread_ts or exc_thread_ts,
+                 "channel_id": event.channel_id or exc_channel_id,
+diff --git a/tests/unit/test_logging_config_filters.py b/tests/unit/test_logging_config_filters.py
+index ae32d13..45f9311 100644
+--- a/tests/unit/test_logging_config_filters.py
++++ b/tests/unit/test_logging_config_filters.py
+@@ -6,6 +6,7 @@ import logging
+ from datetime import date
+ from pathlib import Path
+ 
++import fateforger.core.logging_config as logging_config
+ from fateforger.core.logging_config import (
+     _AutogenCoreFilter,
+     _AutogenEventsFilter,
+@@ -174,3 +175,23 @@ def test_sanitize_for_audit_redacts_and_truncates() -> None:
+     assert sanitized["messages"][0]["content"].startswith("x")
+     assert "truncated" in sanitized["messages"][0]["content"]
+     assert sanitized["prompt_tokens"] == 123
++
++
++def test_emit_llm_audit_event_off_mode_noop(monkeypatch) -> None:
++    """OBS_LLM_AUDIT_MODE=off should suppress writes even when logger exists."""
++
++    class _Sink:
++        def __init__(self) -> None:
++            self.rows: list[str] = []
++
++        def info(self, row: str) -> None:
++            self.rows.append(row)
++
++    sink = _Sink()
++    monkeypatch.setenv("OBS_LLM_AUDIT_ENABLED", "1")
++    monkeypatch.setenv("OBS_LLM_AUDIT_MODE", "off")
++    monkeypatch.setattr(logging_config, "_LLM_AUDIT_LOGGER", sink)
++
++    logging_config._emit_llm_audit_event({"event_type": "LLMCall", "status": "ok"})
++
++    assert sink.rows == []
+diff --git a/tests/unit/test_observability_metrics.py b/tests/unit/test_observability_metrics.py
+index 2c6baf0..88543a5 100644
+--- a/tests/unit/test_observability_metrics.py
++++ b/tests/unit/test_observability_metrics.py
+@@ -167,3 +167,43 @@ def test_record_observability_event_derives_stage_call_label(monkeypatch) -> Non
+ 
+     assert captured
+     assert captured[-1]["call_label"] == "CollectConstraints"
++
++
++def test_record_observability_event_emits_rich_llm_audit_fields(monkeypatch) -> None:
++    """LLM audit payload should include queryable finish/tool/token summary fields."""
++    monkeypatch.setenv("OBS_LLM_AUDIT_ENABLED", "0")
++    captured: list[dict] = []
++    monkeypatch.setattr(logging_config, "_emit_llm_audit_event", captured.append)
++
++    logging_config._record_observability_event(
++        {
++            "type": "LLMCall",
++            "agent_id": "timeboxing_agent/C0AA6HC1RJL:1772248936.310119",
++            "call_label": "planning_date",
++            "prompt_tokens": 12,
++            "completion_tokens": 8,
++            "messages": [{"role": "user", "content": "Find next slot"}],
++            "response": {
++                "model": "google/gemini-3-flash-preview",
++                "choices": [
++                    {
++                        "finish_reason": "tool_calls",
++                        "message": {
++                            "tool_calls": [
++                                {"function": {"name": "list-events"}},
++                            ]
++                        },
++                    }
++                ],
++            },
++        },
++        record_level=logging.INFO,
++    )
++
++    assert captured
++    event = captured[-1]
++    assert event["total_tokens"] == 20
++    assert event["finish_reason"] == "tool_calls"
++    assert event["tool_call_names"] == ["list-events"]
++    assert event["request_chars"] > 0
++    assert event["response_chars"] > 0
+diff --git a/tests/unit/test_settings_mcp_endpoints.py b/tests/unit/test_settings_mcp_endpoints.py
+index b0cf1fa..216e6ed 100644
+--- a/tests/unit/test_settings_mcp_endpoints.py
++++ b/tests/unit/test_settings_mcp_endpoints.py
+@@ -84,3 +84,15 @@ def test_settings_rejects_invalid_ticktick_mcp_url(monkeypatch) -> None:
+     monkeypatch.setenv("TICKTICK_MCP_URL", "ticktick-mcp:8000/mcp")
+     with pytest.raises(ValueError):
+         Settings()
++
++
++def test_settings_rejects_invalid_obs_llm_audit_mode(monkeypatch) -> None:
++    monkeypatch.setenv("OBS_LLM_AUDIT_MODE", "verbose")
++    with pytest.raises(ValueError):
++        Settings()
++
++
++def test_settings_rejects_non_positive_obs_llm_audit_max_chars(monkeypatch) -> None:
++    monkeypatch.setenv("OBS_LLM_AUDIT_MAX_CHARS", "0")
++    with pytest.raises(ValueError):
++        Settings()
+diff --git a/tests/unit/test_timebox_log_query_llm.py b/tests/unit/test_timebox_log_query_llm.py
+index e48459c..fc34338 100644
+--- a/tests/unit/test_timebox_log_query_llm.py
++++ b/tests/unit/test_timebox_log_query_llm.py
+@@ -128,3 +128,125 @@ def test_llm_query_scans_all_logs_when_no_log_path(tmp_path: Path) -> None:
+     parsed = [json.loads(line) for line in lines]
+     assert {row["session_key"] for row in parsed} == {"s-older", "s-newer"}
+     assert all("log_path" in row for row in parsed)
++
++
++def test_llm_query_supports_stage_agent_and_error_filters(tmp_path: Path) -> None:
++    """LLM query should support high-value triage filters."""
++    log_dir = tmp_path / "logs"
++    log_dir.mkdir(parents=True, exist_ok=True)
++    llm_path = log_dir / "llm_io_20260227_120000_12345.jsonl"
++    rows = [
++        {
++            "created_at": "2026-02-27T12:00:00Z",
++            "session_key": "s1",
++            "thread_ts": "100.1",
++            "agent": "timeboxing_agent",
++            "stage": "CollectConstraints",
++            "event_type": "LLMCall",
++            "call_label": "planning_date",
++            "model": "google/gemini-3",
++            "status": "ok",
++            "error": "",
++        },
++        {
++            "created_at": "2026-02-27T12:01:00Z",
++            "session_key": "s1",
++            "thread_ts": "100.1",
++            "agent": "timeboxing_agent",
++            "stage": "CollectConstraints",
++            "event_type": "MessageHandlerException",
++            "call_label": "planning_date",
++            "model": "google/gemini-3",
++            "status": "error",
++            "error": "invalid_date",
++            "error_type": "MessageHandlerException",
++        },
++    ]
++    llm_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
++
++    env = os.environ.copy()
++    env["OBS_LLM_AUDIT_LOG_DIR"] = str(log_dir)
++    env["OBS_LLM_AUDIT_INDEX_FILE"] = "llm_io_index.jsonl"
++
++    result = _run_llm_query(
++        "--agent",
++        "timeboxing_agent",
++        "--stage",
++        "CollectConstraints",
++        "--event-type",
++        "MessageHandlerException",
++        "--has-error",
++        "yes",
++        "--error-type",
++        "MessageHandlerException",
++        "--limit",
++        "10",
++        env=env,
++    )
++
++    assert result.returncode == 0
++    lines = [line for line in result.stdout.splitlines() if line.strip()]
++    assert len(lines) == 1
++    parsed = json.loads(lines[0])
++    assert parsed["event_type"] == "MessageHandlerException"
++    assert parsed["error"] == "invalid_date"
++
++
++def test_llm_query_summary_groups_by_dimensions(tmp_path: Path) -> None:
++    """Summary mode should aggregate counts and token totals by group fields."""
++    log_dir = tmp_path / "logs"
++    log_dir.mkdir(parents=True, exist_ok=True)
++    llm_path = log_dir / "llm_io_20260227_120000_12345.jsonl"
++    rows = [
++        {
++            "created_at": "2026-02-27T12:00:00Z",
++            "call_label": "planning_date",
++            "model": "google/gemini-3",
++            "status": "ok",
++            "prompt_tokens": 10,
++            "completion_tokens": 5,
++            "total_tokens": 15,
++        },
++        {
++            "created_at": "2026-02-27T12:01:00Z",
++            "call_label": "planning_date",
++            "model": "google/gemini-3",
++            "status": "ok",
++            "prompt_tokens": 7,
++            "completion_tokens": 3,
++            "total_tokens": 10,
++        },
++        {
++            "created_at": "2026-02-27T12:02:00Z",
++            "call_label": "patcher_attempt_1",
++            "model": "google/gemini-3",
++            "status": "error",
++            "prompt_tokens": 20,
++            "completion_tokens": 1,
++            "total_tokens": 21,
++        },
++    ]
++    llm_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
++
++    env = os.environ.copy()
++    env["OBS_LLM_AUDIT_LOG_DIR"] = str(log_dir)
++    env["OBS_LLM_AUDIT_INDEX_FILE"] = "llm_io_index.jsonl"
++
++    result = _run_llm_query(
++        "--summary",
++        "--group-by",
++        "call_label,status",
++        "--limit",
++        "10",
++        env=env,
++    )
++
++    assert result.returncode == 0
++    lines = [line for line in result.stdout.splitlines() if line.strip()]
++    assert len(lines) == 2
++    grouped = [json.loads(line) for line in lines]
++    planning = next(
++        row for row in grouped if row["group"]["call_label"] == "planning_date"
++    )
++    assert planning["count"] == 2
++    assert planning["total_tokens"] == 25

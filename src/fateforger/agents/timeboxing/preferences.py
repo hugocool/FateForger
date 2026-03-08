@@ -10,7 +10,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from pydantic import Field as PydanticField
 from sqlalchemy import Column
 from sqlalchemy import DateTime as SQLDateTime
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.types import JSON as SAJSON
 from sqlmodel import Field, SQLModel
@@ -112,7 +112,11 @@ class ConstraintStore:
         thread_ts: Optional[str],
         constraints: List[ConstraintBase],
     ) -> List[Constraint]:
-        """Persist a batch of constraints for a user/thread."""
+        """Persist a batch of constraints for a user/thread.
+
+        Shared scopes (`PROFILE`, `DATESPAN`) are canonicalized across threads to
+        avoid local-mirror accumulation.
+        """
         if not constraints:
             return []
         rows = [
@@ -125,11 +129,66 @@ class ConstraintStore:
             for constraint in constraints
         ]
         async with self._sessionmaker() as session:
-            session.add_all(rows)
+            incoming_shared = [
+                row
+                for row in rows
+                if row.scope in {ConstraintScope.PROFILE, ConstraintScope.DATESPAN}
+            ]
+            incoming_session = [
+                row
+                for row in rows
+                if row.scope not in {ConstraintScope.PROFILE, ConstraintScope.DATESPAN}
+            ]
+            persisted: list[Constraint] = []
+
+            if incoming_shared:
+                stmt = select(Constraint).where(
+                    Constraint.user_id == user_id,
+                    Constraint.scope.in_(
+                        [ConstraintScope.PROFILE, ConstraintScope.DATESPAN]
+                    ),
+                )
+                result = await session.execute(stmt)
+                existing_shared = list(result.scalars().all())
+                existing_by_key = _group_constraints_by_semantics(existing_shared)
+
+                for incoming in incoming_shared:
+                    key = _constraint_semantic_key(incoming)
+                    matches = list(existing_by_key.get(key) or [])
+                    if not matches:
+                        incoming.channel_id = None
+                        incoming.thread_ts = None
+                        session.add(incoming)
+                        existing_by_key.setdefault(key, []).append(incoming)
+                        persisted.append(incoming)
+                        continue
+
+                    canonical_existing = _canonical_constraint(matches)
+                    canonical_candidate = _canonical_constraint([*matches, incoming])
+                    if canonical_candidate is incoming:
+                        payload = incoming.model_dump(
+                            exclude={
+                                "id",
+                                "user_id",
+                                "channel_id",
+                                "thread_ts",
+                                "created_at",
+                                "updated_at",
+                            }
+                        )
+                        _apply_constraint_payload(canonical_existing, payload)
+                    canonical_existing.channel_id = None
+                    canonical_existing.thread_ts = None
+                    persisted.append(canonical_existing)
+
+            if incoming_session:
+                session.add_all(incoming_session)
+                persisted.extend(incoming_session)
+
             await session.commit()
-            for row in rows:
+            for row in _dedupe_constraint_rows_by_id(persisted):
                 await session.refresh(row)
-        return rows
+            return _dedupe_constraint_rows_by_id(persisted)
 
     async def upsert_constraints(
         self,
@@ -248,25 +307,118 @@ class ConstraintStore:
         """List constraints for a user with optional filters."""
         async with self._sessionmaker() as session:
             stmt = select(Constraint).where(Constraint.user_id == user_id)
-            if channel_id:
-                stmt = stmt.where(Constraint.channel_id == channel_id)
-            if thread_ts:
-                if include_shared_scopes:
-                    stmt = stmt.where(
-                        or_(
+            if include_shared_scopes and thread_ts and channel_id:
+                stmt = stmt.where(
+                    or_(
+                        and_(
+                            Constraint.channel_id == channel_id,
                             Constraint.thread_ts == thread_ts,
-                            Constraint.scope == ConstraintScope.PROFILE,
-                            Constraint.scope == ConstraintScope.DATESPAN,
-                        )
+                        ),
+                        Constraint.scope.in_(
+                            [ConstraintScope.PROFILE, ConstraintScope.DATESPAN]
+                        ),
                     )
-                else:
-                    stmt = stmt.where(Constraint.thread_ts == thread_ts)
+                )
+            else:
+                if channel_id:
+                    stmt = stmt.where(Constraint.channel_id == channel_id)
+                if thread_ts:
+                    if include_shared_scopes:
+                        stmt = stmt.where(
+                            or_(
+                                Constraint.thread_ts == thread_ts,
+                                Constraint.scope == ConstraintScope.PROFILE,
+                                Constraint.scope == ConstraintScope.DATESPAN,
+                            )
+                        )
+                    else:
+                        stmt = stmt.where(Constraint.thread_ts == thread_ts)
             if status:
                 stmt = stmt.where(Constraint.status == status)
             if scope:
                 stmt = stmt.where(Constraint.scope == scope)
             result = await session.execute(stmt)
-            return list(result.scalars().all())
+            rows = list(result.scalars().all())
+            if include_shared_scopes:
+                return _canonicalize_shared_rows(rows)
+            return rows
+
+    async def shared_scope_stats(self, *, user_id: str) -> dict[str, Any]:
+        """Return canonicalization stats for shared local constraints."""
+        async with self._sessionmaker() as session:
+            stmt = select(Constraint).where(
+                Constraint.user_id == user_id,
+                Constraint.scope.in_([ConstraintScope.PROFILE, ConstraintScope.DATESPAN]),
+            )
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+        grouped = _group_constraints_by_semantics(rows)
+        duplicate_groups = 0
+        duplicates_found = 0
+        for group in grouped.values():
+            if len(group) <= 1:
+                continue
+            duplicate_groups += 1
+            duplicates_found += max(0, len(group) - 1)
+        return {
+            "raw_shared_rows": len(rows),
+            "canonical_shared_rows": len(grouped),
+            "duplicate_groups": duplicate_groups,
+            "duplicates_found": duplicates_found,
+        }
+
+    async def prune_shared_constraints(
+        self,
+        *,
+        user_id: str,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Archive duplicate shared constraints while keeping one canonical row/key."""
+        async with self._sessionmaker() as session:
+            stmt = select(Constraint).where(
+                Constraint.user_id == user_id,
+                Constraint.scope.in_([ConstraintScope.PROFILE, ConstraintScope.DATESPAN]),
+            )
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+            grouped = _group_constraints_by_semantics(rows)
+            duplicate_groups_payload: list[dict[str, Any]] = []
+            duplicates_found = 0
+            duplicates_archived = 0
+            for group_rows in grouped.values():
+                if len(group_rows) <= 1:
+                    continue
+                ranked = sorted(group_rows, key=_constraint_canonical_rank)
+                canonical = ranked[0]
+                duplicates = ranked[1:]
+                duplicate_groups_payload.append(
+                    {
+                        "canonical_id": canonical.id,
+                        "duplicate_ids": [row.id for row in duplicates if row.id],
+                    }
+                )
+                duplicates_found += len(duplicates)
+                if dry_run:
+                    continue
+                for duplicate in duplicates:
+                    if duplicate.status != ConstraintStatus.DECLINED:
+                        duplicate.status = ConstraintStatus.DECLINED
+                        duplicates_archived += 1
+                    hints = dict(duplicate.hints or {})
+                    hints["pruned_duplicate_of"] = canonical.id
+                    hints["pruned_at"] = datetime.utcnow().isoformat()
+                    duplicate.hints = hints
+            if not dry_run:
+                await session.commit()
+        return {
+            "dry_run": bool(dry_run),
+            "raw_shared_rows": len(rows),
+            "canonical_shared_rows": len(grouped),
+            "duplicate_groups": len(duplicate_groups_payload),
+            "duplicates_found": duplicates_found,
+            "duplicates_archived": duplicates_archived,
+            "groups": duplicate_groups_payload,
+        }
 
     async def get_constraint(
         self,
@@ -330,6 +482,115 @@ class ConstraintStore:
             await session.commit()
             await session.refresh(row)
             return row
+
+
+def _constraint_semantic_key(constraint: Constraint) -> str:
+    """Return a stable semantic key for shared local-constraint identity."""
+    hints = dict(constraint.hints or {})
+    selector = dict(constraint.selector or {})
+    rule_kind = str(
+        hints.get("rule_kind") or selector.get("rule_kind") or ""
+    ).strip().lower()
+    tags = sorted(
+        str(tag).strip().lower() for tag in (constraint.tags or []) if str(tag).strip()
+    )
+    days = sorted(
+        day.value if isinstance(day, ConstraintDayOfWeek) else str(day)
+        for day in (constraint.days_of_week or [])
+    )
+    return "|".join(
+        [
+            str(constraint.scope.value if constraint.scope else "").lower(),
+            str(constraint.name or "").strip().lower(),
+            rule_kind,
+            str(constraint.start_date or ""),
+            str(constraint.end_date or ""),
+            ",".join(days),
+            str(constraint.timezone or "").strip().lower(),
+            str(constraint.recurrence or "").strip().lower(),
+            ",".join(tags),
+        ]
+    )
+
+
+def _constraint_canonical_rank(constraint: Constraint) -> tuple[int, float, int]:
+    """Rank constraints with required precedence: status then newest timestamp."""
+    status_rank = {
+        ConstraintStatus.LOCKED: 0,
+        ConstraintStatus.PROPOSED: 1,
+        ConstraintStatus.DECLINED: 2,
+    }
+    updated = constraint.updated_at.timestamp() if constraint.updated_at else 0.0
+    return (status_rank.get(constraint.status, 3), -updated, -(constraint.id or 0))
+
+
+def _canonical_constraint(constraints: list[Constraint]) -> Constraint:
+    ranked = sorted(constraints, key=_constraint_canonical_rank)
+    return ranked[0]
+
+
+def _apply_constraint_payload(target: Constraint, payload: Dict[str, Any]) -> None:
+    """Apply mutable constraint fields on an existing row."""
+    mutable_fields = (
+        "name",
+        "description",
+        "necessity",
+        "tags",
+        "hints",
+        "status",
+        "source",
+        "confidence",
+        "scope",
+        "rationale",
+        "supersedes",
+        "selector",
+        "start_date",
+        "end_date",
+        "days_of_week",
+        "timezone",
+        "recurrence",
+        "ttl_days",
+    )
+    for field in mutable_fields:
+        if field in payload:
+            setattr(target, field, payload[field])
+
+
+def _group_constraints_by_semantics(rows: list[Constraint]) -> dict[str, list[Constraint]]:
+    grouped: dict[str, list[Constraint]] = {}
+    for row in rows:
+        grouped.setdefault(_constraint_semantic_key(row), []).append(row)
+    return grouped
+
+
+def _canonicalize_shared_rows(rows: list[Constraint]) -> list[Constraint]:
+    """Canonicalize shared rows while preserving all non-shared rows."""
+    shared = [
+        row
+        for row in rows
+        if row.scope in {ConstraintScope.PROFILE, ConstraintScope.DATESPAN}
+    ]
+    non_shared = [
+        row
+        for row in rows
+        if row.scope not in {ConstraintScope.PROFILE, ConstraintScope.DATESPAN}
+    ]
+    grouped = _group_constraints_by_semantics(shared)
+    canonical_shared = [_canonical_constraint(group) for group in grouped.values()]
+    return [*non_shared, *canonical_shared]
+
+
+def _dedupe_constraint_rows_by_id(rows: list[Constraint]) -> list[Constraint]:
+    deduped: list[Constraint] = []
+    seen: set[int] = set()
+    for row in rows:
+        row_id = int(row.id or 0)
+        if row_id and row_id in seen:
+            continue
+        if row_id:
+            seen.add(row_id)
+        deduped.append(row)
+    return deduped
 
 
 async def ensure_constraint_schema(engine: AsyncEngine) -> None:

@@ -158,3 +158,31 @@ def test_stage_message_moves_freeform_next_steps_to_end_and_strips_disclosure_ta
     assert "</summary>" not in message
     assert "Show all constraints" in message
     assert message.index("### Greetings") < message.index("### What I need from you")
+
+
+def test_stage_message_compacts_folded_constraints_for_slack_size() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    folded = [
+        f"Constraint {idx}: enforce long detail text to simulate large payload volume."
+        for idx in range(1, 180)
+    ]
+    gate = StageGateOutput(
+        stage_id=TimeboxingStage.CAPTURE_INPUTS,
+        ready=True,
+        summary=["constraints snapshot"],
+        missing=[],
+        question="continue?",
+        facts={},
+        response_message=SessionMessage(
+            sections=[
+                ConstraintsSection(content=["Top constraint"], folded_content=folded),
+                NextStepsSection(content=["Proceed."]),
+            ]
+        ),
+    )
+
+    message = agent._format_stage_message(gate=gate, constraints=[], immovables=[])
+
+    assert "### All active constraints" in message
+    assert "open full list to review" in message
+    assert len(message) < 4500

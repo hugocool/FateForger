@@ -1,0 +1,15 @@
+# Notion ORM
+ultimate-notion>=0.9.6
+
+# MCP server
+mcp[cli]>=1.0.0
+fastmcp>=0.1.0
+
+# AutoGen (optional — only needed for agent runner scripts)
+autogen-agentchat>=0.4.0
+autogen-ext[mcp,anthropic]>=0.4.0
+
+# Utils
+python-dotenv>=1.0.0
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
