@@ -82,10 +82,20 @@ def test_settings_accepts_graphiti_with_local_runtime_config(monkeypatch) -> Non
     monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
     monkeypatch.setenv("GRAPHITI_IS_CLOUD", "false")
     monkeypatch.setenv(
-        "GRAPHITI_LOCAL_CONFIG_JSON", "{\"path\":\"./data/graphiti_memory.json\"}"
+        "GRAPHITI_LOCAL_CONFIG_JSON", "{\"path\":\"./data/graphiti\"}"
     )
     settings = Settings()
     assert settings.timeboxing_memory_backend == "graphiti"
+
+
+def test_settings_rejects_graphiti_local_json_file_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPHITI_IS_CLOUD", "false")
+    monkeypatch.setenv(
+        "GRAPHITI_LOCAL_CONFIG_JSON", "{\"path\":\"./data/graphiti_memory.json\"}"
+    )
+    with pytest.raises(ValueError):
+        Settings()
 
 
 def test_settings_accepts_graphiti_cloud_with_required_fields(

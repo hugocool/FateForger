@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from urllib.parse import urlparse
@@ -389,15 +390,40 @@ class Settings(BaseSettings):
                     "Mem0 backend requires MEM0_LOCAL_CONFIG_JSON or "
                     "(MEM0_IS_CLOUD=1 + MEM0_API_KEY)."
                 )
-        if self.timeboxing_memory_backend == "graphiti" and self.graphiti_is_cloud:
-            has_cloud_runtime = bool(
-                self.graphiti_api_key.strip() and self.graphiti_cloud_url.strip()
-            )
-            if not has_cloud_runtime:
-                raise ValueError(
-                    "Graphiti cloud backend requires GRAPHITI_API_KEY and "
-                    "GRAPHITI_CLOUD_URL when GRAPHITI_IS_CLOUD=1."
+        if self.timeboxing_memory_backend == "graphiti":
+            if self.graphiti_is_cloud:
+                has_cloud_runtime = bool(
+                    self.graphiti_api_key.strip() and self.graphiti_cloud_url.strip()
                 )
+                if not has_cloud_runtime:
+                    raise ValueError(
+                        "Graphiti cloud backend requires GRAPHITI_API_KEY and "
+                        "GRAPHITI_CLOUD_URL when GRAPHITI_IS_CLOUD=1."
+                    )
+            else:
+                local_config_raw = (self.graphiti_local_config_json or "").strip()
+                if not local_config_raw:
+                    raise ValueError(
+                        "Graphiti local backend requires GRAPHITI_LOCAL_CONFIG_JSON "
+                        "to point at a DB-backed runtime config."
+                    )
+                try:
+                    local_config = json.loads(local_config_raw)
+                except Exception as exc:
+                    raise ValueError(
+                        "GRAPHITI_LOCAL_CONFIG_JSON must be valid JSON."
+                    ) from exc
+                if not isinstance(local_config, dict):
+                    raise ValueError(
+                        "GRAPHITI_LOCAL_CONFIG_JSON must decode to a JSON object."
+                    )
+                # Guard against the deprecated JSON file fallback artifact mode.
+                local_path = str(local_config.get("path") or "").strip().lower()
+                if local_path.endswith(".json"):
+                    raise ValueError(
+                        "Graphiti local config path must not target a JSON file "
+                        "(for example graphiti_memory.json). Use a DB-backed runtime."
+                    )
         return self
 
 

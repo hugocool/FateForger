@@ -1,20 +1,13 @@
 import asyncio
 import logging
-import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from autogen_core import (
     AgentId,
-    DefaultTopicId,
-    MessageContext,
-    RoutedAgent,
     SingleThreadedAgentRuntime,
-    default_subscription,
-    message_handler,
 )
 from autogen_core.tool_agent import ToolAgent
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -265,6 +258,52 @@ async def _assert_mcp_servers_available() -> None:
     logger.info("MCP startup dependency checks passed (%s)", summary)
 
 
+def _graphiti_backend_required() -> bool:
+    """Return whether any configured runtime path requires Graphiti availability."""
+    timeboxing_backend = str(
+        getattr(settings, "timeboxing_memory_backend", "") or ""
+    ).strip().lower()
+    tasks_backend = str(
+        getattr(settings, "tasks_defaults_memory_backend", "") or ""
+    ).strip().lower()
+    if tasks_backend == "inherit_timeboxing":
+        tasks_backend = timeboxing_backend
+    return timeboxing_backend == "graphiti" or tasks_backend == "graphiti"
+
+
+async def _assert_graphiti_runtime_available() -> None:
+    """Fail fast when Graphiti is configured but runtime dependencies are unavailable."""
+    if not _graphiti_backend_required():
+        return
+    try:
+        from fateforger.agents.timeboxing.durable_constraint_store import (
+            build_durable_constraint_store,
+        )
+        from fateforger.agents.timeboxing.graphiti_constraint_memory import (
+            build_graphiti_client_from_settings,
+        )
+
+        user_id = (
+            str(getattr(settings, "graphiti_user_id", "") or "").strip()
+            or "timeboxing"
+        )
+        client = build_graphiti_client_from_settings(user_id=user_id)
+        store = build_durable_constraint_store(client)
+        info = await store.get_store_info()
+        await store.query_constraints(filters={}, limit=1)
+    except Exception as exc:
+        raise RuntimeError(
+            "Graphiti startup dependency check failed. "
+            "Resolve Graphiti runtime configuration before starting the app. "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    logger.info(
+        "Graphiti startup dependency check passed (backend=%s, is_cloud=%s)",
+        str(info.get("backend") or "unknown"),
+        bool(info.get("is_cloud")),
+    )
+
+
 async def _run_initial_planning_reconcile(
     *,
     planning_guardian: PlanningGuardian,
@@ -311,6 +350,7 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
         git_identity.dirty,
     )
     await _assert_mcp_servers_available()
+    await _assert_graphiti_runtime_available()
     scheduler = _create_scheduler(settings.database_url)
     scheduler.start()
 
