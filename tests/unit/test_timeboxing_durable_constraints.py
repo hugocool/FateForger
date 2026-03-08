@@ -523,6 +523,60 @@ def test_collect_constraints_uses_local_profile_default_when_durable_empty() -> 
     )
 
 
+def test_collect_constraints_summary_mentions_calendar_anchors() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    gate = StageGateOutput(
+        stage_id=TimeboxingStage.COLLECT_CONSTRAINTS,
+        ready=False,
+        summary=["Starting stage review."],
+        missing=["sleep target"],
+        question="What should I lock in first?",
+        facts={
+            "immovables": [
+                {"title": "Planning Session", "start": "16:00", "end": "17:00"}
+            ]
+        },
+    )
+
+    normalized = agent._normalize_collect_constraints_gate(
+        session=session,
+        gate=gate,
+        user_message="",
+    )
+
+    assert any(
+        line.startswith("Calendar anchors loaded:")
+        for line in (normalized.summary or [])
+    )
+
+
+def test_build_collect_constraints_context_merges_prefetched_anchors() -> None:
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    agent._session_debug = lambda *_args, **_kwargs: None
+    session = Session(
+        thread_ts="t1",
+        channel_id="c1",
+        user_id="u1",
+        planned_date="2026-03-02",
+        tz_name="Europe/Amsterdam",
+    )
+    session.frame_facts["immovables"] = [
+        {"title": "Lunch", "start": "13:00", "end": "14:00"}
+    ]
+    session.prefetched_immovables_by_date["2026-03-02"] = [
+        {"title": "Planning Session", "start": "16:00", "end": "17:00"}
+    ]
+
+    context = agent._build_collect_constraints_context(session, user_message="")
+
+    immovables = context["immovables"]
+    assert len(immovables) == 2
+    assert immovables[0]["title"] == "Planning Session"
+    assert immovables[1]["title"] == "Lunch"
+    assert len(context["facts"]["immovables"]) == 2
+
+
 @pytest.mark.asyncio
 async def test_collect_constraints_session_override_suppresses_durable_uid() -> None:
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)

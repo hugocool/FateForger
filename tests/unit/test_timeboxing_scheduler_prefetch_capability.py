@@ -89,10 +89,13 @@ async def test_ensure_collect_stage_ready_waits_only_when_needed() -> None:
     async def _await_prefetch(session, *, stage, **kwargs):  # noqa: ARG001
         calls.append(f"{stage.value}:{kwargs.get('fail_on_timeout')}")
 
+    async def _ensure_calendar(session, **_kwargs):  # noqa: ARG001
+        calls.append("ensure_calendar")
+
     capability = SchedulerPrefetchCapability(
         queue_constraint_prefetch=lambda s: None,
         await_pending_durable_prefetch=_await_prefetch,
-        ensure_calendar_immovables=lambda s: None,  # type: ignore[arg-type]
+        ensure_calendar_immovables=_ensure_calendar,
         prefetch_calendar_immovables=lambda s, d: None,  # type: ignore[arg-type]
         is_collect_stage_loaded=lambda s: False,
     )
@@ -103,12 +106,16 @@ async def test_ensure_collect_stage_ready_waits_only_when_needed() -> None:
     capability_loaded = SchedulerPrefetchCapability(
         queue_constraint_prefetch=lambda s: None,
         await_pending_durable_prefetch=_await_prefetch,
-        ensure_calendar_immovables=lambda s: None,  # type: ignore[arg-type]
+        ensure_calendar_immovables=_ensure_calendar,
         prefetch_calendar_immovables=lambda s, d: None,  # type: ignore[arg-type]
         is_collect_stage_loaded=lambda s: True,
     )
     await capability_loaded.ensure_collect_stage_ready(session=_Session())
-    assert calls == ["CollectConstraints:False"]
+    assert calls == [
+        "ensure_calendar",
+        "CollectConstraints:False",
+        "ensure_calendar",
+    ]
 
 
 @pytest.mark.asyncio

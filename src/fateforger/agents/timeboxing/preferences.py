@@ -238,62 +238,6 @@ class ConstraintStore:
                     await session.refresh(row)
             return {"added": len(to_add), "skipped": skipped, "total": len(constraints)}
 
-    async def prune_shared_constraints(
-        self,
-        *,
-        user_id: str,
-        channel_id: Optional[str] = None,
-        dry_run: bool = True,
-    ) -> Dict[str, Any]:
-        """Deduplicate shared-scope constraints by canonical precedence."""
-        async with self._sessionmaker() as session:
-            stmt = select(Constraint).where(
-                Constraint.user_id == user_id,
-                or_(
-                    Constraint.scope == ConstraintScope.PROFILE,
-                    Constraint.scope == ConstraintScope.DATESPAN,
-                ),
-            )
-            if channel_id:
-                stmt = stmt.where(Constraint.channel_id == channel_id)
-            result = await session.execute(stmt)
-            rows = list(result.scalars().all())
-
-            groups: Dict[str, List[Constraint]] = {}
-            for row in rows:
-                groups.setdefault(_shared_constraint_identity(row), []).append(row)
-
-            canonical_by_group: Dict[str, Constraint] = {}
-            duplicate_rows: list[Constraint] = []
-            duplicate_groups = 0
-            for key, items in groups.items():
-                canonical = max(items, key=_shared_canonical_sort_key)
-                canonical_by_group[key] = canonical
-                duplicates = [row for row in items if row.id != canonical.id]
-                if duplicates:
-                    duplicate_groups += 1
-                    duplicate_rows.extend(duplicates)
-
-            pruned = 0
-            if not dry_run and duplicate_rows:
-                for row in duplicate_rows:
-                    await session.delete(row)
-                    pruned += 1
-                await session.commit()
-
-            return {
-                "dry_run": dry_run,
-                "raw_shared_rows": len(rows),
-                "canonical_shared_rows": len(canonical_by_group),
-                "duplicate_groups": duplicate_groups,
-                "duplicates_found": len(duplicate_rows),
-                "duplicates_pruned": pruned,
-                "canonical_statuses_by_identity": {
-                    key: _status_text(value.status)
-                    for key, value in canonical_by_group.items()
-                },
-            }
-
     async def list_constraints(
         self,
         *,
@@ -373,7 +317,12 @@ class ConstraintStore:
         user_id: str,
         dry_run: bool = True,
     ) -> dict[str, Any]:
-        """Archive duplicate shared constraints while keeping one canonical row/key."""
+        """Archive duplicate shared constraints while keeping one canonical row/key.
+
+        The duplicate rows are not deleted; they are marked DECLINED and annotated
+        with pruning hints so they can be reviewed or reinstated if needed.
+        Use ``dry_run=True`` (default) to preview what would be pruned.
+        """
         async with self._sessionmaker() as session:
             stmt = select(Constraint).where(
                 Constraint.user_id == user_id,

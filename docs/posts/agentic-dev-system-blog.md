@@ -32,9 +32,10 @@ The naive response is "just put everything in the system prompt." And indeed, ma
 
 - **The file becomes a graveyard.** Rules accumulate but never get pruned. Contradictions appear. The agent reads 800 lines of instructions and still doesn't know which ones apply to the file it's editing.
 - **Context is spatial, not temporal.** The rules for editing a Slack bot handler are different from the rules for editing an Alembic migration. A single file can't express "when you're in this directory, these additional rules apply."
-- **The agent has no memory across sessions.** Every chat window is a clean slate. Decisions made, patterns established, and mistakes corrected — all evaporate.
 - **There's no feedback loop.** When the agent does something well or poorly, there's no mechanism to update the system. The human mentally notes "I should mention that next time" and forgets.
 - **Observability is zero.** When something goes wrong in production, the agent can't look at metrics, can't read structured logs, can't correlate a Slack thread timestamp to a session trace. It's flying blind.
+
+Some teams try to solve the memory problem with a dedicated "memory bank" — a set of markdown files that persist project context, active tasks, patterns, and decision logs across sessions. We tried this too. It fails for a deeper reason: **any context that lives separately from the code it governs will go stale.** A decision log that says "use pattern X in module Y" is only useful if someone updates it when module Y is refactored. Nobody does. And worse — stale context actively misleads the agent. We had a memory file that told agents our code was in `src/productivity_bot/` months after we'd restructured to `src/fateforger/`. Every new session started by reading a lie.
 
 The result is that experienced developers — the ones who would benefit most from AI acceleration — often find agents more frustrating than helpful. They have more conventions, more context, more subtle architectural decisions that the agent needs to respect. The gap between "what the agent knows" and "what the agent needs to know" grows with project complexity.
 
@@ -100,11 +101,11 @@ Let's walk through each one, starting from the layer the agent touches first.
 
 ---
 
-### Subsystem 1: The AGENTS.md Hierarchy — Spatial Context
+### Subsystem 1: The AGENTS.md Hierarchy — Spatial Context and In-Context Learning
 
-**Problem it solves:** A single instruction file can't express "different rules apply in different parts of the codebase."
+**Problem it solves:** A single instruction file can't express "different rules apply in different parts of the codebase." And separate knowledge stores (memory banks, decision logs) go stale because they're disconnected from the code they describe.
 
-**How it works:** Instead of one monolithic instruction file, the system uses a hierarchy of `AGENTS.md` files — one at the project root and one in each folder with non-trivial agent-relevant constraints. The root file contains project-wide invariants. Nested files contain folder-specific rules.
+**How it works:** Instead of one monolithic instruction file, the system uses a hierarchy of `AGENTS.md` files — one at the project root and one in each folder with non-trivial agent-relevant constraints. The root file contains project-wide invariants. Nested files contain folder-specific rules. **Decisions are recorded directly in these files as in-context learning**, not in a separate log.
 
 In the FateForger project, this looks like:
 
@@ -127,8 +128,8 @@ AGENTS.md                              (root — 581 lines of project-wide rules
 └── src/trmnl_frontend/AGENTS.md
 ```
 
-**The key design principle** is separation of concerns:
-- `AGENTS.md` files contain **agent operating rules** — how to behave, what conventions to follow, what's forbidden
+**The key design principle** is twofold separation:
+- `AGENTS.md` files contain **agent operating rules** — how to behave, what conventions to follow, what's forbidden, and what was decided and why
 - `README.md` files contain **system documentation** — what the code does, its architecture, its APIs
 - The agent reads both but treats them differently
 
@@ -139,13 +140,15 @@ AGENTS.md                              (root — 581 lines of project-wide rules
 - Status taxonomy (Roadmap → WIP → Implemented → Documented → Tested → User-confirmed)
 - Definition of Done rules
 - Workflow evolution protocol (how to safely change the rules themselves)
+- Cross-cutting decisions (e.g. "intent classification must use LLMs, never regex")
 
 **What goes in nested files:**
 - Module-specific conventions ("never use regex for intent classification in this module — use LLM agents")
 - Integration-specific constraints ("calendar MCP calls must have timeouts")
 - Observability-specific playbooks ("detect with Prometheus, diagnose with logs")
+- **Decisions learned from debugging sessions** ("this module's async calls need explicit timeout because X happened")
 
-**Why this works better than a flat file:** When the agent is editing `src/fateforger/agents/timeboxing/nodes/`, it reads the root `AGENTS.md` for project-wide rules AND the nested `AGENTS.md` for timeboxing-specific constraints. The context is always proportional to the task. An agent editing a Grafana dashboard needs different rules than one editing a Slack handler.
+**Why this works better than a flat file or separate memory store:** When the agent is editing `src/fateforger/agents/timeboxing/nodes/`, it reads the root `AGENTS.md` for project-wide rules AND the nested `AGENTS.md` for timeboxing-specific constraints. The context is always proportional to the task. And because decisions live next to the code they govern, they get updated when the code changes and deleted when the code is removed. The knowledge can't go stale in the way a separate decision log does.
 
 **The critical insight:** The root `AGENTS.md` is not a style guide. It's a **governance document** — a contract between the human and the agent about how decisions are made, how progress is tracked, and what invariants must hold regardless of what's being built. In the FateForger system, this file is 581 lines and covers:
 
@@ -167,20 +170,23 @@ This last point is especially important: **the rules are versioned and evolvable
 
 | Mode | Persona | Primary Focus | Key Behavior |
 |------|---------|---------------|--------------|
-| **architect** | System architect | Design, decisions, high-level structure | Full authority to propose and record architectural decisions |
-| **code** | Code expert | Implementation, testing, refactoring | Follows established patterns, suggests architect mode for design changes |
-| **debug** | Debug expert | Diagnosis, root cause analysis, fixes | Uses observability tools, adds regression tests before fixing |
+| **architect** | System architect | Design, decisions, high-level structure | Full authority to propose and record decisions as in-context learning in AGENTS.md |
+| **code** | Code expert | Implementation, testing, refactoring | Follows established patterns, records new conventions in nearest AGENTS.md |
+| **debug** | Debug expert | Diagnosis, root cause analysis, fixes | Uses observability tools, records debugging insights in relevant AGENTS.md |
 | **ask** | Project assistant | Information retrieval, navigation | Read-only orientation, suggests mode switches for changes |
 
 Each mode defines:
 - What tools the agent has access to
 - What it's responsible for
 - What it should delegate to other modes
-- How it should interact with project context
+- How it loads context (which AGENTS.md files to read first)
+- How it records learning (which AGENTS.md files to update)
 
 **The UX this creates:** Instead of the developer manually loading context for each type of work, they switch modes. The architect mode naturally thinks about boundaries and contracts. The debug mode naturally reaches for metrics and logs. The code mode naturally follows patterns and writes tests. The agent's behavior changes to match the task.
 
-**A subtlety that matters:** The modes aren't just about system prompts — they're about **permission boundaries.** The ask mode explicitly cannot update project context or record decisions. It can only read and suggest switching to architect mode for changes. This prevents context pollution from casual questions.
+**A subtlety that matters:** The modes aren't just about system prompts — they're about **permission boundaries.** The ask mode explicitly cannot update AGENTS.md files or record decisions. It can only read and suggest switching to architect mode for changes. This prevents context pollution from casual questions.
+
+**The in-context learning loop:** Every mode includes a protocol for recording significant findings back into the AGENTS.md hierarchy. The architect records design decisions in the root or relevant module's AGENTS.md. The debug mode records failure patterns in the relevant module's AGENTS.md. The code mode records new conventions in the nearest AGENTS.md. This creates a feedback loop: the agent's work improves the context that future agents will read. The system gets smarter over time, without any separate memory layer.
 
 ---
 
@@ -190,10 +196,10 @@ Each mode defines:
 
 **How it works:** `.github/copilot-instructions.md` is the first thing every Copilot session reads. In the FateForger system, this file:
 
-1. Points the agent to read `AGENTS.md`
+1. Directs the agent to read `AGENTS.md` as the single source of truth
 2. Establishes Poetry-first development (never use pip directly)
-3. Defines critical dependencies and debugging tips
-4. Sets the tone for agent behavior
+3. Defines the in-context learning protocol (where to record new knowledge)
+4. Lists the four working modes
 
 **Design principle:** This file should be thin. Its job is to bootstrap the agent into reading the real governance documents, not to duplicate them. Think of it as the bootloader, not the OS.
 
@@ -354,8 +360,9 @@ This creates a clear boundary: the agent can freely edit code, tests, and docs, 
 3. Read the structured log events for that session
 4. Correlate LLM call quality with observed behavior
 5. Propose a fix with evidence
+6. **Record the failure pattern in the relevant module's `AGENTS.md`** so the next agent doesn't repeat the diagnosis
 
-The observability stack turns the agent from a code writer into a **systems engineer**.
+The observability stack turns the agent from a code writer into a **systems engineer**. And the in-context learning protocol ensures debugging insights don't evaporate when the session ends.
 
 ---
 
@@ -454,7 +461,7 @@ docs-serve: .venv/bin/mkdocs serve
 **`pyproject.toml`** — Tool configurations that encode project conventions:
 - Black line length 88
 - Pytest asyncio_mode auto
-- Coverage source includes `src` and `fateforger`
+- Coverage source includes `src` and the project package
 - Test markers for `slow`, `integration`, `unit`
 
 **`poetry.toml`** — In-project virtualenv (`in-project = true`) ensures the `.venv/` directory is in the project root, making interpreter discovery deterministic.
@@ -468,7 +475,6 @@ docs-serve: .venv/bin/mkdocs serve
 **How it works:** `.codex/skills/` contains self-contained skill files — markdown documents that describe how to use a specific tool or execute a specific workflow:
 
 - **`prometheus-agent-audit/SKILL.md`** — How to use Prometheus MCP for agent behavior auditing. Includes preconditions, query guardrails, standard playbook, and the detection-vs-diagnosis rule.
-- **`notion-constraint-memory/SKILL.md`** — How to use the constraint-memory MCP tools for timeboxing preference management, including tool inventory and usage notes.
 
 **The pattern:** Skills are referenced by `AGENTS.md` files and provide detailed "how-to" knowledge that would be too verbose for the main governance document. They're the agent equivalent of runbooks.
 
@@ -499,7 +505,8 @@ Developer debugs an issue
   → observability AGENTS.md provides audit playbook
   → agent uses Prometheus MCP to detect anomalies
   → agent uses log query CLI to diagnose root cause
-  → agent follows Slack audit loop for end-to-end verification
+  → agent records findings in module's AGENTS.md (in-context learning)
+  → next session finds those insights automatically
 
 Developer merges changes
   → CI runs notebook checks + docs deployment
@@ -508,7 +515,7 @@ Developer merges changes
   → workflow_preferences.yaml ensures system-of-record is synced
 ```
 
-Every subsystem reinforces the others. The CI checks enforce what AGENTS.md requires. The observability stack provides what the debug chat mode needs. The notebook protocol creates the artifacts the PR template checks for. Remove any one component and the system degrades gracefully. Remove three and you're back to the amnesia problem.
+Every subsystem reinforces the others. The CI checks enforce what AGENTS.md requires. The observability stack provides what the debug chat mode needs. The notebook protocol creates the artifacts the PR template checks for. The in-context learning loop ensures that what's learned in one session improves the next. Remove any one component and the system degrades gracefully. Remove three and you're back to the amnesia problem.
 
 ---
 
@@ -548,7 +555,7 @@ After answering a few questions (project name, Python version, which optional fe
 
 **Tier 1 — Behavioral Governance (verbatim):**
 - Root `AGENTS.md` with all workflow invariants, stripped of app-specific sections
-- Four chat mode files (architect, code, debug, ask)
+- Four chat mode files (architect, code, debug, ask) with in-context learning protocols
 - Copilot instructions bootstrap file
 - Notebook protocol hierarchy (4 `AGENTS.md` files)
 - PR template with notebook-aware checklists
@@ -580,29 +587,32 @@ After answering a few questions (project name, Python version, which optional fe
 - Application-specific Promtail pipelines — replaced with a generic Docker log scraper
 - Codex skills — replaced with a template `SKILL.md` showing the format
 - Feature-specific nested `AGENTS.md` files — the agent creates these as needed
-- Memory bank files — replaced by the AGENTS.md hierarchy (see below)
 
-### The MemoriPilot decision: when to kill your darlings
+### Decisions as in-context learning: why there's no decision log
 
-An interesting design decision emerged during the portability audit: the original system included a "MemoriPilot" memory bank — seven markdown files that persisted project context across sessions, read by four specialized chat modes.
+A natural question when building an agent operating system is: "where do decisions go?" Most knowledge management approaches create a dedicated decision log — a chronological record of architectural choices with rationale. We tried this. It failed.
 
-In theory, this is valuable: the agent reads `memory-bank/activeContext.md` to know what you're working on, `decisionLog.md` to understand past choices, `systemPatterns.md` to follow conventions.
+The problem with a separate decision log is **staleness by design.** A decision log is append-only and lives in one place. But decisions affect code spread across dozens of files. The decision "never use regex for intent classification" matters when an agent is editing `src/fateforger/agents/timeboxing/` — not when it's browsing a centralized log file it may never read.
 
-In practice, the memory bank had been completely superseded by the `AGENTS.md` hierarchy:
+Worse, a decision log creates a **maintenance burden with no natural feedback loop.** Nobody goes back to prune old entries. Nobody checks if decisions are still relevant. The log grows until it becomes noise, and the agent either reads all of it (wasting context) or none of it (missing critical constraints).
 
-| Memory bank file | Actual state | Already covered by |
-|---|---|---|
-| `productContext.md` | Placeholder ("Feature 1") | `README.md`, Notion |
-| `projectBrief.md` | 2-sentence stub | `README.md` |
-| `architect.md` | Outdated — referenced dead code paths | `AGENTS.md` tech stack + project map |
-| `systemPatterns.md` | Half-placeholder | Nested `AGENTS.md` files (15 of them) |
-| `activeContext.md` | 3 weeks stale, duplicated blocks | GitHub Issues (the actual system of record) |
-| `progress.md` | Empty "Doing" section | GitHub Issues/PRs |
-| `decisionLog.md` | Only useful file | Could live in `docs/decisions/` |
+The alternative is **decisions as in-context learning**: every significant decision is recorded directly in the `AGENTS.md` file where it's relevant.
 
-The memory bank had become a liability: `architect.md` actively told agents the code was in `src/productivity_bot/` when it had been restructured to `src/fateforger/` months ago. The copilot instructions mandated reading these files every turn, wasting a tool call on stale data.
+- "Never use regex for intent classification" goes in `src/fateforger/agents/timeboxing/AGENTS.md`
+- "GitHub is authoritative for engineering execution" goes in the root `AGENTS.md`
+- "Prometheus labels must be low-cardinality" goes in `observability/AGENTS.md`
 
-**The lesson:** Systems that solve a problem at one stage of project maturity can become dead weight — or worse, misleading — at the next stage. The agent operating system should be prunable. In the template, the memory bank is replaced entirely by the `AGENTS.md` hierarchy, which is inherently self-maintaining because it lives alongside the code it describes.
+This creates three powerful properties:
+
+1. **Decisions are encountered when they matter.** An agent editing timeboxing code naturally reads the timeboxing `AGENTS.md` and sees the "no regex" rule. It doesn't need to search a cross-cutting log.
+
+2. **Decisions are pruned when their context changes.** When a module is refactored or removed, its `AGENTS.md` goes with it. Dead decisions don't accumulate.
+
+3. **The system learns from itself.** Every chat mode includes an "in-context learning protocol" — when the architect makes a design decision, it records it in the relevant `AGENTS.md`. When the debugger discovers a failure pattern, it records it in the module where future agents will encounter it. The system gets smarter with use, without any separate memory infrastructure.
+
+We originally had a seven-file memory bank (product context, active context, decision log, system patterns, progress, project brief, architect notes). After months of use, we found that the `AGENTS.md` hierarchy had completely superseded every one of these files. The memory bank referenced dead code paths, duplicated information from GitHub Issues, and wasted a tool call every turn to read stale data.
+
+**The lesson:** don't separate knowledge from the code it governs. If your agent needs to know a rule when editing a specific directory, put the rule in that directory. If it needs to know a cross-cutting constraint, put it in the root governance file. The spatial structure of your codebase is already a knowledge organization system — use it.
 
 ### The post-generation import skill
 
@@ -640,7 +650,7 @@ The broader pattern here is significant: **AI coding agents need infrastructure,
 
 The industry is currently in the "bigger system prompt" phase — trying to solve the context problem by cramming more text into the agent's input. This is like trying to onboard a new developer by handing them a 50-page document on day one. It doesn't work for humans and it doesn't work for agents.
 
-What works is **structured, spatial, layered context** that the agent encounters naturally as it navigates the codebase. Rules that are close to the code they govern. Metadata that's validated by CI. Observability that the agent can query directly. Workflow configurations that separate what's mutable from what's invariant.
+What works is **structured, spatial, layered context** that the agent encounters naturally as it navigates the codebase. Rules that are close to the code they govern. Metadata that's validated by CI. Observability that the agent can query directly. Workflow configurations that separate what's mutable from what's invariant. And a feedback loop where the agent's own work improves the context for the next session.
 
 This is not a model problem. GPT-4, Claude, Gemini — they can all follow instructions well. The bottleneck is the quality, structure, and freshness of the instructions they receive.
 
@@ -648,7 +658,7 @@ This is not a model problem. GPT-4, Claude, Gemini — they can all follow instr
 
 1. **Agent operating systems will become a recognized infrastructure category.** Just as CI/CD went from "nice to have" to "every project has it," structured agent context will become standard. Projects without it will be at a measurable productivity disadvantage.
 
-2. **The AGENTS.md pattern will spread.** Hierarchical, spatially-scoped instruction files that live alongside code are a natural fit for how agents navigate codebases. The specific name doesn't matter — the pattern of "context where the work happens" does.
+2. **The AGENTS.md pattern will spread.** Hierarchical, spatially-scoped instruction files that live alongside code are a natural fit for how agents navigate codebases. The specific name doesn't matter — the pattern of "context where the work happens" does. Separate memory stores and decision logs will be recognized as the anti-pattern they are.
 
 3. **Observability for AI workflows will merge with application observability.** Today, most teams treat agent interactions as black boxes. The pattern described here — where the agent can query the same metrics and logs that a human engineer uses — will become the standard debugging workflow. The agent that can look at its own behavior through metrics is fundamentally more capable than one that can't.
 
@@ -658,4 +668,4 @@ The irony is that the best way to make AI coding agents more productive is not t
 
 *This system was built incrementally over months of production use on the FateForger project — an AI-powered productivity agent deployed via Slack. Every subsystem exists because its absence caused measurable pain. The resulting architecture is open for extraction into a reusable template, and the majority of it applies to any Python project using AI coding agents.*
 
-*The tools change. The models improve. But the need for structured context, spatial governance, and agent-accessible observability is permanent. Build the operating system.*
+*The tools change. The models improve. But the need for structured context, spatial governance, in-context learning, and agent-accessible observability is permanent. Build the operating system.*

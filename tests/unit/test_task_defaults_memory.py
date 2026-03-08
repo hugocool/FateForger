@@ -73,11 +73,11 @@ async def test_missing_openai_key_falls_back_with_one_warning_per_user(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(settings, "tasks_defaults_memory_backend", "mem0", raising=False)
+    monkeypatch.setattr(settings, "tasks_defaults_memory_backend", "graphiti", raising=False)
     monkeypatch.setattr(
-        "fateforger.agents.tasks.defaults_memory.build_mem0_client_from_settings",
+        "fateforger.agents.tasks.defaults_memory.build_graphiti_client_from_settings",
         lambda user_id: (_ for _ in ()).throw(
-            RuntimeError("OPENAI_API_KEY is required for configured Mem0 model")
+            RuntimeError("OPENAI_API_KEY is required for configured graphiti model")
         ),
     )
 
@@ -196,6 +196,9 @@ async def test_runtime_durable_lookup_failure_downgrades_to_fallback_once(
 
 
 def test_defaults_store_uses_graphiti_backend_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        defaults_memory_mod.settings, "tasks_defaults_memory_backend", "graphiti", raising=False
+    )
     store = TaskDefaultsMemoryStore()
     sentinel_client = object()
     sentinel_store = object()

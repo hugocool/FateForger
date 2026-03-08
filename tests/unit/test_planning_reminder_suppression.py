@@ -218,7 +218,7 @@ async def test_planning_still_missing_fail_soft_when_local_upcoming_ref_exists()
                 sessions=[
                     _SessionRef(
                         user_id="U1",
-                        planned_date=date(2026, 3, 7),
+                        planned_date=date.today(),
                         calendar_id="primary",
                         event_id="canonical-event-123",
                     )

@@ -50,6 +50,12 @@ from fateforger.llm import (
     build_autogen_chat_client,
 )
 from fateforger.llm.toon import toon_encode
+from fateforger.sync_core import (
+    ReconciliationSummary,
+    SubmitBaselineGuard,
+    evaluate_submit_baseline_guard,
+    summarize_reconciliation,
+)
 from fateforger.slack_bot.constraint_review import (
     CONSTRAINT_REVIEW_ALL_ACTION_ID,
     CONSTRAINT_ROW_REVIEW_ACTION_ID,
@@ -316,6 +322,7 @@ class Session:
     event_id_map: Dict[str, str] = field(default_factory=dict)
     remote_event_ids_by_index: List[str] = field(default_factory=list)
     pending_submit: bool = False
+    queued_submit_intent: bool = False
     last_sync_transaction: SyncTransaction | None = None
     last_sync_event_id_map: Dict[str, str] | None = None
     last_refine_undo_tb_plan: TBPlan | None = None
@@ -908,8 +915,13 @@ class TimeboxingFlowAgent(RoutedAgent):
     # TODO:  this should be handled by the mcpworkbench, not a re-implementation
     def _ensure_calendar_client(self) -> McpCalendarClient | None:
         """Return the calendar MCP client, initializing it if needed."""
-        if self._calendar_client:
-            return self._calendar_client
+        if not hasattr(self, "_calendar_client"):
+            # Uninitialized test doubles created via ``__new__`` should not
+            # instantiate live MCP clients.
+            return None
+        existing = self._calendar_client
+        if existing:
+            return existing
         server_url = settings.mcp_calendar_server_url.strip()
         if not server_url:
             return None
@@ -2189,6 +2201,23 @@ class TimeboxingFlowAgent(RoutedAgent):
         force_refresh: bool = False,
     ) -> None:
         """Fetch calendar immovables + remote identity for the planned date."""
+        if force_refresh:
+            had_cached = (
+                planned_date in session.prefetched_immovables_by_date
+                or planned_date in session.prefetched_remote_snapshots_by_date
+                or planned_date in session.prefetched_event_id_maps_by_date
+                or planned_date in session.prefetched_remote_event_ids_by_date
+            )
+            session.prefetched_immovables_by_date.pop(planned_date, None)
+            session.prefetched_remote_snapshots_by_date.pop(planned_date, None)
+            session.prefetched_event_id_maps_by_date.pop(planned_date, None)
+            session.prefetched_remote_event_ids_by_date.pop(planned_date, None)
+            self._session_debug(
+                session,
+                "calendar_prefetch_force_refresh",
+                planned_date=planned_date,
+                had_cached=had_cached,
+            )
         if (
             not force_refresh
             and planned_date in session.prefetched_immovables_by_date
@@ -2200,15 +2229,6 @@ class TimeboxingFlowAgent(RoutedAgent):
                 planned_date=planned_date,
             )
             return
-        if force_refresh and (
-            planned_date in session.prefetched_immovables_by_date
-            and planned_date in session.prefetched_remote_snapshots_by_date
-        ):
-            self._session_debug(
-                session,
-                "calendar_prefetch_force_refresh",
-                planned_date=planned_date,
-            )
         client = self._ensure_calendar_client()
         if not client:
             self._append_background_update_once(
@@ -2367,13 +2387,37 @@ class TimeboxingFlowAgent(RoutedAgent):
         planned_date = session.planned_date
         if not planned_date:
             return
-        immovables = session.prefetched_immovables_by_date.get(planned_date) or []
-        if not immovables:
+        prefetched = session.prefetched_immovables_by_date.get(planned_date) or []
+        if not prefetched:
             return
         existing = session.frame_facts.get("immovables")
-        if isinstance(existing, list) and existing:
+        existing_rows = parse_model_list(Immovable, existing)
+        merged_rows: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for source in (prefetched, existing_rows):
+            for row in parse_model_list(Immovable, source):
+                key = (row.title.strip(), row.start, row.end)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged_rows.append(
+                    {
+                        "title": row.title,
+                        "start": row.start,
+                        "end": row.end,
+                    }
+                )
+        if not merged_rows:
             return
-        session.frame_facts["immovables"] = immovables
+        session.frame_facts["immovables"] = merged_rows
+        self._session_debug(
+            session,
+            "calendar_anchors_applied",
+            planned_date=planned_date,
+            prefetched_count=len(prefetched),
+            existing_count=len(existing_rows),
+            merged_count=len(merged_rows),
+        )
 
     def _build_commit_prompt_blocks(self, *, session: Session) -> SlackBlockMessage:
         """Build the Stage 0 commit prompt Slack blocks."""
@@ -2997,6 +3041,19 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
             gate.question = "Using your saved defaults. Reply to override for this session, or proceed."
 
+        anchors = parse_model_list(Immovable, facts.get("immovables"))
+        if anchors:
+            anchor_preview = ", ".join(
+                f"{anchor.start}-{anchor.end} {anchor.title}"
+                for anchor in anchors[:3]
+            )
+            if len(anchors) > 3:
+                anchor_preview = f"{anchor_preview}, +{len(anchors) - 3} more"
+            gate.summary = self._merge_unique_lines(
+                list(gate.summary or []),
+                [f"Calendar anchors loaded: {anchor_preview}."],
+            )
+
         if isinstance(facts.get("_stage_gate_error"), str):
             self._append_background_update_once(session, facts["_stage_gate_error"])
 
@@ -3117,7 +3174,21 @@ class TimeboxingFlowAgent(RoutedAgent):
     ) -> dict[str, Any]:
         """Build the injected context payload for the CollectConstraints stage."""
         self._refresh_temporal_facts(session)
+        self._apply_prefetched_calendar_immovables(session)
         normalized = parse_model_list(Immovable, session.frame_facts.get("immovables"))
+        planned_date = (session.planned_date or "").strip()
+        self._session_debug(
+            session,
+            "collect_context_calendar_anchors",
+            planned_date=planned_date,
+            immovable_count=len(normalized),
+            prefetched_count=len(
+                session.prefetched_immovables_by_date.get(planned_date) or []
+            )
+            if planned_date
+            else 0,
+            pending_prefetch=session.pending_calendar_prefetch,
+        )
         durable = self._collect_stage_durable_constraints(
             session, stage=TimeboxingStage.COLLECT_CONSTRAINTS
         )
@@ -4013,6 +4084,82 @@ class TimeboxingFlowAgent(RoutedAgent):
                 session.base_snapshot = fallback_plan
             session.remote_event_ids_by_index = fallback_ids
 
+    async def _refresh_remote_baseline_before_submit(
+        self,
+        *,
+        session: Session,
+        context: str,
+    ) -> bool:
+        """Refresh remote snapshot before submit; fail closed when unavailable.
+
+        Returns ``True`` when the baseline is fresh enough to safely plan sync ops.
+        """
+        planned_date = (session.planned_date or "").strip()
+        if not planned_date:
+            # Unit tests and degenerate sessions may not have a planned date.
+            # Keep existing behavior in that case.
+            return True
+
+        self._session_debug(
+            session,
+            "calendar_submit_refresh_start",
+            context=context,
+            planned_date=planned_date,
+        )
+        try:
+            await self._prefetch_calendar_immovables(
+                session,
+                planned_date,
+                force_refresh=True,
+            )
+        except Exception as exc:
+            self._session_debug(
+                session,
+                "calendar_submit_refresh_error",
+                context=context,
+                planned_date=planned_date,
+                error_type=type(exc).__name__,
+                error=str(exc)[:1000],
+            )
+            return False
+
+        if planned_date not in session.prefetched_remote_snapshots_by_date:
+            self._session_debug(
+                session,
+                "calendar_submit_refresh_missing_snapshot",
+                context=context,
+                planned_date=planned_date,
+            )
+            return False
+
+        session.base_snapshot = self._build_remote_snapshot_plan(session)
+        self._session_debug(
+            session,
+            "calendar_submit_refresh_done",
+            context=context,
+            planned_date=planned_date,
+            remote_events=len(session.base_snapshot.events),
+            event_id_map_size=len(session.event_id_map),
+            remote_identity_count=len(session.remote_event_ids_by_index),
+        )
+        return True
+
+    async def _ensure_submit_baseline_ready(
+        self,
+        *,
+        session: Session,
+        context: str,
+    ) -> SubmitBaselineGuard:
+        """Return deterministic guard state for submit-time baseline prerequisites."""
+        refresh_ok = await self._refresh_remote_baseline_before_submit(
+            session=session,
+            context=context,
+        )
+        return evaluate_submit_baseline_guard(
+            refresh_ok=refresh_ok,
+            has_base_snapshot=session.base_snapshot is not None,
+        )
+
     def _render_submit_prompt_blocks(
         self, *, session: Session, text: str
     ) -> list[dict[str, Any]]:
@@ -4130,6 +4277,60 @@ class TimeboxingFlowAgent(RoutedAgent):
             failed_details=failed_details,
         )
 
+    def _build_reconciliation_summary(
+        self,
+        *,
+        session: Session,
+        context: str,
+    ) -> ReconciliationSummary | None:
+        """Return deterministic create/update/noop/delete counts for current submit."""
+        if session.base_snapshot is None or session.tb_plan is None:
+            return None
+        try:
+            summary = summarize_reconciliation(
+                remote=session.base_snapshot,
+                desired=session.tb_plan,
+                event_id_map=session.event_id_map,
+                remote_event_ids_by_index=session.remote_event_ids_by_index,
+            )
+        except Exception as exc:
+            self._session_debug(
+                session,
+                "reconciliation_summary_error",
+                context=context,
+                error_type=type(exc).__name__,
+                error=str(exc)[:1000],
+            )
+            return None
+
+        self._session_debug(
+            session,
+            "reconciliation_summary",
+            context=context,
+            remote_fetched=summary.remote_fetched,
+            matched=summary.matched,
+            create=summary.create,
+            update=summary.update,
+            noop=summary.noop,
+            delete=summary.delete,
+        )
+        return summary
+
+    @staticmethod
+    def _format_reconciliation_summary(
+        summary: ReconciliationSummary,
+    ) -> str:
+        """Render deterministic reconciliation counts for user-visible submit output."""
+        return (
+            "Reconciliation: "
+            f"remote fetched {summary.remote_fetched}, "
+            f"matched {summary.matched}, "
+            f"create {summary.create}, "
+            f"update {summary.update}, "
+            f"noop {summary.noop}, "
+            f"delete {summary.delete}."
+        )
+
     async def _submit_current_plan(self, session: Session) -> CalendarSyncOutcome:
         """Sync the current TBPlan and return a structured calendar-change result."""
         if session.tb_plan is None:
@@ -4143,19 +4344,30 @@ class TimeboxingFlowAgent(RoutedAgent):
                 changed=False,
                 note="Calendar sync skipped: plan is not ready yet.",
             )
-        if session.base_snapshot is None:
+        baseline_guard = await self._ensure_submit_baseline_ready(
+            session=session,
+            context="stage4_submit_current_plan",
+        )
+        if not baseline_guard.ready:
             self._session_debug(
                 session,
                 "calendar_sync_skipped",
-                reason="missing_base_snapshot",
+                reason=baseline_guard.reason,
             )
+            if baseline_guard.reason == "missing_base_snapshot":
+                note = (
+                    "Calendar sync skipped: baseline snapshot unavailable. "
+                    "Click Redo to retry sync."
+                )
+            else:
+                note = (
+                    "Calendar sync skipped: couldn't refresh the latest calendar "
+                    "baseline safely. Retry with Redo."
+                )
             return CalendarSyncOutcome(
                 status="skipped",
                 changed=False,
-                note=(
-                    "Calendar sync skipped: baseline snapshot unavailable. "
-                    "Click Redo to retry sync."
-                ),
+                note=note,
             )
 
         sync_started_at = perf_counter()
@@ -5601,6 +5813,120 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         return SessionMessage(sections=[section for _, section in ordered])
 
+    @staticmethod
+    def _stage_label(stage: TimeboxingStage) -> str:
+        """Return canonical stage label text."""
+        stage_order = {
+            TimeboxingStage.COLLECT_CONSTRAINTS: "Stage 1/5 (CollectConstraints)",
+            TimeboxingStage.CAPTURE_INPUTS: "Stage 2/5 (CaptureInputs)",
+            TimeboxingStage.SKELETON: "Stage 3/5 (Skeleton)",
+            TimeboxingStage.REFINE: "Stage 4/5 (Refine)",
+            TimeboxingStage.REVIEW_COMMIT: "Stage 5/5 (ReviewCommit)",
+        }
+        return stage_order.get(stage, f"Stage ({stage.value})")
+
+    @staticmethod
+    def _stage_status_line(gate: StageGateOutput) -> str:
+        """Return deterministic readiness status text for stage output."""
+        return (
+            "Status: ready to proceed."
+            if gate.ready
+            else "Status: waiting on required input."
+        )
+
+    @staticmethod
+    def _stage_button_affordance_line(gate: StageGateOutput) -> str:
+        """Return explicit button guidance for bottom-up Slack scanning."""
+        if gate.stage_id == TimeboxingStage.REVIEW_COMMIT and gate.ready:
+            return "Use buttons below: Submit to Calendar or Keep Editing."
+        if gate.ready:
+            return "Use buttons below: Proceed, or Redo/Back/Cancel."
+        return "Use buttons below: after replying, click Redo (Back/Cancel also available)."
+
+    def _apply_stage_response_contract(
+        self,
+        *,
+        gate: StageGateOutput,
+        message: SessionMessage,
+    ) -> SessionMessage:
+        """Enforce deterministic stage/status/action template on message sections."""
+        sections = list(message.sections)
+        stage_line = self._stage_label(gate.stage_id)
+        status_line = self._stage_status_line(gate)
+        action_line = self._stage_button_affordance_line(gate)
+
+        current_idx: int | None = None
+        for idx, section in enumerate(sections):
+            if isinstance(section, FreeformSection) and (
+                section.heading or ""
+            ).strip().lower() == "current step":
+                current_idx = idx
+                break
+        if current_idx is None:
+            sections.insert(
+                0,
+                FreeformSection(
+                    heading="Current step",
+                    content=f"{stage_line}\n{status_line}",
+                ),
+            )
+        else:
+            current = sections[current_idx]
+            assert isinstance(current, FreeformSection)
+            current_text = (current.content or "").strip()
+            lines = [line for line in current_text.splitlines() if line.strip()]
+            if stage_line not in lines:
+                lines.insert(0, stage_line)
+            if status_line not in lines:
+                lines.append(status_line)
+            sections[current_idx] = FreeformSection(
+                heading=current.heading,
+                content="\n".join(lines),
+            )
+
+        next_idx: int | None = None
+        for idx, section in enumerate(sections):
+            if isinstance(section, NextStepsSection):
+                next_idx = idx
+                break
+            if isinstance(section, FreeformSection) and (
+                section.heading or ""
+            ).strip().lower() in {"what i need from you", "next steps"}:
+                next_idx = idx
+                break
+
+        if next_idx is None:
+            fallback_question = (
+                (gate.question or "").strip() or "Share what to adjust next."
+            )
+            sections.append(
+                NextStepsSection(
+                    heading="What I need from you",
+                    content=[fallback_question, action_line],
+                )
+            )
+        else:
+            current = sections[next_idx]
+            if isinstance(current, NextStepsSection):
+                content = [line for line in current.content if (line or "").strip()]
+                if action_line not in content:
+                    content.append(action_line)
+                sections[next_idx] = NextStepsSection(
+                    heading=current.heading,
+                    content=content,
+                )
+            else:
+                assert isinstance(current, FreeformSection)
+                content = (current.content or "").strip()
+                if action_line not in content:
+                    content = f"{content}\n- {action_line}" if content else action_line
+                sections[next_idx] = FreeformSection(
+                    heading=current.heading,
+                    content=content,
+                )
+
+        return self._ordered_session_sections(SessionMessage(sections=sections))
+
     def _build_collect_constraint_template_section(
         self, *, gate: StageGateOutput, constraints: list[Constraint] | None
     ) -> list[str] | None:
@@ -5621,6 +5947,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         immovables: list[dict[str, str]] | None,
     ) -> list[str]:
         """Deduplicate stage-summary lines without post-hoc phrase filtering."""
+        max_lines = 4
         lines: list[str] = []
         seen: set[str] = set()
         for raw in gate.summary or []:
@@ -5631,6 +5958,8 @@ class TimeboxingFlowAgent(RoutedAgent):
                 continue
             seen.add(line)
             lines.append(line)
+            if len(lines) >= max_lines:
+                break
         return lines
 
     def _format_immovables_section(
@@ -5661,19 +5990,14 @@ class TimeboxingFlowAgent(RoutedAgent):
     ) -> str:
         """Render a markdown stage update, preferring structured section payloads."""
         if gate.response_message and gate.response_message.sections:
-            ordered = self._ordered_session_sections(gate.response_message)
+            ordered = self._apply_stage_response_contract(
+                gate=gate, message=gate.response_message
+            )
             rendered = self._render_session_message(ordered)
             if rendered.strip():
                 return rendered
 
-        stage_order = {
-            TimeboxingStage.COLLECT_CONSTRAINTS: "Stage 1/5 (CollectConstraints)",
-            TimeboxingStage.CAPTURE_INPUTS: "Stage 2/5 (CaptureInputs)",
-            TimeboxingStage.SKELETON: "Stage 3/5 (Skeleton)",
-            TimeboxingStage.REFINE: "Stage 4/5 (Refine)",
-            TimeboxingStage.REVIEW_COMMIT: "Stage 5/5 (ReviewCommit)",
-        }
-        header = stage_order.get(gate.stage_id, f"Stage ({gate.stage_id.value})")
+        header = self._stage_label(gate.stage_id)
         summary_lines = self._sanitize_stage_summary_lines(
             gate=gate, immovables=immovables
         )
@@ -5756,7 +6080,9 @@ class TimeboxingFlowAgent(RoutedAgent):
                 notes = "\n".join([f"- {note}" for note in background_notes])
                 sections.append(FreeformSection(heading="Background", content=notes))
             return self._render_session_message(
-                self._ordered_session_sections(SessionMessage(sections=sections))
+                self._apply_stage_response_contract(
+                    gate=gate, message=SessionMessage(sections=sections)
+                )
             )
 
         if not gate.ready:
@@ -5802,7 +6128,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             notes = "\n".join([f"- {note}" for note in background_notes])
             sections.append(FreeformSection(heading="Background", content=notes))
         return self._render_session_message(
-            self._ordered_session_sections(SessionMessage(sections=sections))
+            self._apply_stage_response_contract(
+                gate=gate, message=SessionMessage(sections=sections)
+            )
         )
 
     def _collect_background_notes(self, session: Session) -> list[str] | None:
@@ -6888,6 +7216,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 )
             decision: StageDecision | None = None
             if session.stage in (
+                TimeboxingStage.SKELETON,
                 TimeboxingStage.REFINE,
                 TimeboxingStage.REVIEW_COMMIT,
             ):
@@ -6895,12 +7224,21 @@ class TimeboxingFlowAgent(RoutedAgent):
                     session,
                     user_message=message.text,
                 )
+            if decision is not None:
+                if decision.submit_intent:
+                    session.queued_submit_intent = True
+                elif session.queued_submit_intent and decision.action in (
+                    "cancel",
+                    "back",
+                    "assist",
+                ):
+                    session.queued_submit_intent = False
             if (
                 session.stage == TimeboxingStage.REVIEW_COMMIT
                 and session.pending_submit
                 and decision is not None
                 and decision.action == "proceed"
-                and decision.submit_intent
+                and (decision.submit_intent or session.queued_submit_intent)
             ):
                 self._session_debug(
                     session,
@@ -6914,6 +7252,8 @@ class TimeboxingFlowAgent(RoutedAgent):
                     submit_mode="auto_nl",
                     submit_attempt_kind=self._submit_attempt_kind(session),
                 )
+                if not session.pending_submit:
+                    session.queued_submit_intent = False
                 await self._publish_update(
                     session=session,
                     user_message=(
@@ -6950,7 +7290,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             outgoing = self._attach_presenter_blocks(reply=wrapped, session=session)
             if (
                 decision is not None
-                and decision.submit_intent
+                and (decision.submit_intent or session.queued_submit_intent)
                 and session.stage == TimeboxingStage.REVIEW_COMMIT
             ):
                 if (
@@ -6970,6 +7310,8 @@ class TimeboxingFlowAgent(RoutedAgent):
                         submit_mode="auto_nl",
                         submit_attempt_kind=self._submit_attempt_kind(session),
                     )
+                    if not session.pending_submit:
+                        session.queued_submit_intent = False
                     await self._publish_update(
                         session=session,
                         user_message=(
@@ -7276,45 +7618,85 @@ class TimeboxingFlowAgent(RoutedAgent):
                 submit_attempt_kind=submit_attempt_kind,
             )
             return self._build_submit_incomplete_reply()
-        if session.base_snapshot is None:
-            session.pending_submit = False
+        baseline_guard = await self._ensure_submit_baseline_ready(
+            session=session,
+            context="stage5_submit_pending_plan",
+        )
+        if not baseline_guard.ready:
             self._session_debug(
                 session,
                 "submission_skipped",
-                reason="missing_base_snapshot",
+                reason=baseline_guard.reason,
                 submit_mode=submit_mode,
                 submit_attempt_kind=submit_attempt_kind,
             )
+            if baseline_guard.reason == "remote_baseline_refresh_failed":
+                return TextMessage(
+                    content=(
+                        "I couldn't refresh the latest calendar state, so I did not submit "
+                        "to avoid duplicate events. Please retry in a moment."
+                    ),
+                    source=self._agent_source(),
+                )
+            session.pending_submit = False
             return self._build_submit_incomplete_reply()
 
+        reconciliation_summary = self._build_reconciliation_summary(
+            session=session,
+            context="stage5_submit_pending_plan",
+        )
         preview_ops = []
-        if submit_attempt_kind == "resubmit":
+        if submit_attempt_kind == "resubmit" and reconciliation_summary is None:
             preview_ops = plan_sync(
                 session.base_snapshot,
                 session.tb_plan,
                 session.event_id_map,
                 remote_event_ids_by_index=session.remote_event_ids_by_index,
             )
-        if submit_attempt_kind == "resubmit" and not preview_ops:
+        planned_mutations = (
+            reconciliation_summary.planned_mutations
+            if reconciliation_summary is not None
+            else len(preview_ops)
+        )
+        if submit_attempt_kind == "resubmit" and planned_mutations == 0:
             session.pending_submit = False
             session.committed = True
+            debug_payload = {
+                "status": "committed",
+                "changed": False,
+                "created": 0,
+                "updated": 0,
+                "deleted": 0,
+                "failed": 0,
+                "failed_ops": [],
+                "ops": 0,
+                "elapsed_s": 0.0,
+                "submit_mode": submit_mode,
+                "submit_attempt_kind": submit_attempt_kind,
+                "no_material_delta": True,
+            }
+            if reconciliation_summary is not None:
+                debug_payload.update(
+                    {
+                        "remote_fetched": reconciliation_summary.remote_fetched,
+                        "matched": reconciliation_summary.matched,
+                        "planned_create": reconciliation_summary.create,
+                        "planned_update": reconciliation_summary.update,
+                        "planned_noop": reconciliation_summary.noop,
+                        "planned_delete": reconciliation_summary.delete,
+                    }
+                )
             self._session_debug(
                 session,
                 "submission_result",
-                status="committed",
-                changed=False,
-                created=0,
-                updated=0,
-                deleted=0,
-                failed=0,
-                failed_ops=[],
-                ops=0,
-                elapsed_s=0.0,
-                submit_mode=submit_mode,
-                submit_attempt_kind=submit_attempt_kind,
-                no_material_delta=True,
+                **debug_payload,
             )
             text = "Calendar already up to date. No changes were needed."
+            if reconciliation_summary is not None:
+                text = (
+                    f"{text}\n\n"
+                    f"{self._format_reconciliation_summary(reconciliation_summary)}"
+                )
             return SlackBlockMessage(
                 text=text,
                 blocks=[build_markdown_block(text=text)],
@@ -7363,21 +7745,35 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         await self._refresh_remote_baseline_after_sync(session)
         summary = self._summarize_sync_transaction(tx)
+        debug_payload = {
+            "status": summary.status,
+            "changed": summary.changed,
+            "created": summary.created,
+            "updated": summary.updated,
+            "deleted": summary.deleted,
+            "failed": summary.failed,
+            "failed_ops": summary.failed_details[:3],
+            "ops": len(tx.ops),
+            "elapsed_s": round(perf_counter() - submit_started_at, 3),
+            "submit_mode": submit_mode,
+            "submit_attempt_kind": submit_attempt_kind,
+            "no_material_delta": False,
+        }
+        if reconciliation_summary is not None:
+            debug_payload.update(
+                {
+                    "remote_fetched": reconciliation_summary.remote_fetched,
+                    "matched": reconciliation_summary.matched,
+                    "planned_create": reconciliation_summary.create,
+                    "planned_update": reconciliation_summary.update,
+                    "planned_noop": reconciliation_summary.noop,
+                    "planned_delete": reconciliation_summary.delete,
+                }
+            )
         self._session_debug(
             session,
             "submission_result",
-            status=summary.status,
-            changed=summary.changed,
-            created=summary.created,
-            updated=summary.updated,
-            deleted=summary.deleted,
-            failed=summary.failed,
-            failed_ops=summary.failed_details[:3],
-            ops=len(tx.ops),
-            elapsed_s=round(perf_counter() - submit_started_at, 3),
-            submit_mode=submit_mode,
-            submit_attempt_kind=submit_attempt_kind,
-            no_material_delta=False,
+            **debug_payload,
         )
 
         if tx.status == "committed":
@@ -7400,6 +7796,11 @@ class TimeboxingFlowAgent(RoutedAgent):
                 )
         else:
             text = f"Submission finished with status `{tx.status}`."
+        if reconciliation_summary is not None:
+            text = (
+                f"{text}\n\n"
+                f"{self._format_reconciliation_summary(reconciliation_summary)}"
+            )
         return SlackBlockMessage(
             text=text,
             blocks=self._render_submit_result_blocks(

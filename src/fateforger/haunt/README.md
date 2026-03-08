@@ -20,3 +20,4 @@ Key files:
 
 Notes:
 - Haunt FunctionTool interfaces are strict-schema compatible; nullable inputs are explicit tool arguments.
+- Planning fallback calendar scans use MCP datetime args without fractional seconds; fractional seconds can trigger MCP argument errors and false "missing planning session" outcomes.

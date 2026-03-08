@@ -396,6 +396,192 @@ async def test_on_user_reply_refine_explicit_commit_submits_in_same_turn() -> No
 
 
 @pytest.mark.asyncio
+async def test_on_user_reply_skeleton_commit_intent_carries_to_review_submit() -> None:
+    agent = _build_agent()
+    session = Session(
+        thread_ts="thread-skeleton-submit",
+        channel_id="C1",
+        user_id="U1",
+        committed=True,
+        planned_date="2026-02-27",
+        tz_name="UTC",
+        session_key="thread-skeleton-submit",
+    )
+    session.stage = TimeboxingStage.SKELETON
+    session.tb_plan = object()  # type: ignore[assignment]
+    session.base_snapshot = object()  # type: ignore[assignment]
+    agent._sessions["thread-skeleton-submit"] = session
+    calls = {"submit": 0, "run_graph": 0}
+
+    async def _decide_next_action(session_obj: Session, *, user_message: str):  # noqa: ARG001
+        if session_obj.stage == TimeboxingStage.SKELETON:
+            return StageDecision(action="proceed", submit_intent=True)
+        if session_obj.stage == TimeboxingStage.REFINE:
+            return StageDecision(action="proceed", submit_intent=False)
+        return StageDecision(action="provide_info", submit_intent=False)
+
+    async def _submit_pending_plan(*, session: Session, submit_mode: str, submit_attempt_kind: str):  # noqa: ARG001
+        _ = submit_mode, submit_attempt_kind
+        calls["submit"] += 1
+        session.pending_submit = False
+        return TextMessage(content="submitted-from-carry", source="timeboxing_agent")
+
+    async def _run_graph_turn(*, session: Session, user_text: str):  # noqa: ARG001
+        _ = session, user_text
+        calls["run_graph"] += 1
+        return TextMessage(content=f"graph-{calls['run_graph']}", source="timeboxing_agent")
+
+    def _attach_presenter_blocks(*, reply: TextMessage, session: Session):
+        _ = reply
+        if calls["run_graph"] == 1:
+            session.stage = TimeboxingStage.REFINE
+            session.pending_submit = False
+            return TextMessage(content="refine-ready", source="timeboxing_agent")
+        session.stage = TimeboxingStage.REVIEW_COMMIT
+        session.pending_submit = True
+        session.tb_plan = object()  # type: ignore[assignment]
+        session.base_snapshot = object()  # type: ignore[assignment]
+        return TextMessage(content="review-ready", source="timeboxing_agent")
+
+    agent._decide_next_action = _decide_next_action
+    agent._submit_pending_plan = _submit_pending_plan
+    agent._run_graph_turn = _run_graph_turn
+    agent._attach_presenter_blocks = _attach_presenter_blocks
+
+    first = await TimeboxingFlowAgent.on_user_reply(
+        agent,
+        TimeboxingUserReply(
+            channel_id="C1",
+            thread_ts="thread-skeleton-submit",
+            user_id="U1",
+            text="looks good, commit this schedule now",
+        ),
+        SimpleNamespace(),
+    )
+
+    assert isinstance(first, TextMessage)
+    assert first.content == "refine-ready"
+    assert calls["submit"] == 0
+    assert session.queued_submit_intent is True
+
+    second = await TimeboxingFlowAgent.on_user_reply(
+        agent,
+        TimeboxingUserReply(
+            channel_id="C1",
+            thread_ts="thread-skeleton-submit",
+            user_id="U1",
+            text="proceed",
+        ),
+        SimpleNamespace(),
+    )
+
+    assert isinstance(second, TextMessage)
+    assert second.content == "submitted-from-carry"
+    assert calls["submit"] == 1
+    assert calls["run_graph"] == 2
+    assert session.queued_submit_intent is False
+
+
+@pytest.mark.asyncio
+async def test_on_user_reply_provide_info_preserves_queued_submit_intent() -> None:
+    agent = _build_agent()
+    session = Session(
+        thread_ts="thread-queued-preserve",
+        channel_id="C1",
+        user_id="U1",
+        committed=True,
+        planned_date="2026-02-27",
+        tz_name="UTC",
+        session_key="thread-queued-preserve",
+    )
+    session.stage = TimeboxingStage.REFINE
+    session.queued_submit_intent = True
+    session.tb_plan = object()  # type: ignore[assignment]
+    session.base_snapshot = object()  # type: ignore[assignment]
+    agent._sessions["thread-queued-preserve"] = session
+    calls = {"submit": 0}
+
+    async def _decide_next_action(session_obj: Session, *, user_message: str):  # noqa: ARG001
+        _ = session_obj
+        return StageDecision(action="provide_info", submit_intent=False)
+
+    async def _submit_pending_plan(*, session: Session, submit_mode: str, submit_attempt_kind: str):  # noqa: ARG001
+        _ = session, submit_mode, submit_attempt_kind
+        calls["submit"] += 1
+        session.pending_submit = False
+        return TextMessage(content="submitted", source="timeboxing_agent")
+
+    async def _run_graph_turn(*, session: Session, user_text: str):  # noqa: ARG001
+        _ = user_text
+        session.stage = TimeboxingStage.REVIEW_COMMIT
+        session.pending_submit = True
+        return TextMessage(content="review-ready", source="timeboxing_agent")
+
+    agent._decide_next_action = _decide_next_action
+    agent._submit_pending_plan = _submit_pending_plan
+    agent._run_graph_turn = _run_graph_turn
+
+    out = await TimeboxingFlowAgent.on_user_reply(
+        agent,
+        TimeboxingUserReply(
+            channel_id="C1",
+            thread_ts="thread-queued-preserve",
+            user_id="U1",
+            text="actually add one more block first",
+        ),
+        SimpleNamespace(),
+    )
+
+    assert isinstance(out, TextMessage)
+    assert out.content == "submitted"
+    assert calls["submit"] == 1
+    assert session.queued_submit_intent is False
+
+
+@pytest.mark.asyncio
+async def test_on_user_reply_cancel_clears_queued_submit_intent() -> None:
+    agent = _build_agent()
+    session = Session(
+        thread_ts="thread-queued-cancel",
+        channel_id="C1",
+        user_id="U1",
+        committed=True,
+        planned_date="2026-02-27",
+        tz_name="UTC",
+        session_key="thread-queued-cancel",
+    )
+    session.stage = TimeboxingStage.REFINE
+    session.queued_submit_intent = True
+    agent._sessions["thread-queued-cancel"] = session
+
+    async def _decide_next_action(session_obj: Session, *, user_message: str):  # noqa: ARG001
+        _ = session_obj
+        return StageDecision(action="cancel", submit_intent=False)
+
+    async def _run_graph_turn(*, session: Session, user_text: str):  # noqa: ARG001
+        _ = session, user_text
+        return TextMessage(content="cancelled", source="timeboxing_agent")
+
+    agent._decide_next_action = _decide_next_action
+    agent._run_graph_turn = _run_graph_turn
+
+    out = await TimeboxingFlowAgent.on_user_reply(
+        agent,
+        TimeboxingUserReply(
+            channel_id="C1",
+            thread_ts="thread-queued-cancel",
+            user_id="U1",
+            text="cancel this session",
+        ),
+        SimpleNamespace(),
+    )
+
+    assert isinstance(out, TextMessage)
+    assert out.content == "cancelled"
+    assert session.queued_submit_intent is False
+
+
+@pytest.mark.asyncio
 async def test_on_user_reply_review_commit_explicit_commit_submits_after_review_render() -> None:
     agent = _build_agent()
     session = Session(

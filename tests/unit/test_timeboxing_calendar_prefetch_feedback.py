@@ -173,3 +173,31 @@ async def test_ensure_calendar_timeout_keeps_prefetch_running_in_background(
     await asyncio.sleep(0.08)
     TimeboxingFlowAgent._apply_prefetched_calendar_immovables(agent, session)
     assert session.frame_facts.get("immovables")
+
+
+def test_apply_prefetched_calendar_immovables_merges_existing_rows() -> None:
+    """Prefetched anchors should be merged with existing rows, not skipped."""
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    agent._session_debug = lambda *_args, **_kwargs: None
+    session = Session(
+        thread_ts="t1",
+        channel_id="c1",
+        user_id="u1",
+        planned_date="2026-02-14",
+        tz_name="Europe/Amsterdam",
+    )
+    session.prefetched_immovables_by_date["2026-02-14"] = [
+        {"title": "Planning", "start": "16:00", "end": "17:00"},
+    ]
+    session.frame_facts["immovables"] = [
+        {"title": "Lunch", "start": "13:00", "end": "14:00"},
+        {"title": "Planning", "start": "16:00", "end": "17:00"},
+    ]
+
+    TimeboxingFlowAgent._apply_prefetched_calendar_immovables(agent, session)
+
+    immovables = session.frame_facts.get("immovables")
+    assert isinstance(immovables, list)
+    assert len(immovables) == 2
+    assert immovables[0]["title"] == "Planning"
+    assert immovables[1]["title"] == "Lunch"

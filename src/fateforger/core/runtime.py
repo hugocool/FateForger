@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import os
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -67,6 +69,14 @@ _runtime_lock = asyncio.Lock()
 
 
 @dataclass(frozen=True)
+class _RuntimeGitIdentity:
+    branch: str
+    commit: str
+    tag: str
+    dirty: bool
+
+
+@dataclass(frozen=True)
 class _McpStartupServer:
     name: str
     url: str
@@ -81,6 +91,61 @@ class _McpStartupProbeResult:
     ok: bool
     tool_count: int
     error: str | None = None
+
+
+def _repo_root_for_runtime() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _run_git_command(*args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=_repo_root_for_runtime(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return (result.stdout or "").strip()
+
+
+def _resolve_runtime_git_identity() -> _RuntimeGitIdentity:
+    branch = "unknown"
+    commit = "unknown"
+    tag = "none"
+    dirty = False
+
+    try:
+        value = _run_git_command("rev-parse", "--abbrev-ref", "HEAD")
+        if value:
+            branch = value
+    except Exception:
+        pass
+
+    try:
+        value = _run_git_command("rev-parse", "--short", "HEAD")
+        if value:
+            commit = value
+    except Exception:
+        pass
+
+    try:
+        value = _run_git_command("describe", "--tags", "--exact-match")
+        if value:
+            tag = value
+    except Exception:
+        tag = "none"
+
+    try:
+        dirty = bool(_run_git_command("status", "--porcelain"))
+    except Exception:
+        dirty = False
+
+    return _RuntimeGitIdentity(
+        branch=branch,
+        commit=commit,
+        tag=tag,
+        dirty=dirty,
+    )
 
 
 def _runtime_mcp_servers() -> list[_McpStartupServer]:
@@ -237,6 +302,14 @@ def _create_scheduler(database_url: str | None) -> AsyncIOScheduler:
 
 async def _create_runtime() -> SingleThreadedAgentRuntime:
     """Create and start the runtime instance."""
+    git_identity = _resolve_runtime_git_identity()
+    logger.info(
+        "Runtime git identity branch=%s commit=%s tag=%s dirty=%s",
+        git_identity.branch,
+        git_identity.commit,
+        git_identity.tag,
+        git_identity.dirty,
+    )
     await _assert_mcp_servers_available()
     scheduler = _create_scheduler(settings.database_url)
     scheduler.start()

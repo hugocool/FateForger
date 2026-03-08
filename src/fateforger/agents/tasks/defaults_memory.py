@@ -31,6 +31,7 @@ _DEFAULTS_DESC_PREFIX = "task_defaults_json:"
 _TASK_DEFAULTS_BACKENDS = {
     "constraint_mcp",
     "mem0",
+    "graphiti",
     "disabled",
     "inherit_timeboxing",
 }
