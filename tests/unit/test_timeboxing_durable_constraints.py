@@ -133,7 +133,7 @@ async def test_collect_constraints_merges_durable_with_session():
 async def test_collect_constraints_requests_shared_scope_fallback(monkeypatch) -> None:
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     captured_kwargs: list[dict[str, object]] = []
-    monkeypatch.setattr(settings, "timeboxing_memory_backend", "constraint_mcp")
+    monkeypatch.setattr(settings, "timeboxing_memory_backend", "graphiti")
 
     class _Store:
         async def list_constraints(self, **kwargs):

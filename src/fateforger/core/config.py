@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 from urllib.parse import urlparse
@@ -29,13 +28,9 @@ class Settings(BaseSettings):
     slack_app_token: str = Field(default="your_slack_app_token_here")
     slack_socket_mode: bool = Field(default=True)
     slack_port: int = Field(default=3000)
-    slack_focus_ttl_seconds: int = Field(
-        default=60 * 60
-    )
+    slack_focus_ttl_seconds: int = Field(default=60 * 60)
     slack_app_name: str = Field(default="FateForger")
-    slack_timeboxing_channel_id: str = Field(
-        default=""
-    )
+    slack_timeboxing_channel_id: str = Field(default="")
     slack_strategy_channel_id: str = Field(default="")
     slack_tasks_channel_id: str = Field(default="")
     slack_ops_channel_id: str = Field(default="")
@@ -53,68 +48,38 @@ class Settings(BaseSettings):
     # LLM Provider Configuration
     # - "openai": OpenAI-hosted models via https://api.openai.com/v1
     # - "openrouter": OpenRouter OpenAI-compatible endpoint via https://openrouter.ai/api/v1
-    llm_provider: str = Field(default="openai")
+    llm_provider: str = Field(default="openrouter")
     openrouter_api_key: str = Field(default="")
-    openrouter_base_url: str = Field(
-        default="https://openrouter.ai/api/v1"
-    )
+    openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1")
     openrouter_http_referer: str = Field(default="")
     openrouter_title: str = Field(default="FateForger")
-    openrouter_send_reasoning_effort_header: bool = Field(
-        default=False
-    )
-    openrouter_reasoning_effort_header: str = Field(
-        default="X-Reasoning-Effort"
-    )
-    openrouter_default_model_flash: str = Field(
-        default="google/gemini-3-flash-preview"
-    )
-    openrouter_default_model_pro: str = Field(
-        default="google/gemini-3-flash-preview"
-    )
+    openrouter_send_reasoning_effort_header: bool = Field(default=False)
+    openrouter_reasoning_effort_header: str = Field(default="X-Reasoning-Effort")
+    openrouter_default_model_flash: str = Field(default="google/gemini-3-flash-preview")
+    openrouter_default_model_pro: str = Field(default="google/gemini-3-flash-preview")
 
     # Per-agent model selection (optional; provider-specific model IDs)
     llm_model_receptionist: str = Field(default="")
     llm_model_admonisher: str = Field(default="")
     llm_model_timeboxing: str = Field(default="")
-    llm_model_timeboxing_draft: str = Field(
-        default=""
-    )
-    llm_model_timebox_patcher: str = Field(
-        default=""
-    )
+    llm_model_timeboxing_draft: str = Field(default="")
+    llm_model_timebox_patcher: str = Field(default="")
     llm_model_planner: str = Field(default="")
     llm_model_revisor: str = Field(default="")
     llm_model_tasks: str = Field(default="")
-    llm_model_calendar_submitter: str = Field(
-        default=""
-    )
+    llm_model_calendar_submitter: str = Field(default="")
 
     # Per-agent temperature
-    llm_temperature_admonisher: float = Field(
-        default=1.1
-    )
+    llm_temperature_admonisher: float = Field(default=1.1)
 
     # Per-agent reasoning effort (OpenRouter: request body `reasoning.effort`; "low"|"medium"|"high")
-    llm_reasoning_effort_timeboxing: str = Field(
-        default=""
-    )
-    llm_reasoning_effort_timeboxing_draft: str = Field(
-        default=""
-    )
-    llm_reasoning_effort_revisor: str = Field(
-        default=""
-    )
-    llm_reasoning_effort_tasks: str = Field(
-        default=""
-    )
-    llm_reasoning_effort_timebox_patcher: str = Field(
-        default=""
-    )
+    llm_reasoning_effort_timeboxing: str = Field(default="")
+    llm_reasoning_effort_timeboxing_draft: str = Field(default="")
+    llm_reasoning_effort_revisor: str = Field(default="")
+    llm_reasoning_effort_tasks: str = Field(default="")
+    llm_reasoning_effort_timebox_patcher: str = Field(default="")
     llm_max_tokens: int = Field(default=0)
-    llm_max_tokens_timebox_patcher: int = Field(
-        default=0
-    )
+    llm_max_tokens_timebox_patcher: int = Field(default=0)
 
     # MCP Server Configuration
     mcp_version: str = Field(default="v1.4.8")
@@ -123,18 +88,10 @@ class Settings(BaseSettings):
     google_oauth_credentials: str = Field(default="/app/gcp-oauth.keys.json")
     mcp_http_port: str = Field(default="3001")
     mcp_http_auth_token: str = Field(default="change_me_to_a_long_random_secret")
-    mcp_calendar_server_url: str = Field(
-        default="http://localhost:3000"
-    )
-    mcp_calendar_server_url_docker: str = Field(
-        default="http://calendar-mcp:3000"
-    )
-    notion_mcp_url: str = Field(
-        default="http://localhost:3001/mcp"
-    )
-    ticktick_mcp_url: str = Field(
-        default="http://ticktick-mcp:8000/mcp"
-    )
+    mcp_calendar_server_url: str = Field(default="http://localhost:3000")
+    mcp_calendar_server_url_docker: str = Field(default="http://calendar-mcp:3000")
+    notion_mcp_url: str = Field(default="http://localhost:3001/mcp")
+    ticktick_mcp_url: str = Field(default="http://ticktick-mcp:8000/mcp")
 
     # TickTick Configuration
     ticktick_mcp_version: str = Field(default="main")
@@ -148,17 +105,11 @@ class Settings(BaseSettings):
     # Notion Configuration
     notion_token: str = Field(default="")
     work_notion_token: str = Field(default="")
-    notion_timeboxing_parent_page_id: str = Field(
-        default=""
-    )
+    notion_timeboxing_parent_page_id: str = Field(default="")
     notion_sprint_db_id: str = Field(default="")
-    notion_sprint_data_source_url: str = Field(
-        default=""
-    )
+    notion_sprint_data_source_url: str = Field(default="")
     notion_sprint_db_ids: str = Field(default="")
-    notion_sprint_data_source_urls: str = Field(
-        default=""
-    )
+    notion_sprint_data_source_urls: str = Field(default="")
 
     # Database Configuration
     alembic_database_url: str = Field(default="sqlite:///data/admonish.db")
@@ -181,20 +132,14 @@ class Settings(BaseSettings):
     wizard_session_secret: str = Field(default="")
 
     # Agent runtime timeouts (seconds)
-    agent_on_messages_timeout_seconds: int = Field(
-        default=60
-    )
-    agent_mcp_discovery_timeout_seconds: int = Field(
-        default=10
-    )
+    agent_on_messages_timeout_seconds: int = Field(default=60)
+    agent_mcp_discovery_timeout_seconds: int = Field(default=10)
     slack_register_user_timeout_seconds: float = Field(default=3.0, gt=0.0)
     slack_route_dispatch_timeout_seconds: float = Field(default=75.0, gt=0.0)
 
     # Timeboxing feature flags
-    timeboxing_memory_backend: str = Field(
-        default="constraint_mcp"
-    )
-    tasks_defaults_memory_backend: str = Field(default="constraint_mcp")
+    timeboxing_memory_backend: str = Field(default="graphiti")
+    tasks_defaults_memory_backend: str = Field(default="graphiti")
 
     # Legacy Mem0 Memory Configuration (deprecated)
     mem0_user_id: str = Field(default="timeboxing")
@@ -205,10 +150,9 @@ class Settings(BaseSettings):
 
     # Graphiti Memory Configuration
     graphiti_user_id: str = Field(default="timeboxing")
-    graphiti_is_cloud: bool = Field(default=False)
-    graphiti_api_key: str = Field(default="")
-    graphiti_cloud_url: str = Field(default="")
-    graphiti_local_config_json: str = Field(default="")
+    graphiti_mcp_server_url: str = Field(default="http://localhost:8005/mcp")
+    graphiti_mcp_group_id: str = Field(default="timeboxing")
+    graphiti_mcp_timeout_seconds: float = Field(default=15.0, gt=0.0)
     graphiti_query_limit: int = Field(default=200)
 
     # Observability Configuration
@@ -218,7 +162,9 @@ class Settings(BaseSettings):
     obs_llm_audit_sink: str = Field(default="loki")
     obs_llm_audit_mode: str = Field(default="sanitized")
     obs_llm_audit_max_chars: int = Field(default=2000)
-    obs_llm_audit_loki_url: str = Field(default="http://localhost:3100/loki/api/v1/push")
+    obs_llm_audit_loki_url: str = Field(
+        default="http://localhost:3100/loki/api/v1/push"
+    )
     obs_llm_audit_queue_max: int = Field(default=4096, ge=1, le=200000)
     obs_llm_audit_batch_size: int = Field(default=128, ge=1, le=10000)
     obs_llm_audit_flush_interval_ms: int = Field(default=250, ge=10, le=60000)
@@ -248,7 +194,7 @@ class Settings(BaseSettings):
             "MCP calendar URL must be absolute and start with http:// or https://"
         )
 
-    @field_validator("notion_mcp_url", "ticktick_mcp_url")
+    @field_validator("notion_mcp_url", "ticktick_mcp_url", "graphiti_mcp_server_url")
     @classmethod
     def _validate_mcp_tool_endpoint_url(cls, value: str) -> str:
         parsed = urlparse((value or "").strip())
@@ -273,21 +219,20 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_timeboxing_memory_backend(cls, value: str) -> str:
         backend = (value or "").strip().lower()
-        if backend in {"constraint_mcp", "graphiti"}:
+        if backend == "graphiti":
             return backend
         raise ValueError(
-            "TIMEBOXING_MEMORY_BACKEND must be one of: constraint_mcp, graphiti"
+            "TIMEBOXING_MEMORY_BACKEND must be: graphiti"
         )
 
     @field_validator("tasks_defaults_memory_backend")
     @classmethod
     def _validate_tasks_defaults_memory_backend(cls, value: str) -> str:
         backend = (value or "").strip().lower()
-        if backend in {"constraint_mcp", "mem0", "disabled", "inherit_timeboxing"}:
+        if backend == "graphiti":
             return backend
         raise ValueError(
-            "TASKS_DEFAULTS_MEMORY_BACKEND must be one of: "
-            "constraint_mcp, mem0, disabled, inherit_timeboxing"
+            "TASKS_DEFAULTS_MEMORY_BACKEND must be: graphiti"
         )
 
     @field_validator("autogen_events_log")
@@ -313,9 +258,7 @@ class Settings(BaseSettings):
         target = (value or "").strip().lower()
         if target in {"stdout", "audit"}:
             return target
-        raise ValueError(
-            "AUTOGEN_EVENTS_OUTPUT_TARGET must be one of: stdout, audit"
-        )
+        raise ValueError("AUTOGEN_EVENTS_OUTPUT_TARGET must be one of: stdout, audit")
 
     @field_validator("autogen_events_full_payload_mode")
     @classmethod
@@ -357,73 +300,12 @@ class Settings(BaseSettings):
             )
         return value
 
-    @field_validator("graphiti_cloud_url")
-    @classmethod
-    def _validate_graphiti_cloud_url(cls, value: str) -> str:
-        text = (value or "").strip()
-        if not text:
-            return ""
-        parsed = urlparse(text)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError(
-                "GRAPHITI_CLOUD_URL must be absolute and start with http:// or https://"
-            )
-        return text
-
     @model_validator(mode="after")
     def _validate_runtime_invariants(self) -> "Settings":
         if not self.slack_socket_mode:
             raise ValueError("SLACK_SOCKET_MODE must remain enabled")
-        needs_mem0_runtime = self.timeboxing_memory_backend == "mem0" or (
-            self.tasks_defaults_memory_backend == "mem0"
-        )
-        if self.tasks_defaults_memory_backend == "inherit_timeboxing":
-            needs_mem0_runtime = needs_mem0_runtime or (
-                self.timeboxing_memory_backend == "mem0"
-            )
-        if needs_mem0_runtime:
-            local_config = (self.mem0_local_config_json or "").strip()
-            has_local_runtime = bool(local_config)
-            has_cloud_runtime = bool(self.mem0_is_cloud and self.mem0_api_key.strip())
-            if not (has_local_runtime or has_cloud_runtime):
-                raise ValueError(
-                    "Mem0 backend requires MEM0_LOCAL_CONFIG_JSON or "
-                    "(MEM0_IS_CLOUD=1 + MEM0_API_KEY)."
-                )
-        if self.timeboxing_memory_backend == "graphiti":
-            if self.graphiti_is_cloud:
-                has_cloud_runtime = bool(
-                    self.graphiti_api_key.strip() and self.graphiti_cloud_url.strip()
-                )
-                if not has_cloud_runtime:
-                    raise ValueError(
-                        "Graphiti cloud backend requires GRAPHITI_API_KEY and "
-                        "GRAPHITI_CLOUD_URL when GRAPHITI_IS_CLOUD=1."
-                    )
-            else:
-                local_config_raw = (self.graphiti_local_config_json or "").strip()
-                if not local_config_raw:
-                    raise ValueError(
-                        "Graphiti local backend requires GRAPHITI_LOCAL_CONFIG_JSON "
-                        "to point at a DB-backed runtime config."
-                    )
-                try:
-                    local_config = json.loads(local_config_raw)
-                except Exception as exc:
-                    raise ValueError(
-                        "GRAPHITI_LOCAL_CONFIG_JSON must be valid JSON."
-                    ) from exc
-                if not isinstance(local_config, dict):
-                    raise ValueError(
-                        "GRAPHITI_LOCAL_CONFIG_JSON must decode to a JSON object."
-                    )
-                # Guard against the deprecated JSON file fallback artifact mode.
-                local_path = str(local_config.get("path") or "").strip().lower()
-                if local_path.endswith(".json"):
-                    raise ValueError(
-                        "Graphiti local config path must not target a JSON file "
-                        "(for example graphiti_memory.json). Use a DB-backed runtime."
-                    )
+        if not (self.graphiti_mcp_server_url or "").strip():
+            raise ValueError("Graphiti backend requires GRAPHITI_MCP_SERVER_URL.")
         return self
 
 

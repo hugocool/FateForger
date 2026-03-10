@@ -69,44 +69,60 @@ def test_settings_rejects_unknown_timeboxing_memory_backend(monkeypatch) -> None
         Settings()
 
 
-def test_settings_rejects_graphiti_cloud_without_runtime_config(monkeypatch) -> None:
-    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
-    monkeypatch.setenv("GRAPHITI_IS_CLOUD", "true")
-    monkeypatch.delenv("GRAPHITI_API_KEY", raising=False)
-    monkeypatch.delenv("GRAPHITI_CLOUD_URL", raising=False)
+def test_settings_rejects_constraint_mcp_timeboxing_memory_backend(monkeypatch) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "constraint_mcp")
     with pytest.raises(ValueError):
         Settings()
 
 
-def test_settings_accepts_graphiti_with_local_runtime_config(monkeypatch) -> None:
+def test_settings_rejects_graphiti_without_mcp_url(monkeypatch) -> None:
     monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
-    monkeypatch.setenv("GRAPHITI_IS_CLOUD", "false")
-    monkeypatch.setenv(
-        "GRAPHITI_LOCAL_CONFIG_JSON", "{\"path\":\"./data/graphiti\"}"
-    )
+    monkeypatch.setenv("GRAPHITI_MCP_SERVER_URL", "")
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_settings_accepts_graphiti_with_mcp_runtime_config(monkeypatch) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPHITI_MCP_SERVER_URL", "http://localhost:8005/mcp")
     settings = Settings()
     assert settings.timeboxing_memory_backend == "graphiti"
 
 
-def test_settings_rejects_graphiti_local_json_file_fallback(monkeypatch) -> None:
+def test_settings_rejects_invalid_graphiti_mcp_url(monkeypatch) -> None:
     monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
-    monkeypatch.setenv("GRAPHITI_IS_CLOUD", "false")
-    monkeypatch.setenv(
-        "GRAPHITI_LOCAL_CONFIG_JSON", "{\"path\":\"./data/graphiti_memory.json\"}"
-    )
+    monkeypatch.setenv("GRAPHITI_MCP_SERVER_URL", "graphiti-mcp:8000")
     with pytest.raises(ValueError):
         Settings()
 
 
-def test_settings_accepts_graphiti_cloud_with_required_fields(
+def test_settings_accepts_tasks_defaults_graphiti_backend(monkeypatch) -> None:
+    monkeypatch.setenv("TASKS_DEFAULTS_MEMORY_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPHITI_MCP_SERVER_URL", "http://localhost:8005/mcp")
+    settings = Settings()
+    assert settings.tasks_defaults_memory_backend == "graphiti"
+
+
+def test_settings_rejects_tasks_defaults_graphiti_without_mcp_url(monkeypatch) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
+    monkeypatch.setenv("TASKS_DEFAULTS_MEMORY_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPHITI_MCP_SERVER_URL", "")
+    with pytest.raises(ValueError):
+        Settings()
+
+
+@pytest.mark.parametrize(
+    "legacy_backend",
+    ["mem0", "constraint_mcp", "inherit_timeboxing", "disabled"],
+)
+def test_settings_rejects_non_graphiti_tasks_defaults_backend(
     monkeypatch,
+    legacy_backend: str,
 ) -> None:
     monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
-    monkeypatch.setenv("GRAPHITI_IS_CLOUD", "true")
-    monkeypatch.setenv("GRAPHITI_API_KEY", "gk_test")
-    monkeypatch.setenv("GRAPHITI_CLOUD_URL", "https://graphiti.example.com")
-    settings = Settings()
-    assert settings.timeboxing_memory_backend == "graphiti"
+    monkeypatch.setenv("TASKS_DEFAULTS_MEMORY_BACKEND", legacy_backend)
+    with pytest.raises(ValueError):
+        Settings()
 
 
 def test_settings_rejects_invalid_notion_mcp_url(monkeypatch) -> None:

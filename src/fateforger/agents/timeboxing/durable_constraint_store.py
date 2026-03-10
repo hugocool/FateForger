@@ -1,6 +1,6 @@
 """Backend-agnostic durable constraint store adapter.
 
-This module wraps the concrete durable-memory clients (Mem0, etc.)
+This module wraps concrete durable-memory clients (Graphiti, MCP, etc.)
 behind one small interface so orchestration code can stay backend-neutral.
 """
 
@@ -587,7 +587,6 @@ class ClientBackedDurableConstraintStore:
         )
         groups: dict[str, list[dict[str, Any]]] = {}
         for entry in await self._load_constraint_entries(rows=rows):
-            uid = _to_text(entry.get("uid"))
             constraint = _constraint_record(entry)
             key, _ = _semantic_identity(constraint)
             groups.setdefault(key, []).append(entry)

@@ -26,7 +26,7 @@ Notes:
 - Pending-task snapshots fail closed (empty result) when TickTick MCP is unreachable, so timeboxing can continue without noisy hard failures.
 - Uses Notion MCP for sprint-domain operations via the task tools above.
 - Due-task defaults backend is explicitly controlled by `TASKS_DEFAULTS_MEMORY_BACKEND`:
-  `constraint_mcp` (default), `mem0`, `disabled`, or `inherit_timeboxing`.
+  `graphiti` only.
 - If the configured durable backend cannot initialize, TaskMarshal falls back to
   local disk cache (`TASKS_DEFAULTS_CACHE_PATH`) and logs a structured one-time
   warning per user/reason (`mode=fallback_cache`, `reason_code=...`).

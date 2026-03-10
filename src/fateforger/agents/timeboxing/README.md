@@ -16,6 +16,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | Durable profile/date-span constraint auto-upsert + Stage 1 prefetch wait | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_constraint_memory_client_tool_name.py` | — |
 | Constraint-memory MCP payload decoding hardening | Implemented, Tested | `test_timeboxing_constraint_memory_client_tool_name.py` | — |
 | Stage 1 lookup-first defaults + session override suppression | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_stage_gate_json_context.py` | — |
+| Stage-context conditional default suppression | Implemented, Tested | `test_timeboxing_constraint_selection.py` | — |
 | Stage 3 markdown-first skeleton overview | Implemented, Tested | `test_timeboxing_skeleton_draft_contract.py` | — |
 | Stage 4 advisory quality facts (0-4) | Implemented, Tested | `test_phase4_rewiring.py` | — |
 | Deterministic stage action buttons | Implemented, Tested | `test_timeboxing_stage_actions.py`, `test_slack_timebox_stage_buttons.py` | — |
@@ -27,7 +28,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 
 | File | Responsibility |
 |------|---------------|
-| `agent.py` | `PlanningCoordinator`: owns Session, routes Slack messages, runs background tasks, manages stage transitions. Entry points: `on_start()`, `on_commit_date()`, `on_user_reply()`. |
+| `agent.py` | `PlanningCoordinator`: owns Session, routes Slack messages, runs background tasks, manages stage transitions, and performs stage-context constraint selection/suppression. Entry points: `on_start()`, `on_commit_date()`, `on_user_reply()`. |
 | `flow_graph.py` | `build_timeboxing_graphflow()`: constructs the AutoGen GraphFlow DAG. Single source of truth for stage transitions and edge conditions. |
 | `stage_gating.py` | `TimeboxingStage` enum, `StageGateOutput` model, LLM prompt templates for each stage gate. |
 | `contracts.py` | Typed stage-context contracts (`SkeletonContext`, `ConstraintContext`, etc.): what each stage receives as input. |

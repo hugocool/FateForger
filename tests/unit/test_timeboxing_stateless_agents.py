@@ -43,6 +43,13 @@ import fateforger.agents.timeboxing.agent as agent_mod
 import fateforger.agents.timeboxing.nlu as nlu_mod
 from fateforger.agents.timeboxing.agent import Session, TimeboxingFlowAgent
 from fateforger.agents.timeboxing.nlu import MemoryReviewDecision
+from fateforger.agents.timeboxing.preferences import (
+    Constraint,
+    ConstraintNecessity,
+    ConstraintScope,
+    ConstraintSource,
+    ConstraintStatus,
+)
 from fateforger.agents.timeboxing.stage_gating import StageDecision, StageGateOutput
 
 # ---------------------------------------------------------------------------
@@ -335,6 +342,58 @@ class TestInterpretConstraintsStateless:
             assert (
                 len(inst.calls[0]) == 1
             ), f"Agent {i} should receive exactly 1 message"
+
+    @pytest.mark.asyncio
+    async def test_payload_includes_existing_session_constraints(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result_json = json.dumps(
+            {
+                "constraints": [],
+                "scope": "session",
+                "should_extract": False,
+            }
+        )
+        counter = _InstantiationCounter(response_content=result_json)
+
+        def _factory(*, model_client: Any) -> _FakeAgent:  # noqa: ANN401
+            return counter.make_agent(model_client=model_client)
+
+        monkeypatch.setattr(agent_mod, "build_constraint_interpreter", _factory)
+
+        agent = _make_agent(model_client=object())
+        existing = Constraint(
+            user_id="u1",
+            channel_id="c1",
+            thread_ts="t1",
+            name="Gym at noon",
+            description="Keep gym around 12:00.",
+            necessity=ConstraintNecessity.SHOULD,
+            status=ConstraintStatus.PROPOSED,
+            source=ConstraintSource.USER,
+            scope=ConstraintScope.SESSION,
+            hints={"uid": "gym-noon"},
+        )
+
+        class _Store:
+            async def list_constraints(self, **kwargs: Any) -> list[Constraint]:  # noqa: ANN401
+                assert kwargs["scope"] == ConstraintScope.SESSION
+                return [existing]
+
+        async def _noop_store() -> None:
+            return None
+
+        agent._ensure_constraint_store = _noop_store  # type: ignore[assignment]
+        agent._constraint_store = _Store()
+        session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+
+        await agent._interpret_constraints(
+            session, text="move gym a bit later", is_initial=False
+        )
+
+        payload = json.loads(counter.instances[0].calls[0][0].content)
+        assert payload["existing_constraints"]
+        assert payload["existing_constraints"][0]["name"] == "Gym at noon"
 
 
 # ---------------------------------------------------------------------------

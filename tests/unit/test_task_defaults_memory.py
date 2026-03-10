@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 import fateforger.agents.tasks.defaults_memory as defaults_memory_mod
-from fateforger.agents.tasks.defaults_memory import TaskDefaultsMemoryStore, TaskDueDefaults
+from fateforger.agents.tasks.defaults_memory import (
+    TaskDefaultsMemoryStore,
+    TaskDueDefaults,
+)
 from fateforger.core.config import settings
 
 
@@ -49,23 +52,27 @@ async def test_disk_fallback_persists_across_store_instances(
 def test_backend_selection_defaults_to_task_specific_setting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings, "timeboxing_memory_backend", "mem0", raising=False)
+    monkeypatch.setattr(
+        settings, "timeboxing_memory_backend", "graphiti", raising=False
+    )
+    monkeypatch.setattr(
+        settings, "tasks_defaults_memory_backend", "graphiti", raising=False
+    )
+    store = TaskDefaultsMemoryStore()
+    assert store._backend == "graphiti"
+
+
+def test_backend_selection_coerces_legacy_value_to_graphiti(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        settings, "timeboxing_memory_backend", "graphiti", raising=False
+    )
     monkeypatch.setattr(
         settings, "tasks_defaults_memory_backend", "constraint_mcp", raising=False
     )
     store = TaskDefaultsMemoryStore()
-    assert store._backend == "constraint_mcp"
-
-
-def test_backend_selection_can_inherit_timeboxing_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "timeboxing_memory_backend", "mem0", raising=False)
-    monkeypatch.setattr(
-        settings, "tasks_defaults_memory_backend", "inherit_timeboxing", raising=False
-    )
-    store = TaskDefaultsMemoryStore()
-    assert store._backend == "mem0"
+    assert store._backend == "graphiti"
 
 
 @pytest.mark.asyncio
@@ -73,11 +80,13 @@ async def test_missing_openai_key_falls_back_with_one_warning_per_user(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(settings, "tasks_defaults_memory_backend", "graphiti", raising=False)
+    monkeypatch.setattr(
+        settings, "tasks_defaults_memory_backend", "graphiti", raising=False
+    )
     monkeypatch.setattr(
         "fateforger.agents.tasks.defaults_memory.build_graphiti_client_from_settings",
         lambda user_id: (_ for _ in ()).throw(
-            RuntimeError("OPENAI_API_KEY is required for configured graphiti model")
+            RuntimeError("OPENROUTER_API_KEY is required for configured graphiti model")
         ),
     )
 
@@ -97,7 +106,7 @@ async def test_missing_openai_key_falls_back_with_one_warning_per_user(
         if "backend mode=fallback_cache" in rec.message
     ]
     assert len(warning_lines) == 2
-    assert all("reason_code=missing_openai_api_key" in msg for msg in warning_lines)
+    assert all("reason_code=missing_openrouter_api_key" in msg for msg in warning_lines)
 
 
 @pytest.mark.asyncio
@@ -106,7 +115,7 @@ async def test_durable_backend_logs_mode_once_and_reads_constraint(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(
-        settings, "tasks_defaults_memory_backend", "constraint_mcp", raising=False
+        settings, "tasks_defaults_memory_backend", "graphiti", raising=False
     )
 
     class _Store:
@@ -158,7 +167,7 @@ async def test_runtime_durable_lookup_failure_downgrades_to_fallback_once(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(
-        settings, "tasks_defaults_memory_backend", "constraint_mcp", raising=False
+        settings, "tasks_defaults_memory_backend", "graphiti", raising=False
     )
 
     class _FailingStore:
@@ -195,9 +204,14 @@ async def test_runtime_durable_lookup_failure_downgrades_to_fallback_once(
     assert len(fallback_lines) == 1
 
 
-def test_defaults_store_uses_graphiti_backend_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_defaults_store_uses_graphiti_backend_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
-        defaults_memory_mod.settings, "tasks_defaults_memory_backend", "graphiti", raising=False
+        defaults_memory_mod.settings,
+        "tasks_defaults_memory_backend",
+        "graphiti",
+        raising=False,
     )
     store = TaskDefaultsMemoryStore()
     sentinel_client = object()
@@ -213,7 +227,10 @@ def test_defaults_store_uses_graphiti_backend_selection(monkeypatch: pytest.Monk
         return sentinel_store
 
     monkeypatch.setattr(
-        defaults_memory_mod.settings, "timeboxing_memory_backend", "graphiti", raising=False
+        defaults_memory_mod.settings,
+        "timeboxing_memory_backend",
+        "graphiti",
+        raising=False,
     )
     monkeypatch.setattr(
         defaults_memory_mod.settings, "graphiti_user_id", "user-graphiti", raising=False
@@ -221,9 +238,14 @@ def test_defaults_store_uses_graphiti_backend_selection(monkeypatch: pytest.Monk
     monkeypatch.setattr(
         defaults_memory_mod, "build_graphiti_client_from_settings", _fake_build_graphiti
     )
-    monkeypatch.setattr(defaults_memory_mod, "build_durable_constraint_store", _fake_build_store)
+    monkeypatch.setattr(
+        defaults_memory_mod, "build_durable_constraint_store", _fake_build_store
+    )
 
     resolved = store._ensure_store()
+
+    assert resolved is sentinel_store
+    assert captured["user_id"] == "user-graphiti"
 
     assert resolved is sentinel_store
     assert captured["user_id"] == "user-graphiti"

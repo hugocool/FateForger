@@ -237,13 +237,13 @@ def test_graphiti_backend_required_when_timeboxing_backend_is_graphiti(
     monkeypatch.setattr(
         runtime_module.settings,
         "tasks_defaults_memory_backend",
-        "constraint_mcp",
+        "graphiti",
         raising=False,
     )
     assert runtime_module._graphiti_backend_required() is True  # noqa: SLF001
 
 
-def test_graphiti_backend_required_when_tasks_inherit_graphiti(
+def test_graphiti_backend_required_when_tasks_backend_is_graphiti(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -252,7 +252,7 @@ def test_graphiti_backend_required_when_tasks_inherit_graphiti(
     monkeypatch.setattr(
         runtime_module.settings,
         "tasks_defaults_memory_backend",
-        "inherit_timeboxing",
+        "graphiti",
         raising=False,
     )
     assert runtime_module._graphiti_backend_required() is True  # noqa: SLF001
@@ -275,7 +275,10 @@ async def test_assert_graphiti_runtime_available_passes_with_queryable_store(
 
     class _Store:
         async def get_store_info(self) -> dict[str, object]:
-            return {"backend": "graphiti", "is_cloud": False}
+            return {
+                "backend": "graphiti",
+                "mcp_server_url": "http://localhost:8005/mcp",
+            }
 
         async def query_constraints(self, *, filters, limit):  # noqa: ANN001
             assert isinstance(filters, dict)

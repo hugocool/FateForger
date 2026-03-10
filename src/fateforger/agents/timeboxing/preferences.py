@@ -238,6 +238,50 @@ class ConstraintStore:
                     await session.refresh(row)
             return {"added": len(to_add), "skipped": skipped, "total": len(constraints)}
 
+    async def replace_session_constraints(
+        self,
+        *,
+        user_id: str,
+        channel_id: Optional[str],
+        thread_ts: Optional[str],
+        constraints: List[ConstraintBase],
+    ) -> List[Constraint]:
+        """Replace session-scope constraints for one thread with a full updated set."""
+        if not thread_ts:
+            return []
+        session_constraints = [
+            constraint
+            for constraint in constraints
+            if (constraint.scope or ConstraintScope.SESSION) == ConstraintScope.SESSION
+        ]
+        rows = [
+            _constraint_row(
+                constraint,
+                user_id=user_id,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+            )
+            for constraint in session_constraints
+        ]
+        async with self._sessionmaker() as session:
+            stmt = select(Constraint).where(
+                Constraint.user_id == user_id,
+                Constraint.scope == ConstraintScope.SESSION,
+                Constraint.thread_ts == thread_ts,
+            )
+            if channel_id:
+                stmt = stmt.where(Constraint.channel_id == channel_id)
+            result = await session.execute(stmt)
+            existing = list(result.scalars().all())
+            for row in existing:
+                await session.delete(row)
+            if rows:
+                session.add_all(rows)
+            await session.commit()
+            for row in rows:
+                await session.refresh(row)
+            return rows
+
     async def list_constraints(
         self,
         *,

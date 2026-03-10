@@ -160,3 +160,53 @@ async def test_prune_shared_constraints_apply_keeps_single_canonical_row() -> No
         assert remaining[0].status == ConstraintStatus.LOCKED
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_replace_session_constraints_replaces_thread_snapshot() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        await ensure_constraint_schema(engine)
+        store = ConstraintStore(async_sessionmaker(engine, expire_on_commit=False))
+        await store.add_constraints(
+            user_id="u1",
+            channel_id="c1",
+            thread_ts="t1",
+            constraints=[
+                ConstraintBase(
+                    name="Old session rule",
+                    description="legacy",
+                    necessity=ConstraintNecessity.SHOULD,
+                    status=ConstraintStatus.PROPOSED,
+                    source=ConstraintSource.USER,
+                    scope=ConstraintScope.SESSION,
+                )
+            ],
+        )
+        replaced = await store.replace_session_constraints(
+            user_id="u1",
+            channel_id="c1",
+            thread_ts="t1",
+            constraints=[
+                ConstraintBase(
+                    name="New session rule",
+                    description="fresh",
+                    necessity=ConstraintNecessity.MUST,
+                    status=ConstraintStatus.LOCKED,
+                    source=ConstraintSource.USER,
+                    scope=ConstraintScope.SESSION,
+                )
+            ],
+        )
+        rows = await store.list_constraints(
+            user_id="u1",
+            channel_id="c1",
+            thread_ts="t1",
+            scope=ConstraintScope.SESSION,
+        )
+
+        assert len(replaced) == 1
+        assert len(rows) == 1
+        assert rows[0].name == "New session rule"
+    finally:
+        await engine.dispose()

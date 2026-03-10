@@ -259,16 +259,8 @@ async def _assert_mcp_servers_available() -> None:
 
 
 def _graphiti_backend_required() -> bool:
-    """Return whether any configured runtime path requires Graphiti availability."""
-    timeboxing_backend = str(
-        getattr(settings, "timeboxing_memory_backend", "") or ""
-    ).strip().lower()
-    tasks_backend = str(
-        getattr(settings, "tasks_defaults_memory_backend", "") or ""
-    ).strip().lower()
-    if tasks_backend == "inherit_timeboxing":
-        tasks_backend = timeboxing_backend
-    return timeboxing_backend == "graphiti" or tasks_backend == "graphiti"
+    """Graphiti is the single durable-memory backend and always required."""
+    return True
 
 
 async def _assert_graphiti_runtime_available() -> None:
@@ -298,9 +290,9 @@ async def _assert_graphiti_runtime_available() -> None:
             f"{type(exc).__name__}: {exc}"
         ) from exc
     logger.info(
-        "Graphiti startup dependency check passed (backend=%s, is_cloud=%s)",
+        "Graphiti startup dependency check passed (backend=%s, mcp_server_url=%s)",
         str(info.get("backend") or "unknown"),
-        bool(info.get("is_cloud")),
+        str(info.get("mcp_server_url") or "unknown"),
     )
 
 
