@@ -20,7 +20,6 @@ from fateforger.agents.timeboxing.durable_constraint_store import (
 from fateforger.agents.timeboxing.graphiti_constraint_memory import (
     build_graphiti_client_from_settings,
 )
-from fateforger.agents.timeboxing.mcp_clients import ConstraintMemoryClient
 from fateforger.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -29,11 +28,7 @@ _DEFAULTS_TOPIC = "taskmarshal-defaults"
 _DEFAULTS_NAME_PREFIX = "taskmarshal-defaults:"
 _DEFAULTS_DESC_PREFIX = "task_defaults_json:"
 _TASK_DEFAULTS_BACKENDS = {
-    "constraint_mcp",
-    "mem0",
     "graphiti",
-    "disabled",
-    "inherit_timeboxing",
 }
 
 
@@ -65,7 +60,9 @@ class TaskDefaultsMemoryStore:
         self._unavailable_reason: str | None = None
         self._unavailable_reason_code: str | None = None
         self._fallback_path = Path(
-            os.getenv("TASKS_DEFAULTS_CACHE_PATH", "logs/taskmarshal_defaults_cache.json")
+            os.getenv(
+                "TASKS_DEFAULTS_CACHE_PATH", "logs/taskmarshal_defaults_cache.json"
+            )
         )
         self._cache_lock = threading.Lock()
         self._cache_mtime_ns: int | None = None
@@ -77,21 +74,12 @@ class TaskDefaultsMemoryStore:
             return self._store
         if self._unavailable_reason:
             return None
-        if self._backend == "disabled":
-            self._unavailable_reason = "tasks defaults durable backend disabled by configuration"
-            self._unavailable_reason_code = "backend_disabled"
-            return None
         try:
-            if self._backend == "constraint_mcp":
-                self._client = ConstraintMemoryClient(timeout=self.timeout_s)
-            elif self._backend == "graphiti":
-                user_id = (
-                    str(getattr(settings, "graphiti_user_id", "") or "").strip()
-                    or "timeboxing"
-                )
-                self._client = build_graphiti_client_from_settings(user_id=user_id)
-            else:
-                raise ValueError(f"Unsupported tasks defaults memory backend: {self._backend}")
+            user_id = (
+                str(getattr(settings, "graphiti_user_id", "") or "").strip()
+                or "timeboxing"
+            )
+            self._client = build_graphiti_client_from_settings(user_id=user_id)
             self._store = build_durable_constraint_store(self._client)
             self._unavailable_reason = None
             self._unavailable_reason_code = None
@@ -173,7 +161,8 @@ class TaskDefaultsMemoryStore:
         record = {
             "constraint_record": {
                 "name": f"{_DEFAULTS_NAME_PREFIX}{defaults.user_id}",
-                "description": _DEFAULTS_DESC_PREFIX + json.dumps(payload, sort_keys=True),
+                "description": _DEFAULTS_DESC_PREFIX
+                + json.dumps(payload, sort_keys=True),
                 "necessity": "should",
                 "status": "locked",
                 "source": "user",
@@ -226,30 +215,24 @@ class TaskDefaultsMemoryStore:
 
     @staticmethod
     def _resolve_backend() -> str:
-        configured = str(
-            getattr(settings, "tasks_defaults_memory_backend", "constraint_mcp") or ""
-        ).strip().lower()
+        configured = (
+            str(getattr(settings, "tasks_defaults_memory_backend", "graphiti") or "")
+            .strip()
+            .lower()
+        )
         if not configured:
-            configured = "constraint_mcp"
-        if configured == "inherit_timeboxing":
-            configured = str(
-                getattr(settings, "timeboxing_memory_backend", "constraint_mcp") or ""
-            ).strip().lower() or "constraint_mcp"
+            configured = "graphiti"
         if configured not in _TASK_DEFAULTS_BACKENDS:
-            return "disabled"
-        if configured == "inherit_timeboxing":
-            return "constraint_mcp"
+            return "graphiti"
         return configured
 
     @staticmethod
     def _classify_unavailable_reason(exc: Exception) -> str:
         message = str(exc).lower()
+        if "openrouter_api_key" in message:
+            return "missing_openrouter_api_key"
         if "openai_api_key" in message:
-            return "missing_openai_api_key"
-        if "mem0_api_key" in message:
-            return "missing_mem0_api_key"
-        if "mem0 backend requires" in message:
-            return "missing_mem0_runtime_config"
+            return "missing_openrouter_api_key"
         if "notion_timeboxing_parent_page_id" in message:
             return "missing_notion_parent_page_id"
         if "notion_token" in message:
@@ -376,10 +359,14 @@ class TaskDefaultsMemoryStore:
                 except Exception:
                     disk_payload = {}
             disk_payload[defaults.user_id] = defaults.model_dump(mode="json")
-            tmp_path = self._fallback_path.with_suffix(self._fallback_path.suffix + ".tmp")
+            tmp_path = self._fallback_path.with_suffix(
+                self._fallback_path.suffix + ".tmp"
+            )
             try:
                 tmp_path.write_text(
-                    json.dumps(disk_payload, ensure_ascii=True, sort_keys=True, indent=2),
+                    json.dumps(
+                        disk_payload, ensure_ascii=True, sort_keys=True, indent=2
+                    ),
                     encoding="utf-8",
                 )
                 tmp_path.replace(self._fallback_path)

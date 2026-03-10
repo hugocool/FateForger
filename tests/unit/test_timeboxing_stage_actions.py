@@ -310,6 +310,7 @@ def test_render_constraints_preview_blocks_labels_new_active_and_selected_counts
     assert "Newly extracted: 6." in preview_text
     assert "Active total (applicable now): 6." in preview_text
     assert "Selected for Refine patching: 4." in preview_text
+    assert "Conflict resolution: kept 4, overridden 2." in preview_text
     assert "Showing the top 3 of 6." in preview_text
 
 

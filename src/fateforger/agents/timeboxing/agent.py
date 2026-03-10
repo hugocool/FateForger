@@ -50,12 +50,6 @@ from fateforger.llm import (
     build_autogen_chat_client,
 )
 from fateforger.llm.toon import toon_encode
-from fateforger.sync_core import (
-    ReconciliationSummary,
-    SubmitBaselineGuard,
-    evaluate_submit_baseline_guard,
-    summarize_reconciliation,
-)
 from fateforger.slack_bot.constraint_review import (
     CONSTRAINT_REVIEW_ALL_ACTION_ID,
     CONSTRAINT_ROW_REVIEW_ACTION_ID,
@@ -71,6 +65,12 @@ from fateforger.slack_bot.timeboxing_submit import (
     build_review_submit_actions_block,
     build_text_section_block,
     build_undo_submit_actions_block,
+)
+from fateforger.sync_core import (
+    ReconciliationSummary,
+    SubmitBaselineGuard,
+    evaluate_submit_baseline_guard,
+    summarize_reconciliation,
 )
 from fateforger.tools.ticktick_mcp import TickTickMcpClient, get_ticktick_mcp_url
 
@@ -95,8 +95,8 @@ from .durable_constraint_store import (
     build_durable_constraint_store,
 )
 from .flow_graph import build_timeboxing_graphflow
-from .mcp_clients import ConstraintMemoryClient, McpCalendarClient
 from .graphiti_constraint_memory import build_graphiti_client_from_settings
+from .mcp_clients import McpCalendarClient
 from .messages import (
     StartTimeboxing,
     TimeboxingCancelSubmit,
@@ -147,6 +147,7 @@ from .stage_gating import (
     TIMEBOX_SUMMARY_PROMPT,
     ConstraintsSection,
     FreeformSection,
+    MessageSection,
     NextStepsSection,
     SessionMessage,
     StageDecision,
@@ -202,6 +203,7 @@ class _ConstraintInterpretationPayload(BaseModel):
     planned_date: str | None = None
     timezone: str | None = None
     stage_id: str | None = None
+    existing_constraints: list[dict[str, Any]] = PydanticField(default_factory=list)
 
 
 class _ConstraintOverviewView(BaseModel):
@@ -295,6 +297,8 @@ class Session:
     active_constraints_raw_count: int = 0
     active_constraints_applicable_count: int = 0
     active_constraints_selected_count: int = 0
+    active_constraints_suppressed_count: int = 0
+    active_constraints_suppressed_reasons: list[str] = field(default_factory=list)
     last_extracted_constraints_count: int = 0
     last_refine_selected_constraints_count: int = 0
     durable_constraints_by_stage: Dict[str, List[Constraint]] = field(
@@ -721,7 +725,10 @@ class TimeboxingFlowAgent(RoutedAgent):
         """Run one GraphFlow turn and return the presenter text message."""
         async with session.graph_turn_lock:
             turn_started_at = perf_counter()
-            turn_elapsed_s = lambda: round(perf_counter() - turn_started_at, 3)
+
+            def turn_elapsed_s() -> float:
+                return round(perf_counter() - turn_started_at, 3)
+
             session.graph_turn_started_at_monotonic = turn_started_at
             session.graph_turn_deadline_monotonic = (
                 turn_started_at + TIMEBOXING_TIMEOUTS.graph_turn_s
@@ -964,30 +971,21 @@ class TimeboxingFlowAgent(RoutedAgent):
             return self._constraint_memory_client
         if self._constraint_memory_unavailable_reason:
             return None
-        backend = str(getattr(settings, "timeboxing_memory_backend", "constraint_mcp"))
+        backend = str(getattr(settings, "timeboxing_memory_backend", "graphiti"))
         backend = backend.strip().lower()
         try:
-            timeout = float(
-                getattr(settings, "agent_mcp_discovery_timeout_seconds", 10)
+            if backend != "graphiti":
+                raise ValueError(
+                    "Unsupported timeboxing memory backend: "
+                    f"{settings.timeboxing_memory_backend}"
+                )
+            user_id = (
+                str(getattr(settings, "graphiti_user_id", "") or "").strip()
+                or "timeboxing"
             )
-            match backend:
-                case "constraint_mcp":
-                    self._constraint_memory_client = ConstraintMemoryClient(
-                        timeout=timeout
-                    )
-                case "graphiti":
-                    user_id = (
-                        str(getattr(settings, "graphiti_user_id", "") or "").strip()
-                        or "timeboxing"
-                    )
-                    self._constraint_memory_client = build_graphiti_client_from_settings(
-                        user_id=user_id
-                    )
-                case _:
-                    raise ValueError(
-                        "Unsupported timeboxing memory backend: "
-                        f"{settings.timeboxing_memory_backend}"
-                    )
+            self._constraint_memory_client = build_graphiti_client_from_settings(
+                user_id=user_id
+            )
             self._constraint_memory_unavailable_reason = None
         except Exception as exc:
             self._constraint_memory_unavailable_reason = f"{type(exc).__name__}: {exc}"
@@ -1138,6 +1136,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             planned_date=session.planned_date,
             timezone=session.tz_name,
             stage_id=session.stage.value if session.stage else None,
+            existing_constraints=await self._list_session_constraints_for_interpretation(
+                session
+            ),
         )
         response = await with_timeout(
             "timeboxing:constraint-interpret",
@@ -1148,6 +1149,56 @@ class TimeboxingFlowAgent(RoutedAgent):
             timeout_s=TIMEBOXING_TIMEOUTS.constraint_interpret_s,
         )
         return parse_chat_content(ConstraintInterpretation, response)
+
+    @staticmethod
+    def _serialize_constraint_for_interpretation(
+        constraint: Constraint,
+    ) -> dict[str, Any]:
+        """Serialize one local constraint row for extraction-context prompts."""
+        payload = constraint.model_dump(
+            mode="json",
+            exclude={
+                "id",
+                "user_id",
+                "channel_id",
+                "thread_ts",
+                "created_at",
+                "updated_at",
+            },
+        )
+        hints = payload.get("hints")
+        if isinstance(hints, dict):
+            uid = str(hints.get("uid") or "").strip()
+            if uid:
+                payload["uid"] = uid
+        return payload
+
+    async def _list_session_constraints_for_interpretation(
+        self, session: Session
+    ) -> list[dict[str, Any]]:
+        """Return current in-thread session constraints for extraction reconciliation."""
+        ensure_store = getattr(self, "_ensure_constraint_store", None)
+        if callable(ensure_store) and hasattr(self, "_constraint_store"):
+            await ensure_store()
+        store = getattr(self, "_constraint_store", None)
+        if store:
+            rows = await store.list_constraints(
+                user_id=session.user_id,
+                channel_id=session.channel_id,
+                thread_ts=session.thread_ts,
+                scope=ConstraintScope.SESSION,
+            )
+            return [
+                self._serialize_constraint_for_interpretation(row)
+                for row in rows
+                if row.status != ConstraintStatus.DECLINED
+            ]
+        return [
+            self._serialize_constraint_for_interpretation(row)
+            for row in (session.active_constraints or [])
+            if row.scope == ConstraintScope.SESSION
+            and row.status != ConstraintStatus.DECLINED
+        ]
 
     # TODO: this should be part of a tool, not bolted onto an agent
     def _constraint_task_key(self, session: Session, text: str) -> str:
@@ -1453,7 +1504,16 @@ class TimeboxingFlowAgent(RoutedAgent):
                                 except Exception:
                                     pass
                     if self._constraint_store:
-                        if hasattr(self._constraint_store, "upsert_constraints"):
+                        if scope == ConstraintScope.SESSION and hasattr(
+                            self._constraint_store, "replace_session_constraints"
+                        ):
+                            await self._constraint_store.replace_session_constraints(
+                                user_id=session.user_id,
+                                channel_id=session.channel_id,
+                                thread_ts=session.thread_ts,
+                                constraints=constraints,
+                            )
+                        elif hasattr(self._constraint_store, "upsert_constraints"):
                             await self._constraint_store.upsert_constraints(
                                 user_id=session.user_id,
                                 channel_id=session.channel_id,
@@ -2135,10 +2195,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         if not session.pending_constraint_extractions:
             return
         task_map = getattr(self, "_constraint_extraction_tasks", {})
-        tasks = [
-            task_map.get(key)
-            for key in session.pending_constraint_extractions
-        ]
+        tasks = [task_map.get(key) for key in session.pending_constraint_extractions]
         tasks = [task for task in tasks if task]
         if not tasks:
             return
@@ -2637,7 +2694,9 @@ class TimeboxingFlowAgent(RoutedAgent):
                 value.value if isinstance(value, ConstraintDayOfWeek) else str(value)
                 for value in days
             }
-            valid_day = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")[planned_day.weekday()]
+            valid_day = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")[
+                planned_day.weekday()
+            ]
             if valid_day not in day_codes:
                 return False
         return True
@@ -2669,7 +2728,10 @@ class TimeboxingFlowAgent(RoutedAgent):
         planned_day = self._parse_session_planned_day(session)
         fallback: list[Constraint] = []
         for constraint in session.active_constraints or []:
-            if constraint.scope not in (ConstraintScope.PROFILE, ConstraintScope.DATESPAN):
+            if constraint.scope not in (
+                ConstraintScope.PROFILE,
+                ConstraintScope.DATESPAN,
+            ):
                 continue
             if constraint.status == ConstraintStatus.DECLINED:
                 continue
@@ -3044,8 +3106,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         anchors = parse_model_list(Immovable, facts.get("immovables"))
         if anchors:
             anchor_preview = ", ".join(
-                f"{anchor.start}-{anchor.end} {anchor.title}"
-                for anchor in anchors[:3]
+                f"{anchor.start}-{anchor.end} {anchor.title}" for anchor in anchors[:3]
             )
             if len(anchors) > 3:
                 anchor_preview = f"{anchor_preview}, +{len(anchors) - 3} more"
@@ -3182,11 +3243,11 @@ class TimeboxingFlowAgent(RoutedAgent):
             "collect_context_calendar_anchors",
             planned_date=planned_date,
             immovable_count=len(normalized),
-            prefetched_count=len(
-                session.prefetched_immovables_by_date.get(planned_date) or []
-            )
-            if planned_date
-            else 0,
+            prefetched_count=(
+                len(session.prefetched_immovables_by_date.get(planned_date) or [])
+                if planned_date
+                else 0
+            ),
             pending_prefetch=session.pending_calendar_prefetch,
         )
         durable = self._collect_stage_durable_constraints(
@@ -3221,7 +3282,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             prefetched=prefetched,
         )
         task_candidates = parse_model_list(TaskCandidate, input_facts.get("tasks"))
-        filtered_out = max(0, len(session.prefetched_pending_tasks or []) - len(prefetched))
+        filtered_out = max(
+            0, len(session.prefetched_pending_tasks or []) - len(prefetched)
+        )
         self._session_debug(
             session,
             "capture_inputs_task_context",
@@ -3264,7 +3327,9 @@ class TimeboxingFlowAgent(RoutedAgent):
 
         reasons: list[str] = []
         suppress_signals = {"gtd_admin_exclusion", "daily_one_thing"}
-        matched = sorted(signal for signal in scope_signals if signal in suppress_signals)
+        matched = sorted(
+            signal for signal in scope_signals if signal in suppress_signals
+        )
         if matched:
             reasons.append("scope_first_suppress_prefetch")
             reasons.extend(matched)
@@ -3936,7 +4001,8 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         can_go_back = session.stage != TimeboxingStage.COLLECT_CONSTRAINTS
         can_proceed = (
-            session.stage != TimeboxingStage.REVIEW_COMMIT and session.stage_ready
+            session.stage != TimeboxingStage.REVIEW_COMMIT
+            and session.stage_ready
             and not has_refine_undo
         )
         meta_value = self._build_stage_action_value(session)
@@ -4434,7 +4500,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             raise ValueError("Refine patch requested without TBPlan state.")
         previous_plan = session.tb_plan.model_copy(deep=True)
         previous_timebox = (
-            session.timebox.model_copy(deep=True) if session.timebox is not None else None
+            session.timebox.model_copy(deep=True)
+            if session.timebox is not None
+            else None
         )
         constraints = await self._collect_constraints(session)
         patch_constraints = self._select_constraints_for_refine_patcher(
@@ -4477,9 +4545,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             note=note,
         )
 
-    async def _undo_last_refine_update(
-        self, *, session: Session
-    ) -> TextMessage | None:
+    async def _undo_last_refine_update(self, *, session: Session) -> TextMessage | None:
         """Restore the previous local draft after a Stage 4 patch."""
         if (
             session.stage != TimeboxingStage.REFINE
@@ -5756,8 +5822,10 @@ class TimeboxingFlowAgent(RoutedAgent):
                     ]
                     folded = [line for line in folded if line]
                     if folded:
-                        folded = TimeboxingFlowAgent._compact_constraint_lines_for_slack(
-                            folded
+                        folded = (
+                            TimeboxingFlowAgent._compact_constraint_lines_for_slack(
+                                folded
+                            )
                         )
                         parts.extend(
                             [
@@ -5857,9 +5925,10 @@ class TimeboxingFlowAgent(RoutedAgent):
 
         current_idx: int | None = None
         for idx, section in enumerate(sections):
-            if isinstance(section, FreeformSection) and (
-                section.heading or ""
-            ).strip().lower() == "current step":
+            if (
+                isinstance(section, FreeformSection)
+                and (section.heading or "").strip().lower() == "current step"
+            ):
                 current_idx = idx
                 break
         if current_idx is None:
@@ -5897,8 +5966,8 @@ class TimeboxingFlowAgent(RoutedAgent):
 
         if next_idx is None:
             fallback_question = (
-                (gate.question or "").strip() or "Share what to adjust next."
-            )
+                gate.question or ""
+            ).strip() or "Share what to adjust next."
             sections.append(
                 NextStepsSection(
                     heading="What I need from you",
@@ -6511,9 +6580,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         session.active_constraints = selected_active_constraints
         session.active_constraints_raw_count = len(raw_active_constraints)
-        session.active_constraints_applicable_count = len(
-            applicable_active_constraints
-        )
+        session.active_constraints_applicable_count = len(applicable_active_constraints)
         session.active_constraints_selected_count = len(selected_active_constraints)
         self._session_debug(
             session,
@@ -6530,11 +6597,19 @@ class TimeboxingFlowAgent(RoutedAgent):
             local_shared_canonical_rows=int(
                 shared_stats.get("canonical_shared_rows") or 0
             ),
-            local_shared_duplicate_groups=int(shared_stats.get("duplicate_groups") or 0),
+            local_shared_duplicate_groups=int(
+                shared_stats.get("duplicate_groups") or 0
+            ),
             durable_count=len(durable_constraints),
             active_raw_count=len(raw_active_constraints),
             active_applicable_count=len(applicable_active_constraints),
             active_selected_count=len(selected_active_constraints),
+            active_suppressed_count=int(
+                session.active_constraints_suppressed_count or 0
+            ),
+            active_suppressed_reasons=list(
+                session.active_constraints_suppressed_reasons or []
+            ),
             active_filtered_out_count=max(
                 0, len(raw_active_constraints) - len(applicable_active_constraints)
             ),
@@ -6556,8 +6631,17 @@ class TimeboxingFlowAgent(RoutedAgent):
         """Reconcile duplicate families and keep stage-relevant constraints only."""
         stage = session.stage
         session_aspect_ids = self._collect_session_aspect_ids(constraints)
+        (
+            eligible_constraints,
+            suppressed_reasons,
+        ) = self._filter_constraints_for_conditional_applicability(
+            constraints=constraints,
+            session_aspect_ids=session_aspect_ids,
+        )
+        session.active_constraints_suppressed_count = len(suppressed_reasons)
+        session.active_constraints_suppressed_reasons = list(suppressed_reasons)
         reconciled_groups: dict[str, list[Constraint]] = {}
-        for constraint in constraints or []:
+        for constraint in eligible_constraints:
             family_key = self._constraint_relevance_family_key(constraint)
             reconciled_groups.setdefault(family_key, []).append(constraint)
 
@@ -6596,6 +6680,122 @@ class TimeboxingFlowAgent(RoutedAgent):
             if aspect_id:
                 aspect_ids.add(aspect_id)
         return aspect_ids
+
+    @classmethod
+    def _collect_active_aspect_ids(cls, constraints: list[Constraint]) -> set[str]:
+        """Collect all aspect IDs currently present in the candidate set."""
+        aspect_ids: set[str] = set()
+        for constraint in constraints or []:
+            aspect_id = cls._constraint_aspect_id(constraint)
+            if aspect_id:
+                aspect_ids.add(aspect_id)
+        return aspect_ids
+
+    @staticmethod
+    def _constraint_excludes_aspect_ids(constraint: Constraint) -> set[str]:
+        """Return structured aspect exclusions for one constraint."""
+        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+        classification = ConstraintAspectClassification.from_hints(hints)
+        if classification is None:
+            return set()
+        return {
+            str(item).strip().lower()
+            for item in (classification.excludes_aspect_ids or [])
+            if str(item).strip()
+        }
+
+    @staticmethod
+    def _constraint_conditional_absent_ids(constraint: Constraint) -> set[str]:
+        """Return structured aspect IDs that must be absent for applicability."""
+        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+        classification = ConstraintAspectClassification.from_hints(hints)
+        if classification is None:
+            return set()
+        return {
+            str(item).strip().lower()
+            for item in (classification.conditional_on_absent or [])
+            if str(item).strip()
+        }
+
+    @staticmethod
+    def _constraint_conditional_present_ids(constraint: Constraint) -> set[str]:
+        """Return structured aspect IDs that must be present for applicability."""
+        hints = constraint.hints if isinstance(constraint.hints, dict) else {}
+        classification = ConstraintAspectClassification.from_hints(hints)
+        if classification is None:
+            return set()
+        return {
+            str(item).strip().lower()
+            for item in (classification.conditional_on_present or [])
+            if str(item).strip()
+        }
+
+    @classmethod
+    def _filter_constraints_for_conditional_applicability(
+        cls,
+        *,
+        constraints: list[Constraint],
+        session_aspect_ids: set[str],
+    ) -> tuple[list[Constraint], list[str]]:
+        """Suppress defaults/profile constraints when stronger same-day facts conflict."""
+        active_aspect_ids = cls._collect_active_aspect_ids(constraints)
+        strongest_by_aspect: dict[str, Constraint] = {}
+        for constraint in constraints or []:
+            aspect_id = cls._constraint_aspect_id(constraint)
+            if not aspect_id:
+                continue
+            current = strongest_by_aspect.get(aspect_id)
+            if current is None or cls._constraint_rank_for_stage_reconciliation(
+                constraint
+            ) < cls._constraint_rank_for_stage_reconciliation(current):
+                strongest_by_aspect[aspect_id] = constraint
+
+        eligible: list[Constraint] = []
+        suppressed_reasons: list[str] = []
+        for constraint in constraints or []:
+            aspect_id = cls._constraint_aspect_id(constraint)
+            if aspect_id:
+                strongest = strongest_by_aspect.get(aspect_id)
+                if strongest is not None and strongest is not constraint:
+                    if (
+                        constraint.scope != ConstraintScope.SESSION
+                        or aspect_id in session_aspect_ids
+                    ):
+                        suppressed_reasons.append("stronger_same_aspect")
+                        continue
+
+            required_present = cls._constraint_conditional_present_ids(constraint)
+            if required_present and not (required_present & active_aspect_ids):
+                suppressed_reasons.append("conditional_on_present")
+                continue
+
+            required_absent = cls._constraint_conditional_absent_ids(constraint)
+            if required_absent & (active_aspect_ids - {aspect_id}):
+                suppressed_reasons.append("conditional_on_absent")
+                continue
+
+            blocked = False
+            if aspect_id:
+                candidate_rank = cls._constraint_rank_for_stage_reconciliation(
+                    constraint
+                )
+                for other in constraints or []:
+                    if other is constraint:
+                        continue
+                    if aspect_id not in cls._constraint_excludes_aspect_ids(other):
+                        continue
+                    if (
+                        cls._constraint_rank_for_stage_reconciliation(other)
+                        <= candidate_rank
+                    ):
+                        blocked = True
+                        break
+            if blocked:
+                suppressed_reasons.append("excluded_by_aspect")
+                continue
+
+            eligible.append(constraint)
+        return eligible, suppressed_reasons
 
     @staticmethod
     def _constraint_rank_for_stage_reconciliation(
@@ -6696,9 +6896,6 @@ class TimeboxingFlowAgent(RoutedAgent):
         self, *, session: Session, relevant_stage_keys: tuple[str, ...]
     ) -> bool:
         """Decide whether shared local constraints should be queried for this turn."""
-        backend = str(getattr(settings, "timeboxing_memory_backend", "") or "").strip().lower()
-        if backend != "graphiti":
-            return True
         if session.pending_durable_constraints:
             return False
         for stage_key in relevant_stage_keys:
@@ -6733,7 +6930,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             }
             classification = ConstraintAspectClassification.from_hints(hints)
             has_temporal_window = bool(
-                constraint.start_date or constraint.end_date or (constraint.days_of_week or [])
+                constraint.start_date
+                or constraint.end_date
+                or (constraint.days_of_week or [])
             )
             is_structured = bool(classification is not None)
             is_startup_prefetch = bool(
@@ -6741,10 +6940,17 @@ class TimeboxingFlowAgent(RoutedAgent):
                 or (classification.is_startup_prefetch if classification else False)
             )
             is_frame_anchor = bool(
-                classification and classification.frame_slot in {"sleep_target", "work_window"}
+                classification
+                and classification.frame_slot in {"sleep_target", "work_window"}
             )
             is_locked = constraint.status == ConstraintStatus.LOCKED
-            if is_startup_prefetch or is_frame_anchor or is_locked or is_structured or has_temporal_window:
+            if (
+                is_startup_prefetch
+                or is_frame_anchor
+                or is_locked
+                or is_structured
+                or has_temporal_window
+            ):
                 out.append(constraint)
         return out
 
@@ -6754,35 +6960,53 @@ class TimeboxingFlowAgent(RoutedAgent):
         session: Session,
         constraints: list[Constraint],
     ) -> list[Constraint]:
-        """Keep Stage 4 patching bounded by selecting the highest-priority constraints."""
+        """Keep all session constraints and cap only durable constraints for Stage 4."""
         ranked = sorted(constraints or [], key=_constraint_priority)
-        limit = max(1, TIMEBOXING_LIMITS.refine_patcher_constraint_limit)
-        if len(ranked) <= limit:
-            session.last_refine_selected_constraints_count = len(ranked)
+        limit = max(0, TIMEBOXING_LIMITS.refine_patcher_constraint_limit)
+        session_constraints = [
+            constraint
+            for constraint in ranked
+            if constraint.scope == ConstraintScope.SESSION
+        ]
+        durable_constraints = [
+            constraint
+            for constraint in ranked
+            if constraint.scope != ConstraintScope.SESSION
+        ]
+        if len(durable_constraints) <= limit:
+            selected = [*session_constraints, *durable_constraints]
+            session.last_refine_selected_constraints_count = len(selected)
             self._session_debug(
                 session,
                 "refine_constraints_selected",
                 total=len(ranked),
-                selected=len(ranked),
-                dropped=0,
-                limit=limit,
+                selected=len(selected),
+                session_selected=len(session_constraints),
+                durable_total=len(durable_constraints),
+                durable_selected=len(durable_constraints),
+                durable_dropped=0,
+                durable_limit=limit,
             )
-            return ranked
+            return selected
 
         must_constraints = [
             constraint
-            for constraint in ranked
+            for constraint in durable_constraints
             if constraint.necessity == ConstraintNecessity.MUST
         ]
-        selected: list[Constraint] = []
-        seen: set[str] = set()
-        for constraint in [*must_constraints, *ranked]:
+        selected: list[Constraint] = list(session_constraints)
+        seen: set[str] = {
+            _constraint_identity_key(constraint) for constraint in selected
+        }
+        durable_selected = 0
+        for constraint in [*must_constraints, *durable_constraints]:
             key = _constraint_identity_key(constraint)
             if key in seen:
                 continue
             seen.add(key)
             selected.append(constraint)
-            if len(selected) >= limit:
+            durable_selected += 1
+            if durable_selected >= limit:
                 break
 
         session.last_refine_selected_constraints_count = len(selected)
@@ -6791,8 +7015,11 @@ class TimeboxingFlowAgent(RoutedAgent):
             "refine_constraints_selected",
             total=len(ranked),
             selected=len(selected),
-            dropped=max(0, len(ranked) - len(selected)),
-            limit=limit,
+            session_selected=len(session_constraints),
+            durable_total=len(durable_constraints),
+            durable_selected=durable_selected,
+            durable_dropped=max(0, len(durable_constraints) - durable_selected),
+            durable_limit=limit,
             selected_names=[
                 (constraint.name or "").strip()
                 for constraint in selected[:10]
@@ -6833,8 +7060,6 @@ class TimeboxingFlowAgent(RoutedAgent):
                 }
             )
             to_add.append(ConstraintBase.model_validate(payload))
-        upsert_added = 0
-        upsert_skipped = 0
         if to_add:
             persisted_rows = await self._constraint_store.add_constraints(
                 user_id=session.user_id,
@@ -7579,7 +7804,9 @@ class TimeboxingFlowAgent(RoutedAgent):
     @staticmethod
     def _submit_attempt_kind(session: Session) -> Literal["first_submit", "resubmit"]:
         """Return submit attempt kind for telemetry and UX clarity."""
-        return "resubmit" if session.last_sync_transaction is not None else "first_submit"
+        return (
+            "resubmit" if session.last_sync_transaction is not None else "first_submit"
+        )
 
     def _build_submit_incomplete_reply(self) -> TextMessage:
         """Return deterministic copy when submit is requested before prerequisites exist."""
@@ -8355,11 +8582,7 @@ def _constraint_canonical_rank(constraint: Constraint) -> tuple[int, int, float,
     if necessity_value not in necessity_rank and necessity_value is not None:
         necessity_value = str(necessity_value).lower()
     updated = getattr(constraint, "updated_at", None)
-    updated_epoch = (
-        updated.timestamp()
-        if isinstance(updated, datetime)
-        else 0.0
-    )
+    updated_epoch = updated.timestamp() if isinstance(updated, datetime) else 0.0
     return (
         status_rank.get(constraint.status, 3),
         necessity_rank.get(necessity_value, 3),
@@ -8387,6 +8610,7 @@ def _constraint_applies_to_stage(
     stage: TimeboxingStage,
 ) -> bool:
     """Return whether a constraint is applicable for the current stage."""
+
     def _as_list(value: object) -> list[object]:
         if isinstance(value, list):
             return value
@@ -8401,7 +8625,9 @@ def _constraint_applies_to_stage(
     )
     if not raw_stages:
         return True
-    normalized = {str(value).strip().lower() for value in raw_stages if str(value).strip()}
+    normalized = {
+        str(value).strip().lower() for value in raw_stages if str(value).strip()
+    }
     return stage.value.strip().lower() in normalized
 
 
@@ -8478,12 +8704,21 @@ def _constraint_count_summary_line(
     if raw_total > applicable_total:
         parts.append(f"Raw active rows before filtering: {raw_total}.")
     if session.stage == TimeboxingStage.REFINE:
-        parts.append(
-            "Selected for Refine patching: "
-            f"{max(0, int(session.last_refine_selected_constraints_count or 0))}."
+        refine_selected_total = max(
+            0, int(session.last_refine_selected_constraints_count or 0)
         )
+        parts.append("Selected for Refine patching: " f"{refine_selected_total}.")
+        kept_total = refine_selected_total
     elif 0 < selected_total < applicable_total:
         parts.append(f"Selected for this stage: {selected_total}.")
+        kept_total = selected_total
+    else:
+        kept_total = applicable_total
+    overridden_total = max(0, applicable_total - kept_total)
+    if overridden_total:
+        parts.append(
+            f"Conflict resolution: kept {kept_total}, overridden {overridden_total}."
+        )
     return " ".join(parts)
 
 

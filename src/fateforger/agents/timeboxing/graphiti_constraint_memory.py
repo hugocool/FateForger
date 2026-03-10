@@ -1,83 +1,192 @@
 """Graphiti-backed durable constraint memory adapter.
 
-Current implementation provides a local JSON-backed temporal memory substrate
-with the same contract as the legacy mem0 adapter so orchestration can switch
-backend paths without changing the durable store interface.
+This adapter uses Graphiti MCP as the persistence/query backend and keeps the
+existing durable-memory contract used by the timeboxing agent.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
-from pathlib import Path
-from threading import Lock
 from typing import Any
 from uuid import uuid4
 
 from autogen_core.memory import MemoryContent, MemoryQueryResult
+from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
 
 from fateforger.core.config import settings
 
 from .mem0_constraint_memory import Mem0ConstraintMemoryClient
 
 
-class _GraphitiLocalMemoryBackend:
-    """Minimal local backend that mimics memory add/query behavior."""
+class _GraphitiMcpMemoryBackend:
+    """Minimal memory backend adapter over Graphiti MCP tools."""
 
-    def __init__(self, *, path: str, user_id: str, limit: int) -> None:
-        self._path = Path(path)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._user_id = str(user_id or "").strip() or "timeboxing"
-        self._limit = max(1, int(limit))
-        self._lock = Lock()
-        self._rows: list[dict[str, Any]] = []
-        self._load()
+    _RECOVERABLE_ERROR_MARKERS = (
+        "timed out while waiting for response",
+        "all connection attempts failed",
+        "connection refused",
+        "server disconnected",
+    )
 
-    @property
-    def path(self) -> str:
-        return str(self._path)
+    def __init__(
+        self,
+        *,
+        server_url: str,
+        group_id: str,
+        user_id: str,
+        timeout_s: float,
+        ingest_wait_s: float = 12.0,
+    ) -> None:
+        self._server_url = server_url
+        self._group_id = group_id
+        self._user_id = user_id
+        self._timeout_s = timeout_s
+        self._ingest_wait_s = max(0.0, float(ingest_wait_s))
+        params = StreamableHttpServerParams(url=self._server_url, timeout=self._timeout_s)
+        self._workbench = McpWorkbench(params)
+        self._lock = asyncio.Lock()
 
-    def _load(self) -> None:
-        if not self._path.exists():
-            self._rows = []
-            return
+    @staticmethod
+    def _decode_tool_json(tool_name: str, result: Any) -> Any:
+        if isinstance(result, (dict, list)):
+            return result
+        to_text = getattr(result, "to_text", None)
+        text = to_text() if callable(to_text) else str(result)
+        text = (text or "").strip()
+        if not text:
+            return {}
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
         try:
-            payload = json.loads(self._path.read_text(encoding="utf-8"))
-        except Exception:
-            payload = []
-        self._rows = payload if isinstance(payload, list) else []
+            return json.loads(text)
+        except Exception as exc:
+            raise RuntimeError(
+                f"graphiti tool {tool_name} returned non-JSON text: {text[:400]}"
+            ) from exc
 
-    def _persist(self) -> None:
-        self._path.write_text(
-            json.dumps(self._rows, ensure_ascii=True, sort_keys=True),
-            encoding="utf-8",
+    @classmethod
+    def _is_recoverable_transport_error(cls, exc: Exception) -> bool:
+        text = str(exc or "").strip().lower()
+        if not text:
+            return False
+        return any(marker in text for marker in cls._RECOVERABLE_ERROR_MARKERS)
+
+    async def _call_tool_json(self, tool_name: str, *, arguments: dict[str, Any]) -> Any:
+        attempts = 2
+        for attempt in range(1, attempts + 1):
+            try:
+                async with self._lock:
+                    result = await self._workbench.call_tool(tool_name, arguments=arguments)
+                return self._decode_tool_json(tool_name, result)
+            except Exception as exc:
+                if attempt >= attempts or not self._is_recoverable_transport_error(exc):
+                    raise
+                await asyncio.sleep(0.25 * attempt)
+        raise RuntimeError(f"graphiti tool {tool_name} failed unexpectedly")
+
+    async def _list_episodes(self, *, max_episodes: int) -> list[dict[str, Any]]:
+        payload = await self._call_tool_json(
+            "get_episodes",
+            arguments={
+                "group_ids": [self._group_id],
+                "max_episodes": max(1, int(max_episodes)),
+            },
         )
+        episodes = payload.get("episodes") if isinstance(payload, dict) else None
+        if not isinstance(episodes, list):
+            return []
+        return [item for item in episodes if isinstance(item, dict)]
+
+    async def _list_memory_rows(self, *, max_records: int) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for episode in await self._list_episodes(max_episodes=max_records):
+            content_raw = str(episode.get("content") or "").strip()
+            if not content_raw:
+                continue
+            try:
+                payload = json.loads(content_raw)
+            except Exception:
+                payload = {
+                    "content": content_raw,
+                    "mime_type": "text/plain",
+                    "metadata": {},
+                }
+            if not isinstance(payload, dict):
+                continue
+            metadata = dict(payload.get("metadata") or {})
+            metadata.setdefault("memory_id", str(episode.get("uuid") or "").strip())
+            metadata.setdefault(
+                "updated_at",
+                str(episode.get("created_at") or datetime.now(timezone.utc).isoformat()),
+            )
+            metadata.setdefault("user_id", self._user_id)
+            rows.append(
+                {
+                    "content": str(payload.get("content") or ""),
+                    "mime_type": str(payload.get("mime_type") or "text/plain"),
+                    "metadata": metadata,
+                    "created_at": str(episode.get("created_at") or ""),
+                    "name": str(episode.get("name") or ""),
+                }
+            )
+        return rows
+
+    async def status(self) -> dict[str, Any]:
+        payload = await self._call_tool_json("get_status", arguments={})
+        return payload if isinstance(payload, dict) else {"status": "unknown"}
 
     async def add(self, content: MemoryContent) -> None:
-        """Persist one memory row."""
         metadata = dict(content.metadata or {})
         if not metadata.get("memory_id"):
             metadata["memory_id"] = f"graphiti:{uuid4().hex}"
-        now_iso = datetime.now(timezone.utc).isoformat()
-        metadata.setdefault("updated_at", now_iso)
+        metadata.setdefault("updated_at", datetime.now(timezone.utc).isoformat())
         metadata.setdefault("user_id", self._user_id)
-
         row = {
             "content": str(content.content or ""),
             "mime_type": str(content.mime_type or "text/plain"),
             "metadata": metadata,
-            "created_at": now_iso,
         }
-        with self._lock:
-            self._rows.append(row)
-            self._persist()
+        name = (
+            str(metadata.get("uid") or "").strip()
+            or str(metadata.get("name") or "").strip()
+            or str(metadata.get("kind") or "").strip()
+            or "timeboxing-memory"
+        )
+        await self._call_tool_json(
+            "add_memory",
+            arguments={
+                "name": name,
+                "episode_body": json.dumps(row, ensure_ascii=True, sort_keys=True),
+                "group_id": self._group_id,
+                "source": "json",
+                "source_description": "fateforger_graphiti_memory",
+            },
+        )
+        if self._ingest_wait_s <= 0:
+            return
+        wanted_memory_id = str(metadata.get("memory_id") or "").strip()
+        deadline = asyncio.get_event_loop().time() + self._ingest_wait_s
+        while asyncio.get_event_loop().time() < deadline:
+            rows = await self._list_memory_rows(max_records=200)
+            if any(
+                str((row.get("metadata") or {}).get("memory_id") or "").strip()
+                == wanted_memory_id
+                for row in rows
+            ):
+                return
+            await asyncio.sleep(0.4)
 
     async def query(self, query: str, *, limit: int = 50) -> MemoryQueryResult:
-        """Query memories with deterministic lexical ranking."""
         query_terms = [term for term in str(query or "").lower().split() if term]
-        row_limit = max(1, int(limit or self._limit))
-        with self._lock:
-            rows = list(self._rows)
+        row_limit = max(1, int(limit or 50))
+        rows = await self._list_memory_rows(max_records=max(200, row_limit * 10))
         scored: list[tuple[int, str, dict[str, Any]]] = []
         for row in rows:
             metadata = dict(row.get("metadata") or {})
@@ -106,24 +215,27 @@ class _GraphitiLocalMemoryBackend:
             )
         return MemoryQueryResult(results=results)
 
+    async def close(self) -> None:
+        await self._workbench.stop()
+
 
 class GraphitiConstraintMemoryClient(Mem0ConstraintMemoryClient):
-    """Graphiti backend using the durable constraint contract."""
+    """Graphiti backend using Graphiti MCP with durable constraint contract."""
 
     def __init__(
         self,
         *,
         user_id: str,
         limit: int = 200,
-        local_config: dict[str, Any] | None = None,
-        memory_backend: Any | None = None,
+        server_url: str,
+        group_id: str,
+        timeout_s: float,
     ) -> None:
-        local = dict(local_config or {})
-        path = str(local.get("path") or "./data/graphiti_memory.json")
-        backend = memory_backend or _GraphitiLocalMemoryBackend(
-            path=path,
+        backend = _GraphitiMcpMemoryBackend(
+            server_url=server_url,
+            group_id=group_id,
             user_id=user_id,
-            limit=limit,
+            timeout_s=timeout_s,
         )
         super().__init__(
             user_id=user_id,
@@ -132,15 +244,28 @@ class GraphitiConstraintMemoryClient(Mem0ConstraintMemoryClient):
             local_config=None,
             memory_backend=backend,
         )
-        self._graphiti_path = path
+        self._graphiti_server_url = server_url
+        self._graphiti_group_id = group_id
+        self._graphiti_timeout_s = timeout_s
 
     async def get_store_info(self) -> dict[str, Any]:
-        return {
+        info = {
             "backend": "graphiti",
             "user_id": self._user_id,
             "limit": self._limit,
-            "path": self._graphiti_path,
+            "mcp_server_url": self._graphiti_server_url,
+            "group_id": self._graphiti_group_id,
+            "timeout_s": self._graphiti_timeout_s,
         }
+        try:
+            status_fn = getattr(self._memory, "status", None)
+            if callable(status_fn):
+                status = await status_fn()
+                if isinstance(status, dict):
+                    info["status"] = status
+        except Exception as exc:
+            info["status_error"] = f"{type(exc).__name__}: {exc}"
+        return info
 
     async def upsert_constraint(
         self,
@@ -155,14 +280,20 @@ class GraphitiConstraintMemoryClient(Mem0ConstraintMemoryClient):
 
 def build_graphiti_client_from_settings(*, user_id: str) -> GraphitiConstraintMemoryClient:
     """Create a Graphiti constraint client from application settings."""
-    local_config_raw = (
-        getattr(settings, "graphiti_local_config_json", "") or ""
-    ).strip()
-    local_config = json.loads(local_config_raw) if local_config_raw else None
+    server_url = str(getattr(settings, "graphiti_mcp_server_url", "") or "").strip()
+    if not server_url:
+        raise ValueError("GRAPHITI_MCP_SERVER_URL is required for graphiti backend")
+    group_id = (
+        str(getattr(settings, "graphiti_mcp_group_id", "") or "").strip()
+        or "timeboxing"
+    )
+    timeout_s = float(getattr(settings, "graphiti_mcp_timeout_seconds", 15.0) or 15.0)
     return GraphitiConstraintMemoryClient(
         user_id=user_id,
         limit=int(getattr(settings, "graphiti_query_limit", 200) or 200),
-        local_config=local_config,
+        server_url=server_url,
+        group_id=group_id,
+        timeout_s=timeout_s,
     )
 
 

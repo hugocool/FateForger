@@ -36,8 +36,15 @@ async def test_queue_constraint_extraction_runs_in_background():
             ],
         )
 
+    store_calls = {"replace": 0, "add": 0}
+
     class _Store:
+        async def replace_session_constraints(self, **_kwargs):
+            store_calls["replace"] += 1
+            return []
+
         async def add_constraints(self, **_kwargs):
+            store_calls["add"] += 1
             return []
 
     async def _fake_collect_constraints(_session: Session):
@@ -67,6 +74,8 @@ async def test_queue_constraint_extraction_runs_in_background():
     res = await asyncio.wait_for(task, timeout=1.0)
     assert res is not None
     assert not session.pending_constraint_extractions
+    assert store_calls["replace"] == 1
+    assert store_calls["add"] == 0
 
 
 @pytest.mark.asyncio

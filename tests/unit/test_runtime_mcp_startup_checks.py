@@ -226,3 +226,94 @@ async def test_assert_mcp_servers_available_required_failure_still_raises(
     assert "calendar-mcp" in message
     # optional server should NOT appear in the hard-failure message
     assert "notion-mcp" not in message
+
+
+def test_graphiti_backend_required_when_timeboxing_backend_is_graphiti(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_module.settings, "timeboxing_memory_backend", "graphiti", raising=False
+    )
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "tasks_defaults_memory_backend",
+        "graphiti",
+        raising=False,
+    )
+    assert runtime_module._graphiti_backend_required() is True  # noqa: SLF001
+
+
+def test_graphiti_backend_required_when_tasks_backend_is_graphiti(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_module.settings, "timeboxing_memory_backend", "graphiti", raising=False
+    )
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "tasks_defaults_memory_backend",
+        "graphiti",
+        raising=False,
+    )
+    assert runtime_module._graphiti_backend_required() is True  # noqa: SLF001
+
+
+async def test_assert_graphiti_runtime_available_noops_when_not_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_module, "_graphiti_backend_required", lambda: False)
+    await runtime_module._assert_graphiti_runtime_available()  # noqa: SLF001
+
+
+async def test_assert_graphiti_runtime_available_passes_with_queryable_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_module, "_graphiti_backend_required", lambda: True)
+
+    import fateforger.agents.timeboxing.durable_constraint_store as durable_store_mod
+    import fateforger.agents.timeboxing.graphiti_constraint_memory as graphiti_mod
+
+    class _Store:
+        async def get_store_info(self) -> dict[str, object]:
+            return {
+                "backend": "graphiti",
+                "mcp_server_url": "http://localhost:8005/mcp",
+            }
+
+        async def query_constraints(self, *, filters, limit):  # noqa: ANN001
+            assert isinstance(filters, dict)
+            assert limit == 1
+            return []
+
+    monkeypatch.setattr(
+        graphiti_mod,
+        "build_graphiti_client_from_settings",
+        lambda *, user_id: object(),
+    )
+    monkeypatch.setattr(
+        durable_store_mod,
+        "build_durable_constraint_store",
+        lambda _client: _Store(),
+    )
+
+    await runtime_module._assert_graphiti_runtime_available()  # noqa: SLF001
+
+
+async def test_assert_graphiti_runtime_available_raises_with_clear_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_module, "_graphiti_backend_required", lambda: True)
+
+    import fateforger.agents.timeboxing.graphiti_constraint_memory as graphiti_mod
+
+    def _boom(*, user_id: str) -> object:
+        raise RuntimeError("graphiti runtime unavailable")
+
+    monkeypatch.setattr(graphiti_mod, "build_graphiti_client_from_settings", _boom)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await runtime_module._assert_graphiti_runtime_available()  # noqa: SLF001
+
+    message = str(exc_info.value)
+    assert "Graphiti startup dependency check failed" in message
+    assert "graphiti runtime unavailable" in message

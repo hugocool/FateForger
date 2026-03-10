@@ -74,15 +74,12 @@ def test_ensure_constraint_memory_client_stops_retrying_after_failure(monkeypatc
     assert "RuntimeError" in (agent._constraint_memory_unavailable_reason or "")
 
 
-def test_ensure_constraint_memory_client_uses_constraint_mcp_backend(
+def test_ensure_constraint_memory_client_rejects_legacy_backend(
     monkeypatch,
 ) -> None:
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     agent._constraint_memory_client = None
     agent._constraint_memory_unavailable_reason = None
-
-    sentinel = object()
-    captured: dict[str, float] = {}
 
     monkeypatch.setattr(
         timeboxing_agent_mod.settings,
@@ -90,22 +87,13 @@ def test_ensure_constraint_memory_client_uses_constraint_mcp_backend(
         "constraint_mcp",
         raising=False,
     )
-    monkeypatch.setattr(
-        timeboxing_agent_mod.settings,
-        "agent_mcp_discovery_timeout_seconds",
-        12,
-        raising=False,
-    )
-    def _fake_constraint_client(*, timeout: float):
-        captured["timeout"] = timeout
-        return sentinel
-
-    monkeypatch.setattr(timeboxing_agent_mod, "ConstraintMemoryClient", _fake_constraint_client)
 
     client = TimeboxingFlowAgent._ensure_constraint_memory_client(agent)
 
-    assert client is sentinel
-    assert captured["timeout"] == 12.0
+    assert client is None
+    assert "unsupported timeboxing memory backend" in (
+        agent._constraint_memory_unavailable_reason or ""
+    ).lower()
 
 
 def test_queue_durable_constraint_upsert_queues_without_parent_config(

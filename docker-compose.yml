@@ -71,6 +71,8 @@ services:
       # Single source of truth: define MCP_CALENDAR_SERVER_URL_DOCKER in `.env`
       # and pass it through to the app container as MCP_CALENDAR_SERVER_URL.
       MCP_CALENDAR_SERVER_URL: "${MCP_CALENDAR_SERVER_URL_DOCKER:?Set MCP_CALENDAR_SERVER_URL_DOCKER in .env}"
+      # Graphiti MCP is reachable via docker service name on the compose network.
+      GRAPHITI_MCP_SERVER_URL: "http://graphiti-mcp:8000/mcp"
     volumes:
       - app_data:/app/data
       - poetry-cache:/root/.cache/pypoetry
@@ -149,6 +151,23 @@ services:
     restart: "no"
     networks:
       - admonish-network
+
+  graphiti-mcp:
+    container_name: graphiti-mcp
+    image: zepai/knowledge-graph-mcp:latest
+    env_file: .env
+    environment:
+      # Graphiti uses an OpenAI-compatible client; route it via OpenRouter.
+      OPENAI_API_KEY: "${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env for graphiti-mcp}"
+      OPENAI_API_URL: "${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}"
+      LLM__MODEL: "${GRAPHITI_LLM_MODEL:-google/gemini-3-flash-preview}"
+      EMBEDDER__MODEL: "${GRAPHITI_EMBEDDER_MODEL:-openai/text-embedding-3-small}"
+    ports:
+      - "${GRAPHITI_MCP_HOST_PORT:-8005}:8000"
+    networks:
+      - admonish-network
+    restart: unless-stopped
+
   ticktick-mcp-auth:
     <<: *common
     profiles: ["ticktick", "auth"] # ← only runs when you ask for it
