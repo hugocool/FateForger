@@ -1,7 +1,7 @@
 # TODO(deprecate): This entire module is dead code. The Notion-MCP extraction path
 # (_ensure_constraint_mcp_tools / NotionConstraintExtractor) is never reached at
 # runtime. The live write path goes through _upsert_constraints_to_durable_store →
-# _build_durable_constraint_record → DurableConstraintStore (mem0). Do not import
+# _build_durable_constraint_record → DurableConstraintStore. Do not import
 # this module from new code. Remove once the agent.py dead-code block is cleaned up.
 from __future__ import annotations
 

@@ -128,6 +128,12 @@ class McpCalendarClient:
         }
         result = await self._workbench.call_tool("list-events", arguments=args)
         payload = _extract_tool_payload(result)
+        if isinstance(payload, str) and payload.strip().lower().startswith("mcp error"):
+            logger.warning(
+                "calendar-mcp list-events returned tool error payload: %s",
+                payload.strip(),
+            )
+            return []
         return _normalize_events(payload)
 
     async def close(self) -> None:
@@ -215,8 +221,8 @@ class PlanningSessionRule:
 
         events = await self._calendar_client.list_events(
             calendar_id=self._config.calendar_id,
-            time_min=start.isoformat(),
-            time_max=end.isoformat(),
+            time_min=_format_mcp_datetime(start),
+            time_max=_format_mcp_datetime(end),
         )
         list_count = len(events)
 
@@ -758,6 +764,11 @@ def _parse_event_dt(raw: Any, *, tz: timezone) -> datetime | None:
 
         return EventDateTime.model_validate(raw).to_datetime(tz)
     return None
+
+
+def _format_mcp_datetime(dt: datetime) -> str:
+    """Return MCP-compatible datetime strings without fractional seconds."""
+    return dt.replace(microsecond=0).isoformat()
 
 
 def _event_within_window(event: dict, start: datetime, end: datetime) -> bool:

@@ -276,6 +276,31 @@ async def test_submit_current_plan_refreshes_remote_baseline(
 
 
 @pytest.mark.asyncio
+async def test_submit_current_plan_aborts_when_remote_baseline_refresh_fails() -> None:
+    """Stage 4 submit should fail closed when latest baseline refresh fails."""
+    submit_plan = AsyncMock(return_value=_build_submit_transaction())
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    agent._calendar_submitter = SimpleNamespace(submit_plan=submit_plan)
+    agent._session_debug = lambda *_args, **_kwargs: None
+    agent._refresh_remote_baseline_before_submit = AsyncMock(return_value=False)
+
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.tz_name = "Europe/Amsterdam"
+    session.tb_plan = _build_plan(summary="Edited")
+    session.base_snapshot = _build_plan(summary="Base")
+    session.event_id_map = {}
+    session.remote_event_ids_by_index = []
+    session.planned_date = "2026-02-13"
+
+    outcome = await TimeboxingFlowAgent._submit_current_plan(agent, session)
+
+    assert outcome.status == "skipped"
+    assert outcome.changed is False
+    assert "couldn't refresh" in outcome.note.lower()
+    submit_plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_refine_patch_path_stages_locally_without_remote_submit() -> None:
     """Stage 4 patching should keep edits local and defer remote writes to Stage 5 submit."""
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
@@ -340,6 +365,8 @@ async def test_submit_pending_plan_resubmit_no_delta_returns_noop_success() -> N
 
     assert isinstance(result, SlackBlockMessage)
     assert "already up to date" in result.text
+    assert "Reconciliation:" in result.text
+    assert "remote fetched" in result.text
     assert session.pending_submit is False
     submit_plan.assert_not_awaited()
     result_events = [payload for name, payload in debug_events if name == "submission_result"]
@@ -347,3 +374,111 @@ async def test_submit_pending_plan_resubmit_no_delta_returns_noop_success() -> N
     assert result_events[-1]["submit_mode"] == "auto_nl"
     assert result_events[-1]["submit_attempt_kind"] == "resubmit"
     assert result_events[-1]["no_material_delta"] is True
+    assert result_events[-1]["planned_create"] == 0
+    assert result_events[-1]["planned_update"] == 0
+    assert result_events[-1]["planned_delete"] == 0
+
+
+@pytest.mark.asyncio
+async def test_submit_pending_plan_aborts_when_remote_baseline_refresh_fails() -> None:
+    """Submit must fail closed when latest remote baseline cannot be refreshed."""
+    submit_plan = AsyncMock(return_value=_build_submit_transaction())
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    agent._calendar_submitter = SimpleNamespace(submit_plan=submit_plan)
+    agent._session_debug = lambda *_args, **_kwargs: None
+    agent._refresh_remote_baseline_before_submit = AsyncMock(return_value=False)
+
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.tz_name = "Europe/Amsterdam"
+    session.stage = TimeboxingStage.REVIEW_COMMIT
+    session.pending_submit = True
+    session.tb_plan = _build_plan(summary="Edited")
+    session.base_snapshot = _build_plan(summary="Base")
+    session.event_id_map = {}
+    session.remote_event_ids_by_index = []
+    session.last_sync_transaction = _build_submit_transaction()
+    session.planned_date = "2026-02-13"
+
+    result = await TimeboxingFlowAgent._submit_pending_plan(
+        agent,
+        session=session,
+        submit_mode="manual_button",
+        submit_attempt_kind="resubmit",
+    )
+
+    assert isinstance(result, TextMessage)
+    assert "did not submit" in result.content.lower()
+    assert session.pending_submit is True
+    submit_plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_submit_pending_plan_aborts_when_base_snapshot_missing_after_refresh() -> None:
+    """Submit should stop when refresh claims success but baseline snapshot is absent."""
+    submit_plan = AsyncMock(return_value=_build_submit_transaction())
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    agent._calendar_submitter = SimpleNamespace(submit_plan=submit_plan)
+    agent._session_debug = lambda *_args, **_kwargs: None
+    agent._refresh_remote_baseline_before_submit = AsyncMock(return_value=True)
+
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.tz_name = "Europe/Amsterdam"
+    session.stage = TimeboxingStage.REVIEW_COMMIT
+    session.pending_submit = True
+    session.tb_plan = _build_plan(summary="Edited")
+    session.base_snapshot = None
+    session.event_id_map = {}
+    session.remote_event_ids_by_index = []
+    session.planned_date = "2026-02-13"
+
+    result = await TimeboxingFlowAgent._submit_pending_plan(
+        agent,
+        session=session,
+        submit_mode="manual_button",
+        submit_attempt_kind="resubmit",
+    )
+
+    assert isinstance(result, TextMessage)
+    assert "incomplete" in result.content.lower()
+    assert session.pending_submit is False
+    submit_plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_submit_pending_plan_committed_includes_reconciliation_summary() -> None:
+    """Successful submit should include deterministic reconciliation counts."""
+    submit_plan = AsyncMock(return_value=_build_submit_transaction())
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    agent._calendar_submitter = SimpleNamespace(submit_plan=submit_plan)
+    debug_events: list[tuple[str, dict]] = []
+    agent._session_debug = (
+        lambda _session, event, **kwargs: debug_events.append((event, kwargs))
+    )
+
+    session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
+    session.tz_name = "Europe/Amsterdam"
+    session.stage = TimeboxingStage.REVIEW_COMMIT
+    session.pending_submit = True
+    session.tb_plan = _build_plan(summary="Focus")
+    session.base_snapshot = _build_plan(summary="Base")
+    session.event_id_map = {}
+    session.remote_event_ids_by_index = []
+
+    result = await TimeboxingFlowAgent._submit_pending_plan(
+        agent,
+        session=session,
+        submit_mode="manual_button",
+        submit_attempt_kind="first_submit",
+    )
+
+    assert isinstance(result, SlackBlockMessage)
+    assert "Reconciliation:" in result.text
+    assert "remote fetched" in result.text
+    assert "create" in result.text
+    assert session.pending_submit is False
+    submit_plan.assert_awaited_once()
+    result_events = [payload for name, payload in debug_events if name == "submission_result"]
+    assert result_events
+    assert result_events[-1]["planned_create"] >= 0
+    assert result_events[-1]["planned_update"] >= 0
+    assert result_events[-1]["planned_delete"] >= 0

@@ -69,21 +69,34 @@ def test_settings_rejects_unknown_timeboxing_memory_backend(monkeypatch) -> None
         Settings()
 
 
-def test_settings_rejects_mem0_without_runtime_config(monkeypatch) -> None:
-    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "mem0")
-    monkeypatch.setenv("MEM0_IS_CLOUD", "false")
-    monkeypatch.delenv("MEM0_LOCAL_CONFIG_JSON", raising=False)
-    monkeypatch.delenv("MEM0_API_KEY", raising=False)
+def test_settings_rejects_graphiti_cloud_without_runtime_config(monkeypatch) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPHITI_IS_CLOUD", "true")
+    monkeypatch.delenv("GRAPHITI_API_KEY", raising=False)
+    monkeypatch.delenv("GRAPHITI_CLOUD_URL", raising=False)
     with pytest.raises(ValueError):
         Settings()
 
 
-def test_settings_accepts_mem0_with_local_runtime_config(monkeypatch) -> None:
-    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "mem0")
-    monkeypatch.setenv("MEM0_IS_CLOUD", "false")
-    monkeypatch.setenv("MEM0_LOCAL_CONFIG_JSON", "{\"path\":\"./data/mem0\"}")
+def test_settings_accepts_graphiti_with_local_runtime_config(monkeypatch) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPHITI_IS_CLOUD", "false")
+    monkeypatch.setenv(
+        "GRAPHITI_LOCAL_CONFIG_JSON", "{\"path\":\"./data/graphiti_memory.json\"}"
+    )
     settings = Settings()
-    assert settings.timeboxing_memory_backend == "mem0"
+    assert settings.timeboxing_memory_backend == "graphiti"
+
+
+def test_settings_accepts_graphiti_cloud_with_required_fields(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPHITI_IS_CLOUD", "true")
+    monkeypatch.setenv("GRAPHITI_API_KEY", "gk_test")
+    monkeypatch.setenv("GRAPHITI_CLOUD_URL", "https://graphiti.example.com")
+    settings = Settings()
+    assert settings.timeboxing_memory_backend == "graphiti"
 
 
 def test_settings_rejects_invalid_notion_mcp_url(monkeypatch) -> None:

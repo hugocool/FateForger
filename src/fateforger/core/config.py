@@ -195,12 +195,20 @@ class Settings(BaseSettings):
     )
     tasks_defaults_memory_backend: str = Field(default="constraint_mcp")
 
-    # Mem0 Memory Configuration
+    # Legacy Mem0 Memory Configuration (deprecated)
     mem0_user_id: str = Field(default="timeboxing")
     mem0_api_key: str = Field(default="")
     mem0_is_cloud: bool = Field(default=False)
     mem0_local_config_json: str = Field(default="")
     mem0_query_limit: int = Field(default=200)
+
+    # Graphiti Memory Configuration
+    graphiti_user_id: str = Field(default="timeboxing")
+    graphiti_is_cloud: bool = Field(default=False)
+    graphiti_api_key: str = Field(default="")
+    graphiti_cloud_url: str = Field(default="")
+    graphiti_local_config_json: str = Field(default="")
+    graphiti_query_limit: int = Field(default=200)
 
     # Observability Configuration
     obs_prometheus_enabled: bool = Field(default=True)
@@ -264,10 +272,10 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_timeboxing_memory_backend(cls, value: str) -> str:
         backend = (value or "").strip().lower()
-        if backend in {"constraint_mcp", "mem0"}:
+        if backend in {"constraint_mcp", "graphiti"}:
             return backend
         raise ValueError(
-            "TIMEBOXING_MEMORY_BACKEND must be one of: constraint_mcp, mem0"
+            "TIMEBOXING_MEMORY_BACKEND must be one of: constraint_mcp, graphiti"
         )
 
     @field_validator("tasks_defaults_memory_backend")
@@ -348,6 +356,19 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator("graphiti_cloud_url")
+    @classmethod
+    def _validate_graphiti_cloud_url(cls, value: str) -> str:
+        text = (value or "").strip()
+        if not text:
+            return ""
+        parsed = urlparse(text)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(
+                "GRAPHITI_CLOUD_URL must be absolute and start with http:// or https://"
+            )
+        return text
+
     @model_validator(mode="after")
     def _validate_runtime_invariants(self) -> "Settings":
         if not self.slack_socket_mode:
@@ -366,7 +387,16 @@ class Settings(BaseSettings):
             if not (has_local_runtime or has_cloud_runtime):
                 raise ValueError(
                     "Mem0 backend requires MEM0_LOCAL_CONFIG_JSON or "
-                    "(MEM0_IS_CLOUD=1 and MEM0_API_KEY)."
+                    "(MEM0_IS_CLOUD=1 + MEM0_API_KEY)."
+                )
+        if self.timeboxing_memory_backend == "graphiti" and self.graphiti_is_cloud:
+            has_cloud_runtime = bool(
+                self.graphiti_api_key.strip() and self.graphiti_cloud_url.strip()
+            )
+            if not has_cloud_runtime:
+                raise ValueError(
+                    "Graphiti cloud backend requires GRAPHITI_API_KEY and "
+                    "GRAPHITI_CLOUD_URL when GRAPHITI_IS_CLOUD=1."
                 )
         return self
 

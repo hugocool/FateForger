@@ -11,8 +11,8 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | Patching (schema-in-prompt) | Implemented, Tested | 14 unit | 2025-07-22 (live LLM) |
 | GraphFlow orchestration | Implemented, Documented | graphflow state machine tests | — |
 | Skeleton pre-generation (AC1) | Implemented, Tested | `test_timeboxing_skeleton_pre_generation.py` | — |
-| Calendar sync + undo controls | Implemented, Tested | `test_timeboxing_submit_flow.py`, `test_slack_timebox_buttons.py` | — |
-| Stage 1 constraint-template coverage UX | Implemented, Tested | `test_timeboxing_stage_message_template_coverage.py` | — |
+| Calendar sync + undo controls | Implemented, Tested (submit-time baseline refresh + deterministic reconciliation summary in Stage 5) | `test_timeboxing_submit_flow.py`, `test_slack_timebox_buttons.py` | 2026-03-07 |
+| Stage 1 constraint-template coverage UX | Implemented, Tested (collect-stage calendar anchor merge + anchor summary line) | `test_timeboxing_stage_message_template_coverage.py`, `test_timeboxing_calendar_prefetch_feedback.py`, `test_timeboxing_durable_constraints.py` | 2026-03-07 |
 | Durable profile/date-span constraint auto-upsert + Stage 1 prefetch wait | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_constraint_memory_client_tool_name.py` | — |
 | Constraint-memory MCP payload decoding hardening | Implemented, Tested | `test_timeboxing_constraint_memory_client_tool_name.py` | — |
 | Stage 1 lookup-first defaults + session override suppression | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_stage_gate_json_context.py` | — |
@@ -74,7 +74,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | `preferences.py` | `ConstraintStore`: SQLite-backed session constraint persistence. |
 | `constraint_retriever.py` | `ConstraintRetriever`: gap-driven durable constraint fetch from Notion MCP. |
 | `constraint_search_tool.py` | Stage-gating Notion search tool (`search_constraints`) with strict FunctionTool schema for structured-output compatibility. |
-| `notion_constraint_extractor.py` | **TODO(deprecate)** — dead code. The Notion-MCP extraction path is never reached; the live write path is `_upsert_constraints_to_durable_store` → mem0. Do not import from new code. |
+| `notion_constraint_extractor.py` | **TODO(deprecate)** — dead code. The Notion-MCP extraction path is never reached; the live write path is `_upsert_constraints_to_durable_store`. Do not import from new code. |
 
 ### Utilities
 

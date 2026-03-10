@@ -5,6 +5,45 @@ import pytest
 from fateforger.core import runtime as runtime_module
 
 
+def test_resolve_runtime_git_identity_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        ("rev-parse", "--abbrev-ref", "HEAD"): "issue/103-planning-reminder-hardening",
+        ("rev-parse", "--short", "HEAD"): "abc1234",
+        ("describe", "--tags", "--exact-match"): "v1.2.3",
+        ("status", "--porcelain"): " M src/file.py",
+    }
+
+    def _fake_run_git_command(*args: str) -> str:
+        return values[args]
+
+    monkeypatch.setattr(runtime_module, "_run_git_command", _fake_run_git_command)
+
+    identity = runtime_module._resolve_runtime_git_identity()  # noqa: SLF001
+
+    assert identity.branch == "issue/103-planning-reminder-hardening"
+    assert identity.commit == "abc1234"
+    assert identity.tag == "v1.2.3"
+    assert identity.dirty is True
+
+
+def test_resolve_runtime_git_identity_falls_back_on_git_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_run_git_command(*args: str) -> str:
+        raise RuntimeError(f"git failed for {args}")
+
+    monkeypatch.setattr(runtime_module, "_run_git_command", _fake_run_git_command)
+
+    identity = runtime_module._resolve_runtime_git_identity()  # noqa: SLF001
+
+    assert identity.branch == "unknown"
+    assert identity.commit == "unknown"
+    assert identity.tag == "none"
+    assert identity.dirty is False
+
+
 async def test_assert_mcp_servers_available_passes_when_all_servers_discover_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -4,7 +4,12 @@ import logging
 
 import pytest
 
-from fateforger.haunt.reconcile import PlanningReconciler, PlanningReminder, PlanningRuleConfig
+from fateforger.haunt.reconcile import (
+    McpCalendarClient,
+    PlanningReconciler,
+    PlanningReminder,
+    PlanningRuleConfig,
+)
 
 
 class DummyCalendarClient:
@@ -82,6 +87,25 @@ class FakePlanningSessionStore:
         ]
         self._sessions.append(row)
         return row
+
+
+class _FakeTextItem:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeToolResult:
+    def __init__(self, content: str) -> None:
+        self.result = [_FakeTextItem(content)]
+
+
+class _FakeWorkbench:
+    def __init__(self, content: str) -> None:
+        self._content = content
+
+    async def call_tool(self, name: str, arguments: dict):
+        assert name == "list-events"
+        return _FakeToolResult(self._content)
 
 
 @pytest.mark.asyncio
@@ -172,6 +196,44 @@ async def test_reconcile_nudges_use_exponential_backoff_by_default():
         timedelta(minutes=80),
         timedelta(minutes=160),
     ]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_list_events_window_omits_microseconds() -> None:
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, 0, 654321, tzinfo=timezone.utc)
+    await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    assert client.calls
+    _, time_min, time_max = client.calls[-1]
+    assert "." not in time_min
+    assert "." not in time_max
+
+
+@pytest.mark.asyncio
+async def test_haunt_calendar_client_logs_mcp_tool_error_payload(caplog) -> None:
+    client = object.__new__(McpCalendarClient)
+    client._workbench = _FakeWorkbench(
+        'MCP error -32602: Invalid arguments for tool list-events'
+    )
+
+    with caplog.at_level(logging.WARNING, logger="fateforger.haunt.reconcile"):
+        events = await client.list_events(
+            calendar_id="primary",
+            time_min="2025-01-01T09:00:00+00:00",
+            time_max="2025-01-02T09:00:00+00:00",
+        )
+
+    assert events == []
+    assert "list-events returned tool error payload" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import fateforger.agents.tasks.defaults_memory as defaults_memory_mod
 from fateforger.agents.tasks.defaults_memory import TaskDefaultsMemoryStore, TaskDueDefaults
 from fateforger.core.config import settings
 
@@ -72,11 +73,11 @@ async def test_missing_openai_key_falls_back_with_one_warning_per_user(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(settings, "tasks_defaults_memory_backend", "mem0", raising=False)
+    monkeypatch.setattr(settings, "tasks_defaults_memory_backend", "graphiti", raising=False)
     monkeypatch.setattr(
-        "fateforger.agents.tasks.defaults_memory.build_mem0_client_from_settings",
+        "fateforger.agents.tasks.defaults_memory.build_graphiti_client_from_settings",
         lambda user_id: (_ for _ in ()).throw(
-            RuntimeError("OPENAI_API_KEY is required for configured Mem0 model")
+            RuntimeError("OPENAI_API_KEY is required for configured graphiti model")
         ),
     )
 
@@ -192,3 +193,37 @@ async def test_runtime_durable_lookup_failure_downgrades_to_fallback_once(
         if "backend mode=fallback_cache" in rec.message
     ]
     assert len(fallback_lines) == 1
+
+
+def test_defaults_store_uses_graphiti_backend_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        defaults_memory_mod.settings, "tasks_defaults_memory_backend", "graphiti", raising=False
+    )
+    store = TaskDefaultsMemoryStore()
+    sentinel_client = object()
+    sentinel_store = object()
+    captured: dict[str, str] = {}
+
+    def _fake_build_graphiti(*, user_id: str):
+        captured["user_id"] = user_id
+        return sentinel_client
+
+    def _fake_build_store(client):
+        assert client is sentinel_client
+        return sentinel_store
+
+    monkeypatch.setattr(
+        defaults_memory_mod.settings, "timeboxing_memory_backend", "graphiti", raising=False
+    )
+    monkeypatch.setattr(
+        defaults_memory_mod.settings, "graphiti_user_id", "user-graphiti", raising=False
+    )
+    monkeypatch.setattr(
+        defaults_memory_mod, "build_graphiti_client_from_settings", _fake_build_graphiti
+    )
+    monkeypatch.setattr(defaults_memory_mod, "build_durable_constraint_store", _fake_build_store)
+
+    resolved = store._ensure_store()
+
+    assert resolved is sentinel_store
+    assert captured["user_id"] == "user-graphiti"

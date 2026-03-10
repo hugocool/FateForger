@@ -89,17 +89,26 @@ class SchedulerPrefetchCapability:
         *,
         session: SessionPrefetchState,
     ) -> None:
-        """Block briefly when collect-stage durable constraints are still loading."""
-        if (
-            session.stage == TimeboxingStage.COLLECT_CONSTRAINTS
-            and not self._is_collect_stage_loaded(session)
-        ):
-            await self._await_pending_durable_prefetch(
+        """Block briefly for collect-stage prerequisites (calendar + durable)."""
+        if session.stage != TimeboxingStage.COLLECT_CONSTRAINTS:
+            return
+
+        awaitables: list[Awaitable[None]] = [
+            self._ensure_calendar_immovables(
                 session,
-                stage=TimeboxingStage.COLLECT_CONSTRAINTS,
-                timeout_s=TIMEBOXING_TIMEOUTS.pending_constraints_wait_s,
-                fail_on_timeout=False,
+                timeout_s=TIMEBOXING_TIMEOUTS.calendar_prefetch_wait_s,
             )
+        ]
+        if not self._is_collect_stage_loaded(session):
+            awaitables.append(
+                self._await_pending_durable_prefetch(
+                    session,
+                    stage=TimeboxingStage.COLLECT_CONSTRAINTS,
+                    timeout_s=TIMEBOXING_TIMEOUTS.pending_constraints_wait_s,
+                    fail_on_timeout=False,
+                )
+            )
+        await asyncio.gather(*awaitables)
 
 
 __all__ = [
