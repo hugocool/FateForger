@@ -60,7 +60,9 @@ class TaskDefaultsMemoryStore:
         self._unavailable_reason: str | None = None
         self._unavailable_reason_code: str | None = None
         self._fallback_path = Path(
-            os.getenv("TASKS_DEFAULTS_CACHE_PATH", "logs/taskmarshal_defaults_cache.json")
+            os.getenv(
+                "TASKS_DEFAULTS_CACHE_PATH", "logs/taskmarshal_defaults_cache.json"
+            )
         )
         self._cache_lock = threading.Lock()
         self._cache_mtime_ns: int | None = None
@@ -159,7 +161,8 @@ class TaskDefaultsMemoryStore:
         record = {
             "constraint_record": {
                 "name": f"{_DEFAULTS_NAME_PREFIX}{defaults.user_id}",
-                "description": _DEFAULTS_DESC_PREFIX + json.dumps(payload, sort_keys=True),
+                "description": _DEFAULTS_DESC_PREFIX
+                + json.dumps(payload, sort_keys=True),
                 "necessity": "should",
                 "status": "locked",
                 "source": "user",
@@ -212,9 +215,11 @@ class TaskDefaultsMemoryStore:
 
     @staticmethod
     def _resolve_backend() -> str:
-        configured = str(
-            getattr(settings, "tasks_defaults_memory_backend", "graphiti") or ""
-        ).strip().lower()
+        configured = (
+            str(getattr(settings, "tasks_defaults_memory_backend", "graphiti") or "")
+            .strip()
+            .lower()
+        )
         if not configured:
             configured = "graphiti"
         if configured not in _TASK_DEFAULTS_BACKENDS:
@@ -354,10 +359,14 @@ class TaskDefaultsMemoryStore:
                 except Exception:
                     disk_payload = {}
             disk_payload[defaults.user_id] = defaults.model_dump(mode="json")
-            tmp_path = self._fallback_path.with_suffix(self._fallback_path.suffix + ".tmp")
+            tmp_path = self._fallback_path.with_suffix(
+                self._fallback_path.suffix + ".tmp"
+            )
             try:
                 tmp_path.write_text(
-                    json.dumps(disk_payload, ensure_ascii=True, sort_keys=True, indent=2),
+                    json.dumps(
+                        disk_payload, ensure_ascii=True, sort_keys=True, indent=2
+                    ),
                     encoding="utf-8",
                 )
                 tmp_path.replace(self._fallback_path)

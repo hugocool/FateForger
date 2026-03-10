@@ -50,12 +50,6 @@ from fateforger.llm import (
     build_autogen_chat_client,
 )
 from fateforger.llm.toon import toon_encode
-from fateforger.sync_core import (
-    ReconciliationSummary,
-    SubmitBaselineGuard,
-    evaluate_submit_baseline_guard,
-    summarize_reconciliation,
-)
 from fateforger.slack_bot.constraint_review import (
     CONSTRAINT_REVIEW_ALL_ACTION_ID,
     CONSTRAINT_ROW_REVIEW_ACTION_ID,
@@ -71,6 +65,12 @@ from fateforger.slack_bot.timeboxing_submit import (
     build_review_submit_actions_block,
     build_text_section_block,
     build_undo_submit_actions_block,
+)
+from fateforger.sync_core import (
+    ReconciliationSummary,
+    SubmitBaselineGuard,
+    evaluate_submit_baseline_guard,
+    summarize_reconciliation,
 )
 from fateforger.tools.ticktick_mcp import TickTickMcpClient, get_ticktick_mcp_url
 
@@ -95,8 +95,8 @@ from .durable_constraint_store import (
     build_durable_constraint_store,
 )
 from .flow_graph import build_timeboxing_graphflow
-from .mcp_clients import McpCalendarClient
 from .graphiti_constraint_memory import build_graphiti_client_from_settings
+from .mcp_clients import McpCalendarClient
 from .messages import (
     StartTimeboxing,
     TimeboxingCancelSubmit,
@@ -147,8 +147,8 @@ from .stage_gating import (
     TIMEBOX_SUMMARY_PROMPT,
     ConstraintsSection,
     FreeformSection,
-    NextStepsSection,
     MessageSection,
+    NextStepsSection,
     SessionMessage,
     StageDecision,
     StageGateOutput,
@@ -725,8 +725,10 @@ class TimeboxingFlowAgent(RoutedAgent):
         """Run one GraphFlow turn and return the presenter text message."""
         async with session.graph_turn_lock:
             turn_started_at = perf_counter()
+
             def turn_elapsed_s() -> float:
                 return round(perf_counter() - turn_started_at, 3)
+
             session.graph_turn_started_at_monotonic = turn_started_at
             session.graph_turn_deadline_monotonic = (
                 turn_started_at + TIMEBOXING_TIMEOUTS.graph_turn_s
@@ -1149,7 +1151,9 @@ class TimeboxingFlowAgent(RoutedAgent):
         return parse_chat_content(ConstraintInterpretation, response)
 
     @staticmethod
-    def _serialize_constraint_for_interpretation(constraint: Constraint) -> dict[str, Any]:
+    def _serialize_constraint_for_interpretation(
+        constraint: Constraint,
+    ) -> dict[str, Any]:
         """Serialize one local constraint row for extraction-context prompts."""
         payload = constraint.model_dump(
             mode="json",
@@ -1500,11 +1504,8 @@ class TimeboxingFlowAgent(RoutedAgent):
                                 except Exception:
                                     pass
                     if self._constraint_store:
-                        if (
-                            scope == ConstraintScope.SESSION
-                            and hasattr(
-                                self._constraint_store, "replace_session_constraints"
-                            )
+                        if scope == ConstraintScope.SESSION and hasattr(
+                            self._constraint_store, "replace_session_constraints"
                         ):
                             await self._constraint_store.replace_session_constraints(
                                 user_id=session.user_id,
@@ -2194,10 +2195,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         if not session.pending_constraint_extractions:
             return
         task_map = getattr(self, "_constraint_extraction_tasks", {})
-        tasks = [
-            task_map.get(key)
-            for key in session.pending_constraint_extractions
-        ]
+        tasks = [task_map.get(key) for key in session.pending_constraint_extractions]
         tasks = [task for task in tasks if task]
         if not tasks:
             return
@@ -2696,7 +2694,9 @@ class TimeboxingFlowAgent(RoutedAgent):
                 value.value if isinstance(value, ConstraintDayOfWeek) else str(value)
                 for value in days
             }
-            valid_day = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")[planned_day.weekday()]
+            valid_day = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")[
+                planned_day.weekday()
+            ]
             if valid_day not in day_codes:
                 return False
         return True
@@ -2728,7 +2728,10 @@ class TimeboxingFlowAgent(RoutedAgent):
         planned_day = self._parse_session_planned_day(session)
         fallback: list[Constraint] = []
         for constraint in session.active_constraints or []:
-            if constraint.scope not in (ConstraintScope.PROFILE, ConstraintScope.DATESPAN):
+            if constraint.scope not in (
+                ConstraintScope.PROFILE,
+                ConstraintScope.DATESPAN,
+            ):
                 continue
             if constraint.status == ConstraintStatus.DECLINED:
                 continue
@@ -3103,8 +3106,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         anchors = parse_model_list(Immovable, facts.get("immovables"))
         if anchors:
             anchor_preview = ", ".join(
-                f"{anchor.start}-{anchor.end} {anchor.title}"
-                for anchor in anchors[:3]
+                f"{anchor.start}-{anchor.end} {anchor.title}" for anchor in anchors[:3]
             )
             if len(anchors) > 3:
                 anchor_preview = f"{anchor_preview}, +{len(anchors) - 3} more"
@@ -3241,11 +3243,11 @@ class TimeboxingFlowAgent(RoutedAgent):
             "collect_context_calendar_anchors",
             planned_date=planned_date,
             immovable_count=len(normalized),
-            prefetched_count=len(
-                session.prefetched_immovables_by_date.get(planned_date) or []
-            )
-            if planned_date
-            else 0,
+            prefetched_count=(
+                len(session.prefetched_immovables_by_date.get(planned_date) or [])
+                if planned_date
+                else 0
+            ),
             pending_prefetch=session.pending_calendar_prefetch,
         )
         durable = self._collect_stage_durable_constraints(
@@ -3280,7 +3282,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             prefetched=prefetched,
         )
         task_candidates = parse_model_list(TaskCandidate, input_facts.get("tasks"))
-        filtered_out = max(0, len(session.prefetched_pending_tasks or []) - len(prefetched))
+        filtered_out = max(
+            0, len(session.prefetched_pending_tasks or []) - len(prefetched)
+        )
         self._session_debug(
             session,
             "capture_inputs_task_context",
@@ -3323,7 +3327,9 @@ class TimeboxingFlowAgent(RoutedAgent):
 
         reasons: list[str] = []
         suppress_signals = {"gtd_admin_exclusion", "daily_one_thing"}
-        matched = sorted(signal for signal in scope_signals if signal in suppress_signals)
+        matched = sorted(
+            signal for signal in scope_signals if signal in suppress_signals
+        )
         if matched:
             reasons.append("scope_first_suppress_prefetch")
             reasons.extend(matched)
@@ -3995,7 +4001,8 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         can_go_back = session.stage != TimeboxingStage.COLLECT_CONSTRAINTS
         can_proceed = (
-            session.stage != TimeboxingStage.REVIEW_COMMIT and session.stage_ready
+            session.stage != TimeboxingStage.REVIEW_COMMIT
+            and session.stage_ready
             and not has_refine_undo
         )
         meta_value = self._build_stage_action_value(session)
@@ -4493,7 +4500,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             raise ValueError("Refine patch requested without TBPlan state.")
         previous_plan = session.tb_plan.model_copy(deep=True)
         previous_timebox = (
-            session.timebox.model_copy(deep=True) if session.timebox is not None else None
+            session.timebox.model_copy(deep=True)
+            if session.timebox is not None
+            else None
         )
         constraints = await self._collect_constraints(session)
         patch_constraints = self._select_constraints_for_refine_patcher(
@@ -4536,9 +4545,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             note=note,
         )
 
-    async def _undo_last_refine_update(
-        self, *, session: Session
-    ) -> TextMessage | None:
+    async def _undo_last_refine_update(self, *, session: Session) -> TextMessage | None:
         """Restore the previous local draft after a Stage 4 patch."""
         if (
             session.stage != TimeboxingStage.REFINE
@@ -5815,8 +5822,10 @@ class TimeboxingFlowAgent(RoutedAgent):
                     ]
                     folded = [line for line in folded if line]
                     if folded:
-                        folded = TimeboxingFlowAgent._compact_constraint_lines_for_slack(
-                            folded
+                        folded = (
+                            TimeboxingFlowAgent._compact_constraint_lines_for_slack(
+                                folded
+                            )
                         )
                         parts.extend(
                             [
@@ -5916,9 +5925,10 @@ class TimeboxingFlowAgent(RoutedAgent):
 
         current_idx: int | None = None
         for idx, section in enumerate(sections):
-            if isinstance(section, FreeformSection) and (
-                section.heading or ""
-            ).strip().lower() == "current step":
+            if (
+                isinstance(section, FreeformSection)
+                and (section.heading or "").strip().lower() == "current step"
+            ):
                 current_idx = idx
                 break
         if current_idx is None:
@@ -5956,8 +5966,8 @@ class TimeboxingFlowAgent(RoutedAgent):
 
         if next_idx is None:
             fallback_question = (
-                (gate.question or "").strip() or "Share what to adjust next."
-            )
+                gate.question or ""
+            ).strip() or "Share what to adjust next."
             sections.append(
                 NextStepsSection(
                     heading="What I need from you",
@@ -6570,9 +6580,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         session.active_constraints = selected_active_constraints
         session.active_constraints_raw_count = len(raw_active_constraints)
-        session.active_constraints_applicable_count = len(
-            applicable_active_constraints
-        )
+        session.active_constraints_applicable_count = len(applicable_active_constraints)
         session.active_constraints_selected_count = len(selected_active_constraints)
         self._session_debug(
             session,
@@ -6589,12 +6597,16 @@ class TimeboxingFlowAgent(RoutedAgent):
             local_shared_canonical_rows=int(
                 shared_stats.get("canonical_shared_rows") or 0
             ),
-            local_shared_duplicate_groups=int(shared_stats.get("duplicate_groups") or 0),
+            local_shared_duplicate_groups=int(
+                shared_stats.get("duplicate_groups") or 0
+            ),
             durable_count=len(durable_constraints),
             active_raw_count=len(raw_active_constraints),
             active_applicable_count=len(applicable_active_constraints),
             active_selected_count=len(selected_active_constraints),
-            active_suppressed_count=int(session.active_constraints_suppressed_count or 0),
+            active_suppressed_count=int(
+                session.active_constraints_suppressed_count or 0
+            ),
             active_suppressed_reasons=list(
                 session.active_constraints_suppressed_reasons or []
             ),
@@ -6745,7 +6757,10 @@ class TimeboxingFlowAgent(RoutedAgent):
             if aspect_id:
                 strongest = strongest_by_aspect.get(aspect_id)
                 if strongest is not None and strongest is not constraint:
-                    if constraint.scope != ConstraintScope.SESSION or aspect_id in session_aspect_ids:
+                    if (
+                        constraint.scope != ConstraintScope.SESSION
+                        or aspect_id in session_aspect_ids
+                    ):
                         suppressed_reasons.append("stronger_same_aspect")
                         continue
 
@@ -6761,13 +6776,18 @@ class TimeboxingFlowAgent(RoutedAgent):
 
             blocked = False
             if aspect_id:
-                candidate_rank = cls._constraint_rank_for_stage_reconciliation(constraint)
+                candidate_rank = cls._constraint_rank_for_stage_reconciliation(
+                    constraint
+                )
                 for other in constraints or []:
                     if other is constraint:
                         continue
                     if aspect_id not in cls._constraint_excludes_aspect_ids(other):
                         continue
-                    if cls._constraint_rank_for_stage_reconciliation(other) <= candidate_rank:
+                    if (
+                        cls._constraint_rank_for_stage_reconciliation(other)
+                        <= candidate_rank
+                    ):
                         blocked = True
                         break
             if blocked:
@@ -6910,7 +6930,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             }
             classification = ConstraintAspectClassification.from_hints(hints)
             has_temporal_window = bool(
-                constraint.start_date or constraint.end_date or (constraint.days_of_week or [])
+                constraint.start_date
+                or constraint.end_date
+                or (constraint.days_of_week or [])
             )
             is_structured = bool(classification is not None)
             is_startup_prefetch = bool(
@@ -6918,10 +6940,17 @@ class TimeboxingFlowAgent(RoutedAgent):
                 or (classification.is_startup_prefetch if classification else False)
             )
             is_frame_anchor = bool(
-                classification and classification.frame_slot in {"sleep_target", "work_window"}
+                classification
+                and classification.frame_slot in {"sleep_target", "work_window"}
             )
             is_locked = constraint.status == ConstraintStatus.LOCKED
-            if is_startup_prefetch or is_frame_anchor or is_locked or is_structured or has_temporal_window:
+            if (
+                is_startup_prefetch
+                or is_frame_anchor
+                or is_locked
+                or is_structured
+                or has_temporal_window
+            ):
                 out.append(constraint)
         return out
 
@@ -6966,7 +6995,9 @@ class TimeboxingFlowAgent(RoutedAgent):
             if constraint.necessity == ConstraintNecessity.MUST
         ]
         selected: list[Constraint] = list(session_constraints)
-        seen: set[str] = {_constraint_identity_key(constraint) for constraint in selected}
+        seen: set[str] = {
+            _constraint_identity_key(constraint) for constraint in selected
+        }
         durable_selected = 0
         for constraint in [*must_constraints, *durable_constraints]:
             key = _constraint_identity_key(constraint)
@@ -7773,7 +7804,9 @@ class TimeboxingFlowAgent(RoutedAgent):
     @staticmethod
     def _submit_attempt_kind(session: Session) -> Literal["first_submit", "resubmit"]:
         """Return submit attempt kind for telemetry and UX clarity."""
-        return "resubmit" if session.last_sync_transaction is not None else "first_submit"
+        return (
+            "resubmit" if session.last_sync_transaction is not None else "first_submit"
+        )
 
     def _build_submit_incomplete_reply(self) -> TextMessage:
         """Return deterministic copy when submit is requested before prerequisites exist."""
@@ -8549,11 +8582,7 @@ def _constraint_canonical_rank(constraint: Constraint) -> tuple[int, int, float,
     if necessity_value not in necessity_rank and necessity_value is not None:
         necessity_value = str(necessity_value).lower()
     updated = getattr(constraint, "updated_at", None)
-    updated_epoch = (
-        updated.timestamp()
-        if isinstance(updated, datetime)
-        else 0.0
-    )
+    updated_epoch = updated.timestamp() if isinstance(updated, datetime) else 0.0
     return (
         status_rank.get(constraint.status, 3),
         necessity_rank.get(necessity_value, 3),
@@ -8581,6 +8610,7 @@ def _constraint_applies_to_stage(
     stage: TimeboxingStage,
 ) -> bool:
     """Return whether a constraint is applicable for the current stage."""
+
     def _as_list(value: object) -> list[object]:
         if isinstance(value, list):
             return value
@@ -8595,7 +8625,9 @@ def _constraint_applies_to_stage(
     )
     if not raw_stages:
         return True
-    normalized = {str(value).strip().lower() for value in raw_stages if str(value).strip()}
+    normalized = {
+        str(value).strip().lower() for value in raw_stages if str(value).strip()
+    }
     return stage.value.strip().lower() in normalized
 
 
@@ -8675,10 +8707,7 @@ def _constraint_count_summary_line(
         refine_selected_total = max(
             0, int(session.last_refine_selected_constraints_count or 0)
         )
-        parts.append(
-            "Selected for Refine patching: "
-            f"{refine_selected_total}."
-        )
+        parts.append("Selected for Refine patching: " f"{refine_selected_total}.")
         kept_total = refine_selected_total
     elif 0 < selected_total < applicable_total:
         parts.append(f"Selected for this stage: {selected_total}.")
