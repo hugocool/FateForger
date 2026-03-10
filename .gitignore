@@ -234,7 +234,12 @@ poetry.lock
 # Database files
 data/*.db
 *.db
+# Local Graphiti fallback artifact
+data/graphiti_memory.json
 
 # Logs
 logs/
 *.log
+
+# Local safety bundles
+.git-backups/
