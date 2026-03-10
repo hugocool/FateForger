@@ -238,3 +238,4 @@ data/*.db
 # Logs
 logs/
 *.log
+.worktrees/
