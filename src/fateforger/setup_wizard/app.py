@@ -11,7 +11,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from .checks import config_snapshot, run_all_checks
+from .calendar_prefs import read_accounts, read_prefs, write_prefs
+from .checks import call_mcp_tool, config_snapshot, run_all_checks
 from .envfile import read_env_file, update_env_file
 
 # Global cache for health checks
@@ -38,6 +39,98 @@ def _require_admin(request: Request) -> None:
     if request.session.get("wizard_ok") is True:
         return
     raise HTTPException(status_code=401, detail="Login required")
+
+
+def _calendar_mcp_url() -> str:
+    """URL of the calendar MCP server (within Docker network)."""
+    port = os.getenv("PORT", "3000")
+    return (
+        os.getenv("WIZARD_CALENDAR_MCP_URL")
+        or os.getenv("MCP_CALENDAR_SERVER_URL")
+        or f"http://calendar-mcp:{port}"
+    )
+
+
+def _tokens_path() -> Path:
+    """Path to the calendar MCP tokens.json (read-only volume mount)."""
+    return Path("/config/calendar-mcp-tokens/tokens.json")
+
+
+def _prefs_path() -> Path:
+    """Path to the calendar-preferences.json written by the wizard."""
+    return _secrets_dir() / "calendar-preferences.json"
+
+
+def _parse_calendars(
+    result: Any, accounts: dict[str, dict]
+) -> dict[str, list[dict[str, Any]]]:
+    """Parse a list-calendars MCP result into {account_id: [calendar_dict]}."""
+    import json as _json
+
+    calendars: list[Any] = []
+    if isinstance(result, list):
+        calendars = result
+    elif isinstance(result, str):
+        try:
+            parsed = _json.loads(result)
+            if isinstance(parsed, list):
+                calendars = parsed
+        except Exception:
+            pass
+    elif isinstance(result, dict):
+        content = result.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    try:
+                        parsed = _json.loads(item["text"])
+                        if isinstance(parsed, list):
+                            calendars = parsed
+                            break
+                    except Exception:
+                        pass
+
+    grouped: dict[str, list[dict[str, Any]]] = {acc: [] for acc in accounts}
+    for cal in calendars:
+        if not isinstance(cal, dict):
+            continue
+        account_id = cal.get("accountId") or cal.get("account") or "default"
+        if account_id not in grouped:
+            grouped[account_id] = []
+        grouped[account_id].append(
+            {
+                "id": cal.get("id", ""),
+                "summary": cal.get("summary", cal.get("id", "")),
+                "primary": bool(cal.get("primary")),
+                "accountId": account_id,
+            }
+        )
+    return grouped
+
+
+def _extract_oauth_url(result: Any) -> str | None:
+    """Try to extract an OAuth URL from a manage-accounts tool result."""
+    import json as _json
+
+    from .checks import _extract_text_from_result
+
+    text = _extract_text_from_result(result)
+    if isinstance(text, str) and text.startswith("http"):
+        return text
+    if isinstance(result, dict):
+        url = result.get("url") or result.get("authUrl") or result.get("oauth_url")
+        if url:
+            return str(url)
+    if isinstance(text, str):
+        try:
+            parsed = _json.loads(text)
+            if isinstance(parsed, dict):
+                url = parsed.get("url") or parsed.get("authUrl")
+                if url:
+                    return str(url)
+        except Exception:
+            pass
+    return None
 
 
 def _summarize_dir(path: Path) -> dict[str, Any]:
@@ -499,10 +592,14 @@ async def notion_generate_token(request: Request):
     return RedirectResponse(url="/setup/env", status_code=303)
 
 
-@app.get(
-    "/setup/google", response_class=HTMLResponse, dependencies=[Depends(_require_admin)]
-)
-async def setup_google_page(request: Request):
+async def _render_google_page(
+    request: Request,
+    *,
+    oauth_url: str | None = None,
+    pending_account_id: str | None = None,
+    add_error: str | None = None,
+) -> HTMLResponse:
+    """Shared render helper for the Google Calendar setup page."""
     secrets_dir = _secrets_dir()
     gcal_path = secrets_dir / "gcal-oauth.json"
     env = read_env_file(_env_path())
@@ -511,6 +608,21 @@ async def setup_google_page(request: Request):
     integrations = _build_integrations(
         env=env, checks_by_name=checks_by_name, gcal_present=gcal_path.exists()
     )
+    accounts = read_accounts(_tokens_path())
+    prefs = read_prefs(_prefs_path())
+
+    # Best-effort: fetch calendars from MCP (empty if MCP is down or no accounts yet).
+    calendars_by_account: dict[str, list[dict]] = {}
+    if accounts:
+        result, _err = await call_mcp_tool(
+            url=_calendar_mcp_url(),
+            tool_name="list-calendars",
+            params={},
+            timeout_s=4.0,
+        )
+        if result is not None:
+            calendars_by_account = _parse_calendars(result, accounts)
+
     return templates.TemplateResponse(
         request,
         "setup_google.html",
@@ -519,8 +631,22 @@ async def setup_google_page(request: Request):
             "gcal_path": str(gcal_path),
             "integrations": integrations,
             "active_integration": "calendar-mcp",
+            "accounts": accounts,
+            "calendars_by_account": calendars_by_account,
+            "prefs": prefs,
+            "oauth_url": oauth_url,
+            "pending_account_id": pending_account_id,
+            "add_error": add_error,
         },
     )
+
+
+@app.get(
+    "/setup/google", response_class=HTMLResponse, dependencies=[Depends(_require_admin)]
+)
+async def setup_google_page(request: Request) -> HTMLResponse:
+    """Render the Google Calendar setup page."""
+    return await _render_google_page(request)
 
 
 @app.post(
@@ -528,13 +654,13 @@ async def setup_google_page(request: Request):
 )
 async def setup_google_submit(
     request: Request, gcal_oauth_json: UploadFile = File(...)
-):
+) -> RedirectResponse:
+    """Upload the OAuth app credentials JSON."""
     secrets_dir = _secrets_dir()
     secrets_dir.mkdir(parents=True, exist_ok=True)
     target = secrets_dir / "gcal-oauth.json"
 
     raw = await gcal_oauth_json.read()
-    # Basic validation: must be valid JSON.
     try:
         import json
 
@@ -544,7 +670,108 @@ async def setup_google_submit(
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
 
     target.write_bytes(raw)
+    return RedirectResponse(url="/setup/google", status_code=303)
 
+
+@app.post(
+    "/setup/google/add-account",
+    response_class=HTMLResponse,
+    dependencies=[Depends(_require_admin)],
+)
+async def setup_google_add_account(
+    request: Request, account_id: str = Form("")
+) -> HTMLResponse:
+    """Trigger MCP account auth and render the page with the OAuth URL."""
+    account_id = account_id.strip().lower()
+    if not account_id:
+        return await _render_google_page(request, add_error="Account ID cannot be empty.")
+
+    result, err = await call_mcp_tool(
+        url=_calendar_mcp_url(),
+        tool_name="manage-accounts",
+        params={"action": "add", "account_id": account_id},
+        timeout_s=8.0,
+    )
+    if err:
+        return await _render_google_page(
+            request, add_error=f"Could not contact Calendar MCP: {err}"
+        )
+
+    oauth_url = _extract_oauth_url(result)
+    if not oauth_url:
+        return await _render_google_page(
+            request,
+            add_error=f"MCP did not return an OAuth URL. Raw: {str(result)[:200]}",
+        )
+
+    return await _render_google_page(
+        request, oauth_url=oauth_url, pending_account_id=account_id
+    )
+
+
+@app.post(
+    "/setup/google/remove-account",
+    dependencies=[Depends(_require_admin)],
+)
+async def setup_google_remove_account(
+    request: Request, account_id: str = Form("")
+) -> RedirectResponse:
+    """Remove an authenticated Google account via the MCP."""
+    account_id = account_id.strip()
+    if account_id:
+        await call_mcp_tool(
+            url=_calendar_mcp_url(),
+            tool_name="manage-accounts",
+            params={"action": "remove", "account_id": account_id},
+            timeout_s=5.0,
+        )
+    return RedirectResponse(url="/setup/google", status_code=303)
+
+
+@app.post(
+    "/setup/google/preferences",
+    dependencies=[Depends(_require_admin)],
+)
+async def setup_google_save_preferences(request: Request) -> RedirectResponse:
+    """Parse the preferences form and save to calendar-preferences.json."""
+    import json as _json
+
+    form = await request.form()
+    default_write_account = (form.get("default_write_account") or "").strip() or None
+    default_write_calendar = (form.get("default_write_calendar") or "").strip() or None
+
+    # Build per-account exclusion lists from hidden known_calendars__ fields.
+    accounts_prefs: dict[str, Any] = {}
+    for key, value in form.multi_items():
+        if not key.startswith("known_calendars__"):
+            continue
+        account_id = key[len("known_calendars__"):]
+        try:
+            known: list[dict] = _json.loads(str(value))
+        except Exception:
+            known = []
+        included_ids: set[str] = {
+            v for k, v in form.multi_items() if k == f"included__{account_id}"
+        }
+        excluded = [
+            cal["id"] for cal in known
+            if cal.get("id") and cal["id"] not in included_ids
+        ]
+        default_cal = (form.get(f"default_calendar__{account_id}") or "").strip() or None
+        accounts_prefs[account_id] = {
+            "default_calendar": default_cal,
+            "excluded_calendars": excluded,
+        }
+
+    write_prefs(
+        _prefs_path(),
+        {
+            "version": 1,
+            "default_write_account": default_write_account,
+            "default_write_calendar": default_write_calendar,
+            "accounts": accounts_prefs,
+        },
+    )
     return RedirectResponse(url="/setup/google", status_code=303)
 
 
