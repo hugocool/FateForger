@@ -195,15 +195,11 @@ class Settings(BaseSettings):
     )
     tasks_defaults_memory_backend: str = Field(default="constraint_mcp")
 
-    # Legacy Mem0 Memory Configuration (deprecated)
-    mem0_user_id: str = Field(default="timeboxing")
-    mem0_api_key: str = Field(default="")
-    mem0_is_cloud: bool = Field(default=False)
-    mem0_local_config_json: str = Field(default="")
-    mem0_query_limit: int = Field(default=200)
-
     # Graphiti Memory Configuration
     graphiti_user_id: str = Field(default="timeboxing")
+    graphiti_mcp_server_url: str = Field(default="")
+    graphiti_store_backend: str = Field(default="neo4j")
+    graphiti_neo4j_uri: str = Field(default="")
     graphiti_is_cloud: bool = Field(default=False)
     graphiti_api_key: str = Field(default="")
     graphiti_cloud_url: str = Field(default="")
@@ -282,11 +278,11 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_tasks_defaults_memory_backend(cls, value: str) -> str:
         backend = (value or "").strip().lower()
-        if backend in {"constraint_mcp", "mem0", "disabled", "inherit_timeboxing"}:
+        if backend in {"constraint_mcp", "graphiti", "disabled", "inherit_timeboxing"}:
             return backend
         raise ValueError(
             "TASKS_DEFAULTS_MEMORY_BACKEND must be one of: "
-            "constraint_mcp, mem0, disabled, inherit_timeboxing"
+            "constraint_mcp, graphiti, disabled, inherit_timeboxing"
         )
 
     @field_validator("autogen_events_log")
@@ -369,35 +365,74 @@ class Settings(BaseSettings):
             )
         return text
 
+    @field_validator("graphiti_mcp_server_url")
+    @classmethod
+    def _validate_graphiti_mcp_server_url(cls, value: str) -> str:
+        text = (value or "").strip()
+        if not text:
+            return ""
+        parsed = urlparse(text)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(
+                "GRAPHITI_MCP_SERVER_URL must be absolute and start with http:// or https://"
+            )
+        if not parsed.path or parsed.path == "/":
+            raise ValueError(
+                "GRAPHITI_MCP_SERVER_URL must include explicit path (e.g. /sse or /mcp)"
+            )
+        return text
+
+    @field_validator("graphiti_store_backend")
+    @classmethod
+    def _validate_graphiti_store_backend(cls, value: str) -> str:
+        text = (value or "").strip().lower()
+        if not text:
+            return "neo4j"
+        if text != "neo4j":
+            raise ValueError("GRAPHITI_STORE_BACKEND must be 'neo4j'")
+        return text
+
+    @field_validator("graphiti_neo4j_uri")
+    @classmethod
+    def _validate_graphiti_neo4j_uri(cls, value: str) -> str:
+        text = (value or "").strip()
+        if not text:
+            return ""
+        parsed = urlparse(text)
+        if parsed.scheme not in {"bolt", "neo4j"} or not parsed.netloc:
+            raise ValueError(
+                "GRAPHITI_NEO4J_URI must be absolute and start with bolt:// or neo4j://"
+            )
+        return text
+
     @model_validator(mode="after")
     def _validate_runtime_invariants(self) -> "Settings":
         if not self.slack_socket_mode:
             raise ValueError("SLACK_SOCKET_MODE must remain enabled")
-        needs_mem0_runtime = self.timeboxing_memory_backend == "mem0" or (
-            self.tasks_defaults_memory_backend == "mem0"
-        )
-        if self.tasks_defaults_memory_backend == "inherit_timeboxing":
-            needs_mem0_runtime = needs_mem0_runtime or (
-                self.timeboxing_memory_backend == "mem0"
+        graphiti_selected = self.timeboxing_memory_backend == "graphiti"
+        if self.tasks_defaults_memory_backend == "graphiti":
+            graphiti_selected = True
+        if (
+            self.tasks_defaults_memory_backend == "inherit_timeboxing"
+            and self.timeboxing_memory_backend == "graphiti"
+        ):
+            graphiti_selected = True
+        if graphiti_selected and not self.graphiti_mcp_server_url.strip():
+            raise ValueError(
+                "Graphiti backend requires GRAPHITI_MCP_SERVER_URL in active runtime paths."
             )
-        if needs_mem0_runtime:
-            local_config = (self.mem0_local_config_json or "").strip()
-            has_local_runtime = bool(local_config)
-            has_cloud_runtime = bool(self.mem0_is_cloud and self.mem0_api_key.strip())
-            if not (has_local_runtime or has_cloud_runtime):
-                raise ValueError(
-                    "Mem0 backend requires MEM0_LOCAL_CONFIG_JSON or "
-                    "(MEM0_IS_CLOUD=1 + MEM0_API_KEY)."
-                )
-        if self.timeboxing_memory_backend == "graphiti" and self.graphiti_is_cloud:
-            has_cloud_runtime = bool(
-                self.graphiti_api_key.strip() and self.graphiti_cloud_url.strip()
+        if graphiti_selected and self.graphiti_store_backend != "neo4j":
+            raise ValueError(
+                "Graphiti backend requires GRAPHITI_STORE_BACKEND=neo4j."
             )
-            if not has_cloud_runtime:
-                raise ValueError(
-                    "Graphiti cloud backend requires GRAPHITI_API_KEY and "
-                    "GRAPHITI_CLOUD_URL when GRAPHITI_IS_CLOUD=1."
-                )
+        if graphiti_selected and not self.graphiti_neo4j_uri.strip():
+            raise ValueError(
+                "Graphiti backend requires GRAPHITI_NEO4J_URI in active runtime paths."
+            )
+        if (self.graphiti_local_config_json or "").strip():
+            raise ValueError(
+                "GRAPHITI_LOCAL_CONFIG_JSON is no longer supported; use GRAPHITI_MCP_SERVER_URL backed by Neo4j."
+            )
         return self
 
 

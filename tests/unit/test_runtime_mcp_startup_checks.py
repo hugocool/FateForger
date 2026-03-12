@@ -131,6 +131,32 @@ async def test_probe_runtime_mcp_server_handles_empty_tools_and_timeout(
     assert "timed out" in (timeout_result.error or "")
 
 
+async def test_probe_runtime_mcp_server_rejects_graphiti_missing_required_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = runtime_module._McpStartupServer(
+        name="graphiti-mcp",
+        url="http://graphiti:8000/mcp",
+        timeout_s=1.0,
+        required_tools=("add_memory", "get_episodes"),
+    )
+
+    class _Tool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    async def _tools(*, url: str, headers, timeout_s: float) -> list:
+        _ = (url, headers, timeout_s)
+        return [_Tool("add_memory")]
+
+    monkeypatch.setattr(runtime_module, "_discover_mcp_tools", _tools)
+    result = await runtime_module._probe_runtime_mcp_server(server)  # noqa: SLF001
+
+    assert result.ok is False
+    assert "missing required tools" in (result.error or "")
+    assert "get_episodes" in (result.error or "")
+
+
 def test_runtime_mcp_servers_uses_resolved_tool_urls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -169,6 +195,66 @@ def test_runtime_mcp_servers_uses_resolved_tool_urls(
     assert servers[0].optional is False
     assert servers[1].optional is True
     assert servers[2].optional is True
+
+
+def test_runtime_mcp_servers_includes_graphiti_when_graphiti_backend_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "mcp_calendar_server_url",
+        "http://calendar-from-settings:3000",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "timeboxing_memory_backend",
+        "graphiti",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "tasks_defaults_memory_backend",
+        "inherit_timeboxing",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "graphiti_mcp_server_url",
+        "http://graphiti-mcp:8000/mcp",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "graphiti_store_backend",
+        "neo4j",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "graphiti_neo4j_uri",
+        "bolt://neo4j:7687",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "fateforger.tools.notion_mcp.get_notion_mcp_url",
+        lambda: "http://notion-from-resolver:3001/mcp",
+    )
+    monkeypatch.setattr(
+        "fateforger.tools.ticktick_mcp.get_ticktick_mcp_url",
+        lambda: "http://ticktick-from-resolver:8000/mcp",
+    )
+    monkeypatch.setattr(
+        "fateforger.tools.notion_mcp.get_notion_mcp_headers",
+        lambda: {"Authorization": "Bearer test-token"},
+    )
+
+    servers = runtime_module._runtime_mcp_servers()  # noqa: SLF001
+
+    graphiti_server = next(server for server in servers if server.name == "graphiti-mcp")
+    assert graphiti_server.url == "http://graphiti-mcp:8000/mcp"
+    assert graphiti_server.optional is False
+    assert graphiti_server.required_tools == ("add_memory", "get_episodes")
 
 
 async def test_assert_mcp_servers_available_optional_failures_do_not_raise(
@@ -226,3 +312,43 @@ async def test_assert_mcp_servers_available_required_failure_still_raises(
     assert "calendar-mcp" in message
     # optional server should NOT appear in the hard-failure message
     assert "notion-mcp" not in message
+
+
+def test_log_memory_runtime_identity_reports_graphiti_neo4j(caplog, monkeypatch) -> None:
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "timeboxing_memory_backend",
+        "graphiti",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "tasks_defaults_memory_backend",
+        "inherit_timeboxing",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "graphiti_store_backend",
+        "neo4j",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "graphiti_mcp_server_url",
+        "http://graphiti-mcp:8000/mcp",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_module.settings,
+        "graphiti_neo4j_uri",
+        "bolt://neo4j:7687",
+        raising=False,
+    )
+    caplog.set_level("INFO")
+
+    runtime_module._log_memory_runtime_identity()  # noqa: SLF001
+
+    messages = [rec.message for rec in caplog.records]
+    assert any("graphiti_store_backend=neo4j" in msg for msg in messages)
+    assert any("graphiti_neo4j_uri=bolt://neo4j:7687" in msg for msg in messages)

@@ -1,0 +1,258 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "FateForger: Ensure Docker",
+      "detail": "Check if Docker is running and start Docker Desktop if needed",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/dev/ensure_docker.sh",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Dev Down (All)",
+      "detail": "Stops all FateForger docker-compose services (including profiled ones) and the TRMNL dev stack.",
+      "type": "shell",
+      "command": "zsh",
+      "args": [
+        "-lc",
+        "docker compose --profile notion --profile ticktick --profile toggl down --remove-orphans >/dev/null 2>&1 || true; docker compose down --remove-orphans >/dev/null 2>&1 || true; docker compose -f src/trmnl_frontend/docker-compose.yml down >/dev/null 2>&1 || true"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Dev Up (Infra Clean)",
+      "detail": "Ensures a clean slate (down everything) then starts calendar-mcp, Graphiti MCP, Neo4j, ticktick-mcp and toggl-mcp for local Slack bot debug.",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/dev/compose_up_debug_infra.sh",
+      "args": ["--clean-all"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "dependsOn": ["FateForger: Ensure Docker"],
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Up (Infra for Debug)",
+      "detail": "Starts calendar-mcp, Graphiti MCP, Neo4j, ticktick-mcp and toggl-mcp; stops dockerized slack-bot to avoid two Socket Mode connections.",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/dev/compose_up_debug_infra.sh",
+      "args": ["--stop-slack-bot"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "dependsOn": ["FateForger: Ensure Docker"],
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Observability Up",
+      "detail": "Starts local Prometheus + Grafana stack for audit/debug sessions.",
+      "type": "shell",
+      "command": "zsh",
+      "args": [
+        "-lc",
+        "OBS_GRAFANA_PUBLIC_PORT=${OBS_GRAFANA_PUBLIC_PORT:-3300} docker compose -f observability/docker-compose.yml up -d"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "dependsOn": ["FateForger: Ensure Docker"],
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Observability Down",
+      "detail": "Stops local Prometheus + Grafana stack started for debugging.",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "-f", "observability/docker-compose.yml", "down"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Up (Infra + Observability for Debug)",
+      "detail": "Starts infra MCP plus local observability stack used by Slack audit workflow.",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "FateForger: Compose Up (Infra for Debug)",
+        "FateForger: Observability Up"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Down (Infra + Observability)",
+      "detail": "Stops local observability and compose stack after debug session.",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "FateForger: Observability Down",
+        "FateForger: Compose Down"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Stop (Slack Bot)",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "stop", "slack-bot"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Up (Core)",
+      "type": "shell",
+      "command": "docker",
+      "args": [
+        "compose",
+        "up",
+        "-d",
+        "--build",
+        "slack-bot",
+        "calendar-mcp"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Up (Dev Mode)",
+      "detail": "Starts stack with source code mounted and auto-reload enabled (watchfiles)",
+      "type": "shell",
+      "command": "docker",
+      "args": [
+        "compose",
+        "-f",
+        "docker-compose.yml",
+        "-f",
+        "docker-compose.dev.yml",
+        "up",
+        "-d",
+        "slack-bot",
+        "calendar-mcp"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Up (Everything)",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "--profile", "notion", "up", "-d", "--build"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Up (MCP Only)",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "up", "-d", "calendar-mcp"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Calendar MCP Auth (Interactive)",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "--profile", "auth", "run", "--rm", "calendar-mcp-auth"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Up (Optional: Notion MCP)",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "--profile", "notion", "up", "-d", "notion-mcp"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Up (Optional: TickTick MCP)",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "--profile", "ticktick", "up", "-d", "ticktick-mcp"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Up (Optional: Toggl MCP)",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "--profile", "toggl", "up", "-d", "toggl-mcp"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Down",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "down"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Verify Stack",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["scripts/dev/verify_stack.py"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: Compose Logs (Tail)",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "logs", "-f", "--tail", "200"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "FateForger: TRMNL Dev Server",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "up"],
+      "options": {
+        "cwd": "${workspaceFolder}/src/trmnl_frontend"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": false,
+        "showReuseMessage": false
+      },
+      "problemMatcher": [],
+      "detail": "🎨 Starts TRMNL preview with hot reload (http://localhost:4567)",
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      }
+    }
+  ]
+}

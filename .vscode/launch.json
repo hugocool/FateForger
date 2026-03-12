@@ -1,0 +1,91 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "🎨 TRMNL Dashboard (Dev Server)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": [
+        "compose",
+        "-f",
+        "${workspaceFolder}/src/trmnl_frontend/docker-compose.yml",
+        "up"
+      ],
+      "cwd": "${workspaceFolder}/src/trmnl_frontend",
+      "console": "integratedTerminal",
+      "serverReadyAction": {
+        "pattern": "Listening on http://0\\.0\\.0\\.0:4567",
+        "uriFormat": "http://localhost:4567",
+        "action": "openExternally"
+      },
+      "presentation": {
+        "hidden": false,
+        "group": "FateForger",
+        "order": 1
+      }
+    },
+    {
+      "name": "FateForger: Slack Bot (Socket Mode)",
+      "type": "python",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "module": "fateforger.slack_bot.bot",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "preLaunchTask": "FateForger: Compose Up (Infra for Debug)",
+      "postDebugTask": "FateForger: Compose Down",
+      "presentation": {
+        "hidden": false,
+        "group": "FateForger",
+        "order": 2
+      }
+    },
+    {
+      "name": "FateForger: Slack Bot (Debug + Auto Reload)",
+      "type": "python",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "program": "${workspaceFolder}/scripts/dev/slack_bot_dev.py",
+      "justMyCode": true,
+      "subProcess": true,
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "OBS_PROMETHEUS_ENABLED": "1",
+        "OBS_PROMETHEUS_PORT": "9464",
+        "OBS_LLM_AUDIT_ENABLED": "1",
+        "OBS_LLM_AUDIT_MODE": "sanitized",
+        "OBS_LLM_AUDIT_MAX_CHARS": "2000",
+        "FF_DISABLE_WATCH": "1",
+        "GRAPHITI_NEO4J_URI": "bolt://localhost:7687"
+      },
+      "preLaunchTask": "FateForger: Compose Up (Infra + Observability for Debug)",
+      "postDebugTask": "FateForger: Compose Down (Infra + Observability)",
+      "presentation": {
+        "hidden": false,
+        "group": "FateForger",
+        "order": 3
+      }
+    },
+    {
+      "name": "FateForger: slackbot",
+      "type": "python",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "program": "${workspaceFolder}/scripts/dev/slack_bot_dev.py",
+      "justMyCode": true,
+      "subProcess": true,
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "GRAPHITI_NEO4J_URI": "bolt://localhost:7687"
+      },
+      "preLaunchTask": "FateForger: Dev Up (Infra Clean)",
+      "postDebugTask": "FateForger: Dev Down (All)",
+      "presentation": {
+        "hidden": false,
+        "group": "FateForger",
+        "order": 1
+      }
+    }
+  ]
+}

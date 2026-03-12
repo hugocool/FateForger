@@ -162,7 +162,7 @@ async def test_explicit_defaults_command_works_without_pending_state(
 
 
 @pytest.mark.asyncio
-async def test_defaults_fallback_cache_reused_when_durable_memory_unavailable(
+async def test_defaults_in_memory_cache_reused_within_agent_when_durable_memory_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = _build_agent(monkeypatch)
