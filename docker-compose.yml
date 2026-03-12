@@ -80,6 +80,7 @@ services:
     volumes:
       - app_data:/app/data
       - poetry-cache:/root/.cache/pypoetry
+      - ./secrets:/app/secrets:ro  # calendar-preferences.json + future secrets (read-only)
     networks:
       - admonish-network
     restart: unless-stopped
