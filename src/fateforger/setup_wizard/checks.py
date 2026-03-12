@@ -89,9 +89,23 @@ async def _probe_mcp_tools(
 
 
 def _extract_text_from_result(result: Any) -> str | None:
-    """Extract plain text from an MCP tool call result."""
+    """Extract plain text from an MCP tool call result.
+
+    Handles: plain str, dict with content list, dict with text/url fields,
+    and list of TextContent-like objects (autogen MCP tool responses).
+    """
     if isinstance(result, str):
         return result
+    if isinstance(result, list):
+        # autogen returns [TextContent(type='text', text='...')] for MCP tool results
+        for item in result:
+            if hasattr(item, "type") and getattr(item, "type", "") == "text":
+                text = getattr(item, "text", None)
+                if text is not None:
+                    return text
+            if isinstance(item, dict) and item.get("type") == "text":
+                return item.get("text")
+        return None
     if isinstance(result, dict):
         content = result.get("content")
         if isinstance(content, list):

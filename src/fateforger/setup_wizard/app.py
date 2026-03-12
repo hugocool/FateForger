@@ -118,14 +118,19 @@ def _extract_oauth_url(result: Any) -> str | None:
     if isinstance(text, str) and text.startswith("http"):
         return text
     if isinstance(result, dict):
-        url = result.get("url") or result.get("authUrl") or result.get("oauth_url")
+        url = (
+            result.get("url")
+            or result.get("authUrl")
+            or result.get("auth_url")
+            or result.get("oauth_url")
+        )
         if url:
             return str(url)
     if isinstance(text, str):
         try:
             parsed = _json.loads(text)
             if isinstance(parsed, dict):
-                url = parsed.get("url") or parsed.get("authUrl")
+                url = parsed.get("url") or parsed.get("authUrl") or parsed.get("auth_url")
                 if url:
                     return str(url)
         except Exception:
