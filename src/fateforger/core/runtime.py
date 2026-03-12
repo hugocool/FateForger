@@ -83,6 +83,7 @@ class _McpStartupServer:
     headers: dict[str, str] | None = None
     timeout_s: float = 5.0
     optional: bool = False
+    required_tools: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -152,7 +153,7 @@ def _runtime_mcp_servers() -> list[_McpStartupServer]:
     from fateforger.tools.notion_mcp import get_notion_mcp_headers, get_notion_mcp_url
     from fateforger.tools.ticktick_mcp import get_ticktick_mcp_url
 
-    return [
+    servers = [
         _McpStartupServer(
             name="calendar-mcp",
             url=settings.mcp_calendar_server_url.strip(),
@@ -172,6 +173,27 @@ def _runtime_mcp_servers() -> list[_McpStartupServer]:
             optional=True,
         ),
     ]
+
+    graphiti_enabled = settings.timeboxing_memory_backend == "graphiti"
+    if settings.tasks_defaults_memory_backend == "graphiti":
+        graphiti_enabled = True
+    elif (
+        settings.tasks_defaults_memory_backend == "inherit_timeboxing"
+        and settings.timeboxing_memory_backend == "graphiti"
+    ):
+        graphiti_enabled = True
+
+    if graphiti_enabled:
+        servers.append(
+            _McpStartupServer(
+                name="graphiti-mcp",
+                url=settings.graphiti_mcp_server_url.strip(),
+                timeout_s=5.0,
+                required_tools=("add_memory", "get_episodes"),
+            )
+        )
+
+    return servers
 
 
 async def _discover_mcp_tools(
@@ -228,10 +250,55 @@ async def _probe_runtime_mcp_server(
             tool_count=0,
             error="server returned no tools",
         )
+    missing_required_tools = []
+    available_tool_names = {
+        str(getattr(tool, "name", "") or "").strip() for tool in tools
+    }
+    if server.required_tools:
+        missing_required_tools = [
+            name for name in server.required_tools if name not in available_tool_names
+        ]
+    if missing_required_tools:
+        return _McpStartupProbeResult(
+            server=server,
+            ok=False,
+            tool_count=len(tools),
+            error=(
+                "missing required tools: " + ", ".join(missing_required_tools)
+            ),
+        )
     return _McpStartupProbeResult(
         server=server,
         ok=True,
         tool_count=len(tools),
+    )
+
+
+def _log_memory_runtime_identity() -> None:
+    graphiti_enabled = settings.timeboxing_memory_backend == "graphiti"
+    if settings.tasks_defaults_memory_backend == "graphiti":
+        graphiti_enabled = True
+    elif (
+        settings.tasks_defaults_memory_backend == "inherit_timeboxing"
+        and settings.timeboxing_memory_backend == "graphiti"
+    ):
+        graphiti_enabled = True
+
+    if not graphiti_enabled:
+        logger.info(
+            "Durable memory runtime identity timeboxing_backend=%s tasks_defaults_backend=%s",
+            settings.timeboxing_memory_backend,
+            settings.tasks_defaults_memory_backend,
+        )
+        return
+
+    logger.info(
+        "Durable memory runtime identity timeboxing_backend=%s tasks_defaults_backend=%s graphiti_store_backend=%s graphiti_mcp_server_url=%s graphiti_neo4j_uri=%s",
+        settings.timeboxing_memory_backend,
+        settings.tasks_defaults_memory_backend,
+        settings.graphiti_store_backend,
+        settings.graphiti_mcp_server_url,
+        settings.graphiti_neo4j_uri,
     )
 
 
@@ -310,6 +377,7 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
         git_identity.tag,
         git_identity.dirty,
     )
+    _log_memory_runtime_identity()
     await _assert_mcp_servers_available()
     scheduler = _create_scheduler(settings.database_url)
     scheduler.start()

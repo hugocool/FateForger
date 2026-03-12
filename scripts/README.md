@@ -63,7 +63,6 @@ This directory contains utility and setup scripts for the Admonish productivity 
 | `docker_utils.py` | Docker container management utilities. |
 | `dev_utils.py` | Development environment setup and maintenance. |
 | `constraint_mcp_server.py` | Constraint-memory MCP server (wraps Notion access for durable timeboxing preferences). |
-| `migrate_notion_constraints_to_mem0.py` | One-shot migration from Notion TB memory databases into Mem0 durable storage. |
 | `seed_constraint_types.py` | Seeds constraint type definitions into the database. |
 | `timebox_patch_demo.py` | Demo script for timebox patching flow. |
 | `auth_calendar.sh` | Google Calendar OAuth authentication helper. |
@@ -73,6 +72,7 @@ This directory contains utility and setup scripts for the Admonish productivity 
 | File | Purpose |
 |------|---------|
 | `verify_stack.py` | Verifies the Docker Compose stack is healthy. |
+| `compose_up_debug_infra.sh` | Starts the VS Code debug infra stack, resolves the Graphiti public port from `.env`, and brings up `calendar-mcp`, `neo4j`, `graphiti-mcp`, `ticktick-mcp`, and `toggl-mcp`. |
 | `slack_bot_dev.py` | Local Slack bot dev runner. |
 | `slack_user_timeboxing_driver.py` | Interactive driver that posts as a real Slack user token (`xoxp`) to exercise the true Slack inbound path in a timeboxing thread. |
 | `slack_mcp_client.sh` | Starts/verifies/stops `tuannvm/slack-mcp-client` via Docker Compose using `.env` tokens with retry + healthcheck cycle. |
@@ -156,25 +156,6 @@ poetry run python scripts/init_db.py
 # Setup test database  
 poetry run python scripts/setup_test_db.py
 
-# Dry-run Notion -> Mem0 migration
-poetry run python scripts/migrate_notion_constraints_to_mem0.py
-
-# Apply migration (constraints + events-as-reflections)
-poetry run python scripts/migrate_notion_constraints_to_mem0.py --apply --include-events
-
-# If parent page access is restricted, use explicit TB DB IDs instead
-poetry run python scripts/migrate_notion_constraints_to_mem0.py \
-  --apply \
-  --topics-db-id <topics_db_id> \
-  --types-db-id <types_db_id> \
-  --constraints-db-id <constraints_db_id> \
-  --windows-db-id <windows_db_id> \
-  --events-db-id <events_db_id>
-
-# Temporary fallback: migrate from local sqlite mirror table `timeboxing_constraints`
-poetry run python scripts/migrate_notion_constraints_to_mem0.py \
-  --source sqlite \
-  --apply
 ```
 
 ## Observability Runbook (Prometheus + Grafana + MCP)
@@ -225,3 +206,24 @@ Combined Slack audit loop:
    - `timebox_log_query.py sessions/events`
    - `timebox_log_query.py llm`
 4. Use `session_key`/`thread_ts`/`call_label` to isolate root cause and patch with tests first.
+
+
+## Graphiti Durable Memory Stack
+
+For the active durable-memory runtime path, start Neo4j + Graphiti MCP from the repo root:
+
+```bash
+docker compose up -d neo4j graphiti-mcp
+```
+
+Or use the infra-only stack:
+
+```bash
+docker compose -f infra/docker-compose.yml up -d neo4j graphiti-mcp
+```
+
+Expected local endpoints:
+
+- Graphiti MCP: `http://localhost:${GRAPHITI_MCP_PUBLIC_PORT:-8000}/mcp` (helper scripts also fall back to legacy `GRAPHITI_MCP_HOST_PORT`)
+- Neo4j Bolt: `bolt://localhost:7687`
+- Neo4j Browser: `http://localhost:7474`

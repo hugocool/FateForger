@@ -71,32 +71,64 @@ def test_settings_rejects_unknown_timeboxing_memory_backend(monkeypatch) -> None
 
 def test_settings_rejects_graphiti_cloud_without_runtime_config(monkeypatch) -> None:
     monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
-    monkeypatch.setenv("GRAPHITI_IS_CLOUD", "true")
-    monkeypatch.delenv("GRAPHITI_API_KEY", raising=False)
-    monkeypatch.delenv("GRAPHITI_CLOUD_URL", raising=False)
+    monkeypatch.delenv("GRAPHITI_MCP_SERVER_URL", raising=False)
     with pytest.raises(ValueError):
         Settings()
 
 
-def test_settings_accepts_graphiti_with_local_runtime_config(monkeypatch) -> None:
+def test_settings_rejects_graphiti_with_local_runtime_config(monkeypatch) -> None:
     monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
-    monkeypatch.setenv("GRAPHITI_IS_CLOUD", "false")
     monkeypatch.setenv(
         "GRAPHITI_LOCAL_CONFIG_JSON", "{\"path\":\"./data/graphiti_memory.json\"}"
     )
-    settings = Settings()
-    assert settings.timeboxing_memory_backend == "graphiti"
+    monkeypatch.setenv("GRAPHITI_MCP_SERVER_URL", "http://graphiti-mcp:8000/mcp")
+    with pytest.raises(ValueError):
+        Settings()
 
 
-def test_settings_accepts_graphiti_cloud_with_required_fields(
+def test_settings_accepts_graphiti_with_mcp_server_url(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
-    monkeypatch.setenv("GRAPHITI_IS_CLOUD", "true")
-    monkeypatch.setenv("GRAPHITI_API_KEY", "gk_test")
-    monkeypatch.setenv("GRAPHITI_CLOUD_URL", "https://graphiti.example.com")
+    monkeypatch.setenv("GRAPHITI_MCP_SERVER_URL", "http://graphiti-mcp:8000/mcp")
+    monkeypatch.setenv("GRAPHITI_STORE_BACKEND", "neo4j")
+    monkeypatch.setenv("GRAPHITI_NEO4J_URI", "bolt://neo4j:7687")
     settings = Settings()
     assert settings.timeboxing_memory_backend == "graphiti"
+    assert settings.graphiti_mcp_server_url == "http://graphiti-mcp:8000/mcp"
+
+
+def test_settings_rejects_invalid_graphiti_mcp_url(monkeypatch) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPHITI_MCP_SERVER_URL", "graphiti-mcp:8000/mcp")
+    monkeypatch.setenv("GRAPHITI_STORE_BACKEND", "neo4j")
+    monkeypatch.setenv("GRAPHITI_NEO4J_URI", "bolt://neo4j:7687")
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_settings_rejects_mem0_task_defaults_backend(monkeypatch) -> None:
+    monkeypatch.setenv("TASKS_DEFAULTS_MEMORY_BACKEND", "mem0")
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_settings_rejects_graphiti_without_neo4j_uri(monkeypatch) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPHITI_MCP_SERVER_URL", "http://graphiti-mcp:8000/mcp")
+    monkeypatch.setenv("GRAPHITI_STORE_BACKEND", "neo4j")
+    monkeypatch.delenv("GRAPHITI_NEO4J_URI", raising=False)
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_settings_rejects_non_neo4j_graphiti_store_backend(monkeypatch) -> None:
+    monkeypatch.setenv("TIMEBOXING_MEMORY_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPHITI_MCP_SERVER_URL", "http://graphiti-mcp:8000/mcp")
+    monkeypatch.setenv("GRAPHITI_STORE_BACKEND", "falkordb")
+    monkeypatch.setenv("GRAPHITI_NEO4J_URI", "bolt://neo4j:7687")
+    with pytest.raises(ValueError):
+        Settings()
 
 
 def test_settings_rejects_invalid_notion_mcp_url(monkeypatch) -> None:
