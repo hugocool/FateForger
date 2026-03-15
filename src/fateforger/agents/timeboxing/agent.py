@@ -6663,20 +6663,29 @@ class TimeboxingFlowAgent(RoutedAgent):
             or str(aspect.get("schedule_start") or "").strip()
             or aspect.get("duration_min") is not None
         ):
-            if stage == TimeboxingStage.COLLECT_CONSTRAINTS:
-                if aspect_id and session_aspect_ids and aspect_id in session_aspect_ids:
-                    return True
-                return bool(
-                    aspect.get("is_startup_prefetch")
-                    or str(aspect.get("frame_slot") or "").strip()
-                    or str(aspect.get("schedule_start") or "").strip()
-                    or str(aspect.get("schedule_end") or "").strip()
-                )
-            return True
+            # Aspect is active in this session (e.g. user mentioned a market visit).
+            if aspect_id and session_aspect_ids and aspect_id in session_aspect_ids:
+                return True
+            # Fixed daily slot (morning ritual, gym slot) — always include.
+            if str(aspect.get("frame_slot") or "").strip():
+                return True
+            # Startup-prefetch constraints — always include at session open.
+            if aspect.get("is_startup_prefetch"):
+                return True
+            # Has aspect_id but that aspect is absent from this session → exclude.
+            # (e.g. "Market opening hours" when no market visit is planned.)
+            if aspect_id:
+                return False
+            # No aspect_id — generic schedule/duration metadata; include.
+            return bool(
+                str(aspect.get("schedule_start") or "").strip()
+                or str(aspect.get("schedule_end") or "").strip()
+                or aspect.get("duration_min") is not None
+            )
 
-        if (
-            constraint.necessity == ConstraintNecessity.MUST
-            and constraint.status == ConstraintStatus.LOCKED
+        if constraint.necessity == ConstraintNecessity.MUST and constraint.status in (
+            ConstraintStatus.LOCKED,
+            ConstraintStatus.PROPOSED,
         ):
             return True
 
@@ -6740,9 +6749,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 STARTUP_PREFETCH_TAG in tags
                 or (classification.is_startup_prefetch if classification else False)
             )
-            is_frame_anchor = bool(
-                classification and classification.frame_slot in {"sleep_target", "work_window"}
-            )
+            is_frame_anchor = bool(classification and classification.frame_slot)
             is_locked = constraint.status == ConstraintStatus.LOCKED
             if is_startup_prefetch or is_frame_anchor or is_locked or is_structured or has_temporal_window:
                 out.append(constraint)
@@ -6956,14 +6963,8 @@ class TimeboxingFlowAgent(RoutedAgent):
                     and session.base_snapshot is not None
                 ):
                     session.pending_submit = True
-                    submit_blocks = self._render_submit_prompt_blocks(
-                        session=session,
-                        text=(
-                            reply.content
-                            if isinstance(reply, TextMessage)
-                            else reply.text
-                        ),
-                    )
+                    # Auto-submit will trigger immediately after this inside on_user_reply
+                    submit_blocks = []
                 else:
                     session.pending_submit = False
             case _:
@@ -7236,14 +7237,11 @@ class TimeboxingFlowAgent(RoutedAgent):
             if (
                 session.stage == TimeboxingStage.REVIEW_COMMIT
                 and session.pending_submit
-                and decision is not None
-                and decision.action == "proceed"
-                and (decision.submit_intent or session.queued_submit_intent)
             ):
                 self._session_debug(
                     session,
-                    "nl_submit_from_reply",
-                    decision_action=decision.action,
+                    "auto_submit_on_review_commit",
+                    decision_action=decision.action if decision else None,
                     submit_mode="auto_nl",
                     submit_attempt_kind=self._submit_attempt_kind(session),
                 )
@@ -7288,11 +7286,8 @@ class TimeboxingFlowAgent(RoutedAgent):
                 reply=reply, session=session
             )
             outgoing = self._attach_presenter_blocks(reply=wrapped, session=session)
-            if (
-                decision is not None
-                and (decision.submit_intent or session.queued_submit_intent)
-                and session.stage == TimeboxingStage.REVIEW_COMMIT
-            ):
+
+            if session.stage == TimeboxingStage.REVIEW_COMMIT:
                 if (
                     session.pending_submit
                     and session.tb_plan is not None
@@ -7300,7 +7295,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 ):
                     self._session_debug(
                         session,
-                        "nl_submit_from_reply",
+                        "auto_submit_on_review_commit",
                         decision_action=decision.action,
                         submit_mode="auto_nl",
                         submit_attempt_kind=self._submit_attempt_kind(session),
@@ -7777,7 +7772,16 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
 
         if tx.status == "committed":
-            text = "Submitted to Google Calendar. You can undo this submission."
+            changes = []
+            if summary.created > 0:
+                changes.append(f"{summary.created} new events")
+            if summary.updated > 0:
+                changes.append(f"{summary.updated} updated events")
+            if summary.deleted > 0:
+                changes.append(f"{summary.deleted} deleted events")
+            change_str = ", ".join(changes) if changes else "No changes needed"
+            
+            text = f"✅ Submitted to Google Calendar ({change_str}). You can undo this submission if you'd like to revert."
         elif tx.status == "partial":
             first_error = (
                 summary.failed_details[0].get("error", "").strip()
