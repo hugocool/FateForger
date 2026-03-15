@@ -17,7 +17,7 @@ from dataclasses import dataclass
 class TimeboxingTimeouts:
     """Timeout configuration for timeboxing orchestration."""
 
-    stage_gate_s: float = 35.0
+    stage_gate_s: float = 90.0
     stage_decision_s: float = 20.0
     constraint_intent_s: float = 10.0
     constraint_interpret_s: float = 20.0
