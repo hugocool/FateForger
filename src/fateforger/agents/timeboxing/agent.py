@@ -1788,6 +1788,12 @@ class TimeboxingFlowAgent(RoutedAgent):
                         merged_record = incoming_record
                     lifecycle = dict(merged_record.get("lifecycle") or {})
                     lifecycle["uid"] = equivalent_uid
+                    lifecycle = _increment_session_appearances(lifecycle)
+                    if _should_auto_promote(
+                        session_appearances=int(lifecycle.get("session_appearances") or 0),
+                        necessity=str(merged_record.get("necessity") or ""),
+                    ):
+                        merged_record["status"] = ConstraintStatus.LOCKED.value
                     merged_record["lifecycle"] = lifecycle
                     patch_ops_fn = getattr(
                         store, "build_constraint_json_patch_ops", None
@@ -8516,6 +8522,21 @@ _FRAME_SLOT_ALIASES: dict[str, str] = {
     "dog": "dog_walk",
     "walk_dog": "dog_walk",
 }
+
+
+AUTO_PROMOTE_THRESHOLD: int = 3
+
+
+def _increment_session_appearances(lifecycle: dict[str, Any]) -> dict[str, Any]:
+    """Return a new lifecycle dict with session_appearances incremented by 1."""
+    updated = dict(lifecycle)
+    updated["session_appearances"] = int(lifecycle.get("session_appearances") or 0) + 1
+    return updated
+
+
+def _should_auto_promote(*, session_appearances: int, necessity: str) -> bool:
+    """Return True when a MUST-level constraint has been seen enough times to promote."""
+    return necessity == "MUST" and session_appearances >= AUTO_PROMOTE_THRESHOLD
 
 
 def _normalise_frame_slot(slot: str | None) -> str | None:
