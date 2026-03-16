@@ -8288,6 +8288,10 @@ def _constraints_from_memory(
         # hints["aspect_classification"] without keyword or regex scanning.
         aspect_cls = record.get("aspect_classification")
         if isinstance(aspect_cls, dict) and aspect_cls:
+            raw_slot = aspect_cls.get("frame_slot")
+            if raw_slot is not None:
+                aspect_cls = dict(aspect_cls)
+                aspect_cls["frame_slot"] = _normalise_frame_slot(raw_slot)
             hints["aspect_classification"] = aspect_cls
         confidence = record.get("confidence")
         parsed_confidence: float | None = None
@@ -8489,6 +8493,39 @@ def _constraint_count_summary_line(
     elif 0 < selected_total < applicable_total:
         parts.append(f"Selected for this stage: {selected_total}.")
     return " ".join(parts)
+
+
+_FRAME_SLOT_ALIASES: dict[str, str] = {
+    "evening_ritual": "evening_wind_down",
+    "evening_routine": "evening_wind_down",
+    "wind_down": "evening_wind_down",
+    "pre_sleep_prep": "shutdown",
+    "shutdown_ritual": "shutdown",
+    "bedtime_prep": "shutdown",
+    "pre_gym": "pre_gym_meal",
+    "pre_gym_oats": "pre_gym_meal",
+    "morning_routine": "morning_ritual",
+    "morning": "morning_ritual",
+    "commute": "commute_out",
+    "commute_to_work": "commute_out",
+    "commute_home": "commute_back",
+    "lunch": "lunch_break",
+    "sleep": "sleep_target",
+    "bed": "sleep_target",
+    "music": "music_making",
+    "dog": "dog_walk",
+    "walk_dog": "dog_walk",
+}
+
+
+def _normalise_frame_slot(slot: str | None) -> str | None:
+    """Normalise a frame_slot slug to its canonical form, returning as-is if novel."""
+    if not slot:
+        return None
+    normalised = str(slot).strip().lower()
+    if not normalised:
+        return None
+    return _FRAME_SLOT_ALIASES.get(normalised, normalised)
 
 
 # TODO: this should not be neccesary at all
