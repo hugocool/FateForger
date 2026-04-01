@@ -782,6 +782,47 @@ async def setup_google_save_preferences(request: Request) -> RedirectResponse:
     return RedirectResponse(url="/setup/google", status_code=303)
 
 
+@app.post(
+    "/setup/google/calendar-list",
+    dependencies=[Depends(_require_admin)],
+)
+async def setup_google_save_calendar_list(request: Request) -> RedirectResponse:
+    """Save the default calendar load list to calendar-preferences.json."""
+    form = await request.form()
+
+    # Collect selected calendar entries: form fields named "list_cal__<account>__<cal_id>"
+    calendars: list[dict[str, str]] = []
+    for key, _value in form.multi_items():
+        if not key.startswith("list_cal__"):
+            continue
+        parts = key[len("list_cal__"):].split("__", 1)
+        if len(parts) != 2:
+            continue
+        account, calendar_id = parts
+        calendars.append({"account": account, "calendar_id": calendar_id})
+
+    write_account = (form.get("list_write_account") or "").strip()
+    write_calendar_id = (form.get("list_write_calendar_id") or "").strip()
+
+    list_def: dict[str, Any] = {
+        "calendars": calendars,
+        "write_calendar": {"account": write_account, "calendar_id": write_calendar_id},
+    }
+
+    existing = read_prefs(_prefs_path())
+    existing_lists = existing.get("lists") or {}
+    existing_lists["default"] = list_def
+
+    write_prefs(
+        _prefs_path(),
+        {
+            **existing,
+            "lists": existing_lists,
+        },
+    )
+    return RedirectResponse(url="/setup/google", status_code=303)
+
+
 @app.get(
     "/setup/notion", response_class=HTMLResponse, dependencies=[Depends(_require_admin)]
 )

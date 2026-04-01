@@ -174,7 +174,83 @@
   {% endif %}
 </div>
 
-{# ── 4. Stack instructions ────────────────────────────────────────── #}
+{# ── 4. Default Calendar Load List ───────────────────────────────── #}
+<div class="card" style="margin-top:14px">
+  <h2>Default Calendar Load List</h2>
+  <p class="muted">
+    Choose which calendars to load when planning your day. All checked calendars
+    are fetched together in one request. The <strong>write target</strong> is where
+    patched or new events are saved.
+  </p>
+
+  {% if not accounts %}
+    <p class="pill warn" style="margin-top:10px">Add at least one account above before configuring the load list.</p>
+  {% else %}
+  <form method="post" action="/setup/google/calendar-list">
+
+    {% set current_list = prefs.lists.get("default", {}) if prefs.lists else {} %}
+    {% set current_cal_ids = [] %}
+    {% for entry in (current_list.get("calendars") or []) %}
+      {% set _ = current_cal_ids.append(entry.get("calendar_id")) %}
+    {% endfor %}
+
+    {% set current_wc = current_list.get("write_calendar", {}) %}
+    {% set current_write_id = current_wc.get("calendar_id", "") if current_wc else "" %}
+    {% set current_write_account = current_wc.get("account", "") if current_wc else "" %}
+
+    {% for account_id, cals in calendars_by_account.items() %}
+    <div class="hr"></div>
+    <p style="font-size:13px; font-weight:600; margin:12px 0 6px">{{ account_id }}</p>
+    {% for cal in cals %}
+    <label style="display:flex; align-items:center; gap:10px; margin:0 0 6px; cursor:pointer">
+      <input type="checkbox"
+             name="list_cal__{{ account_id }}__{{ cal.id }}"
+             value="{{ cal.id }}"
+             {% if cal.id in current_cal_ids or not current_cal_ids %}checked{% endif %}
+             style="width:auto; cursor:pointer; accent-color:var(--ok)" />
+      <span style="font-size:13px">{{ cal.summary }}{% if cal.primary %} <span class="muted">(primary)</span>{% endif %}</span>
+    </label>
+    {% endfor %}
+    {% endfor %}
+
+    <div class="hr"></div>
+    <label style="margin-top:12px">Write target account</label>
+    <select name="list_write_account" title="Write target account" style="width:100%; background:rgba(11,16,32,0.75); border:1px solid var(--border); border-radius:10px; padding:10px 12px; color:var(--text); font-size:13px; box-sizing:border-box">
+      <option value="">— choose —</option>
+      {% for account_id in accounts %}
+        <option value="{{ account_id }}" {% if current_write_account == account_id %}selected{% endif %}>{{ account_id }}</option>
+      {% endfor %}
+    </select>
+
+    <label style="margin-top:12px">Write target calendar</label>
+    <select name="list_write_calendar_id" title="Write target calendar" style="width:100%; background:rgba(11,16,32,0.75); border:1px solid var(--border); border-radius:10px; padding:10px 12px; color:var(--text); font-size:13px; box-sizing:border-box">
+      <option value="">— choose —</option>
+      {% for account_id, cals in calendars_by_account.items() %}
+        {% if cals %}
+        <optgroup label="{{ account_id }}">
+          {% for cal in cals %}
+            <option value="{{ cal.id }}" {% if current_write_id == cal.id %}selected{% endif %}>
+              {{ cal.summary }}{% if cal.primary %} (primary){% endif %}
+            </option>
+          {% endfor %}
+        </optgroup>
+        {% endif %}
+      {% endfor %}
+    </select>
+
+    <div class="actions" style="margin-top:18px">
+      <button class="btn" type="submit" style="color:var(--ok); border-color:rgba(45,212,191,0.4)">Save load list</button>
+    </div>
+  </form>
+
+  {% if current_list %}
+  <div class="hr"></div>
+  <p class="muted">Current list: {{ (current_list.get("calendars") or []) | length }} calendar(s) → write to <code>{{ current_write_id or "—" }}</code></p>
+  {% endif %}
+  {% endif %}
+</div>
+
+{# ── 5. Stack instructions ────────────────────────────────────────── #}
 <div class="card" style="margin-top:14px">
   <h2>Stack instructions</h2>
   <p class="muted">After uploading a new OAuth JSON or removing accounts, restart the calendar-mcp container:</p>
