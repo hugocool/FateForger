@@ -33,6 +33,7 @@ def read_prefs(prefs_path: Path) -> dict[str, Any]:
         "default_write_account": None,
         "default_write_calendar": None,
         "accounts": {},
+        "lists": {},
     }
     if not prefs_path.exists():
         return defaults
@@ -42,6 +43,7 @@ def read_prefs(prefs_path: Path) -> dict[str, Any]:
             return defaults
         merged = {**defaults, **raw}
         merged["accounts"] = raw.get("accounts") or {}
+        merged["lists"] = raw.get("lists") or {}
         return merged
     except Exception:
         return defaults

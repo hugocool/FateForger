@@ -768,6 +768,7 @@ async def setup_google_save_preferences(request: Request) -> RedirectResponse:
             "excluded_calendars": excluded,
         }
 
+    existing = read_prefs(_prefs_path())
     write_prefs(
         _prefs_path(),
         {
@@ -775,6 +776,7 @@ async def setup_google_save_preferences(request: Request) -> RedirectResponse:
             "default_write_account": default_write_account,
             "default_write_calendar": default_write_calendar,
             "accounts": accounts_prefs,
+            "lists": existing.get("lists") or {},
         },
     )
     return RedirectResponse(url="/setup/google", status_code=303)

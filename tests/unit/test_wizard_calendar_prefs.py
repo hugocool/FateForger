@@ -89,3 +89,30 @@ def test_read_prefs_bad_json_returns_defaults(tmp_path: Path) -> None:
     p.write_text("not json")
     prefs = read_prefs(p)
     assert prefs["default_write_account"] is None
+
+
+def test_read_prefs_includes_lists_default(tmp_path: Path) -> None:
+    prefs = read_prefs(tmp_path / "nonexistent.json")
+    assert "lists" in prefs
+    assert prefs["lists"] == {}
+
+
+def test_read_prefs_preserves_lists(tmp_path: Path) -> None:
+    data = {
+        "version": 1,
+        "default_write_account": "work",
+        "default_write_calendar": "primary",
+        "accounts": {},
+        "lists": {
+            "default": {
+                "calendars": [{"account": "work", "calendar_id": "primary"}],
+                "write_calendar": {"account": "work", "calendar_id": "primary"},
+            }
+        },
+    }
+    p = tmp_path / "prefs.json"
+    p.write_text(json.dumps(data))
+    prefs = read_prefs(p)
+    assert "lists" in prefs
+    assert "default" in prefs["lists"]
+    assert prefs["lists"]["default"]["calendars"][0]["account"] == "work"
