@@ -19,13 +19,16 @@ import asyncio
 import cmd
 import os
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from fateforger.agents.timeboxing.patcher_context import PatchConversation
 from fateforger.agents.timeboxing.patching import TimeboxPatcher
 from fateforger.agents.timeboxing.planning_policy import STAGE4_REFINEMENT_PROMPT
 from fateforger.agents.timeboxing.tb_models import TBPlan
-from fateforger.agents.timeboxing.tb_ops import TBPatch
+
+if TYPE_CHECKING:
+    from fateforger.agents.timeboxing.tb_ops import TBPatch
 
 
 class PatchSession:
@@ -137,6 +140,7 @@ class PatchRepl(cmd.Cmd):
                 self._session._load_from_gcal(calendar_id=self._calendar_id, day=day, tz=self._tz)
             )
             self._session._set_plan(plan)
+            self._session.conversation.reset()
             print(f"Loaded {len(plan.events)} events.")
             self._print_summary(plan)
         except Exception as exc:
@@ -177,7 +181,7 @@ class PatchRepl(cmd.Cmd):
             print(f"Valid — {len(resolved)} events:")
             for r in resolved:
                 print(f"  {r.get('start_time', '?')}–{r.get('end_time', '?')}  [{r['t']}] {r['n']}")
-        except (ValueError, RuntimeError) as exc:
+        except Exception as exc:
             print(f"Error: {exc}")
 
     def do_submit(self, _arg: str) -> None:
@@ -206,9 +210,18 @@ class PatchRepl(cmd.Cmd):
         print("Bye.")
         return True
 
-    def do_exit(self, arg: str) -> bool:
+    def do_exit(self, _arg: str) -> bool:
         """exit  — Exit."""
-        return self.do_quit(arg)
+        return self.do_quit("")
+
+    def do_EOF(self, _arg: str) -> bool:
+        """Exit on Ctrl-D / EOF."""
+        print()
+        return self.do_quit("")
+
+    def emptyline(self) -> None:
+        """Do nothing on empty input (override default re-run behavior)."""
+        pass
 
     def _print_summary(self, plan: TBPlan) -> None:
         try:
