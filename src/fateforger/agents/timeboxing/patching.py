@@ -186,10 +186,12 @@ class TimeboxPatcher:
 
                 # Success — record turns and reset on full rebuild
                 if conversation is not None:
-                    conversation.append_user(user_text)
-                    conversation.append_assistant(last_assistant_text)
                     if any(op.op == "ra" for op in patch.ops):
+                        # Full rebuild — reset to fresh context (don't record this turn)
                         conversation.reset()
+                    else:
+                        conversation.append_user(user_text)
+                        conversation.append_assistant(last_assistant_text)
 
                 logger.info(
                     "timebox_patcher request_id=%s success attempt=%s/%s ops=%s",

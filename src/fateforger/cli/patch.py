@@ -168,6 +168,10 @@ class PatchRepl(cmd.Cmd):
                 self._session._set_plan(new_plan)
                 print("Plan updated.")
             else:
+                # NOTE: the conversation history inside apply_patch was already appended
+                # before control returned here. A rejected plan means self.plan is unchanged
+                # but the conversation now contains a user/assistant exchange for the
+                # discarded patch. Future patch calls will see that context.
                 print("Discarded.")
         except RuntimeError as exc:
             print(f"Error: {exc}")

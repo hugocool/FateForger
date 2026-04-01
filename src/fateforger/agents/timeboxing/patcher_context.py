@@ -191,7 +191,14 @@ class PatchConversation:
             self.turns = self.turns[-max_messages:]
 
     def to_autogen_messages(self) -> list[TextMessage]:
-        """Convert turns to AutoGen TextMessage list for agent.on_messages()."""
+        """Convert turns to AutoGen TextMessage list for agent.on_messages().
+
+        Note: AutoGen's TextMessage.to_model_message() always produces a UserMessage
+        regardless of source, so assistant turns in this history will be sent to the
+        LLM as user-role messages. This is a known limitation of TextMessage-based
+        history injection — the error context in ErrorFeedback.render() carries the
+        semantic weight for retries, not the role structure here.
+        """
         return [
             TextMessage(content=t["content"], source=t["role"])
             for t in self.turns
