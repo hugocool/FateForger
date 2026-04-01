@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from fateforger.core.calendar_preferences import CalendarAccountPrefs, CalendarPreferences
+from fateforger.core.calendar_preferences import (
+    CalendarAccountPrefs,
+    CalendarEntry,
+    CalendarList,
+    CalendarPreferences,
+)
 
 
 def test_load_missing_file_returns_defaults(tmp_path: Path) -> None:
@@ -73,3 +78,57 @@ def test_load_invalid_json_returns_defaults(tmp_path: Path) -> None:
     prefs = CalendarPreferences.load(p)
     assert prefs.default_write_account is None
     assert prefs.accounts == {}
+
+
+def test_load_with_lists(tmp_path: Path) -> None:
+    data = {
+        "default_write_account": "biolytics",
+        "default_write_calendar": "primary",
+        "accounts": {},
+        "lists": {
+            "default": {
+                "calendars": [
+                    {"account": "biolytics", "calendar_id": "primary"},
+                    {"account": "gerimedica", "calendar_id": "primary"},
+                ],
+                "write_calendar": {"account": "biolytics", "calendar_id": "primary"},
+            }
+        },
+    }
+    p = tmp_path / "prefs.json"
+    p.write_text(json.dumps(data))
+    prefs = CalendarPreferences.load(p)
+    assert "default" in prefs.lists
+    cal_list = prefs.lists["default"]
+    assert len(cal_list.calendars) == 2
+    assert cal_list.calendars[0].account == "biolytics"
+    assert cal_list.calendars[1].calendar_id == "primary"
+    assert cal_list.write_calendar.account == "biolytics"
+
+
+def test_load_without_lists_returns_empty(tmp_path: Path) -> None:
+    data = {"default_write_account": "work", "default_write_calendar": "primary"}
+    p = tmp_path / "prefs.json"
+    p.write_text(json.dumps(data))
+    prefs = CalendarPreferences.load(p)
+    assert prefs.lists == {}
+
+
+def test_load_lists_skips_malformed_entries(tmp_path: Path) -> None:
+    data = {
+        "lists": {
+            "default": {
+                "calendars": [
+                    {"account": "ok", "calendar_id": "primary"},
+                    "not-a-dict",
+                    {"calendar_id": "missing-account"},
+                ],
+                "write_calendar": {"account": "ok", "calendar_id": "primary"},
+            }
+        }
+    }
+    p = tmp_path / "prefs.json"
+    p.write_text(json.dumps(data))
+    prefs = CalendarPreferences.load(p)
+    assert len(prefs.lists["default"].calendars) == 1
+    assert prefs.lists["default"].calendars[0].account == "ok"
