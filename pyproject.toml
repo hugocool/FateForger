@@ -52,6 +52,7 @@ dependencies = [
 plan = "fateforger.bots.planner_bot:main"
 haunt = "fateforger.bots.haunter_bot:main"
 watch = "fateforger.bots.calendar_watch_server:main"
+patch = "fateforger.cli.patch:main"
 
 [tool.poetry]
 name = "fateforger"
