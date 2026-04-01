@@ -8,8 +8,6 @@ Three components:
 
 from __future__ import annotations
 
-import json
-
 from pydantic import BaseModel, ConfigDict
 
 from .tb_models import TBPlan

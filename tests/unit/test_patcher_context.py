@@ -1,7 +1,6 @@
 """Tests for PatcherContext, ErrorFeedback, and PatchConversation."""
 from __future__ import annotations
 
-import json
 from datetime import date, time, timedelta
 
 import pytest
