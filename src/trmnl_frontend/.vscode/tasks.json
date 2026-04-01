@@ -1,0 +1,25 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "TRMNL: Start Dev Server",
+      "type": "shell",
+      "command": "docker compose up",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": false,
+        "showReuseMessage": false
+      },
+      "options": {
+        "cwd": "${workspaceFolder}/src/trmnl_frontend"
+      },
+      "problemMatcher": [],
+      "detail": "Starts TRMNL preview with hot reload on http://localhost:3100"
+    }
+  ]
+}

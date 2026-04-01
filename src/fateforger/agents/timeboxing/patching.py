@@ -20,7 +20,7 @@ import logging
 import os
 import time
 from collections.abc import Iterator
-from typing import Any, Callable, Iterable, List, Literal
+from typing import Any, Callable, Iterable, Literal
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
@@ -28,74 +28,19 @@ from autogen_core import CancellationToken
 
 from fateforger.debug.diag import with_timeout
 from fateforger.llm import build_autogen_chat_client
-from fateforger.llm.toon import toon_encode
 
 from .actions import TimeboxAction
 from .constants import TIMEBOXING_TIMEOUTS
+from .patcher_context import ErrorFeedback, PatchConversation, PatcherContext
 from .planning_policy import (
-    PLANNING_POLICY_VERSION,
-    QUALITY_RUBRIC_PROMPT,
-    SHARED_PLANNING_POLICY_PROMPT,
-    STAGE3_OUTLINE_PROMPT,
-    STAGE4_REFINEMENT_PROMPT,
+    STAGE4_REFINEMENT_PROMPT as _DEFAULT_STAGE_RULES,
 )
 from .preferences import Constraint
 from .tb_models import TBPlan
 from .tb_ops import TBPatch, apply_tb_ops
 from .timebox import Timebox
-from .toon_views import constraints_rows
 
 logger = logging.getLogger(__name__)
-
-# ── System prompt for the patcher agent ──────────────────────────────────
-
-_PATCHER_SYSTEM_PROMPT = f"""\
-You are a timebox refinement assistant. You receive the current schedule
-as a TBPlan JSON, plus a user instruction and optional constraints.
-
-Planning policy version: {PLANNING_POLICY_VERSION}
-
-**Your task**: produce a single ``TBPatch`` JSON with the minimal set of
-typed domain operations that fulfills the user's request.
-
-Available operations (field ``op`` discriminator):
-- ``ae`` (AddEvents): add one or more events. Set ``after`` to insert position.
-- ``re`` (RemoveEvent): remove by index ``i``.
-- ``ue`` (UpdateEvent): merge partial changes onto event at index ``i``.
-- ``me`` (MoveEvent): reorder event from ``fr`` to ``to``.
-- ``ra`` (ReplaceAll): replace the entire event list (only for full rebuilds).
-
-Time placement (field ``a`` discriminator on ``p``):
-- ``ap`` (AfterPrev): starts after previous event ends; needs ``dur`` (ISO 8601).
-- ``bn`` (BeforeNext): ends when next event starts; needs ``dur``.
-- ``fs`` (FixedStart): pinned start time; needs ``st`` (HH:MM) and ``dur``.
-- ``fw`` (FixedWindow): fixed start and end; needs ``st`` and ``et``.
-
-Event types (``t``): M (meeting), C (commute), DW (deep work), SW (shallow work),
-PR (plan & review), H (habit), R (regeneration), BU (buffer), BG (background).
-
-Shared planning policy:
-{SHARED_PLANNING_POLICY_PROMPT}
-
-Stage-aware behavior (read the "Planning context" JSON included in user_message):
-- If context stage is ``Skeleton`` (or ``extra.mode`` is ``outline``), follow:
-{STAGE3_OUTLINE_PROMPT}
-- If context stage is ``Refine``, follow:
-{STAGE4_REFINEMENT_PROMPT}
-
-Quality rubric guidance:
-{QUALITY_RUBRIC_PROMPT}
-
-Rules:
-- Prefer fine-grained ops (ue, re, ae) over ra.
-- Keep immovable events (meetings, fixed windows) unchanged unless explicitly asked.
-- Maintain time chain validity: at least one fixed anchor must exist.
-- BG events must use fs or fw timing.
-- If validation feedback lists rule violations, satisfy those first with minimal edits
-  and then apply the requested refinement while preserving intent.
-
-Return ONLY the TBPatch JSON.
-"""
 
 
 class TimeboxPatcher:
@@ -142,6 +87,9 @@ class TimeboxPatcher:
         constraints: Iterable[Constraint] | None = None,
         actions: Iterable[TimeboxAction] | None = None,
         plan_validator: Callable[[TBPlan], Any] | None = None,
+        stage_rules: str | None = None,
+        conversation: PatchConversation | None = None,
+        memories: list[str] | None = None,
     ) -> tuple[TBPlan, TBPatch]:
         """Generate and apply a ``TBPatch`` to the current plan.
 
@@ -149,9 +97,13 @@ class TimeboxPatcher:
             current: The current ``TBPlan``.
             user_message: The user's refinement instruction.
             constraints: Active constraints (optional).
-            actions: Recent actions log (optional).
+            actions: Recent actions log (optional, kept for backward compat).
             plan_validator: Optional callback to validate the patched plan.
                 Any raised exception is fed back into retry guidance.
+            stage_rules: Stage-specific rules for the system prompt.
+                Defaults to ``STAGE4_REFINEMENT_PROMPT``.
+            conversation: Caller-owned multi-turn history for multi-turn retries.
+            memories: Optional list of memory/preference strings.
 
         Returns:
             Tuple of ``(patched_plan, patch)`` so callers can inspect
@@ -165,57 +117,61 @@ class TimeboxPatcher:
                 f"TimeboxPatcher.apply_patch only supports stage='Refine'. Got {stage!r}."
             )
         constraints_list = list(constraints or [])
-        actions_list = list(actions or [])
+        _stage_rules = stage_rules or _DEFAULT_STAGE_RULES
         request_id = f"patch-{int(time.time() * 1000)}"
-        agent = AssistantAgent(
-            name="TimeboxPatcherAgent",
-            model_client=self._model_client,
-            system_message=_patcher_system_prompt_with_schema(),
-            reflect_on_tool_use=False,
-        )
-        retry_feedback: str | None = None
+
+        original_plan = current
+        error_feedback: ErrorFeedback | None = None
+        last_assistant_text: str | None = None
         last_error: Exception | None = None
         last_retryable = True
+        patch: TBPatch | None = None
 
         for attempt in range(1, self._max_attempts + 1):
-            context = _build_context(
-                current,
-                user_message,
-                constraints_list,
-                actions_list,
-                retry_feedback=retry_feedback,
+            ctx = PatcherContext(
+                plan=current,
+                user_message=user_message,
+                stage_rules=_stage_rules,
+                constraints=constraints_list or None,
+                memories=memories,
+                error_feedback=error_feedback,
             )
+            agent = AssistantAgent(
+                name="TimeboxPatcherAgent",
+                model_client=self._model_client,
+                system_message=ctx.system_prompt(),
+                reflect_on_tool_use=False,
+            )
+            user_text = ctx.user_message_text()
+            prior_messages = conversation.to_autogen_messages() if conversation else []
+            new_user_msg = TextMessage(content=user_text, source="user")
+            messages_for_agent = prior_messages + [new_user_msg]
+
             logger.debug(
-                "timebox_patcher request_id=%s attempt=%s/%s events=%s constraints=%s actions=%s",
+                "timebox_patcher request_id=%s attempt=%s/%s events=%s",
                 request_id,
                 attempt,
                 self._max_attempts,
                 len(current.events),
-                len(constraints_list),
-                len(actions_list),
             )
-            if retry_feedback:
-                logger.debug(
-                    "timebox_patcher request_id=%s retry_feedback=%s",
-                    request_id,
-                    retry_feedback,
-                )
+
             try:
                 response = await with_timeout(
                     "timeboxing:patcher",
-                    agent.on_messages(
-                        [TextMessage(content=context, source="user")],
-                        CancellationToken(),
-                    ),
+                    agent.on_messages(messages_for_agent, CancellationToken()),
                     timeout_s=TIMEBOXING_TIMEOUTS.skeleton_draft_s,
                 )
-                raw_content = getattr(getattr(response, "chat_message", None), "content", None)
+                raw_content = getattr(
+                    getattr(response, "chat_message", None), "content", None
+                )
+                last_assistant_text = (
+                    raw_content if isinstance(raw_content, str) else str(raw_content or "")
+                )
                 logger.debug(
-                    "timebox_patcher request_id=%s attempt=%s raw_len=%s raw_content=%s",
+                    "timebox_patcher request_id=%s attempt=%s raw_len=%s",
                     request_id,
                     attempt,
-                    len(raw_content) if isinstance(raw_content, str) else None,
-                    _to_log_string(raw_content),
+                    len(last_assistant_text),
                 )
                 patch = _extract_patch(response)
                 logger.debug(
@@ -227,6 +183,16 @@ class TimeboxPatcher:
                 patched = apply_tb_ops(current, patch)
                 if plan_validator is not None:
                     plan_validator(patched)
+
+                # Success — record turns and reset on full rebuild
+                if conversation is not None:
+                    if any(op.op == "ra" for op in patch.ops):
+                        # Full rebuild — reset to fresh context (don't record this turn)
+                        conversation.reset()
+                    else:
+                        conversation.append_user(user_text)
+                        conversation.append_assistant(last_assistant_text)
+
                 logger.info(
                     "timebox_patcher request_id=%s success attempt=%s/%s ops=%s",
                     request_id,
@@ -235,18 +201,31 @@ class TimeboxPatcher:
                     len(patch.ops),
                 )
                 return patched, patch
+
             except Exception as exc:
                 last_error = exc
                 retryable = _is_retryable_patch_error(exc)
                 last_retryable = retryable
-                retry_feedback = _build_retry_feedback(error=exc)
+                error_msg = _build_retry_feedback(error=exc)
+                # Use model_construct to bypass min_length validation when no patch
+                # was produced (e.g. provider error before _extract_patch ran).
+                prior_patch = patch if patch is not None else TBPatch.model_construct(ops=[])
+                error_feedback = ErrorFeedback(
+                    original_plan=original_plan,
+                    prior_patch=prior_patch,
+                    partial_result=None,
+                    error_message=error_msg,
+                )
+                if conversation is not None and last_assistant_text:
+                    conversation.append_user(user_text)
+                    conversation.append_assistant(last_assistant_text)
                 logger.warning(
                     "timebox_patcher request_id=%s failed attempt=%s/%s retryable=%s error=%s",
                     request_id,
                     attempt,
                     self._max_attempts,
                     retryable,
-                    retry_feedback,
+                    error_msg,
                 )
                 if not retryable:
                     break
@@ -290,6 +269,7 @@ class TimeboxPatcher:
             user_message=user_message,
             constraints=constraints,
             actions=actions,
+            stage_rules=_DEFAULT_STAGE_RULES,
         )
         return tb_plan_to_timebox(patched_plan)
 
@@ -297,89 +277,15 @@ class TimeboxPatcher:
 # ── Internal helpers ─────────────────────────────────────────────────────
 
 
-def _patcher_system_prompt_with_schema() -> str:
-    """Build patcher system prompt with the TBPatch JSON schema appended.
-
-    The schema is included so the LLM produces valid JSON matching the
-    ``TBPatch`` structure without relying on ``response_format`` (which
-    rejects ``oneOf`` from discriminated unions).
-
-    Returns:
-        Full system prompt string.
-    """
-    schema_json = json.dumps(TBPatch.model_json_schema(), indent=2)
-    return (
-        _PATCHER_SYSTEM_PROMPT
-        + f"\n\nTBPatch JSON Schema:\n```json\n{schema_json}\n```"
-        + "\n\nReturn ONLY the raw TBPatch JSON object — no markdown fences, no commentary."
-    )
-
-
-def _build_context(
-    plan: TBPlan,
-    user_message: str,
-    constraints: Iterable[Constraint],
-    actions: Iterable[TimeboxAction],
-    retry_feedback: str | None = None,
-) -> str:
-    """Build the prompt context for the patcher agent.
-
-    Args:
-        plan: Current TBPlan.
-        user_message: User's refinement instruction.
-        constraints: Active constraints.
-        actions: Recent actions.
-
-    Returns:
-        Formatted prompt string.
-    """
-    plan_json = plan.model_dump_json(indent=2)
-    constraints_list = list(constraints)
-    constraints_toon = ""
-    if constraints_list:
-        constraints_toon = toon_encode(
-            name="constraints",
-            rows=constraints_rows(constraints_list),
-            fields=["name", "necessity", "scope", "status", "source", "description"],
-        )
-    actions_text = _format_actions(actions)
-
-    context = (
-        f"Current TBPlan:\n```json\n{plan_json}\n```\n\n"
-        f"User request: {user_message}\n\n"
-        f"{constraints_toon}\n"
-        f"Recent actions:\n{actions_text}\n\n"
-        "Produce the TBPatch JSON with minimal ops to fulfill the request."
-    )
-    if retry_feedback:
-        context += (
-            "\n\nPrevious patch attempt failed.\n"
-            f"Validation/apply error: {retry_feedback}\n"
-            "Return a corrected TBPatch that resolves this error while preserving user intent."
-        )
-    return context
-
-
-def _format_actions(actions: Iterable[TimeboxAction]) -> str:
-    """Format action log for prompt context.
-
-    Args:
-        actions: Iterable of TimeboxAction.
-
-    Returns:
-        Formatted string.
-    """
-    lines: List[str] = []
-    for action in actions:
-        details = []
-        if action.from_time:
-            details.append(f"from {action.from_time}")
-        if action.to_time:
-            details.append(f"to {action.to_time}")
-        detail_text = " ".join(details)
-        reason = f" | reason: {action.reason}" if action.reason else ""
-        lines.append(f"- {action.kind} {action.summary} {detail_text}".strip() + reason)
-    return "\n".join(lines) if lines else "- (none)"
+def _patcher_system_prompt_with_schema(stage_rules: str = "") -> str:
+    """Delegate to PatcherContext.system_prompt() — kept for backward compat."""
+    import datetime as _dt
+    dummy = TBPlan(date=_dt.date.today(), events=[])
+    return PatcherContext(
+        plan=dummy,
+        user_message="",
+        stage_rules=stage_rules or _DEFAULT_STAGE_RULES,
+    ).system_prompt()
 
 
 def _extract_patch(response: Any) -> TBPatch:
@@ -487,20 +393,6 @@ def _is_retryable_patch_error(error: Exception) -> bool:
         if status >= 500:
             return True
     return True
-
-
-def _to_log_string(value: Any) -> str:
-    """Render patcher values as compact log-safe strings."""
-    try:
-        if hasattr(value, "model_dump_json"):
-            text = value.model_dump_json()  # type: ignore[call-arg]
-        elif isinstance(value, (dict, list)):
-            text = json.dumps(value, ensure_ascii=False, default=str)
-        else:
-            text = str(value)
-    except Exception:
-        text = repr(value)
-    return _truncate(text, max_chars=6000)
 
 
 def _truncate(value: str, *, max_chars: int) -> str:

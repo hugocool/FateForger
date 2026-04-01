@@ -1,0 +1,93 @@
+{
+    "github.gitAuthentication": "hugocool",
+    "git.terminalAuthentication": false,
+    "github.auth.useGitHubCLI": true,
+    "editor.formatOnSave": true,
+    "files.autoSave": "onFocusChange",
+    // Python Configuration
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    "python.terminal.activateEnvironment": true,
+    "python.languageServer": "Pylance",
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.indexing": true,
+    "python.analysis.extraPaths": [
+        "./src"
+    ],
+    // Linting
+    "python.linting.enabled": true,
+    "python.linting.pylintEnabled": false,
+    "python.linting.flake8Enabled": true,
+    "python.linting.mypyEnabled": true,
+    "python.linting.flake8Args": [
+        "--max-line-length=88",
+        "--extend-ignore=E203,W503,E501"
+    ],
+    // Formatting
+    "black-formatter.args": [
+        "--line-length=88"
+    ],
+    // Editor Actions
+    "editor.codeActionsOnSave": {
+        "source.organizeImports": "explicit"
+    },
+    // Language-specific settings
+    "[python]": {
+        "editor.formatOnSave": true,
+        "editor.insertFinalNewline": true,
+        "editor.trimAutoWhitespace": true,
+        "editor.rulers": [
+            88
+        ]
+    },
+    "[markdown]": {
+        "editor.formatOnSave": false,
+        "editor.wordWrap": "on"
+    },
+    // File exclusions
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        "**/.mypy_cache": true,
+        "**/data/*.db": true,
+        "**/logs/*.log": true
+    },
+    // Testing
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.nosetestsEnabled": false,
+
+    // Jupyter
+    "jupyter.notebookFileRoot": "${workspaceFolder}/src",
+
+    // Markdown linting
+    "markdownlint.config": {
+        "MD004": {
+            "style": "asterisk"
+        },
+        "MD026": false,
+        "MD024": false
+    },
+    // MCP Configuration
+    "mcp": {
+        "servers": {
+            "context7": {
+                "type": "http",
+                "url": "https://mcp.context7.com/mcp"
+            }
+        }
+    },
+    // Debug UX
+    "debug.console.clearBeforeReusing": true,
+    "debug.terminal.clearBeforeReusing": true,
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "notebook.defaultFormatter": "ms-python.black-formatter",
+    "python-envs.defaultEnvManager": "ms-python.python:poetry",
+    "python-envs.defaultPackageManager": "ms-python.python:poetry",
+    "claudeCode.allowDangerouslySkipPermissions": true,
+    "claudeCode.useCtrlEnterToSend": true,
+    "github.copilot.chat.claudeAgent.allowDangerouslySkipPermissions": true,
+    "github.copilot.chat.anthropic.tools.websearch.enabled": false
+}

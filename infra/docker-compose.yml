@@ -1,0 +1,96 @@
+version: "3.9"
+
+x-google-calendar-mcp: &google-calendar-mcp
+  build:
+    context: https://github.com/nspady/google-calendar-mcp.git#v1.4.8
+    dockerfile: Dockerfile
+  image: myorg/calendar-mcp:v1.4.8
+
+services:
+  calendar-mcp:
+    <<: *google-calendar-mcp
+    container_name: google-calendar-mcp
+    env_file:
+      - ../.env
+    volumes:
+      - type: bind
+        source: ../secrets/gcal-oauth.json
+        target: /app/gcp-oauth.keys.json
+        read_only: true
+      - calendar-mcp-tokens:/home/node/.config/google-calendar-mcp
+    ports:
+      - "${PORT}:${PORT}"
+      - "3500:3500"
+    environment:
+      TRANSPORT: "${TRANSPORT}"
+      PORT: "${PORT}"
+      GOOGLE_OAUTH_CREDENTIALS: "/app/gcp-oauth.keys.json"
+      HOST: "0.0.0.0"
+    networks:
+      - admonish-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT}/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: neo4j
+    env_file:
+      - ../.env
+    environment:
+      NEO4J_AUTH: "${GRAPHITI_NEO4J_USERNAME:-neo4j}/${GRAPHITI_NEO4J_PASSWORD:-demodemo}"
+    ports:
+      - "${GRAPHITI_NEO4J_BROWSER_PORT:-7474}:7474"
+      - "${GRAPHITI_NEO4J_PUBLIC_PORT:-7687}:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - admonish-network
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -a bolt://localhost:7687 -u ${GRAPHITI_NEO4J_USERNAME:-neo4j} -p ${GRAPHITI_NEO4J_PASSWORD:-demodemo} 'RETURN 1;' >/dev/null 2>&1",
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  graphiti-mcp:
+    image: zepai/knowledge-graph-mcp:latest
+    container_name: graphiti-mcp
+    env_file:
+      - ../.env
+    environment:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      MODEL_NAME: "${GRAPHITI_MODEL_NAME:-gpt-4.1-mini}"
+      GRAPH_DATABASE_PROVIDER: "neo4j"
+      NEO4J_URI: "bolt://neo4j:7687"
+      NEO4J_USER: "${GRAPHITI_NEO4J_USERNAME:-neo4j}"
+      NEO4J_PASSWORD: "${GRAPHITI_NEO4J_PASSWORD:-demodemo}"
+    ports:
+      - "${GRAPHITI_MCP_PUBLIC_PORT:-8000}:8000"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    networks:
+      - admonish-network
+    restart: unless-stopped
+
+networks:
+  admonish-network:
+    driver: bridge
+
+volumes:
+  calendar-mcp-tokens:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local

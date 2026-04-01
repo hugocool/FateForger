@@ -1,37 +1,186 @@
 {% extends "base.html" %}
 {% block content %}
-  <div class="card">
-    <h2>Google Calendar MCP</h2>
-    <p class="muted">This writes <code>secrets/gcal-oauth.json</code>, which is mounted into the <code>calendar-mcp</code> container.</p>
 
-    {% if gcal_present %}
-      <p class="pill ok">OAuth JSON present: <code>{{ gcal_path }}</code></p>
-    {% else %}
-      <p class="pill warn">Missing OAuth JSON: <code>{{ gcal_path }}</code></p>
-    {% endif %}
+{# ── 1. OAuth App Credentials ─────────────────────────────────────── #}
+<div class="card">
+  <h2>OAuth App Credentials</h2>
+  <p class="muted">Upload the <code>gcp-oauth.keys.json</code> (Desktop app type) from Google Cloud Console. This is the OAuth <em>app</em> credential shared by all accounts — you only need to do this once.</p>
 
-    <div class="hr"></div>
-    <p class="muted">
-      Upstream docs:
-      <a href="https://github.com/nspady/google-calendar-mcp" target="_blank" rel="noreferrer">google-calendar-mcp</a>
-      •
-      <a href="https://github.com/nspady/google-calendar-mcp/blob/main/docs/authentication.md" target="_blank" rel="noreferrer">Authentication</a>
-      •
-      <a href="https://github.com/nspady/google-calendar-mcp/blob/main/docs/docker.md" target="_blank" rel="noreferrer">Docker</a>
-    </p>
+  {% if gcal_present %}
+    <p class="pill ok" style="margin-bottom:10px">OAuth JSON present: <code>{{ gcal_path }}</code></p>
+  {% else %}
+    <p class="pill warn" style="margin-bottom:10px">Missing OAuth JSON: <code>{{ gcal_path }}</code></p>
+  {% endif %}
 
-    <div class="hr"></div>
-    <form method="post" action="/setup/google" enctype="multipart/form-data">
-      <label>Upload OAuth credentials JSON (Desktop app type)</label>
-      <input name="gcal_oauth_json" type="file" accept="application/json" />
-      <div class="actions">
-        <button class="btn" type="submit">Upload</button>
-        <a class="btn" href="/">Back</a>
+  <form method="post" action="/setup/google" enctype="multipart/form-data">
+    <label>Upload credentials JSON</label>
+    <input name="gcal_oauth_json" type="file" accept="application/json" />
+    <div class="actions">
+      <button class="btn" type="submit">Upload</button>
+    </div>
+  </form>
+
+  <div class="hr"></div>
+  <p class="muted">
+    <a href="https://github.com/nspady/google-calendar-mcp" target="_blank" rel="noreferrer">google-calendar-mcp</a>
+    •
+    <a href="https://github.com/nspady/google-calendar-mcp/blob/main/docs/authentication.md" target="_blank" rel="noreferrer">Auth docs</a>
+    •
+    <a href="https://github.com/nspady/google-calendar-mcp/blob/main/docs/docker.md" target="_blank" rel="noreferrer">Docker docs</a>
+  </p>
+</div>
+
+{# ── 2. Accounts ──────────────────────────────────────────────────── #}
+<div class="card" style="margin-top:14px">
+  <h2>Google Accounts</h2>
+  <p class="muted">Add one account per Google identity (e.g. <code>work</code>, <code>personal</code>). Each account authenticates independently using the OAuth app credentials above.</p>
+
+  {% if accounts %}
+    <div style="margin-top:10px">
+      {% for account_id, info in accounts.items() %}
+      <div class="row" style="justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border)">
+        <div>
+          <span style="font-size:13px; font-weight:600">{{ account_id }}</span>
+          {% if info.get("cached_email") %}
+            <span class="muted" style="margin-left:8px">{{ info.cached_email }}</span>
+          {% endif %}
+        </div>
+        <form method="post" action="/setup/google/remove-account" style="display:inline">
+          <input type="hidden" name="account_id" value="{{ account_id }}" />
+          <button class="btn" type="submit" style="color:var(--bad); font-size:12px; padding:6px 10px">Remove</button>
+        </form>
       </div>
-    </form>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="pill warn" style="margin:10px 0">No accounts authenticated yet.</p>
+  {% endif %}
+
+  {% if add_error %}
+    <p class="pill bad" style="margin-top:10px">{{ add_error }}</p>
+  {% endif %}
+
+  {% if oauth_url %}
+  <div style="background:rgba(45,212,191,0.06); border:1px solid rgba(45,212,191,0.3); border-radius:12px; padding:14px; margin-top:14px">
+    <p style="margin:0 0 6px; font-size:13px; font-weight:600; color:var(--ok)">Authorize "{{ pending_account_id }}"</p>
+    <p class="muted">Open this URL in your browser to grant calendar access, then return here and click Refresh to confirm.</p>
+    <pre style="margin:8px 0; word-break:break-all">{{ oauth_url }}</pre>
+    <div class="actions">
+      <a class="btn" href="{{ oauth_url }}" target="_blank" rel="noreferrer" style="color:var(--ok); border-color:rgba(45,212,191,0.4)">Open Authorization URL</a>
+      <form method="post" action="/health/refresh" style="display:inline">
+        <button class="btn" type="submit">Refresh status</button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="hr"></div>
+  <form method="post" action="/setup/google/add-account">
+    <label>Account nickname (lowercase letters, numbers, hyphens — e.g. <code>work</code> or <code>personal</code>)</label>
+    <input name="account_id" type="text" placeholder="work" pattern="[a-z0-9_-]{1,64}" style="max-width:260px" />
+    <div class="actions">
+      <button class="btn" type="submit">Add account &rarr;</button>
+    </div>
+  </form>
+</div>
+
+{# ── 3. Calendar Preferences ─────────────────────────────────────── #}
+<div class="card" style="margin-top:14px">
+  <h2>Calendar Preferences</h2>
+  <p class="muted">Set which calendars the bot queries by default and where it writes new events. Unchecked calendars are excluded from default queries — you can always ask the bot to include them explicitly.</p>
+
+  {% if not accounts %}
+    <p class="pill warn" style="margin-top:10px">Add at least one account above before configuring preferences.</p>
+  {% else %}
+  <form method="post" action="/setup/google/preferences">
 
     <div class="hr"></div>
-    <p class="muted">After upload, (re)start the stack:</p>
-    <pre>docker compose up -d --build calendar-mcp</pre>
-  </div>
+    <label>Default output account</label>
+    <select name="default_write_account" style="width:100%; background:rgba(11,16,32,0.75); border:1px solid var(--border); border-radius:10px; padding:10px 12px; color:var(--text); font-size:13px; box-sizing:border-box">
+      <option value="">— choose —</option>
+      {% for account_id in accounts %}
+        <option value="{{ account_id }}" {% if prefs.default_write_account == account_id %}selected{% endif %}>{{ account_id }}</option>
+      {% endfor %}
+    </select>
+
+    <label style="margin-top:12px">Default output calendar (for new events created by the bot)</label>
+    <select name="default_write_calendar" style="width:100%; background:rgba(11,16,32,0.75); border:1px solid var(--border); border-radius:10px; padding:10px 12px; color:var(--text); font-size:13px; box-sizing:border-box">
+      <option value="">— choose —</option>
+      {% for account_id, cals in calendars_by_account.items() %}
+        {% if cals %}
+        <optgroup label="{{ account_id }}">
+          {% for cal in cals %}
+            <option value="{{ cal.id }}" {% if prefs.default_write_calendar == cal.id %}selected{% endif %}>
+              {{ cal.summary }}{% if cal.primary %} (primary){% endif %}
+            </option>
+          {% endfor %}
+        </optgroup>
+        {% endif %}
+      {% endfor %}
+    </select>
+
+    {# Per-account calendar include/exclude checkboxes #}
+    {% for account_id, cals in calendars_by_account.items() %}
+    <div class="hr"></div>
+    <p style="font-size:13px; font-weight:600; margin:12px 0 4px">{{ account_id }} — calendars to include by default</p>
+    <p class="muted" style="margin:0 0 10px">Unchecked calendars are excluded from default queries.</p>
+
+    {% set acct_prefs = prefs.accounts.get(account_id, {}) if prefs.accounts else {} %}
+    {% set excluded = acct_prefs.get("excluded_calendars", []) if acct_prefs else [] %}
+
+    {# Hidden field: all calendars for this account (server uses it to compute excluded list) #}
+    <input type="hidden" name="known_calendars__{{ account_id }}" value='{{ cals | tojson }}' />
+
+    <label style="margin-top:8px">Default calendar for {{ account_id }}</label>
+    <select name="default_calendar__{{ account_id }}" style="width:100%; background:rgba(11,16,32,0.75); border:1px solid var(--border); border-radius:10px; padding:10px 12px; color:var(--text); font-size:13px; box-sizing:border-box">
+      <option value="">— same as global default —</option>
+      {% for cal in cals %}
+        <option value="{{ cal.id }}" {% if acct_prefs.get("default_calendar") == cal.id %}selected{% endif %}>
+          {{ cal.summary }}{% if cal.primary %} (primary){% endif %}
+        </option>
+      {% endfor %}
+    </select>
+
+    {% if cals %}
+      <div style="margin-top:10px; display:flex; flex-direction:column; gap:7px">
+        {% for cal in cals %}
+        <label style="display:flex; align-items:center; gap:10px; margin:0; cursor:pointer">
+          <input type="checkbox"
+                 name="included__{{ account_id }}"
+                 value="{{ cal.id }}"
+                 {% if cal.id not in excluded %}checked{% endif %}
+                 style="width:auto; cursor:pointer; accent-color:var(--ok)" />
+          <span style="font-size:13px">
+            {{ cal.summary }}
+            {% if cal.primary %}<span class="muted">(primary)</span>{% endif %}
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted" style="font-size:12px; margin-top:6px">No calendars found for this account — make sure the Calendar MCP is running and this account has completed OAuth.</p>
+    {% endif %}
+    {% endfor %}
+
+    <div class="actions" style="margin-top:18px">
+      <button class="btn" type="submit" style="color:var(--ok); border-color:rgba(45,212,191,0.4)">Save preferences</button>
+    </div>
+  </form>
+
+  {% if prefs.default_write_calendar %}
+  <div class="hr"></div>
+  <p class="muted">Current default output: <strong>{{ prefs.default_write_account or "—" }}</strong> › <code>{{ prefs.default_write_calendar }}</code></p>
+  {% endif %}
+  {% endif %}
+</div>
+
+{# ── 4. Stack instructions ────────────────────────────────────────── #}
+<div class="card" style="margin-top:14px">
+  <h2>Stack instructions</h2>
+  <p class="muted">After uploading a new OAuth JSON or removing accounts, restart the calendar-mcp container:</p>
+  <pre>docker compose up -d --build calendar-mcp</pre>
+  <p class="muted" style="margin-top:10px">After saving preferences, restart the bot to pick up the new defaults:</p>
+  <pre>docker compose restart slack-bot</pre>
+</div>
+
 {% endblock %}
