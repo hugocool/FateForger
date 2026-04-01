@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from fateforger.agents.timeboxing import patching as patching_module
+from fateforger.agents.timeboxing.patcher_context import PatchConversation
 from fateforger.agents.timeboxing.planning_policy import (
     SHARED_PLANNING_POLICY_PROMPT,
     STAGE4_REFINEMENT_PROMPT,
@@ -312,10 +313,6 @@ async def test_apply_patch_stops_on_non_retryable_provider_error(
             actions=[],
         )
     assert attempts["calls"] == 1
-
-
-from fateforger.agents.timeboxing.patcher_context import PatchConversation
-from fateforger.agents.timeboxing.planning_policy import STAGE4_REFINEMENT_PROMPT
 
 
 @pytest.mark.asyncio

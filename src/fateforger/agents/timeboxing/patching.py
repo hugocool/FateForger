@@ -20,7 +20,7 @@ import logging
 import os
 import time
 from collections.abc import Iterator
-from typing import Any, Callable, Iterable, List, Literal
+from typing import Any, Callable, Iterable, Literal
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
@@ -117,7 +117,6 @@ class TimeboxPatcher:
                 f"TimeboxPatcher.apply_patch only supports stage='Refine'. Got {stage!r}."
             )
         constraints_list = list(constraints or [])
-        _actions_list = list(actions or [])  # kept for future use
         _stage_rules = stage_rules or _DEFAULT_STAGE_RULES
         request_id = f"patch-{int(time.time() * 1000)}"
 
@@ -287,28 +286,6 @@ def _patcher_system_prompt_with_schema(stage_rules: str = "") -> str:
     ).system_prompt()
 
 
-def _format_actions(actions: Iterable[TimeboxAction]) -> str:
-    """Format action log for prompt context.
-
-    Args:
-        actions: Iterable of TimeboxAction.
-
-    Returns:
-        Formatted string.
-    """
-    lines: List[str] = []
-    for action in actions:
-        details = []
-        if action.from_time:
-            details.append(f"from {action.from_time}")
-        if action.to_time:
-            details.append(f"to {action.to_time}")
-        detail_text = " ".join(details)
-        reason = f" | reason: {action.reason}" if action.reason else ""
-        lines.append(f"- {action.kind} {action.summary} {detail_text}".strip() + reason)
-    return "\n".join(lines) if lines else "- (none)"
-
-
 def _extract_patch(response: Any) -> TBPatch:
     """Extract ``TBPatch`` from an AutoGen agent response.
 
@@ -414,20 +391,6 @@ def _is_retryable_patch_error(error: Exception) -> bool:
         if status >= 500:
             return True
     return True
-
-
-def _to_log_string(value: Any) -> str:
-    """Render patcher values as compact log-safe strings."""
-    try:
-        if hasattr(value, "model_dump_json"):
-            text = value.model_dump_json()  # type: ignore[call-arg]
-        elif isinstance(value, (dict, list)):
-            text = json.dumps(value, ensure_ascii=False, default=str)
-        else:
-            text = str(value)
-    except Exception:
-        text = repr(value)
-    return _truncate(text, max_chars=6000)
 
 
 def _truncate(value: str, *, max_chars: int) -> str:
