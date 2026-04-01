@@ -331,3 +331,110 @@ class TestParseEventDt:
         dt = self._call({"date": "2025-06-01"}, tz=self.EASTERN)
         assert dt is not None
         assert dt.tzinfo is not None
+
+
+# ── load_list() tests ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_load_list_empty_returns_empty_snapshot() -> None:
+    """load_list with no calendars returns empty snapshot without calling workbench."""
+    from fateforger.core.calendar_preferences import CalendarEntry, CalendarList
+
+    workbench = _FakeWorkbench(payload={"events": [], "totalCount": 0})
+    client = McpCalendarClient.__new__(McpCalendarClient)
+    client._workbench = workbench
+    list_def = CalendarList(
+        calendars=[],
+        write_calendar=CalendarEntry(account="work", calendar_id="primary"),
+    )
+    snapshot = await client.load_list(
+        list_def=list_def, day=date(2026, 4, 1), tz=ZoneInfo("Europe/Amsterdam")
+    )
+    assert snapshot.response.events == []
+    assert snapshot.immovables == []
+    assert workbench.last_arguments is None  # workbench was never called
+
+
+@pytest.mark.asyncio
+async def test_load_list_single_calendar_passes_id_as_string() -> None:
+    """Single calendar should pass calendarId as a plain string, not a JSON array."""
+    from fateforger.core.calendar_preferences import CalendarEntry, CalendarList
+
+    workbench = _FakeWorkbench(payload={"events": [], "totalCount": 0})
+    client = McpCalendarClient.__new__(McpCalendarClient)
+    client._workbench = workbench
+    list_def = CalendarList(
+        calendars=[CalendarEntry(account="work", calendar_id="work@gmail.com")],
+        write_calendar=CalendarEntry(account="work", calendar_id="work@gmail.com"),
+    )
+    await client.load_list(
+        list_def=list_def, day=date(2026, 4, 1), tz=ZoneInfo("Europe/Amsterdam")
+    )
+    assert workbench.last_arguments is not None
+    assert workbench.last_arguments["calendarId"] == "work@gmail.com"
+
+
+@pytest.mark.asyncio
+async def test_load_list_multiple_calendars_passes_json_array() -> None:
+    """Multiple calendars should pass calendarId as a JSON-encoded array string."""
+    from fateforger.core.calendar_preferences import CalendarEntry, CalendarList
+
+    workbench = _FakeWorkbench(payload={"events": [], "totalCount": 0})
+    client = McpCalendarClient.__new__(McpCalendarClient)
+    client._workbench = workbench
+    list_def = CalendarList(
+        calendars=[
+            CalendarEntry(account="work", calendar_id="work@gmail.com"),
+            CalendarEntry(account="personal", calendar_id="primary"),
+        ],
+        write_calendar=CalendarEntry(account="work", calendar_id="work@gmail.com"),
+    )
+    await client.load_list(
+        list_def=list_def, day=date(2026, 4, 1), tz=ZoneInfo("Europe/Amsterdam")
+    )
+    assert workbench.last_arguments is not None
+    ids = json.loads(workbench.last_arguments["calendarId"])
+    assert ids == ["work@gmail.com", "primary"]
+
+
+@pytest.mark.asyncio
+async def test_load_list_deduplicates_by_event_id() -> None:
+    """Events with duplicate IDs should be deduplicated; first occurrence wins."""
+    from fateforger.core.calendar_preferences import CalendarEntry, CalendarList
+
+    events = [
+        {
+            "id": "evt-1", "summary": "First copy",
+            "start": {"dateTime": "2026-04-01T09:00:00"},
+            "end": {"dateTime": "2026-04-01T10:00:00"},
+        },
+        {
+            "id": "evt-1", "summary": "Duplicate",
+            "start": {"dateTime": "2026-04-01T09:00:00"},
+            "end": {"dateTime": "2026-04-01T10:00:00"},
+        },
+        {
+            "id": "evt-2", "summary": "Unique",
+            "start": {"dateTime": "2026-04-01T11:00:00"},
+            "end": {"dateTime": "2026-04-01T12:00:00"},
+        },
+    ]
+    workbench = _FakeWorkbench(payload={"events": events, "totalCount": len(events)})
+    client = McpCalendarClient.__new__(McpCalendarClient)
+    client._workbench = workbench
+    list_def = CalendarList(
+        calendars=[
+            CalendarEntry(account="work", calendar_id="primary"),
+            CalendarEntry(account="personal", calendar_id="other@gmail.com"),
+        ],
+        write_calendar=CalendarEntry(account="work", calendar_id="primary"),
+    )
+    snapshot = await client.load_list(
+        list_def=list_def, day=date(2026, 4, 1), tz=ZoneInfo("Europe/Amsterdam")
+    )
+    event_ids = [e.id for e in snapshot.response.events]
+    assert event_ids.count("evt-1") == 1
+    summaries = [e.summary for e in snapshot.response.events if e.id == "evt-1"]
+    assert summaries == ["First copy"]
+    assert len(snapshot.response.events) == 2  # evt-1 (deduplicated) + evt-2
