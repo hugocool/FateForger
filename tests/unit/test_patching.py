@@ -1,7 +1,7 @@
 """Unit tests for fateforger.agents.timeboxing.patching.
 
 Tests ``_extract_patch()`` (including fenced-JSON handling),
-``_build_context()``, and ``_patcher_system_prompt_with_schema()``.
+and ``_patcher_system_prompt_with_schema()``.
 """
 
 from __future__ import annotations
@@ -14,13 +14,10 @@ import pytest
 
 from fateforger.agents.timeboxing import patching as patching_module
 from fateforger.agents.timeboxing.planning_policy import (
-    PLANNING_POLICY_VERSION,
     SHARED_PLANNING_POLICY_PROMPT,
     STAGE4_REFINEMENT_PROMPT,
 )
 from fateforger.agents.timeboxing.patching import (
-    _PATCHER_SYSTEM_PROMPT,
-    _build_context,
     _extract_patch,
     _patcher_system_prompt_with_schema,
     TimeboxPatcher,
@@ -141,29 +138,6 @@ class TestExtractPatch:
             _extract_patch(resp)
 
 
-# ── _build_context ────────────────────────────────────────────────────────
-
-
-class TestBuildContext:
-    """Tests for ``_build_context()``."""
-
-    def test_contains_plan_json(self, simple_plan: TBPlan) -> None:
-        """Context includes the plan as JSON."""
-        ctx = _build_context(simple_plan, "add lunch", [], [])
-        assert '"Morning routine"' in ctx
-        assert '"Deep work"' in ctx
-
-    def test_contains_user_message(self, simple_plan: TBPlan) -> None:
-        """Context includes the user's instruction."""
-        ctx = _build_context(simple_plan, "add a lunch break at noon", [], [])
-        assert "add a lunch break at noon" in ctx
-
-    def test_contains_produce_directive(self, simple_plan: TBPlan) -> None:
-        """Context ends with the produce directive."""
-        ctx = _build_context(simple_plan, "anything", [], [])
-        assert "Produce the TBPatch JSON" in ctx
-
-
 # ── _patcher_system_prompt_with_schema ────────────────────────────────────
 
 
@@ -187,9 +161,8 @@ class TestPatcherSystemPrompt:
         assert "no markdown fences" in full
 
     def test_includes_shared_planning_policy(self) -> None:
-        """Patcher prompt should include the shared policy version + content."""
+        """Patcher prompt should include the shared policy content and stage rules."""
         full = _patcher_system_prompt_with_schema()
-        assert PLANNING_POLICY_VERSION in full
         assert SHARED_PLANNING_POLICY_PROMPT.splitlines()[0] in full
         assert STAGE4_REFINEMENT_PROMPT.splitlines()[0] in full
 
@@ -339,3 +312,120 @@ async def test_apply_patch_stops_on_non_retryable_provider_error(
             actions=[],
         )
     assert attempts["calls"] == 1
+
+
+from fateforger.agents.timeboxing.patcher_context import PatchConversation
+from fateforger.agents.timeboxing.planning_policy import STAGE4_REFINEMENT_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_uses_patcher_context_system_prompt(
+    simple_plan: TBPlan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TimeboxPatcher should use PatcherContext.system_prompt() as agent system_message."""
+    captured: list[str] = []
+    raw_patch = json.dumps({"ops": [{"op": "ue", "i": 0, "n": "Updated"}]})
+
+    class _FakeAssistant:
+        def __init__(self, *, name, model_client, system_message, **kwargs):
+            captured.append(system_message)
+
+        async def on_messages(self, messages, cancellation_token):
+            return _make_response(raw_patch)
+
+    async def _passthrough_timeout(label, awaitable, *, timeout_s):
+        return await awaitable
+
+    monkeypatch.setattr(patching_module, "AssistantAgent", _FakeAssistant)
+    monkeypatch.setattr(patching_module, "with_timeout", _passthrough_timeout)
+
+    patcher = TimeboxPatcher(model_client=object(), max_attempts=1)
+    await patcher.apply_patch(
+        stage="Refine",
+        current=simple_plan,
+        user_message="update event",
+        stage_rules=STAGE4_REFINEMENT_PROMPT,
+    )
+
+    assert len(captured) == 1
+    assert "timebox refinement assistant" in captured[0]
+    assert "TBPatch" in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_appends_to_conversation(
+    simple_plan: TBPlan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Successful patch should append user + assistant turns to conversation."""
+    raw_patch = json.dumps({"ops": [{"op": "ue", "i": 0, "n": "Updated"}]})
+
+    class _FakeAssistant:
+        def __init__(self, **kwargs):
+            pass
+
+        async def on_messages(self, messages, cancellation_token):
+            return _make_response(raw_patch)
+
+    async def _passthrough_timeout(label, awaitable, *, timeout_s):
+        return await awaitable
+
+    monkeypatch.setattr(patching_module, "AssistantAgent", _FakeAssistant)
+    monkeypatch.setattr(patching_module, "with_timeout", _passthrough_timeout)
+
+    conv = PatchConversation()
+    patcher = TimeboxPatcher(model_client=object(), max_attempts=1)
+    await patcher.apply_patch(
+        stage="Refine",
+        current=simple_plan,
+        user_message="update event",
+        stage_rules=STAGE4_REFINEMENT_PROMPT,
+        conversation=conv,
+    )
+
+    assert len(conv.turns) == 2
+    assert conv.turns[0]["role"] == "user"
+    assert conv.turns[1]["role"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_retry_appends_error_feedback_as_new_user_turn(
+    simple_plan: TBPlan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On retry, user turn should contain ErrorFeedback block."""
+    user_messages_seen: list[str] = []
+    raw_patch = json.dumps({"ops": [{"op": "ue", "i": 0, "n": "Updated"}]})
+    call_count = {"n": 0}
+
+    class _FakeAssistant:
+        def __init__(self, **kwargs):
+            pass
+
+        async def on_messages(self, messages, cancellation_token):
+            for m in messages:
+                if getattr(m, "source", None) == "user":
+                    user_messages_seen.append(m.content)
+            return _make_response(raw_patch)
+
+    async def _passthrough_timeout(label, awaitable, *, timeout_s):
+        return await awaitable
+
+    def _validator(plan):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise ValueError("Overlap detected between events.")
+
+    monkeypatch.setattr(patching_module, "AssistantAgent", _FakeAssistant)
+    monkeypatch.setattr(patching_module, "with_timeout", _passthrough_timeout)
+
+    patcher = TimeboxPatcher(model_client=object(), max_attempts=2)
+    await patcher.apply_patch(
+        stage="Refine",
+        current=simple_plan,
+        user_message="update event",
+        stage_rules=STAGE4_REFINEMENT_PROMPT,
+        plan_validator=_validator,
+    )
+
+    assert len(user_messages_seen) >= 2
+    assert "Previous patch attempt failed" in user_messages_seen[-1]
+    assert "Overlap detected" in user_messages_seen[-1]
