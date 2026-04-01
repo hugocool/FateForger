@@ -5,7 +5,11 @@ from datetime import date, time, timedelta
 
 import pytest
 
-from fateforger.agents.timeboxing.patcher_context import ErrorFeedback
+from fateforger.agents.timeboxing.patcher_context import ErrorFeedback, PatchConversation, PatcherContext
+from fateforger.agents.timeboxing.planning_policy import (
+    SHARED_PLANNING_POLICY_PROMPT,
+    STAGE4_REFINEMENT_PROMPT,
+)
 from fateforger.agents.timeboxing.tb_models import ET, FixedStart, TBEvent, TBPlan
 from fateforger.agents.timeboxing.tb_ops import TBPatch, UpdateEvent
 
@@ -76,13 +80,6 @@ class TestErrorFeedback:
         )
         text = fb.render()
         assert "Partial result" not in text
-
-
-from fateforger.agents.timeboxing.patcher_context import PatcherContext
-from fateforger.agents.timeboxing.planning_policy import (
-    SHARED_PLANNING_POLICY_PROMPT,
-    STAGE4_REFINEMENT_PROMPT,
-)
 
 
 class TestPatcherContext:
@@ -162,3 +159,43 @@ class TestPatcherContext:
     def test_system_prompt_is_stable_across_calls(self, simple_plan):
         ctx = PatcherContext(plan=simple_plan, user_message="add lunch", stage_rules=STAGE4_REFINEMENT_PROMPT)
         assert ctx.system_prompt() == ctx.system_prompt()
+
+
+class TestPatchConversation:
+    def test_starts_empty(self):
+        conv = PatchConversation()
+        assert conv.turns == []
+
+    def test_append_user_adds_turn(self):
+        conv = PatchConversation()
+        conv.append_user("add lunch")
+        assert len(conv.turns) == 1
+        assert conv.turns[0] == {"role": "user", "content": "add lunch"}
+
+    def test_append_assistant_adds_turn(self):
+        conv = PatchConversation()
+        conv.append_assistant('{"ops":[]}')
+        assert conv.turns[0]["role"] == "assistant"
+
+    def test_reset_clears_turns(self):
+        conv = PatchConversation()
+        conv.append_user("x")
+        conv.reset()
+        assert conv.turns == []
+
+    def test_max_turns_truncates_oldest_pairs(self):
+        conv = PatchConversation(max_turns=2)
+        for i in range(4):
+            conv.append_user(f"msg {i}")
+            conv.append_assistant(f"resp {i}")
+        # max_turns=2 means keep last 2 user+assistant pairs = 4 messages
+        assert len(conv.turns) <= 4
+        assert conv.turns[-1]["content"] == "resp 3"
+
+    def test_to_autogen_messages_format(self):
+        conv = PatchConversation()
+        conv.append_user("instruction")
+        conv.append_assistant("patch json")
+        msgs = conv.to_autogen_messages()
+        assert msgs[0].source == "user"
+        assert msgs[1].source == "assistant"

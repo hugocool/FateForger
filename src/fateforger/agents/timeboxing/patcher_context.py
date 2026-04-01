@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 
+from autogen_agentchat.messages import TextMessage
 from pydantic import BaseModel, ConfigDict
 
 from .planning_policy import SHARED_PLANNING_POLICY_PROMPT
@@ -160,4 +161,41 @@ class PatcherContext(BaseModel):
         return "\n".join(parts)
 
 
-__all__ = ["ErrorFeedback", "PatcherContext"]
+class PatchConversation:
+    """Caller-owned multi-turn conversation history for the patcher.
+
+    Holds alternating user/assistant turns. The CLI holds one per session;
+    TimeboxPatcher uses it so retries are follow-up turns, not fresh contexts.
+    Call reset() after a ReplaceAll (ra) op — full rebuild = fresh context.
+    """
+
+    def __init__(self, *, max_turns: int = 20) -> None:
+        self._max_turns = max_turns
+        self.turns: list[dict[str, str]] = []
+
+    def append_user(self, text: str) -> None:
+        self.turns.append({"role": "user", "content": text})
+        self._truncate()
+
+    def append_assistant(self, text: str) -> None:
+        self.turns.append({"role": "assistant", "content": text})
+        self._truncate()
+
+    def reset(self) -> None:
+        """Clear history. Call after a ReplaceAll (ra) op."""
+        self.turns = []
+
+    def _truncate(self) -> None:
+        max_messages = self._max_turns * 2
+        if len(self.turns) > max_messages:
+            self.turns = self.turns[-max_messages:]
+
+    def to_autogen_messages(self) -> list[TextMessage]:
+        """Convert turns to AutoGen TextMessage list for agent.on_messages()."""
+        return [
+            TextMessage(content=t["content"], source=t["role"])
+            for t in self.turns
+        ]
+
+
+__all__ = ["ErrorFeedback", "PatcherContext", "PatchConversation"]
