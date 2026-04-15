@@ -57,6 +57,7 @@ class McpEndpointPolicy:
     env_vars: tuple[str, ...]
     default_url: str
     default_path: str = "/mcp"
+    require_explicit_path: bool = True
 
 
 class McpEndpointResolver:
@@ -81,7 +82,11 @@ class McpEndpointResolver:
         return self.validate(self._default_url(source))
 
     def validate(self, value: str) -> str:
-        raw, _parsed = _validate_url(value, label=f"{self._policy.name} URL")
+        raw, _parsed = _validate_url(
+            value,
+            label=f"{self._policy.name} URL",
+            require_explicit_path=self._policy.require_explicit_path,
+        )
         return raw
 
     def probe(
@@ -89,7 +94,9 @@ class McpEndpointResolver:
     ) -> tuple[bool, str | None]:
         try:
             validated, parsed = _validate_url(
-                server_url, label=f"{self._policy.name} URL"
+                server_url,
+                label=f"{self._policy.name} URL",
+                require_explicit_path=self._policy.require_explicit_path,
             )
         except ValueError as exc:
             return False, str(exc)
@@ -155,7 +162,27 @@ class TickTickMcpEndpointResolver(McpEndpointResolver):
         return f"http://localhost:{port}/mcp"
 
 
+class CalendarMcpEndpointResolver(McpEndpointResolver):
+    """Google Calendar endpoint policy.
+
+    The URL does not require an explicit ``/mcp`` path — the calendar MCP server
+    listens at the root by default (e.g. ``http://localhost:3000``).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            McpEndpointPolicy(
+                name="Calendar MCP",
+                env_vars=("MCP_CALENDAR_SERVER_URL",),
+                default_url="http://localhost:3000",
+                default_path="",
+                require_explicit_path=False,
+            )
+        )
+
+
 __all__ = [
+    "CalendarMcpEndpointResolver",
     "McpEndpointPolicy",
     "McpEndpointResolver",
     "NotionMcpEndpointResolver",
