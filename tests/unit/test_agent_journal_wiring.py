@@ -7,20 +7,20 @@ import inspect
 from fateforger.agents.timeboxing import agent as agent_module
 
 
-def test_agent_module_imports_journaling_decorators():
+def test_agent_module_imports_journaling_decorators() -> None:
     src = inspect.getsource(agent_module)
     assert "JournalingPatcher" in src
     assert "JournalingSubmitter" in src
 
 
-def test_journal_is_optional_and_failure_is_tolerated():
+def test_journal_is_optional_and_failure_is_tolerated() -> None:
     """A journal that cannot be opened must not stop the agent from starting."""
     src = inspect.getsource(agent_module._build_journal_store)
     assert "except Exception" in src
     assert "return None" in src
 
 
-def test_journal_store_is_built_without_touching_the_event_loop():
+def test_journal_store_is_built_without_touching_the_event_loop() -> None:
     """The constructor runs inside a live loop; blocking calls would raise there.
 
     Because the failure path degrades to None, a blocking call would leave the
@@ -32,7 +32,7 @@ def test_journal_store_is_built_without_touching_the_event_loop():
     assert "journal_sessionmaker" in src
 
 
-async def test_build_journal_store_works_inside_a_running_loop():
+async def test_build_journal_store_works_inside_a_running_loop() -> None:
     """Exercise the real constraint rather than asserting on source text."""
     agent_module._JOURNAL_STORE = None
     try:
@@ -41,6 +41,6 @@ async def test_build_journal_store_works_inside_a_running_loop():
         agent_module._JOURNAL_STORE = None
 
 
-def test_wrappers_are_skipped_when_journal_unavailable():
+def test_wrappers_are_skipped_when_journal_unavailable() -> None:
     assert agent_module._maybe_journal_patcher(sentinel := object(), None) is sentinel
     assert agent_module._maybe_journal_submitter(sentinel2 := object(), None) is sentinel2

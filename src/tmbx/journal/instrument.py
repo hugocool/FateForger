@@ -173,6 +173,48 @@ class JournalingPatcher:
         await self._write(entry)
         return result
 
+    async def apply_patch_legacy(self, **kwargs: Any) -> Any:
+        """Journal the ``Timebox``-in/``Timebox``-out legacy patch path.
+
+        Must call ``self._inner.apply_patch_legacy`` directly rather than
+        delegating to this wrapper's own ``apply_patch``: the inner
+        ``apply_patch_legacy`` already does its own TBPlan conversion and
+        calls ``self.apply_patch(...)`` on *itself* (the unwrapped inner
+        object), so routing through the wrapper here would double-convert
+        and still bypass journaling on the inner call. See the module
+        docstring.
+
+        The legacy interface returns a ``Timebox`` directly rather than a
+        ``(TBPlan, TBPatch)`` tuple, so there is no patch object to
+        serialise — ``ops_json`` is recorded as ``"{}"``.
+        """
+        current = kwargs.get("current")
+        constraints: Iterable[Any] = kwargs.get("constraints") or []
+        instruction = kwargs.get("user_message")
+
+        base = dict(
+            calendar_id=self._resolve_calendar_id(),
+            plan_date=_plan_date(current),
+            instruction=instruction,
+            kind=EntryKind.ATTEMPT,
+        )
+        refs = _safe_constraint_refs(constraints)
+
+        try:
+            result = await self._inner.apply_patch_legacy(**kwargs)
+        except Exception as exc:
+            entry = JournalEntry(
+                **base, outcome=PatchOutcome.APPLY_FAILED, error=str(exc)[:2000]
+            )
+            entry.set_constraints(refs)
+            await self._write(entry)
+            raise
+
+        entry = JournalEntry(**base, outcome=PatchOutcome.APPLIED, ops_json="{}")
+        entry.set_constraints(refs)
+        await self._write(entry)
+        return result
+
 
 class JournalingSubmitter:
     """Wrap a submitter, recording commit and undo rows.
