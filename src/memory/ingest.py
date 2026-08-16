@@ -35,16 +35,37 @@ async def ingest(
     recent = (
         store.by_session(observation.session_id) if observation.session_id else []
     )
-    anchor_j, tier_j, meta_j, dedup_j = await asyncio.gather(
+    # return_exceptions=True so a failing judgement cannot orphan its three
+    # siblings: with the default, gather propagates the first exception but
+    # leaves the others running, discarding their results and errors. We
+    # await all four, then re-raise the first failure to preserve the
+    # ValueError contract callers rely on.
+    results = await asyncio.gather(
         judge.anchors(observation),
         judge.tier(observation),
         judge.meta(observation),
         judge.dedup(observation, recent),
+        return_exceptions=True,
     )
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    anchor_j, tier_j, meta_j, dedup_j = results
 
     if meta_j.is_meta:
         return IngestResult(stored=False, suppressed_as="meta")
     if dedup_j.duplicate_of is not None:
+        # The id came from the model. Verify it names an observation we
+        # actually minted before discarding user data on its say-so: this
+        # store is append-only, so a suppression caused by a hallucinated
+        # id is permanent and invisible. Set membership over system-minted
+        # uids is explicitly outside the no-matching rule.
+        known = {o.uid for o in recent}
+        if dedup_j.duplicate_of not in known:
+            raise ValueError(
+                f"judge returned unknown duplicate_of {dedup_j.duplicate_of!r}; "
+                f"not among {len(known)} candidate uids"
+            )
         return IngestResult(stored=False, suppressed_as="duplicate")
 
     observation.anchors = anchor_j.anchors

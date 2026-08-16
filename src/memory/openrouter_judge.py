@@ -159,8 +159,13 @@ class OpenRouterJudge:
     ) -> DedupJudgement:
         if not recent:
             return DedupJudgement()
-        candidates = "\n".join(f"{o.uid}: {o.text}" for o in recent)
-        user = f"New statement:\n{observation.text}\n\nEarlier statements:\n{candidates}"
+        candidates = json.dumps(
+            [{"uid": o.uid, "text": o.text} for o in recent], ensure_ascii=False
+        )
+        user = (
+            f"New statement:\n{json.dumps(observation.text, ensure_ascii=False)}"
+            f"\n\nEarlier statements:\n{candidates}"
+        )
         payload = await self._ask(DEDUP_PROMPT, user)
         if "duplicate_of" not in payload:
             raise ValueError(f"could not parse judge response: {payload!r}")

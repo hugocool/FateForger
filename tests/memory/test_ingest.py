@@ -76,6 +76,33 @@ async def test_generated_provenance_is_never_judged_or_stored(tmp_path):
     assert judge.calls == []
 
 
+async def test_an_unknown_duplicate_id_raises_rather_than_discarding(tmp_path):
+    """A hallucinated id must never silently destroy a real observation."""
+    import pytest
+
+    store = ObservationStore(str(tmp_path / "m.db"))
+    store.append(_obs("wake at 07:00"))
+    judge = StubJudge(duplicates={"eat oats before gym": "not-a-real-uid"})
+    with pytest.raises(ValueError, match="unknown duplicate_of"):
+        await ingest(_obs("eat oats before gym"), judge, store)
+    assert len(store.all()) == 1
+
+
+async def test_a_failing_judgement_propagates_and_stores_nothing(tmp_path):
+    """Fail loudly is the contract; verify it holds at the ingest layer."""
+    import pytest
+
+    store = ObservationStore(str(tmp_path / "m.db"))
+
+    class FailingJudge(StubJudge):
+        async def tier(self, observation):
+            raise ValueError("model returned nonsense")
+
+    with pytest.raises(ValueError, match="model returned nonsense"):
+        await ingest(_obs("eat oats before gym"), FailingJudge(), store)
+    assert store.all() == []
+
+
 async def test_the_four_judgements_are_issued_concurrently(tmp_path):
     """Four sequential round-trips is the failure this guards against."""
     store = ObservationStore(str(tmp_path / "m.db"))
