@@ -13,7 +13,7 @@
 
 ## Global Constraints
 
-- **`src/tmbx/` must never import from `fateforger.*`.** The reverse (`fateforger` importing `tmbx`) is allowed and is how Part A works. Enforced by a test in Task A1.
+- **`src/tmbx/` must never import from `fateforger.*`.** The reverse (`fateforger` importing `tmbx`) is allowed and is how Part A works. Enforced by a test in Task 1.
 - **Run tests with** `poetry run pytest <path> -v`. Config is in `pyproject.toml` — `asyncio_mode = "auto"`, so async tests need no decorator.
 - **No test may require a live Google Calendar, a live LLM, or network access.**
 - **Commit per task, as each task's commit step specifies.** The repo's default (`AGENTS.md`) forbids unprompted commits; the user granted commit authority for this execution run, scoped to the branch `feat/tmbx-journal-level1`. **Never push, and never touch `main`.**
@@ -29,7 +29,7 @@ This part ships first and deliberately lands in code slated for deletion. Its va
 
 ---
 
-### Task A1: Package skeleton and the import boundary
+### Task 1: Package skeleton and the import boundary
 
 **Files:**
 - Create: `src/tmbx/__init__.py`
@@ -138,7 +138,7 @@ git commit -m "feat(tmbx): package skeleton with enforced fateforger import boun
 
 ---
 
-### Task A2: Journal schema and store
+### Task 2: Journal schema and store
 
 **Files:**
 - Create: `src/tmbx/journal/models.py`
@@ -146,7 +146,7 @@ git commit -m "feat(tmbx): package skeleton with enforced fateforger import boun
 - Test: `tests/unit/tmbx/test_journal_store.py`
 
 **Interfaces:**
-- Consumes: the `tmbx` package from Task A1
+- Consumes: the `tmbx` package from Task 1
 - Produces:
   - `ConstraintRef(uid: str, uid_kind: Literal["minted","derived"], reason: str | None)`
   - `JournalEntry` — SQLModel table `tmbx_journal`, columns listed in Step 3
@@ -479,14 +479,14 @@ git commit -m "feat(tmbx): journal schema and async SQLite store"
 
 ---
 
-### Task A3: Disposition derivation
+### Task 3: Disposition derivation
 
 **Files:**
 - Create: `src/tmbx/journal/disposition.py`
 - Test: `tests/unit/tmbx/test_disposition.py`
 
 **Interfaces:**
-- Consumes: `JournalEntry`, `EntryKind`, `PatchOutcome` from Task A2
+- Consumes: `JournalEntry`, `EntryKind`, `PatchOutcome` from Task 2
 - Produces: `Disposition` enum and `derive_dispositions(entries: list[JournalEntry]) -> dict[int, Disposition]`
 
 Disposition is derived rather than reported: `undone` when a later undo row references the commit's `tx_id`; `superseded` when another commit for the same day landed after it; `abandoned` when an attempt applied cleanly but never became a commit; `accepted` when a commit stands.
@@ -658,7 +658,7 @@ git commit -m "feat(tmbx): derive journal dispositions from rows, not host repor
 
 ---
 
-### Task A4: Persist constraint extraction provenance
+### Task 4: Persist constraint extraction provenance
 
 **Files:**
 - Modify: `src/fateforger/agents/timeboxing/agent.py` — inside `_queue_constraint_extraction` (definition at line 1375)
@@ -666,7 +666,7 @@ git commit -m "feat(tmbx): derive journal dispositions from rows, not host repor
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks
-- Produces: every constraint produced by extraction carries `hints["extraction_reason"]`, one of `"graphflow_turn"` or `"refine_background_memory"`. Task A5 reads this.
+- Produces: every constraint produced by extraction carries `hints["extraction_reason"]`, one of `"graphflow_turn"` or `"refine_background_memory"`. Task 5 reads this.
 
 **Why this task exists:** `reason` is currently passed to `_queue_constraint_extraction` and used only for debug logging (`agent.py:1405`, `agent.py:1648`). It never reaches the constraint record. Without it the journal cannot distinguish constraints extracted from what the user actually said from constraints extracted from machine-authored repair text (`nodes.py:596`) — and the synthetic path fires precisely when preflight found plan issues, so those constraints correlate with failure. A consumer learning from unlabelled rows would get the causation backwards.
 
@@ -781,14 +781,14 @@ git commit -m "feat(constraints): persist extraction reason onto constraint hint
 
 ---
 
-### Task A5: Constraint reference extraction
+### Task 5: Constraint reference extraction
 
 **Files:**
 - Create: `src/tmbx/journal/constraint_refs.py`
 - Test: `tests/unit/tmbx/test_constraint_refs.py`
 
 **Interfaces:**
-- Consumes: `ConstraintRef` from Task A2; the `hints["extraction_reason"]` written in Task A4
+- Consumes: `ConstraintRef` from Task 2; the `hints["extraction_reason"]` written in Task 4
 - Produces: `constraint_refs(objects: Iterable[Any]) -> list[ConstraintRef]` — duck-typed over anything with `.hints`, `.name`, `.description`, `.necessity`, `.scope`, so `tmbx` stays free of `fateforger` imports.
 
 **Why the derived fallback exists:** `Constraint` has no uid column. `id` is an autoincrement int; the joinable uid lives in `hints["uid"]` and is optional. When absent, the legacy code derives a key from `name|description|necessity|scope` (`preferences.py:604-614`) — which changes whenever the constraint text is edited. Emitting both kinds, tagged, makes that degradation measurable rather than silent.
@@ -940,14 +940,14 @@ git commit -m "feat(tmbx): constraint refs with minted-vs-derived uid tagging"
 
 ---
 
-### Task A6: Journaling decorators
+### Task 6: Journaling decorators
 
 **Files:**
 - Create: `src/tmbx/journal/instrument.py`
 - Test: `tests/unit/tmbx/test_instrument.py`
 
 **Interfaces:**
-- Consumes: `JournalStore` (A2), `constraint_refs` (A5), `JournalEntry`/`EntryKind`/`PatchOutcome` (A2)
+- Consumes: `JournalStore` (Task 2), `constraint_refs` (Task 5), `JournalEntry`/`EntryKind`/`PatchOutcome` (Task 2)
 - Produces:
   - `JournalingPatcher(inner, store, calendar_id_fn)` — exposes `apply_patch(**kwargs)` matching the wrapped signature
   - `JournalingSubmitter(inner, store)` — exposes `submit_plan(...)`, `undo_transaction(tx)`, `undo_last()`, and passes through `last_transaction`
@@ -1251,14 +1251,14 @@ git commit -m "feat(tmbx): journaling decorators for the legacy patcher and subm
 
 ---
 
-### Task A7: Wire the decorators into the agent
+### Task 7: Wire the decorators into the agent
 
 **Files:**
 - Modify: `src/fateforger/agents/timeboxing/agent.py:445-446`
 - Test: `tests/unit/test_agent_journal_wiring.py`
 
 **Interfaces:**
-- Consumes: `JournalingPatcher`, `JournalingSubmitter` (A6); `init_journal`, `JournalStore` (A2)
+- Consumes: `JournalingPatcher`, `JournalingSubmitter` (Task 6); `init_journal`, `JournalStore` (Task 2)
 - Produces: a live agent whose patcher and submitter are journaled. Nothing later depends on this task.
 
 - [ ] **Step 1: Write the failing test**
@@ -1405,14 +1405,14 @@ git commit -m "feat(timeboxing): journal patch attempts, commits and undos"
 
 ---
 
-### Task A8: Read API for the constraint memory map
+### Task 8: Read API for the constraint memory map
 
 **Files:**
 - Create: `src/tmbx/journal/read_api.py`
 - Test: `tests/unit/tmbx/test_read_api.py`
 
 **Interfaces:**
-- Consumes: `JournalStore` (A2), `derive_dispositions` (A3)
+- Consumes: `JournalStore` (Task 2), `derive_dispositions` (Task 3)
 - Produces: `PatchRecord` (Pydantic) and `JournalReader(store).records(calendar_id, start, end) -> list[PatchRecord]`
 
 This is the feedback channel map B consumes. It reads rather than tailing the table, so the schema can change without breaking them.
@@ -1583,7 +1583,7 @@ Expected: PASS, 3 tests
 - [ ] **Step 5: Run the full tmbx suite**
 
 Run: `poetry run pytest tests/unit/tmbx -v`
-Expected: PASS — all tasks A1–A8.
+Expected: PASS — all tasks 1–8.
 
 - [ ] **Step 6: Commit**
 
@@ -1602,7 +1602,7 @@ Clean-room. Nothing here imports `fateforger`.
 
 ---
 
-### Task B1: Core plan models with three-level identity
+### Task 9: Core plan models with three-level identity
 
 **Files:**
 - Create: `src/tmbx/core/__init__.py`
@@ -2002,14 +2002,14 @@ git commit -m "feat(tmbx): plan and block models with three-level identity"
 
 ---
 
-### Task B2: Level 1 ops with set semantics
+### Task 10: Level 1 ops with set semantics
 
 **Files:**
 - Create: `src/tmbx/core/ops.py`
 - Test: `tests/unit/tmbx/test_ops.py`
 
 **Interfaces:**
-- Consumes: `Block`, `Plan`, `Timing`, `ET` (B1)
+- Consumes: `Block`, `Plan`, `Timing`, `ET` (Task 9)
 - Produces:
   - `AddBlock(op="add", after, n, d, t, p, h, slug, why)`, `RemoveBlock(op="remove", h, why)`, `UpdateBlock(op="update", h, n, d, t, p, slug, why)`, `MoveBlock(op="move", h, after, why)`
   - `Op` union discriminated on `op`; `Patch(ops)`
@@ -2387,14 +2387,14 @@ git commit -m "feat(tmbx): level 1 ops with set semantics and handle addressing"
 
 ---
 
-### Task B3: Over-specification detection
+### Task 11: Over-specification detection
 
 **Files:**
 - Create: `src/tmbx/core/commitment.py`
 - Test: `tests/unit/tmbx/test_commitment.py`
 
 **Interfaces:**
-- Consumes: `Plan`, `Block`, `AfterPrev`, `FixedStart`, `FixedWindow` (B1)
+- Consumes: `Plan`, `Block`, `AfterPrev`, `FixedStart`, `FixedWindow` (Task 9)
 - Produces: `overspecified(plan) -> list[str]` — handles whose fixed timing could be relaxed to `ap` without changing any resolved time
 
 This makes "specify as little as possible" measurable rather than aspirational, and gives the prompt compiler a metric component.
@@ -2541,14 +2541,14 @@ git commit -m "feat(tmbx): detect over-specified timing as a measurable check"
 
 ---
 
-### Task B4: Plan rendering
+### Task 12: Plan rendering
 
 **Files:**
 - Create: `src/tmbx/core/render.py`
 - Test: `tests/unit/tmbx/test_render.py`
 
 **Interfaces:**
-- Consumes: `Plan`, `Resolved` (B1)
+- Consumes: `Plan`, `Resolved` (Task 9)
 - Produces: `render_plan(plan) -> str` — a TOON-style table with columns `H, type, summary, ST, ET, mode, dur, location`
 
 Three deltas from the legacy `timebox_events_rows`: `H` becomes the first column because it is the addressing key; the boolean anchor flag becomes the actual mode, since a boolean collapses four modes into two and hides exactly what least-commitment depends on; and durations are ISO rather than `total_seconds()`.
@@ -2697,7 +2697,7 @@ git commit -m "feat(tmbx): plan rendering with handles, real modes, ISO duration
 
 ---
 
-### Task B5: Calendar port and snapshot tokens
+### Task 13: Calendar port and snapshot tokens
 
 **Files:**
 - Create: `src/tmbx/calendar/__init__.py`
@@ -2706,7 +2706,7 @@ git commit -m "feat(tmbx): plan rendering with handles, real modes, ISO duration
 - Test: `tests/unit/tmbx/test_calendar_port.py`
 
 **Interfaces:**
-- Consumes: `Plan`, `Block`, `ET` (B1)
+- Consumes: `Plan`, `Block`, `ET` (Task 9)
 - Produces:
   - `CalendarEvent(event_id, summary, description, start, end, etag, uid, handle, slug)` — provider-neutral
   - `CalendarPort` protocol: `async list_day(calendar_id, day) -> list[CalendarEvent]`, `async create(calendar_id, event)`, `async update(calendar_id, event)`, `async delete(calendar_id, event_id)`
@@ -2714,7 +2714,7 @@ git commit -m "feat(tmbx): plan rendering with handles, real modes, ISO duration
   - `drift(snapshot, live_events) -> list[str]` — event ids whose etag changed, appeared, or vanished
   - `FakeCalendar` implementing `CalendarPort`, with `mutate(event_id)` to simulate a concurrent edit
 
-**Why the fake matters:** the precondition tests in B6 need a calendar that changes between snapshot and commit. That is the exact scenario the legacy engine gets wrong, and it cannot be tested against a real calendar.
+**Why the fake matters:** the precondition tests in Task 14 need a calendar that changes between snapshot and commit. That is the exact scenario the legacy engine gets wrong, and it cannot be tested against a real calendar.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2987,14 +2987,14 @@ git commit -m "feat(tmbx): calendar port, snapshot tokens, drift detection, fake
 
 ---
 
-### Task B6: Plan service — read, apply, commit, undo
+### Task 14: Plan service — read, apply, commit, undo
 
 **Files:**
 - Create: `src/tmbx/service.py`
 - Test: `tests/unit/tmbx/test_service.py`
 
 **Interfaces:**
-- Consumes: `Plan`/`Block` (B1), `Patch`/`apply_ops`/`validate_patch` (B2), `render_plan` (B4), `CalendarPort`/`Snapshot`/`make_snapshot`/`drift` (B5), `JournalStore` (A2)
+- Consumes: `Plan`/`Block` (Task 9), `Patch`/`apply_ops`/`validate_patch` (Task 10), `render_plan` (Task 12), `CalendarPort`/`Snapshot`/`make_snapshot`/`drift` (Task 13), `JournalStore` (Task 2)
 - Produces: `PlanService(calendar, store, mint_uid)` with:
   - `async read(calendar_id, day) -> tuple[Plan, Snapshot]`
   - `async apply(snapshot, patch) -> ApplyResult(plan, rendered, violations, overspecified)`
@@ -3438,14 +3438,14 @@ git commit -m "feat(tmbx): plan service with snapshot preconditions on commit an
 
 ---
 
-### Task B7: MCP server
+### Task 15: MCP server
 
 **Files:**
 - Create: `src/tmbx/server.py`
 - Test: `tests/unit/tmbx/test_server.py`
 
 **Interfaces:**
-- Consumes: `PlanService`, `ConflictError` (B6); `Patch` (B2); `init_journal`, `JournalStore` (A2)
+- Consumes: `PlanService`, `ConflictError` (Task 14); `Patch` (Task 10); `init_journal`, `JournalStore` (Task 2)
 - Produces: `build_server(service) -> FastMCP` exposing `plan_read`, `plan_apply`, `plan_commit`, `plan_undo`, `plan_history`, plus resources `tmbx://schema/ops` and `tmbx://policy/planning`. `main()` is the stdio entrypoint.
 
 `patch_nl` is deliberately absent at level 1 — Claude Code emits `Patch` directly against the published schema. It arrives with the Slack host.
@@ -3775,4 +3775,4 @@ At this point:
 
 **Next, outside this plan:** the `tmbx` REPL (#125 decides whether to harvest the existing branch), the Google Calendar adapter behind `CalendarPort`, and the level 2 vocabulary (#147) — whose op set should be chosen from what level 1 could not express, not from this document.
 
-**The measurement that gates level 2.** Task B2's commutativity test proves the ops compose; it does not prove the model can *produce* them. Once the server runs, plan real days through it and keep a list of instructions that could not be expressed with four ops. That list is #147's input. Without it, level 2 gets designed from taste — which is the failure this ladder exists to avoid.
+**The measurement that gates level 2.** Task 10's commutativity test proves the ops compose; it does not prove the model can *produce* them. Once the server runs, plan real days through it and keep a list of instructions that could not be expressed with four ops. That list is #147's input. Without it, level 2 gets designed from taste — which is the failure this ladder exists to avoid.
