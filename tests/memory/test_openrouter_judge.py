@@ -115,3 +115,11 @@ async def test_an_injected_client_is_not_closed_by_us():
     await judge.aclose()
     assert client.is_closed is False
     await client.aclose()
+
+
+def test_a_self_constructed_client_has_a_generous_timeout():
+    """A 5s default read timeout kills a corpus run on the first slow call."""
+    judge = OpenRouterJudge(api_key="k", base_url="https://example.invalid")
+    timeout = judge._client.timeout
+    assert timeout.read >= 60.0
+    assert timeout.connect >= 10.0

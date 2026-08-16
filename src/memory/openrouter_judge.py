@@ -104,7 +104,13 @@ class OpenRouterJudge:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = model
-        self._client = client or httpx.AsyncClient()
+        # A model call can comfortably exceed httpx's 5s default read timeout,
+        # and a corpus run makes hundreds of sequential calls — one slow
+        # response must not kill the run. Applies only to the client we
+        # construct; an injected client keeps its caller's configuration.
+        self._client = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0)
+        )
         # Only close what we created; an injected client belongs to its caller.
         self._owns_client = client is None
 
