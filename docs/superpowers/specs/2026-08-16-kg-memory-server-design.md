@@ -406,6 +406,26 @@ Load-bearing findings from the research pass. Full reports in `docs/superpowers/
   survived intact.
 - **Mem0 is a confirmed non-fit.** Its own Table 2 reports full-context 72.90 beating
   Mem0-graph 68.44. The claim is cost, not quality.
+- **The clearest live illustration of why I1 exists**, found in this repo at
+  `graphiti_constraint_memory.py:94-138`. The constraint-retrieval relevance function is
+  hand-rolled bag-of-words: `score = sum(1 for term in query_terms if term in blob)`, where
+  `query_terms` is the query lowercased and split, and `blob` includes `json.dumps(episode)` —
+  so terms also match field names, statuses and uuids, making non-zero scores noise.
+
+  Zero-score episodes are **not** filtered; every episode is appended, then sorted by
+  `(-score, updated_at)` **ascending** and truncated. `-score` ascending is correct — best
+  first — but the `updated_at` tiebreak is ascending over ISO strings, so among equal scores
+  the order is **oldest first**.
+
+  Consequence: whenever the query's literal words are absent from the episode text — which,
+  per the `gym` case above, is the common case — the ranker silently returns the *oldest* N
+  constraints and truncates away everything current. Not "returns nothing", and not "falls
+  back to recency": it falls back to **reverse-chronological**. The longer the store runs, the
+  more reliably it surfaces the least relevant rows, and nothing raises.
+
+  (This was initially suspected as the cause of #114, "Graphiti returns 0 durable
+  constraints". It is not — the function never returns empty. #114 should be debugged upstream
+  at `get_episodes` or a filter above it.)
 
 ## Open questions (fog)
 
