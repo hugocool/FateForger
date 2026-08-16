@@ -108,3 +108,29 @@ async def test_refuses_to_project_a_suppressed_observation(tmp_path):
     with pytest.raises(ValueError, match="not stored"):
         await project(_obs("begin the session"), suppressed, StubJudge(), store)
     assert store.all() == []
+
+
+async def test_concurrent_projections_of_the_same_rule_create_one_constraint(tmp_path):
+    """The canonicalisation layer must not produce duplicates under concurrency."""
+    import asyncio
+
+    store = ConstraintStore(str(tmp_path / "c.db"))
+
+    class SlowJudge(StubJudge):
+        """Answers 'new' the first time, then folds into whatever exists."""
+
+        async def canonicalise(self, observation, candidates):
+            await asyncio.sleep(0.02)
+            self.calls.append(("canonicalise", observation.uid))
+            from memory.judge import CanonicaliseJudgement
+
+            if candidates:
+                return CanonicaliseJudgement(constraint_uid=candidates[0].uid)
+            return CanonicaliseJudgement()
+
+    judge = SlowJudge()
+    await asyncio.gather(
+        project(_obs("oats before gym"), _result(), judge, store),
+        project(_obs("oats 2h before the gym"), _result(), judge, store),
+    )
+    assert len(store.all()) == 1, "concurrent projection created a duplicate"

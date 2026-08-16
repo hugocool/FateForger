@@ -96,3 +96,40 @@ def test_linking_the_same_observation_twice_is_idempotent(tmp_path):
     store.link_observation(c.uid, "obs-2")
     assert store.observations_for(c.uid) == ["obs-1", "obs-2"]
     assert store.get(c.uid).source_observation_uids == ["obs-1", "obs-2"]
+
+
+def test_replace_links_drops_links_that_are_no_longer_present(tmp_path):
+    """Re-projection can remove an observation, not only add one."""
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    c = _c()
+    store.upsert(c)
+    store.link_observation(c.uid, "obs-2")
+    assert store.observations_for(c.uid) == ["obs-1", "obs-2"]
+    store.replace_links(c.uid, ["obs-2", "obs-3"])
+    assert store.observations_for(c.uid) == ["obs-2", "obs-3"]
+
+
+def test_replace_links_is_idempotent(tmp_path):
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    c = _c()
+    store.upsert(c)
+    store.replace_links(c.uid, ["obs-9"])
+    store.replace_links(c.uid, ["obs-9"])
+    assert store.observations_for(c.uid) == ["obs-9"]
+
+
+def test_replace_links_with_an_empty_list_clears_provenance(tmp_path):
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    c = _c()
+    store.upsert(c)
+    store.replace_links(c.uid, [])
+    assert store.observations_for(c.uid) == []
+
+
+def test_replace_links_does_not_touch_another_constraints_links(tmp_path):
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    a, b = _c("A"), _c("B")
+    store.upsert(a)
+    store.upsert(b)
+    store.replace_links(a.uid, ["obs-x"])
+    assert store.observations_for(b.uid) == ["obs-1"]

@@ -97,6 +97,26 @@ class ConstraintStore:
         )
         self._conn.commit()
 
+    def replace_links(self, constraint_uid: str, observation_uids: list[str]) -> None:
+        """Set a constraint's provenance to exactly these observations.
+
+        Re-projection can DROP an observation from a constraint, not only add
+        one, so an add-only link table would silently over-report provenance
+        and inflate the evidence counts that promotion and decay rely on.
+        Delete-then-insert in a single transaction so a concurrent reader
+        never observes a constraint with no provenance at all.
+        """
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM constraint_observations WHERE constraint_uid = ?",
+                (constraint_uid,),
+            )
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO constraint_observations "
+                "(constraint_uid, observation_uid) VALUES (?,?)",
+                [(constraint_uid, uid) for uid in observation_uids],
+            )
+
     def observations_for(self, constraint_uid: str) -> list[str]:
         rows = self._conn.execute(
             "SELECT observation_uid FROM constraint_observations "
