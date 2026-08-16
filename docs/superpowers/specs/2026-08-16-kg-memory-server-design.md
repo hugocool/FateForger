@@ -447,6 +447,24 @@ Load-bearing findings from the research pass. Full reports in `docs/superpowers/
   constraints". It is not — the function never returns empty. #114 should be debugged upstream
   at `get_episodes` or a filter above it.)
 
+## Known gaps in the built code
+
+Recorded rather than discovered later. Both bear on invariants.
+
+**Provenance links are add-only (bears on I4).** `ConstraintStore.link_observation` inserts and
+never deletes, so if a re-projection drops an observation from a constraint's provenance, the
+link persists and provenance is silently over-reported. Since re-projection *is* how a taxonomy
+change propagates, this must close before that is built. Fix shape: a
+`replace_links(constraint_uid, uids)` that deletes then inserts in one transaction. No current
+caller triggers it — both `upsert` call sites pass brand-new constraints.
+
+**Duplicate constraints under concurrent projection (bears on I5).** Two projections of the
+same rule can each snapshot a candidate list lacking the other's constraint, both receive "new"
+from the judge, and both create a row — user-visible duplication in the layer whose whole job is
+canonicalisation. The provenance half of this is fixed (the link table made appends idempotent),
+but creation is not. It needs serialisation at the call site, enforced rather than assumed.
+Note the race window is a full model round-trip, not microseconds.
+
 ## Open questions (fog)
 
 - Re-projection mechanics when L3 changes — incremental or full rebuild, and what invalidates.
