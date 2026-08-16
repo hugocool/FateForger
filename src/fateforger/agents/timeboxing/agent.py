@@ -15,7 +15,17 @@ from enum import Enum
 from functools import wraps
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, Dict, List, Literal, ParamSpec, Type, TypeVar
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    ParamSpec,
+    Type,
+    TypeVar,
+)
 from zoneinfo import ZoneInfo
 
 from autogen_agentchat.agents import AssistantAgent
@@ -415,6 +425,30 @@ async def get_constraint_mcp_tools() -> list:
         timeout=10.0,
     )
     return await mcp_server_tools(params)
+
+
+def _stamp_extraction_reason(constraints: Iterable[Any], *, reason: str) -> None:
+    """Record which extraction pass produced each constraint.
+
+    Distinguishes constraints extracted from what the user actually said
+    (``graphflow_turn``) from those extracted from machine-authored repair
+    text (``refine_background_memory``). The second path fires when preflight
+    found plan issues, so those constraints correlate with failure — consumers
+    must be able to filter them out rather than learn from them.
+
+    First write wins: a later pass never relabels provenance.
+    """
+    for constraint in constraints or []:
+        hints = getattr(constraint, "hints", None)
+        if hints is None:
+            continue
+        if not isinstance(hints, dict):
+            continue
+        if hints.get("extraction_reason"):
+            continue
+        hints["extraction_reason"] = reason
+        # SQLModel JSON columns need reassignment to register as dirty.
+        constraint.hints = dict(hints)
 
 
 class TimeboxingFlowAgent(RoutedAgent):
@@ -1395,6 +1429,9 @@ class TimeboxingFlowAgent(RoutedAgent):
                 acquired = True
                 interpretation = await self._interpret_constraints(
                     session, text=text, is_initial=is_initial
+                )
+                _stamp_extraction_reason(
+                    interpretation.constraints or [], reason=reason
                 )
                 session.last_extracted_constraints_count = len(
                     interpretation.constraints or []
