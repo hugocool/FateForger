@@ -449,21 +449,36 @@ Load-bearing findings from the research pass. Full reports in `docs/superpowers/
 
 ## Known gaps in the built code
 
-Recorded rather than discovered later. Both bear on invariants.
+### Closed
 
-**Provenance links are add-only (bears on I4).** `ConstraintStore.link_observation` inserts and
-never deletes, so if a re-projection drops an observation from a constraint's provenance, the
-link persists and provenance is silently over-reported. Since re-projection *is* how a taxonomy
-change propagates, this must close before that is built. Fix shape: a
-`replace_links(constraint_uid, uids)` that deletes then inserts in one transaction. No current
-caller triggers it — both `upsert` call sites pass brand-new constraints.
+**Provenance links were add-only (I4).** `link_observation` inserted and never deleted, so a
+re-projection that dropped an observation left the stale link behind and over-reported the
+evidence counts promotion and decay rely on. Closed by `ConstraintStore.replace_links`, which
+deletes then inserts inside one transaction so a concurrent reader never sees a constraint with
+no provenance at all.
 
-**Duplicate constraints under concurrent projection (bears on I5).** Two projections of the
-same rule can each snapshot a candidate list lacking the other's constraint, both receive "new"
-from the judge, and both create a row — user-visible duplication in the layer whose whole job is
-canonicalisation. The provenance half of this is fixed (the link table made appends idempotent),
-but creation is not. It needs serialisation at the call site, enforced rather than assumed.
-Note the race window is a full model round-trip, not microseconds.
+**Duplicate constraints under concurrent projection (I5).** Two projections of the same rule
+could each snapshot a candidate list lacking the other's constraint, each be told "this is new",
+and each create a row — duplication in the layer whose whole job is canonicalisation. The race
+window spans a full model round-trip, so it was wide. Closed by serialising the read-judge-write
+span with one lock per constraint store.
+
+### Open
+
+**The lock registry never evicts.** `projection._LOCKS` holds one `asyncio.Lock` per distinct
+`ConstraintStore` instance for the life of the process. Harmless with the current call sites,
+which hold one long-lived store, and not a correctness hazard — lookups only happen while the
+store is alive on the calling stack, so id-reuse after garbage collection cannot race a live
+lock. It becomes a real leak if a server ever creates a store per request.
+
+The cause is an error in the instruction that specified it: it claimed `ConstraintStore` is not
+hashable and therefore keyed the registry by `id()`. Plain Python objects *are* hashable by
+identity, so a `weakref.WeakKeyDictionary` keyed on the store itself would evict automatically
+and is strictly better. Fix shape is three lines.
+
+**Per-session serialisation is enforced for projection but assumed everywhere else.** The lock
+covers `project`. Nothing prevents a future caller from driving `ingest` concurrently over the
+same session in a way the design has not been reasoned about.
 
 ## Open questions (fog)
 
