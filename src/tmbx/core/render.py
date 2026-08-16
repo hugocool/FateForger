@@ -23,18 +23,66 @@ Three deltas from the legacy ``timebox_events_rows``
   far easier to read.
 
 ``uid`` is never rendered. The handle stands in for it.
+
+Free-text fields (currently just the name) are quoted when they would
+otherwise break the table — see ``_escape``.
 """
 
 from __future__ import annotations
 
 from datetime import date as date_type
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from isodate import duration_isoformat
 
 from .models import Plan, Resolved
 
 COLUMNS = ("H", "type", "summary", "ST", "ET", "mode", "dur")
+
+_DELIMITER = ","
+
+
+def _escape(value: str) -> str:
+    """Quote a free-text field so it can't be mistaken for column structure.
+
+    ``Block.n`` is unconstrained user prose — ``"Sprint, planning"`` is an
+    entirely ordinary name, and rendered raw it would inject an extra
+    delimiter, shifting every column after it. A literal newline would
+    split one row across two physical lines, making the next row look
+    malformed. Neither is a judgement about what the text *means* — it is
+    quoting a syntactic boundary, the same thing CSV quoting does, so it
+    does not fall under the "no judging user meaning by string means" ban.
+
+    Mirrors ``fateforger.llm.toon._toon_escape``'s rule exactly (quote on
+    delimiter/newline/CR/quote/surrounding whitespace, double an embedded
+    quote) without importing it — ``src/tmbx`` must never import
+    ``fateforger``.
+    """
+    if value == "":
+        return value
+    needs_quote = (
+        _DELIMITER in value
+        or "\n" in value
+        or "\r" in value
+        or '"' in value
+        or value != value.strip()
+    )
+    if not needs_quote:
+        return value
+    return f'"{value.replace(chr(34), chr(34) * 2)}"'
+
+
+def _iso_duration(value: timedelta) -> str:
+    """ISO 8601 duration, with one deliberate override: a zero-length
+    window (``FixedWindow`` permits ``et == st`` — see ``models.py``)
+    renders as ``PT0S``, not ``isodate``'s own ``P0D``. Both are valid ISO
+    8601 for a zero duration, but ``PT0S`` reads unambiguously as "a
+    time span of zero" where ``P0D`` reads as "zero days" -- easy to
+    misparse as a whole-day block at a glance.
+    """
+    if value == timedelta(0):
+        return "PT0S"
+    return duration_isoformat(value)
 
 
 def _fmt_clock(t: time, dt: datetime, plan_date: date_type) -> str:
@@ -57,15 +105,15 @@ def _fmt_clock(t: time, dt: datetime, plan_date: date_type) -> str:
 
 
 def _row(plan_date: date_type, r: Resolved) -> str:
-    return ",".join(
+    return _DELIMITER.join(
         [
             r.h,
             r.t.value,
-            r.n,
+            _escape(r.n),
             _fmt_clock(r.start, r.start_dt, plan_date),
             _fmt_clock(r.end, r.end_dt, plan_date),
             r.mode,
-            duration_isoformat(r.dur),
+            _iso_duration(r.dur),
         ]
     )
 
