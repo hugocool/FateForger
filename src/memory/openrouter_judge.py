@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from memory.judge import (
     AnchorJudgement,
+    CanonicaliseJudgement,
     DedupJudgement,
     MetaJudgement,
     TierJudgement,
@@ -63,6 +64,21 @@ something new. Rewording, reordering, or adding detail to the same underlying
 point counts as a duplicate. A different rule about the same topic does not.
 
 Respond with JSON only: {"duplicate_of": "<id>"|null, "rationale": "..."}\
+"""
+
+CANONICALISE_PROMPT = """\
+You decide whether a new statement expresses a rule the system already knows.
+
+You are given a new statement and a list of existing rules, each with an id.
+Return the id of the rule the statement expresses, or null if it expresses a
+rule that is genuinely new.
+
+The same rule restated, reworded, or given in more detail is the SAME rule.
+A different rule about the same topic is NOT — "oats before gym" and "protein
+after gym" are two rules about gym nutrition, not one.
+
+Respond with JSON only:
+{"constraint_uid": "<id>"|null, "rationale": "..."}\
 """
 
 
@@ -170,3 +186,23 @@ class OpenRouterJudge:
         if "duplicate_of" not in payload:
             raise ValueError(f"could not parse judge response: {payload!r}")
         return self._build(DedupJudgement, payload)
+
+    async def canonicalise(
+        self, observation: Observation, candidates: list[object]
+    ) -> CanonicaliseJudgement:
+        if not candidates:
+            # Nothing to match against; "new" is the only possible answer and
+            # asking would waste a call. This is a shortcut, not a fallback.
+            return CanonicaliseJudgement()
+        listing = json.dumps(
+            [{"uid": c.uid, "name": c.name, "description": c.description} for c in candidates],
+            ensure_ascii=False,
+        )
+        user = (
+            f"New statement:\n{json.dumps(observation.text, ensure_ascii=False)}"
+            f"\n\nExisting rules:\n{listing}"
+        )
+        payload = await self._ask(CANONICALISE_PROMPT, user)
+        if "constraint_uid" not in payload:
+            raise ValueError(f"could not parse judge response: {payload!r}")
+        return self._build(CanonicaliseJudgement, payload)

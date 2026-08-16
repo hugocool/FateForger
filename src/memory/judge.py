@@ -40,11 +40,18 @@ class DedupJudgement(BaseModel):
     rationale: str = ""
 
 
+class CanonicaliseJudgement(BaseModel):
+    """Which existing constraint, if any, a new observation expresses."""
+
+    constraint_uid: str | None = None
+    rationale: str = ""
+
+
 @runtime_checkable
 class Judge(Protocol):
     """The only way this package learns what an observation means.
 
-    Four independent questions. Implementations must not answer any of them
+    Five independent questions. Implementations must not answer any of them
     with pattern matching; see CLAUDE.md.
     """
 
@@ -57,6 +64,10 @@ class Judge(Protocol):
     async def dedup(
         self, observation: Observation, recent: list[Observation]
     ) -> DedupJudgement: ...
+
+    async def canonicalise(
+        self, observation: Observation, candidates: list[object]
+    ) -> CanonicaliseJudgement: ...
 
 
 class StubJudge:
@@ -73,11 +84,13 @@ class StubJudge:
         tiers: dict[str, Tier] | None = None,
         metas: dict[str, bool] | None = None,
         duplicates: dict[str, str] | None = None,
+        canonical: dict[str, str] | None = None,
     ) -> None:
         self._anchors = anchors or {}
         self._tiers = tiers or {}
         self._metas = metas or {}
         self._duplicates = duplicates or {}
+        self._canonical = canonical or {}
         self.calls: list[tuple[str, str]] = []
 
     async def anchors(self, observation: Observation) -> AnchorJudgement:
@@ -100,4 +113,12 @@ class StubJudge:
         self.calls.append(("dedup", observation.uid))
         return DedupJudgement(
             duplicate_of=self._duplicates.get(observation.text)
+        )
+
+    async def canonicalise(
+        self, observation: Observation, candidates: list[object]
+    ) -> CanonicaliseJudgement:
+        self.calls.append(("canonicalise", observation.uid))
+        return CanonicaliseJudgement(
+            constraint_uid=self._canonical.get(observation.text)
         )
