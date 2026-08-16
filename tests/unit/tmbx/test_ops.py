@@ -320,3 +320,148 @@ def test_add_anchored_on_a_block_moved_in_the_same_patch():
     assert len(results) == 1
     (order,) = results
     assert order == ("PR1", "DW2", "AA1", "DW1")
+
+
+# --- Fix round 2, Finding 1: chained reorders (moves anchored on moves) ---
+
+
+def _plan_four():
+    return Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            Block(uid="u1", h="PR1", n="Plan", t=ET.PR,
+                  p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)),
+                  anchor_source="user"),
+            Block(uid="u2", h="DW1", n="Sprint", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=90))),
+            Block(uid="u3", h="DW2", n="Review", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=45))),
+            Block(uid="u4", h="DW3", n="Wrap", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+        ],
+    )
+
+
+def test_chained_reorder_of_three_blocks_is_order_independent():
+    """PR1, DW1, DW2, DW3 -> move DW2 right after PR1, then move DW1 right
+    after DW2's NEW spot. The natural way to express reordering DW1 and
+    DW2: intended result PR1, DW2, DW1, DW3 — not a relabeling of the
+    pre-patch order.
+    """
+    ops = [
+        MoveBlock(h="DW2", after="PR1"),
+        MoveBlock(h="DW1", after="DW2"),
+    ]
+    results = set()
+    for permutation in itertools.permutations(ops):
+        plan = apply_ops(_plan_four(), Patch(ops=list(permutation)), mint_uid=lambda: "u-x")
+        results.add(tuple(b.h for b in plan.blocks))
+    assert len(results) == 1
+    (order,) = results
+    assert order == ("PR1", "DW2", "DW1", "DW3")
+
+
+def test_move_anchored_on_a_co_moved_block_that_is_anchored_on_a_removed_block():
+    """BB1 moves to where the removed XX1 used to be; AA1 moves to right
+    after BB1's NEW spot. Two dependency mechanisms (removed-anchor
+    walk-back and co-moved-anchor deferral) composing in one patch.
+    """
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            Block(uid="u1", h="PR1", n="Plan", t=ET.PR,
+                  p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)),
+                  anchor_source="user"),
+            Block(uid="u2", h="AA1", n="A", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u3", h="BB1", n="B", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u4", h="XX1", n="X", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+        ],
+    )
+    ops = [
+        RemoveBlock(h="XX1"),
+        MoveBlock(h="BB1", after="XX1"),
+        MoveBlock(h="AA1", after="BB1"),
+    ]
+    results = set()
+    for permutation in itertools.permutations(ops):
+        result = apply_ops(plan, Patch(ops=list(permutation)), mint_uid=lambda: "u-x")
+        results.add(tuple(b.h for b in result.blocks))
+    assert len(results) == 1
+    (order,) = results
+    assert order == ("PR1", "BB1", "AA1")
+
+
+def test_validate_rejects_cyclic_move_anchors():
+    errors = validate_patch(
+        _plan(), Patch(ops=[MoveBlock(h="DW1", after="DW2"), MoveBlock(h="DW2", after="DW1")])
+    )
+    assert any("DW1" in e and "DW2" in e for e in errors)
+
+
+def test_apply_raises_clean_error_for_cyclic_move_anchors():
+    with pytest.raises(ValueError) as excinfo:
+        apply_ops(
+            _plan(),
+            Patch(ops=[MoveBlock(h="DW1", after="DW2"), MoveBlock(h="DW2", after="DW1")]),
+            mint_uid=_mint,
+        )
+    assert str(excinfo.value).startswith("invalid patch:")
+
+
+# --- Fix round 2, Finding 2: validate_patch must catch Plan-level gaps ----
+
+
+def test_validate_catches_chain_left_without_an_anchor_by_removal():
+    """PR1 is the plan's only fs-anchored block; removing it leaves the
+    whole chain unanchored — a Plan-level invariant, not a Block-level one.
+    """
+    errors = validate_patch(_plan(), Patch(ops=[RemoveBlock(h="PR1")]))
+    assert any("anchor" in e for e in errors)
+
+
+def test_apply_raises_clean_error_not_raw_pydantic_for_unanchored_chain():
+    with pytest.raises(ValueError) as excinfo:
+        apply_ops(_plan(), Patch(ops=[RemoveBlock(h="PR1")]), mint_uid=_mint)
+    assert str(excinfo.value).startswith("invalid patch:")
+
+
+def test_validate_catches_chain_left_unanchored_by_a_retime():
+    """Retiming the only fs-anchored block away from fs/fw unanchors the
+    chain just as surely as removing it outright."""
+    errors = validate_patch(
+        _plan(), Patch(ops=[UpdateBlock(h="PR1", p=AfterPrev(dur=timedelta(minutes=30)))])
+    )
+    assert any("anchor" in e for e in errors)
+
+
+# --- Fix round 2, Finding 3: reusing a handle freed in the same patch -----
+
+
+def test_validate_allows_reusing_a_handle_freed_by_removal_in_the_same_patch():
+    op = AddBlock(after="END", h="DW1", n="New Sprint", t=ET.DW,
+                  p=AfterPrev(dur=timedelta(minutes=20)))
+    errors = validate_patch(_plan(), Patch(ops=[RemoveBlock(h="DW1"), op]))
+    assert errors == []
+
+
+def test_add_reuses_a_handle_freed_by_removal_in_the_same_patch():
+    """Replace in place, keeping the name — as idiomatic as reusing the
+    position, which fix round 1 already allows."""
+    result = apply_ops(
+        _plan(),
+        Patch(ops=[
+            RemoveBlock(h="DW1"),
+            AddBlock(after="END", h="DW1", n="New Sprint", t=ET.DW,
+                     p=AfterPrev(dur=timedelta(minutes=20))),
+        ]),
+        mint_uid=_mint,
+    )
+    new_dw1 = result.by_handle("DW1")
+    assert new_dw1.n == "New Sprint"
+    assert new_dw1.uid.startswith("u-new-")
+
+
+def test_validate_still_rejects_a_handle_added_while_it_survives():
+    """Regression guard: reuse is legal only when the original is removed —
+    adding a handle that still stands must still be rejected.
+    """
+    op = AddBlock(after="END", h="DW1", n="Clash", t=ET.DW,
+                  p=AfterPrev(dur=timedelta(minutes=30)))
+    assert any("DW1" in e for e in validate_patch(_plan(), Patch(ops=[op])))

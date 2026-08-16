@@ -79,7 +79,7 @@ class Patch(BaseModel):
     ops: list[Op] = Field(min_length=1)
 
 
-def _block_invariant_errors(t: ET, p: Timing, anchor_source: str | None) -> list[str]:
+def _block_invariant_errors(t: ET, p: Timing, anchor_source: AnchorSource | None) -> list[str]:
     """Mirror every invariant ``Block``'s own validators enforce.
 
     ``validate_patch`` must reject anything that would make ``Block`` or
@@ -97,15 +97,29 @@ def _block_invariant_errors(t: ET, p: Timing, anchor_source: str | None) -> list
     return errors
 
 
-def _validate_add(index: int, op: AddBlock, existing: set[str], added: set[str]) -> list[str]:
+def _validate_add(
+    index: int,
+    op: AddBlock,
+    existing_pre: set[str],
+    existing_effective: set[str],
+    added: set[str],
+) -> list[str]:
+    """``existing_pre`` (the full pre-patch handle set) governs whether an
+    anchor reference is meaningful — even a removed handle names a real
+    pre-patch position (see ``_resolve_anchor``). ``existing_effective``
+    (pre-patch minus this same patch's removals) governs whether the new
+    block's OWN handle collides — a handle freed by a same-patch removal is
+    fair game to reuse, only a handle that still stands, or is claimed
+    twice, is a real clash.
+    """
     errors: list[str] = []
     if not is_valid_handle(op.h):
         errors.append(
             f"op {index}: handle {op.h!r} must be 2-5 uppercase letters then 1-2 digits"
         )
-    if op.h in existing or op.h in added:
+    if op.h in existing_effective or op.h in added:
         errors.append(f"op {index}: handle {op.h} already exists")
-    if op.after not in (None, END) and op.after not in existing:
+    if op.after not in (None, END) and op.after not in existing_pre:
         errors.append(f"op {index}: anchor {op.after} not found")
     errors.extend(
         f"op {index}: {op.h} {msg}"
@@ -148,6 +162,56 @@ def _validate_touch(
     return errors
 
 
+def _cyclic_move_anchors(move_ops: list[MoveBlock]) -> set[str]:
+    """Return the handles caught in a cyclic move-anchor dependency.
+
+    A move depends on another move if its anchor names a handle that is
+    ALSO being moved in this same patch (see ``_apply_moves``'s dependency
+    layering). Repeatedly drop any move whose anchor is not itself still
+    pending — what's left after nothing more can be dropped is exactly the
+    set with no valid placement order: a cycle, direct or transitive.
+    """
+    pending = {op.h: op.after for op in move_ops}
+    changed = True
+    while changed:
+        changed = False
+        for h, after in list(pending.items()):
+            if after is None or after == END or after not in pending:
+                del pending[h]
+                changed = True
+    return set(pending)
+
+
+def _plan_invariant_errors(plan: Plan, patch: Patch) -> list[str]:
+    """Mirror ``Plan``'s own validators against the patch's effective result.
+
+    Removes and updates (through their merged fields) and adds are enough
+    to determine the final set of ``(t, p)`` pairs — moves don't change
+    either, so they're irrelevant to this specific check. Handle-uniqueness
+    of the effective result is enforced incrementally in ``_validate_add``
+    (``existing_effective`` plus the ``added``/``touched`` bookkeeping), so
+    the only remaining ``Plan``-level invariant is chain-anchoring.
+    """
+    removed = {op.h for op in patch.ops if isinstance(op, RemoveBlock)}
+    updates = {op.h: op for op in patch.ops if isinstance(op, UpdateBlock)}
+    adds = [op for op in patch.ops if isinstance(op, AddBlock)]
+
+    effective: list[tuple[ET, Timing]] = []
+    for block in plan.blocks:
+        if block.h in removed:
+            continue
+        op = updates.get(block.h)
+        t = op.t if op is not None and op.t is not None else block.t
+        p = op.p if op is not None and op.p is not None else block.p
+        effective.append((t, p))
+    effective.extend((op.t, op.p) for op in adds)
+
+    chain = [(t, p) for t, p in effective if t is not ET.BG]
+    if chain and not any(p.a in ("fs", "fw") for t, p in chain):
+        return ["patch leaves the chain with no fs or fw anchor"]
+    return []
+
+
 def validate_patch(plan: Plan, patch: Patch) -> list[str]:
     """Check a patch against a plan without applying it.
 
@@ -155,21 +219,34 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
     pre-patch plan and the patch itself — nothing depends on partial
     application, so a patch can be judged valid or invalid before any op
     runs. A patch that passes here is guaranteed not to raise during
-    ``apply_ops`` — see ``_block_invariant_errors``.
+    ``apply_ops``: every ``Block`` invariant is covered by
+    ``_block_invariant_errors``, every ``Plan`` invariant by
+    ``_plan_invariant_errors`` plus the effective-handle-set uniqueness
+    check below, and every move-anchor dependency either resolves (see
+    ``_apply_moves``) or is caught here as a cycle.
     """
     errors: list[str] = []
-    existing = {b.h for b in plan.blocks}
+    existing_pre = {b.h for b in plan.blocks}
+    removed = {op.h for op in patch.ops if isinstance(op, RemoveBlock)}
+    existing_effective = existing_pre - removed
     touched: set[str] = set()
     added: set[str] = set()
 
     for index, op in enumerate(patch.ops):
         if isinstance(op, AddBlock):
-            errors.extend(_validate_add(index, op, existing, added))
+            errors.extend(_validate_add(index, op, existing_pre, existing_effective, added))
             added.add(op.h)
             continue
 
-        errors.extend(_validate_touch(index, op, existing, touched, plan))
+        errors.extend(_validate_touch(index, op, existing_pre, touched, plan))
         touched.add(op.h)
+
+    move_ops = [op for op in patch.ops if isinstance(op, MoveBlock)]
+    cyclic = _cyclic_move_anchors(move_ops)
+    if cyclic:
+        errors.append(f"cyclic move anchors: {', '.join(sorted(cyclic))}")
+
+    errors.extend(_plan_invariant_errors(plan, patch))
 
     return errors
 
@@ -278,14 +355,47 @@ def _apply_updates(blocks: list[Block], patch: Patch) -> list[Block]:
 
 
 def _apply_moves(blocks: list[Block], patch: Patch, pre_order: list[str]) -> list[Block]:
+    """Apply every ``MoveBlock`` op in one phase, in dependency order.
+
+    A move's anchor can itself be a handle moved in this same patch — a
+    chained reorder — and that anchor's own final position has to exist
+    before this move can be placed against it. Moves are therefore applied
+    in dependency layers: everything whose anchor is NOT another
+    still-pending moved handle goes first (its anchor is either a block
+    that never moves this patch, found directly, or one that was removed,
+    handled by ``_resolve_anchor``'s pre-patch-order walk-back); placing a
+    layer resolves its handles for the next layer to depend on. The layer
+    order is entirely a function of which handle anchors on which — data,
+    never ``patch.ops`` position — so this stays order-independent, and
+    multiple moves resolving to the same anchor within a layer still go
+    through ``_insert_batch``'s handle tie-break.
+
+    ``validate_patch`` (``_cyclic_move_anchors``) rejects a patch whose
+    moves have no valid layering before ``apply_ops`` ever calls this, so
+    the raise below is a defensive backstop, not a reachable path.
+    """
     move_ops = [op for op in patch.ops if isinstance(op, MoveBlock)]
     if not move_ops:
         return blocks
+
     by_handle = {b.h: b for b in blocks}
-    moved_handles = {op.h for op in move_ops if op.h in by_handle}
-    remaining = [b for b in blocks if b.h not in moved_handles]
-    items = [(by_handle[op.h], op.after) for op in move_ops if op.h in by_handle]
-    return _insert_batch(remaining, items, pre_order)
+    pending = {op.h: op for op in move_ops if op.h in by_handle}
+    working = [b for b in blocks if b.h not in pending]
+
+    while pending:
+        ready = {
+            h: op
+            for h, op in pending.items()
+            if op.after in (None, END) or op.after not in pending
+        }
+        if not ready:
+            raise ValueError(f"cyclic move anchors: {', '.join(sorted(pending))}")
+        items = [(by_handle[h], op.after) for h, op in ready.items()]
+        working = _insert_batch(working, items, pre_order)
+        for h in ready:
+            del pending[h]
+
+    return working
 
 
 def _apply_adds(
@@ -316,10 +426,39 @@ def _apply_adds(
 def apply_ops(plan: Plan, patch: Patch, *, mint_uid: Callable[[], str]) -> Plan:
     """Apply a patch and return a new plan.
 
-    Ops are applied in four phases — remove, update, move, add — but every
-    phase resolves its addressing (handles, anchors) against data, never
-    against where an op sat in ``patch.ops``. That is what makes the result
-    independent of the order the ops were listed in.
+    Ops are applied in four phases — remove, update, move, add — and each
+    phase resolves its addressing against something that cannot depend on
+    ``patch.ops`` list order:
+
+    * **Remove** resolves against handle membership only. The surviving set
+      is ``blocks - {removed handles}``, a set difference — commutative by
+      definition, and ``validate_patch`` guarantees no handle is removed
+      twice.
+    * **Update** resolves each op against its own handle's dict entry.
+      ``validate_patch``'s "touched" check guarantees at most one op
+      touches a given handle across remove/update/move, so distinct
+      updates write disjoint keys — independent regardless of order.
+    * **Move** resolves each op's new position against its anchor, which is
+      one of: a sentinel (``None``/``END``, no dependency), a block never
+      touched by any move this patch (found directly in the pre-move
+      list), a block removed this patch (``_resolve_anchor`` walks
+      backward through ``pre_order`` — the *original* plan order, a static
+      snapshot, never ``patch.ops``), or another block ALSO being moved
+      this patch (a chained reorder — resolved by processing moves in
+      dependency layers derived purely from the anchor graph; see
+      ``_apply_moves``). A cycle in that graph has no valid layer and is
+      rejected by ``validate_patch`` before this ever runs.
+    * **Add** resolves exactly like a move's anchor case, running after
+      moves so an add anchored on a moved block sees its final position.
+      ``validate_patch`` already rejects an add anchored on another add's
+      handle (which doesn't exist pre-patch), so adds never depend on each
+      other.
+
+    Within any phase, several ops resolving to the same anchor are placed
+    by ``_insert_batch`` in one pass, tie-broken by the new block's own
+    handle — content, never list position. That chain of "resolves against
+    data, not list position" at every step is what makes the whole patch a
+    set rather than a sequence.
 
     Args:
         plan: Pre-patch plan. Not mutated.
