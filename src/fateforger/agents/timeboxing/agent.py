@@ -444,7 +444,7 @@ def _stamp_extraction_reason(constraints: Iterable[Any], *, reason: str) -> None
             continue
         if not isinstance(hints, dict):
             continue
-        if hints.get("extraction_reason"):
+        if "extraction_reason" in hints:
             continue
         hints["extraction_reason"] = reason
         # SQLModel JSON columns need reassignment to register as dirty.
