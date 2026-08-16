@@ -37,16 +37,17 @@ from pydantic import BaseModel
 from .calendar.port import CalendarEvent, CalendarPort, Snapshot, drift, make_snapshot
 from .core.commitment import overspecified
 from .core.models import ET, Block, FixedWindow, Plan
-from .core.ops import Patch, apply_ops
+from .core.ops import MoveBlock, Patch, RemoveBlock, UpdateBlock, apply_ops
 from .core.render import render_plan
 from .journal.models import EntryKind, JournalEntry, PatchOutcome
 from .journal.store import JournalStore
 
 # Task 13 threaded a required ``tz`` through ``list_day``/``make_snapshot``
 # after this brief was written. ``Plan.tz`` is where the domain's timezone
-# lives, so its default is the one honest fallback for the two call sites
-# that have no snapshot yet to read a ``tz`` off of: the first ``read`` of a
-# day, and ``undo`` (whose ``JournalEntry`` row carries no ``tz`` column).
+# lives, so its default is the one honest fallback for the one call site
+# that has no snapshot yet to read a ``tz`` off of: the first ``read`` of a
+# day. ``undo`` reads ``JournalEntry.tz`` instead — populated on every
+# commit — rather than guessing.
 _DEFAULT_TZ = Plan.model_fields["tz"].default
 
 
@@ -56,6 +57,22 @@ class ConflictError(RuntimeError):
     def __init__(self, conflicts: list[str]) -> None:
         super().__init__(f"calendar drifted: {', '.join(conflicts)}")
         self.conflicts = conflicts
+
+
+class ForeignBlockError(RuntimeError):
+    """A patch tried to modify or remove a block tmbx does not own.
+
+    A foreign block — a calendar event with no tmbx ``uid``, e.g. a meeting
+    someone else created — is read-only context: the chain must respect it
+    and the model must see it, but tmbx must never write, retime, or delete
+    one. A patch that tries anyway is refused outright rather than silently
+    dropped, so the model learns foreign blocks are immovable instead of
+    watching its own edit vanish.
+    """
+
+    def __init__(self, handles: list[str]) -> None:
+        super().__init__(f"patch touches foreign block(s): {', '.join(handles)}")
+        self.handles = handles
 
 
 class ApplyResult(BaseModel):
@@ -71,8 +88,14 @@ class CommitResult(BaseModel):
     conflicts: list[str] = []
 
 
-def _event_to_block(event: CalendarEvent, index: int) -> Block:
+def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
     """Build a block from a calendar event, minting a handle if absent.
+
+    ``uid`` is supplied by the caller, never derived from ``event`` here.
+    For a tmbx-owned event it is the real ``event.uid``; for a foreign one
+    (see ``PlanService._plan_from_calendar``) it is a throwaway placeholder
+    that exists only to satisfy ``Block.uid: str`` and must never be
+    mistaken for a durable, correlatable identity.
 
     Every calendar event is a fixed window by construction — its start/end
     are the observed fact, not the model's intent — so ``anchor_source`` is
@@ -83,7 +106,7 @@ def _event_to_block(event: CalendarEvent, index: int) -> Block:
     """
     handle = event.handle or f"EVT{index + 1}"
     return Block(
-        uid=event.uid or f"u-{event.event_id}",
+        uid=uid,
         h=handle,
         slug=event.slug,
         n=event.summary,
@@ -92,6 +115,21 @@ def _event_to_block(event: CalendarEvent, index: int) -> Block:
         p=FixedWindow(st=event.start.time(), et=event.end.time()),
         anchor_source="calendar",
     )
+
+
+def _foreign_touches(patch: Patch, foreign_handles: set[str]) -> list[str]:
+    """Handles a patch tries to retime, remove, or move that tmbx doesn't own.
+
+    ``AddBlock.after`` naming a foreign handle is deliberately not flagged —
+    that only positions a new block relative to it, it never touches the
+    foreign block's own fields.
+    """
+    touched = {
+        op.h
+        for op in patch.ops
+        if isinstance(op, (RemoveBlock, UpdateBlock, MoveBlock)) and op.h in foreign_handles
+    }
+    return sorted(touched)
 
 
 class PlanService:
@@ -114,36 +152,71 @@ class PlanService:
 
     async def _plan_from_calendar(
         self, calendar_id: str, day: date_type, tz: str
-    ) -> tuple[Plan, list[CalendarEvent]]:
+    ) -> tuple[Plan, list[CalendarEvent], set[str]]:
         """Fetch live calendar state and rebuild it as a plan.
 
         The durable source of truth. Called fresh by ``read``, ``apply`` and
         ``commit`` alike — never cached — so every call sees what is
         actually on the calendar right now.
+
+        Returns the plan, the raw events it was built from, and the set of
+        block uids that are FOREIGN — read-only context tmbx did not
+        create. An event with no ``uid`` extended property (a meeting, an
+        invite, anything not made by this system) gets a throwaway uid
+        minted here purely to satisfy ``Block.uid: str``; ownership is the
+        calendar's own ``uid`` presence, never a string this method fills
+        the field with. ``_write`` and the foreign-touch guard in
+        ``apply``/``commit`` use this set to make sure a foreign block is
+        never created, updated, retimed, or deleted.
         """
         events = await self.calendar.list_day(calendar_id, day, tz)
         events = sorted(events, key=lambda e: e.start)
-        plan = Plan(
-            date=day,
-            tz=tz,
-            blocks=[_event_to_block(event, index) for index, event in enumerate(events)],
-        )
-        return plan, events
+        blocks: list[Block] = []
+        foreign_uids: set[str] = set()
+        for index, event in enumerate(events):
+            if event.uid:
+                blocks.append(_event_to_block(event, index, event.uid))
+            else:
+                placeholder = self._mint_uid()
+                foreign_uids.add(placeholder)
+                blocks.append(_event_to_block(event, index, placeholder))
+        plan = Plan(date=day, tz=tz, blocks=blocks)
+        return plan, events, foreign_uids
 
     async def read(
         self, calendar_id: str, day: date_type, tz: str = _DEFAULT_TZ
     ) -> tuple[Plan, Snapshot]:
-        """Fetch live calendar state as a plan plus a snapshot token."""
-        plan, events = await self._plan_from_calendar(calendar_id, day, tz)
+        """Fetch live calendar state as a plan plus a snapshot token.
+
+        Foreign events (see ``_plan_from_calendar``) are included as
+        ordinary blocks — the model needs to see them, and the chain must
+        respect them — but any patch that later tries to touch one is
+        refused; see ``apply``/``commit``.
+        """
+        plan, events, _foreign_uids = await self._plan_from_calendar(calendar_id, day, tz)
         snapshot = make_snapshot(calendar_id, day, tz, events)
         return plan, snapshot
 
     async def apply(self, snapshot: Snapshot, patch: Patch) -> ApplyResult:
         """Pure preview: applies ops against the live plan, validates,
-        journals the attempt, writes nothing to the calendar."""
-        plan, _events = await self._plan_from_calendar(
+        journals the attempt, writes nothing to the calendar.
+
+        The plan is re-derived from the calendar on every call (see the
+        module docstring), so a caller holding one ``snapshot`` across two
+        ``apply`` calls can see the preview move between them if the
+        calendar changed in between — ``apply`` never checks drift, only
+        ``commit`` does.
+        """
+        plan, _events, foreign_uids = await self._plan_from_calendar(
             snapshot.calendar_id, snapshot.day, snapshot.tz
         )
+
+        foreign_handles = {b.h for b in plan.blocks if b.uid in foreign_uids}
+        touched = _foreign_touches(patch, foreign_handles)
+        if touched:
+            error = f"patch touches foreign block(s): {', '.join(touched)}"
+            await self._journal(snapshot, patch, PatchOutcome.APPLY_FAILED, error=error)
+            raise ForeignBlockError(touched)
 
         violations: list[str] = []
         outcome = PatchOutcome.APPLIED
@@ -175,9 +248,16 @@ class PlanService:
         expect: Literal["clean", "force"] = "clean",
     ) -> CommitResult:
         """Check preconditions, write to the calendar, journal the commit."""
-        plan, live = await self._plan_from_calendar(
+        plan, live, foreign_uids = await self._plan_from_calendar(
             snapshot.calendar_id, snapshot.day, snapshot.tz
         )
+
+        foreign_handles = {b.h for b in plan.blocks if b.uid in foreign_uids}
+        touched = _foreign_touches(patch, foreign_handles)
+        if touched:
+            error = f"patch touches foreign block(s): {', '.join(touched)}"
+            await self._journal(snapshot, patch, PatchOutcome.APPLY_FAILED, error=error)
+            raise ForeignBlockError(touched)
 
         conflicts = drift(snapshot, live)
         if conflicts and expect != "force":
@@ -185,7 +265,7 @@ class PlanService:
 
         patched = apply_ops(plan, patch, mint_uid=self._mint_uid)
         before = [event.model_copy(deep=True) for event in live]
-        await self._write(snapshot.calendar_id, patched, live)
+        await self._write(snapshot.calendar_id, patched, live, foreign_uids)
 
         # Capture state as it stands immediately after the write. Undo
         # compares live state against THIS. Re-deriving it at undo time
@@ -215,6 +295,13 @@ class PlanService:
 
         Reads its precondition state from the journal, not from process
         memory, so undo survives a restart — the defect behind #112.
+
+        Ownership applies here too: ``before_json`` is a snapshot of every
+        event on the day, foreign ones included, so the restore/delete pass
+        below only ever touches events that carry a real ``uid`` — a
+        foreign event must never be re-``update``d back to data it already
+        has (which would still bump its etag on a real provider) or treated
+        as a deletion candidate.
         """
         row = await self.store.by_tx_id(tx_id)
         if (
@@ -225,42 +312,42 @@ class PlanService:
         ):
             raise KeyError(f"unknown or non-undoable transaction {tx_id}")
 
-        calendar_id, day = row.calendar_id, row.plan_date
+        calendar_id, day, tz = row.calendar_id, row.plan_date, row.tz
         before_events = [
             CalendarEvent.model_validate(item) for item in json.loads(row.before_json)
         ]
         post_etags: dict[str, str] = json.loads(row.post_etags_json)
 
-        # No tz survives on the journal row (see _DEFAULT_TZ above). Only
-        # matters to a real adapter's day-boundary math; FakeCalendar
-        # ignores it, and this method never constructs a Plan, so the
-        # fallback is otherwise inert here.
-        live = await self.calendar.list_day(calendar_id, day, _DEFAULT_TZ)
-        live_etags = {event.event_id: event.etag for event in live}
-        conflicts = sorted(
-            {
-                event_id
-                for event_id in set(post_etags) | set(live_etags)
-                if post_etags.get(event_id) != live_etags.get(event_id)
-            }
+        live = await self.calendar.list_day(calendar_id, day, tz)
+        # Reuse drift() rather than re-deriving an inline etag comparison,
+        # so the commit precondition and the undo precondition stay one
+        # algorithm. token/event_ids are irrelevant to drift() (it only
+        # reads .etags) and are left at their defaults.
+        post_snapshot = Snapshot(
+            token="undo", calendar_id=calendar_id, day=day, tz=tz, etags=post_etags
         )
+        conflicts = drift(post_snapshot, live)
         if conflicts:
             raise ConflictError(conflicts)
 
         current_ids = {event.event_id for event in live}
-        before_ids = {event.event_id for event in before_events}
-        for event in before_events:
+        owned_current_ids = {event.event_id for event in live if event.uid}
+        owned_before = [event for event in before_events if event.uid]
+        owned_before_ids = {event.event_id for event in owned_before}
+
+        for event in owned_before:
             if event.event_id in current_ids:
                 await self.calendar.update(calendar_id, event)
             else:
                 await self.calendar.create(calendar_id, event)
-        for event_id in current_ids - before_ids:
+        for event_id in owned_current_ids - owned_before_ids:
             await self.calendar.delete(calendar_id, event_id)
 
         undo_tx = uuid.uuid4().hex
         entry = JournalEntry(
             calendar_id=calendar_id,
             plan_date=day,
+            tz=tz,
             kind=EntryKind.UNDO,
             outcome=PatchOutcome.APPLIED,
             tx_id=undo_tx,
@@ -270,7 +357,11 @@ class PlanService:
         return CommitResult(tx_id=undo_tx, committed=True)
 
     async def _write(
-        self, calendar_id: str, plan: Plan, existing: list[CalendarEvent]
+        self,
+        calendar_id: str,
+        plan: Plan,
+        existing: list[CalendarEvent],
+        foreign_uids: set[str],
     ) -> None:
         """Push a resolved plan to the calendar.
 
@@ -289,13 +380,25 @@ class PlanService:
         ``existing``, never from the uid's string form. uid is opaque;
         deriving one identifier from the other silently breaks the moment
         uids are really minted.
+
+        A block whose uid is in ``foreign_uids`` is skipped outright — no
+        create, no update — and ``existing`` events with no real ``uid``
+        are excluded from ``owned_ids`` entirely, so they can never be a
+        deletion candidate either. ``apply``/``commit`` already refuse a
+        patch that tries to touch a foreign block (``_foreign_touches``),
+        so this is a second, structural guarantee: even a bug in that
+        check could not make this method write to something tmbx doesn't
+        own.
         """
         resolved = {row.h: row for row in plan.resolve(check_overlap=False)}
         existing_by_id = {event.event_id: event for event in existing}
+        owned_ids = {event.event_id for event in existing if event.uid}
         event_ids = {event.uid: event.event_id for event in existing if event.uid}
         keep: set[str] = set()
 
         for block in plan.blocks:
+            if block.uid in foreign_uids:
+                continue  # read-only context: never created, updated, or deleted
             row = resolved[block.h]
             event_id = event_ids.get(block.uid) or f"tmbx{uuid.uuid4().hex[:20]}"
             keep.add(event_id)
@@ -314,7 +417,7 @@ class PlanService:
             else:
                 await self.calendar.create(calendar_id, event)
 
-        for event_id in set(existing_by_id) - keep:
+        for event_id in owned_ids - keep:
             await self.calendar.delete(calendar_id, event_id)
 
     async def _journal(
@@ -332,6 +435,7 @@ class PlanService:
         entry = JournalEntry(
             calendar_id=snapshot.calendar_id,
             plan_date=snapshot.day,
+            tz=snapshot.tz,
             kind=kind,
             ops_json=patch.model_dump_json(),
             outcome=outcome,
@@ -349,4 +453,10 @@ class PlanService:
         await self.store.append(entry)
 
 
-__all__ = ["ApplyResult", "CommitResult", "ConflictError", "PlanService"]
+__all__ = [
+    "ApplyResult",
+    "CommitResult",
+    "ConflictError",
+    "ForeignBlockError",
+    "PlanService",
+]

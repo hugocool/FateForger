@@ -67,6 +67,15 @@ class JournalEntry(SQLModel, table=True):
 
     calendar_id: str = Field(index=True)
     plan_date: date_type = Field(index=True)
+    tz: str = Field(
+        default="Europe/Amsterdam",
+        description="IANA timezone the row's calendar_id/plan_date were read "
+        "in. Not imported from tmbx.core.models.Plan to keep the journal "
+        "decoupled from the core domain module — the default mirrors "
+        "Plan.tz's own default rather than sharing it. Populated from the "
+        "snapshot on every row; undo reads it back to refetch the correct "
+        "day window instead of guessing.",
+    )
 
     instruction: str | None = None
     constraints_json: str = Field(default="[]")
