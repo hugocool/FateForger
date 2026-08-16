@@ -29,6 +29,13 @@ class _FakePatcher:
         patch = SimpleNamespace(model_dump_json=lambda: '{"ops":[{"op":"ue"}]}')
         return plan, patch
 
+    async def apply_patch_legacy(self, **kwargs):
+        if self.raises:
+            raise self.raises
+        # Legacy interface returns a Timebox-like object directly, not a
+        # (plan, patch) tuple.
+        return SimpleNamespace(date=DAY)
+
 
 class _FakeSubmitter:
     def __init__(self):
@@ -223,6 +230,48 @@ async def test_submitter_last_transaction_passes_through(store):
     inner.last_transaction = sentinel_tx
     sub = JournalingSubmitter(inner, store)
     assert sub.last_transaction is sentinel_tx
+
+
+# ── Legacy path: apply_patch_legacy must be journaled explicitly ──────────
+# TimeboxPatcher.apply_patch_legacy calls self.apply_patch(...) on the
+# *inner* (unwrapped) patcher, so relying on __getattr__ passthrough alone
+# would leave this path unjournaled even though it resolves and works.
+
+
+async def test_legacy_patch_writes_attempt_row(store):
+    patcher = JournalingPatcher(_FakePatcher(), store, calendar_id_fn=lambda: "primary")
+    result = await patcher.apply_patch_legacy(
+        stage="Refine",
+        current=SimpleNamespace(date=DAY),
+        user_message="move lunch",
+        constraints=[SimpleNamespace(hints={"uid": "c1", "extraction_reason": "graphflow_turn"})],
+    )
+    assert result is not None
+
+    rows = await store.by_day("primary", DAY)
+    assert len(rows) == 1
+    assert rows[0].kind is EntryKind.ATTEMPT
+    assert rows[0].outcome is PatchOutcome.APPLIED
+    assert rows[0].instruction == "move lunch"
+    assert rows[0].ops_json == "{}"
+    assert rows[0].get_constraints()[0].uid == "c1"
+
+
+async def test_legacy_patch_failure_writes_failure_row_and_reraises(store):
+    patcher = JournalingPatcher(
+        _FakePatcher(raises=ValueError("bad legacy patch")),
+        store,
+        calendar_id_fn=lambda: "primary",
+    )
+    with pytest.raises(ValueError):
+        await patcher.apply_patch_legacy(
+            stage="Refine", current=SimpleNamespace(date=DAY), user_message="x", constraints=[]
+        )
+
+    rows = await store.by_day("primary", DAY)
+    assert rows[0].kind is EntryKind.ATTEMPT
+    assert rows[0].outcome is PatchOutcome.APPLY_FAILED
+    assert "bad legacy patch" in (rows[0].error or "")
 
 
 # ── Minor: submit_plan / undo_transaction journal inner failures too ──────

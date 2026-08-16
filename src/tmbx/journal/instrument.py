@@ -2,7 +2,18 @@
 """Decorators that journal the legacy patcher and submitter.
 
 Instrumentation by decoration: both wrapped objects are constructed at a
-single site each, so five call sites get covered by two changed lines.
+single site each, so six call sites get covered by two changed lines —
+``apply_patch`` (x2), ``apply_patch_legacy`` (x1), ``submit_plan`` (x2) and
+``undo_transaction`` (x1) in ``agent.py``.
+
+``apply_patch_legacy`` needs its own explicit journaling method rather than
+relying on ``__getattr__`` passthrough: ``TimeboxPatcher.apply_patch_legacy``
+converts ``Timebox`` to ``TBPlan``, then calls ``self.apply_patch(...)`` on
+itself — the *inner*, unwrapped patcher — and converts back. If this wrapper
+only exposed ``apply_patch`` and let ``apply_patch_legacy`` fall through
+``__getattr__``, the call would resolve straight to the unwrapped inner
+object and produce no journal row at all, even though the call itself
+succeeds. Journaling has to wrap the legacy entrypoint directly.
 
 Journal writes never break planning. Every write is guarded, and so is
 every other piece of context-gathering that runs before or after the

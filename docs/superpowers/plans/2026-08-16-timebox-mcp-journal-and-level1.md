@@ -1752,7 +1752,6 @@ intent, ``Plan.resolve()`` does the arithmetic.
 
 from __future__ import annotations
 
-import re
 from datetime import date as date_type
 from datetime import datetime, time, timedelta
 from enum import Enum
@@ -1761,7 +1760,23 @@ from typing import Annotated, Literal, Union
 from isodate import parse_duration as _parse_duration
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-HANDLE_RE = re.compile(r"^[A-Z]{3,5}\d{1,2}$")
+def is_valid_handle(value: str) -> bool:
+    """Check a handle's shape: 3-5 uppercase letters then 1-2 digits.
+
+    Written without ``re`` because project rules ban the module outright.
+    A handle is an identifier the system mints, not user prose, so checking
+    its shape is not a judgement about meaning — but the ban is absolute,
+    so this uses plain string predicates.
+    """
+    digits = value[len(value.rstrip("0123456789")) :]
+    letters = value[: len(value) - len(digits)]
+    return (
+        3 <= len(letters) <= 5
+        and 1 <= len(digits) <= 2
+        and letters.isalpha()
+        and letters.isupper()
+        and digits.isdigit()
+    )
 
 
 class ET(str, Enum):
@@ -1858,7 +1873,7 @@ class Block(BaseModel):
     @field_validator("h")
     @classmethod
     def _handle_shape(cls, value: str) -> str:
-        if not HANDLE_RE.match(value):
+        if not is_valid_handle(value):
             raise ValueError(
                 f"handle {value!r} must be 3-5 uppercase letters then 1-2 digits"
             )
@@ -1981,7 +1996,7 @@ __all__ = [
     "ET",
     "FixedStart",
     "FixedWindow",
-    "HANDLE_RE",
+    "is_valid_handle",
     "Plan",
     "Resolved",
     "Timing",
