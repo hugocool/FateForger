@@ -76,6 +76,21 @@ def _coerce_time(value: object) -> object:
     return time.fromisoformat(value) if isinstance(value, str) else value
 
 
+def _resolve_window(day: date_type, st: time, et: time) -> tuple[datetime, datetime]:
+    """Combine a fixed start/end time-of-day pair into concrete datetimes.
+
+    Midnight-crossing rule: when ``et <= st`` the window is taken to cross
+    midnight — the end lands on the day *after* ``day`` rather than producing
+    a negative duration. Real calendars contain events like this (an
+    overnight shift, a late set), and a plan must be able to represent a day
+    that has one.
+    """
+    start_dt = datetime.combine(day, st)
+    end_day = day + timedelta(days=1) if et <= st else day
+    end_dt = datetime.combine(end_day, et)
+    return start_dt, end_dt
+
+
 class AfterPrev(BaseModel):
     """Duration only; starts when the previous block ends."""
 
@@ -109,7 +124,12 @@ class FixedStart(BaseModel):
 
 
 class FixedWindow(BaseModel):
-    """Pinned start and end; duration is an output."""
+    """Pinned start and end; duration is an output.
+
+    If ``et <= st`` the window is resolved as crossing midnight (see
+    ``_resolve_window`` in ``Plan.resolve``) rather than yielding a negative
+    duration.
+    """
 
     model_config = ConfigDict(extra="forbid")
     a: Literal["fw"] = "fw"
@@ -160,6 +180,14 @@ class Block(BaseModel):
             raise ValueError("BG blocks require fs or fw timing")
         return self
 
+    @model_validator(mode="after")
+    def _fixed_timing_needs_anchor_source(self) -> "Block":
+        if self.p.a in ("fs", "fw") and self.anchor_source is None:
+            raise ValueError(
+                f"{self.h}: anchor_source is required when timing is fs or fw"
+            )
+        return self
+
 
 class Resolved(BaseModel):
     """A block with concrete times computed."""
@@ -205,11 +233,21 @@ class Plan(BaseModel):
     def resolve(self, *, check_overlap: bool = True) -> list[Resolved]:
         """Compute concrete start/end for every block.
 
-        Forward pass handles ap/fs/fw; a backward pass closes bn.
+        Forward pass handles ap/fs/fw; a backward pass closes bn. ``BG``
+        blocks never participate in chain propagation in either pass — they
+        are resolved from their own fixed timing and never move
+        ``last_end``/``next_start``, exactly as they are already excluded
+        from ``_chain_is_anchored`` and the overlap check below.
+
+        An ``ap`` block may not follow an unresolved ``bn`` block: ``bn``
+        ends when the next block starts and ``ap`` starts when the previous
+        block ends, so the pair defines each other with nothing to anchor
+        on. That configuration is not mis-resolved here — it is rejected.
         """
         day = self.date
         rows: list[dict] = []
         last_end: datetime | None = None
+        pending_bn_handle: str | None = None
 
         for block in self.blocks:
             row: dict = {
@@ -221,7 +259,27 @@ class Plan(BaseModel):
             }
             p = block.p
 
+            if block.t is ET.BG:
+                # BG is invisible to the chain: resolve its own fixed timing
+                # but never touch last_end / pending_bn_handle.
+                if p.a == "fs":
+                    start_dt = datetime.combine(day, p.st)
+                    end_dt = start_dt + p.dur
+                else:  # fw — Block validation guarantees fs or fw for BG
+                    start_dt, end_dt = _resolve_window(day, p.st, p.et)
+                row.update(start=start_dt.time(), end=end_dt.time(), dur=end_dt - start_dt)
+                rows.append(row)
+                continue
+
             if p.a == "ap":
+                if pending_bn_handle is not None:
+                    raise ValueError(
+                        f"{pending_bn_handle} and {block.h}: circular chain — "
+                        f"{pending_bn_handle} (bn) ends when {block.h} starts, "
+                        f"{block.h} (ap) starts when {pending_bn_handle} ends. "
+                        "An ap block may only follow a block whose end is "
+                        "already determined."
+                    )
                 if last_end is None:
                     raise ValueError(f"{block.h}: after_previous has no preceding block")
                 start_dt, end_dt = last_end, last_end + p.dur
@@ -229,19 +287,22 @@ class Plan(BaseModel):
                 start_dt = datetime.combine(day, p.st)
                 end_dt = start_dt + p.dur
             elif p.a == "fw":
-                start_dt = datetime.combine(day, p.st)
-                end_dt = datetime.combine(day, p.et)
+                start_dt, end_dt = _resolve_window(day, p.st, p.et)
             else:  # bn — resolved backwards
                 row["_pending_dur"] = p.dur
                 rows.append(row)
+                pending_bn_handle = block.h
                 continue
 
             row.update(start=start_dt.time(), end=end_dt.time(), dur=end_dt - start_dt)
             last_end = end_dt
+            pending_bn_handle = None
             rows.append(row)
 
         next_start: datetime | None = None
         for row in reversed(rows):
+            if row["t"] is ET.BG:
+                continue  # BG never participates in chain propagation
             if "_pending_dur" in row:
                 if next_start is None:
                     raise ValueError(f"{row['h']}: before_next has no following block")
@@ -251,6 +312,13 @@ class Plan(BaseModel):
             next_start = datetime.combine(day, row["start"])
 
         resolved = [Resolved(**row) for row in rows]
+
+        # Invariant: no resolved block may have a negative duration, in any
+        # mode. This is what keeps the overlap check below sound — it walks
+        # adjacent pairs assuming monotonic, non-negative resolved times.
+        for r in resolved:
+            if r.dur < timedelta(0):
+                raise ValueError(f"{r.h}: resolved duration is negative ({r.dur})")
 
         if check_overlap:
             chain = [r for r in resolved if r.t is not ET.BG]

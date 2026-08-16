@@ -6,19 +6,25 @@ from datetime import date, time, timedelta
 import pytest
 from pydantic import ValidationError
 
-from tmbx.core.models import ET, AfterPrev, Block, FixedStart, FixedWindow, Plan
+from tmbx.core.models import ET, AfterPrev, BeforeNext, Block, FixedStart, FixedWindow, Plan
 
 
-def _block(h, t=ET.DW, p=None, uid=None, n="Work"):
-    return Block(uid=uid or f"u-{h}", h=h, n=n, t=t, p=p or AfterPrev(dur=timedelta(minutes=60)))
+def _block(h, t=ET.DW, p=None, uid=None, n="Work", anchor_source=None):
+    p = p or AfterPrev(dur=timedelta(minutes=60))
+    if anchor_source is None and p.a in ("fs", "fw"):
+        anchor_source = "user"
+    return Block(uid=uid or f"u-{h}", h=h, n=n, t=t, p=p, anchor_source=anchor_source)
 
 
 def test_handle_format_accepted():
     assert _block("DW1").h == "DW1"
     assert _block("GYM12").h == "GYM12"
+    assert _block("ABCDE1").h == "ABCDE1"  # 5 letters — max-letters boundary
 
 
-@pytest.mark.parametrize("bad", ["dw1", "D1", "TOOLONG1", "DW", "DW123", "DW-1"])
+@pytest.mark.parametrize(
+    "bad", ["dw1", "D1", "TOOLONG1", "DW", "DW123", "DW-1", "ABCDEF1"]
+)
 def test_handle_format_rejected(bad):
     with pytest.raises(ValidationError):
         _block(bad)
@@ -90,3 +96,148 @@ def test_background_events_are_exempt_from_overlap():
 def test_background_must_use_fixed_timing():
     with pytest.raises(ValidationError):
         _block("BG1", t=ET.BG, p=AfterPrev(dur=timedelta(minutes=30)))
+
+
+# --- anchor_source enforcement --------------------------------------------
+
+
+def test_anchor_source_required_for_fixed_start():
+    with pytest.raises(ValidationError):
+        Block(
+            uid="u1",
+            h="AA1",
+            n="Work",
+            t=ET.DW,
+            p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)),
+        )
+
+
+def test_anchor_source_required_for_fixed_window():
+    with pytest.raises(ValidationError):
+        Block(
+            uid="u1",
+            h="AA1",
+            n="Work",
+            t=ET.DW,
+            p=FixedWindow(st=time(9, 0), et=time(9, 30)),
+        )
+
+
+def test_anchor_source_not_required_for_after_prev():
+    block = Block(
+        uid="u1",
+        h="AA1",
+        n="Work",
+        t=ET.DW,
+        p=AfterPrev(dur=timedelta(minutes=30)),
+    )
+    assert block.anchor_source is None
+
+
+# --- bn: full coverage of the fourth timing mode ---------------------------
+
+
+def test_bn_resolves_against_a_fixed_successor():
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            _block("AA1", p=BeforeNext(dur=timedelta(minutes=20))),
+            _block("BB1", p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30))),
+        ],
+    )
+    aa1 = plan.resolve()[0]
+    assert (aa1.start, aa1.end) == (time(8, 40), time(9, 0))
+
+
+def test_bn_skips_a_bg_block_between_it_and_its_successor():
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            _block("AA1", p=BeforeNext(dur=timedelta(minutes=15))),
+            _block("BG1", t=ET.BG, p=FixedWindow(st=time(9, 0), et=time(9, 10))),
+            _block("CC1", p=FixedStart(st=time(9, 30), dur=timedelta(minutes=30))),
+        ],
+    )
+    resolved = {r.h: r for r in plan.resolve()}
+    # Must anchor to CC1 (09:30), not to the BG block (09:00).
+    assert (resolved["AA1"].start, resolved["AA1"].end) == (time(9, 15), time(9, 30))
+
+
+def test_consecutive_bn_blocks_chain_backwards():
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            _block("AA1", p=BeforeNext(dur=timedelta(minutes=15))),
+            _block("BB1", p=BeforeNext(dur=timedelta(minutes=30))),
+            _block("CC1", p=FixedStart(st=time(10, 0), dur=timedelta(minutes=30))),
+        ],
+    )
+    resolved = {r.h: r for r in plan.resolve()}
+    assert (resolved["BB1"].start, resolved["BB1"].end) == (time(9, 30), time(10, 0))
+    assert (resolved["AA1"].start, resolved["AA1"].end) == (time(9, 15), time(9, 30))
+
+
+def test_bn_last_with_no_successor_raises():
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            _block("AA1", p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30))),
+            _block("BB1", p=BeforeNext(dur=timedelta(minutes=15))),
+        ],
+    )
+    with pytest.raises(ValueError, match="before_next has no following block"):
+        plan.resolve()
+
+
+def test_ap_after_bn_is_circular():
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            _block("XA1", p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30))),
+            _block("YB1", p=BeforeNext(dur=timedelta(minutes=15))),
+            _block("ZC1", p=AfterPrev(dur=timedelta(minutes=60))),
+        ],
+    )
+    with pytest.raises(ValueError, match="circular"):
+        plan.resolve()
+
+
+# --- FixedWindow crossing midnight -----------------------------------------
+
+
+def test_fixed_window_crossing_midnight_is_supported():
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[_block("NS1", p=FixedWindow(st=time(23, 0), et=time(1, 0)))],
+    )
+    resolved = plan.resolve()[0]
+    assert (resolved.start, resolved.end) == (time(23, 0), time(1, 0))
+    assert resolved.dur == timedelta(hours=2)
+
+
+# --- negative-duration invariant --------------------------------------------
+
+
+def test_negative_duration_is_rejected():
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[_block("AA1", p=FixedStart(st=time(9, 0), dur=timedelta(minutes=-30)))],
+    )
+    with pytest.raises(ValueError, match="negative"):
+        plan.resolve()
+
+
+def test_negative_duration_guard_catches_a_nonadjacent_overlap():
+    """Regression: a malformed middle block must not let an adjacent-pairs
+    overlap check miss a real overlap between the first and third blocks.
+    """
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            _block("AA1", p=FixedStart(st=time(10, 0), dur=timedelta(minutes=180))),
+            _block("BB1", p=FixedStart(st=time(20, 0), dur=timedelta(hours=-10))),
+            _block("CC1", p=FixedStart(st=time(10, 30), dur=timedelta(minutes=30))),
+        ],
+    )
+    with pytest.raises(ValueError, match="negative"):
+        plan.resolve()
