@@ -243,3 +243,6 @@ logs/
 
 # Local safety bundles
 .git-backups/
+
+# SDD scratch workspace
+.superpowers/
