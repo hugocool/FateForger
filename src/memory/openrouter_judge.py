@@ -84,6 +84,19 @@ class OpenRouterJudge:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._client = client or httpx.AsyncClient()
+        # Only close what we created; an injected client belongs to its caller.
+        self._owns_client = client is None
+
+    async def aclose(self) -> None:
+        """Close the HTTP client, but only if this instance created it."""
+        if self._owns_client:
+            await self._client.aclose()
+
+    async def __aenter__(self) -> OpenRouterJudge:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()
 
     async def _ask(self, system: str, user: str) -> dict[str, Any]:
         response = await self._client.post(
@@ -107,9 +120,12 @@ class OpenRouterJudge:
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         try:
-            return json.loads(content)
+            payload = json.loads(content)
         except json.JSONDecodeError as exc:
             raise ValueError(f"could not parse judge response: {content!r}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"could not parse judge response: {content!r}")
+        return payload
 
     @staticmethod
     def _build(model_cls, payload: dict[str, Any]):

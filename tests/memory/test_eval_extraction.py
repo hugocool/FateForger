@@ -41,29 +41,34 @@ def _obs(text: str) -> Observation:
 
 async def test_finds_gym_which_pattern_matching_scored_at_zero():
     """The measured failure of the discarded implementation."""
-    result = await _judge().anchors(_obs("Eat oats 2 hours before going to the gym"))
+    async with _judge() as judge:
+        result = await judge.anchors(_obs("Eat oats 2 hours before going to the gym"))
     assert "gym" in [a.lower() for a in result.anchors]
 
 
 async def test_a_real_preference_mentioning_a_session_is_not_meta():
     """The marker list would have suppressed this permanently."""
-    result = await _judge().meta(_obs("Gym Session — user goes to the gym at 18:00"))
+    async with _judge() as judge:
+        result = await judge.meta(_obs("Gym Session — user goes to the gym at 18:00"))
     assert result.is_meta is False
 
 
 async def test_interaction_chatter_is_meta():
-    result = await _judge().meta(
-        _obs("The user wants to begin the timeboxing session immediately")
-    )
+    async with _judge() as judge:
+        result = await judge.meta(
+            _obs("The user wants to begin the timeboxing session immediately")
+        )
     assert result.is_meta is True
 
 
 async def test_a_standing_rule_is_durable_and_a_declaration():
-    result = await _judge().tier(_obs("I never schedule meetings before 13:00"))
+    async with _judge() as judge:
+        result = await judge.tier(_obs("I never schedule meetings before 13:00"))
     assert result.tier is Tier.DURABLE
     assert result.is_declaration is True
 
 
 async def test_todays_appointment_is_session_scoped():
-    result = await _judge().tier(_obs("Hockey game today at 11:45 at VVV"))
+    async with _judge() as judge:
+        result = await judge.tier(_obs("Hockey game today at 11:45 at VVV"))
     assert result.tier is Tier.SESSION

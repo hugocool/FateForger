@@ -98,3 +98,14 @@ async def test_request_carries_the_pinned_model_and_minimal_reasoning():
     assert captured["model"] == "google/gemini-3.6-flash"
     # "enabled": False is rejected by this endpoint; "minimal" is the floor.
     assert captured.get("reasoning", {}).get("effort") == "minimal"
+
+
+async def test_an_injected_client_is_not_closed_by_us():
+    """The caller owns a client it passed in."""
+    client = _mock({"anchors": []})
+    judge = OpenRouterJudge(
+        api_key="k", base_url="https://example.invalid", client=client
+    )
+    await judge.aclose()
+    assert client.is_closed is False
+    await client.aclose()
