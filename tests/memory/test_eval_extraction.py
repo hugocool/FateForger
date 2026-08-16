@@ -72,3 +72,51 @@ async def test_todays_appointment_is_session_scoped():
     async with _judge() as judge:
         result = await judge.tier(_obs("Hockey game today at 11:45 at VVV"))
     assert result.tier is Tier.SESSION
+
+
+def _constraint(name: str, description: str):
+    from datetime import datetime, timezone
+
+    from memory.constraint import Applicability, Constraint
+    from memory.models import Tier
+
+    return Constraint(
+        name=name,
+        description=description,
+        necessity="must",
+        scope="profile",
+        status="locked",
+        source="user",
+        tier=Tier.DURABLE,
+        applicability=Applicability(),
+        source_observation_uids=[],
+        created_at=datetime(2026, 3, 9, tzinfo=timezone.utc),
+    )
+
+
+async def test_a_reworded_restatement_is_recognised_as_the_same_rule():
+    existing = _constraint("Oats before gym", "Eat oats two hours before the gym")
+    async with _judge() as judge:
+        result = await judge.canonicalise(
+            _obs("I need my oats a couple of hours ahead of training"), [existing]
+        )
+    assert result.constraint_uid == existing.uid
+
+
+async def test_a_different_rule_on_the_same_topic_is_not_merged():
+    """The failure that would silently destroy a real preference."""
+    existing = _constraint("Oats before gym", "Eat oats two hours before the gym")
+    async with _judge() as judge:
+        result = await judge.canonicalise(
+            _obs("Protein shake within 30 minutes after the gym"), [existing]
+        )
+    assert result.constraint_uid is None
+
+
+async def test_an_unrelated_statement_is_new():
+    existing = _constraint("Oats before gym", "Eat oats two hours before the gym")
+    async with _judge() as judge:
+        result = await judge.canonicalise(
+            _obs("Never schedule meetings before 13:00"), [existing]
+        )
+    assert result.constraint_uid is None
