@@ -88,9 +88,25 @@ Anchors arrive as **symbols**, not natural language — a calendar event hands t
 `hockey` directly. Every system surveyed embeds the query first because its input is natural
 language. That step is dead weight here.
 
-Conditional applicability is **graph structure, not a field**. Multi-seed traversal, where
-rules sitting at path intersections are exactly the conditionally-applicable ones: co-presence
-*is* path intersection, so no separate condition-evaluator is required.
+Conditional applicability is relational, not a field — a scalar `condition` column is
+unqueryable. **How it is encoded is an open fork, tracked on #137**, and it must be decided
+before any node/edge model is written:
+
+| | conditionality lives in | the cross-day case |
+|---|---|---|
+| **Path intersection** (WaterCircles) | graph **structure** — co-presence *is* path intersection, so no separate condition-evaluator exists | needs a new temporal edge type |
+| **Trigger predicates** (*Delivery, Not Storage*) | **predicates attached to rules**, evaluated deterministically | `temporal` is already a predicate class |
+
+Both reach I1 by different routes. The cross-day case is real and was found in the data, not
+imagined: a gym event described as *"post-hockey… Day after hockey → hams pre-fatigued, so
+quads carry the volume."* Gym content depends on what happened **yesterday**, which multi-seed
+same-day intersection cannot express.
+
+An event carries *n* anchors, not one — four surface forms were observed for a single anchor
+(`Hockey`, `Hockey training`, `Hockey Game (incl. warmup)`, `Hockey at vvv`), plus one event
+titled `hockey/running` which is genuinely two. And offsets belong on the edge (`oats
+APPLIES_TO sport, −2h`), not on the constraint, or a rule cannot carry a different offset per
+anchor.
 
 ## Gate (loop 2)
 
@@ -117,6 +133,54 @@ sessions do not help. The gate is therefore shaped as:
 may contract the logical extent. Behavioural non-compliance carries finite weight, adjusts
 confidence only, and never touches the extent. Skipping oats before one hockey game is not
 evidence the rule is wrong.
+
+### The verdict has three values, not two
+
+`keep` / `retract` is the defect. **IB3** (Aha, Kibler & Albert 1991) supplies the third, and it
+is the cleanest mechanism found anywhere in the survey — two parameters:
+
+| condition | verdict | action |
+|---|---|---|
+| `lower(accuracy) > upper(class_frequency)` | acceptable | promote |
+| `upper(accuracy) < lower(class_frequency)` | noisy | retract |
+| intervals **overlap** | **mediocre** | **wait — gather more evidence** |
+
+Three properties that make it right rather than merely plausible: the baseline is the class's
+**own observed frequency**, so a rule about something rare is not punished for applying rarely;
+thresholds are deliberately **asymmetric** (90% confidence to be accepted, 75% to be dropped);
+and intervals **shrink monotonically**, so verdicts are provisional early and firm late with no
+scheduling logic.
+
+**Every system surveyed that lacks this third state is one mislabelled observation away from a
+bad permanent edit** — FORTE, KRUST, base EITHER, JTMS, canonical RDR. The current store has two
+states.
+
+**IB3 is only half of it.** It can ask "is this item bad?" but never "who is to blame?".
+**BBNR** (Delany & Cunningham 2004) is the causal half — it maintains a *liability set* of what
+**causes** misclassifications rather than what **is** misclassified, verifies each removal by
+simulation, and **restores automatically if the removal breaks anything**. They compose, and
+each is unsound alone.
+
+**The update rule is Spohn/Shenoy evidence-oriented conditionalisation**: `τ(A↑x) − τ(A) = x`.
+Each observation of strength *x* moves the two-sided rank by exactly *x*; *n* observations by
+*nx*. **Reversible by construction and commutative**, so replay order does not affect the
+result — which is what makes a derived projection over an immutable log safe. Cite Definition
+10 (evidence-oriented); Spohn's Definition 6 (result-oriented) explicitly does *not* accumulate.
+
+**Simplest thing that works, and it needs no statistics:** EITHER's noise mode — **minimum
+support of 2 on the repair, not on the rule**. *"If the correction only applies to a single
+example, then it could well be that it was the example, rather than the rule, that was in
+error."* Companion brake worth stealing: **the evidence required to justify a deletion scales
+with the syntactic mass of what is being deleted.**
+
+**Counter-based promotion is dead.** Nous's own ablation shows a confidence update with uniform
+observation weights *"degenerates into a soft recency-follower"* and ties last-write-wins. This
+invalidates `session_appearances >= 3 → LOCKED` from the earlier constraint-memory spec. The
+distinction lives in the **reliability signal**, not the update rule.
+
+**If an LLM judge appears anywhere, it needs a rubric.** Measured: an unguided judge ranks
+learned rules at **46.4%**, and **15.8% on widest-margin pairs — an inversion, worse than
+chance**. The same judge with an outcome-validated rubric reaches **73.8%**.
 
 **Decompose or be unfalsifiable.** Worst-case bound width equals the disagreement rate, so a
 change touching 5% of sessions is estimable and one touching 60% is not. Taxonomy changes are
@@ -172,6 +236,29 @@ discussed.
 **The gate must reject meta-level rows.** Currently written as constraints: *"the user wants to
 begin the timeboxing session immediately"*, *"the activity must adhere to a timeboxing
 format"*. These describe the session, not the day.
+
+### Three source channels, and the channel is a free durability prior
+
+| channel | mostly produces | prior |
+|---|---|---|
+| planning session | today's facts | session |
+| **weekly review** | **policy and reflection** | **durable** |
+| calendar | anchors, and behavioural outcome | — |
+
+A statement made during weekly review is far more likely to be a durable rule than one made
+mid-planning. That is the speech-act signal the assertion path needs, **derivable from context
+with no classifier**. It also explains the assertion cases found empirically — `WIP guardrail`,
+`Two-lane strategic day cap`, `Wednesday revenue-first precedence` all read as reflection, not
+planning.
+
+Infrastructure exists: `review-system/` is a FastMCP server (Notion-backed, Socratic gated
+sessions, SKILL.md and AutoGen integration complete, ORM wiring outstanding), plus a tested
+`revisor` agent. The weekly review is a recurring calendar ritual, not a hypothetical.
+
+**This makes three stores, not two.** C4 already notes the SQL table and durable store
+diverging; the review adds a Notion-backed third — and it is the channel producing the *most
+durable* rules. If review-derived policy lives only in Notion it never reaches retrieval. Must
+be decided, not discovered.
 
 ### Decay is a discount rate on evidence, not a lifetime
 
@@ -230,6 +317,44 @@ that everything it proposed was right, from silence, with the user's name on it.
 than applied silently. This is the answer to AGM's success postulate: a declaration is not
 permanently immune, but evidence proposes rather than overrides.
 
+## Experiments
+
+Every number in this spec was measured against the real store (`data/admonish.db`, 1,662 rows),
+the session logs (1,004 sessions), and the real calendar. Scripts are throwaway; the findings
+are not.
+
+| # | Question | Result |
+|---|---|---|
+| E1 | How many real concepts are in the store? | 1,662 rows → 606 concepts. Only 2.7× collapse. Naive jaccard-0.6 merging **false-merges** distinct concepts (`Work Window` with `Deep Work Block Duration`) — first evidence that a similarity threshold is the wrong canonicalisation tool. |
+| E2 | Is restatement evidence? | **No.** 48% of restatements occur <1 min apart, median gap 1.2 min; only 11% span more than a day. Machine duplication is separable deterministically: rows ≫ threads is machine, rows ≈ threads is genuine. |
+| E3 | Which failure mode dominates? | FM2 (cross-session retrieval) hits 95 distinct concepts; FM1 (within-session) hits 33. Their vocabularies are disjoint — FM1 is today's facts, FM2 is durable preferences. |
+| E4 | Does promotion work? | **13 of 625 session concepts ever reached PROFILE (2%).** `wake up time` extracted 22× across 22 threads, never promoted. This is FM2's entire cause. |
+| E5 | Does anchor-recurrence promotion work? | **Recall 0.85.** Its 10 false negatives are all policy declarations — which is exactly what the assertion path covers. |
+| E6 | Does anchor traversal work? | Yes — two deterministic hops on one real week, no LLM in the read path. The hockey/oats failure is documented in the real calendar (2026-03-08), not hypothetical. |
+| E7 | Are outcomes recoverable retroactively? | **Yes**, for machine-checkable rules, from the calendar, with zero new instrumentation: oats −2h before gym 83%, no-meetings-before-13:00 75%, lunch 62%, work-cutoff 100%. |
+| E8 | Is durable memory contributing? | **84% of logged retrievals selected zero constraints.** Durable memory contributed to 1 of 32 checkable rule-days; 14 were honoured with nothing retrieved. Caveat: only the *durable* path is logged, and the rules audited are ones a competent planner does anyway. |
+
+E8 is the uncomfortable one and should stay uncomfortable: **the baseline to beat is not the
+current system, it is no durable memory at all**, and that baseline scored 62–100% on
+everything checkable. If memory earns its keep it is on the unguessable rules — Friday systems
+quarantine, C2F caps, Wednesday revenue-first — and none of those were tested.
+
+## Build order
+
+The write path first, not the graph. Retrieval was shown cheap (E6); promotion was shown broken
+(E4), and it is the whole of FM2.
+
+1. **L1 observation log + anchor vocabulary.** Append-only, minted identity (I3), machine-replay
+   filter at ingest (C9). The anchor vocabulary comes out of the recurrence count already
+   present in the data, plus the calendar (which is where `gym` and `hockey` live).
+2. **Promotion.** Both paths — anchor recurrence and assertion — with the channel prior. Ambient
+   proposal surface with three-valued reliability.
+3. **Retrieval by traversal.** Deterministic walk. Only after #137 settles the conditionality
+   encoding.
+4. **Decay**, then **loop 2 and the gate**, in the weekly review.
+
+Steps 1–2 fix FM2 on their own, run on SQLite, and require no substrate decision.
+
 ## Known constraints
 
 Facts about the existing system the design must survive. These are constraints, not work items.
@@ -240,7 +365,8 @@ Facts about the existing system the design must survive. These are constraints, 
 | C2 | Constraints carry control flow, not just prompt text. Of 9 consumers of `session.active_constraints`, 5 are behavioural; `agent.py:3272` gates task prefetch on a planning-aspect id, uncovered by tests. |
 | C3 | #104's second extraction runs on machine-generated text (`stage_user_message` cleared at four sites; RefineNode falls through to a synthetic instruction). Under I2, a fabricated observation is permanent. |
 | C4 | Two stores. Slack constraint-review modals read the SQL table, not the durable store. |
-| C5 | No outcome column in ~1,000 logged sessions, and much of the corpus ran while retrieval returned zero (#114) — a degenerate regime that must be segmented, not averaged. |
+| C5 | No *explicit* outcome column in ~1,000 logged sessions — but outcomes are recoverable retroactively for machine-checkable rules by auditing the calendar (see Experiments), and the review system's Outcomes DB may hold explicit ones. Much of the corpus ran while retrieval returned zero (84% of logged selections), a degenerate regime that must be segmented, not averaged. |
+| C9 | Every apparent signal in the corpus needs a machine-replay filter before it means anything. Three separate measurements were contaminated: 48% of constraint restatements occur <1 minute apart, and user turns repeat byte-identically. Raw counts overstate evidence by roughly 2×. |
 | C6 | "Anchor" already means three things here: retrieval seed, block label (#118), and the `planning_anchors` table. |
 | C7 | Task-specific work constraints flood the profile store (#116) — visible in the data as `Facet Extraction Blocks` ×44, `Block Count` ×42. |
 | C8 | Existing dedup lives at two layers; the store-level layer is replaced outright by projection, since semantic identity becomes a projection rule rather than a lookup-before-write. |
@@ -284,8 +410,8 @@ Load-bearing findings from the research pass. Full reports in `docs/superpowers/
 ## Open questions (fog)
 
 - Re-projection mechanics when L3 changes — incremental or full rebuild, and what invalidates.
-- **Ambiguous non-compliance.** No prior art found. Recommender MNAR/PU literature assumes no
-  stated preference exists, which is the opposite case. Genuinely open.
+- **How conditionality is encoded** — path intersection vs trigger predicates. See Retrieval;
+  tracked on #137 and blocking the write path.
 - Migration of the 1,662 existing rows.
 - Whether Notion survives as a human-editable view onto the graph.
 - Multi-user, or single-tenant forever.
