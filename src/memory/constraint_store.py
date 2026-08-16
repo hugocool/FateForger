@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import datetime
 
 from memory.constraint import Applicability, Constraint
@@ -42,41 +43,48 @@ class ConstraintStore:
     """
 
     def __init__(self, db_path: str) -> None:
-        self._conn = sqlite3.connect(db_path)
+        # check_same_thread=False because the MCP server dispatches sync tool
+        # handlers to worker threads. This build's SQLite is multithread mode
+        # (sqlite3.threadsafety == 1): a connection may cross threads only if
+        # uses never overlap, so every method serialises on _lock. RLock, not
+        # Lock — _row calls observations_for re-entrantly.
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._lock = threading.RLock()
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
     def upsert(self, constraint: Constraint) -> str:
-        self._conn.execute(
-            "INSERT INTO constraints (uid, name, description, necessity, scope, "
-            " status, source, frame_slot, tier, applicability, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(uid) DO UPDATE SET "
-            " name=excluded.name, description=excluded.description, "
-            " necessity=excluded.necessity, scope=excluded.scope, "
-            " status=excluded.status, source=excluded.source, "
-            " frame_slot=excluded.frame_slot, tier=excluded.tier, "
-            " applicability=excluded.applicability",
-            (
-                constraint.uid,
-                constraint.name,
-                constraint.description,
-                constraint.necessity,
-                constraint.scope,
-                constraint.status,
-                constraint.source,
-                constraint.frame_slot,
-                constraint.tier.value,
-                constraint.applicability.model_dump_json(),
-                constraint.created_at.isoformat(),
-            ),
-        )
-        self._conn.commit()
-        # Re-projection can DROP an observation, not only add one, so set the
-        # links rather than appending to them. link_observation remains for the
-        # incremental fold path, where adding is exactly what is meant.
-        self.replace_links(constraint.uid, constraint.source_observation_uids)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO constraints (uid, name, description, necessity, scope, "
+                " status, source, frame_slot, tier, applicability, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(uid) DO UPDATE SET "
+                " name=excluded.name, description=excluded.description, "
+                " necessity=excluded.necessity, scope=excluded.scope, "
+                " status=excluded.status, source=excluded.source, "
+                " frame_slot=excluded.frame_slot, tier=excluded.tier, "
+                " applicability=excluded.applicability",
+                (
+                    constraint.uid,
+                    constraint.name,
+                    constraint.description,
+                    constraint.necessity,
+                    constraint.scope,
+                    constraint.status,
+                    constraint.source,
+                    constraint.frame_slot,
+                    constraint.tier.value,
+                    constraint.applicability.model_dump_json(),
+                    constraint.created_at.isoformat(),
+                ),
+            )
+            self._conn.commit()
+            # Re-projection can DROP an observation, not only add one, so set the
+            # links rather than appending to them. link_observation remains for the
+            # incremental fold path, where adding is exactly what is meant.
+            self.replace_links(constraint.uid, constraint.source_observation_uids)
         return constraint.uid
 
     def link_observation(self, constraint_uid: str, observation_uid: str) -> None:
@@ -87,12 +95,13 @@ class ConstraintStore:
         which is what compare-and-swap is for. The reverse index also gives
         re-projection an observation -> constraint lookup.
         """
-        self._conn.execute(
-            "INSERT OR IGNORE INTO constraint_observations "
-            "(constraint_uid, observation_uid) VALUES (?,?)",
-            (constraint_uid, observation_uid),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO constraint_observations "
+                "(constraint_uid, observation_uid) VALUES (?,?)",
+                (constraint_uid, observation_uid),
+            )
+            self._conn.commit()
 
     def replace_links(self, constraint_uid: str, observation_uids: list[str]) -> None:
         """Set a constraint's provenance to exactly these observations.
@@ -103,42 +112,47 @@ class ConstraintStore:
         Delete-then-insert in a single transaction so a concurrent reader
         never observes a constraint with no provenance at all.
         """
-        with self._conn:
-            self._conn.execute(
-                "DELETE FROM constraint_observations WHERE constraint_uid = ?",
-                (constraint_uid,),
-            )
-            self._conn.executemany(
-                "INSERT OR IGNORE INTO constraint_observations "
-                "(constraint_uid, observation_uid) VALUES (?,?)",
-                [(constraint_uid, uid) for uid in observation_uids],
-            )
+        with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "DELETE FROM constraint_observations WHERE constraint_uid = ?",
+                    (constraint_uid,),
+                )
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO constraint_observations "
+                    "(constraint_uid, observation_uid) VALUES (?,?)",
+                    [(constraint_uid, uid) for uid in observation_uids],
+                )
 
     def observations_for(self, constraint_uid: str) -> list[str]:
-        rows = self._conn.execute(
-            "SELECT observation_uid FROM constraint_observations "
-            "WHERE constraint_uid = ? ORDER BY observation_uid",
-            (constraint_uid,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT observation_uid FROM constraint_observations "
+                "WHERE constraint_uid = ? ORDER BY observation_uid",
+                (constraint_uid,),
+            ).fetchall()
         return [r["observation_uid"] for r in rows]
 
     def get(self, uid: str) -> Constraint | None:
-        row = self._conn.execute(
-            "SELECT * FROM constraints WHERE uid = ?", (uid,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM constraints WHERE uid = ?", (uid,)
+            ).fetchone()
         return self._row(row) if row else None
 
     def all(self) -> list[Constraint]:
-        rows = self._conn.execute(
-            "SELECT * FROM constraints ORDER BY created_at"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM constraints ORDER BY created_at"
+            ).fetchall()
         return [self._row(r) for r in rows]
 
     def durable(self) -> list[Constraint]:
-        rows = self._conn.execute(
-            "SELECT * FROM constraints WHERE tier = ? ORDER BY created_at",
-            (Tier.DURABLE.value,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM constraints WHERE tier = ? ORDER BY created_at",
+                (Tier.DURABLE.value,),
+            ).fetchall()
         return [self._row(r) for r in rows]
 
     def _row(self, row: sqlite3.Row) -> Constraint:

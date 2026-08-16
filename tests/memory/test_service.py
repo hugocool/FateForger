@@ -103,5 +103,27 @@ async def test_a_restatement_folds_rather_than_duplicating(tmp_path):
 
 
 def test_one_db_file_carries_both_stores(tmp_path):
+    import sqlite3
+
+    _service(tmp_path)
+    conn = sqlite3.connect(str(tmp_path / "memory.db"))
+    tables = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    assert {"observations", "constraints", "constraint_observations"} <= tables
+
+
+def test_stores_survive_cross_thread_use(tmp_path):
+    """MCP frameworks run sync tools on worker threads; sqlite must not care."""
+    import concurrent.futures
+    from datetime import date as _date
+
     service = _service(tmp_path)
-    assert (tmp_path / "memory.db").exists()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        views = pool.submit(
+            service.get_active_constraints, _date(2026, 3, 9)
+        ).result()
+    assert views == []
