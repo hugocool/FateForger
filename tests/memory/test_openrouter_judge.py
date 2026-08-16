@@ -58,12 +58,18 @@ async def test_tier_parses_structured_output():
         api_key="k",
         base_url="https://example.invalid",
         client=_mock(
-            {"tier": "durable", "is_declaration": True, "rationale": "policy"}
+            {
+                "tier": "durable",
+                "is_declaration": True,
+                "label": "No work after 21:00",
+                "rationale": "policy",
+            }
         ),
     )
     result = await judge.tier(_obs("never work after 21:00"))
     assert result.tier is Tier.DURABLE
     assert result.is_declaration is True
+    assert result.label == "No work after 21:00"
 
 
 async def test_a_malformed_response_fails_loudly():

@@ -141,3 +141,65 @@ async def test_concurrent_projections_of_the_same_rule_create_one_constraint(tmp
         project(_obs("oats 2h before the gym"), _result(), judge, store),
     )
     assert len(store.all()) == 1, "concurrent projection created a duplicate"
+
+
+async def test_the_models_label_becomes_the_constraint_name(tmp_path):
+    """I1: the LLM proposes and names. Name and description must differ."""
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    judge = StubJudge(
+        tiers={"eat oats two hours before gym": Tier.DURABLE},
+        labels={"eat oats two hours before gym": "Oats before gym"},
+    )
+    obs = _obs("eat oats two hours before gym")
+    result = IngestResult(
+        stored=True, uid=obs.uid, tier=Tier.DURABLE,
+        label="Oats before gym", is_declaration=False,
+    )
+    c = await project(obs, result, judge, store)
+    assert c.name == "Oats before gym"
+    assert c.description == "eat oats two hours before gym"
+
+
+async def test_a_declaration_becomes_a_must(tmp_path):
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    obs = _obs("never schedule meetings before 13:00")
+    result = IngestResult(
+        stored=True, uid=obs.uid, tier=Tier.DURABLE,
+        label="No morning meetings", is_declaration=True,
+    )
+    c = await project(obs, result, StubJudge(), store)
+    assert c.necessity is Necessity.MUST
+
+
+async def test_an_inferred_rule_becomes_a_should(tmp_path):
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    obs = _obs("I usually have lunch around noon")
+    result = IngestResult(
+        stored=True, uid=obs.uid, tier=Tier.DURABLE,
+        label="Lunch around noon", is_declaration=False,
+    )
+    c = await project(obs, result, StubJudge(), store)
+    assert c.necessity is Necessity.SHOULD
+
+
+async def test_channel_maps_to_the_consumers_source_vocabulary(tmp_path):
+    """The consuming server's enum is user|calendar|system|feedback."""
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    for channel, expected in (
+        (Channel.PLANNING, Source.USER),
+        (Channel.REVIEW, Source.USER),
+        (Channel.CALENDAR, Source.CALENDAR),
+    ):
+        obs = Observation(
+            text=f"rule from {channel.value}",
+            channel=channel,
+            provenance=Provenance.OBSERVED,
+            session_id="s1",
+            observed_at=T0,
+        )
+        result = IngestResult(
+            stored=True, uid=obs.uid, tier=Tier.DURABLE,
+            label="a rule", is_declaration=False,
+        )
+        c = await project(obs, result, StubJudge(), store)
+        assert c.source is expected

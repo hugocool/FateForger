@@ -23,7 +23,7 @@ class TierJudgement(BaseModel):
 
     tier: Tier = Tier.SESSION
     is_declaration: bool = False
-    label: str = ""
+    label: str
     rationale: str = ""
 
 
@@ -99,12 +99,16 @@ class StubJudge:
         metas: dict[str, bool] | None = None,
         duplicates: dict[str, str] | None = None,
         canonical: dict[str, str] | None = None,
+        labels: dict[str, str] | None = None,
+        declarations: dict[str, bool] | None = None,
     ) -> None:
         self._anchors = anchors or {}
         self._tiers = tiers or {}
         self._metas = metas or {}
         self._duplicates = duplicates or {}
         self._canonical = canonical or {}
+        self._labels = labels or {}
+        self._declarations = declarations or {}
         self.calls: list[tuple[str, str]] = []
 
     async def anchors(self, observation: Observation) -> AnchorJudgement:
@@ -114,7 +118,9 @@ class StubJudge:
     async def tier(self, observation: Observation) -> TierJudgement:
         self.calls.append(("tier", observation.uid))
         return TierJudgement(
-            tier=self._tiers.get(observation.text, Tier.SESSION)
+            tier=self._tiers.get(observation.text, Tier.SESSION),
+            label=self._labels.get(observation.text, observation.text),
+            is_declaration=self._declarations.get(observation.text, False),
         )
 
     async def meta(self, observation: Observation) -> MetaJudgement:

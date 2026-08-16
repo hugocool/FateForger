@@ -143,6 +143,20 @@ def test_replace_links_does_not_touch_another_constraints_links(tmp_path):
     assert store.observations_for(b.uid) == ["obs-1"]
 
 
+def test_reprojection_that_drops_an_observation_drops_its_link(tmp_path):
+    """I4: re-projection must be able to shrink provenance, not only grow it."""
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    c = _c()
+    store.upsert(c)
+    store.link_observation(c.uid, "obs-2")
+    assert store.observations_for(c.uid) == ["obs-1", "obs-2"]
+
+    c.source_observation_uids = ["obs-1"]
+    store.upsert(c)
+    assert store.observations_for(c.uid) == ["obs-1"]
+    assert store.get(c.uid).source_observation_uids == ["obs-1"]
+
+
 def test_applicability_boundaries_are_inclusive():
     from datetime import date as _date
 

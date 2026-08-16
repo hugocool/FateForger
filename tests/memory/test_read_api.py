@@ -108,8 +108,13 @@ def test_the_read_path_cannot_reach_a_model():
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
 
-    forbidden = {"memory.judge", "memory.openrouter_judge", "memory.ingest", "httpx", "asyncio"}
-    assert not (imported & forbidden), f"read path imports {imported & forbidden}"
+    allowed = {"__future__", "datetime", "memory.constraint", "memory.constraint_store"}
+    assert imported <= allowed, (
+        f"read path imports {imported - allowed}; it must reach nothing that "
+        f"can call a model. An allow-list is used rather than a deny-list "
+        f"because a deny-list is bypassed by `from memory import judge`, by "
+        f"any HTTP client not named in it, and by importlib."
+    )
 
     assert not [
         n for n in ast.walk(tree) if isinstance(n, (ast.AsyncFunctionDef, ast.Await))

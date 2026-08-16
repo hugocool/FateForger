@@ -66,6 +66,7 @@ async def test_a_standing_rule_is_durable_and_a_declaration():
         result = await judge.tier(_obs("I never schedule meetings before 13:00"))
     assert result.tier is Tier.DURABLE
     assert result.is_declaration is True
+    assert result.label, "the model must name the rule, not leave it unnamed"
 
 
 async def test_todays_appointment_is_session_scoped():

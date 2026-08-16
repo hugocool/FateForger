@@ -465,16 +465,12 @@ span with one lock per constraint store.
 
 ### Open
 
-**The lock registry never evicts.** `projection._LOCKS` holds one `asyncio.Lock` per distinct
-`ConstraintStore` instance for the life of the process. Harmless with the current call sites,
-which hold one long-lived store, and not a correctness hazard — lookups only happen while the
-store is alive on the calling stack, so id-reuse after garbage collection cannot race a live
-lock. It becomes a real leak if a server ever creates a store per request.
-
-The cause is an error in the instruction that specified it: it claimed `ConstraintStore` is not
-hashable and therefore keyed the registry by `id()`. Plain Python objects *are* hashable by
-identity, so a `weakref.WeakKeyDictionary` keyed on the store itself would evict automatically
-and is strictly better. Fix shape is three lines.
+**Serialisation is per process and per store instance.** The lock closing the
+duplicate-creation race is mutual exclusion over one `ConstraintStore` object,
+weak-keyed so a collected store does not leak its lock. Two store instances on
+the same file, or two processes, can still both create a constraint for one
+rule: there is no database-level uniqueness. For a design whose stated shape is
+a standalone server, that is a real limit rather than a closed gap.
 
 **Per-session serialisation is enforced for projection but assumed everywhere else.** The lock
 covers `project`. Nothing prevents a future caller from driving `ingest` concurrently over the

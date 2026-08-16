@@ -164,8 +164,9 @@ class OpenRouterJudge:
 
     async def tier(self, observation: Observation) -> TierJudgement:
         payload = await self._ask(TIER_PROMPT, observation.text)
-        if "tier" not in payload:
-            raise ValueError(f"could not parse judge response: {payload!r}")
+        for required in ("tier", "label"):
+            if required not in payload:
+                raise ValueError(f"could not parse judge response: {payload!r}")
         return self._build(TierJudgement, payload)
 
     async def meta(self, observation: Observation) -> MetaJudgement:

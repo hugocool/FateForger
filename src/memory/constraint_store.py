@@ -1,7 +1,6 @@
 # src/memory/constraint_store.py
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import datetime
 
@@ -20,7 +19,6 @@ CREATE TABLE IF NOT EXISTS constraints (
     frame_slot   TEXT,
     tier         TEXT NOT NULL,
     applicability TEXT NOT NULL,
-    source_observation_uids TEXT NOT NULL,
     created_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_constraints_tier ON constraints(tier);
@@ -52,16 +50,14 @@ class ConstraintStore:
     def upsert(self, constraint: Constraint) -> str:
         self._conn.execute(
             "INSERT INTO constraints (uid, name, description, necessity, scope, "
-            " status, source, frame_slot, tier, applicability, "
-            " source_observation_uids, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+            " status, source, frame_slot, tier, applicability, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(uid) DO UPDATE SET "
             " name=excluded.name, description=excluded.description, "
             " necessity=excluded.necessity, scope=excluded.scope, "
             " status=excluded.status, source=excluded.source, "
             " frame_slot=excluded.frame_slot, tier=excluded.tier, "
-            " applicability=excluded.applicability, "
-            " source_observation_uids=excluded.source_observation_uids",
+            " applicability=excluded.applicability",
             (
                 constraint.uid,
                 constraint.name,
@@ -73,13 +69,14 @@ class ConstraintStore:
                 constraint.frame_slot,
                 constraint.tier.value,
                 constraint.applicability.model_dump_json(),
-                json.dumps(constraint.source_observation_uids),
                 constraint.created_at.isoformat(),
             ),
         )
         self._conn.commit()
-        for observation_uid in constraint.source_observation_uids:
-            self.link_observation(constraint.uid, observation_uid)
+        # Re-projection can DROP an observation, not only add one, so set the
+        # links rather than appending to them. link_observation remains for the
+        # incremental fold path, where adding is exactly what is meant.
+        self.replace_links(constraint.uid, constraint.source_observation_uids)
         return constraint.uid
 
     def link_observation(self, constraint_uid: str, observation_uid: str) -> None:
