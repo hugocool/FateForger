@@ -90,3 +90,13 @@ def test_generated_observations_never_promote():
     decision = decide(obs, _vocab("gym"))
     assert decision.tier is Tier.SESSION
     assert decision.reason is PromotionReason.NONE
+
+
+def test_a_real_preference_mentioning_a_session_is_not_meta_level():
+    """Regression: generic "session" phrasing must not suppress a life rule."""
+    assert not is_meta_level("always start the session with a five-minute stretch")
+    decision = decide(
+        _obs("always start the session with a five-minute stretch at the gym"),
+        _vocab("gym"),
+    )
+    assert decision.tier is Tier.DURABLE

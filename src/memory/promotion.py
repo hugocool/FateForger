@@ -8,12 +8,16 @@ from pydantic import BaseModel, Field
 from memory.anchors import AnchorVocabulary, extract_anchors
 from memory.models import Channel, Observation, Provenance, Tier
 
+# Only markers naming the tool itself. Generic phrases like "begin the session"
+# were removed: the meta guard short-circuits to SESSION unconditionally, so a
+# real preference ("always start the session with a five-minute stretch") would
+# be permanently blocked from durable memory — the very failure this task fixes.
+# They also caught nothing extra: the polluting row "the user wants to begin the
+# timeboxing session immediately" already matches "timeboxing session".
 META_MARKERS = (
     "timeboxing session",
     "timeboxing format",
     "timeboxing methodology",
-    "begin the session",
-    "start the session",
 )
 
 
