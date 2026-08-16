@@ -10,12 +10,12 @@ here.
 calendar — an etag change, a vanished event, or an appeared event — as one
 flat set of affected event ids. It does not try to judge whether an
 appeared event actually conflicts with the write being attempted: ``drift``
-only sees ``Snapshot`` (calendar_id, day, etags) and the live events, never
-the blocks a caller is about to commit, so it has no basis for that
-judgement. Scoping "does this drift matter to *my* write" belongs to the
-caller, which knows which event ids its write touches and can intersect
-that set against ``drift()``'s output. Reporting everything here keeps the
-primitive honest; filtering by relevance here would make it guess.
+only sees ``Snapshot`` (calendar_id, day, tz, etags) and the live events,
+never the blocks a caller is about to commit, so it has no basis for that
+judgement. The commit path gates on the whole snapshot: any drift anywhere
+in the snapshotted day blocks the write, deliberately, because that is the
+precondition surface that closes the clobber/blind-undo bug this module
+exists to fix. Reporting everything here keeps the primitive honest.
 """
 
 from __future__ import annotations
@@ -31,6 +31,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class CalendarEvent(BaseModel):
     """One calendar event, provider-neutral.
+
+    ``start``/``end`` are naive wall-clock datetimes in the owning
+    snapshot's timezone (``Snapshot.tz``) — never UTC, and never converted
+    to a timezone-aware object. The domain is naive throughout; mixing
+    naive and aware datetimes here would be worse than committing to one.
+    A real adapter, which receives tz-aware RFC3339 timestamps from the
+    provider, is responsible for converting to this wall-clock
+    representation itself before handing an event back.
 
     ``uid``, ``handle`` and ``slug`` live in provider extended properties.
     """
@@ -49,13 +57,22 @@ class CalendarEvent(BaseModel):
 
 
 class Snapshot(BaseModel):
-    """Observed calendar state at a point in time."""
+    """Observed calendar state at a point in time.
+
+    ``tz`` is the IANA timezone whose wall clock every event's ``start``/
+    ``end`` (and the snapshot's own ``day`` boundary) are expressed in. It
+    is required rather than defaulted: an unstated default is exactly how
+    a near-midnight event or a DST transition goes wrong silently in a
+    real adapter, so the snapshot must say plainly which timezone its
+    naive datetimes belong to instead of letting a caller assume UTC.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     token: str
     calendar_id: str
     day: date_type
+    tz: str
     etags: dict[str, str] = Field(default_factory=dict)
     event_ids: dict[str, str] = Field(
         default_factory=dict,
@@ -65,13 +82,33 @@ class Snapshot(BaseModel):
 
 
 def make_snapshot(
-    calendar_id: str, day: date_type, events: list[CalendarEvent]
+    calendar_id: str, day: date_type, tz: str, events: list[CalendarEvent]
 ) -> Snapshot:
-    """Build a snapshot from observed events."""
+    """Build a snapshot from observed events.
+
+    Raises ``ValueError`` if two events share a ``uid``. uid uniqueness is
+    an invariant maintained elsewhere in the domain; silently letting a
+    later event overwrite an earlier one in ``event_ids`` would corrupt
+    the create-vs-update decision made from it downstream.
+    """
     etags = {event.event_id: event.etag for event in events}
-    event_ids = {event.uid: event.event_id for event in events if event.uid}
+    event_ids: dict[str, str] = {}
+    for event in events:
+        if not event.uid:
+            continue
+        if event.uid in event_ids:
+            raise ValueError(
+                f"duplicate uid {event.uid!r}: events "
+                f"{event_ids[event.uid]!r} and {event.event_id!r} both claim it"
+            )
+        event_ids[event.uid] = event.event_id
     payload = json.dumps(
-        {"calendar_id": calendar_id, "day": day.isoformat(), "etags": etags},
+        {
+            "calendar_id": calendar_id,
+            "day": day.isoformat(),
+            "tz": tz,
+            "etags": etags,
+        },
         sort_keys=True,
     )
     token = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
@@ -79,6 +116,7 @@ def make_snapshot(
         token=token,
         calendar_id=calendar_id,
         day=day,
+        tz=tz,
         etags=etags,
         event_ids=event_ids,
     )
@@ -107,8 +145,14 @@ class CalendarPort(Protocol):
     """Everything the server needs from a calendar provider."""
 
     async def list_day(
-        self, calendar_id: str, day: date_type
-    ) -> list[CalendarEvent]: ...
+        self, calendar_id: str, day: date_type, tz: str
+    ) -> list[CalendarEvent]:
+        """Events on ``day``, where ``day``'s midnight-to-midnight bounds
+        and every returned event's naive ``start``/``end`` are interpreted
+        in ``tz``. A real adapter uses ``tz`` to compute the day's UTC
+        window and to convert provider-side aware timestamps down to this
+        wall-clock representation; it must never assume UTC."""
+        ...
 
     async def create(self, calendar_id: str, event: CalendarEvent) -> CalendarEvent: ...
 
