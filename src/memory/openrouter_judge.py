@@ -95,9 +95,12 @@ class OpenRouterJudge:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                # Extraction is term typing, not deliberation. Reasoning
-                # tokens buy nothing and cost latency in the write path.
-                "reasoning": {"enabled": False},
+                # Extraction is term typing, not deliberation, so reasoning is
+                # held to the floor. Note: this endpoint REJECTS
+                # {"enabled": False} with "Reasoning is mandatory for this
+                # endpoint and cannot be disabled" — verified against the live
+                # API on 2026-08-16. "minimal" is the lowest accepted setting.
+                "reasoning": {"effort": "minimal"},
                 "response_format": {"type": "json_object"},
             },
         )

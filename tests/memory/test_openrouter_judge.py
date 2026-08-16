@@ -79,7 +79,7 @@ async def test_a_malformed_response_fails_loudly():
         await judge.anchors(_obs("anything"))
 
 
-async def test_request_carries_the_pinned_model_and_no_reasoning():
+async def test_request_carries_the_pinned_model_and_minimal_reasoning():
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -96,4 +96,5 @@ async def test_request_carries_the_pinned_model_and_no_reasoning():
     )
     await judge.anchors(_obs("anything"))
     assert captured["model"] == "google/gemini-3.6-flash"
-    assert captured.get("reasoning", {}).get("enabled") is False
+    # "enabled": False is rejected by this endpoint; "minimal" is the floor.
+    assert captured.get("reasoning", {}).get("effort") == "minimal"
