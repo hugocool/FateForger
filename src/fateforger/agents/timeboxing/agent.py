@@ -181,11 +181,15 @@ from .toon_views import (
     tasks_rows,
     timebox_events_rows,
 )
+from tmbx.journal.instrument import JournalingPatcher, JournalingSubmitter
+from tmbx.journal.store import JournalStore, journal_sessionmaker
 
 logger = logging.getLogger(__name__)
 TEnum = TypeVar("TEnum", bound=Enum)
 P = ParamSpec("P")
 R = TypeVar("R")
+
+_JOURNAL_STORE: JournalStore | None = None
 
 
 def _fallback_on_parse_error(default: R) -> Callable[[Callable[P, R]], Callable[P, R]]:
@@ -202,6 +206,46 @@ def _fallback_on_parse_error(default: R) -> Callable[[Callable[P, R]], Callable[
         return _wrapped
 
     return _decorator
+
+
+def _build_journal_store() -> JournalStore | None:
+    """Open the patch journal, or return ``None`` if unavailable.
+
+    Synchronous by construction. This runs from ``__init__`` while the Slack
+    bot's event loop is already running, so it must never block that loop
+    with a synchronous wait for a coroutine — such a call raises inside a
+    running loop, and because the failure path degrades to ``None``, the
+    journal would be silently disabled in production while every test
+    passed.
+
+    ``journal_sessionmaker`` only builds a lazily-connecting engine. The schema
+    is created out of band by ``tmbx-init-journal``; if it is missing, the
+    first append fails, is logged by the decorator's guard, and planning
+    continues.
+    """
+    global _JOURNAL_STORE
+    if _JOURNAL_STORE is not None:
+        return _JOURNAL_STORE
+    try:
+        _JOURNAL_STORE = JournalStore(journal_sessionmaker())
+        return _JOURNAL_STORE
+    except Exception:
+        logger.warning("patch journal unavailable; continuing unjournaled", exc_info=True)
+        return None
+
+
+def _maybe_journal_patcher(patcher: Any, store: JournalStore | None) -> Any:
+    """Wrap the patcher when a journal is available, else pass it through."""
+    if store is None:
+        return patcher
+    return JournalingPatcher(patcher, store)
+
+
+def _maybe_journal_submitter(submitter: Any, store: JournalStore | None) -> Any:
+    """Wrap the submitter when a journal is available, else pass it through."""
+    if store is None:
+        return submitter
+    return JournalingSubmitter(submitter, store)
 
 
 class _ConstraintInterpretationPayload(BaseModel):
@@ -476,8 +520,11 @@ class TimeboxingFlowAgent(RoutedAgent):
         self._constraint_engine = None
         self._constraint_agent = self._build_constraint_agent()
         self._constraint_retriever = ConstraintRetriever()
-        self._timebox_patcher = TimeboxPatcher()
-        self._calendar_submitter = CalendarSubmitter()
+        _journal = _build_journal_store()
+        self._timebox_patcher = _maybe_journal_patcher(TimeboxPatcher(), _journal)
+        self._calendar_submitter = _maybe_journal_submitter(
+            CalendarSubmitter(), _journal
+        )
         self._task_marshalling = TaskMarshallingCapability(
             send_message=self.send_message,
             timeout_s=TIMEBOXING_TIMEOUTS.tasks_snapshot_s,
