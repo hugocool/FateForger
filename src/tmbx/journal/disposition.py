@@ -58,14 +58,18 @@ def derive_dispositions(entries: list[JournalEntry]) -> dict[int, Disposition]:
             result[entry.id] = Disposition.FAILED
             continue
 
+        # Rows whose tx_id was undone by a later UNDO are marked UNDONE.
         if entry.tx_id and entry.tx_id in undone_tx:
             result[entry.id] = Disposition.UNDONE
             continue
 
-        if last_commit_id is not None and entry.id < last_commit_id:
+        # Only commits can be superseded by later commits. Gate prevents ATTEMPT/UNDO
+        # rows reaching this check (Critical 3 fix).
+        if entry.kind is EntryKind.COMMIT and last_commit_id is not None and entry.id < last_commit_id:
             result[entry.id] = Disposition.SUPERSEDED
             continue
 
+        # Only attempts that weren't committed are abandoned.
         if entry.kind is EntryKind.ATTEMPT:
             result[entry.id] = Disposition.ABANDONED
             continue

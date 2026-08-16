@@ -118,3 +118,37 @@ def test_attempt_with_tx_id_in_undone_set_respects_precedence():
     result = derive_dispositions(entries)
     assert result[1] == Disposition.UNDONE, "ATTEMPT with tx_id in undone_tx should be UNDONE by precedence"
     assert result[2] == Disposition.ACCEPTED
+
+
+def test_attempt_followed_by_unrelated_commit_is_not_superseded():
+    """Critical 3 fix: SUPERSEDED must be gated to COMMIT rows.
+
+    An ATTEMPT that applied but was never committed, followed by an unrelated
+    COMMIT the same day, should be ABANDONED, not SUPERSEDED. This is the most
+    common real abandonment: explore, decide not to commit, commit something else.
+    """
+    entries = [
+        _entry(1, EntryKind.ATTEMPT, tx_id="tx1"),
+        _entry(2, EntryKind.COMMIT, tx_id="tx2"),
+    ]
+    result = derive_dispositions(entries)
+    assert result[1] == Disposition.ABANDONED, "Uncommitted ATTEMPT should be ABANDONED, not SUPERSEDED"
+    assert result[2] == Disposition.ACCEPTED
+
+
+def test_undo_row_not_superseded_by_later_commit():
+    """Critical 3 fix: SUPERSEDED must be gated to COMMIT rows.
+
+    A sequence: COMMIT, UNDO of it, then a later COMMIT.
+    The UNDO row should be ACCEPTED (it succeeded), not SUPERSEDED.
+    Supersession is a relation between commits; UNDOs are never superseded.
+    """
+    entries = [
+        _entry(1, EntryKind.COMMIT, tx_id="tx1"),
+        _entry(2, EntryKind.UNDO, tx_id="tx2", undoes_tx="tx1"),
+        _entry(3, EntryKind.COMMIT, tx_id="tx3"),
+    ]
+    result = derive_dispositions(entries)
+    assert result[2] == Disposition.ACCEPTED, "UNDO row should be ACCEPTED, not SUPERSEDED"
+    assert result[1] == Disposition.UNDONE
+    assert result[3] == Disposition.ACCEPTED
