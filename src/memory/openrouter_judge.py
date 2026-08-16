@@ -147,7 +147,14 @@ class OpenRouterJudge:
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         try:
-            payload = json.loads(content)
+            # raw_decode takes the first complete JSON value and tells us where
+            # it ended. The endpoint's json mode is not airtight: a real run
+            # saw a correct object followed by one stray apostrophe, and
+            # strict parsing killed 400 calls over it. A complete object at
+            # the start is unambiguous — trailing junk cannot change its
+            # meaning — but if no valid JSON starts the reply, we still raise:
+            # this tolerates noise around the answer, never a missing answer.
+            payload, _end = json.JSONDecoder().raw_decode(content.strip())
         except json.JSONDecodeError as exc:
             raise ValueError(f"could not parse judge response: {content!r}") from exc
         if not isinstance(payload, dict):

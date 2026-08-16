@@ -37,6 +37,21 @@ def _mock(payload: dict) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
+def _mock_raw(content: str) -> httpx.AsyncClient:
+    """Mock client that puts the string verbatim in message content (not JSON-encoded)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": content}}
+                ]
+            },
+        )
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
 def test_satisfies_the_protocol():
     assert isinstance(
         OpenRouterJudge(api_key="k", base_url="https://example.invalid"), Judge
@@ -123,3 +138,26 @@ def test_a_self_constructed_client_has_a_generous_timeout():
     timeout = judge._client.timeout
     assert timeout.read >= 60.0
     assert timeout.connect >= 10.0
+
+
+async def test_trailing_junk_after_a_complete_object_is_tolerated():
+    """A real run died on a correct object followed by one stray apostrophe."""
+    judge = OpenRouterJudge(
+        api_key="k",
+        base_url="https://example.invalid",
+        client=_mock_raw('{"anchors": ["gym"]}\''),
+    )
+    result = await judge.anchors(_obs("gym at 18:00"))
+    assert result.anchors == ["gym"]
+
+
+async def test_leading_junk_still_fails_loudly():
+    import pytest
+
+    judge = OpenRouterJudge(
+        api_key="k",
+        base_url="https://example.invalid",
+        client=_mock_raw('I think: {"anchors": ["gym"]}'),
+    )
+    with pytest.raises(ValueError, match="could not parse"):
+        await judge.anchors(_obs("gym at 18:00"))
