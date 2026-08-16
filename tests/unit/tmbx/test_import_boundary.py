@@ -25,12 +25,12 @@ def _imported_modules(path: Path) -> set[str]:
             if isinstance(node.func, ast.Name):
                 target_name = node.func.id
             elif isinstance(node.func, ast.Attribute):
-                # importlib.import_module
-                if isinstance(node.func.value, ast.Name) and node.func.value.id == "importlib":
-                    target_name = f"importlib.{node.func.attr}"
+                # <any>.import_module (catches both importlib and aliased imports)
+                if node.func.attr == "import_module":
+                    target_name = "import_module"
 
-            if target_name in ("__import__", "importlib.import_module") and node.args:
-                if isinstance(node.args[0], ast.Constant):
+            if target_name in ("__import__", "import_module") and node.args:
+                if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                     found.add(node.args[0].value)
 
     return found
@@ -58,32 +58,34 @@ def test_tmbx_package_exists() -> None:
     assert tmbx.__name__ == "tmbx"
 
 
-def test_dynamic_import_dunder_caught() -> None:
-    """Verify __import__("fateforger") is detected."""
-    source = '__import__("fateforger")'
-    tree = ast.parse(source)
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id == "__import__" and node.args:
-                if isinstance(node.args[0], ast.Constant):
-                    found.add(node.args[0].value)
-    assert "fateforger" in found, f"Dynamic __import__ not detected; found: {found}"
+def test_dynamic_import_dunder_caught(tmp_path: Path) -> None:
+    """Verify __import__("fateforger") via _imported_modules()."""
+    test_file = tmp_path / "test_dunder.py"
+    test_file.write_text('__import__("fateforger")\n')
+    found = _imported_modules(test_file)
+    assert "fateforger" in found, f"__import__(\"fateforger\") not detected; found: {found}"
 
 
-def test_dynamic_import_importlib_caught() -> None:
-    """Verify importlib.import_module("fateforger.core") is detected."""
-    source = 'importlib.import_module("fateforger.core")'
-    tree = ast.parse(source)
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            target_name = None
-            if isinstance(node.func, ast.Attribute):
-                if isinstance(node.func.value, ast.Name) and node.func.value.id == "importlib":
-                    target_name = f"importlib.{node.func.attr}"
+def test_dynamic_import_importlib_caught(tmp_path: Path) -> None:
+    """Verify importlib.import_module("fateforger.core") via _imported_modules()."""
+    test_file = tmp_path / "test_importlib.py"
+    test_file.write_text('importlib.import_module("fateforger.core")\n')
+    found = _imported_modules(test_file)
+    assert "fateforger.core" in found, f"importlib.import_module(\"fateforger.core\") not detected; found: {found}"
 
-            if target_name == "importlib.import_module" and node.args:
-                if isinstance(node.args[0], ast.Constant):
-                    found.add(node.args[0].value)
-    assert "fateforger.core" in found, f"Dynamic importlib.import_module not detected; found: {found}"
+
+def test_dynamic_import_aliased_importlib_caught(tmp_path: Path) -> None:
+    """Verify aliased importlib.import_module("fateforger") via _imported_modules()."""
+    test_file = tmp_path / "test_alias.py"
+    test_file.write_text('import importlib as il\nil.import_module("fateforger")\n')
+    found = _imported_modules(test_file)
+    assert "fateforger" in found, f"Aliased il.import_module(\"fateforger\") not detected; found: {found}"
+
+
+def test_innocent_import_not_flagged(tmp_path: Path) -> None:
+    """Verify innocent imports are not mistakenly flagged."""
+    test_file = tmp_path / "test_innocent.py"
+    test_file.write_text('import os\nfrom pathlib import Path\n')
+    found = _imported_modules(test_file)
+    assert "fateforger" not in found
+    assert not any(m.startswith("fateforger.") for m in found)
