@@ -215,6 +215,37 @@ def test_fixed_window_crossing_midnight_is_supported():
     assert resolved.dur == timedelta(hours=2)
 
 
+def test_fixed_window_zero_length_is_same_day_not_midnight_crossing():
+    """et == st must stay a same-day zero-duration window, not become 24h.
+
+    Regression: the midnight-crossing rule must be strict (et < st), not
+    et <= st — this was correct before that rule existed.
+    """
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[_block("ZZ1", p=FixedWindow(st=time(9, 0), et=time(9, 0)))],
+    )
+    resolved = plan.resolve()[0]
+    assert (resolved.start, resolved.end) == (time(9, 0), time(9, 0))
+    assert resolved.dur == timedelta(0)
+
+
+def test_cross_midnight_chain_blocks_that_genuinely_overlap_are_rejected():
+    """Regression: the overlap check must compare real datetimes, not
+    recombine `time`-only start/end with the plan's single date — that
+    truncation made a genuine 30-minute overlap across midnight invisible.
+    """
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            _block("AA1", p=FixedWindow(st=time(22, 0), et=time(0, 0))),
+            _block("BB1", p=FixedWindow(st=time(23, 30), et=time(0, 30))),
+        ],
+    )
+    with pytest.raises(ValueError, match="Overlap"):
+        plan.resolve()
+
+
 # --- negative-duration invariant --------------------------------------------
 
 

@@ -79,14 +79,18 @@ def _coerce_time(value: object) -> object:
 def _resolve_window(day: date_type, st: time, et: time) -> tuple[datetime, datetime]:
     """Combine a fixed start/end time-of-day pair into concrete datetimes.
 
-    Midnight-crossing rule: when ``et <= st`` the window is taken to cross
-    midnight — the end lands on the day *after* ``day`` rather than producing
-    a negative duration. Real calendars contain events like this (an
-    overnight shift, a late set), and a plan must be able to represent a day
-    that has one.
+    Midnight-crossing rule: when ``et < st`` (strictly) the window is taken
+    to cross midnight — the end lands on the day *after* ``day`` rather than
+    producing a negative duration. Real calendars contain events like this
+    (an overnight shift, a late set), and a plan must be able to represent a
+    day that has one.
+
+    The comparison is strict on purpose: ``et == st`` is a same-day,
+    zero-duration window, not a 24-hour one. Only a strictly *earlier* end
+    means the window wrapped around midnight.
     """
     start_dt = datetime.combine(day, st)
-    end_day = day + timedelta(days=1) if et <= st else day
+    end_day = day + timedelta(days=1) if et < st else day
     end_dt = datetime.combine(end_day, et)
     return start_dt, end_dt
 
@@ -126,9 +130,9 @@ class FixedStart(BaseModel):
 class FixedWindow(BaseModel):
     """Pinned start and end; duration is an output.
 
-    If ``et <= st`` the window is resolved as crossing midnight (see
+    If ``et < st`` the window is resolved as crossing midnight (see
     ``_resolve_window`` in ``Plan.resolve``) rather than yielding a negative
-    duration.
+    duration. ``et == st`` is a same-day, zero-duration window.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -190,7 +194,17 @@ class Block(BaseModel):
 
 
 class Resolved(BaseModel):
-    """A block with concrete times computed."""
+    """A block with concrete times computed.
+
+    ``start``/``end`` are wall-clock ``time`` — what the render layer shows.
+    ``start_dt``/``end_dt`` are the full datetimes those were derived from,
+    carrying the actual day (which may be the day *after* the plan's date
+    for a block that crosses midnight). Anything that needs to compare two
+    resolved blocks' ordering — the overlap check, most notably — must use
+    ``start_dt``/``end_dt``, not recombine ``start``/``end`` with the plan's
+    single ``date``: a block that legitimately lands on the next day would
+    get silently truncated back onto the plan's date and compare wrong.
+    """
 
     uid: str
     h: str
@@ -199,6 +213,8 @@ class Resolved(BaseModel):
     mode: str
     start: time
     end: time
+    start_dt: datetime
+    end_dt: datetime
     dur: timedelta
 
 
@@ -267,7 +283,13 @@ class Plan(BaseModel):
                     end_dt = start_dt + p.dur
                 else:  # fw — Block validation guarantees fs or fw for BG
                     start_dt, end_dt = _resolve_window(day, p.st, p.et)
-                row.update(start=start_dt.time(), end=end_dt.time(), dur=end_dt - start_dt)
+                row.update(
+                    start=start_dt.time(),
+                    end=end_dt.time(),
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                    dur=end_dt - start_dt,
+                )
                 rows.append(row)
                 continue
 
@@ -294,22 +316,38 @@ class Plan(BaseModel):
                 pending_bn_handle = block.h
                 continue
 
-            row.update(start=start_dt.time(), end=end_dt.time(), dur=end_dt - start_dt)
+            row.update(
+                start=start_dt.time(),
+                end=end_dt.time(),
+                start_dt=start_dt,
+                end_dt=end_dt,
+                dur=end_dt - start_dt,
+            )
             last_end = end_dt
             pending_bn_handle = None
             rows.append(row)
 
-        next_start: datetime | None = None
+        next_start_dt: datetime | None = None
         for row in reversed(rows):
             if row["t"] is ET.BG:
                 continue  # BG never participates in chain propagation
             if "_pending_dur" in row:
-                if next_start is None:
+                if next_start_dt is None:
                     raise ValueError(f"{row['h']}: before_next has no following block")
                 dur = row.pop("_pending_dur")
-                start_dt = next_start - dur
-                row.update(start=start_dt.time(), end=next_start.time(), dur=dur)
-            next_start = datetime.combine(day, row["start"])
+                start_dt = next_start_dt - dur
+                row.update(
+                    start=start_dt.time(),
+                    end=next_start_dt.time(),
+                    start_dt=start_dt,
+                    end_dt=next_start_dt,
+                    dur=dur,
+                )
+            # Read the neighbour's own resolved datetime, not a
+            # datetime.combine(day, row["start"]) reconstruction — that
+            # would silently truncate a block that legitimately crossed
+            # midnight back onto the plan's single date.
+            next_start_dt = row["start_dt"]
 
         resolved = [Resolved(**row) for row in rows]
 
@@ -323,7 +361,10 @@ class Plan(BaseModel):
         if check_overlap:
             chain = [r for r in resolved if r.t is not ET.BG]
             for a, b in zip(chain, chain[1:]):
-                if datetime.combine(day, a.end) > datetime.combine(day, b.start):
+                # Compare the real datetimes, not a same-day recombination —
+                # a block that legitimately crosses midnight must still be
+                # comparable to its neighbours on the following day.
+                if a.end_dt > b.start_dt:
                     raise ValueError(
                         f"Overlap: {a.h} ends {a.end} but {b.h} starts {b.start}"
                     )
