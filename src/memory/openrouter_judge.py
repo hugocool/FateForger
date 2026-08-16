@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import httpx
@@ -211,3 +212,20 @@ class OpenRouterJudge:
         if "constraint_uid" not in payload:
             raise ValueError(f"could not parse judge response: {payload!r}")
         return self._build(CanonicaliseJudgement, payload)
+
+
+def openrouter_judge_from_env() -> OpenRouterJudge:
+    """Build the real judge from environment configuration.
+
+    Raises rather than defaulting when the key is absent: a memory server
+    that silently cannot judge is worse than one that refuses to start.
+    """
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not set")
+    return OpenRouterJudge(
+        api_key=api_key,
+        base_url=os.environ.get(
+            "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+        ),
+    )
