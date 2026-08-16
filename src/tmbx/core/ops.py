@@ -16,7 +16,7 @@ from typing import Annotated, Callable, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models import Block, ET, Plan, Timing
+from .models import AnchorSource, Block, ET, Plan, Timing, is_valid_handle
 
 END = "END"
 
@@ -41,7 +41,7 @@ class AddBlock(_OpBase):
     t: ET
     p: Timing
     slug: str | None = None
-    anchor_source: str | None = None
+    anchor_source: AnchorSource | None = None
 
 
 class RemoveBlock(_OpBase):
@@ -59,7 +59,7 @@ class UpdateBlock(_OpBase):
     t: ET | None = None
     p: Timing | None = None
     slug: str | None = None
-    anchor_source: str | None = None
+    anchor_source: AnchorSource | None = None
 
 
 class MoveBlock(_OpBase):
@@ -79,19 +79,47 @@ class Patch(BaseModel):
     ops: list[Op] = Field(min_length=1)
 
 
+def _block_invariant_errors(t: ET, p: Timing, anchor_source: str | None) -> list[str]:
+    """Mirror every invariant ``Block``'s own validators enforce.
+
+    ``validate_patch`` must reject anything that would make ``Block`` or
+    ``Plan`` construction raise later — that is the whole point of
+    validating up front under set semantics. A gap here means a validated
+    patch can still blow up mid-``apply_ops`` with a raw
+    ``pydantic.ValidationError`` instead of this module's own clean
+    ``"invalid patch: …"``.
+    """
+    errors: list[str] = []
+    if t is ET.BG and p.a not in ("fs", "fw"):
+        errors.append("BG blocks require fs or fw timing")
+    if p.a in ("fs", "fw") and not anchor_source:
+        errors.append("anchor_source is required when timing is fs or fw")
+    return errors
+
+
 def _validate_add(index: int, op: AddBlock, existing: set[str], added: set[str]) -> list[str]:
     errors: list[str] = []
+    if not is_valid_handle(op.h):
+        errors.append(
+            f"op {index}: handle {op.h!r} must be 2-5 uppercase letters then 1-2 digits"
+        )
     if op.h in existing or op.h in added:
         errors.append(f"op {index}: handle {op.h} already exists")
     if op.after not in (None, END) and op.after not in existing:
         errors.append(f"op {index}: anchor {op.after} not found")
-    if op.p.a in ("fs", "fw") and not op.anchor_source:
-        errors.append(f"op {index}: {op.h} uses fixed timing without anchor_source")
+    errors.extend(
+        f"op {index}: {op.h} {msg}"
+        for msg in _block_invariant_errors(op.t, op.p, op.anchor_source)
+    )
     return errors
 
 
 def _validate_touch(
-    index: int, op: RemoveBlock | UpdateBlock | MoveBlock, existing: set[str], touched: set[str]
+    index: int,
+    op: RemoveBlock | UpdateBlock | MoveBlock,
+    existing: set[str],
+    touched: set[str],
+    plan: Plan,
 ) -> list[str]:
     errors: list[str] = []
     if op.h not in existing:
@@ -100,9 +128,23 @@ def _validate_touch(
         errors.append(f"op {index}: {op.h} is touched by more than one op")
     if isinstance(op, MoveBlock) and op.after not in (None, END) and op.after not in existing:
         errors.append(f"op {index}: anchor {op.after} not found")
-    if isinstance(op, UpdateBlock) and op.p is not None and op.p.a in ("fs", "fw"):
-        if not op.anchor_source:
-            errors.append(f"op {index}: {op.h} set to fixed timing without anchor_source")
+    if isinstance(op, UpdateBlock):
+        # Check the invariants against what the MERGE would actually
+        # produce, not against the op's own fields in isolation. An unset
+        # field is untouched (UpdateBlock's own contract), so its
+        # contribution to the merged block comes from the current target —
+        # e.g. an update that only retimes a block which already carries
+        # anchor_source must not be rejected for "missing" one it already
+        # has.
+        target = plan.by_handle(op.h)
+        assert target is not None  # existing already confirmed this
+        eff_t = op.t if op.t is not None else target.t
+        eff_p = op.p if op.p is not None else target.p
+        eff_anchor = op.anchor_source if op.anchor_source is not None else target.anchor_source
+        errors.extend(
+            f"op {index}: {op.h} {msg}"
+            for msg in _block_invariant_errors(eff_t, eff_p, eff_anchor)
+        )
     return errors
 
 
@@ -112,7 +154,8 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
     Set semantics make this possible: every check below reads only the
     pre-patch plan and the patch itself — nothing depends on partial
     application, so a patch can be judged valid or invalid before any op
-    runs.
+    runs. A patch that passes here is guaranteed not to raise during
+    ``apply_ops`` — see ``_block_invariant_errors``.
     """
     errors: list[str] = []
     existing = {b.h for b in plan.blocks}
@@ -125,14 +168,38 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
             added.add(op.h)
             continue
 
-        errors.extend(_validate_touch(index, op, existing, touched))
+        errors.extend(_validate_touch(index, op, existing, touched, plan))
         touched.add(op.h)
 
     return errors
 
 
+def _resolve_anchor(after: str, pre_order: list[str], known: set[str]) -> str | None:
+    """Resolve ``after`` to a handle present in the current working list, or
+    ``None`` to prepend.
+
+    Set semantics: ``after`` names a position in the *pre-patch* plan, and
+    that position stays meaningful even when the block it names is removed
+    by the same patch — which is exactly how a model expresses "replace
+    this block in place." If ``after`` survived (whether at its original
+    spot or moved elsewhere — a move already resolves to its new position,
+    so that case returns immediately below), insertion still goes right
+    after it. If it was removed, walk backward through the pre-patch order
+    to the nearest predecessor that did survive; if nothing before it
+    survived either — it was effectively first — the new item prepends.
+    """
+    if after in known:
+        return after
+    if after not in pre_order:
+        return END  # defensive: validate_patch already guarantees this can't happen
+    for candidate in reversed(pre_order[: pre_order.index(after)]):
+        if candidate in known:
+            return candidate
+    return None
+
+
 def _insert_batch(
-    blocks: list[Block], items: list[tuple[Block, str | None]]
+    blocks: list[Block], items: list[tuple[Block, str | None]], pre_order: list[str]
 ) -> list[Block]:
     """Insert many new blocks against ``blocks`` in one pass.
 
@@ -140,13 +207,10 @@ def _insert_batch(
     them one at a time, in whatever order the patch happened to list them,
     would make each insert leapfrog the last — the result would depend on
     op order, which is exactly what set semantics forbids. Instead, every
-    item's position is resolved against the anchor it names, and items
-    sharing a position are ordered by their own handle: a group's relative
-    order comes from op *content*, never from where the op sat in the list.
-
-    An anchor absent from ``blocks`` (its block was removed by this same
-    patch, or never existed) falls back to the end, same as a lone insert
-    against a missing handle would.
+    item's position is resolved (via ``_resolve_anchor``) against the
+    anchor it names, and items sharing a position are ordered by their own
+    handle: a group's relative order comes from op *content*, never from
+    where the op sat in the list.
     """
     known = {b.h for b in blocks}
     prepend: list[Block] = []
@@ -156,10 +220,17 @@ def _insert_batch(
     for block, after in items:
         if after is None:
             prepend.append(block)
-        elif after == END or after not in known:
+            continue
+        if after == END:
+            trailing.append(block)
+            continue
+        resolved = _resolve_anchor(after, pre_order, known)
+        if resolved is None:
+            prepend.append(block)
+        elif resolved == END:
             trailing.append(block)
         else:
-            after_map.setdefault(after, []).append(block)
+            after_map.setdefault(resolved, []).append(block)
 
     def _by_handle(group: list[Block]) -> list[Block]:
         return sorted(group, key=lambda b: b.h)
@@ -206,7 +277,7 @@ def _apply_updates(blocks: list[Block], patch: Patch) -> list[Block]:
     return [by_handle[b.h] for b in blocks]
 
 
-def _apply_moves(blocks: list[Block], patch: Patch) -> list[Block]:
+def _apply_moves(blocks: list[Block], patch: Patch, pre_order: list[str]) -> list[Block]:
     move_ops = [op for op in patch.ops if isinstance(op, MoveBlock)]
     if not move_ops:
         return blocks
@@ -214,11 +285,11 @@ def _apply_moves(blocks: list[Block], patch: Patch) -> list[Block]:
     moved_handles = {op.h for op in move_ops if op.h in by_handle}
     remaining = [b for b in blocks if b.h not in moved_handles]
     items = [(by_handle[op.h], op.after) for op in move_ops if op.h in by_handle]
-    return _insert_batch(remaining, items)
+    return _insert_batch(remaining, items, pre_order)
 
 
 def _apply_adds(
-    blocks: list[Block], patch: Patch, mint_uid: Callable[[], str]
+    blocks: list[Block], patch: Patch, mint_uid: Callable[[], str], pre_order: list[str]
 ) -> list[Block]:
     add_ops = [op for op in patch.ops if isinstance(op, AddBlock)]
     if not add_ops:
@@ -233,13 +304,13 @@ def _apply_adds(
                 d=op.d,
                 t=op.t,
                 p=op.p,
-                anchor_source=op.anchor_source,  # type: ignore[arg-type]
+                anchor_source=op.anchor_source,
             ),
             op.after,
         )
         for op in add_ops
     ]
-    return _insert_batch(blocks, items)
+    return _insert_batch(blocks, items, pre_order)
 
 
 def apply_ops(plan: Plan, patch: Patch, *, mint_uid: Callable[[], str]) -> Plan:
@@ -262,11 +333,12 @@ def apply_ops(plan: Plan, patch: Patch, *, mint_uid: Callable[[], str]) -> Plan:
     if errors:
         raise ValueError("invalid patch: " + "; ".join(errors))
 
+    pre_order = [b.h for b in plan.blocks]
     blocks = [b.model_copy(deep=True) for b in plan.blocks]
     blocks = _apply_removes(blocks, patch)
     blocks = _apply_updates(blocks, patch)
-    blocks = _apply_moves(blocks, patch)
-    blocks = _apply_adds(blocks, patch, mint_uid)
+    blocks = _apply_moves(blocks, patch, pre_order)
+    blocks = _apply_adds(blocks, patch, mint_uid, pre_order)
 
     return Plan(blocks=blocks, date=plan.date, tz=plan.tz)
 
