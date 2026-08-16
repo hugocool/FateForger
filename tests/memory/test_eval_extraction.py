@@ -61,6 +61,40 @@ async def test_interaction_chatter_is_meta():
     assert result.is_meta is True
 
 
+async def test_a_schedule_structure_rule_is_not_meta():
+    """The first corpus run suppressed 32 real rules as meta; this pins the fix."""
+    async with _judge() as judge:
+        result = await judge.meta(
+            _obs("Deep Work Block Duration: Deep Work (DW) blocks are usually 2 hours long")
+        )
+    assert result.is_meta is False
+
+
+async def test_a_daily_meal_rule_is_not_meta():
+    async with _judge() as judge:
+        result = await judge.meta(
+            _obs("Daily Meals: Include breakfast, lunch, and dinner every day.")
+        )
+    assert result.is_meta is False
+
+
+async def test_a_block_inclusion_rule_is_not_meta():
+    async with _judge() as judge:
+        result = await judge.meta(
+            _obs("Always include planning session: Always include a planning session in the schedule.")
+        )
+    assert result.is_meta is False
+
+
+async def test_methodology_preference_is_still_meta():
+    """The fix must not swing the other way: tool talk stays suppressed."""
+    async with _judge() as judge:
+        result = await judge.meta(
+            _obs("Timeboxing Preference: Apply timeboxing methodology to the scheduling process.")
+        )
+    assert result.is_meta is True
+
+
 async def test_a_standing_rule_is_durable_and_a_declaration():
     async with _judge() as judge:
         result = await judge.tier(_obs("I never schedule meetings before 13:00"))

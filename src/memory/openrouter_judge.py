@@ -51,12 +51,23 @@ Respond with JSON only:
 """
 
 META_PROMPT = """\
-You detect statements about the tool rather than about the person's life.
+You detect statements about the tool rather than about the person's life or
+the schedule it produces. There are three kinds of statement; only the first
+is meta.
 
-A statement is meta if it describes the planning conversation itself — how
-the session should run, what format to use, that it should start now. It is
-NOT meta merely because it mentions a session: "gym session at 18:00" is
+Meta: about the tool or the conversation with it — wanting to start or run
+the session, what format or methodology the assistant should use, how the
+tool itself should behave.
+
+NOT meta — the person's life: activities, meals, sleep, appointments. It is
+not meta merely because it mentions a session: "gym session at 18:00" is
 about the person's life.
+
+NOT meta — rules about the schedule being produced: how long blocks should
+be, how many, how they alternate, which blocks to always include or never
+include, caps and guardrails on kinds of work. These are the output of
+planning, not talk about the conversation. Example: "Deep Work blocks are
+usually 2 hours long" is a rule about the schedule, not meta.
 
 Respond with JSON only: {"is_meta": true|false, "rationale": "..."}\
 """
