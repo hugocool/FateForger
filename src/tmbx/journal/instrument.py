@@ -20,16 +20,22 @@ every other piece of context-gathering that runs before or after the
 wrapped call (constraint extraction, calendar-id resolution) — none of it
 is allowed to stop the underlying patcher or submitter from doing its job.
 
+Neither wrapper guesses a calendar when it isn't told one.
 ``JournalingPatcher``'s ``calendar_id_fn`` defaults to a function that
-returns ``UNRESOLVED_CALENDAR_ID`` rather than a guessed calendar. Resolving
-to a plausible-looking default (e.g. ``"primary"``, or the installation-wide
-``CalendarPreferences`` default) would replace a visibly wrong value with a
-value that looks resolved but isn't — a harder bug to find later, since
-nothing in the agent path actually reads which calendar the session
-concerns. Until a caller supplies a real resolver bound to the active
-session, every ATTEMPT row is honestly marked unresolved instead of
-attributed to a calendar it may not belong to. Passing a resolver that
-returns the session's real calendar id is the caller's responsibility.
+returns ``UNRESOLVED_CALENDAR_ID``, and ``JournalingSubmitter.submit_plan``
+falls back to the same sentinel when its caller's ``**kwargs`` carries no
+``calendar_id`` — as of this writing, no call site in ``agent.py`` passes
+one to either ``submit_plan`` call, so every COMMIT row is unresolved until
+a caller is wired to supply it. ``undo_transaction`` reads
+``tmbx_calendar_id`` off the transaction ``submit_plan`` stamped, so an
+undo of an unresolved commit stays unresolved too, rather than resolving
+"backward" to a guess. Resolving any of these to a plausible-looking
+default (e.g. ``"primary"``, or the installation-wide ``CalendarPreferences``
+default) would replace a visibly wrong value with a value that looks
+resolved but isn't — a harder bug to find later, since nothing in the agent
+path actually reads which calendar the session concerns. Passing a resolver
+or an explicit ``calendar_id`` that returns the session's real calendar id
+is the caller's responsibility.
 
 Legacy transaction status vocabulary differs by direction, and this module
 maps each direction separately rather than assuming one success string:
@@ -256,7 +262,7 @@ class JournalingSubmitter:
             logger.warning("journal write failed; continuing", exc_info=True)
 
     async def submit_plan(self, desired: Any, **kwargs: Any) -> Any:
-        calendar_id = kwargs.get("calendar_id", "primary")
+        calendar_id = kwargs.get("calendar_id", UNRESOLVED_CALENDAR_ID)
         plan_date = _plan_date(desired)
 
         try:
@@ -291,7 +297,7 @@ class JournalingSubmitter:
         return tx
 
     async def undo_transaction(self, tx: Any) -> Any:
-        calendar_id = getattr(tx, "tmbx_calendar_id", "primary")
+        calendar_id = getattr(tx, "tmbx_calendar_id", UNRESOLVED_CALENDAR_ID)
         plan_date = getattr(tx, "tmbx_plan_date", date_type.today())
         undoes_tx = getattr(tx, "tmbx_tx_id", None)
 

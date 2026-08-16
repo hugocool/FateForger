@@ -234,6 +234,49 @@ async def test_calendar_id_fn_raising_records_unresolved_not_primary(store):
     assert len(rows) == 1
 
 
+async def test_submit_with_no_calendar_id_records_unresolved_not_primary(store):
+    """No caller in agent.py passes calendar_id to submit_plan today, so the
+    kwargs.get(..., "primary") default silently attributed every commit row
+    to "primary" — the same defect as the patcher's calendar_id_fn."""
+    sub = JournalingSubmitter(_FakeSubmitter(), store)
+    tx = await sub.submit_plan(SimpleNamespace(date=DAY))
+
+    assert await store.by_day("primary", DAY) == []
+
+    rows = await store.by_day(UNRESOLVED_CALENDAR_ID, DAY)
+    assert len(rows) == 1
+    assert rows[0].kind is EntryKind.COMMIT
+    assert rows[0].calendar_id == UNRESOLVED_CALENDAR_ID
+    assert getattr(tx, "tmbx_calendar_id", None) == UNRESOLVED_CALENDAR_ID
+
+
+async def test_submit_with_explicit_calendar_id_is_unchanged(store):
+    """When a caller does supply a calendar id, behaviour is unchanged."""
+    sub = JournalingSubmitter(_FakeSubmitter(), store)
+    await sub.submit_plan(SimpleNamespace(date=DAY), calendar_id="cal-explicit")
+
+    assert await store.by_day(UNRESOLVED_CALENDAR_ID, DAY) == []
+
+    rows = await store.by_day("cal-explicit", DAY)
+    assert len(rows) == 1
+
+
+async def test_undo_of_unresolved_calendar_commit_stays_unresolved(store):
+    """undo_transaction reads tmbx_calendar_id off the stamped transaction.
+    If the commit itself was unresolved, the undo row must stay unresolved
+    too rather than falling back to "primary"."""
+    sub = JournalingSubmitter(_FakeSubmitter(), store)
+    tx = await sub.submit_plan(SimpleNamespace(date=DAY))
+    await sub.undo_transaction(tx)
+
+    assert await store.by_day("primary", DAY) == []
+
+    rows = await store.by_day(UNRESOLVED_CALENDAR_ID, DAY)
+    assert len(rows) == 2
+    assert rows[1].kind is EntryKind.UNDO
+    assert rows[1].calendar_id == UNRESOLVED_CALENDAR_ID
+
+
 # ── Important 4: __getattr__ passthrough ───────────────────────────────────
 
 
