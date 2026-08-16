@@ -302,6 +302,26 @@ they were filed as permanent when they were sprint-scoped, and the scope vocabul
 Initial rates are defaulted by kind, overridable, and adjustable at weekly review — which is
 also the natural moment to say a sprint focus is finished.
 
+### Why tier is judged at write time but not stored there
+
+A design question worth settling before promotion is built on top, because the code alone
+cannot tell you which reading was intended.
+
+Tier is asked of the model during ingest, alongside anchors, meta and dedup — but it is not
+persisted on the observation. Under I2 and I4 that is correct rather than wasteful: **tier is
+an L2 property, and L2 is derived from L1 by re-projection.** Writing a tier onto an immutable
+observation would freeze a judgement that must be free to change when the taxonomy does.
+
+So why ask at all, if the answer isn't kept? Because the **ambient proposal surface** needs an
+answer at the moment of the observation. The agent proposes a tier and the user can correct it
+without breaking the flow of conversation — and that proposal has to exist while the context is
+still fresh. Re-deriving it later would mean the user sees nothing at the moment it would have
+been cheapest to correct.
+
+The judgement is therefore **transient by design**: it exists to be shown, not to be stored.
+It also rides free in the existing `asyncio.gather`, so it costs no additional round-trip.
+**L2 remains the authority**; a stored tier would compete with it.
+
 ### The operator surface is ambient
 
 The agent **proposes** a tier assignment and the user can change it, without impeding the flow
