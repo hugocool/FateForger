@@ -70,6 +70,17 @@ class ObservationStore:
         ).fetchall()
         return [self._row_to_obs(r) for r in rows]
 
+    def append_filtered(
+        self, obs: Observation, window_seconds: int = 60
+    ) -> str | None:
+        """Append unless this is machine replay. Returns None when suppressed."""
+        from memory.replay_filter import is_machine_replay
+
+        recent = self.by_session(obs.session_id) if obs.session_id else []
+        if is_machine_replay(obs, recent, window_seconds=window_seconds):
+            return None
+        return self.append(obs)
+
     @staticmethod
     def _row_to_obs(row: sqlite3.Row) -> Observation:
         return Observation(
