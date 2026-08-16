@@ -2,11 +2,41 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from enum import Enum
 
 from pydantic import BaseModel, Field
 
 from memory.identity import mint_uid
 from memory.models import Tier
+
+
+class Necessity(str, Enum):
+    MUST = "must"
+    SHOULD = "should"
+
+
+class Scope(str, Enum):
+    SESSION = "session"
+    PROFILE = "profile"
+
+
+class Status(str, Enum):
+    PROPOSED = "proposed"
+    LOCKED = "locked"
+
+
+class Source(str, Enum):
+    """Who asserted this, in the consuming server's vocabulary.
+
+    Distinct from Channel, which is where the statement arrived. A rule stated
+    during weekly review and one stated mid-planning both come from the user;
+    only a rule inferred from calendar data comes from the calendar.
+    """
+
+    USER = "user"
+    CALENDAR = "calendar"
+    SYSTEM = "system"
+    FEEDBACK = "feedback"
 
 
 class Applicability(BaseModel):
@@ -41,10 +71,10 @@ class ConstraintView(BaseModel):
     uid: str
     name: str
     description: str
-    necessity: str
-    scope: str
-    status: str
-    source: str
+    necessity: Necessity
+    scope: Scope
+    status: Status
+    source: Source
     frame_slot: str | None = None
 
 
@@ -59,10 +89,10 @@ class Constraint(BaseModel):
     uid: str = Field(default_factory=mint_uid)
     name: str
     description: str
-    necessity: str
-    scope: str
-    status: str
-    source: str
+    necessity: Necessity
+    scope: Scope
+    status: Status
+    source: Source
     frame_slot: str | None = None
     tier: Tier = Tier.SESSION
     applicability: Applicability = Field(default_factory=Applicability)

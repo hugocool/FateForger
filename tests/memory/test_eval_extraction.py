@@ -77,16 +77,23 @@ async def test_todays_appointment_is_session_scoped():
 def _constraint(name: str, description: str):
     from datetime import datetime, timezone
 
-    from memory.constraint import Applicability, Constraint
+    from memory.constraint import (
+        Applicability,
+        Constraint,
+        Necessity,
+        Scope,
+        Source,
+        Status,
+    )
     from memory.models import Tier
 
     return Constraint(
         name=name,
         description=description,
-        necessity="must",
-        scope="profile",
-        status="locked",
-        source="user",
+        necessity=Necessity.MUST,
+        scope=Scope.PROFILE,
+        status=Status.LOCKED,
+        source=Source.USER,
         tier=Tier.DURABLE,
         applicability=Applicability(),
         source_observation_uids=[],

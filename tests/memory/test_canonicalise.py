@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 
 import httpx
 
-from memory.constraint import Applicability, Constraint
+from memory.constraint import (
+    Applicability,
+    Constraint,
+    Necessity,
+    Scope,
+    Source,
+    Status,
+)
 from memory.judge import CanonicaliseJudgement, StubJudge
 from memory.models import Channel, Observation, Provenance, Tier
 from memory.openrouter_judge import OpenRouterJudge
@@ -28,10 +35,10 @@ def _c(name: str) -> Constraint:
     return Constraint(
         name=name,
         description=name,
-        necessity="must",
-        scope="profile",
-        status="locked",
-        source="user",
+        necessity=Necessity.MUST,
+        scope=Scope.PROFILE,
+        status=Status.LOCKED,
+        source=Source.USER,
         tier=Tier.DURABLE,
         applicability=Applicability(),
         source_observation_uids=[],

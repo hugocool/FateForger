@@ -5,7 +5,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from memory.constraint import Applicability, Constraint
+from memory.constraint import (
+    Applicability,
+    Constraint,
+    Necessity,
+    Scope,
+    Source,
+    Status,
+)
 from memory.constraint_store import ConstraintStore
 from memory.ingest import IngestResult
 from memory.judge import StubJudge
@@ -33,10 +40,10 @@ def _existing(store: ConstraintStore, name: str) -> Constraint:
     c = Constraint(
         name=name,
         description=name,
-        necessity="must",
-        scope="profile",
-        status="proposed",
-        source="user",
+        necessity=Necessity.MUST,
+        scope=Scope.PROFILE,
+        status=Status.PROPOSED,
+        source=Source.USER,
         tier=Tier.DURABLE,
         applicability=Applicability(),
         source_observation_uids=["obs-0"],

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from memory.judge import (
     AnchorJudgement,
     CanonicaliseJudgement,
+    ConstraintLike,
     DedupJudgement,
     MetaJudgement,
     TierJudgement,
@@ -41,8 +42,11 @@ Also say whether it is a declaration — a rule the person is stating outright
 ("I never take meetings before 13:00") rather than a fact you inferred from
 what they happened to mention.
 
+Also give a short label naming the rule — a few words, the way someone would
+refer to it in a list. "Oats before gym", not a restatement of the sentence.
+
 Respond with JSON only:
-{"tier": "durable"|"session", "is_declaration": true|false, "rationale": "..."}\
+{"tier": "durable"|"session", "is_declaration": true|false, "label": "...", "rationale": "..."}\
 """
 
 META_PROMPT = """\
@@ -188,7 +192,7 @@ class OpenRouterJudge:
         return self._build(DedupJudgement, payload)
 
     async def canonicalise(
-        self, observation: Observation, candidates: list[object]
+        self, observation: Observation, candidates: list[ConstraintLike]
     ) -> CanonicaliseJudgement:
         if not candidates:
             # Nothing to match against; "new" is the only possible answer and

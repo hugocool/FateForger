@@ -2,25 +2,43 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 
-from memory.constraint import Applicability, Constraint
+from memory.constraint import (
+    Applicability,
+    Constraint,
+    Necessity,
+    Scope,
+    Source,
+    Status,
+)
 from memory.constraint_store import ConstraintStore
 from memory.ingest import IngestResult
 from memory.judge import Judge
-from memory.models import Observation, Tier
+from memory.models import Channel, Observation, Tier
 
-# One lock per constraint store. The read-judge-write span in project()
-# includes a model round-trip, so two concurrent projections of the same rule
-# can each see a candidate list lacking the other's constraint, each be told
-# "this is new", and each create a row — duplication in the layer whose whole
-# job is canonicalisation. Serialising per store closes that window. Keyed by
-# id() because ConstraintStore is not hashable and one lock per instance is
-# exactly the granularity we want.
-_LOCKS: dict[int, asyncio.Lock] = {}
+# Channel is where a statement arrived; source is who asserted it. A rule
+# given in weekly review and one given mid-planning are both the user's.
+_SOURCE_BY_CHANNEL = {
+    Channel.PLANNING: Source.USER,
+    Channel.REVIEW: Source.USER,
+    Channel.CALENDAR: Source.CALENDAR,
+}
+
+# One lock per constraint store, weak-keyed so a collected store does not leak
+# its lock. The read-judge-write span in project() includes a model round-trip,
+# so two concurrent projections of the same rule can each see a candidate list
+# lacking the other's constraint, each be told "this is new", and each create a
+# row — duplication in the layer whose whole job is canonicalisation.
+_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def _lock_for(constraint_store: ConstraintStore) -> asyncio.Lock:
-    return _LOCKS.setdefault(id(constraint_store), asyncio.Lock())
+    lock = _LOCKS.get(constraint_store)
+    if lock is None:
+        lock = asyncio.Lock()
+        _LOCKS[constraint_store] = lock
+    return lock
 
 
 async def project(
@@ -53,12 +71,16 @@ async def project(
         # limit, and it saves a model call.
         if ingest_result.tier is not Tier.DURABLE:
             created = Constraint(
-                name=observation.text,
+                name=ingest_result.label or observation.text,
                 description=observation.text,
-                necessity="should",
-                scope="profile",
-                status="proposed",
-                source=observation.channel.value,
+                necessity=Necessity.MUST
+                if ingest_result.is_declaration
+                else Necessity.SHOULD,
+                scope=Scope.PROFILE
+                if ingest_result.tier is Tier.DURABLE
+                else Scope.SESSION,
+                status=Status.PROPOSED,
+                source=_SOURCE_BY_CHANNEL[observation.channel],
                 tier=ingest_result.tier,
                 applicability=Applicability(),
                 source_observation_uids=[observation.uid],
@@ -91,12 +113,14 @@ async def project(
             return constraint_store.get(existing.uid)
 
         created = Constraint(
-            name=observation.text,
+            name=ingest_result.label or observation.text,
             description=observation.text,
-            necessity="should",
-            scope="profile",
-            status="proposed",
-            source=observation.channel.value,
+            necessity=Necessity.MUST
+            if ingest_result.is_declaration
+            else Necessity.SHOULD,
+            scope=Scope.PROFILE if ingest_result.tier is Tier.DURABLE else Scope.SESSION,
+            status=Status.PROPOSED,
+            source=_SOURCE_BY_CHANNEL[observation.channel],
             tier=ingest_result.tier,
             applicability=Applicability(),
             source_observation_uids=[observation.uid],

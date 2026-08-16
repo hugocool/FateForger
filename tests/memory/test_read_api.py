@@ -3,7 +3,15 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from memory.constraint import Applicability, Constraint, ConstraintView
+from memory.constraint import (
+    Applicability,
+    Constraint,
+    ConstraintView,
+    Necessity,
+    Scope,
+    Source,
+    Status,
+)
 from memory.constraint_store import ConstraintStore
 from memory.models import Tier
 from memory.read_api import get_active_constraints
@@ -17,10 +25,10 @@ def _c(name: str, tier: Tier = Tier.DURABLE, **app) -> Constraint:
     return Constraint(
         name=name,
         description=f"description of {name}",
-        necessity="must",
-        scope="profile",
-        status="locked",
-        source="user",
+        necessity=Necessity.MUST,
+        scope=Scope.PROFILE,
+        status=Status.LOCKED,
+        source=Source.USER,
         frame_slot=None,
         tier=tier,
         applicability=Applicability(**app),
@@ -74,3 +82,15 @@ def test_the_view_carries_the_uid_so_the_journal_can_join(tmp_path):
     c = _c("Sleep 23:00")
     store.upsert(c)
     assert get_active_constraints(store, MONDAY)[0].uid == c.uid
+
+
+def test_the_read_path_cannot_reach_a_model():
+    """I1: no model call in the read path. Enforced, not merely conventional."""
+    import pathlib
+
+    source = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "src" / "memory" / "read_api.py"
+    ).read_text()
+    for forbidden in ("judge", "openrouter", "httpx", "await"):
+        assert forbidden not in source, f"read_api.py must not reference {forbidden}"

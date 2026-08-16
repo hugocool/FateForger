@@ -14,7 +14,7 @@ def get_active_constraints(
 
     No model call happens here. Filtering is structural only — a date against
     a range, a weekday against a list of weekdays — which is arithmetic, not
-    a judgement about meaning.
+    a decision about what something means.
 
     LIMITATION, deliberate and worth stating: this returns every durable
     constraint whose applicability window covers the day. It does NOT do

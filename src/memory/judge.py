@@ -23,6 +23,7 @@ class TierJudgement(BaseModel):
 
     tier: Tier = Tier.SESSION
     is_declaration: bool = False
+    label: str = ""
     rationale: str = ""
 
 
@@ -48,6 +49,19 @@ class CanonicaliseJudgement(BaseModel):
 
 
 @runtime_checkable
+class ConstraintLike(Protocol):
+    """The shape canonicalise needs from a candidate.
+
+    Structural rather than importing Constraint, so the port stays free of
+    knowledge about the layer above it.
+    """
+
+    uid: str
+    name: str
+    description: str
+
+
+@runtime_checkable
 class Judge(Protocol):
     """The only way this package learns what an observation means.
 
@@ -66,7 +80,7 @@ class Judge(Protocol):
     ) -> DedupJudgement: ...
 
     async def canonicalise(
-        self, observation: Observation, candidates: list[object]
+        self, observation: Observation, candidates: list[ConstraintLike]
     ) -> CanonicaliseJudgement: ...
 
 
@@ -116,7 +130,7 @@ class StubJudge:
         )
 
     async def canonicalise(
-        self, observation: Observation, candidates: list[object]
+        self, observation: Observation, candidates: list[ConstraintLike]
     ) -> CanonicaliseJudgement:
         self.calls.append(("canonicalise", observation.uid))
         return CanonicaliseJudgement(

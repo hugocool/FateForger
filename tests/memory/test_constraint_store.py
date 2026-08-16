@@ -3,7 +3,15 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from memory.constraint import Applicability, Constraint, ConstraintView
+from memory.constraint import (
+    Applicability,
+    Constraint,
+    ConstraintView,
+    Necessity,
+    Scope,
+    Source,
+    Status,
+)
 from memory.constraint_store import ConstraintStore
 from memory.models import Tier
 
@@ -14,10 +22,10 @@ def _c(name: str = "Oats before gym", **kw) -> Constraint:
     defaults = dict(
         name=name,
         description="Eat oats two hours before gym",
-        necessity="must",
-        scope="profile",
-        status="proposed",
-        source="user",
+        necessity=Necessity.MUST,
+        scope=Scope.PROFILE,
+        status=Status.PROPOSED,
+        source=Source.USER,
         frame_slot="pre_gym_meal",
         tier=Tier.DURABLE,
         applicability=Applicability(),
@@ -133,3 +141,13 @@ def test_replace_links_does_not_touch_another_constraints_links(tmp_path):
     store.upsert(b)
     store.replace_links(a.uid, ["obs-x"])
     assert store.observations_for(b.uid) == ["obs-1"]
+
+
+def test_applicability_boundaries_are_inclusive():
+    from datetime import date as _date
+
+    a = Applicability(start_date=_date(2026, 3, 1), end_date=_date(2026, 3, 5))
+    assert a.applies_on(_date(2026, 3, 1)) is True
+    assert a.applies_on(_date(2026, 3, 5)) is True
+    assert a.applies_on(_date(2026, 2, 28)) is False
+    assert a.applies_on(_date(2026, 3, 6)) is False

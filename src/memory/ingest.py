@@ -15,6 +15,8 @@ class IngestResult(BaseModel):
     uid: str | None = None
     tier: Tier = Tier.SESSION
     anchors: list[str] = Field(default_factory=list)
+    label: str = ""
+    is_declaration: bool = False
     suppressed_as: str | None = None
 
 
@@ -71,5 +73,10 @@ async def ingest(
     observation.anchors = anchor_j.anchors
     uid = store.append(observation)
     return IngestResult(
-        stored=True, uid=uid, tier=tier_j.tier, anchors=anchor_j.anchors
+        stored=True,
+        uid=uid,
+        tier=tier_j.tier,
+        anchors=anchor_j.anchors,
+        label=tier_j.label,
+        is_declaration=tier_j.is_declaration,
     )
