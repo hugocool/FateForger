@@ -40,13 +40,17 @@ class EntryKind(str, Enum):
 class ConstraintRef(BaseModel):
     """A constraint that was in context when the patch was produced.
 
-    ``uid_kind`` records whether the uid was a real minted identifier or a
-    content-derived fallback. Derived keys change when the constraint text is
-    edited, so downstream consumers must be able to tell them apart.
+    ``uid_kind`` records whether the uid was a real minted identifier or
+    could not be resolved at all. There is no content-derived fallback:
+    hashing a constraint's text to invent an identity is banned (CLAUDE.md)
+    because it silently conflates distinct constraints that happen to read
+    alike. A constraint without ``hints["uid"]`` gets ``uid_kind =
+    "unresolvable"`` and an empty ``uid`` — an honest absence rather than a
+    guessed key.
     """
 
     uid: str
-    uid_kind: Literal["minted", "derived"]
+    uid_kind: Literal["minted", "unresolvable"]
     reason: str | None = None
 
 

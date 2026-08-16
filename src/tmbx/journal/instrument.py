@@ -20,12 +20,16 @@ every other piece of context-gathering that runs before or after the
 wrapped call (constraint extraction, calendar-id resolution) — none of it
 is allowed to stop the underlying patcher or submitter from doing its job.
 
-Known limitation: ``JournalingPatcher``'s ``calendar_id_fn`` defaults to
-``lambda: "primary"``. Until a caller supplies a real resolver bound to the
-active session, every ATTEMPT row is attributed to the ``"primary"``
-calendar regardless of which calendar the plan actually belongs to. This is
-not fixed here — it is the caller's responsibility (see Task 7) to pass a
-resolver that returns the session's real calendar id.
+``JournalingPatcher``'s ``calendar_id_fn`` defaults to a function that
+returns ``UNRESOLVED_CALENDAR_ID`` rather than a guessed calendar. Resolving
+to a plausible-looking default (e.g. ``"primary"``, or the installation-wide
+``CalendarPreferences`` default) would replace a visibly wrong value with a
+value that looks resolved but isn't — a harder bug to find later, since
+nothing in the agent path actually reads which calendar the session
+concerns. Until a caller supplies a real resolver bound to the active
+session, every ATTEMPT row is honestly marked unresolved instead of
+attributed to a calendar it may not belong to. Passing a resolver that
+returns the session's real calendar id is the caller's responsibility.
 
 Legacy transaction status vocabulary differs by direction, and this module
 maps each direction separately rather than assuming one success string:
@@ -53,6 +57,18 @@ from .constraint_refs import constraint_refs
 from .models import ConstraintRef, EntryKind, JournalEntry, PatchOutcome
 
 logger = logging.getLogger(__name__)
+
+UNRESOLVED_CALENDAR_ID = "unresolved:no-calendar-id-resolver"
+"""Sentinel recorded in place of a guessed calendar id.
+
+``JournalEntry.calendar_id`` is a non-null indexed column, so there is no
+NULL to fall back to. This string is unmistakably not a real Google Calendar
+id (never "primary", never an email address), sorts and indexes like any
+other value, and is stable so ``JournalStore.by_day`` can group these rows
+together deliberately — querying by this constant is how a caller finds
+"all rows where we don't know the calendar" rather than silently reading
+them as if they were on "primary".
+"""
 
 
 def _plan_date(obj: Any) -> date_type:
@@ -117,7 +133,7 @@ class JournalingPatcher:
         self,
         inner: Any,
         store: Any,
-        calendar_id_fn: Callable[[], str] = lambda: "primary",
+        calendar_id_fn: Callable[[], str] = lambda: UNRESOLVED_CALENDAR_ID,
     ) -> None:
         self._inner = inner
         self._store = store
@@ -138,9 +154,11 @@ class JournalingPatcher:
             return self._calendar_id_fn()
         except Exception:
             logger.warning(
-                "calendar_id_fn failed; falling back to 'primary'", exc_info=True
+                "calendar_id_fn raised; recording calendar_id as unresolved "
+                "rather than guessing",
+                exc_info=True,
             )
-            return "primary"
+            return UNRESOLVED_CALENDAR_ID
 
     async def apply_patch(self, **kwargs: Any) -> Any:
         current = kwargs.get("current")
@@ -312,4 +330,4 @@ class JournalingSubmitter:
         return await self.undo_transaction(tx)
 
 
-__all__ = ["JournalingPatcher", "JournalingSubmitter"]
+__all__ = ["UNRESOLVED_CALENDAR_ID", "JournalingPatcher", "JournalingSubmitter"]

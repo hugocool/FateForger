@@ -6,7 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from tmbx.journal.instrument import JournalingPatcher, JournalingSubmitter
+from tmbx.journal.instrument import (
+    UNRESOLVED_CALENDAR_ID,
+    JournalingPatcher,
+    JournalingSubmitter,
+)
 from tmbx.journal.models import EntryKind, PatchOutcome
 from tmbx.journal.store import JournalStore, init_journal
 
@@ -196,14 +200,37 @@ async def test_calendar_id_fn_is_resolved_per_call(store):
     assert len(rows_b) == 1 and rows_b[0].instruction == "second"
 
 
-async def test_default_calendar_id_fn_is_primary(store):
-    """Documented default: with no resolver supplied, attempts are attributed
-    to "primary" — a known limitation until a caller wires a real resolver."""
+async def test_default_calendar_id_fn_records_unresolved_not_primary(store):
+    """With no resolver supplied, the row must not claim "primary" — that is
+    an invented value, not a real fact about which calendar the session
+    concerns. It must be recorded as unresolved instead."""
     patcher = JournalingPatcher(_FakePatcher(), store)
     await patcher.apply_patch(
         stage="Refine", current=SimpleNamespace(date=DAY), user_message="x", constraints=[]
     )
-    rows = await store.by_day("primary", DAY)
+
+    assert await store.by_day("primary", DAY) == []
+
+    rows = await store.by_day(UNRESOLVED_CALENDAR_ID, DAY)
+    assert len(rows) == 1
+    assert rows[0].calendar_id == UNRESOLVED_CALENDAR_ID
+
+
+async def test_calendar_id_fn_raising_records_unresolved_not_primary(store):
+    """A supplied resolver that raises is still an absence of a real answer
+    — it must not fall back to "primary" either."""
+
+    def _boom() -> str:
+        raise RuntimeError("no session bound")
+
+    patcher = JournalingPatcher(_FakePatcher(), store, calendar_id_fn=_boom)
+    await patcher.apply_patch(
+        stage="Refine", current=SimpleNamespace(date=DAY), user_message="x", constraints=[]
+    )
+
+    assert await store.by_day("primary", DAY) == []
+
+    rows = await store.by_day(UNRESOLVED_CALENDAR_ID, DAY)
     assert len(rows) == 1
 
 
