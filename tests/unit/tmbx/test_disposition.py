@@ -66,3 +66,55 @@ def test_applied_attempt_never_committed_is_abandoned():
 def test_failed_attempt_is_failed_not_abandoned():
     entries = [_entry(1, EntryKind.ATTEMPT, outcome=PatchOutcome.APPLY_FAILED)]
     assert derive_dispositions(entries) == {1: Disposition.FAILED}
+
+
+def test_undo_of_earlier_commit_does_not_supersede_later_commit():
+    """Critical 1 fix: UNDO rows should not count as commits for supersession.
+
+    Two commits and an undo of the earlier one. The later commit should be
+    ACCEPTED, not SUPERSEDED by the undo.
+    """
+    entries = [
+        _entry(1, EntryKind.COMMIT, tx_id="tx1"),
+        _entry(2, EntryKind.COMMIT, tx_id="tx2"),
+        _entry(3, EntryKind.UNDO, tx_id="tx3", undoes_tx="tx1"),
+    ]
+    result = derive_dispositions(entries)
+    assert result[2] == Disposition.ACCEPTED, "Undo of earlier commit should not supersede later commit"
+    assert result[1] == Disposition.UNDONE
+
+
+def test_failed_undo_does_not_mark_target_as_undone():
+    """Critical 2 fix: A failed UNDO should not mark its target as UNDONE.
+
+    A commit followed by an UNDO with APPLY_FAILED should leave the commit
+    as ACCEPTED (its changes are still live) and mark the undo as FAILED.
+    """
+    entries = [
+        _entry(1, EntryKind.COMMIT, tx_id="tx1"),
+        _entry(2, EntryKind.UNDO, tx_id="tx2", undoes_tx="tx1", outcome=PatchOutcome.APPLY_FAILED),
+    ]
+    result = derive_dispositions(entries)
+    assert result[1] == Disposition.ACCEPTED, "Commit should be ACCEPTED when undo fails"
+    assert result[2] == Disposition.FAILED, "Failed undo should be FAILED"
+
+
+def test_empty_input_returns_empty_dict():
+    """Edge case: empty entries list."""
+    assert derive_dispositions([]) == {}
+
+
+def test_attempt_with_tx_id_in_undone_set_respects_precedence():
+    """Important 3 fix: ATTEMPT→ABANDONED should come after UNDONE check.
+
+    An ATTEMPT row that carries a tx_id present in undone_tx should be
+    marked as UNDONE (by precedence), not ABANDONED. This pins that the
+    precedence evaluation order is: failed → undone → superseded → abandoned.
+    """
+    entries = [
+        _entry(1, EntryKind.ATTEMPT, tx_id="tx1"),
+        _entry(2, EntryKind.UNDO, tx_id="tx2", undoes_tx="tx1"),
+    ]
+    result = derive_dispositions(entries)
+    assert result[1] == Disposition.UNDONE, "ATTEMPT with tx_id in undone_tx should be UNDONE by precedence"
+    assert result[2] == Disposition.ACCEPTED

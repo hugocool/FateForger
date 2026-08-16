@@ -31,26 +31,31 @@ def derive_dispositions(entries: list[JournalEntry]) -> dict[int, Disposition]:
         abandoned → accepted.
     """
     ordered = sorted(entries, key=lambda e: (e.id or 0))
-    undone_tx = {e.undoes_tx for e in ordered if e.undoes_tx}
 
-    commit_ids = [
+    # Only successful undos mark their targets as undone (Critical 2 fix).
+    undone_tx = {
+        e.undoes_tx
+        for e in ordered
+        if e.undoes_tx and e.outcome is PatchOutcome.APPLIED
+    }
+
+    # Only COMMIT rows determine supersession; UNDO rows don't supersede
+    # (Critical 1 fix). Rename to clarify intent.
+    later_commit_ids = [
         e.id
         for e in ordered
-        if e.kind in (EntryKind.COMMIT, EntryKind.UNDO) and e.id is not None
+        if e.kind is EntryKind.COMMIT and e.id is not None
     ]
-    last_commit_id = commit_ids[-1] if commit_ids else None
+    last_commit_id = later_commit_ids[-1] if later_commit_ids else None
 
     result: dict[int, Disposition] = {}
     for entry in ordered:
         if entry.id is None:
             continue
 
+        # Precedence order (Important 3 fix): evaluate in documented order.
         if entry.outcome is not PatchOutcome.APPLIED:
             result[entry.id] = Disposition.FAILED
-            continue
-
-        if entry.kind is EntryKind.ATTEMPT:
-            result[entry.id] = Disposition.ABANDONED
             continue
 
         if entry.tx_id and entry.tx_id in undone_tx:
@@ -59,6 +64,10 @@ def derive_dispositions(entries: list[JournalEntry]) -> dict[int, Disposition]:
 
         if last_commit_id is not None and entry.id < last_commit_id:
             result[entry.id] = Disposition.SUPERSEDED
+            continue
+
+        if entry.kind is EntryKind.ATTEMPT:
+            result[entry.id] = Disposition.ABANDONED
             continue
 
         result[entry.id] = Disposition.ACCEPTED
