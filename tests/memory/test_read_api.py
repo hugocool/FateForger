@@ -85,12 +85,32 @@ def test_the_view_carries_the_uid_so_the_journal_can_join(tmp_path):
 
 
 def test_the_read_path_cannot_reach_a_model():
-    """I1: no model call in the read path. Enforced, not merely conventional."""
+    """I1: no model call in the read path. Enforced structurally, not by prose.
+
+    Checked with the AST rather than a text scan: the earlier substring version
+    tripped on the word "judgement" appearing in a docstring, which is prose,
+    not a dependency. What matters is that this module imports nothing that can
+    call a model, and defines nothing that can await one.
+    """
+    import ast
     import pathlib
 
     source = (
         pathlib.Path(__file__).resolve().parents[2]
         / "src" / "memory" / "read_api.py"
     ).read_text()
-    for forbidden in ("judge", "openrouter", "httpx", "await"):
-        assert forbidden not in source, f"read_api.py must not reference {forbidden}"
+    tree = ast.parse(source)
+
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
+    forbidden = {"memory.judge", "memory.openrouter_judge", "memory.ingest", "httpx", "asyncio"}
+    assert not (imported & forbidden), f"read path imports {imported & forbidden}"
+
+    assert not [
+        n for n in ast.walk(tree) if isinstance(n, (ast.AsyncFunctionDef, ast.Await))
+    ], "read path must contain no async function and no await"

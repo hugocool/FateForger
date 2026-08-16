@@ -1,7 +1,7 @@
 # tests/memory/test_constraint_store.py
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 from memory.constraint import (
     Applicability,

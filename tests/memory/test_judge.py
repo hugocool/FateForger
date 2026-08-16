@@ -5,9 +5,7 @@ from datetime import datetime, timezone
 
 from memory.judge import (
     AnchorJudgement,
-    DedupJudgement,
     Judge,
-    MetaJudgement,
     StubJudge,
     TierJudgement,
 )
