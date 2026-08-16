@@ -11,7 +11,7 @@ This check turns that principle into a measurement.
 
 from __future__ import annotations
 
-from .models import ET, AfterPrev, Plan
+from .models import ET, AfterPrev, Block, Plan
 
 
 def overspecified(plan: Plan) -> list[str]:
@@ -26,6 +26,17 @@ def overspecified(plan: Plan) -> list[str]:
     that has already crossed midnight can make two blocks land 24h apart
     while their time-of-day components coincide. Comparing bare ``time``
     would treat those as the same moment; they are not.
+
+    Conservative by construction, not just in outcome: an ``fs``/``fw``
+    block immediately preceded by an unresolved ``bn`` can never be
+    flagged, even when it is genuinely redundant. Relaxing it to ``ap``
+    always trips ``resolve()``'s own ap-cannot-follow-an-unresolved-``bn``
+    guard — the pair would define each other with nothing to anchor on —
+    so the probe never gets far enough to compare times; it declines to
+    judge that block rather than misjudging it. Inherited from Task 9's
+    chain semantics, not introduced here. A handle missing from the result
+    can therefore mean "load-bearing" or "immediately after a bn" — never
+    "flagged when it shouldn't have been."
     """
     try:
         rows = plan.resolve(check_overlap=False)
@@ -49,9 +60,22 @@ def overspecified(plan: Plan) -> list[str]:
             continue
 
         candidate = plan.model_copy(deep=True)
-        candidate.blocks[index] = candidate.blocks[index].model_copy(
-            update={"p": AfterPrev(dur=durations[block.h]), "anchor_source": None}
+        # Re-validate through Block rather than trusting a bare
+        # model_copy(update=...) — that skips Block's own validators (the
+        # same trap ops.py's _apply_updates documents and works around).
+        # Today's single field combination (ap, anchor_source=None,
+        # non-BG) happens to satisfy both Block validators, but that's
+        # unenforced coincidence unless something actually checks it: a
+        # future validator change, or extending this probe to try a second
+        # relaxed mode, must fail loudly here rather than silently
+        # constructing an invalid Block that only crashes later, deep
+        # inside resolve().
+        relaxed_block = Block.model_validate(
+            candidate.blocks[index]
+            .model_copy(update={"p": AfterPrev(dur=durations[block.h]), "anchor_source": None})
+            .model_dump()
         )
+        candidate.blocks[index] = relaxed_block
 
         try:
             relaxed = {

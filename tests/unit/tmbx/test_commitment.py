@@ -108,3 +108,70 @@ def test_first_anchor_exemption_ignores_preceding_non_anchor_blocks():
               p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)), anchor_source="user"),
     ])
     assert overspecified(plan) == []
+
+
+def test_three_chained_redundant_anchors_are_all_flagged():
+    """Each of DW1/DW2/DW3 independently lands exactly where ap would place
+    it given its immediate predecessor — over-specification isn't limited
+    to a single redundant pin."""
+    plan = _p(blocks=[
+        Block(uid="u1", h="PR1", n="Plan", t=ET.PR,
+              p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)), anchor_source="user"),
+        Block(uid="u2", h="DW1", n="Work", t=ET.DW,
+              p=FixedStart(st=time(9, 30), dur=timedelta(minutes=60)), anchor_source="user"),
+        Block(uid="u3", h="DW2", n="More", t=ET.DW,
+              p=FixedStart(st=time(10, 30), dur=timedelta(minutes=45)), anchor_source="user"),
+        Block(uid="u4", h="DW3", n="Even more", t=ET.DW,
+              p=FixedStart(st=time(11, 15), dur=timedelta(minutes=30)), anchor_source="user"),
+    ])
+    assert overspecified(plan) == ["DW1", "DW2", "DW3"]
+
+
+def test_empty_plan_returns_empty_list():
+    """No blocks, nothing to flag — and nothing to raise on either."""
+    plan = _p(blocks=[])
+    assert overspecified(plan) == []
+
+
+def test_all_background_plan_returns_empty_list():
+    """A plan with only BG blocks has an empty chain; every block is
+    skipped by the BG guard before it ever reaches candidacy."""
+    plan = _p(blocks=[
+        Block(uid="u1", h="BG1", n="Focus block", t=ET.BG,
+              p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)), anchor_source="calendar"),
+        Block(uid="u2", h="BG2", n="Do not disturb", t=ET.BG,
+              p=FixedWindow(st=time(12, 0), et=time(13, 0)), anchor_source="calendar"),
+    ])
+    assert overspecified(plan) == []
+
+
+def test_circular_bn_ap_chain_in_the_baseline_returns_empty_list():
+    """DW0 (bn) is immediately followed by DW1 (ap) in the *original* plan
+    — resolve()'s own ap-cannot-follow-an-unresolved-bn guard fires on the
+    very first (baseline) resolve, before any candidate is even built. This
+    exercises the outer ``except ValueError: return []`` directly."""
+    plan = _p(blocks=[
+        Block(uid="u1", h="PR1", n="Plan", t=ET.PR,
+              p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)), anchor_source="user"),
+        Block(uid="u2", h="DW0", n="Wait", t=ET.DW, p=BeforeNext(dur=timedelta(minutes=15))),
+        Block(uid="u3", h="DW1", n="Work", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=60))),
+    ])
+    assert overspecified(plan) == []
+
+
+def test_fixed_block_immediately_after_bn_is_never_flagged():
+    """Documents the known conservative blind spot: DW1 is fixed at 09:30,
+    exactly where a naive ap-from-PR1 computation would land it — it looks
+    redundant — but it is immediately preceded by DW0 (bn). Relaxing DW1 to
+    ap trips resolve()'s ap-cannot-follow-an-unresolved-bn guard on the
+    *candidate* resolve, so the probe can't confirm the match and silently
+    declines rather than flagging it. This also exercises the inner
+    ``except ValueError: continue`` directly."""
+    plan = _p(blocks=[
+        Block(uid="u1", h="PR1", n="Plan", t=ET.PR,
+              p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)), anchor_source="user"),
+        Block(uid="u2", h="DW0", n="Wait", t=ET.DW, p=BeforeNext(dur=timedelta(minutes=15))),
+        Block(uid="u3", h="DW1", n="Work", t=ET.DW,
+              p=FixedStart(st=time(9, 30), dur=timedelta(minutes=60)), anchor_source="user"),
+    ])
+    assert overspecified(plan) == []
