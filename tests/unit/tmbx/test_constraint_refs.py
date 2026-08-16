@@ -45,9 +45,20 @@ def test_derived_uid_changes_when_text_is_edited():
 
 
 def test_enum_valued_fields_are_normalised():
-    necessity = SimpleNamespace(value="must")
-    refs = constraint_refs([_c(necessity=necessity)])
-    assert refs[0].uid_kind == "derived"
+    """Enum and plain-string values for the same field must hash identically."""
+    necessity_enum = SimpleNamespace(value="must")
+    enum_uid = derived_uid(_c(necessity=necessity_enum))
+    plain_uid = derived_uid(_c(necessity="must"))
+    assert enum_uid == plain_uid
+
+
+def test_derived_uid_is_collision_safe():
+    """Two constraints differing only in where the separator falls must differ."""
+    # Without length-prefixing, these would collide:
+    # "A|B|C|D" vs. "A|BC|D" both join the same way
+    uid_abc_d = derived_uid(_c(name="A|B", description="C"))
+    uid_a_bcd = derived_uid(_c(name="A", description="B|C"))
+    assert uid_abc_d != uid_a_bcd
 
 
 def test_empty_input():
