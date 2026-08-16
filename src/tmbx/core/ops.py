@@ -162,21 +162,92 @@ def _validate_touch(
     return errors
 
 
-def _cyclic_move_anchors(move_ops: list[MoveBlock]) -> set[str]:
-    """Return the handles caught in a cyclic move-anchor dependency.
+def _walk_back_dependency(
+    after: str,
+    pre_order: list[str],
+    moved: set[str],
+    removed: set[str],
+    self_handle: str,
+) -> str | None:
+    """The single move-handle ``self_handle``'s move (anchored on
+    ``after``) genuinely depends on, or ``None`` if it resolves without
+    depending on anything still in ``moved``.
 
-    A move depends on another move if its anchor names a handle that is
-    ALSO being moved in this same patch (see ``_apply_moves``'s dependency
-    layering). Repeatedly drop any move whose anchor is not itself still
-    pending — what's left after nothing more can be dropped is exactly the
-    set with no valid placement order: a cycle, direct or transitive.
+    Mirrors the *exact* path ``_resolve_anchor`` walks — not just the
+    anchor's literal value. An anchor naming a handle in ``moved`` (other
+    than ``self_handle``) depends on it directly. An anchor naming a
+    ``removed`` handle depends on the nearest ``pre_order`` predecessor
+    that is itself in ``moved`` — and the walk to find that predecessor
+    can pass straight through it without that handle ever being the
+    anchor's own literal value. "Removed" and "moved" are not separate
+    cases here on purpose — a walk through a removed handle can land on a
+    moved one, composing both, and treating them as disjoint is exactly
+    the defect this function closes. Anything else (present, and neither
+    moved nor removed) terminates the walk with no dependency: it already
+    exists, unconditionally, so resolution can happen now.
+
+    ``self_handle`` matters because a move can be its own nearest walk-back
+    candidate: if ``self_handle`` immediately preceded the removed anchor
+    in ``pre_order``, it is vacating that exact spot, so finding itself
+    there is not a dependency on anything — the walk terminates with no
+    dependency, same as finding a genuinely stable handle would, rather
+    than continuing past itself to whatever comes next. A literal
+    self-reference (``after == self_handle``) is different: that IS a real
+    dependency on itself, and is still reported as a cycle by the caller,
+    since it's caught by the direct-membership check above, before this
+    walk-back loop ever runs.
+
+    Used identically by ``validate_patch`` (``_cyclic_move_anchors``, over
+    the complete static move set, to build the whole dependency graph for
+    cycle detection) and by ``_apply_moves`` (round by round, as ``moved``
+    shrinks to whatever is still unplaced) — the two agree by construction
+    because they call the same function, not by keeping two derivations
+    in sync.
     """
-    pending = {op.h: op.after for op in move_ops}
+    if after in moved:
+        return after
+    if after not in removed:
+        return None
+    if after not in pre_order:
+        return None  # defensive: validate_patch's existence check already covers this
+    for candidate in reversed(pre_order[: pre_order.index(after)]):
+        if candidate == self_handle:
+            return None
+        if candidate in moved:
+            return candidate
+        if candidate not in removed:
+            return None
+    return None
+
+
+def _cyclic_move_anchors(
+    move_ops: list[MoveBlock], pre_order: list[str], removed: set[str]
+) -> set[str]:
+    """Return the handles caught in a cyclic move dependency.
+
+    Dependencies come from ``_walk_back_dependency`` — the same function
+    ``_apply_moves`` uses for its round-by-round readiness check — so this
+    sees the exact graph the resolution mechanism has, including edges no
+    literal ``after`` reference ever names (a walk-back through a removed
+    handle can pass through a co-moved one). Repeatedly drop any move
+    whose dependency isn't itself still pending; what's left when nothing
+    more can be dropped has no valid placement order.
+    """
+    moved = {op.h for op in move_ops}
+    dep_of: dict[str, str] = {}
+    for op in move_ops:
+        if op.after in (None, END):
+            continue
+        dep = _walk_back_dependency(op.after, pre_order, moved, removed, op.h)
+        if dep is not None:
+            dep_of[op.h] = dep
+
+    pending = dict(dep_of)
     changed = True
     while changed:
         changed = False
-        for h, after in list(pending.items()):
-            if after is None or after == END or after not in pending:
+        for h, dep in list(pending.items()):
+            if dep not in pending:
                 del pending[h]
                 changed = True
     return set(pending)
@@ -227,6 +298,7 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
     """
     errors: list[str] = []
     existing_pre = {b.h for b in plan.blocks}
+    pre_order = [b.h for b in plan.blocks]
     removed = {op.h for op in patch.ops if isinstance(op, RemoveBlock)}
     existing_effective = existing_pre - removed
     touched: set[str] = set()
@@ -242,7 +314,7 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
         touched.add(op.h)
 
     move_ops = [op for op in patch.ops if isinstance(op, MoveBlock)]
-    cyclic = _cyclic_move_anchors(move_ops)
+    cyclic = _cyclic_move_anchors(move_ops, pre_order, removed)
     if cyclic:
         errors.append(f"cyclic move anchors: {', '.join(sorted(cyclic))}")
 
@@ -357,39 +429,52 @@ def _apply_updates(blocks: list[Block], patch: Patch) -> list[Block]:
 def _apply_moves(blocks: list[Block], patch: Patch, pre_order: list[str]) -> list[Block]:
     """Apply every ``MoveBlock`` op in one phase, in dependency order.
 
-    A move's anchor can itself be a handle moved in this same patch — a
-    chained reorder — and that anchor's own final position has to exist
-    before this move can be placed against it. Moves are therefore applied
-    in dependency layers: everything whose anchor is NOT another
-    still-pending moved handle goes first (its anchor is either a block
-    that never moves this patch, found directly, or one that was removed,
-    handled by ``_resolve_anchor``'s pre-patch-order walk-back); placing a
-    layer resolves its handles for the next layer to depend on. The layer
-    order is entirely a function of which handle anchors on which — data,
-    never ``patch.ops`` position — so this stays order-independent, and
-    multiple moves resolving to the same anchor within a layer still go
-    through ``_insert_batch``'s handle tie-break.
+    A move's resolution can depend on another move in this same patch —
+    directly, when its anchor names another moved handle, or indirectly,
+    when its anchor names a REMOVED handle whose walk-back (``pre_order``,
+    via ``_walk_back_dependency``) passes through one. That dependency has
+    to be placed first. Moves are therefore applied in dependency layers:
+    each round, everything ``_walk_back_dependency`` says has no remaining
+    dependency goes together (via ``_insert_batch``'s handle tie-break for
+    anything sharing a resolved anchor); placing a layer resolves its
+    handles for the next layer to depend on. The layer order is entirely a
+    function of the dependency graph — data, never ``patch.ops`` position
+    — so this stays order-independent.
 
-    ``validate_patch`` (``_cyclic_move_anchors``) rejects a patch whose
-    moves have no valid layering before ``apply_ops`` ever calls this, so
-    the raise below is a defensive backstop, not a reachable path.
+    ``validate_patch`` (``_cyclic_move_anchors``, over the same graph)
+    rejects a patch whose moves have no valid layering before ``apply_ops``
+    ever calls this. The upfront check below calls that exact function
+    again as a defensive backstop rather than re-deriving cycle detection
+    inside the loop — one algorithm, not two copies to keep in sync.
     """
     move_ops = [op for op in patch.ops if isinstance(op, MoveBlock)]
     if not move_ops:
         return blocks
+
+    removed = {op.h for op in patch.ops if isinstance(op, RemoveBlock)}
+    cyclic = _cyclic_move_anchors(move_ops, pre_order, removed)
+    if cyclic:
+        raise ValueError(f"cyclic move anchors: {', '.join(sorted(cyclic))}")
 
     by_handle = {b.h: b for b in blocks}
     pending = {op.h: op for op in move_ops if op.h in by_handle}
     working = [b for b in blocks if b.h not in pending]
 
     while pending:
+        moved_now = set(pending)
         ready = {
             h: op
             for h, op in pending.items()
-            if op.after in (None, END) or op.after not in pending
+            if op.after in (None, END)
+            or _walk_back_dependency(op.after, pre_order, moved_now, removed, h) is None
         }
         if not ready:
-            raise ValueError(f"cyclic move anchors: {', '.join(sorted(pending))}")
+            # Defensive only: the upfront _cyclic_move_anchors check above
+            # already rules this out.
+            raise ValueError(
+                f"internal error: no ready move among {sorted(pending)} despite "
+                "passing the upfront cycle check"
+            )
         items = [(by_handle[h], op.after) for h, op in ready.items()]
         working = _insert_batch(working, items, pre_order)
         for h in ready:
@@ -438,16 +523,23 @@ def apply_ops(plan: Plan, patch: Patch, *, mint_uid: Callable[[], str]) -> Plan:
       ``validate_patch``'s "touched" check guarantees at most one op
       touches a given handle across remove/update/move, so distinct
       updates write disjoint keys — independent regardless of order.
-    * **Move** resolves each op's new position against its anchor, which is
-      one of: a sentinel (``None``/``END``, no dependency), a block never
-      touched by any move this patch (found directly in the pre-move
-      list), a block removed this patch (``_resolve_anchor`` walks
-      backward through ``pre_order`` — the *original* plan order, a static
-      snapshot, never ``patch.ops``), or another block ALSO being moved
-      this patch (a chained reorder — resolved by processing moves in
-      dependency layers derived purely from the anchor graph; see
-      ``_apply_moves``). A cycle in that graph has no valid layer and is
-      rejected by ``validate_patch`` before this ever runs.
+    * **Move** resolves each op's new position against its anchor.
+      ``_walk_back_dependency`` computes what that position actually
+      depends on: a sentinel (``None``/``END``) has none; an anchor naming
+      a block moved in this same patch depends on it directly; an anchor
+      naming a block removed this patch depends on whatever
+      ``_resolve_anchor``'s backward walk through ``pre_order`` (the
+      *original*, static plan order — never ``patch.ops``) would actually
+      hit first. That walk can pass straight through a block ALSO being
+      moved this patch before reaching anything else — "removed" and
+      "co-moved" are not separate cases; a walk-back can compose both, and
+      the dependency graph is built from the path actually walked, not
+      just an anchor's literal value. Moves are applied in dependency
+      layers built from that graph — data, never ``patch.ops`` position —
+      so a move whose resolution passes through a co-moved block, whether
+      that block is named directly or only reached by walking back through
+      a remove, defers behind it. A cycle in that graph has no valid layer
+      and is rejected by ``validate_patch`` before this ever runs.
     * **Add** resolves exactly like a move's anchor case, running after
       moves so an add anchored on a moved block sees its final position.
       ``validate_patch`` already rejects an add anchored on another add's

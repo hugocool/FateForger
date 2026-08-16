@@ -465,3 +465,140 @@ def test_validate_still_rejects_a_handle_added_while_it_survives():
     op = AddBlock(after="END", h="DW1", n="Clash", t=ET.DW,
                   p=AfterPrev(dur=timedelta(minutes=30)))
     assert any("DW1" in e for e in validate_patch(_plan(), Patch(ops=[op])))
+
+
+# --- Fix round 3: walk-back through a removed anchor can cross a co-moved
+# block that no literal `after` reference ever named -----------------------
+
+
+def test_walk_back_through_a_removed_anchor_crosses_a_co_moved_block():
+    """PR1, MM1, RR1, NN1. MM1 moves to END; NN1 anchors on removed RR1,
+    whose real pre-patch predecessor is MM1 — not named by any literal
+    `after`, only reachable by the walk-back itself. MM1 must place first.
+    """
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            Block(uid="u1", h="PR1", n="Plan", t=ET.PR,
+                  p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)),
+                  anchor_source="user"),
+            Block(uid="u2", h="MM1", n="M", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u3", h="RR1", n="R", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u4", h="NN1", n="N", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+        ],
+    )
+    ops = [
+        RemoveBlock(h="RR1"),
+        MoveBlock(h="MM1", after="END"),
+        MoveBlock(h="NN1", after="RR1"),
+    ]
+    results = set()
+    for permutation in itertools.permutations(ops):
+        result = apply_ops(plan, Patch(ops=list(permutation)), mint_uid=lambda: "u-x")
+        results.add(tuple(b.h for b in result.blocks))
+    assert len(results) == 1
+    (order,) = results
+    assert order == ("PR1", "MM1", "NN1")
+
+
+def test_walk_back_crosses_two_co_moved_blocks_in_a_dependency_chain():
+    """PR1, MM1, RG1, KK1, RR1, NN1. RG1 and RR1 removed. MM1 -> END
+    (trivial). KK1 -> RG1 (walk-back finds co-moved MM1 — not literal).
+    NN1 -> RR1 (walk-back finds co-moved KK1 — not literal). NN1's real
+    resolution transitively crosses both MM1 and KK1 before it can place.
+    """
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            Block(uid="u1", h="PR1", n="Plan", t=ET.PR,
+                  p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)),
+                  anchor_source="user"),
+            Block(uid="u2", h="MM1", n="M", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u3", h="RG1", n="RG", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u4", h="KK1", n="K", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u5", h="RR1", n="R", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u6", h="NN1", n="N", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+        ],
+    )
+    ops = [
+        RemoveBlock(h="RG1"),
+        RemoveBlock(h="RR1"),
+        MoveBlock(h="MM1", after="END"),
+        MoveBlock(h="KK1", after="RG1"),
+        MoveBlock(h="NN1", after="RR1"),
+    ]
+    results = set()
+    for permutation in itertools.permutations(ops):
+        result = apply_ops(plan, Patch(ops=list(permutation)), mint_uid=lambda: "u-x")
+        results.add(tuple(b.h for b in result.blocks))
+    assert len(results) == 1
+    (order,) = results
+    assert order == ("PR1", "MM1", "KK1", "NN1")
+
+
+def test_walk_back_crosses_a_co_moved_block_anchored_on_another_removed_handle():
+    """PR1, RG1, ZK1, RR1, AN1. RG1 and RR1 both removed. ZK1 -> RG1
+    (walk-back lands directly on stable PR1 — ZK1 has no dependency of its
+    own). AN1 -> RR1 (walk-back finds co-moved ZK1). Two DIFFERENT removed
+    handles, each resolved by its own walk-back, chained through one
+    co-moved block.
+
+    Handles are deliberately chosen so alphabetical tie-break would land
+    them in the WRONG order (AN1 before ZK1) if AN1 were incorrectly
+    treated as having no dependency and batched alongside ZK1 in the same
+    round — the exact shape of the bug this pins.
+    """
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            Block(uid="u1", h="PR1", n="Plan", t=ET.PR,
+                  p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)),
+                  anchor_source="user"),
+            Block(uid="u2", h="RG1", n="RG", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u3", h="ZK1", n="Z", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u4", h="RR1", n="R", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u5", h="AN1", n="A", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+        ],
+    )
+    ops = [
+        RemoveBlock(h="RG1"),
+        RemoveBlock(h="RR1"),
+        MoveBlock(h="ZK1", after="RG1"),
+        MoveBlock(h="AN1", after="RR1"),
+    ]
+    results = set()
+    for permutation in itertools.permutations(ops):
+        result = apply_ops(plan, Patch(ops=list(permutation)), mint_uid=lambda: "u-x")
+        results.add(tuple(b.h for b in result.blocks))
+    assert len(results) == 1
+    (order,) = results
+    assert order == ("PR1", "ZK1", "AN1")
+
+
+def test_validate_rejects_a_cycle_composed_via_walk_back():
+    """XX1 anchors on removed ZZ1, whose walk-back predecessor is co-moved
+    YY1 (no literal reference between XX1 and YY1 at all). YY1 anchors
+    directly on XX1. The two moves cycle through each other only via the
+    walk-back path — validate_patch must still catch it.
+    """
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            Block(uid="u1", h="PR1", n="Plan", t=ET.PR,
+                  p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)),
+                  anchor_source="user"),
+            Block(uid="u2", h="XX1", n="X", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u3", h="YY1", n="Y", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+            Block(uid="u4", h="ZZ1", n="Z", t=ET.DW, p=AfterPrev(dur=timedelta(minutes=30))),
+        ],
+    )
+    ops = [
+        RemoveBlock(h="ZZ1"),
+        MoveBlock(h="XX1", after="ZZ1"),
+        MoveBlock(h="YY1", after="XX1"),
+    ]
+    errors = validate_patch(plan, Patch(ops=ops))
+    assert any("XX1" in e and "YY1" in e for e in errors)
+    with pytest.raises(ValueError) as excinfo:
+        apply_ops(plan, Patch(ops=ops), mint_uid=_mint)
+    assert str(excinfo.value).startswith("invalid patch:")
