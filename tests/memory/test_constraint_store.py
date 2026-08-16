@@ -85,3 +85,14 @@ def test_applicability_defaults_to_always(tmp_path):
     assert a.start_date is None
     assert a.end_date is None
     assert a.days_of_week == []
+
+
+def test_linking_the_same_observation_twice_is_idempotent(tmp_path):
+    """Append must not replay a prior payload; the link is a set."""
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    c = _c()
+    store.upsert(c)
+    store.link_observation(c.uid, "obs-2")
+    store.link_observation(c.uid, "obs-2")
+    assert store.observations_for(c.uid) == ["obs-1", "obs-2"]
+    assert store.get(c.uid).source_observation_uids == ["obs-1", "obs-2"]

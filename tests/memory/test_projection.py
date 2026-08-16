@@ -25,8 +25,8 @@ def _obs(text: str) -> Observation:
     )
 
 
-def _result(tier: Tier = Tier.DURABLE) -> IngestResult:
-    return IngestResult(stored=True, uid="obs-1", tier=tier, anchors=["gym"])
+def _result(tier: Tier = Tier.DURABLE, uid: str = "obs-1") -> IngestResult:
+    return IngestResult(stored=True, uid=uid, tier=tier, anchors=["gym"])
 
 
 def _existing(store: ConstraintStore, name: str) -> Constraint:
@@ -81,3 +81,30 @@ async def test_a_session_tier_observation_still_projects(tmp_path):
     store = ConstraintStore(str(tmp_path / "c.db"))
     c = await project(_obs("hockey at 11:45"), _result(Tier.SESSION), StubJudge(), store)
     assert c.tier is Tier.SESSION
+
+
+async def test_a_session_restatement_never_demotes_a_durable_constraint(tmp_path):
+    """The cross-session recall failure this project exists to fix."""
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    existing = _existing(store, "Oats before gym")
+    judge = StubJudge(canonical={"oats at 9 today": existing.uid})
+    await project(_obs("oats at 9 today"), _result(Tier.SESSION), judge, store)
+    assert store.get(existing.uid).tier is Tier.DURABLE
+
+
+async def test_a_session_observation_is_not_canonicalised(tmp_path):
+    """Session tier is mortal and uncanonicalised; asking would waste a call."""
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    _existing(store, "Oats before gym")
+    judge = StubJudge()
+    await project(_obs("hockey at 11:45"), _result(Tier.SESSION), judge, store)
+    assert judge.calls == [], "no judgement should have been requested"
+
+
+async def test_refuses_to_project_a_suppressed_observation(tmp_path):
+    """Provenance must never point at something absent from the log."""
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    suppressed = IngestResult(stored=False, suppressed_as="meta")
+    with pytest.raises(ValueError, match="not stored"):
+        await project(_obs("begin the session"), suppressed, StubJudge(), store)
+    assert store.all() == []

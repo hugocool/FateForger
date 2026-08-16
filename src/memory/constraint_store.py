@@ -24,6 +24,13 @@ CREATE TABLE IF NOT EXISTS constraints (
     created_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_constraints_tier ON constraints(tier);
+CREATE TABLE IF NOT EXISTS constraint_observations (
+    constraint_uid  TEXT NOT NULL,
+    observation_uid TEXT NOT NULL,
+    PRIMARY KEY (constraint_uid, observation_uid)
+);
+CREATE INDEX IF NOT EXISTS ix_co_observation
+    ON constraint_observations(observation_uid);
 """
 
 
@@ -71,7 +78,32 @@ class ConstraintStore:
             ),
         )
         self._conn.commit()
+        for observation_uid in constraint.source_observation_uids:
+            self.link_observation(constraint.uid, observation_uid)
         return constraint.uid
+
+    def link_observation(self, constraint_uid: str, observation_uid: str) -> None:
+        """Record that an observation contributed to a constraint.
+
+        Idempotent by primary key, so this replaces a read-modify-write on a
+        list field: an append is one insert that replays no prior payload,
+        which is what compare-and-swap is for. The reverse index also gives
+        re-projection an observation -> constraint lookup.
+        """
+        self._conn.execute(
+            "INSERT OR IGNORE INTO constraint_observations "
+            "(constraint_uid, observation_uid) VALUES (?,?)",
+            (constraint_uid, observation_uid),
+        )
+        self._conn.commit()
+
+    def observations_for(self, constraint_uid: str) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT observation_uid FROM constraint_observations "
+            "WHERE constraint_uid = ? ORDER BY observation_uid",
+            (constraint_uid,),
+        ).fetchall()
+        return [r["observation_uid"] for r in rows]
 
     def get(self, uid: str) -> Constraint | None:
         row = self._conn.execute(
@@ -92,8 +124,7 @@ class ConstraintStore:
         ).fetchall()
         return [self._row(r) for r in rows]
 
-    @staticmethod
-    def _row(row: sqlite3.Row) -> Constraint:
+    def _row(self, row: sqlite3.Row) -> Constraint:
         return Constraint(
             uid=row["uid"],
             name=row["name"],
@@ -105,6 +136,6 @@ class ConstraintStore:
             frame_slot=row["frame_slot"],
             tier=Tier(row["tier"]),
             applicability=Applicability.model_validate_json(row["applicability"]),
-            source_observation_uids=json.loads(row["source_observation_uids"]),
+            source_observation_uids=self.observations_for(row["uid"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )
