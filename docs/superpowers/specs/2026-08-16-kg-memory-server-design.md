@@ -463,7 +463,34 @@ and each create a row — duplication in the layer whose whole job is canonicali
 window spans a full model round-trip, so it was wide. Closed by serialising the read-judge-write
 span with one lock per constraint store.
 
-### Open
+### Open — carried from review, not yet fixed
+
+**Typing is documented, not enforced.** There is no `src/memory/py.typed`, so mypy treats the
+package as an untyped library and degrades cross-module references to `Any`. The enums on
+`ConstraintView` and the `ConstraintLike` protocol are therefore documentation until that file
+exists — a wrong type crossing the process seam would not be caught.
+
+**Two comments overstate what the code does.** `projection` claims skipping the session tier
+"bounds the candidate list so the write-path prompt cannot grow without limit". It does not:
+`durable()` has no `LIMIT`, and durable constraints grow without bound — the legacy store held
+~606 concepts. Every canonicalise call serialises all of them into a prompt, now inside a
+per-store lock. Likewise `ingest` binds `store.by_session(...)` to a variable named `recent`
+when it is every observation in the session, unbounded, fed straight into the dedup prompt.
+Both need real windows.
+
+**Session-tier constraints are written and never removed**, despite the design saying the
+session tier "dies at session end". They are also never read — `get_active_constraints` returns
+durable only — so their sole current effect is to exist.
+
+**The fold branch drops the assertion signal.** When a later declaration restates an existing
+`SHOULD` rule, `project` links the observation and returns without upgrading `necessity` to
+`MUST`. The assertion promotion path is therefore lost on every restatement.
+
+**Neither store exposes `close()`**, both default to `check_same_thread=True`, and `project`
+does synchronous sqlite I/O on the event loop. An MCP server dispatching to a thread pool would
+raise.
+
+### Open — concurrency
 
 **Serialisation is per process and per store instance.** The lock closing the
 duplicate-creation race is mutual exclusion over one `ConstraintStore` object,
