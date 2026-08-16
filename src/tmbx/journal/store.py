@@ -92,6 +92,27 @@ class JournalStore:
             )
             return list(result.scalars().all())
 
+    async def by_range(
+        self, calendar_id: str, start: date_type, end: date_type
+    ) -> list[JournalEntry]:
+        """All rows for one calendar across an inclusive date range, oldest first.
+
+        One query regardless of range width — callers that need per-day
+        semantics (disposition derivation) group the result by
+        ``plan_date`` themselves; supersession is a within-day relation,
+        so that grouping must stay explicit at the call site rather than
+        being folded into a single derivation over the whole range.
+        """
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(JournalEntry)
+                .where(JournalEntry.calendar_id == calendar_id)
+                .where(JournalEntry.plan_date >= start)
+                .where(JournalEntry.plan_date <= end)
+                .order_by(JournalEntry.id)
+            )
+            return list(result.scalars().all())
+
     async def by_tx_id(self, tx_id: str) -> JournalEntry | None:
         """Fetch a commit row by its transaction id.
 

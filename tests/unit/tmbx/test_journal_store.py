@@ -70,3 +70,63 @@ async def test_by_day_scopes_to_calendar(store):
         )
     )
     assert await store.by_day("primary", date(2026, 8, 17)) == []
+
+
+async def test_by_range_filters_and_orders(store):
+    for day, instr in [
+        (date(2026, 8, 16), "before range"),
+        (date(2026, 8, 17), "day 1"),
+        (date(2026, 8, 18), "day 2"),
+        (date(2026, 8, 19), "after range"),
+    ]:
+        await store.append(
+            JournalEntry(
+                calendar_id="primary",
+                plan_date=day,
+                instruction=instr,
+                ops_json="{}",
+                ops_schema_version=1,
+                outcome=PatchOutcome.APPLIED,
+            )
+        )
+
+    rows = await store.by_range("primary", date(2026, 8, 17), date(2026, 8, 18))
+    assert [r.instruction for r in rows] == ["day 1", "day 2"]
+
+
+async def test_by_range_scopes_to_calendar(store):
+    await store.append(
+        JournalEntry(
+            calendar_id="work",
+            plan_date=date(2026, 8, 17),
+            instruction="work cal",
+            ops_json="{}",
+            ops_schema_version=1,
+            outcome=PatchOutcome.APPLIED,
+        )
+    )
+    assert await store.by_range("primary", date(2026, 8, 17), date(2026, 8, 17)) == []
+
+
+async def test_by_range_single_day_matches_by_day(store):
+    for day, instr in [
+        (date(2026, 8, 17), "first"),
+        (date(2026, 8, 18), "other day"),
+        (date(2026, 8, 17), "second"),
+    ]:
+        await store.append(
+            JournalEntry(
+                calendar_id="primary",
+                plan_date=day,
+                instruction=instr,
+                ops_json="{}",
+                ops_schema_version=1,
+                outcome=PatchOutcome.APPLIED,
+            )
+        )
+
+    by_day_rows = await store.by_day("primary", date(2026, 8, 17))
+    by_range_rows = await store.by_range(
+        "primary", date(2026, 8, 17), date(2026, 8, 17)
+    )
+    assert [r.id for r in by_day_rows] == [r.id for r in by_range_rows]

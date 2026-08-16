@@ -62,6 +62,74 @@ async def test_date_range_is_inclusive(reader):
     assert len(await reader.records("primary", date(2026, 8, 16), date(2026, 8, 18))) == 2
 
 
+async def test_commit_on_earlier_day_is_not_superseded_by_later_day_commit(tmp_path):
+    """Pins per-day disposition derivation against a whole-range regression.
+
+    ``derive_dispositions`` ranks commits by raw ``entry.id``, not by day.
+    If ``records`` ever collected entries across the whole queried range
+    and called ``derive_dispositions`` once over the concatenation, the
+    day-1 commit's id would be smaller than the day-2 commit's id, so
+    day-1's commit would flip from ACCEPTED to SUPERSEDED even though
+    supersession is a within-day relation. This only passes under correct
+    per-day derivation.
+    """
+    store = JournalStore(await init_journal(tmp_path / "j.db"))
+
+    await store.append(
+        JournalEntry(
+            calendar_id="primary",
+            plan_date=date(2026, 8, 17),
+            ops_json="{}",
+            ops_schema_version=1,
+            outcome=PatchOutcome.APPLIED,
+            kind=EntryKind.COMMIT,
+            tx_id="tx-day1",
+        )
+    )
+    await store.append(
+        JournalEntry(
+            calendar_id="primary",
+            plan_date=date(2026, 8, 18),
+            ops_json="{}",
+            ops_schema_version=1,
+            outcome=PatchOutcome.APPLIED,
+            kind=EntryKind.COMMIT,
+            tx_id="tx-day2",
+        )
+    )
+
+    reader = JournalReader(store)
+    records = await reader.records("primary", date(2026, 8, 17), date(2026, 8, 18))
+
+    by_day = {r.plan_date: r for r in records}
+    assert by_day[date(2026, 8, 17)].disposition == Disposition.ACCEPTED
+    assert by_day[date(2026, 8, 18)].disposition == Disposition.ACCEPTED
+
+
+async def test_error_is_carried_through_for_failed_rows(tmp_path):
+    """A FAILED disposition without the error message doesn't teach anything."""
+    store = JournalStore(await init_journal(tmp_path / "j.db"))
+
+    await store.append(
+        JournalEntry(
+            calendar_id="primary",
+            plan_date=date(2026, 8, 17),
+            ops_json="{}",
+            ops_schema_version=1,
+            outcome=PatchOutcome.APPLY_FAILED,
+            kind=EntryKind.ATTEMPT,
+            error="conflict: event already exists",
+        )
+    )
+
+    reader = JournalReader(store)
+    records = await reader.records("primary", date(2026, 8, 17), date(2026, 8, 17))
+
+    assert len(records) == 1
+    assert records[0].disposition == Disposition.FAILED
+    assert records[0].error == "conflict: event already exists"
+
+
 async def test_unresolvable_constraint_ref_survives_round_trip(tmp_path):
     """The common case in real data: no minted uid.
 
