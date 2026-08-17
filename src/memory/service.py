@@ -12,6 +12,7 @@ from memory.judge import Judge
 from memory.models import Channel, Observation, Provenance, Tier
 from memory.projection import project
 from memory.read_api import get_active_constraints as _read
+from memory.read_api import get_faded_constraints as _read_faded
 from memory.store import ObservationStore
 
 
@@ -72,3 +73,8 @@ class MemoryService:
         self, day: date, stage: str | None = None
     ) -> list[ConstraintView]:
         return _read(self._constraints, day, stage)
+
+    def get_faded_constraints(
+        self, day: date, stage: str | None = None
+    ) -> list[ConstraintView]:
+        return _read_faded(self._constraints, day, stage)
