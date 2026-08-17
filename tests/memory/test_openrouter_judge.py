@@ -161,3 +161,70 @@ async def test_leading_junk_still_fails_loudly():
     )
     with pytest.raises(ValueError, match="could not parse"):
         await judge.anchors(_obs("gym at 18:00"))
+
+
+async def test_a_provider_error_body_is_retried_then_succeeds(monkeypatch):
+    """OpenRouter surfaces provider hiccups as 200-with-error-body."""
+    from memory import openrouter_judge as openrouter_judge_module
+
+    monkeypatch.setattr(openrouter_judge_module, "_RETRY_DELAYS", (0, 0))
+
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json={"error": {"message": "upstream hiccup"}})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({"anchors": ["gym"]})}}]},
+        )
+
+    judge = OpenRouterJudge(
+        api_key="k",
+        base_url="https://example.invalid",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    result = await judge.anchors(_obs("gym at 18:00"))
+    assert result.anchors == ["gym"]
+    assert calls["n"] == 2
+
+
+async def test_persistent_provider_failure_raises_with_detail(monkeypatch):
+    import pytest
+    from memory import openrouter_judge as openrouter_judge_module
+
+    monkeypatch.setattr(openrouter_judge_module, "_RETRY_DELAYS", (0, 0))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"error": {"message": "upstream hiccup"}})
+
+    judge = OpenRouterJudge(
+        api_key="k",
+        base_url="https://example.invalid",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ValueError, match="after 3 attempts.*upstream hiccup"):
+        await judge.anchors(_obs("gym at 18:00"))
+
+
+async def test_a_malformed_content_is_never_retried():
+    """Semantic failures raise immediately; only transport retries."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "not json at all"}}]}
+        )
+
+    import pytest
+
+    judge = OpenRouterJudge(
+        api_key="k",
+        base_url="https://example.invalid",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ValueError, match="could not parse"):
+        await judge.anchors(_obs("gym at 18:00"))
+    assert calls["n"] == 1

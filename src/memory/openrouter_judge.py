@@ -1,6 +1,7 @@
 # src/memory/openrouter_judge.py
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any
@@ -97,6 +98,21 @@ Respond with JSON only:
 {"constraint_uid": "<id>"|null, "rationale": "..."}\
 """
 
+# Backoff between retry attempts (seconds), one entry per retry gap. A
+# module-level tuple so tests can shrink it instead of sleeping for real.
+_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
+
+
+class _ProviderError(Exception):
+    """OpenRouter returned HTTP 200 with a body that has no `choices` key.
+
+    This is how OpenRouter surfaces an upstream provider hiccup: the
+    envelope is well-formed enough to pass `raise_for_status()`, but the
+    body is `{"error": {...}}` instead of a completion. Treated as a
+    transient transport failure, not a semantic one — the request itself
+    didn't get an answer, so it's eligible for retry.
+    """
+
 
 class OpenRouterJudge:
     """Judge backed directly by OpenRouter.
@@ -137,26 +153,70 @@ class OpenRouterJudge:
         await self.aclose()
 
     async def _ask(self, system: str, user: str) -> dict[str, Any]:
-        response = await self._client.post(
-            f"{self._base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self._api_key}"},
-            json={
-                "model": self._model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                # Extraction is term typing, not deliberation, so reasoning is
-                # held to the floor. Note: this endpoint REJECTS
-                # {"enabled": False} with "Reasoning is mandatory for this
-                # endpoint and cannot be disabled" — verified against the live
-                # API on 2026-08-16. "minimal" is the lowest accepted setting.
-                "reasoning": {"effort": "minimal"},
-                "response_format": {"type": "json_object"},
-            },
-        )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
+        # Transient transport failures are retried; semantic failures are not.
+        # A ~500-call corpus run has died three separate times on three
+        # different transients (read timeout, provider error-in-200-body,
+        # trailing junk). Retrying the SAME question substitutes nothing and
+        # is not the silent fallback CLAUDE.md bans — a silent fallback swaps
+        # in a *different* answer when the real one is missing; a retry asks
+        # the identical question again and, if every attempt fails, still
+        # raises loudly at the end — now with the provider's actual error
+        # visible instead of a bare KeyError.
+        content: str | None = None
+        last_error: Exception | None = None
+        attempts = len(_RETRY_DELAYS) + 1
+        for attempt in range(attempts):
+            try:
+                response = await self._client.post(
+                    f"{self._base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    json={
+                        "model": self._model,
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                        # Extraction is term typing, not deliberation, so
+                        # reasoning is held to the floor. Note: this endpoint
+                        # REJECTS {"enabled": False} with "Reasoning is
+                        # mandatory for this endpoint and cannot be disabled"
+                        # — verified against the live API on 2026-08-16.
+                        # "minimal" is the lowest accepted setting.
+                        "reasoning": {"effort": "minimal"},
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+                response.raise_for_status()
+                body = response.json()
+                if "choices" not in body:
+                    # HTTP 200 with an error body: OpenRouter's way of
+                    # surfacing an upstream provider hiccup. raise_for_status
+                    # already passed, so without this check the next line
+                    # would raise a bare KeyError that hides the provider's
+                    # own error message.
+                    raise _ProviderError(
+                        f"provider returned 200 without choices: "
+                        f"{body.get('error', body)!r}"
+                    )
+                content = body["choices"][0]["message"]["content"]
+                break
+            except (httpx.TimeoutException, _ProviderError) as exc:
+                last_error = exc
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status != 429 and status < 500:
+                    # A 4xx other than "too many requests" will not get
+                    # better on retry — it's a bad request, not a transient.
+                    raise
+                last_error = exc
+
+            if attempt == attempts - 1:
+                raise ValueError(
+                    f"judge request failed after {attempts} attempts: {last_error}"
+                ) from last_error
+            await asyncio.sleep(_RETRY_DELAYS[attempt])
+
+        assert content is not None  # the loop only exits via `break` or `raise`
         try:
             # raw_decode takes the first complete JSON value and tells us where
             # it ended. The endpoint's json mode is not airtight: a real run
@@ -165,6 +225,11 @@ class OpenRouterJudge:
             # the start is unambiguous — trailing junk cannot change its
             # meaning — but if no valid JSON starts the reply, we still raise:
             # this tolerates noise around the answer, never a missing answer.
+            # This parsing step is deliberately OUTSIDE the retry loop above:
+            # malformed content is a semantic failure of a well-formed
+            # envelope, not a transient transport failure, and must raise
+            # immediately rather than burn retries on an answer that will
+            # never change.
             payload, _end = json.JSONDecoder().raw_decode(content.strip())
         except json.JSONDecodeError as exc:
             raise ValueError(f"could not parse judge response: {content!r}") from exc
