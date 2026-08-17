@@ -31,6 +31,7 @@ def _c(name: str = "Oats before gym", **kw) -> Constraint:
         applicability=Applicability(),
         source_observation_uids=["obs-1"],
         created_at=T0,
+        last_observed_at=T0,
     )
     defaults.update(kw)
     return Constraint(**defaults)

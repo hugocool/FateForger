@@ -133,6 +133,7 @@ def _constraint(name: str, description: str):
         applicability=Applicability(),
         source_observation_uids=[],
         created_at=datetime(2026, 3, 9, tzinfo=timezone.utc),
+        last_observed_at=datetime(2026, 3, 9, tzinfo=timezone.utc),
     )
 
 

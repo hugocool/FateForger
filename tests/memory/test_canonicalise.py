@@ -43,6 +43,7 @@ def _c(name: str) -> Constraint:
         applicability=Applicability(),
         source_observation_uids=[],
         created_at=T0,
+        last_observed_at=T0,
     )
 
 

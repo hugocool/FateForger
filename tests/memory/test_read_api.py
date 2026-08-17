@@ -34,6 +34,7 @@ def _c(name: str, tier: Tier = Tier.DURABLE, **app) -> Constraint:
         applicability=Applicability(**app),
         source_observation_uids=[],
         created_at=T0,
+        last_observed_at=T0,
     )
 
 

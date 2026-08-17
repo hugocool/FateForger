@@ -48,6 +48,7 @@ def _existing(store: ConstraintStore, name: str) -> Constraint:
         applicability=Applicability(),
         source_observation_uids=["obs-0"],
         created_at=T0,
+        last_observed_at=T0,
     )
     store.upsert(c)
     return c

@@ -6,7 +6,7 @@ import threading
 from datetime import datetime
 
 from memory.constraint import Applicability, Constraint
-from memory.models import Tier
+from memory.models import DecayClass, Tier
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS constraints (
@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS constraints (
     frame_slot   TEXT,
     tier         TEXT NOT NULL,
     applicability TEXT NOT NULL,
-    created_at   TEXT NOT NULL
+    created_at   TEXT NOT NULL,
+    decay_class      TEXT NOT NULL,
+    last_observed_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_constraints_tier ON constraints(tier);
 CREATE TABLE IF NOT EXISTS constraint_observations (
@@ -58,14 +60,17 @@ class ConstraintStore:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO constraints (uid, name, description, necessity, scope, "
-                " status, source, frame_slot, tier, applicability, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                " status, source, frame_slot, tier, applicability, created_at, "
+                " decay_class, last_observed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(uid) DO UPDATE SET "
                 " name=excluded.name, description=excluded.description, "
                 " necessity=excluded.necessity, scope=excluded.scope, "
                 " status=excluded.status, source=excluded.source, "
                 " frame_slot=excluded.frame_slot, tier=excluded.tier, "
-                " applicability=excluded.applicability",
+                " applicability=excluded.applicability, "
+                " decay_class=excluded.decay_class, "
+                " last_observed_at=excluded.last_observed_at",
                 (
                     constraint.uid,
                     constraint.name,
@@ -78,6 +83,8 @@ class ConstraintStore:
                     constraint.tier.value,
                     constraint.applicability.model_dump_json(),
                     constraint.created_at.isoformat(),
+                    constraint.decay_class.value,
+                    constraint.last_observed_at.isoformat(),
                 ),
             )
             self._conn.commit()
@@ -169,4 +176,6 @@ class ConstraintStore:
             applicability=Applicability.model_validate_json(row["applicability"]),
             source_observation_uids=self.observations_for(row["uid"]),
             created_at=datetime.fromisoformat(row["created_at"]),
+            decay_class=DecayClass(row["decay_class"]),
+            last_observed_at=datetime.fromisoformat(row["last_observed_at"]),
         )

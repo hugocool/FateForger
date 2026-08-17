@@ -89,6 +89,8 @@ async def project(
                 ),
                 source_observation_uids=[observation.uid],
                 created_at=observation.observed_at,
+                decay_class=ingest_result.decay_class,
+                last_observed_at=observation.observed_at,
             )
             constraint_store.upsert(created)
             return created
@@ -111,6 +113,18 @@ async def project(
                 )
             existing = known[judgement.constraint_uid]
             constraint_store.link_observation(existing.uid, observation.uid)
+            # Re-read: `existing` predates link_observation, so its
+            # source_observation_uids is stale. upsert() replaces provenance
+            # links with whatever list it is given (replace_links), so
+            # upserting the stale object here would silently drop the link
+            # just added above.
+            existing = constraint_store.get(existing.uid)
+            # Newest evidence wins. Backfill replays historical rows, so a
+            # fold can carry an OLDER observation than the constraint already
+            # has.
+            if observation.observed_at > existing.last_observed_at:
+                existing.last_observed_at = observation.observed_at
+            constraint_store.upsert(existing)
             # Tier only ever moves up. A durable rule is never demoted by a
             # later observation; that would be last-write-wins, which this
             # design rejects explicitly.
@@ -133,6 +147,8 @@ async def project(
             ),
             source_observation_uids=[observation.uid],
             created_at=observation.observed_at,
+            decay_class=ingest_result.decay_class,
+            last_observed_at=observation.observed_at,
         )
         constraint_store.upsert(created)
         return created

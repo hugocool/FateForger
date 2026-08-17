@@ -7,7 +7,7 @@ from enum import Enum
 from pydantic import BaseModel, Field, field_validator
 
 from memory.identity import mint_uid
-from memory.models import Tier
+from memory.models import HALF_LIFE_DAYS, DecayClass, Tier
 
 
 class Necessity(str, Enum):
@@ -116,6 +116,23 @@ class Constraint(BaseModel):
     applicability: Applicability = Field(default_factory=Applicability)
     source_observation_uids: list[str] = Field(default_factory=list)
     created_at: datetime
+    # Default PERMANENT: a rule wrongly marked permanent is merely noisy, one
+    # wrongly marked short-lived disappears without being asked.
+    decay_class: DecayClass = DecayClass.PERMANENT
+    # Deliberately no default: a constraint whose observation date is unknown
+    # cannot be reasoned about, and a default would silently pick a lie.
+    last_observed_at: datetime
+
+    def has_faded(self, on: date) -> bool:
+        """True when no observation is recent enough to keep this alive.
+
+        Arithmetic only — a timestamp against a threshold. No model call, so
+        this is safe to run in the read path (I1).
+        """
+        half_life = HALF_LIFE_DAYS[self.decay_class]
+        if half_life is None:
+            return False
+        return (on - self.last_observed_at.date()).days > half_life
 
     def to_view(self) -> ConstraintView:
         return ConstraintView(

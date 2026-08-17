@@ -7,7 +7,7 @@ from datetime import date
 from pydantic import BaseModel, Field
 
 from memory.judge import Judge
-from memory.models import Observation, Provenance, Tier
+from memory.models import DecayClass, Observation, Provenance, Tier
 from memory.store import ObservationStore
 
 
@@ -22,6 +22,9 @@ class IngestResult(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     days_of_week: list[int] = Field(default_factory=list)  # 0=Mon .. 6=Sun
+    # Default PERMANENT: a rule wrongly marked permanent is merely noisy, one
+    # wrongly marked short-lived disappears without being asked.
+    decay_class: DecayClass = DecayClass.PERMANENT
 
 
 async def ingest(
@@ -86,4 +89,5 @@ async def ingest(
         start_date=tier_j.start_date,
         end_date=tier_j.end_date,
         days_of_week=tier_j.days_of_week,
+        decay_class=tier_j.decay_class,
     )

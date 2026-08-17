@@ -6,7 +6,7 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
-from memory.models import Observation, Tier
+from memory.models import DecayClass, Observation, Tier
 
 
 class AnchorJudgement(BaseModel):
@@ -35,6 +35,10 @@ class TierJudgement(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     days_of_week: list[int] = Field(default_factory=list)  # 0=Mon .. 6=Sun
+
+    # Seed vocabulary — see DecayClass. Default PERMANENT because the safe
+    # failure is a rule that never fades, not one that vanishes unasked.
+    decay_class: DecayClass = DecayClass.PERMANENT
 
 
 class MetaJudgement(BaseModel):
@@ -114,6 +118,7 @@ class StubJudge:
         days_of_week: dict[str, list[int]] | None = None,
         start_dates: dict[str, date] | None = None,
         end_dates: dict[str, date] | None = None,
+        decay_classes: dict[str, DecayClass] | None = None,
     ) -> None:
         self._anchors = anchors or {}
         self._tiers = tiers or {}
@@ -125,6 +130,7 @@ class StubJudge:
         self._days_of_week = days_of_week or {}
         self._start_dates = start_dates or {}
         self._end_dates = end_dates or {}
+        self._decay_classes = decay_classes or {}
         self.calls: list[tuple[str, str]] = []
 
     async def anchors(self, observation: Observation) -> AnchorJudgement:
@@ -140,6 +146,9 @@ class StubJudge:
             start_date=self._start_dates.get(observation.text),
             end_date=self._end_dates.get(observation.text),
             days_of_week=self._days_of_week.get(observation.text, []),
+            decay_class=self._decay_classes.get(
+                observation.text, DecayClass.PERMANENT
+            ),
         )
 
     async def meta(self, observation: Observation) -> MetaJudgement:

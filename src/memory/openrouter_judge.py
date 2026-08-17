@@ -57,9 +57,19 @@ Also say when the rule applies, if the statement scopes it:
 Do not invent scoping. "Sleep at 23:00" applies every day: empty list, null
 dates. "Go to client on Tuesdays and Thursdays" is [1, 3].
 
+Also say how long the rule stays true if nobody mentions it again:
+- "permanent" — only changes if the person changes (sleep window, meal structure)
+- "seasonal" — changes on a life event (commute duration, which days they see a client)
+- "project" — true for a chapter of work, then done (a cap on a specific workstream)
+- "daily" — true for one day (today's appointment)
+
+When unsure, answer "permanent". A rule wrongly marked permanent is merely
+noisy; a rule wrongly marked short-lived disappears without being asked.
+
 Respond with JSON only:
 {"tier": "durable"|"session", "is_declaration": true|false, "label": "...",
- "days_of_week": [...], "start_date": null, "end_date": null, "rationale": "..."}\
+ "days_of_week": [...], "start_date": null, "end_date": null,
+ "decay_class": "permanent"|"seasonal"|"project"|"daily", "rationale": "..."}\
 """
 
 META_PROMPT = """\
