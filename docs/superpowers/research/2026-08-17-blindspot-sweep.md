@@ -75,6 +75,36 @@ So I2's "L1 is append-only, a correction is a new row" is true only for statemen
 
 ---
 
+## 9. A single-sample eval against a sampled model is a coin flip — found the hard way
+
+Discovered while adding the decay evals, and it generalises past this project.
+
+`test_a_sprint_scoped_cap_is_project_class` **passed on its first pytest run.** The implementer
+did not trust it and resampled the identical text nine times outside pytest: **eight of nine
+calls returned `permanent`, not `project`.** The passing run was the 1-in-9 outlier. The prompt
+had named the "project" category without giving the model any signal to key off, so the
+judgement was close to a coin flip and the eval happened to catch the winning side.
+
+After adding a discriminator — a cap or gate on a *named workstream* is `project`, and naming one
+is required evidence rather than a licence to guess short-lived — eight of eight resamples
+returned `project`.
+
+**This makes the whole eval suite's reliability unmeasured**, not just this one test. Every one
+of the 20 evals is a single draw, and finding 7 above establishes that nothing pins
+`temperature` (Gemini's default is 1.0). A green suite currently proves that each assertion held
+*once*.
+
+The methodological rule this implies, worth carrying into any project doing LLM-judged work:
+
+> **An eval that samples once tests the model's luck, not its behaviour.** Either pin sampling
+> (`temperature: 0`) so a single draw is representative, or sample n times and assert on the
+> rate. A prompt fix validated by one passing call has not been validated.
+
+Note the two are not interchangeable. `temperature: 0` makes the suite *stable* but still tests
+one point; resampling measures the *distribution*, which is what tells you a judgement is
+robust rather than merely reproducible. For a judgement in the write path, the distribution is
+the thing that matters.
+
 ## Checked and found sound
 
 Recorded so the next person does not re-walk this path.
