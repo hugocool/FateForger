@@ -88,6 +88,21 @@ async def test_read_returns_plan_and_snapshot(service):
     assert snapshot.token
 
 
+async def test_read_rendered_marks_no_foreign_blocks_when_none_exist(service):
+    result = await service.read_rendered("primary", DAY)
+    assert "PR1,tmbx," in result.rendered
+    assert "DW1,tmbx," in result.rendered
+    assert result.snapshot.token
+    assert result.blocks == 2
+
+
+async def test_read_rendered_marks_foreign_blocks(service_with_foreign):
+    result = await service_with_foreign.read_rendered("primary", DAY)
+    assert "EVT3,foreign," in result.rendered
+    assert "PR1,tmbx," in result.rendered
+    assert "DW1,tmbx," in result.rendered
+
+
 async def test_apply_is_pure_and_writes_nothing_to_the_calendar(service):
     _, snapshot = await service.read("primary", DAY)
     result = await service.apply(snapshot, Patch(ops=[UpdateBlock(h="DW1", n="Renamed")]))
@@ -137,6 +152,38 @@ async def test_commit_writes_to_the_calendar_and_returns_a_tx_id(service):
     assert result.committed and result.tx_id
     live = await service.calendar.list_day("primary", DAY, TZ)
     assert any(e.summary == "Renamed" for e in live)
+
+
+async def test_commit_does_not_rewrite_blocks_the_patch_did_not_touch(service):
+    """``_write`` resolves and re-``update``s the *whole* plan on every
+    commit; without a no-op guard that means every commit rewrites every
+    untouched block too. Against ``FakeCalendar`` the only observable
+    symptom is a bumped etag -- harmless here, but against a real provider
+    it's an etag bump and a change notification for every event on the
+    day, on every commit. PR1 (untouched by this patch) must come out with
+    the exact same etag it went in with.
+    """
+    live_before = {e.event_id: e.etag for e in await service.calendar.list_day("primary", DAY, TZ)}
+
+    _, snapshot = await service.read("primary", DAY)
+    await service.commit(
+        snapshot,
+        Patch(
+            ops=[
+                AddBlock(
+                    after="DW1",
+                    h="BU1",
+                    n="Buffer",
+                    t=ET.BU,
+                    p=AfterPrev(dur=timedelta(minutes=10)),
+                )
+            ]
+        ),
+    )
+
+    live_after = {e.event_id: e.etag for e in await service.calendar.list_day("primary", DAY, TZ)}
+    assert live_after["e1"] == live_before["e1"]  # PR1: untouched, etag unchanged
+    assert live_after["e2"] == live_before["e2"]  # DW1: untouched, etag unchanged
 
 
 async def test_commit_refuses_when_the_calendar_drifted(service):

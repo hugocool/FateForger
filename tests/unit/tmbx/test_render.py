@@ -109,8 +109,26 @@ def test_every_column_survives_in_the_rendered_row():
     field from ``_row`` makes one of these two lines fail.
     """
     rows = render_plan(_plan()).splitlines()[1:]
-    assert rows[0] == "DW1,DW,Sprint,09:00,10:30,fw,PT1H30M"
-    assert rows[1] == "LUN1,R,Lunch,10:30,11:15,ap,PT45M"
+    assert rows[0] == "DW1,tmbx,DW,Sprint,09:00,10:30,fw,PT1H30M"
+    assert rows[1] == "LUN1,tmbx,R,Lunch,10:30,11:15,ap,PT45M"
+
+
+def test_own_column_defaults_to_tmbx_when_no_foreign_uids_given():
+    rows = render_plan(_plan()).splitlines()[1:]
+    assert all(row.split(",")[1] == "tmbx" for row in rows)
+
+
+def test_foreign_uids_are_marked_foreign_and_others_stay_tmbx():
+    """The only signal in a rendered plan that distinguishes an immovable
+    block from an editable one -- see the module docstring. A block's
+    ``uid`` (never itself rendered) is the join key, not its handle:
+    handle shape (e.g. an ``EVT``-prefixed one) is only a coincidental,
+    unreliable partial signal, per PlanService._plan_from_calendar.
+    """
+    rows = render_plan(_plan(), foreign_uids={"u2"}).splitlines()[1:]
+    by_handle = {row.split(",")[0]: row.split(",")[1] for row in rows}
+    assert by_handle["DW1"] == "tmbx"  # uid u1, not in foreign_uids
+    assert by_handle["LUN1"] == "foreign"  # uid u2, in foreign_uids
 
 
 def test_render_survives_a_plan_that_would_fail_overlap_validation():
@@ -140,32 +158,32 @@ def test_render_survives_a_plan_that_would_fail_overlap_validation():
 def test_name_containing_the_delimiter_is_quoted():
     body = render_plan(_named("Sprint, planning", FixedWindow(st=time(9, 0), et=time(10, 0))))
     assert body == (
-        "blocks[1]{H,type,summary,ST,ET,mode,dur}:\n"
-        'XX1,DW,"Sprint, planning",09:00,10:00,fw,PT1H'
+        "blocks[1]{H,own,type,summary,ST,ET,mode,dur}:\n"
+        'XX1,tmbx,DW,"Sprint, planning",09:00,10:00,fw,PT1H'
     )
 
 
 def test_name_containing_a_newline_is_quoted():
     body = render_plan(_named("Lunch\nBreak", FixedWindow(st=time(9, 0), et=time(10, 0))))
     assert body == (
-        "blocks[1]{H,type,summary,ST,ET,mode,dur}:\n"
-        'XX1,DW,"Lunch\nBreak",09:00,10:00,fw,PT1H'
+        "blocks[1]{H,own,type,summary,ST,ET,mode,dur}:\n"
+        'XX1,tmbx,DW,"Lunch\nBreak",09:00,10:00,fw,PT1H'
     )
 
 
 def test_name_containing_a_quote_is_escaped_by_doubling():
     body = render_plan(_named('Say "hi"', FixedWindow(st=time(9, 0), et=time(10, 0))))
     assert body == (
-        "blocks[1]{H,type,summary,ST,ET,mode,dur}:\n"
-        'XX1,DW,"Say ""hi""",09:00,10:00,fw,PT1H'
+        "blocks[1]{H,own,type,summary,ST,ET,mode,dur}:\n"
+        'XX1,tmbx,DW,"Say ""hi""",09:00,10:00,fw,PT1H'
     )
 
 
 def test_empty_name_renders_as_an_empty_field_not_two_quotes():
     body = render_plan(_named("", FixedWindow(st=time(9, 0), et=time(10, 0))))
     assert body == (
-        "blocks[1]{H,type,summary,ST,ET,mode,dur}:\n"
-        "XX1,DW,,09:00,10:00,fw,PT1H"
+        "blocks[1]{H,own,type,summary,ST,ET,mode,dur}:\n"
+        "XX1,tmbx,DW,,09:00,10:00,fw,PT1H"
     )
 
 

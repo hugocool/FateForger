@@ -75,6 +75,20 @@ class ForeignBlockError(RuntimeError):
         self.handles = handles
 
 
+class ReadResult(BaseModel):
+    """``read()``'s sibling for a caller that needs the plan as *text*.
+
+    Kept as a separate return type — and ``read_rendered`` as a separate
+    method — rather than changing what ``read()`` itself returns, so every
+    existing caller of ``read()`` (including its own test suite, which
+    unpacks a bare ``(Plan, Snapshot)`` tuple throughout) is untouched.
+    """
+
+    snapshot: Snapshot
+    rendered: str
+    blocks: int
+
+
 class ApplyResult(BaseModel):
     plan: Plan
     rendered: str
@@ -114,6 +128,27 @@ def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
         t=ET.M,
         p=FixedWindow(st=event.start.time(), et=event.end.time()),
         anchor_source="calendar",
+    )
+
+
+def _event_unchanged(existing: CalendarEvent, candidate: CalendarEvent) -> bool:
+    """True if writing ``candidate`` over ``existing`` would be a no-op.
+
+    Compares only the fields tmbx actually controls — summary, description,
+    start, end, uid, handle, slug — never ``etag`` (``candidate`` never
+    carries a real one; see ``_write``) or ``event_id`` (already the join
+    key that got the two events paired up). A block whose resolved state
+    is identical to what's live must not be re-``update``d just because
+    some *other* block in the same commit changed.
+    """
+    return (
+        existing.summary == candidate.summary
+        and existing.description == candidate.description
+        and existing.start == candidate.start
+        and existing.end == candidate.end
+        and existing.uid == candidate.uid
+        and existing.handle == candidate.handle
+        and existing.slug == candidate.slug
     )
 
 
@@ -197,6 +232,24 @@ class PlanService:
         snapshot = make_snapshot(calendar_id, day, tz, events)
         return plan, snapshot
 
+    async def read_rendered(
+        self, calendar_id: str, day: date_type, tz: str = _DEFAULT_TZ
+    ) -> ReadResult:
+        """Like ``read()``, but returns the plan already rendered to text
+        with foreign blocks marked — see ``core.render.render_plan``'s
+        ``own`` column. The MCP server's ``plan_read`` tool uses this
+        instead of calling ``render_plan`` itself, so foreign-block
+        knowledge never has to be re-derived (or, worse, guessed from
+        handle naming) outside this module.
+        """
+        plan, events, foreign_uids = await self._plan_from_calendar(calendar_id, day, tz)
+        snapshot = make_snapshot(calendar_id, day, tz, events)
+        return ReadResult(
+            snapshot=snapshot,
+            rendered=render_plan(plan, foreign_uids),
+            blocks=len(plan.blocks),
+        )
+
     async def apply(self, snapshot: Snapshot, patch: Patch) -> ApplyResult:
         """Pure preview: applies ops against the live plan, validates,
         journals the attempt, writes nothing to the calendar.
@@ -235,7 +288,7 @@ class PlanService:
         await self._journal(snapshot, patch, outcome)
         return ApplyResult(
             plan=patched,
-            rendered=render_plan(patched),
+            rendered=render_plan(patched, foreign_uids),
             violations=violations,
             overspecified=overspecified(patched),
         )
@@ -389,6 +442,14 @@ class PlanService:
         so this is a second, structural guarantee: even a bug in that
         check could not make this method write to something tmbx doesn't
         own.
+
+        A block whose resolved state exactly matches what's already on the
+        calendar is skipped, not re-``update``d — see ``_event_unchanged``.
+        Every commit resolves the *whole* plan, so without this check a
+        one-block patch would rewrite every other block too: harmless
+        against the fake, but against a real provider that's an etag bump
+        and a change notification for every event on the day, on every
+        commit.
         """
         resolved = {row.h: row for row in plan.resolve(check_overlap=False)}
         existing_by_id = {event.event_id: event for event in existing}
@@ -412,10 +473,11 @@ class PlanService:
                 handle=block.h,
                 slug=block.slug,
             )
-            if event_id in existing_by_id:
-                await self.calendar.update(calendar_id, event)
-            else:
+            existing_event = existing_by_id.get(event_id)
+            if existing_event is None:
                 await self.calendar.create(calendar_id, event)
+            elif not _event_unchanged(existing_event, event):
+                await self.calendar.update(calendar_id, event)
 
         for event_id in owned_ids - keep:
             await self.calendar.delete(calendar_id, event_id)
@@ -459,4 +521,5 @@ __all__ = [
     "ConflictError",
     "ForeignBlockError",
     "PlanService",
+    "ReadResult",
 ]

@@ -18,32 +18,51 @@ is expected to have read separately.
 Every write path (``plan_commit``, ``plan_undo``) can *refuse*. A refusal
 is reported as a normal JSON result with a ``"reason"`` code — never raised
 as a tool-call exception — because a refusal is not a transient error: the
-correct response is never "retry the same call". Two distinct refusal
-causes exist and are surfaced with distinct reasons:
+correct response is never "retry the same call". Four refusal causes exist:
 
-* ``ConflictError`` — the calendar drifted since the snapshot (a stale
-  precondition). The remedy is re-read, then rebuild the patch.
-* ``ForeignBlockError`` — the patch names a calendar event tmbx does not
-  own (someone else's meeting, an invite). The remedy is to drop that op;
-  tmbx can never edit a foreign block, force or no force.
+* ``stale_snapshot`` (``ConflictError``) — the calendar drifted since the
+  snapshot. The remedy is re-read, then rebuild the patch. Not safe to
+  retry as-is.
+* ``foreign_block`` (``ForeignBlockError``) — the patch names a calendar
+  event tmbx does not own (someone else's meeting, an invite). The remedy
+  is to drop that op; tmbx can never edit a foreign block, force or no
+  force. Not safe to retry as-is.
+* ``invalid_patch`` — the patch is shaped correctly but a domain rule
+  rejects it (``apply_ops``'s own ``ValueError``: duplicate handle, a
+  cyclic move, an overlap, ...). Safe to retry once fixed.
+* ``malformed_input`` — the raw call doesn't match the expected shape at
+  all (an unknown op literal, a snapshot missing ``tz``, a non-ISO
+  ``day``). Safe to retry once fixed.
 
-Both are ``RuntimeError`` subclasses, not ``ValueError`` — plain
-``ValueError`` (which also covers pydantic's ``ValidationError``, itself a
-``ValueError`` subclass) is reserved for "the patch itself is malformed",
-a third, retry-after-fixing refusal kind.
+``ConflictError``/``ForeignBlockError`` are ``RuntimeError`` subclasses;
+plain ``ValueError`` (which also covers pydantic's ``ValidationError``)
+covers the other two.
+
+``snapshot`` and ``patch`` are typed ``dict[str, Any]`` at the tool
+boundary, not ``Snapshot``/``Patch`` directly, and validated by hand with
+``model_validate`` inside each tool body. Typing them as the real pydantic
+models is more idiomatic and did ship first, but FastMCP runs that
+validation as part of its own argument binding, *before* the function body
+ever runs — so a malformed call never reached this module's ``except``
+blocks at all; it surfaced as an opaque MCP ``ToolError`` (still
+``isError=True``, so nothing is mistaken for success, but not the curated
+refusal every other failure gets, and a typo'd op literal is a completely
+plausible thing for a model to send). Accepting raw dicts and validating
+inside the ``try`` is what actually keeps every failure inside the
+``ok``/``committed`` contract; ``PlanService`` itself still only ever sees
+real, validated ``Snapshot``/``Patch`` objects.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import date as date_type
-from typing import Literal
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
 from .calendar.port import Snapshot
 from .core.ops import Patch
-from .core.render import render_plan
 from .journal.disposition import derive_dispositions
 from .service import ConflictError, ForeignBlockError, PlanService
 
@@ -63,17 +82,21 @@ ap with no change to any time as "overspecified" — treat those as mistakes
 to fix, not intentional choices.
 
 Address blocks by handle, taken from the "H" column of the rendered plan —
-never by position. A patch is a set: every op resolves against the plan as
+never by position. A handle is 2-5 uppercase letters then 1-2 digits (e.g.
+DW1, MTNG12). A patch is a set: every op resolves against the plan as
 rendered, so op order does not matter, and no op may reference a block
 created by another op in the same patch.
 
 Some rendered blocks are FOREIGN: real calendar events tmbx did not create
 (someone else's meeting, an invite). They occupy real time and the chain
-must respect them, but tmbx can never edit, retime, or remove one — the
-render does not mark which blocks these are, so the only signal is a
-refusal with reason "foreign_block" when an op names one. Anchoring a new
-block's `after` on a foreign handle is fine; targeting the foreign block
-itself with remove/update/move is not, ever.
+must respect them, but tmbx can never edit, retime, or remove one. Each
+row's "own" column marks this directly ("tmbx" or "foreign") — check it
+before addressing a handle with remove/update/move, rather than guessing
+from the handle itself: an "EVT"-prefixed handle is only a coincidental,
+unreliable partial signal (any block with no calendar-provided handle gets
+one, foreign or not). Anchoring a new block's `after` on a foreign handle
+is fine; targeting the foreign block itself with remove/update/move is
+refused outright, reason "foreign_block".
 """
 
 _OPS_SCHEMA_PREAMBLE = """\
@@ -83,12 +106,16 @@ matters and no op may reference a handle another op in the same patch just
 created. add/move accept `after`: a handle to insert after, null to
 prepend, or the literal "END" to append (default "END").
 
+A new handle (add's `h`) must be 2-5 uppercase letters then 1-2 digits
+(e.g. DW1, MTNG12) — anything else is refused as reason "invalid_patch"
+before anything is written.
+
 A handle may belong to a FOREIGN block — a calendar event tmbx did not
-create (e.g. someone else's meeting). Naming one as an add/move `after`
-anchor is fine — that only positions a new block relative to it. Naming
-one as the `h` of remove/update/move is refused outright, with reason
-"foreign_block": tmbx must respect it in the chain but can never write to
-it.
+create (e.g. someone else's meeting); the rendered plan's "own" column
+marks these "foreign". Naming one as an add/move `after` anchor is fine —
+that only positions a new block relative to it. Naming one as the `h` of
+remove/update/move is refused outright, with reason "foreign_block": tmbx
+must respect it in the chain but can never write to it.
 
 Schema:
 """
@@ -118,9 +145,11 @@ def build_server(service: PlanService) -> FastMCP:
         instructions=(
             "Read a day's plan, preview typed patches against it, commit them, "
             "and undo. Always plan_read first — plan_apply and plan_commit both "
-            "need the snapshot object it returns. A tool result with "
-            "committed/ok false is a refusal, not a crash — see each tool's "
-            "own description for what it means and what to do next."
+            "need the snapshot object it returns; treat it as opaque and pass it "
+            "back verbatim. Every result is a JSON object with an \"ok\" or "
+            "\"committed\" boolean — false always means a refusal, never a "
+            "crash. See each tool's own description for its refusal reasons "
+            "and what to do about each."
         ),
     )
     mcp.tmbx_service = service  # type: ignore[attr-defined]
@@ -129,30 +158,62 @@ def build_server(service: PlanService) -> FastMCP:
     async def plan_read(calendar_id: str, day: str) -> str:
         """Read a day's plan from the calendar.
 
+        `day` is a date string "YYYY-MM-DD" (e.g. "2026-08-17").
+
         Always call this first. plan_apply and plan_commit both require the
         snapshot this returns, which pins the exact calendar state your
         patch is built against — re-read whenever you no longer trust that
         nothing changed underneath you, and always after a commit or a
-        refusal that names conflicts. Never reuse a snapshot from an
-        earlier read once you know the calendar moved.
+        refusal that names conflicts. Treat the returned snapshot as
+        opaque: pass it back to plan_apply/plan_commit exactly as received,
+        never hand-construct or edit one.
 
-        Returns the rendered plan (blocks addressed by handle, in the "H"
-        column), the block count, and the snapshot to pass back verbatim.
-        Some blocks may be FOREIGN — calendar events tmbx did not create;
-        see tmbx://policy/planning for what that means for editing them.
+        On success, "rendered" shows the plan as a table addressed by
+        handle (the "H" column). Its "own" column marks each block "tmbx"
+        (editable) or "foreign" (a calendar event tmbx did not create,
+        such as someone else's meeting — see tmbx://policy/planning for
+        what that means for editing it).
+
+        A result with "ok": false is a refusal: reason "malformed_input"
+        means `day` was not a valid date — "message" says how.
         """
-        plan, snapshot = await service.read(calendar_id, date_type.fromisoformat(day))
+        try:
+            parsed_day = date_type.fromisoformat(day)
+        except ValueError as exc:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "reason": "malformed_input",
+                    "message": f'day must be "YYYY-MM-DD": {exc}',
+                }
+            )
+        result = await service.read_rendered(calendar_id, parsed_day)
         return json.dumps(
             {
-                "snapshot": snapshot.model_dump(mode="json"),
-                "rendered": render_plan(plan),
-                "blocks": len(plan.blocks),
+                "ok": True,
+                "snapshot": result.snapshot.model_dump(mode="json"),
+                "rendered": result.rendered,
+                "blocks": result.blocks,
             }
         )
 
     @mcp.tool(name="plan_apply", structured_output=False)
-    async def plan_apply(snapshot: Snapshot, patch: Patch) -> str:
+    async def plan_apply(snapshot: dict[str, Any], patch: dict[str, Any]) -> str:
         """Preview a patch against the live plan. Writes nothing, ever.
+
+        `snapshot` is opaque: pass back exactly the "snapshot" object
+        plan_read (or plan_apply) returned — never hand-construct one.
+
+        `patch` = {"ops": [...]}, each op one of:
+          {"op":"add","h":<new handle>,"n":<name>,"t":<type>,"p":<timing>,
+           "after"?:<handle|null|"END">,"d"?,"slug"?,"anchor_source"?}
+          {"op":"remove","h":<handle>}
+          {"op":"update","h":<handle>, any of n/d/t/p/slug/anchor_source}
+          {"op":"move","h":<handle>,"after"?:<handle|null|"END">}
+        `p` (timing) is one of {"a":"ap","dur":<ISO8601 duration>},
+        {"a":"bn","dur":...}, {"a":"fs","st":<HH:MM:SS>,"dur":...},
+        {"a":"fw","st":...,"et":...}. Full schema, including the handle
+        format: tmbx://schema/ops.
 
         Re-derives the plan from the calendar on every call, so it never
         checks whether the calendar drifted since your snapshot — only
@@ -160,20 +221,29 @@ def build_server(service: PlanService) -> FastMCP:
         "what would this look like", before committing.
 
         A result with "ok": false is a refusal, not a crash:
+        - reason "malformed_input": `snapshot` or `patch` doesn't match
+          its expected shape — "message" says which. Fix the shape and
+          call again.
         - reason "foreign_block": the patch names a handle (see "handles")
           tmbx does not own. Drop that op and route around the block
           instead of retrying as-is.
-        - reason "invalid_patch": the patch fails validation (duplicate
-          handle, a fixed-timing block with no anchor_source, a cyclic
-          move, an overlap, ...) — "message" says which. Fix it and call
-          again; this refusal is safe to retry once corrected.
+        - reason "invalid_patch": the patch is shaped correctly but fails
+          a domain rule (duplicate handle, a fixed-timing block with no
+          anchor_source, a cyclic move, an overlap, ...) — "message" says
+          which. Fix it and call again.
 
         On success, "overspecified" lists handles pinned to fs/fw that
         could be relaxed to ap with no change to any resolved time — treat
         those as mistakes, per tmbx://policy/planning.
         """
         try:
-            result = await service.apply(snapshot, patch)
+            snapshot_obj = Snapshot.model_validate(snapshot)
+            patch_obj = Patch.model_validate(patch)
+        except ValueError as exc:
+            return json.dumps({"ok": False, "reason": "malformed_input", "message": str(exc)})
+
+        try:
+            result = await service.apply(snapshot_obj, patch_obj)
         except ForeignBlockError as exc:
             return json.dumps(
                 {
@@ -196,16 +266,24 @@ def build_server(service: PlanService) -> FastMCP:
 
     @mcp.tool(name="plan_commit", structured_output=False)
     async def plan_commit(
-        snapshot: Snapshot, patch: Patch, expect: Literal["clean", "force"] = "clean"
+        snapshot: dict[str, Any],
+        patch: dict[str, Any],
+        expect: Literal["clean", "force"] = "clean",
     ) -> str:
         """Write a patch to the calendar. The only tool that writes.
 
-        Requires the snapshot from the plan_read (or plan_apply) you built
-        this patch against. Refuses rather than writing anything wrong — a
-        refusal here is never a transient error, so never retry the exact
-        same call.
+        `snapshot` and `patch` take exactly the shapes documented on
+        plan_apply — `snapshot` opaque (pass back what plan_read/plan_apply
+        returned, verbatim), `patch` = {"ops": [...]}; full schema at
+        tmbx://schema/ops.
+
+        Refuses rather than writing anything wrong — a refusal here is
+        never a transient error, so never retry the exact same call.
 
         A result with "committed": false tells you why and what to do:
+        - reason "malformed_input": `snapshot` or `patch` doesn't match
+          its expected shape — "message" says which. Fix the shape and
+          call again.
         - reason "stale_snapshot": the calendar changed since your
           snapshot ("conflicts" lists the affected event ids). Call
           plan_read again, look at the new state, and rebuild the patch
@@ -216,13 +294,26 @@ def build_server(service: PlanService) -> FastMCP:
           does not own (e.g. a meeting someone else made). Drop that op;
           tmbx can never edit or delete it, force or no force. Anchoring a
           new block after it is fine.
-        - reason "invalid_patch": the patch itself is malformed —
-          "message" says how. Fix it and call again.
+        - reason "invalid_patch": the patch is shaped correctly but fails
+          a domain rule — "message" says how. Fix it and call again.
 
         On success, "tx_id" identifies this write for plan_undo.
         """
         try:
-            result = await service.commit(snapshot, patch, expect=expect)
+            snapshot_obj = Snapshot.model_validate(snapshot)
+            patch_obj = Patch.model_validate(patch)
+        except ValueError as exc:
+            return json.dumps(
+                {
+                    "committed": False,
+                    "reason": "malformed_input",
+                    "conflicts": [],
+                    "message": str(exc),
+                }
+            )
+
+        try:
+            result = await service.commit(snapshot_obj, patch_obj, expect=expect)
         except ConflictError as exc:
             return json.dumps(
                 {
@@ -268,7 +359,8 @@ def build_server(service: PlanService) -> FastMCP:
         clobbering any edit made since that commit. There is no force
         option here: undo never overwrites.
 
-        A result with "committed": false tells you why:
+        A result with "committed": false tells you why ("conflicts" is
+        always present, empty when it doesn't apply):
         - reason "would_overwrite_newer_edit": something on the calendar
           changed since that commit ("conflicts" lists the affected event
           ids). Call plan_read to see current state and decide by hand —
@@ -298,6 +390,7 @@ def build_server(service: PlanService) -> FastMCP:
                 {
                     "committed": False,
                     "reason": "unknown_transaction",
+                    "conflicts": [],
                     "message": str(exc),
                 }
             )
@@ -307,27 +400,46 @@ def build_server(service: PlanService) -> FastMCP:
     async def plan_history(calendar_id: str, day: str) -> str:
         """List patch attempts, commits, and undos recorded for one day.
 
-        Each entry carries a derived "disposition": "accepted" (a commit
-        that stands), "superseded" (an older commit later overwritten by a
-        newer one), "undone" (a commit later reversed by plan_undo),
-        "abandoned" (a preview that was never committed), or "failed"
-        (validation or apply failed outright). Use this to see what
-        actually happened to a day over time — not just its current state.
+        `day` is a date string "YYYY-MM-DD" (e.g. "2026-08-17").
+
+        On success, "entries" carries one item per row, each with a
+        derived "disposition": "accepted" (a commit that stands),
+        "superseded" (an older commit later overwritten by a newer one),
+        "undone" (a commit later reversed by plan_undo), "abandoned" (a
+        preview that was never committed), or "failed" (validation or
+        apply failed outright). Use this to see what actually happened to
+        a day over time — not just its current state.
+
+        A result with "ok": false is a refusal: reason "malformed_input"
+        means `day` was not a valid date.
         """
-        entries = await service.store.by_day(calendar_id, date_type.fromisoformat(day))
+        try:
+            parsed_day = date_type.fromisoformat(day)
+        except ValueError as exc:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "reason": "malformed_input",
+                    "message": f'day must be "YYYY-MM-DD": {exc}',
+                }
+            )
+        entries = await service.store.by_day(calendar_id, parsed_day)
         dispositions = derive_dispositions(entries)
         return json.dumps(
-            [
-                {
-                    "id": entry.id,
-                    "kind": entry.kind.value,
-                    "outcome": entry.outcome.value,
-                    "disposition": dispositions[entry.id].value,
-                    "tx_id": entry.tx_id,
-                }
-                for entry in entries
-                if entry.id is not None
-            ]
+            {
+                "ok": True,
+                "entries": [
+                    {
+                        "id": entry.id,
+                        "kind": entry.kind.value,
+                        "outcome": entry.outcome.value,
+                        "disposition": dispositions[entry.id].value,
+                        "tx_id": entry.tx_id,
+                    }
+                    for entry in entries
+                    if entry.id is not None
+                ],
+            }
         )
 
     @mcp.resource("tmbx://schema/ops")

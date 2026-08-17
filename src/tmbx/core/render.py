@@ -26,10 +26,20 @@ Three deltas from the legacy ``timebox_events_rows``
 
 Free-text fields (currently just the name) are quoted when they would
 otherwise break the table — see ``_escape``.
+
+The ``own`` column marks blocks tmbx does not own — real calendar events
+such as someone else's meeting, present in the plan as read-only context
+the chain must respect but that no op may ever remove/update/move (see
+``PlanService._plan_from_calendar``/``_foreign_touches``). Without this
+column a model has no way to tell an editable block from an immovable one
+except by triggering a refusal first; an ``EVT``-prefixed handle is only a
+coincidental partial signal (any block with no calendar-provided handle
+gets one, tmbx-owned or not) and must not be pattern-matched on instead.
 """
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import date as date_type
 from datetime import datetime, time, timedelta
 
@@ -37,7 +47,7 @@ from isodate import duration_isoformat
 
 from .models import Plan, Resolved
 
-COLUMNS = ("H", "type", "summary", "ST", "ET", "mode", "dur")
+COLUMNS = ("H", "own", "type", "summary", "ST", "ET", "mode", "dur")
 
 _DELIMITER = ","
 
@@ -104,10 +114,11 @@ def _fmt_clock(t: time, dt: datetime, plan_date: date_type) -> str:
     return f"{base}{sign}{offset}"
 
 
-def _row(plan_date: date_type, r: Resolved) -> str:
+def _row(plan_date: date_type, r: Resolved, *, foreign: bool) -> str:
     return _DELIMITER.join(
         [
             r.h,
+            "foreign" if foreign else "tmbx",
             r.t.value,
             _escape(r.n),
             _fmt_clock(r.start, r.start_dt, plan_date),
@@ -118,20 +129,28 @@ def _row(plan_date: date_type, r: Resolved) -> str:
     )
 
 
-def render_plan(plan: Plan) -> str:
+def render_plan(plan: Plan, foreign_uids: Collection[str] = ()) -> str:
     """Render ``plan`` as a TOON-style table: a header naming the row count
     and columns, then one comma-separated row per block, in plan order.
 
     Uses ``plan.resolve(check_overlap=False)`` — rendering is a read, not a
     validation step, and must not raise just because a plan happens to
     overlap; that is a separate check's job.
+
+    ``foreign_uids`` — a block's ``uid`` (never rendered itself, see the
+    module docstring) — controls the ``own`` column: ``"foreign"`` when
+    ``r.uid`` is in the set, ``"tmbx"`` otherwise. Defaults to empty so a
+    caller with nothing foreign to mark (or that doesn't track ownership at
+    all) still gets valid output; ``PlanService`` is the only caller that
+    knows the real set, from the same calendar fetch that built the plan.
     """
     header = f"blocks[{len(plan.blocks)}]{{{','.join(COLUMNS)}}}:"
     if not plan.blocks:
         return header
 
+    foreign = set(foreign_uids)
     rows = plan.resolve(check_overlap=False)
-    lines = [header] + [_row(plan.date, r) for r in rows]
+    lines = [header] + [_row(plan.date, r, foreign=r.uid in foreign) for r in rows]
     return "\n".join(lines)
 
 
