@@ -162,3 +162,43 @@ async def test_an_unrelated_statement_is_new():
             _obs("Never schedule meetings before 13:00"), [existing]
         )
     assert result.constraint_uid is None
+
+
+async def test_named_weekdays_are_extracted():
+    """Measured defect: this rule was served on a Monday."""
+    async with _judge() as judge:
+        result = await judge.tier(
+            _obs("Client attendance days: Go to client on Tuesdays and Thursdays.")
+        )
+    assert sorted(result.days_of_week) == [1, 3]
+
+
+async def test_a_single_named_weekday_is_extracted():
+    async with _judge() as judge:
+        result = await judge.tier(
+            _obs(
+                "Wednesday revenue-first precedence: On Wednesday, Revenue lane "
+                "must run before any build/system cognitive block."
+            )
+        )
+    assert result.days_of_week == [2]
+
+
+async def test_a_daily_rule_acquires_no_day_filter():
+    """The dangerous direction: inventing scoping silently hides a rule."""
+    async with _judge() as judge:
+        result = await judge.tier(
+            _obs("Sleep schedule: Aim to sleep at 23:00 and wake at 07:00.")
+        )
+    assert result.days_of_week == []
+    assert result.start_date is None
+    assert result.end_date is None
+
+
+async def test_an_unscoped_rule_acquires_no_dates():
+    async with _judge() as judge:
+        result = await judge.tier(
+            _obs("Oats Timing: Oats must be consumed exactly 2 hours before the gym.")
+        )
+    assert result.days_of_week == []
+    assert result.start_date is None
