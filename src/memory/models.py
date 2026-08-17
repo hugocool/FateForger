@@ -1,12 +1,27 @@
 # src/memory/models.py
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from memory.identity import mint_uid
+
+
+def as_aware_utc(value: datetime) -> datetime:
+    """Coerce a datetime to timezone-aware UTC.
+
+    The store must hold only aware timestamps: comparing a naive one against
+    an aware one raises TypeError, and the two sources genuinely differ —
+    the corpus backfill inherits naive local times from the legacy database
+    while the live path stamps aware UTC. A naive value is interpreted as
+    UTC rather than local time: this data is machine-recorded, and guessing
+    a local zone would silently shift every historical timestamp.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class Channel(str, Enum):
@@ -49,6 +64,11 @@ class Observation(BaseModel):
     session_id: str | None = None
     observed_at: datetime
     anchors: list[str] = Field(default_factory=list)
+
+    @field_validator("observed_at")
+    @classmethod
+    def _observed_at_is_aware(cls, value: datetime) -> datetime:
+        return as_aware_utc(value)
 
 
 class DecayClass(str, Enum):

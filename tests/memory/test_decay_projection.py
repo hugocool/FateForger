@@ -86,3 +86,32 @@ async def test_folding_an_earlier_observation_does_not_rewind(tmp_path):
     await project(old, _result(old, DecayClass.PROJECT), judge, store)
 
     assert store.get(c.uid).last_observed_at == T1
+
+
+async def test_a_live_aware_observation_folds_onto_a_naive_seeded_constraint(tmp_path):
+    """The seeded store holds naive timestamps; the live path stamps aware UTC."""
+    from datetime import timezone as _tz
+
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    naive = datetime(2026, 3, 1, 9, 0)  # no tzinfo, as the backfill produces
+    first = _obs("cap framing at 15 minutes", naive)
+    c = await project(first, _result(first, DecayClass.PROJECT), StubJudge(), store)
+
+    aware = datetime(2026, 8, 17, 9, 0, tzinfo=_tz.utc)
+    later = _obs("still capping framing", aware)
+    judge = StubJudge(canonical={"still capping framing": c.uid})
+    folded = await project(later, _result(later, DecayClass.PROJECT), judge, store)
+
+    assert folded.uid == c.uid
+    assert store.get(c.uid).last_observed_at == aware
+
+
+def test_naive_timestamps_are_coerced_to_utc():
+    from datetime import timezone as _tz
+
+    from memory.models import as_aware_utc
+
+    naive = datetime(2026, 3, 1, 9, 0)
+    assert as_aware_utc(naive) == datetime(2026, 3, 1, 9, 0, tzinfo=_tz.utc)
+    already = datetime(2026, 3, 1, 9, 0, tzinfo=_tz.utc)
+    assert as_aware_utc(already) is already or as_aware_utc(already) == already

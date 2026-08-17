@@ -7,7 +7,7 @@ from enum import Enum
 from pydantic import BaseModel, Field, field_validator
 
 from memory.identity import mint_uid
-from memory.models import HALF_LIFE_DAYS, DecayClass, Tier
+from memory.models import HALF_LIFE_DAYS, DecayClass, Tier, as_aware_utc
 
 
 class Necessity(str, Enum):
@@ -122,6 +122,11 @@ class Constraint(BaseModel):
     # Deliberately no default: a constraint whose observation date is unknown
     # cannot be reasoned about, and a default would silently pick a lie.
     last_observed_at: datetime
+
+    @field_validator("created_at", "last_observed_at")
+    @classmethod
+    def _timestamps_are_aware(cls, value: datetime) -> datetime:
+        return as_aware_utc(value)
 
     def has_faded(self, on: date) -> bool:
         """True when no observation is recent enough to keep this alive.
