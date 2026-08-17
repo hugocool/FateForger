@@ -1,6 +1,7 @@
 # src/memory/judge.py
 from __future__ import annotations
 
+from datetime import date
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
@@ -25,6 +26,15 @@ class TierJudgement(BaseModel):
     is_declaration: bool = False
     label: str
     rationale: str = ""
+
+    # Applicability rides along on this judgement rather than getting its own
+    # call: deciding durability already requires reading the whole statement,
+    # so the scoping words are in front of the model anyway. Raw fields rather
+    # than the Applicability value object, so this port stays free of any
+    # import from the constraint layer above it.
+    start_date: date | None = None
+    end_date: date | None = None
+    days_of_week: list[int] = Field(default_factory=list)  # 0=Mon .. 6=Sun
 
 
 class MetaJudgement(BaseModel):
@@ -101,6 +111,9 @@ class StubJudge:
         canonical: dict[str, str] | None = None,
         labels: dict[str, str] | None = None,
         declarations: dict[str, bool] | None = None,
+        days_of_week: dict[str, list[int]] | None = None,
+        start_dates: dict[str, date] | None = None,
+        end_dates: dict[str, date] | None = None,
     ) -> None:
         self._anchors = anchors or {}
         self._tiers = tiers or {}
@@ -109,6 +122,9 @@ class StubJudge:
         self._canonical = canonical or {}
         self._labels = labels or {}
         self._declarations = declarations or {}
+        self._days_of_week = days_of_week or {}
+        self._start_dates = start_dates or {}
+        self._end_dates = end_dates or {}
         self.calls: list[tuple[str, str]] = []
 
     async def anchors(self, observation: Observation) -> AnchorJudgement:
@@ -121,6 +137,9 @@ class StubJudge:
             tier=self._tiers.get(observation.text, Tier.SESSION),
             label=self._labels.get(observation.text, observation.text),
             is_declaration=self._declarations.get(observation.text, False),
+            start_date=self._start_dates.get(observation.text),
+            end_date=self._end_dates.get(observation.text),
+            days_of_week=self._days_of_week.get(observation.text, []),
         )
 
     async def meta(self, observation: Observation) -> MetaJudgement:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +19,9 @@ class IngestResult(BaseModel):
     label: str = ""
     is_declaration: bool = False
     suppressed_as: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    days_of_week: list[int] = Field(default_factory=list)  # 0=Mon .. 6=Sun
 
 
 async def ingest(
@@ -79,4 +83,7 @@ async def ingest(
         anchors=anchor_j.anchors,
         label=tier_j.label,
         is_declaration=tier_j.is_declaration,
+        start_date=tier_j.start_date,
+        end_date=tier_j.end_date,
+        days_of_week=tier_j.days_of_week,
     )

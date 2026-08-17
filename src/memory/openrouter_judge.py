@@ -47,8 +47,19 @@ what they happened to mention.
 Also give a short label naming the rule — a few words, the way someone would
 refer to it in a list. "Oats before gym", not a restatement of the sentence.
 
+Also say when the rule applies, if the statement scopes it:
+- days_of_week: weekday numbers it is limited to, Monday=0 through Sunday=6.
+  Only when the statement names particular days. A rule that holds every day
+  gets an empty list.
+- start_date / end_date: ISO dates, only when the statement names a period.
+  A standing rule gets null for both.
+
+Do not invent scoping. "Sleep at 23:00" applies every day: empty list, null
+dates. "Go to client on Tuesdays and Thursdays" is [1, 3].
+
 Respond with JSON only:
-{"tier": "durable"|"session", "is_declaration": true|false, "label": "...", "rationale": "..."}\
+{"tier": "durable"|"session", "is_declaration": true|false, "label": "...",
+ "days_of_week": [...], "start_date": null, "end_date": null, "rationale": "..."}\
 """
 
 META_PROMPT = """\

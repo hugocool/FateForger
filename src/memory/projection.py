@@ -82,7 +82,11 @@ async def project(
                 status=Status.PROPOSED,
                 source=_SOURCE_BY_CHANNEL[observation.channel],
                 tier=ingest_result.tier,
-                applicability=Applicability(),
+                applicability=Applicability(
+                    start_date=ingest_result.start_date,
+                    end_date=ingest_result.end_date,
+                    days_of_week=ingest_result.days_of_week,
+                ),
                 source_observation_uids=[observation.uid],
                 created_at=observation.observed_at,
             )
@@ -122,7 +126,11 @@ async def project(
             status=Status.PROPOSED,
             source=_SOURCE_BY_CHANNEL[observation.channel],
             tier=ingest_result.tier,
-            applicability=Applicability(),
+            applicability=Applicability(
+                start_date=ingest_result.start_date,
+                end_date=ingest_result.end_date,
+                days_of_week=ingest_result.days_of_week,
+            ),
             source_observation_uids=[observation.uid],
             created_at=observation.observed_at,
         )
