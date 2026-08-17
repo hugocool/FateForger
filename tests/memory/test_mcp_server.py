@@ -21,7 +21,11 @@ def _service(tmp_path, judge=None) -> MemoryService:
 async def test_the_server_exposes_exactly_the_session_verbs(tmp_path):
     server = build_server(_service(tmp_path))
     tools = {t.name for t in await server.list_tools()}
-    assert tools == {"memory_observe", "memory_get_active_constraints"}
+    assert tools == {
+        "memory_observe",
+        "memory_get_active_constraints",
+        "memory_get_faded_constraints",
+    }
 
 
 async def test_observe_tool_round_trips(tmp_path):
