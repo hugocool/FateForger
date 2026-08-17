@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from memory.models import Channel, Observation, Provenance, Tier
+from memory.models import Channel, DecayClass, Observation, Provenance, Tier
 from memory.openrouter_judge import OpenRouterJudge
 
 pytestmark = [
@@ -203,3 +203,37 @@ async def test_an_unscoped_rule_acquires_no_dates():
         )
     assert result.days_of_week == []
     assert result.start_date is None
+
+
+async def test_a_sprint_scoped_cap_is_project_class():
+    """The C2F family is the reason decay exists."""
+    async with _judge() as judge:
+        result = await judge.tier(
+            _obs(
+                "C2F framing cap 15m: C2F framing is capped at 15 minutes and "
+                "must end with one success sentence."
+            )
+        )
+    assert result.decay_class is DecayClass.PROJECT
+
+
+async def test_a_sleep_window_is_permanent():
+    async with _judge() as judge:
+        result = await judge.tier(
+            _obs("Sleep schedule: Aim to sleep at 23:00 and wake at 07:00.")
+        )
+    assert result.decay_class is DecayClass.PERMANENT
+
+
+async def test_a_commute_duration_is_seasonal():
+    async with _judge() as judge:
+        result = await judge.tier(
+            _obs("Commute Duration: Commute is always 30 minutes long.")
+        )
+    assert result.decay_class is DecayClass.SEASONAL
+
+
+async def test_todays_appointment_is_daily():
+    async with _judge() as judge:
+        result = await judge.tier(_obs("Hockey game today at 11:45 at VVV"))
+    assert result.decay_class is DecayClass.DAILY

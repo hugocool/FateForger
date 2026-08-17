@@ -63,8 +63,19 @@ Also say how long the rule stays true if nobody mentions it again:
 - "project" — true for a chapter of work, then done (a cap on a specific workstream)
 - "daily" — true for one day (today's appointment)
 
-When unsure, answer "permanent". A rule wrongly marked permanent is merely
-noisy; a rule wrongly marked short-lived disappears without being asked.
+"project" rarely says "temporary" outright — it signals through what the rule
+governs, not through its wording. A rule about sleep, meals, or a recurring
+commute holds regardless of what the person is working on, so it is
+"permanent". A cap, gate, or limit that only makes sense while a specific
+named initiative or workstream is active — even one referred to by a short
+internal name ("C2F framing", "the migration") rather than an explicit
+deadline — is "project": it governs a piece of work, not the person's life.
+
+When unsure between "permanent" and "seasonal", answer "permanent" — a rule
+wrongly marked permanent is merely noisy, one wrongly marked short-lived
+disappears without being asked. That same caution is why "project" must not
+be the default guess: naming a specific workstream is real evidence, not an
+excuse to guess short-lived.
 
 Respond with JSON only:
 {"tier": "durable"|"session", "is_declaration": true|false, "label": "...",

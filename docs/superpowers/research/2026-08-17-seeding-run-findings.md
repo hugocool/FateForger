@@ -184,3 +184,120 @@ substitute a different answer.
 every constraint traceable to the legacy rows that produced it. Partial stores from the
 failed attempts kept as `data/memory.db.{partial-timeout,partial-jsonerr,run4-overmeta,run5-partial}`
 for comparison; all uncommitted, deletable once this document is agreed.
+
+## Update: decay class shipped, evaluated, and re-seeded — the flood number was smaller than expected, and not for the reason hoped
+
+Decay (#152) is now live: the `tier` judgement also returns a `decay_class`
+(`permanent`/`seasonal`/`project`/`daily`), each constraint tracks
+`last_observed_at`, and `get_active_constraints` withholds anything whose
+evidence has gone stale past its class's half-life — `get_faded_constraints`
+returns exactly those, as a review queue, not a deletion. Four new evals pin
+the judgement; the corpus was re-seeded from scratch under the full decay
+pipeline. `data/memory.db` (not committed) now holds **69 observations, 37
+constraints** — one fewer constraint than the previous run, attributable to
+the same canonicalise/dedup non-determinism this document already flags
+("Six attempts; the last completed") rather than anything in this change.
+
+**A prompt fix was needed, and the way the bug hid itself is the more
+interesting part.** The eval for the case decay exists to solve —
+`C2F framing cap 15m: ... capped at 15 minutes ...` should classify
+`project` — passed on the first `pytest -m slow` run. Before trusting that,
+the model was resampled on the identical text outside pytest: it returned
+`permanent`. Sampling eight more times: **8 of 9 total calls returned
+`permanent`**; the pytest green was the one-in-nine outlier, not the modal
+answer. `TIER_PROMPT` named the "project" category but gave the model no
+textual signal to key off, so it fell back to the prompt's own "when unsure,
+answer permanent" default — safe in isolation, wrong for the one case the
+whole mechanism was built for. Fix: the prompt now says a cap/gate/limit that
+only makes sense while a *named initiative or workstream* is active is
+"project" even without an explicit deadline, and explicitly rules out
+"project" as a second default alongside "permanent" — naming a workstream is
+required evidence, not a coin flip. After the fix: 8/8 repeat samples on the
+C2F text return `project`; all 20 evals (16 pre-existing + 4 new) pass
+twice in a row; none of the 16 pre-existing evals regressed, so this is not
+reported as a prompt-budget finding.
+
+**Lesson worth generalising, on top of the one already in this document
+about categories a prompt forgets to name:** a single-shot pass on a
+stochastic judge is not evidence for a boundary case. The pytest run and the
+resampling run asked the identical question of the identical model and got
+different majority answers depending on which one call landed. Anything this
+document reports as "N/N evals passed" for a boundary-adjacent case should be
+read as "N/N on this sample," not as a guarantee — the C2F case specifically
+should be periodically resampled if `TIER_PROMPT` moves again.
+
+**Decay-class distribution across the 37 constraints:** permanent 34,
+seasonal 2 (`Commute duration`, `Client attendance days`), project 1
+(`C2F framing cap`), daily 0. Zero `daily` is expected, not a gap: a "today"
+statement is judged `session` tier, and session-tier observations are never
+projected into a durable constraint, so `daily` cannot appear in this table
+by construction — the class exists for the judgement layer, not this store.
+
+**Monday active count, measured two ways** to keep the "historical corpus"
+caveat honest instead of asserted:
+
+| reference day | active | faded (review queue) |
+|---|---|---|
+| 2026-03-09 (the Monday the pre-decay baseline of 34 was itself measured on) | 35 | 0 |
+| 2026-08-17 (today — ~5–6 months after the last legacy row) | 34 | 1 |
+
+On the corpus-native Monday every `last_observed_at` is days old, so decay
+removes nothing. On real "today," exactly one constraint has fallen out of
+`get_active_constraints` and into `get_faded_constraints`: `C2F framing cap`
+(`last_observed_at` 2026-02-28, 170 days before today, against a 90-day
+project half-life). Not deleted — withheld and queued, exactly as designed.
+
+**This inverts the expectation this document set up for itself.** The
+previous entry warned a historical re-seed would produce a *large* faded
+count because `project`/`daily` rows are months stale. The mechanism fired —
+but the count is 1, not large, because only one of the 37 constraints was
+ever classified `project` to begin with, and none were `daily`. The small
+number is not decay being lenient; it is the classifier correctly declining
+to guess `project` without textual evidence, which is the direction the
+prompt asks for. A corpus whose rules more often named their own workstream
+in the text would produce a much larger faded count under the identical
+mechanism. **State this plainly for whoever reads this next: a faded count
+measured on this one historical backfill, in either direction — small here,
+large in the original warning — is a property of what this corpus's text
+happens to say, not a general claim about decay's effect in live use.**
+
+**The C2F family hand-check is the sharpest illustration of that limitation.**
+This document has referred to four constraints as "the C2F family"
+(`C2F framing cap`, `Artifact-first scheduling gate`, `Strategic outcome
+daily limit`, `Wednesday revenue-first precedence`) since the applicability
+update above. Checking all four against this run's actual decay_class:
+
+| named constraint | decay_class | does the legacy text name a workstream? |
+|---|---|---|
+| `C2F framing cap` | **project** | yes — "C2F framing" |
+| `Artifact-first scheduling gate` | permanent | no — "Only schedule blocks for tasks with a binary DoD and named artifact…" |
+| `Max parallel strategic outcomes` (this run's label for what was called `Strategic outcome daily limit`) | permanent | no — "Never schedule more than two parallel strategic outcomes in one day…" |
+| `Wednesday revenue-first precedence` | permanent | no — "On Wednesday, Revenue lane must run before any build/system cognitive block…" |
+
+Only one of the four carries a named-workstream token in its own text; the
+other three read, from text alone, as generic scheduling-discipline rules —
+indistinguishable from a permanent methodology preference. This is the same
+gap already named above ("these were sprint-scoped when written and nothing
+in the text says so"), now concrete on three of the four examples this
+document itself uses to talk about the problem. Forcing the other three to
+`project` would mean inventing scoping the text does not carry — the thing
+the decay prompt, and the project's rules generally, forbid. **The fix for
+these three is not a better decay prompt; it is the user (or a future
+review-queue interaction) supplying the missing scope, which is what the
+faded/review-queue design exists to make possible once a constraint's
+evidence goes stale on its own schedule** — these three simply haven't gone
+stale yet, because nothing in their text ever told the classifier they could.
+
+**Hand-check, the other direction: did anything permanent get wrongly marked
+short-lived?** No. All 37 constraints were read by uid/decay_class/tier —
+every row outside the one `project` and two `seasonal` above is `permanent`,
+including every constraint that obviously must never expire on its own:
+`Sleep schedule`, `Oats Timing`, `Three daily meals`, `Deep work block
+duration`, `Work Block Alternation`, `Block exit criteria`, and the rest.
+
+## Store state (superseded by the decay re-seed above)
+
+`data/memory.db` now holds 69 observations, 37 constraints (37 durable, one
+project-class, two seasonal-class), re-seeded fresh under the decay pipeline
+described above. The pre-decay store is preserved at `data/memory.db.pre-decay`
+for comparison; not committed.
