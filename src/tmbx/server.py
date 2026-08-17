@@ -61,7 +61,8 @@ from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from .calendar.port import Snapshot
+from .calendar.port import CalendarPort, Snapshot
+from .core.models import Plan
 from .core.ops import Patch
 from .journal.disposition import derive_dispositions
 from .service import ConflictError, ForeignBlockError, PlanService
@@ -455,23 +456,58 @@ def build_server(service: PlanService) -> FastMCP:
     return mcp
 
 
-def main() -> None:
-    """stdio entrypoint.
+_CALENDAR_BACKEND_ENV_VAR = "TMBX_CALENDAR_BACKEND"
+_CALENDAR_TZ_ENV_VAR = "TMBX_CALENDAR_TZ"
+_DEFAULT_CALENDAR_BACKEND = "fake"
 
-    Wired to ``FakeCalendar`` — an in-memory, non-persistent stand-in.
-    Task 15 does not build the real Google Calendar adapter (see the
-    task's "Deliberately not built here" note); ``CalendarPort`` is the
-    seam a real adapter drops into once it exists, and nothing here needs
-    to change to wire one in.
+
+def _build_calendar_port() -> CalendarPort:
+    """Pick the calendar backend from the environment.
+
+    ``TMBX_CALENDAR_BACKEND`` selects it: ``"fake"`` (the default, an
+    in-memory, non-persistent stand-in — safe to run with no setup and
+    what every existing local workflow already expects) or ``"google"``
+    (the real ``GoogleCalendarAdapter``, talking to a live Google Calendar
+    MCP server — see ``scripts/tmbx_smoke.py`` to confirm that wiring
+    works before pointing a live session at it). The fake stays the
+    default deliberately: flipping to a real calendar — one ``plan_commit``
+    away from a real write — should be an explicit opt-in, never a side
+    effect of just running ``tmbx-mcp``.
+
+    ``GoogleCalendarAdapter`` reads its own server URL from
+    ``MCP_CALENDAR_SERVER_URL`` (defaulting to ``http://localhost:3000``);
+    only the tz used to interpret naive wall-clock times on writes is
+    configured here, via ``TMBX_CALENDAR_TZ`` (default matches ``Plan``'s
+    own default, ``"Europe/Amsterdam"``) — see ``GoogleCalendarAdapter``'s
+    own docstring for why create/update need a tz the port itself never
+    threads through.
     """
+    import os
+
+    backend = os.environ.get(_CALENDAR_BACKEND_ENV_VAR, _DEFAULT_CALENDAR_BACKEND)
+    if backend == "fake":
+        from .calendar.fake import FakeCalendar
+
+        return FakeCalendar()
+    if backend == "google":
+        from .calendar.gcal import GoogleCalendarAdapter
+
+        tz = os.environ.get(_CALENDAR_TZ_ENV_VAR, Plan.model_fields["tz"].default)
+        return GoogleCalendarAdapter(tz=tz)
+    raise ValueError(
+        f'{_CALENDAR_BACKEND_ENV_VAR}={backend!r} is not "fake" or "google"'
+    )
+
+
+def main() -> None:
+    """stdio entrypoint. See ``_build_calendar_port`` for backend selection."""
     import asyncio
 
-    from .calendar.fake import FakeCalendar
     from .journal.store import JournalStore, init_journal
 
     async def _build() -> FastMCP:
         store = JournalStore(await init_journal())
-        return build_server(PlanService(FakeCalendar(), store))
+        return build_server(PlanService(_build_calendar_port(), store))
 
     asyncio.run(_build()).run()
 

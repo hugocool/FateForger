@@ -43,9 +43,15 @@ from datetime import datetime
 import pytest
 
 from tmbx.calendar.fake import FakeCalendar
+from tmbx.calendar.gcal import GoogleCalendarAdapter
 from tmbx.calendar.port import CalendarEvent
 from tmbx.journal.store import JournalStore, init_journal
-from tmbx.server import build_server
+from tmbx.server import (
+    _CALENDAR_BACKEND_ENV_VAR,
+    _CALENDAR_TZ_ENV_VAR,
+    _build_calendar_port,
+    build_server,
+)
 from tmbx.service import PlanService
 
 DAY = "2026-08-17"
@@ -478,3 +484,41 @@ async def test_plan_history_reports_a_malformed_day_as_a_refusal_not_a_crash(ser
     assert body["ok"] is False
     assert body["reason"] == "malformed_input"
     assert body["message"]
+
+
+# ---------------------------------------------------------------------------
+# _build_calendar_port — backend selection from the environment
+# ---------------------------------------------------------------------------
+
+
+def test_build_calendar_port_defaults_to_the_fake(monkeypatch):
+    """No env var set at all — the safe, no-setup-required default."""
+    monkeypatch.delenv(_CALENDAR_BACKEND_ENV_VAR, raising=False)
+    assert isinstance(_build_calendar_port(), FakeCalendar)
+
+
+def test_build_calendar_port_fake_is_explicit_too(monkeypatch):
+    monkeypatch.setenv(_CALENDAR_BACKEND_ENV_VAR, "fake")
+    assert isinstance(_build_calendar_port(), FakeCalendar)
+
+
+def test_build_calendar_port_selects_google_adapter(monkeypatch):
+    monkeypatch.setenv(_CALENDAR_BACKEND_ENV_VAR, "google")
+    monkeypatch.delenv(_CALENDAR_TZ_ENV_VAR, raising=False)
+    port = _build_calendar_port()
+    assert isinstance(port, GoogleCalendarAdapter)
+    assert port._tz == "Europe/Amsterdam"  # Plan's own default
+
+
+def test_build_calendar_port_google_reads_tz_from_env(monkeypatch):
+    monkeypatch.setenv(_CALENDAR_BACKEND_ENV_VAR, "google")
+    monkeypatch.setenv(_CALENDAR_TZ_ENV_VAR, "America/New_York")
+    port = _build_calendar_port()
+    assert isinstance(port, GoogleCalendarAdapter)
+    assert port._tz == "America/New_York"
+
+
+def test_build_calendar_port_rejects_an_unknown_backend(monkeypatch):
+    monkeypatch.setenv(_CALENDAR_BACKEND_ENV_VAR, "carrier-pigeon")
+    with pytest.raises(ValueError, match="carrier-pigeon"):
+        _build_calendar_port()
