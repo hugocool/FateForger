@@ -265,7 +265,10 @@ async def test_list_day_skips_cancelled_events():
 
 
 async def test_list_day_reports_uid_none_for_a_foreign_event():
-    """No tmbx extendedProperties at all — a meeting tmbx did not create."""
+    """No tmbx extendedProperties at all — a meeting tmbx did not create.
+    block_type/timing_mode must come back None right alongside uid/handle/
+    slug — a foreign event must never look owned just because this
+    adapter now also round-trips type and mode."""
     payload = {"events": [_raw_event(event_id="foreign1", private=None)]}
     adapter, _ = make_adapter({"list-events": [_text_result(payload)]})
     events = await adapter.list_day("primary", DAY, TZ)
@@ -273,6 +276,8 @@ async def test_list_day_reports_uid_none_for_a_foreign_event():
     assert event.uid is None
     assert event.handle is None
     assert event.slug is None
+    assert event.block_type is None
+    assert event.timing_mode is None
 
 
 async def test_list_day_reads_tmbx_identity_from_extended_properties():
@@ -294,6 +299,22 @@ async def test_list_day_reads_tmbx_identity_from_extended_properties():
     assert (event.uid, event.handle, event.slug) == ("u-123", "DW1", "deep-work")
 
 
+async def test_list_day_reads_tmbx_type_and_mode_from_extended_properties():
+    payload = {
+        "events": [
+            _raw_event(
+                event_id="owned2",
+                private={"tmbx.uid": "u-9", "tmbx.type": "DW", "tmbx.mode": "ap"},
+            )
+        ]
+    }
+    adapter, _ = make_adapter({"list-events": [_text_result(payload)]})
+    events = await adapter.list_day("primary", DAY, TZ)
+    event = events[0]
+    assert event.block_type == "DW"
+    assert event.timing_mode == "ap"
+
+
 async def test_list_day_uses_updated_as_the_etag_surrogate():
     payload = {"events": [_raw_event(event_id="e1", updated="2026-08-17T08:00:00.000Z")]}
     adapter, _ = make_adapter({"list-events": [_text_result(payload)]})
@@ -307,6 +328,11 @@ async def test_list_day_uses_updated_as_the_etag_surrogate():
 
 
 async def test_create_sends_flat_iso_start_end_and_tz():
+    """Also the "assert the exact extendedProperties payload" test the
+    fake calendar can't stand in for: block_type/timing_mode are the two
+    fields that stopped surviving the round trip through a real calendar
+    (every block reading back as plain M/fw) until this adapter started
+    writing them."""
     event = CalendarEvent(
         event_id="tmbxabc123",
         summary="Deep Work",
@@ -316,13 +342,21 @@ async def test_create_sends_flat_iso_start_end_and_tz():
         uid="u-1",
         handle="DW1",
         slug="deep-work",
+        block_type="DW",
+        timing_mode="ap",
     )
     response = _raw_event(
         event_id="tmbxabc123",
         summary="Deep Work",
         start="2026-08-17T09:00:00+02:00",
         end="2026-08-17T10:30:00+02:00",
-        private={"tmbx.uid": "u-1", "tmbx.handle": "DW1", "tmbx.slug": "deep-work"},
+        private={
+            "tmbx.uid": "u-1",
+            "tmbx.handle": "DW1",
+            "tmbx.slug": "deep-work",
+            "tmbx.type": "DW",
+            "tmbx.mode": "ap",
+        },
     )
     adapter, caller = make_adapter(
         {"create-event": [_text_result({"event": response})]}
@@ -339,9 +373,16 @@ async def test_create_sends_flat_iso_start_end_and_tz():
     assert args["end"] == "2026-08-17T10:30:00"
     assert args["timeZone"] == TZ
     assert args["extendedProperties"] == {
-        "private": {"tmbx.uid": "u-1", "tmbx.handle": "DW1", "tmbx.slug": "deep-work"}
+        "private": {
+            "tmbx.uid": "u-1",
+            "tmbx.handle": "DW1",
+            "tmbx.slug": "deep-work",
+            "tmbx.type": "DW",
+            "tmbx.mode": "ap",
+        }
     }
     assert (created.uid, created.handle, created.slug) == ("u-1", "DW1", "deep-work")
+    assert (created.block_type, created.timing_mode) == ("DW", "ap")
     assert created.event_id == "tmbxabc123"
 
 

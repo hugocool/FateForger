@@ -13,13 +13,14 @@ landed after the brief was written:
 from __future__ import annotations
 
 import itertools
+import logging
 from datetime import date, datetime, time, timedelta
 
 import pytest
 
 from tmbx.calendar.fake import FakeCalendar
 from tmbx.calendar.port import CalendarEvent
-from tmbx.core.models import ET, AfterPrev, FixedWindow
+from tmbx.core.models import ET, AfterPrev, BeforeNext, FixedStart, FixedWindow
 from tmbx.core.ops import AddBlock, Patch, RemoveBlock, UpdateBlock
 from tmbx.journal.models import PatchOutcome
 from tmbx.journal.store import JournalStore, init_journal
@@ -35,7 +36,15 @@ DAY = date(2026, 8, 17)
 TZ = "Europe/Amsterdam"
 
 
-def _event(eid, h, start_h, end_h, uid=None):
+def _event(eid, h, start_h, end_h, uid=None, block_type="M", timing_mode="fw"):
+    """``block_type``/``timing_mode`` default to the plain ``M``/``fw`` a
+    real adapter would have written for an ordinary fixed-window meeting
+    block — i.e. these fixtures already represent a fully migrated,
+    already-round-tripped event, not a partial write. Tests that
+    specifically exercise the missing-properties fallback (an older
+    schema version) pass ``block_type=None``/``timing_mode=None``
+    explicitly instead of relying on this default.
+    """
     return CalendarEvent(
         event_id=eid,
         summary=f"Block {h}",
@@ -44,6 +53,8 @@ def _event(eid, h, start_h, end_h, uid=None):
         etag="v1",
         uid=uid or f"u-{eid}",
         handle=h,
+        block_type=block_type,
+        timing_mode=timing_mode,
     )
 
 
@@ -454,3 +465,300 @@ async def test_commit_mints_a_valid_base32hex_event_id_for_a_new_block(service):
     live = await service.calendar.list_day("primary", DAY, TZ)
     new_event = next(e for e in live if e.handle == "BU1")
     assert is_valid_base32hex_event_id(new_event.event_id)
+
+
+# ---------------------------------------------------------------------------
+# Block type and timing mode must survive commit -> re-read. Before this
+# fix every block read back as ET.M / FixedWindow regardless of what it
+# actually was — the chain ossified in storage even though nothing about
+# the *model's* intent had changed, and overspecified() had no way to see
+# it because by the time it read the plan back, everything genuinely was
+# pinned.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def empty_service(tmp_path):
+    """A fresh, empty calendar -- these tests build their own plan from
+    scratch rather than relying on the ``service``/``e1``/``e2`` fixture,
+    since they need full control over every block's type and mode."""
+    calendar = FakeCalendar({"primary": []})
+    store = JournalStore(await init_journal(tmp_path / "j.db"))
+    counter = itertools.count(1)
+    return PlanService(calendar, store, mint_uid=lambda: f"u-new-{next(counter)}")
+
+
+async def test_commit_and_reread_round_trips_every_timing_mode(empty_service):
+    """One commit per op, each anchored after the previous: a patch is a
+    set resolved against the *pre-patch* plan (``ops.py``'s own module
+    docstring — "no op may reference a block created by another op in the
+    same patch"), so building a five-block chain in a single patch isn't
+    legal; each block has to land for real before the next can anchor
+    after it."""
+    svc = empty_service
+
+    async def _add(after, h, n, t, p, anchor_source=None):
+        _, snapshot = await svc.read("primary", DAY)
+        result = await svc.commit(
+            snapshot,
+            Patch(
+                ops=[
+                    AddBlock(
+                        after=after, h=h, n=n, t=t, p=p, anchor_source=anchor_source
+                    )
+                ]
+            ),
+        )
+        assert result.committed
+
+    await _add(None, "ANC1", "Anchor", ET.M, FixedWindow(st=time(8, 0), et=time(9, 0)), "user")
+    await _add("ANC1", "APX1", "After Prev", ET.DW, AfterPrev(dur=timedelta(minutes=30)))
+    await _add(
+        "APX1",
+        "FSX1",
+        "Fixed Start",
+        ET.PR,
+        FixedStart(st=time(10, 0), dur=timedelta(minutes=20)),
+        "user",
+    )
+    # END1 lands right after FSX1 *before* BNX1 exists — bn resolves
+    # backward from its follower, so that follower has to already be on
+    # the plan at commit time. BNX1 is then inserted between FSX1 and
+    # END1 (still "after FSX1"), becoming END1's new immediate
+    # predecessor and giving bn something real to resolve against.
+    await _add(
+        "FSX1",
+        "END1",
+        "End Anchor",
+        ET.R,
+        FixedStart(st=time(11, 0), dur=timedelta(minutes=10)),
+        "user",
+    )
+    await _add("FSX1", "BNX1", "Before Next", ET.H, BeforeNext(dur=timedelta(minutes=15)))
+
+    plan, _snapshot = await svc.read("primary", DAY)
+    by_handle = {b.h: b for b in plan.blocks}
+
+    assert (by_handle["ANC1"].t, by_handle["ANC1"].p.a) == (ET.M, "fw")
+    assert (by_handle["APX1"].t, by_handle["APX1"].p.a) == (ET.DW, "ap")
+    assert (by_handle["FSX1"].t, by_handle["FSX1"].p.a) == (ET.PR, "fs")
+    assert (by_handle["BNX1"].t, by_handle["BNX1"].p.a) == (ET.H, "bn")
+    assert (by_handle["END1"].t, by_handle["END1"].p.a) == (ET.R, "fs")
+
+    # The chain must still actually flex: APX1's duration is a property
+    # of its stored ap mode, not a value frozen at commit time.
+    assert by_handle["APX1"].p.dur == timedelta(minutes=30)
+    assert by_handle["BNX1"].p.dur == timedelta(minutes=15)
+
+
+@pytest.mark.parametrize("block_type", list(ET))
+async def test_every_event_type_round_trips(empty_service, block_type):
+    svc = empty_service
+    _, snapshot = await svc.read("primary", DAY)
+    # fs satisfies every type's timing constraint, BG included (BG
+    # requires fs or fw), and alone in an otherwise-empty plan it also
+    # satisfies the chain-anchor requirement (or, for BG, the chain is
+    # empty and the requirement doesn't apply at all) -- so one op shape
+    # covers all nine types uniformly.
+    patch = Patch(
+        ops=[
+            AddBlock(
+                after=None,
+                h="TYP1",
+                n="Typed block",
+                t=block_type,
+                p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)),
+                anchor_source="user",
+            )
+        ]
+    )
+    result = await svc.commit(snapshot, patch)
+    assert result.committed
+
+    plan, _snapshot = await svc.read("primary", DAY)
+    assert plan.by_handle("TYP1").t == block_type
+
+
+async def test_read_a_foreign_event_is_unaffected_by_type_mode_reconstruction(
+    tmp_path, caplog
+):
+    """A foreign event never carries tmbx.type/tmbx.mode at all -- that is
+    normal and permanent, not a degraded case, so it must default quietly
+    (ET.M/fw, no warning) and, above all, must never be mistaken for an
+    owned event just because this system now also round-trips type and
+    mode. Regressing this cost a Critical once already."""
+    calendar = FakeCalendar({"primary": [_foreign_event("e3", 13, 14)]})
+    store = JournalStore(await init_journal(tmp_path / "j.db"))
+    svc = PlanService(calendar, store)
+
+    with caplog.at_level(logging.WARNING):
+        plan, _snapshot = await svc.read("primary", DAY)
+
+    block = plan.blocks[0]
+    assert block.t == ET.M
+    assert block.p.a == "fw"
+    assert block.p.st == time(13, 0)
+    assert block.p.et == time(14, 0)
+    assert not any(
+        "block_type/timing_mode" in record.getMessage() for record in caplog.records
+    )
+
+
+async def test_read_an_owned_event_with_missing_properties_degrades_and_logs(
+    tmp_path, caplog
+):
+    """An owned event (real tmbx uid) with no block_type/timing_mode at
+    all: a partial write, or an event written before this round-trip
+    existed. Falls back to ET.M/fw off the event's own observed times --
+    deliberately, and logged, never a silently guessed mode."""
+    legacy_event = CalendarEvent(
+        event_id="e-legacy",
+        summary="Old block",
+        start=datetime(2026, 8, 17, 9, 0),
+        end=datetime(2026, 8, 17, 10, 0),
+        etag="v1",
+        uid="u-legacy",
+        handle="LEG1",
+        # block_type/timing_mode intentionally left unset.
+    )
+    calendar = FakeCalendar({"primary": [legacy_event]})
+    store = JournalStore(await init_journal(tmp_path / "j.db"))
+    svc = PlanService(calendar, store)
+
+    with caplog.at_level(logging.WARNING):
+        plan, _snapshot = await svc.read("primary", DAY)
+
+    block = plan.by_handle("LEG1")
+    assert block.t == ET.M
+    assert block.p.a == "fw"
+    assert block.p.st == time(9, 0)
+    assert block.p.et == time(10, 0)
+    assert any(
+        "e-legacy" in record.getMessage()
+        and "block_type/timing_mode" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+async def test_read_an_owned_event_with_jointly_inconsistent_properties_degrades_and_logs(
+    tmp_path, caplog
+):
+    """block_type="BG" and timing_mode="ap" each parse individually, but
+    ``Block`` itself rejects that combination (BG requires fs/fw) -- the
+    missing/unparseable check above never catches this since neither
+    value is missing or unparseable on its own. Must still degrade to the
+    same documented fallback, logged, rather than a raw ValidationError
+    taking the whole read down."""
+    inconsistent_event = CalendarEvent(
+        event_id="e-corrupt",
+        summary="Background, allegedly",
+        start=datetime(2026, 8, 17, 9, 0),
+        end=datetime(2026, 8, 17, 10, 0),
+        etag="v1",
+        uid="u-corrupt",
+        handle="COR1",
+        block_type="BG",
+        timing_mode="ap",
+    )
+    calendar = FakeCalendar({"primary": [inconsistent_event]})
+    store = JournalStore(await init_journal(tmp_path / "j.db"))
+    svc = PlanService(calendar, store)
+
+    with caplog.at_level(logging.WARNING):
+        plan, _snapshot = await svc.read("primary", DAY)
+
+    block = plan.by_handle("COR1")
+    assert block.t == ET.M
+    assert block.p.a == "fw"
+    assert any(
+        "e-corrupt" in record.getMessage()
+        and "block_type/timing_mode" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+async def test_commit_writes_the_resolved_type_and_mode_onto_the_calendar_event(
+    empty_service,
+):
+    """The write side of the round trip, independent of gcal.py: the
+    CalendarEvent PlanService actually hands the port carries block_type/
+    timing_mode sourced from the resolved block, not left unset."""
+    svc = empty_service
+    _, snapshot = await svc.read("primary", DAY)
+    await svc.commit(
+        snapshot,
+        Patch(
+            ops=[
+                AddBlock(
+                    after=None,
+                    h="DW1",
+                    n="Deep Work",
+                    t=ET.DW,
+                    p=FixedStart(st=time(9, 0), dur=timedelta(minutes=45)),
+                    anchor_source="user",
+                )
+            ]
+        ),
+    )
+    live = await svc.calendar.list_day("primary", DAY, TZ)
+    event = next(e for e in live if e.handle == "DW1")
+    assert (event.block_type, event.timing_mode) == ("DW", "fs")
+
+
+async def test_relaxing_timing_mode_alone_still_writes_to_the_calendar(empty_service):
+    """A patch that only changes ``p`` (fs -> ap), leaving start/end/
+    summary/description/uid/handle/slug identical, must still reach the
+    calendar -- without block_type/timing_mode in ``_event_unchanged``'s
+    comparison this would be (wrongly) treated as a no-op and the mode
+    change would never actually be written."""
+    svc = empty_service
+    _, snapshot = await svc.read("primary", DAY)
+    await svc.commit(
+        snapshot,
+        Patch(
+            ops=[
+                AddBlock(
+                    after=None,
+                    h="ANC1",
+                    n="Anchor",
+                    t=ET.M,
+                    p=FixedWindow(st=time(8, 0), et=time(9, 0)),
+                    anchor_source="user",
+                )
+            ]
+        ),
+    )
+    _, snapshot1 = await svc.read("primary", DAY)
+    await svc.commit(
+        snapshot1,
+        Patch(
+            ops=[
+                AddBlock(
+                    after="ANC1",
+                    h="RLX1",
+                    n="Relax me",
+                    t=ET.M,
+                    p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)),
+                    anchor_source="user",
+                )
+            ]
+        ),
+    )
+    live_before = {
+        e.handle: (e.etag, e.timing_mode)
+        for e in await svc.calendar.list_day("primary", DAY, TZ)
+    }
+    assert live_before["RLX1"][1] == "fs"
+
+    _, snapshot2 = await svc.read("primary", DAY)
+    await svc.commit(
+        snapshot2,
+        Patch(ops=[UpdateBlock(h="RLX1", p=AfterPrev(dur=timedelta(minutes=30)))]),
+    )
+
+    live_after = {
+        e.handle: (e.etag, e.timing_mode)
+        for e in await svc.calendar.list_day("primary", DAY, TZ)
+    }
+    assert live_after["RLX1"][1] == "ap"
+    assert live_after["RLX1"][0] != live_before["RLX1"][0]  # etag bumped: really written

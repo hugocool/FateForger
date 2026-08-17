@@ -9,6 +9,20 @@ module already solved the argument shapes and response normalisation
 against this exact server; see each helper's docstring for what changed and
 why.
 
+``extendedProperties.private`` under the ``tmbx`` namespace carries five
+values round-tripped verbatim: identity (``uid``/``handle``/``slug``, as
+before) plus ``block_type``/``timing_mode``. Without the latter two, every
+block reads back as a plain fixed window regardless of what it actually
+was — an event has no field of its own for "this is a deep-work block" or
+"this was meant to float after the previous one"; without persisting
+them, that information is invented fresh on every read (always ``ET.M``,
+always ``fw``), which ossifies every chain into a wall of independently
+pinned blocks the moment it round-trips through the calendar. This module
+only carries the two raw strings through; reconstructing them into a real
+``ET``/``Timing`` (and what happens when they're missing or unparseable
+on an otherwise-owned event) is ``service._event_to_block``'s job — see
+its docstring.
+
 Two things the port's ``CalendarPort`` protocol does not give this adapter,
 that a real provider needs:
 
@@ -74,6 +88,8 @@ SERVER_URL_ENV_VAR = "MCP_CALENDAR_SERVER_URL"
 _PRIVATE_UID_KEY = "tmbx.uid"
 _PRIVATE_HANDLE_KEY = "tmbx.handle"
 _PRIVATE_SLUG_KEY = "tmbx.slug"
+_PRIVATE_TYPE_KEY = "tmbx.type"
+_PRIVATE_MODE_KEY = "tmbx.mode"
 
 _CANCELLED_STATUS = "cancelled"
 
@@ -276,10 +292,11 @@ def _write_event_args(event: CalendarEvent, *, tz: str) -> dict[str, Any]:
     v2.3.1's ``tools/registry.ts``) takes flat ISO8601 strings for these,
     not a nested ``{dateTime, timeZone}`` object; that nested shape shows
     up only in this repo's throwaway dev seed scripts, not the tool's
-    actual schema. ``extendedProperties.private`` carries identity — see
-    the module docstring — and is included only when at least one of
-    uid/handle/slug is set, since a foreign event is never written here at
-    all (the service never calls create/update for one).
+    actual schema. ``extendedProperties.private`` carries identity plus
+    ``block_type``/``timing_mode`` — see the module docstring — and is
+    included only when at least one of those five is set, since a foreign
+    event is never written here at all (the service never calls
+    create/update for one).
     """
     private = {
         key: value
@@ -287,6 +304,8 @@ def _write_event_args(event: CalendarEvent, *, tz: str) -> dict[str, Any]:
             (_PRIVATE_UID_KEY, event.uid),
             (_PRIVATE_HANDLE_KEY, event.handle),
             (_PRIVATE_SLUG_KEY, event.slug),
+            (_PRIVATE_TYPE_KEY, event.block_type),
+            (_PRIVATE_MODE_KEY, event.timing_mode),
         )
         if value is not None
     }
@@ -384,12 +403,19 @@ def _parse_event_dt(raw: dict[str, Any] | None, *, tz: ZoneInfo) -> datetime | N
 def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
     """Build a ``CalendarEvent`` from one raw provider event dict.
 
-    Reads identity from ``extendedProperties.private`` under the ``tmbx``
-    namespace; an event with none of those keys is foreign — ``uid``
-    (and ``handle``/``slug``) come back ``None``, never invented, which is
-    exactly what ``PlanService`` needs to treat it as read-only. ``etag``
-    is the provider's ``updated`` timestamp — see the module docstring for
-    why there is no real etag to carry here.
+    Reads identity, plus ``block_type``/``timing_mode``, from
+    ``extendedProperties.private`` under the ``tmbx`` namespace; an event
+    with none of those keys is foreign — ``uid`` (and ``handle``/``slug``/
+    ``block_type``/``timing_mode``) come back ``None``, never invented,
+    which is exactly what ``PlanService`` needs to treat it as read-only.
+    This function only carries the raw wire values through — it does not
+    validate ``block_type`` against ``ET`` or ``timing_mode`` against a
+    known mode, and it does not decide what happens when they're absent
+    on an otherwise-owned event; that reconstruction, and its documented
+    fallback, live in ``service._event_to_block``, which is where a
+    provider-neutral decision like that belongs. ``etag`` is the
+    provider's ``updated`` timestamp — see the module docstring for why
+    there is no real etag to carry here.
     """
     start = _parse_event_dt(raw.get("start"), tz=tz)
     end = _parse_event_dt(raw.get("end"), tz=tz)
@@ -413,6 +439,8 @@ def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
         uid=private.get(_PRIVATE_UID_KEY),
         handle=private.get(_PRIVATE_HANDLE_KEY),
         slug=private.get(_PRIVATE_SLUG_KEY),
+        block_type=private.get(_PRIVATE_TYPE_KEY),
+        timing_mode=private.get(_PRIVATE_MODE_KEY),
     )
 
 

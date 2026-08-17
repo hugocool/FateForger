@@ -28,20 +28,32 @@ Two defects in the legacy engine this closes:
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import uuid
 from datetime import date as date_type
 from typing import Callable, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .calendar.port import CalendarEvent, CalendarPort, Snapshot, drift, make_snapshot
 from .core.commitment import overspecified
-from .core.models import ET, Block, FixedWindow, Plan
+from .core.models import (
+    ET,
+    AfterPrev,
+    BeforeNext,
+    Block,
+    FixedStart,
+    FixedWindow,
+    Plan,
+    Timing,
+)
 from .core.ops import MoveBlock, Patch, RemoveBlock, UpdateBlock, apply_ops
 from .core.render import render_plan
 from .journal.models import EntryKind, JournalEntry, PatchOutcome
 from .journal.store import JournalStore
+
+_logger = logging.getLogger(__name__)
 
 # Google's custom event id must be base32hex: digits 0-9 and lowercase
 # letters a-v only (no w/x/y/z), 5-1024 characters. The prior minter used
@@ -150,6 +162,59 @@ class CommitResult(BaseModel):
     conflicts: list[str] = []
 
 
+_FALLBACK_TYPE = ET.M
+
+
+def _fallback_timing(event: CalendarEvent) -> Timing:
+    """The one, deliberate default: a plain fixed window off the observed
+    event times. Used both for foreign events (which never carry
+    ``block_type``/``timing_mode`` at all — that is normal, permanent,
+    and not logged) and as the last resort for an owned event whose
+    stored value is missing or unparseable (logged — see
+    ``_reconstruct_timing``)."""
+    return FixedWindow(st=event.start.time(), et=event.end.time())
+
+
+def _reconstruct_timing(mode: str, event: CalendarEvent) -> Timing | None:
+    """Rebuild the stored ``Timing`` variant for one ``timing_mode`` literal.
+
+    The event's own ``start``/``end`` are always the source of truth for
+    *when* the block actually sits — including after someone drags it in
+    Google — so every branch derives its numbers from them rather than
+    from anything else that might have been stored: ``dur`` is always
+    ``event.end - event.start``, ``st``/``et`` are always
+    ``event.start.time()``/``event.end.time()``. The stored mode is only
+    ever the source of truth for *how it was meant to flex* — which
+    variant to rebuild, never what its numbers are. Returns ``None`` for
+    an unrecognised mode string, so the caller can fall back deliberately
+    rather than this function guessing.
+    """
+    duration = event.end - event.start
+    if mode == "ap":
+        return AfterPrev(dur=duration)
+    if mode == "bn":
+        return BeforeNext(dur=duration)
+    if mode == "fs":
+        return FixedStart(st=event.start.time(), dur=duration)
+    if mode == "fw":
+        return FixedWindow(st=event.start.time(), et=event.end.time())
+    return None
+
+
+def _reconstruct_block_type(value: str) -> ET | None:
+    """Validate a stored ``block_type`` string against ``ET``.
+
+    A plain constructor call against a closed enum, not a judgement about
+    what the string *means* — the documented ``CLAUDE.md`` exception for
+    an identifier the system itself minted and is reading back, exactly
+    like ``is_valid_base32hex_event_id`` above.
+    """
+    try:
+        return ET(value)
+    except ValueError:
+        return None
+
+
 def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
     """Build a block from a calendar event, minting a handle if absent.
 
@@ -159,22 +224,81 @@ def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
     that exists only to satisfy ``Block.uid: str`` and must never be
     mistaken for a durable, correlatable identity.
 
-    Every calendar event is a fixed window by construction — its start/end
-    are the observed fact, not the model's intent — so ``anchor_source`` is
-    always ``"calendar"``. ``t`` defaults to ``ET.M``: ``CalendarEvent``
-    carries no block-type field to read one from, and guessing a type from
-    ``summary``/``description`` text would be exactly the string-meaning
-    judgement this project bans.
+    Every calendar event is a fixed window *at minimum* — its start/end
+    are the observed fact, never the model's intent — so ``anchor_source``
+    is always ``"calendar"`` regardless of which ``Timing`` variant comes
+    back. Type and mode are reconstructed from ``event.block_type``/
+    ``event.timing_mode`` (round-tripped through provider extended
+    properties by a real adapter — see ``gcal.py``) when both are present
+    and valid; a plain ``FixedWindow``/``ET.M`` fallback covers four
+    distinct cases, three of which are logged:
+
+    * **Foreign** (``event.uid is None``): never carries these fields at
+      all. Expected, permanent, not an anomaly — never logged. This is
+      the guard that keeps a foreign event from ever looking owned; it
+      must never regress.
+    * **Owned, but missing/unparseable** (a partial write, or an event
+      written before this round-trip existed — an older schema version):
+      genuinely anomalous. Falls back the same way, deliberately, but
+      logs a warning naming the event so a partial write is visible
+      rather than silently guessed at.
+    * **Owned, individually valid but jointly inconsistent** — e.g.
+      ``block_type="BG"`` stored alongside ``timing_mode="ap"``, which
+      ``Block``'s own validator rejects (``BG`` requires ``fs``/``fw``).
+      Each value parses fine on its own, so the two checks above never
+      catch it; the same fallback still applies, still logged, rather
+      than letting ``Block`` construction raise and take the whole read
+      down with it.
+    * **Owned, both present and valid**: the real path — reconstructs the
+      actual stored variant via ``_reconstruct_timing``.
+
+    Guessing a type from ``summary``/``description`` text is never done
+    in any of these cases — that would be exactly the string-meaning
+    judgement this project bans; an unreconstructable block is always
+    ``ET.M``, never inferred from its name.
     """
     handle = event.handle or f"EVT{index + 1}"
+    block_type = _reconstruct_block_type(event.block_type) if event.block_type else None
+    timing = _reconstruct_timing(event.timing_mode, event) if event.timing_mode else None
+
+    if block_type is not None and timing is not None:
+        try:
+            return Block(
+                uid=uid,
+                h=handle,
+                slug=event.slug,
+                n=event.summary,
+                d=event.description,
+                t=block_type,
+                p=timing,
+                anchor_source="calendar",
+            )
+        except ValidationError:
+            reason = "jointly inconsistent"
+    else:
+        reason = "unusable"
+
+    if event.uid is not None:
+        _logger.warning(
+            "calendar event %r has a tmbx uid but %s block_type/timing_mode "
+            "(block_type=%r, timing_mode=%r) — defaulting to %s/fw. Likely "
+            "a partial write or an event written before this round-trip "
+            "existed.",
+            event.event_id,
+            reason,
+            event.block_type,
+            event.timing_mode,
+            _FALLBACK_TYPE.value,
+        )
+
     return Block(
         uid=uid,
         h=handle,
         slug=event.slug,
         n=event.summary,
         d=event.description,
-        t=ET.M,
-        p=FixedWindow(st=event.start.time(), et=event.end.time()),
+        t=_FALLBACK_TYPE,
+        p=_fallback_timing(event),
         anchor_source="calendar",
     )
 
@@ -183,11 +307,20 @@ def _event_unchanged(existing: CalendarEvent, candidate: CalendarEvent) -> bool:
     """True if writing ``candidate`` over ``existing`` would be a no-op.
 
     Compares only the fields tmbx actually controls — summary, description,
-    start, end, uid, handle, slug — never ``etag`` (``candidate`` never
-    carries a real one; see ``_write``) or ``event_id`` (already the join
-    key that got the two events paired up). A block whose resolved state
-    is identical to what's live must not be re-``update``d just because
-    some *other* block in the same commit changed.
+    start, end, uid, handle, slug, block_type, timing_mode — never ``etag``
+    (``candidate`` never carries a real one; see ``_write``) or
+    ``event_id`` (already the join key that got the two events paired
+    up). A block whose resolved state is identical to what's live must
+    not be re-``update``d just because some *other* block in the same
+    commit changed.
+
+    ``block_type``/``timing_mode`` matter here for the same reason the
+    identity fields do: a patch that only relaxes ``fs`` to ``ap``, or
+    only retypes ``M`` to ``DW``, changes neither the resolved time nor
+    any other currently-compared field, so without these two in the
+    comparison that edit would be (wrongly) treated as a no-op and never
+    actually reach the calendar — silently reintroducing the exact
+    round-trip loss this comparison exists to close.
     """
     return (
         existing.summary == candidate.summary
@@ -197,6 +330,8 @@ def _event_unchanged(existing: CalendarEvent, candidate: CalendarEvent) -> bool:
         and existing.uid == candidate.uid
         and existing.handle == candidate.handle
         and existing.slug == candidate.slug
+        and existing.block_type == candidate.block_type
+        and existing.timing_mode == candidate.timing_mode
     )
 
 
@@ -498,6 +633,13 @@ class PlanService:
         against the fake, but against a real provider that's an etag bump
         and a change notification for every event on the day, on every
         commit.
+
+        ``block_type``/``timing_mode`` are set from the resolved block's
+        own ``t``/``p.a`` on every write — a real provider round-trips
+        these through extended properties (see ``gcal.py``) so a later
+        read can reconstruct the actual ``Timing`` variant via
+        ``_event_to_block`` instead of always seeing a plain fixed
+        window.
         """
         resolved = {row.h: row for row in plan.resolve(check_overlap=False)}
         existing_by_id = {event.event_id: event for event in existing}
@@ -520,6 +662,8 @@ class PlanService:
                 uid=block.uid,
                 handle=block.h,
                 slug=block.slug,
+                block_type=block.t.value,
+                timing_mode=block.p.a,
             )
             existing_event = existing_by_id.get(event_id)
             if existing_event is None:

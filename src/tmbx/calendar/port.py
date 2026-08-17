@@ -41,6 +41,13 @@ class CalendarEvent(BaseModel):
     representation itself before handing an event back.
 
     ``uid``, ``handle`` and ``slug`` live in provider extended properties.
+    So do ``block_type``/``timing_mode`` — the raw, unvalidated strings a
+    provider round-trips verbatim (e.g. ``block_type="DW"``,
+    ``timing_mode="ap"``); reconstructing them into a real ``ET``/
+    ``Timing`` object, and deciding what to do when they're absent or
+    unparseable, is domain logic that lives in
+    ``service._event_to_block`` — this model only carries the wire value
+    through, exactly as it already does for identity.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -54,6 +61,8 @@ class CalendarEvent(BaseModel):
     uid: str | None = None
     handle: str | None = None
     slug: str | None = None
+    block_type: str | None = None
+    timing_mode: str | None = None
 
 
 class Snapshot(BaseModel):
