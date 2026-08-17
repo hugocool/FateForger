@@ -133,6 +133,51 @@ the real endpoint proves the system.
 - **Applicability extraction is orthogonal to the fork** and should not wait for it.
 - **Decay is orthogonal too** and the C2F family is its live test set.
 
+## Update: applicability extraction shipped, and it corrects this document
+
+`Applicability` is now extracted at write time (#151) — riding on the `tier` judgement, so no
+extra model call. 16 evals pass including the adversarial one (a daily rule must acquire *no*
+day filter). Re-seeded over the same 97 rows.
+
+| day | before | after |
+|---|---|---|
+| Mon | 36 | **34** |
+| Tue–Thu | 36 | 35 |
+| Fri | 36 | **34** |
+
+**Three** of 38 constraints acquired any scoping — exactly the day-scoped rules, with nothing
+inventing scoping it should not have:
+
+- `Client attendance days` → Tue, Thu
+- `Wednesday revenue-first precedence` → Wed
+- `Systems-work quarantine before Friday` → Mon–Fri
+
+**This falsifies a claim made above.** The "flood, quantified" section asserted applicability
+extraction would reduce the Monday flood *more than semantic relevance would*. It does not: two
+constraints. The extraction is correct — the premise was wrong.
+
+**The real finding is why.** The flood is not caused by rules that should be scoped and are not.
+The user genuinely holds ~34 standing daily rules. That reorders what is left:
+
+- **Decay matters more than credited.** The C2F project family is ~8 of the 34, and nothing
+  about their text says they were sprint-scoped. Decay is now the largest single reduction
+  available.
+- **Semantic relevance is needed after all.** It was being deferred as the expensive option; on
+  this corpus it is the only mechanism that can distinguish "applies today" from "matters for a
+  day containing hockey" once decay has removed the genuinely expired.
+- Applicability extraction remains correct and worth having — it is simply a correctness fix
+  (Tue/Thu rules no longer fire on Mondays) rather than a volume fix.
+
+**One judgement worth flagging:** `Systems-work quarantine before Friday` was scoped Mon–Fri.
+The rule reads *"no system-refinement blocks before Friday 15:00"*, which arguably means
+Mon–Thu. Defensible either way; the eval set does not pin this edge.
+
+**One hazard closed along the way.** Nothing validated the weekday range. Had the model reverted
+to ISO numbering (Monday=1..Sunday=7), a Sunday rule would encode as `[7]`, match no real date,
+and be silently served on **no day at all** — worse than the flood. `Applicability` now rejects
+out-of-range indices loudly rather than clamping or filtering, since dropping the bad index would
+substitute a different answer.
+
 ## Store state
 
 `data/memory.db` — 69 observations, 38 constraints (36 durable), full provenance links,
