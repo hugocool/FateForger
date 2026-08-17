@@ -21,7 +21,12 @@ that a real provider needs:
   server *does* expose, so that is what ``CalendarEvent.etag`` carries here.
   It is honest about being a substitute: never a fabricated stable-looking
   value, and it still changes on every real edit, which is the only
-  property ``drift()`` actually needs from it.
+  property ``drift()`` actually needs from it. **But it is coarser than a
+  real etag**: ``drift()`` (``calendar/port.py``) compares this value
+  directly, and two writes landing inside the same timestamp resolution
+  window would read as unchanged — a narrower miss window than a real
+  provider etag would leave, worth knowing before trusting ``drift()`` to
+  catch every concurrent edit.
 * **No tz on create/update/delete.** ``list_day`` and ``Snapshot`` both
   carry ``tz``, but ``CalendarPort.create``/``update``/``delete`` do not —
   ``CalendarEvent`` itself has no tz field either. A real write still has
@@ -34,7 +39,9 @@ that a real provider needs:
   caller in this codebase uses one tz throughout a session (``Plan``'s own
   default, ``"Europe/Amsterdam"``), so a single adapter-level tz is the
   pragmatic fix rather than a bug being papered over — but it is worth
-  saying plainly rather than silently assuming.
+  saying plainly rather than silently assuming. **Fine for a
+  single-timezone deployment; wrong for any deployment spanning more than
+  one tz.**
 """
 
 from __future__ import annotations

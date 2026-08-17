@@ -28,6 +28,7 @@ Two defects in the legacy engine this closes:
 from __future__ import annotations
 
 import json
+import secrets
 import uuid
 from datetime import date as date_type
 from typing import Callable, Literal
@@ -41,6 +42,53 @@ from .core.ops import MoveBlock, Patch, RemoveBlock, UpdateBlock, apply_ops
 from .core.render import render_plan
 from .journal.models import EntryKind, JournalEntry, PatchOutcome
 from .journal.store import JournalStore
+
+# Google's custom event id must be base32hex: digits 0-9 and lowercase
+# letters a-v only (no w/x/y/z), 5-1024 characters. The prior minter used
+# a literal "tmbx" prefix — 'x' sits past 'v' in that alphabet, so every
+# id it produced was invalid and every create-event against a real
+# calendar would have been rejected. "tmb0" reads the same way with a
+# digit standing in for the disallowed letter; the random suffix is drawn
+# from the same alphabet rather than reused from ``uuid4().hex`` (which
+# happens to be a subset today — 0-9a-f — but that's a coincidence this
+# code should not depend on staying true).
+_BASE32HEX_ALPHABET = "0123456789abcdefghijklmnopqrstuv"
+_EVENT_ID_PREFIX = "tmb0"
+_EVENT_ID_RANDOM_LEN = 20
+_MIN_EVENT_ID_LEN = 5
+_MAX_EVENT_ID_LEN = 1024
+
+
+def is_valid_base32hex_event_id(value: str) -> bool:
+    """True if ``value`` is a legal Google Calendar custom event id.
+
+    Plain string predicate, no regex — an id this system itself mints is
+    the documented exception to the project's "no judging string meaning"
+    rule (``CLAUDE.md``): it carries no user content, only shape.
+    """
+    if not (_MIN_EVENT_ID_LEN <= len(value) <= _MAX_EVENT_ID_LEN):
+        return False
+    return all(ch in _BASE32HEX_ALPHABET for ch in value)
+
+
+def _mint_event_id() -> str:
+    """Mint a random, opaque event id valid as a Google custom event id.
+
+    Identity stays random and content-free on purpose — never derived from
+    ``date|name|start|index`` the way the legacy engine's
+    ``sync_engine.base32hex_id`` did. A content-derived id is exactly the
+    thing this package's two-level identity design (``uid``/``handle``)
+    exists to avoid, and it breaks the moment a block is renamed.
+    """
+    random_part = "".join(
+        secrets.choice(_BASE32HEX_ALPHABET) for _ in range(_EVENT_ID_RANDOM_LEN)
+    )
+    event_id = f"{_EVENT_ID_PREFIX}{random_part}"
+    if not is_valid_base32hex_event_id(event_id):
+        # Can't happen given the alphabet/length above — a hard failure
+        # here beats silently handing Google an id it will reject.
+        raise RuntimeError(f"minted event id {event_id!r} is not valid base32hex")
+    return event_id
 
 # Task 13 threaded a required ``tz`` through ``list_day``/``make_snapshot``
 # after this brief was written. ``Plan.tz`` is where the domain's timezone
@@ -461,7 +509,7 @@ class PlanService:
             if block.uid in foreign_uids:
                 continue  # read-only context: never created, updated, or deleted
             row = resolved[block.h]
-            event_id = event_ids.get(block.uid) or f"tmbx{uuid.uuid4().hex[:20]}"
+            event_id = event_ids.get(block.uid) or _mint_event_id()
             keep.add(event_id)
             event = CalendarEvent(
                 event_id=event_id,
@@ -522,4 +570,5 @@ __all__ = [
     "ForeignBlockError",
     "PlanService",
     "ReadResult",
+    "is_valid_base32hex_event_id",
 ]

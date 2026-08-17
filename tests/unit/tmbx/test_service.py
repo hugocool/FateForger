@@ -23,7 +23,13 @@ from tmbx.core.models import ET, AfterPrev, FixedWindow
 from tmbx.core.ops import AddBlock, Patch, RemoveBlock, UpdateBlock
 from tmbx.journal.models import PatchOutcome
 from tmbx.journal.store import JournalStore, init_journal
-from tmbx.service import ConflictError, ForeignBlockError, PlanService
+from tmbx.service import (
+    ConflictError,
+    ForeignBlockError,
+    PlanService,
+    _mint_event_id,
+    is_valid_base32hex_event_id,
+)
 
 DAY = date(2026, 8, 17)
 TZ = "Europe/Amsterdam"
@@ -370,3 +376,81 @@ async def test_foreign_event_survives_an_undo(service_with_foreign):
     assert len(live) == 3
     foreign = next(e for e in live if e.event_id == "e3")
     assert foreign.etag == "v1"  # never written by commit or undo
+
+
+# ---------------------------------------------------------------------------
+# Minted event ids must be valid Google Calendar custom ids: base32hex
+# (0-9, a-v only; no w/x/y/z), 5-1024 characters. The original minter used
+# a literal "tmbx" prefix — 'x' is outside that alphabet — so every
+# create-event against a real calendar would have been rejected.
+# ---------------------------------------------------------------------------
+
+
+def test_is_valid_base32hex_event_id_rejects_the_old_tmbx_prefixed_shape():
+    """The exact bug this fixes: the old minter's output contained 'x'."""
+    old_style_id = "tmbx" + "a" * 20
+    assert "x" in old_style_id
+    assert is_valid_base32hex_event_id(old_style_id) is False
+
+
+def test_is_valid_base32hex_event_id_rejects_each_disallowed_letter():
+    for letter in "wxyz":
+        assert is_valid_base32hex_event_id(f"tmb0{letter}aaaa") is False
+
+
+def test_is_valid_base32hex_event_id_accepts_the_new_prefix_and_digits_and_a_to_v():
+    assert is_valid_base32hex_event_id("tmb0" + "0123456789abcdefghijklmnopqrstuv") is True
+
+
+def test_is_valid_base32hex_event_id_enforces_the_minimum_length():
+    assert is_valid_base32hex_event_id("abcd") is False  # 4 chars, too short
+    assert is_valid_base32hex_event_id("abcde") is True  # 5 chars, the floor
+
+
+def test_is_valid_base32hex_event_id_enforces_the_maximum_length():
+    assert is_valid_base32hex_event_id("a" * 1024) is True  # the ceiling
+    assert is_valid_base32hex_event_id("a" * 1025) is False
+
+
+def test_mint_event_id_is_always_valid_base32hex():
+    """Mint a few hundred and check every single one — the alphabet is
+    drawn from directly (not assumed to coincide with ``uuid4().hex``), so
+    this is the test that would actually have failed against the old
+    "tmbx"-prefixed minter."""
+    minted = [_mint_event_id() for _ in range(500)]
+    assert all(is_valid_base32hex_event_id(event_id) for event_id in minted)
+    assert all(event_id.startswith("tmb0") for event_id in minted)
+    # No forbidden letter ever appears, in the prefix or the random tail.
+    assert not any(letter in event_id for event_id in minted for letter in "wxyz")
+
+
+def test_mint_event_id_is_random_not_content_derived():
+    """Two calls must not collide — identity stays opaque and random, never
+    derived from a block's name/date/start the way the legacy engine's
+    ``sync_engine.base32hex_id`` did (which breaks on rename)."""
+    assert _mint_event_id() != _mint_event_id()
+
+
+async def test_commit_mints_a_valid_base32hex_event_id_for_a_new_block(service):
+    """End-to-end: a patch that adds a brand-new block goes through
+    ``PlanService._write``'s minting path, and the id that actually lands
+    on the calendar is a legal Google custom event id."""
+    _, snapshot = await service.read("primary", DAY)
+    await service.commit(
+        snapshot,
+        Patch(
+            ops=[
+                AddBlock(
+                    after="DW1",
+                    h="BU1",
+                    n="Buffer",
+                    t=ET.BU,
+                    p=AfterPrev(dur=timedelta(minutes=10)),
+                )
+            ]
+        ),
+    )
+
+    live = await service.calendar.list_day("primary", DAY, TZ)
+    new_event = next(e for e in live if e.handle == "BU1")
+    assert is_valid_base32hex_event_id(new_event.event_id)
