@@ -165,3 +165,18 @@ def test_applicability_boundaries_are_inclusive():
     assert a.applies_on(_date(2026, 3, 5)) is True
     assert a.applies_on(_date(2026, 2, 28)) is False
     assert a.applies_on(_date(2026, 3, 6)) is False
+
+
+def test_weekday_indices_outside_zero_to_six_are_rejected():
+    """ISO numbering (Sunday=7) would match no real date and hide the rule."""
+    import pytest
+
+    with pytest.raises(ValueError, match="out of range"):
+        Applicability(days_of_week=[7])
+    with pytest.raises(ValueError, match="out of range"):
+        Applicability(days_of_week=[-1])
+
+
+def test_the_full_valid_week_is_accepted():
+    a = Applicability(days_of_week=[0, 1, 2, 3, 4, 5, 6])
+    assert len(a.days_of_week) == 7

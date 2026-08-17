@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from memory.identity import mint_uid
 from memory.models import Tier
@@ -50,6 +50,24 @@ class Applicability(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     days_of_week: list[int] = Field(default_factory=list)  # 0=Mon .. 6=Sun
+
+    @field_validator("days_of_week")
+    @classmethod
+    def _weekdays_in_range(cls, value: list[int]) -> list[int]:
+        """Reject weekday indices outside 0-6.
+
+        Monday=0..Sunday=6, matching date.weekday(). A model that reverts to
+        ISO numbering (Monday=1..Sunday=7) would encode Sunday as 7, which
+        matches no real date — the constraint would then be silently served
+        on no day at all. Bounds-checking a model-supplied integer index is
+        arithmetic on a system-defined range, not a judgement about meaning.
+        """
+        out_of_range = [d for d in value if d < 0 or d > 6]
+        if out_of_range:
+            raise ValueError(
+                f"weekday index out of range 0-6 (Monday=0..Sunday=6): {out_of_range}"
+            )
+        return value
 
     def applies_on(self, day: date) -> bool:
         if self.start_date is not None and day < self.start_date:
