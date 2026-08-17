@@ -463,6 +463,28 @@ and each create a row — duplication in the layer whose whole job is canonicali
 window spans a full model round-trip, so it was wide. Closed by serialising the read-judge-write
 span with one lock per constraint store.
 
+### Open — `upsert` is destructive to provenance links
+
+`ConstraintStore.upsert` calls `replace_links(uid, constraint.source_observation_uids)`. That
+was the fix that closed I4 — re-projection must be able to *drop* an observation, not only add
+one — and it is correct for re-projection. It also makes `upsert` **destructive to any link not
+present on the object handed to it**.
+
+Consequence: **upserting a stale `Constraint` silently destroys links added since it was read.**
+This has now bitten twice, both times in the fold path, where `existing` comes from a
+pre-fold `durable()` snapshot and `link_observation` has run in between. Both times the symptom
+was a lost provenance link with nothing raised; the second time it broke an existing test, which
+is the only reason it was caught.
+
+The current mitigation is a re-read immediately after `link_observation`, which works but leaves
+the trap armed for the next caller. The real fix is to make the destructive behaviour opt-in
+rather than default — `upsert` leaves links alone, and re-projection calls `replace_links`
+explicitly — so that the dangerous operation is the one you have to ask for.
+
+Worth noting the shape of the mistake: closing I4 made one operation authoritative over
+provenance, and nothing was done to stop *other* callers of that operation from inheriting the
+authority. A fix that widens a method's power needs to narrow who may use it.
+
 ### Open — carried from review, not yet fixed
 
 **Typing is documented, not enforced.** There is no `src/memory/py.typed`, so mypy treats the
