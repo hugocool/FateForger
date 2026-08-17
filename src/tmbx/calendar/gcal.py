@@ -161,13 +161,22 @@ class GoogleCalendarAdapter:
         not need to detect or special-case it, only the dedupe below, which
         is needed whenever more than one calendar can return the same
         event.
+
+        A day with nothing on it is a normal, common result, not a
+        failure — see ``_extract_payload``: when the server hands back a
+        successful, non-JSON reply (observed against the real server on an
+        empty day) there is no payload to normalize, so this reads as an
+        empty list rather than raising. Distinct from a real failure,
+        which ``_extract_payload``/``_call`` still raise on before this
+        method ever sees a payload at all.
         """
         args = _list_events_args(calendar_id=calendar_id, day=day, tz=tz)
         payload = await self._call("list-events", args)
         zone = ZoneInfo(tz)
         seen: set[str] = set()
         events: list[CalendarEvent] = []
-        for raw in _normalize_events(payload):
+        raw_events = [] if payload is None else _normalize_events(payload)
+        for raw in raw_events:
             if str(raw.get("status", "")).lower() == _CANCELLED_STATUS:
                 continue
             event = _event_from_payload(raw, tz=zone)
@@ -188,6 +197,14 @@ class GoogleCalendarAdapter:
         args["calendarId"] = calendar_id
         args["eventId"] = event.event_id
         payload = await self._call("create-event", args)
+        if payload is None:
+            # Unlike list-events, there is no sensible "empty" reading of
+            # a write: no created event came back, so this must raise
+            # rather than silently claim success. See _extract_payload.
+            raise RuntimeError(
+                "calendar MCP tool 'create-event' returned a non-JSON "
+                "success response with no created event"
+            )
         return _event_from_payload(_unwrap_single(payload), tz=ZoneInfo(self._tz))
 
     async def update(self, calendar_id: str, event: CalendarEvent) -> CalendarEvent:
@@ -195,6 +212,11 @@ class GoogleCalendarAdapter:
         args["calendarId"] = calendar_id
         args["eventId"] = event.event_id
         payload = await self._call("update-event", args)
+        if payload is None:
+            raise RuntimeError(
+                "calendar MCP tool 'update-event' returned a non-JSON "
+                "success response with no updated event"
+            )
         return _event_from_payload(_unwrap_single(payload), tz=ZoneInfo(self._tz))
 
     async def delete(self, calendar_id: str, event_id: str) -> None:
@@ -208,6 +230,12 @@ class GoogleCalendarAdapter:
         payload = await self._call(
             "delete-event", {"calendarId": calendar_id, "eventId": event_id}
         )
+        if payload is None:
+            # No confirmed-empty reading for a write — see create/update.
+            raise RuntimeError(
+                "calendar MCP tool 'delete-event' returned a non-JSON "
+                "success response with no confirmation"
+            )
         if isinstance(payload, dict) and payload.get("success") is False:
             raise RuntimeError(
                 f"calendar MCP tool 'delete-event' reported failure: {payload!r}"
@@ -391,40 +419,67 @@ def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
 def _result_text(result: CallToolResult) -> str:
     """Concatenate every text content block in a tool result.
 
-    The server always replies with a single ``{"type": "text", "text":
-    JSON.stringify(data)}`` block (confirmed against v2.3.1's
-    ``response-builder.ts``), but concatenating every text block rather
-    than indexing ``content[0]`` costs nothing and does not assume that
-    stays true.
+    The source read for this adapter (v2.3.1's ``response-builder.ts``)
+    says every reply is a single ``{"type": "text", "text":
+    JSON.stringify(data)}`` block — but the real, authenticated server has
+    been observed sending plain prose instead of JSON for at least one
+    tool/scenario (``list-events`` on an empty day), so that claim does
+    not hold in general; see ``_extract_payload`` for how a non-JSON text
+    body is handled. Concatenating every text block rather than indexing
+    ``content[0]`` costs nothing and does not assume anything about how
+    many blocks there are either.
     """
     parts = [block.text for block in result.content if isinstance(block, TextContent)]
     return "\n".join(parts).strip()
 
 
 def _extract_payload(tool_name: str, result: CallToolResult) -> Any:
-    """Decode a tool result's JSON payload, raising plainly on failure.
+    """Decode a tool result's payload, or ``None`` if there isn't one to decode.
 
-    ``isError`` covers a tool-level failure the server chose to report as
-    a result rather than a protocol error; a thrown ``McpError`` from a
-    Google API failure (confirmed as how ``create``/``update``/``delete``
-    surface errors) propagates on its own through ``session.call_tool``
-    and is never caught here — a real provider failure should crash, not
-    be folded into some refusal contract that only applies to domain
-    rules.
+    ``isError`` is the structural signal for "this call failed" — a tool-
+    level failure the server chose to report as a result rather than a
+    protocol error; a thrown ``McpError`` from a Google API failure
+    (confirmed as how ``create``/``update``/``delete`` surface errors)
+    propagates on its own through ``session.call_tool`` and is never
+    caught here. Either way, a real provider failure crashes rather than
+    being folded into some refusal contract that only applies to domain
+    rules — that is exactly what keeps ``None`` below safe to treat as
+    "nothing here" instead of "something went wrong": by the time
+    execution reaches it, both known failure signals have already been
+    ruled out.
+
+    Three shapes are tried, in order, all structural — never a judgement
+    about what any response *text* means (banned outright by ``CLAUDE.md``):
+
+    1. ``result.structuredContent``, if the server set one. MCP's own
+       structured-output channel, separate from the human-readable
+       ``content`` blocks — the most direct signal available, when present.
+    2. ``content``'s text, if it parses as JSON.
+    3. Neither: the server has been observed (against the real,
+       authenticated ``list-events`` tool, on a day with zero events) to
+       reply with plain prose instead of JSON — e.g. "No events found in 1
+       calendar(s)." — while ``isError`` is ``False``. That is a real,
+       successful response this adapter cannot parse as a payload, not a
+       failure; returned as ``None`` and left to the caller, since what
+       "no payload" means differs by tool (an empty collection for
+       ``list-events``; an unrecoverable problem for ``create``/``update``/
+       ``delete``, which never have a sensible empty reading and raise on
+       ``None`` themselves).
     """
     if result.isError:
         raise RuntimeError(
             f"calendar MCP tool {tool_name!r} failed: {_result_text(result)}"
         )
+    structured = result.structuredContent
+    if isinstance(structured, dict) and structured:
+        return structured
     text = _result_text(result)
     if not text:
-        raise RuntimeError(f"calendar MCP tool {tool_name!r} returned an empty response")
+        return None
     try:
         return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"calendar MCP tool {tool_name!r} returned non-JSON text: {text!r}"
-        ) from exc
+    except json.JSONDecodeError:
+        return None
 
 
 __all__ = [

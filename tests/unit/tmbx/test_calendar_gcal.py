@@ -33,6 +33,21 @@ def _text_result(payload: Any, *, is_error: bool = False) -> CallToolResult:
     )
 
 
+def _prose_result(
+    text: str, *, structured_content: dict[str, Any] | None = None
+) -> CallToolResult:
+    """A successful (``isError=False``) reply whose ``content`` is plain
+    prose, not JSON — the shape observed from the real, authenticated
+    ``list-events`` tool on a day with no events ("No events found in N
+    calendar(s)."). ``structured_content``, when given, models MCP's
+    separate structured-output channel a server may set alongside the
+    prose ``content``."""
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structuredContent=structured_content,
+    )
+
+
 class FakeCaller:
     """Records every ``call_tool`` invocation; replays canned results in order."""
 
@@ -416,16 +431,158 @@ async def test_is_error_result_raises_runtime_error_with_message():
         await adapter.list_day("primary", DAY, TZ)
 
 
-async def test_non_json_text_raises_runtime_error():
-    adapter, caller = make_adapter({"list-events": []})
+async def test_list_day_empty_text_is_no_events_not_a_crash():
+    """A blank response body, ``isError=False``: nothing parseable, but
+    also nothing that failed."""
+    adapter, _ = make_adapter(
+        {"list-events": [CallToolResult(content=[TextContent(type="text", text="")])]}
+    )
+    events = await adapter.list_day("primary", DAY, TZ)
+    assert events == []
 
-    async def call_tool(name, arguments):
-        caller.calls.append((name, arguments))
-        return CallToolResult(content=[TextContent(type="text", text="not json")])
 
-    caller.call_tool = call_tool  # type: ignore[method-assign]
-    with pytest.raises(RuntimeError):
+# ---------------------------------------------------------------------------
+# non-JSON *prose* success responses — the real server has been observed
+# replying "No events found in N calendar(s)." (isError=False) instead of
+# JSON for an empty list-events result. Handled structurally: isError is
+# already ruled out by the time non-JSON text is reached, so a successful
+# non-JSON reply reads as "no payload", never as a failure — and never by
+# matching on what the prose actually says (banned by CLAUDE.md, and it
+# would break the moment the server rewords or localises the message).
+# ---------------------------------------------------------------------------
+
+
+async def test_list_day_treats_the_observed_no_events_prose_as_an_empty_day():
+    adapter, _ = make_adapter(
+        {"list-events": [_prose_result("No events found in 1 calendar(s).")]}
+    )
+    events = await adapter.list_day("primary", DAY, TZ)
+    assert events == []
+
+
+async def test_list_day_treats_arbitrary_reworded_prose_as_empty_too():
+    """Proof this is a shape judgement, not a text judgement: a message
+    that shares not one word with the observed original still reads as
+    empty, because nothing about the *wording* is inspected."""
+    adapter, _ = make_adapter(
+        {"list-events": [_prose_result("Uw agenda is leeg voor deze dag! \U0001f389")]}
+    )
+    events = await adapter.list_day("primary", DAY, TZ)
+    assert events == []
+
+
+async def test_list_day_multi_calendar_all_empty_returns_no_events():
+    multi_id = json.dumps(["work", "personal"])
+    adapter, caller = make_adapter(
+        {"list-events": [_prose_result("No events found in 2 calendar(s).")]}
+    )
+    events = await adapter.list_day(multi_id, DAY, TZ)
+    assert events == []
+    assert caller.calls[0][1]["calendarId"] == multi_id
+
+
+async def test_list_day_multi_calendar_one_empty_one_populated_still_returns_events():
+    """Only *some* of the queried calendars being empty must not trip the
+    empty-day handling — the populated calendar's JSON response is used
+    exactly as any other successful read."""
+    multi_id = json.dumps(["work", "personal"])
+    payload = {"events": [_raw_event(event_id="from-personal")], "totalCount": 1}
+    adapter, _ = make_adapter({"list-events": [_text_result(payload)]})
+    events = await adapter.list_day(multi_id, DAY, TZ)
+    assert [e.event_id for e in events] == ["from-personal"]
+
+
+async def test_list_day_still_raises_on_a_real_error_not_silently_empty():
+    """The one thing that must never happen: a real failure reading as a
+    clear day. isError is the structural signal that rules this out before
+    the non-JSON/prose handling ever runs."""
+    adapter, _ = make_adapter(
+        {
+            "list-events": [
+                _text_result("upstream Google API request failed", is_error=True)
+            ]
+        }
+    )
+    with pytest.raises(RuntimeError, match="upstream Google API request failed"):
         await adapter.list_day("primary", DAY, TZ)
+
+
+async def test_list_day_prefers_structured_content_over_prose_text():
+    """When the server sets MCP's separate structured-output field
+    alongside prose ``content``, that structured payload is used directly
+    — the most direct of the three signals ``_extract_payload`` tries."""
+    adapter, _ = make_adapter(
+        {
+            "list-events": [
+                _prose_result(
+                    "Here you go!",
+                    structured_content={
+                        "events": [_raw_event(event_id="from-structured")],
+                        "totalCount": 1,
+                    },
+                )
+            ]
+        }
+    )
+    events = await adapter.list_day("primary", DAY, TZ)
+    assert [e.event_id for e in events] == ["from-structured"]
+
+
+async def test_list_day_structured_content_empty_events_is_also_no_events():
+    adapter, _ = make_adapter(
+        {
+            "list-events": [
+                _prose_result(
+                    "No events found in 1 calendar(s).",
+                    structured_content={"events": [], "totalCount": 0},
+                )
+            ]
+        }
+    )
+    events = await adapter.list_day("primary", DAY, TZ)
+    assert events == []
+
+
+# ---------------------------------------------------------------------------
+# write paths: a non-JSON success response has no sensible "empty" meaning
+# and must still raise, unlike list-events.
+# ---------------------------------------------------------------------------
+
+
+async def test_create_raises_on_a_non_json_success_response():
+    event = CalendarEvent(
+        event_id="tmb0abc",
+        summary="X",
+        start=datetime(2026, 8, 17, 9, 0),
+        end=datetime(2026, 8, 17, 10, 0),
+    )
+    adapter, _ = make_adapter(
+        {"create-event": [_prose_result("Event created successfully.")]}
+    )
+    with pytest.raises(RuntimeError):
+        await adapter.create("primary", event)
+
+
+async def test_update_raises_on_a_non_json_success_response():
+    event = CalendarEvent(
+        event_id="tmb0abc",
+        summary="X",
+        start=datetime(2026, 8, 17, 9, 0),
+        end=datetime(2026, 8, 17, 10, 0),
+    )
+    adapter, _ = make_adapter(
+        {"update-event": [_prose_result("Event updated successfully.")]}
+    )
+    with pytest.raises(RuntimeError):
+        await adapter.update("primary", event)
+
+
+async def test_delete_raises_on_a_non_json_success_response():
+    adapter, _ = make_adapter(
+        {"delete-event": [_prose_result("Event deleted successfully.")]}
+    )
+    with pytest.raises(RuntimeError):
+        await adapter.delete("primary", "e1")
 
 
 # ---------------------------------------------------------------------------
