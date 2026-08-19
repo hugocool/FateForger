@@ -74,11 +74,9 @@ async def project(
                 name=ingest_result.label or observation.text,
                 description=observation.text,
                 necessity=Necessity.MUST
-                if ingest_result.is_declaration
+                if ingest_result.is_binding
                 else Necessity.SHOULD,
-                scope=Scope.PROFILE
-                if ingest_result.tier is Tier.DURABLE
-                else Scope.SESSION,
+                scope=Scope.SESSION,
                 status=Status.PROPOSED,
                 source=_SOURCE_BY_CHANNEL[observation.channel],
                 tier=ingest_result.tier,
@@ -134,7 +132,7 @@ async def project(
             name=ingest_result.label or observation.text,
             description=observation.text,
             necessity=Necessity.MUST
-            if ingest_result.is_declaration
+            if ingest_result.is_binding
             else Necessity.SHOULD,
             scope=Scope.PROFILE if ingest_result.tier is Tier.DURABLE else Scope.SESSION,
             status=Status.PROPOSED,

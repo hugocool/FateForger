@@ -13,6 +13,7 @@ from memory.judge import (
     ConstraintLike,
     DedupJudgement,
     MetaJudgement,
+    NecessityJudgement,
     TierJudgement,
 )
 from memory.models import Observation
@@ -81,6 +82,36 @@ Respond with JSON only:
  "decay_class": "permanent"|"seasonal"|"project"|"daily", "rationale": "..."}\
 """
 
+NECESSITY_PROMPT = """\
+You decide whether a rule is a hard boundary or a strong preference.
+
+The question is what happens when the day can only be made to work by
+breaking it.
+
+"binding" — the person would reject the plan outright. What breaks is
+something they will not trade: a commitment to another person, health, a
+contractual or legal obligation, a physical impossibility. "Pick up my
+daughter at 17:00" is binding — missing it is not a worse day, it is a
+failure.
+
+"preference" — the person would accept the plan and be mildly annoyed. The
+day is worse and still works. "I like to start with deep work" is a
+preference: starting with email is a poorer morning, not a broken one.
+
+How firmly it is worded is not the signal, and following the wording is the
+specific mistake this question exists to correct. People state preferences
+emphatically ("I ALWAYS start with deep work") and boundaries casually ("oh,
+school run at 3"). Ask what breaks, not how hard they said it.
+
+When unsure, answer false. A preference wrongly marked binding makes the
+planner refuse to produce a workable day; a boundary wrongly marked a
+preference produces a day the person will visibly correct, which is
+recoverable and which the planner gets to see.
+
+Respond with JSON only:
+{"is_binding": true|false, "rationale": "..."}\
+"""
+
 META_PROMPT = """\
 You detect statements about the tool rather than about the person's life or
 the schedule it produces. There are three kinds of statement; only the first
@@ -130,7 +161,7 @@ Respond with JSON only:
 
 
 class PromptJudge(ABC):
-    """The five questions, asked identically no matter who answers them.
+    """The six questions, asked identically no matter who answers them.
 
     A subclass supplies transport and nothing else. This exists because the
     server now has two ways to reach a model — its own provider, or the
@@ -188,6 +219,12 @@ class PromptJudge(ABC):
             if required not in payload:
                 raise ValueError(f"could not parse judge response: {payload!r}")
         return self._build(TierJudgement, payload)
+
+    async def necessity(self, observation: Observation) -> NecessityJudgement:
+        payload = await self._ask(NECESSITY_PROMPT, observation.text)
+        if "is_binding" not in payload:
+            raise ValueError(f"could not parse judge response: {payload!r}")
+        return self._build(NecessityJudgement, payload)
 
     async def meta(self, observation: Observation) -> MetaJudgement:
         payload = await self._ask(META_PROMPT, observation.text)

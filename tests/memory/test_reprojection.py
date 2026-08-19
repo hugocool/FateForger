@@ -169,7 +169,7 @@ async def test_derivation_uses_the_whole_evidence_set_not_the_first(tmp_path):
     judge = StubJudge(
         tiers={"lunch at 12:30 sharp": Tier.DURABLE},  # early stays SESSION
         labels={"lunch at 12:30 sharp": "Lunch"},
-        declarations={"lunch at 12:30 sharp": True},
+        bindings={"lunch at 12:30 sharp": True},
         decay_classes={"lunch at 12:30 sharp": DecayClass.SEASONAL},
     )
     await reproject(observations, constraints, judge)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import NamedTuple
 
 from pydantic import BaseModel, Field
 
@@ -48,30 +49,52 @@ class ReprojectionReport(BaseModel):
     skipped: list[tuple[str, str]] = Field(default_factory=list)
 
 
+class _Judged(NamedTuple):
+    tier: object
+    necessity: object
+
+
 async def _judge_all(
     observations: list[Observation], judge: Judge
-) -> dict[str, object]:
-    """Re-ask the tier question for every observation, concurrently.
+) -> dict[str, _Judged]:
+    """Re-ask the derivable questions for every observation, concurrently.
 
-    Only `tier` is re-asked. `anchors` was written into the append-only log at
-    ingest and cannot be revised here without violating I2. `meta` and `dedup`
-    are admission gates whose answers already decided what got stored;
-    re-running them would mean un-storing, which I2 also forbids. So one
-    question per observation, and the derived fields all hang off it.
+    Two of the six are re-asked. `anchors` was written into the append-only
+    log at ingest and cannot be revised here without violating I2. `meta` and
+    `dedup` are admission gates whose answers already decided what got stored;
+    re-running them would mean un-storing, which I2 also forbids. And
+    `canonicalise` merges rather than derives — see the note on reproject.
+
+    Both questions for every observation go out in one gather rather than one
+    gather per question, so the fan-out is over the whole work set instead of
+    being serialised into two rounds.
     """
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT_JUDGEMENTS)
 
-    async def one(observation: Observation):
+    async def ask(coro_factory):
         async with semaphore:
-            return await judge.tier(observation)
+            return await coro_factory()
 
     results = await asyncio.gather(
-        *(one(o) for o in observations), return_exceptions=True
+        *(
+            ask(factory)
+            for observation in observations
+            for factory in (
+                lambda o=observation: judge.tier(o),
+                lambda o=observation: judge.necessity(o),
+            )
+        ),
+        return_exceptions=True,
     )
     for result in results:
         if isinstance(result, BaseException):
             raise result
-    return dict(zip([o.uid for o in observations], results))
+    return {
+        observation.uid: _Judged(
+            tier=results[i * 2], necessity=results[i * 2 + 1]
+        )
+        for i, observation in enumerate(observations)
+    }
 
 
 def _derive(observations: list[Observation], judgements: dict) -> dict:
@@ -90,7 +113,7 @@ def _derive(observations: list[Observation], judgements: dict) -> dict:
     """
     ordered = sorted(observations, key=lambda o: o.observed_at)
     newest = ordered[-1]
-    newest_j = judgements[newest.uid]
+    newest_j = judgements[newest.uid].tier
 
     # Tier only ever moves up: one durable statement makes the rule durable,
     # and no later session-tier mention demotes it. Same rule the fold branch
@@ -98,7 +121,7 @@ def _derive(observations: list[Observation], judgements: dict) -> dict:
     # last-write-wins, which this design rejects.
     tier = (
         Tier.DURABLE
-        if any(judgements[o.uid].tier is Tier.DURABLE for o in ordered)
+        if any(judgements[o.uid].tier.tier is Tier.DURABLE for o in ordered)
         else Tier.SESSION
     )
 
@@ -107,7 +130,7 @@ def _derive(observations: list[Observation], judgements: dict) -> dict:
     # widen a rule back to every day.
     applicability = Applicability()
     for observation in reversed(ordered):
-        judgement = judgements[observation.uid]
+        judgement = judgements[observation.uid].tier
         if judgement.start_date or judgement.end_date or judgement.days_of_week:
             applicability = Applicability(
                 start_date=judgement.start_date,
@@ -119,8 +142,12 @@ def _derive(observations: list[Observation], judgements: dict) -> dict:
     return {
         "name": newest_j.label or newest.text,
         "description": newest.text,
+        # Binding once, binding after: a casual later mention of a rule the
+        # person stated as a hard boundary does not soften it. Same shape as
+        # tier, and for the same reason — softening on the newest observation
+        # would be last-write-wins.
         "necessity": Necessity.MUST
-        if any(judgements[o.uid].is_declaration for o in ordered)
+        if any(judgements[o.uid].necessity.is_binding for o in ordered)
         else Necessity.SHOULD,
         "scope": Scope.PROFILE if tier is Tier.DURABLE else Scope.SESSION,
         "source": _SOURCE_BY_CHANNEL[newest.channel],

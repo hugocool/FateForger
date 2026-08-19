@@ -161,23 +161,29 @@ async def test_the_models_label_becomes_the_constraint_name(tmp_path):
     assert c.description == "eat oats two hours before gym"
 
 
-async def test_a_declaration_becomes_a_must(tmp_path):
+async def test_a_binding_rule_becomes_a_must(tmp_path):
     store = ConstraintStore(str(tmp_path / "c.db"))
-    obs = _obs("never schedule meetings before 13:00")
+    obs = _obs("I collect my daughter from school at 15:00")
     result = IngestResult(
         stored=True, uid=obs.uid, tier=Tier.DURABLE,
-        label="No morning meetings", is_declaration=True,
+        label="School run", is_binding=True,
     )
     c = await project(obs, result, StubJudge(), store)
     assert c.necessity is Necessity.MUST
 
 
-async def test_an_inferred_rule_becomes_a_should(tmp_path):
+async def test_a_preference_becomes_a_should_however_firmly_stated(tmp_path):
+    """Necessity follows what breaks, not how emphatically it was said.
+
+    Wiring it to is_declaration made this MUST, which is why 36 of 37 live
+    constraints were MUST and no consumer could tell a boundary from a
+    preference (#156).
+    """
     store = ConstraintStore(str(tmp_path / "c.db"))
-    obs = _obs("I usually have lunch around noon")
+    obs = _obs("I ALWAYS start the day with deep work, never email")
     result = IngestResult(
         stored=True, uid=obs.uid, tier=Tier.DURABLE,
-        label="Lunch around noon", is_declaration=False,
+        label="Deep work first", is_declaration=True, is_binding=False,
     )
     c = await project(obs, result, StubJudge(), store)
     assert c.necessity is Necessity.SHOULD

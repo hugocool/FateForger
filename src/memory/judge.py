@@ -41,6 +41,18 @@ class TierJudgement(BaseModel):
     decay_class: DecayClass = DecayClass.PERMANENT
 
 
+class NecessityJudgement(BaseModel):
+    """Whether breaking this rule ruins the day or merely worsens it.
+
+    A bool rather than the Necessity enum, so this port stays free of any
+    import from the constraint layer above it — the same reason applicability
+    rides as raw fields on TierJudgement.
+    """
+
+    is_binding: bool = False
+    rationale: str = ""
+
+
 class MetaJudgement(BaseModel):
     """Whether this describes the interaction rather than the user's life."""
 
@@ -87,6 +99,8 @@ class Judge(Protocol):
 
     async def tier(self, observation: Observation) -> TierJudgement: ...
 
+    async def necessity(self, observation: Observation) -> NecessityJudgement: ...
+
     async def meta(self, observation: Observation) -> MetaJudgement: ...
 
     async def dedup(
@@ -119,6 +133,7 @@ class StubJudge:
         start_dates: dict[str, date] | None = None,
         end_dates: dict[str, date] | None = None,
         decay_classes: dict[str, DecayClass] | None = None,
+        bindings: dict[str, bool] | None = None,
     ) -> None:
         self._anchors = anchors or {}
         self._tiers = tiers or {}
@@ -131,6 +146,7 @@ class StubJudge:
         self._start_dates = start_dates or {}
         self._end_dates = end_dates or {}
         self._decay_classes = decay_classes or {}
+        self._bindings = bindings or {}
         self.calls: list[tuple[str, str]] = []
 
     async def anchors(self, observation: Observation) -> AnchorJudgement:
@@ -149,6 +165,12 @@ class StubJudge:
             decay_class=self._decay_classes.get(
                 observation.text, DecayClass.PERMANENT
             ),
+        )
+
+    async def necessity(self, observation: Observation) -> NecessityJudgement:
+        self.calls.append(("necessity", observation.uid))
+        return NecessityJudgement(
+            is_binding=self._bindings.get(observation.text, False)
         )
 
     async def meta(self, observation: Observation) -> MetaJudgement:

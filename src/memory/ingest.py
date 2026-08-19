@@ -18,6 +18,12 @@ class IngestResult(BaseModel):
     anchors: list[str] = Field(default_factory=list)
     label: str = ""
     is_declaration: bool = False
+    # Whether breaking the rule ruins the day. Its own judgement rather than a
+    # field on the tier call: the tier prompt already answers four things, and
+    # a prompt that names a category without giving the model something to key
+    # off produces a near coin flip (see CLAUDE.md). Concurrent, so a fifth
+    # question costs no latency.
+    is_binding: bool = False
     suppressed_as: str | None = None
     start_date: date | None = None
     end_date: date | None = None
@@ -32,8 +38,8 @@ async def ingest(
 ) -> IngestResult:
     """Judge an observation and append it unless it should be suppressed.
 
-    The four judgements are independent, so they are issued concurrently:
-    one round-trip of latency rather than four. Nothing here inspects the
+    The five judgements are independent, so they are issued concurrently:
+    one round-trip of latency rather than five. Nothing here inspects the
     observation's text — every decision about meaning comes from the judge.
     """
     if observation.provenance is not Provenance.OBSERVED:
@@ -44,22 +50,23 @@ async def ingest(
     recent = (
         store.by_session(observation.session_id) if observation.session_id else []
     )
-    # return_exceptions=True so a failing judgement cannot orphan its three
+    # return_exceptions=True so a failing judgement cannot orphan its four
     # siblings: with the default, gather propagates the first exception but
     # leaves the others running, discarding their results and errors. We
-    # await all four, then re-raise the first failure to preserve the
+    # await all five, then re-raise the first failure to preserve the
     # ValueError contract callers rely on.
     results = await asyncio.gather(
         judge.anchors(observation),
         judge.tier(observation),
         judge.meta(observation),
         judge.dedup(observation, recent),
+        judge.necessity(observation),
         return_exceptions=True,
     )
     for result in results:
         if isinstance(result, BaseException):
             raise result
-    anchor_j, tier_j, meta_j, dedup_j = results
+    anchor_j, tier_j, meta_j, dedup_j, necessity_j = results
 
     if meta_j.is_meta:
         return IngestResult(stored=False, suppressed_as="meta")
@@ -86,6 +93,7 @@ async def ingest(
         anchors=anchor_j.anchors,
         label=tier_j.label,
         is_declaration=tier_j.is_declaration,
+        is_binding=necessity_j.is_binding,
         start_date=tier_j.start_date,
         end_date=tier_j.end_date,
         days_of_week=tier_j.days_of_week,
