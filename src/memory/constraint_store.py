@@ -42,6 +42,7 @@ class ConstraintStore:
                 " status=excluded.status, source=excluded.source, "
                 " frame_slot=excluded.frame_slot, tier=excluded.tier, "
                 " applicability=excluded.applicability, "
+                " created_at=excluded.created_at, "
                 " decay_class=excluded.decay_class, "
                 " last_observed_at=excluded.last_observed_at",
                 (

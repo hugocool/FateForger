@@ -271,6 +271,7 @@ async def test_the_sampling_server_needs_no_api_key(tmp_path, monkeypatch):
     tools = {t.name for t in await server.list_tools()}
     assert tools == {
         "memory_observe",
+        "memory_reproject",
         "memory_get_active_constraints",
         "memory_get_faded_constraints",
     }

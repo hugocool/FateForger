@@ -27,7 +27,12 @@ It never samples — structural filtering only, so it is fast, repeatable, and
 safe to call inside a planning loop. Expect every applicable rule rather than
 a semantically ranked subset. memory_get_faded_constraints returns the rules
 withheld because nothing has re-stated them lately; they are candidates for
-review, not for planning.\
+review, not for planning.
+
+memory_reproject re-derives stored constraints from the observations behind
+them. Constraints keep the fields the build that created them produced, so
+this is how an improvement in judgement reaches rules that already exist. It
+samples once per observation; run it deliberately, not in a loop.\
 """
 
 # Judgements are small JSON objects with a short rationale. Generous enough
@@ -141,6 +146,24 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
             observed_at=when,
         )
         return outcome.model_dump(mode="json")
+
+    @mcp.tool(name="memory_reproject")
+    async def memory_reproject(constraint_uid: str | None = None) -> dict:
+        """Re-derive stored constraints from their source observations.
+
+        Run this after the server's judgement of what statements mean has
+        improved. Constraints created earlier do not otherwise acquire the
+        improvement: a restatement folds into the existing row and refreshes
+        only its timestamp, so an old rule keeps whatever fields the build
+        that created it produced.
+
+        Samples once per source observation, so it is slow and costs the
+        host's tokens — not something to call inside a planning loop. Pass
+        `constraint_uid` to re-derive a single rule. Identity is preserved and
+        the returned report names every field that moved.
+        """
+        report = await service.reproject(constraint_uid)
+        return report.model_dump(mode="json")
 
     @mcp.tool(name="memory_get_active_constraints")
     def memory_get_active_constraints(

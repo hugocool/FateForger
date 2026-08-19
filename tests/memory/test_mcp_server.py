@@ -23,6 +23,7 @@ async def test_the_server_exposes_exactly_the_session_verbs(tmp_path):
     tools = {t.name for t in await server.list_tools()}
     assert tools == {
         "memory_observe",
+        "memory_reproject",
         "memory_get_active_constraints",
         "memory_get_faded_constraints",
     }

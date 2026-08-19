@@ -13,6 +13,7 @@ from memory.models import Channel, Observation, Provenance, Tier
 from memory.projection import project
 from memory.read_api import get_active_constraints as _read
 from memory.read_api import get_faded_constraints as _read_faded
+from memory.reprojection import ReprojectionReport, reproject
 from memory.store import ObservationStore
 
 
@@ -67,6 +68,22 @@ class MemoryService:
             constraint_uid=constraint.uid,
             constraint_name=constraint.name,
             tier=constraint.tier,
+        )
+
+    async def reproject(self, uid: str | None = None) -> ReprojectionReport:
+        """Re-derive constraints from the observations that produced them.
+
+        The entry point invariant I4 needs: without it, a judgement
+        improvement reaches only constraints created after it shipped, so a
+        store stays frozen at the taxonomy of the run that made it.
+
+        Explicit rather than automatic. It re-asks the model once per
+        observation in the store, and it rewrites derived state in place —
+        neither belongs in a request path, and the report it returns is the
+        only record of what moved.
+        """
+        return await reproject(
+            self._observations, self._constraints, self._judge, uid=uid
         )
 
     def get_active_constraints(
