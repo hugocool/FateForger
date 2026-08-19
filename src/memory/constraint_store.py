@@ -6,34 +6,8 @@ import threading
 from datetime import datetime
 
 from memory.constraint import Applicability, Constraint
+from memory.migrations import apply_migrations
 from memory.models import DecayClass, Tier
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS constraints (
-    uid          TEXT PRIMARY KEY,
-    name         TEXT NOT NULL,
-    description  TEXT NOT NULL,
-    necessity    TEXT NOT NULL,
-    scope        TEXT NOT NULL,
-    status       TEXT NOT NULL,
-    source       TEXT NOT NULL,
-    frame_slot   TEXT,
-    tier         TEXT NOT NULL,
-    applicability TEXT NOT NULL,
-    created_at   TEXT NOT NULL,
-    decay_class      TEXT NOT NULL,
-    last_observed_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_constraints_tier ON constraints(tier);
-CREATE TABLE IF NOT EXISTS constraint_observations (
-    constraint_uid  TEXT NOT NULL,
-    observation_uid TEXT NOT NULL,
-    PRIMARY KEY (constraint_uid, observation_uid)
-);
-CREATE INDEX IF NOT EXISTS ix_co_observation
-    ON constraint_observations(observation_uid);
-"""
-
 
 class ConstraintStore:
     """Persistence for derived constraints.
@@ -53,8 +27,7 @@ class ConstraintStore:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._lock = threading.RLock()
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        apply_migrations(self._conn)
 
     def upsert(self, constraint: Constraint) -> str:
         with self._lock:

@@ -6,21 +6,8 @@ import sqlite3
 import threading
 from datetime import datetime
 
+from memory.migrations import apply_migrations
 from memory.models import Channel, Observation, Provenance
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS observations (
-    uid          TEXT PRIMARY KEY,
-    text         TEXT NOT NULL,
-    channel      TEXT NOT NULL,
-    provenance   TEXT NOT NULL,
-    session_id   TEXT,
-    observed_at  TEXT NOT NULL,
-    anchors      TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_obs_session ON observations(session_id);
-"""
-
 
 class ObservationStore:
     """Append-only log of observations.
@@ -37,8 +24,7 @@ class ObservationStore:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._lock = threading.RLock()
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        apply_migrations(self._conn)
 
     def append(self, obs: Observation) -> str:
         with self._lock:
