@@ -98,6 +98,9 @@ of them was found vacuous.
 
 > `OPENROUTER_DEFAULT_MODEL_FLASH` in `.env` currently pins the older
 > `google/gemini-3-flash-preview`. This file is authoritative; update the pin when convenient.
+> `OpenRouterJudge` defaults to `google/gemini-3.6-flash` in code and does not read that
+> variable, so the evals run on the right model regardless — but anything that does read it
+> will not.
 
 ### Why
 
@@ -149,22 +152,40 @@ surfaces it. That is the same silent-wrong-answer shape the pattern-matching ban
 `get_active_constraints` is synchronous, arithmetic-only, and guarded by an AST test. Callers
 hold it inside a planning loop; a model call there would buy them the host's latency and make
 the same day, read twice, answer differently. Filtering is structural — date ranges, weekday
-lists, decay thresholds. Semantic relevance is not implemented, so expect every applicable rule
-rather than a ranked subset.
+lists, decay thresholds, and reachability over the anchor graph.
 
-### Two things an incoming agent would otherwise assume wrongly
+That last one shaped the interface. Turning "Hockey practice" into an anchor uid *is* a
+judgement, so it cannot happen at read time: `resolve_anchor_names` is a separate sampling call
+a host makes once when it knows the day's events, and the read path then takes uids and does set
+membership over identifiers this system minted.
 
-**Improvements do not reach constraints that already exist.** `project()` writes derived fields
-only on the create branch; re-observing an old constraint folds and never acquires new fields,
-and no re-projection entry point exists. So every judgement improvement — including the ones
-already merged — applies only to constraints created after it shipped. A store is frozen at the
-taxonomy of the run that made it. This is I4, unimplemented, tracked as #154. Until it lands, a
-measurement on a fresh seed does not predict behaviour on the live store.
+### Three things an incoming agent would otherwise assume wrongly
 
-**`status` and `necessity` are effectively constants.** Projection hardcodes `Status.PROPOSED`,
-so `LOCKED` is never emitted; `necessity` is `MUST` for 36 of 37 live constraints, because it
-derives from `is_declaration`. Anything filtering on either gets all or nothing, and no test
-notices, because no fixture uses a value the pipeline can actually produce.
+**The anchor graph exists, the taxonomy is empty, and narrowing on it will lose rules.**
+`get_active_constraints(day, stage, anchor_uids)` walks the graph and returns only what the
+day's anchors reach — plus every constraint carrying no anchors, because unanchored and
+unreachable are different things. But `anchor_edges` is deliberately unpopulated: inducing
+`hockey is_a sport` is a taxonomy change, and promotion is structural and gated (#140). With no
+edges a rule surfaces only if its *own* anchor is among the seeds, so **a bedtime rule anchored
+to `sleep` vanishes on any day whose events do not name sleep.** Call it without `anchor_uids`
+until the gate lands. Getting the flood beats losing the bedtime.
+
+**`status` is a constant; `necessity` is not, any more.** Projection still hardcodes
+`Status.PROPOSED`, so `LOCKED` is never emitted and filtering on it matches nothing — it needs
+promotion logic that does not exist (#140), and a wrongly-locked rule makes the planner refuse
+to produce a workable day. `necessity` *was* the same story until it stopped deriving from
+`is_declaration` and became its own judgement asking what breaks rather than how firmly it was
+said. Measured at 8 draws per case, the old signal inverted three of four and answered `MUST` to
+three of four; the new one separates boundaries from preferences 8/8 against 0/8. It is worth
+reading.
+
+**A store older than the code is the case nothing had exercised.** Every run re-seeded from
+scratch, which hid both severe findings of the last sweep. Both are now closed — the schema is a
+versioned ladder that refuses a database it does not understand rather than failing as an
+`IndexError` in a row mapper (#155), and `reproject()` re-derives constraints from the
+observations behind them, so a judgement improvement reaches rules that already exist (#154,
+I4). Neither is automatic: re-projection samples once per observation and is an explicit call,
+never a request-path one. The live seeded store still predates all of it.
 
 ### Data
 
