@@ -55,15 +55,24 @@ class McpSampler:
         session_provider: Callable[[], ServerSession],
         *,
         max_tokens: int = MAX_TOKENS,
-        temperature: float = 0.0,
+        temperature: float | None = None,
     ) -> None:
         self._session_provider = session_provider
         self._max_tokens = max_tokens
-        # Pinned to 0. These are extraction judgements in the write path, and
-        # a sampled judgement makes a store's contents depend on luck: two
-        # identical statements can canonicalise differently. A host is free to
-        # ignore this — the MCP spec makes every sampling parameter advisory —
-        # so it is a request, not a guarantee.
+        # Unpinned by default, and this was measured rather than assumed.
+        # Pinning to 0 was once justified as making the write path
+        # reproducible; two identical passes over the real corpus showed it
+        # buys nothing here — no field disagreed less at 0, and whole-record
+        # disagreement was higher. Plausibly the endpoint still samples
+        # reasoning tokens, which this API refuses to disable outright.
+        #
+        # A default that looks like a guarantee and is not one is worse than
+        # no default: it invites callers to skip resampling. Determinism here
+        # comes from comparing categorical fields, not from a parameter.
+        # See docs/superpowers/research/2026-08-20-sampler-noise-floor.md.
+        #
+        # A host may still pass one, and remains free to ignore it — the MCP
+        # spec makes every sampling parameter advisory.
         self._temperature = temperature
 
     async def complete(self, system: str, user: str) -> str:
@@ -96,7 +105,7 @@ class McpSampler:
                 ],
                 system_prompt=system,
                 max_tokens=self._max_tokens,
-                temperature=self._temperature,
+                **({} if self._temperature is None else {"temperature": self._temperature}),
             )
         except McpError as exc:
             # The host answered the request with an error — a user rejecting

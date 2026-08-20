@@ -78,13 +78,26 @@ Never assert an exact model output string in a unit test. Assert the decision it
 
 ### An eval that samples once tests the model's luck, not its behaviour
 
-Either pin sampling (`temperature: 0`) so a single draw is representative, or sample n times and
-assert on the rate. **A prompt fix validated by one passing call has not been validated.**
+Sample n times and assert on the rate. **A prompt fix validated by one passing call has not
+been validated.**
 
-The two are not interchangeable. `temperature: 0` makes a suite *stable* but still tests one
-point; resampling measures the *distribution*, which is what tells you a judgement is robust
-rather than merely reproducible. For a judgement in the write path, the distribution is the
-thing that matters.
+**Do not pin `temperature: 0`, and do not treat pinning as an alternative to resampling.** It
+was once offered as one here. Two identical passes over the real corpus retired it: no field
+disagreed *less* at 0, and whole-record disagreement was *higher*. Plausibly the endpoint still
+samples reasoning tokens — `minimal` reduces them and this API rejects `{"enabled": false}`
+outright, so there is no floor below minimal. A pin that looks like a guarantee and is not one
+is worse than no pin, because it invites skipping the resample.
+
+Resampling measures the *distribution*, which is what tells you a judgement is robust rather
+than merely reproducible. For a judgement in the write path, the distribution is the thing that
+matters — and it is the only thing available.
+
+**Determinism comes from comparing the right fields, not from a sampling parameter.**
+Categorical judgements (`tier`, `decay_class`, `is_binding`, `days_of_week`) disagree at
+0–1.4%. Free text (`label`) disagrees at ~45%, because two runs paraphrase one rule — *"Oats
+before gym"* against *"Oats timing"* — and neither is wrong. **Any comparison over whole
+records measures paraphrase and nothing else.** Measurements:
+`docs/superpowers/research/2026-08-20-sampler-noise-floor.md`.
 
 This is not hypothetical. `test_a_sprint_scoped_cap_is_project_class` passed on its first run.
 The implementer resampled the identical text nine times: **eight of nine returned `permanent`,

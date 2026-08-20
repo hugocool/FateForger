@@ -251,13 +251,28 @@ async def test_non_text_content_is_refused():
         await McpSampler(lambda: session).complete("s", "u")
 
 
-async def test_the_request_carries_the_system_prompt_and_pins_temperature():
+async def test_the_request_carries_the_system_prompt_and_sends_no_temperature():
+    """Unpinned by default, and the parameter is omitted rather than sent as None.
+
+    Pinning to 0 was measured and buys nothing here — no field disagreed less
+    at 0 and whole-record disagreement was higher — so a default pin would be
+    a guarantee the transport cannot keep. Sending the key with a null value
+    is not the same as omitting it: a host that reads the field would see it
+    set. See 2026-08-20-sampler-noise-floor.md.
+    """
     session = FakeSession(result=_text_result('{"is_meta": false}'))
     await McpSampler(lambda: session).complete("SYSTEM", "USER")
     request = session.requests[0]
     assert request["system_prompt"] == "SYSTEM"
-    assert request["temperature"] == 0.0
+    assert "temperature" not in request
     assert request["messages"][0].content.text == "USER"
+
+
+async def test_a_host_may_still_pin_a_temperature():
+    """Advisory, but a caller that wants one is not prevented from asking."""
+    session = FakeSession(result=_text_result('{"is_meta": false}'))
+    await McpSampler(lambda: session, temperature=0.4).complete("SYSTEM", "USER")
+    assert session.requests[0]["temperature"] == 0.4
 
 
 # --- the server ----------------------------------------------------------
