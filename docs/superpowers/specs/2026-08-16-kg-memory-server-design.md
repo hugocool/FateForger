@@ -606,6 +606,42 @@ a standalone server, that is a real limit rather than a closed gap.
 covers `project`. Nothing prevents a future caller from driving `ingest` concurrently over the
 same session in a way the design has not been reasoned about.
 
+### Open — fields that advertise a discriminator and carry no signal
+
+**This spec describes a richer information model than the pipeline implements, and every gap
+is silent.** A consumer reading `models.py` sees a field, builds a filter on it, and gets all
+or nothing — with no test failing, because no fixture uses a value the pipeline can produce.
+Verified against the code on 2026-08-19:
+
+| field | state | why it is not merely unfinished |
+|---|---|---|
+| `Reliability` | **never wired.** Defined in `models.py`, exported from `__init__`, read by nothing — not stored, not weighted, not consulted, not even in a test | It is the field that should bound the #168 evidence-inflation harm: three retries are three `UNEXAMINED` rows, not three confirmations. Without it the gate has no notion of confirmation at all |
+| `is_declaration` | **was newly orphaned; deleted in `40e041f`.** Judged, carried on `IngestResult`, plumbed through the prompt and the `Judge` protocol — and consumed by nothing from #156, which gave `necessity` its own judgement and removed its only reader, until it was found four commits later | Kept in this table because the *shape* outlived the field. A reader saw a value carefully computed and threaded through four modules and reasonably concluded it mattered; the fix that killed it left the producer running |
+| `Status` | **unreachable value.** `projection.py` hardcodes `Status.PROPOSED` on both branches, so `LOCKED` is never emitted | Anything filtering for locked rules gets an empty set, which is indistinguishable from "nothing is locked yet" |
+| `frame_slot` | **null on 94%** (1,562 of 1,662; 75% within PROFILE), where null means three incompatible things | See Open questions. Nothing can branch on it correctly until the meanings are separated |
+
+`channel` is **not** in this list, though a sweep finding about judges not receiving it invites
+the confusion: it is genuinely consumed, driving `source` via `_SOURCE_BY_CHANNEL` in both
+`projection` and `reprojection`.
+
+The two failure shapes are worth separating, because they need different fixes. **Never wired**
+is unfinished work. **Newly orphaned** is a regression artifact — a fix removed the only
+consumer and left the producer running, so the code actively performs work whose result is
+discarded, and looks intentional to anyone reading it fresh. The second shape has no natural
+detector: nothing fails, and the field's presence is its own argument for keeping it.
+
+### Open — a shared idempotency key with divergent payloads
+
+Closed for the common case by #168, which gave the write a caller-supplied identity so a retry
+is a no-op rather than a blind replay (I5, applied to L1 appends for the first time). One path
+survives and is asserted rather than fixed: **same key, different text**, from a mangled retry
+or a caller reusing a key. `append` is a no-op on a known uid so L1 keeps the original, but
+projection would run on the incoming text — yielding a constraint that describes a statement
+existing nowhere in the observation log, with provenance pointing at a row that says something
+else. Re-projection would later "correct" it, so the store appears to change its mind
+unprompted. **First payload wins.** Found by mutation testing, and reachable only where two
+failure modes meet, which is why two earlier tests passed against the bug.
+
 ## Scope — one server, several projections (#159)
 
 Whether this serves the planner or every agent. **One L1 with several L2 projections, not
