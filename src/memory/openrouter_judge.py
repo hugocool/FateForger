@@ -39,11 +39,13 @@ class OpenRouterJudge(PromptJudge):
         api_key: str,
         base_url: str,
         model: str = "google/gemini-3.6-flash",
+        temperature: float | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self._temperature = temperature
         # A model call can comfortably exceed httpx's 5s default read timeout,
         # and a corpus run makes hundreds of sequential calls — one slow
         # response must not kill the run. Applies only to the client we
@@ -101,6 +103,11 @@ class OpenRouterJudge(PromptJudge):
                         # "minimal" is the lowest accepted setting.
                         "reasoning": {"effort": "minimal"},
                         "response_format": {"type": "json_object"},
+                        **(
+                            {}
+                            if self._temperature is None
+                            else {"temperature": self._temperature}
+                        ),
                     },
                 )
                 response.raise_for_status()
