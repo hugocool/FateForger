@@ -204,17 +204,54 @@ correction applies to a single example, the example is the more likely error. Th
 to build first: it needs no statistics, no labels and no outcome data, and it provably
 strengthens as the corpus grows rather than requiring a corpus to begin working.
 
-**Stage 5 is uninterpretable without a noise floor, so the floor is a precondition, not a
-check.** Run the *unchanged* taxonomy twice and record the disagreement rate. Until that number
-exists, every influence-replay diff is confounded with LLM non-determinism, and a gate that
-cannot separate its own noise from a real regression is worse than no gate — it rejects
-proposals at whatever rate the sampler happens to disagree with itself.
+**A noise floor is a precondition, not a check** — a gate that cannot separate its own noise
+from a real regression is worse than no gate, because it rejects proposals at whatever rate the
+sampler happens to disagree with itself. **There are two floors, and they are not the same
+measurement.**
 
-**The diff-size bound follows from the same number.** Worst-case bound width equals the
-disagreement rate, so a change touching 5% of sessions is estimable and one touching 60% is
-not. Stage 0 therefore has no fixed constant: it is *derived* from the measured floor, and it
-tightens as the sampler stabilises. A proposal exceeding it is decomposed and resubmitted as
-parts, never waved through as a special case.
+**The judge-side floor is measured** (`2026-08-20-sampler-noise-floor.md`, two identical passes
+over the real 69-observation corpus):
+
+| field | unpinned | `temperature: 0` |
+|---|---|---|
+| `tier`, `decay_class`, `is_binding` | 0.0% | 1.4% |
+| `days_of_week` | 1.4% | 1.4% |
+| `label` (free text) | **44.9%** | **53.6%** |
+| any field | 46.4% | 56.5% |
+
+**Every categorical judgement is effectively deterministic; the whole-record figure is
+paraphrase and nothing else.** Two runs render one rule as *"Oats before gym"* and *"Oats
+timing"* and neither is wrong.
+
+**So the diff-size bound is computed per field over categoricals — `tier`, `decay_class`,
+`is_binding`, `days_of_week` — and never over whole records.** This matters more than it
+sounds: whole-record gives ~46% and categorical gives ~1.4%, two orders of magnitude apart, and
+**the obvious way to compute it is the wrong one.** Derived from 46% the bound admits almost
+anything; derived from 1.4% it constrains. Stage 0 has no fixed constant either way — it is
+derived from the measured floor and tightens as the sampler stabilises. A proposal exceeding it
+is decomposed and resubmitted as parts, never waved through.
+
+**The planner-side floor is not measured, and stage 5 needs it rather than the one above.**
+Influence replay re-runs *the planner* with a constraint removed; its confound is planner
+non-determinism, not judge non-determinism. The judge measurement unblocks stage 0 and makes
+re-projection trustworthy (#154) — it says nothing about how much two identical planning runs
+differ. Expect that floor to be **worse**, because a plan is mostly not categorical, and the
+paraphrase effect that dominates `label` is the general case rather than the exception.
+**Categorical determinism is the lucky special case.**
+
+**Pinning `temperature: 0` does not buy determinism here.** It was not lower on any field, and
+whole-record was higher. The single-field differences are one observation each and one pair of
+runs cannot show that zero is *worse* — but it is enough to retire the assumption that pinning
+delivers a stable draw. Plausibly the endpoint still samples reasoning tokens: `minimal`
+reduces them and this API rejects `{"enabled": false}` outright, so there is no floor below
+minimal. **Determinism comes from comparing the right fields, not from a sampling parameter.**
+
+**Limit worth stating rather than discovering: replay cannot police free text.** Stage 5's
+discriminating power rests on the compared fields being near-deterministic. A judgement
+returning prose — a rationale, a proposed anchor *name*, a constraint label — sits above the
+paraphrase floor and is invisible to the filter. **The gate is therefore blind to precisely the
+part of a taxonomy proposal that carries its meaning**, and that part is the part a human reads
+at stage 6. This is an argument for stage 6 being the only authorising step, not a gap in it.
 
 **Drift is diachronic and does not belong in this procedure at all** (Leake & Wilson). A
 population-level trend requires signed cumulative error exceeding a magnitude *and* persisting
