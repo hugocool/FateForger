@@ -52,14 +52,49 @@ class MemoryService:
         session_id: str | None,
         observed_at: datetime,
         provenance: Provenance = Provenance.OBSERVED,
+        write_uid: str | None = None,
     ) -> ObserveOutcome:
+        """Record one statement. Safe to retry when `write_uid` is supplied.
+
+        Without `write_uid` the identity of the write is minted here, so a
+        caller retrying the same statement produces a second observation that
+        is indistinguishable from the user having said it twice — and L1 is
+        append-only, so it is permanent. Since evidence is what promotion and
+        decay count, a retry loop does not merely add noise: it inflates
+        support for whatever failed most often.
+
+        Passing a stable `write_uid` across retries makes this a no-op on the
+        second attempt. It also repairs the case that motivated it: if a
+        previous attempt appended and then failed during projection, the
+        observation is already stored with no constraint linked, and the retry
+        adopts that orphan rather than adding another.
+        """
         observation = Observation(
             text=text,
             channel=channel,
             provenance=provenance,
             session_id=session_id,
             observed_at=observed_at,
+            **({"uid": write_uid} if write_uid else {}),
         )
+
+        if write_uid is not None:
+            existing = self._observations.get(write_uid)
+            if existing is not None:
+                linked = self._constraints.constraint_for_observation(write_uid)
+                if linked is not None:
+                    constraint = self._constraints.get(linked)
+                    return ObserveOutcome(
+                        stored=True,
+                        constraint_uid=constraint.uid,
+                        constraint_name=constraint.name,
+                        tier=constraint.tier,
+                    )
+                # Stored but never projected — the orphan a prior failure left
+                # behind. Fall through and finish the projection rather than
+                # appending a duplicate of a row that is already here.
+                observation = existing
+
         result = await ingest(observation, self._judge, self._observations)
         if not result.stored:
             return ObserveOutcome(stored=False, suppressed_as=result.suppressed_as)

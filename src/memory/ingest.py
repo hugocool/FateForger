@@ -85,10 +85,10 @@ async def ingest(
         return IngestResult(stored=False, suppressed_as="duplicate")
 
     observation.anchors = anchor_j.anchors
-    uid = store.append(observation)
+    store.append(observation)
     return IngestResult(
         stored=True,
-        uid=uid,
+        uid=observation.uid,
         tier=tier_j.tier,
         anchors=anchor_j.anchors,
         label=tier_j.label,

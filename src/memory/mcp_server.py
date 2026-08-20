@@ -127,6 +127,7 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         session_id: str,
         channel: str = "planning",
         observed_at: str | None = None,
+        write_uid: str | None = None,
     ) -> dict:
         """Record one user statement and file it into memory.
 
@@ -134,6 +135,14 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         statement in one conversation, and a fresh value per conversation. A
         value that changes per call makes dedup a no-op; a constant value
         makes the candidate list grow without bound.
+
+        `write_uid` makes the call safe to retry. Without it, retrying appends
+        a second observation indistinguishable from the user having said the
+        same thing twice — and this log is append-only, so it is permanent.
+        Evidence is what promotion and decay count, so a retry loop inflates
+        support for whatever failed most often. Generate one id per statement
+        you intend to record, reuse it across retries of that statement, and
+        never reuse it for a different statement.
         """
         when = (
             datetime.fromisoformat(observed_at)
@@ -145,6 +154,7 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
             channel=Channel(channel),
             session_id=session_id,
             observed_at=when,
+            write_uid=write_uid,
         )
         return outcome.model_dump(mode="json")
 

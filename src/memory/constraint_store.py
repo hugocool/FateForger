@@ -105,6 +105,20 @@ class ConstraintStore:
                     [(constraint_uid, uid) for uid in observation_uids],
                 )
 
+    def constraint_for_observation(self, observation_uid: str) -> str | None:
+        """Which constraint an observation produced, if projection got that far.
+
+        None means the observation is an orphan: stored, but its projection
+        never completed. ix_co_observation exists for this direction.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT constraint_uid FROM constraint_observations "
+                "WHERE observation_uid = ? LIMIT 1",
+                (observation_uid,),
+            ).fetchone()
+        return row["constraint_uid"] if row else None
+
     def observations_for(self, constraint_uid: str) -> list[str]:
         with self._lock:
             rows = self._conn.execute(

@@ -20,12 +20,11 @@ def _obs(text: str = "wake up at 07:00", **kw) -> Observation:
     return Observation(**defaults)
 
 
-def test_append_returns_uid_and_get_round_trips(tmp_path):
+def test_append_reports_whether_it_wrote_and_get_round_trips(tmp_path):
     store = ObservationStore(str(tmp_path / "m.db"))
     obs = _obs()
-    uid = store.append(obs)
-    assert uid == obs.uid
-    got = store.get(uid)
+    assert store.append(obs) is True
+    got = store.get(obs.uid)
     assert got is not None
     assert got.text == "wake up at 07:00"
     assert got.channel is Channel.PLANNING
@@ -65,3 +64,19 @@ def test_package_does_not_import_fateforger():
     root = pathlib.Path(__file__).resolve().parents[2] / "src" / "memory"
     for path in root.rglob("*.py"):
         assert "fateforger" not in path.read_text(), f"{path} imports fateforger"
+
+
+def test_appending_the_same_uid_twice_writes_once(tmp_path):
+    """I5 at L1: never a blind replay of a prior payload.
+
+    The invariant was applied to L2 upserts and never to L1 appends, which is
+    the half that was missing. In an append-only log a replayed write is
+    permanent, and evidence is what promotion and decay count — so a retry
+    loop inflates support rather than merely adding a row.
+    """
+    store = ObservationStore(str(tmp_path / "m.db"))
+    obs = _obs()
+
+    assert store.append(obs) is True
+    assert store.append(obs) is False
+    assert len(store.all()) == 1
