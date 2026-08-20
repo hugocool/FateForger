@@ -34,7 +34,6 @@ async def test_observe_tool_round_trips(tmp_path):
     judge = StubJudge(
         tiers={"no meetings before 13:00": Tier.DURABLE},
         labels={"no meetings before 13:00": "No morning meetings"},
-        declarations={"no meetings before 13:00": True},
     )
     server = build_server(_service(tmp_path, judge))
     result = await server.call_tool(

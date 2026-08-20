@@ -26,7 +26,7 @@ def _obs(text: str, at: datetime = T0) -> Observation:
 def _result(obs, decay=DecayClass.PERMANENT, label="a rule") -> IngestResult:
     return IngestResult(
         stored=True, uid=obs.uid, tier=Tier.DURABLE,
-        label=label, is_declaration=True, decay_class=decay,
+        label=label, decay_class=decay,
     )
 
 

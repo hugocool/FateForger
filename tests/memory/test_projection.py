@@ -154,7 +154,7 @@ async def test_the_models_label_becomes_the_constraint_name(tmp_path):
     obs = _obs("eat oats two hours before gym")
     result = IngestResult(
         stored=True, uid=obs.uid, tier=Tier.DURABLE,
-        label="Oats before gym", is_declaration=False,
+        label="Oats before gym",
     )
     c = await project(obs, result, judge, store)
     assert c.name == "Oats before gym"
@@ -183,7 +183,7 @@ async def test_a_preference_becomes_a_should_however_firmly_stated(tmp_path):
     obs = _obs("I ALWAYS start the day with deep work, never email")
     result = IngestResult(
         stored=True, uid=obs.uid, tier=Tier.DURABLE,
-        label="Deep work first", is_declaration=True, is_binding=False,
+        label="Deep work first", is_binding=False,
     )
     c = await project(obs, result, StubJudge(), store)
     assert c.necessity is Necessity.SHOULD
@@ -206,7 +206,7 @@ async def test_channel_maps_to_the_consumers_source_vocabulary(tmp_path):
         )
         result = IngestResult(
             stored=True, uid=obs.uid, tier=Tier.DURABLE,
-            label="a rule", is_declaration=False,
+            label="a rule",
         )
         c = await project(obs, result, StubJudge(), store)
         assert c.source is expected

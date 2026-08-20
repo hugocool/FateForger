@@ -23,7 +23,6 @@ class TierJudgement(BaseModel):
     """Whether this belongs in durable memory or dies with the session."""
 
     tier: Tier = Tier.SESSION
-    is_declaration: bool = False
     label: str
     rationale: str = ""
 
@@ -175,7 +174,6 @@ class StubJudge:
         duplicates: dict[str, str] | None = None,
         canonical: dict[str, str] | None = None,
         labels: dict[str, str] | None = None,
-        declarations: dict[str, bool] | None = None,
         days_of_week: dict[str, list[int]] | None = None,
         start_dates: dict[str, date] | None = None,
         end_dates: dict[str, date] | None = None,
@@ -189,7 +187,6 @@ class StubJudge:
         self._duplicates = duplicates or {}
         self._canonical = canonical or {}
         self._labels = labels or {}
-        self._declarations = declarations or {}
         self._days_of_week = days_of_week or {}
         self._start_dates = start_dates or {}
         self._end_dates = end_dates or {}
@@ -207,7 +204,6 @@ class StubJudge:
         return TierJudgement(
             tier=self._tiers.get(observation.text, Tier.SESSION),
             label=self._labels.get(observation.text, observation.text),
-            is_declaration=self._declarations.get(observation.text, False),
             start_date=self._start_dates.get(observation.text),
             end_date=self._end_dates.get(observation.text),
             days_of_week=self._days_of_week.get(observation.text, []),

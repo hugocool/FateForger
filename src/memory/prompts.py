@@ -41,10 +41,6 @@ You decide whether a statement belongs in long-term memory.
 rule, or fact about how this person lives. "session" means it is about today
 only: a specific appointment, a one-off adjustment, today's plan.
 
-Also say whether it is a declaration — a rule the person is stating outright
-("I never take meetings before 13:00") rather than a fact you inferred from
-what they happened to mention.
-
 Also give a short label naming the rule — a few words, the way someone would
 refer to it in a list. "Oats before gym", not a restatement of the sentence.
 
@@ -79,7 +75,7 @@ be the default guess: naming a specific workstream is real evidence, not an
 excuse to guess short-lived.
 
 Respond with JSON only:
-{"tier": "durable"|"session", "is_declaration": true|false, "label": "...",
+{"tier": "durable"|"session", "label": "...",
  "days_of_week": [...], "start_date": null, "end_date": null,
  "decay_class": "permanent"|"seasonal"|"project"|"daily", "rationale": "..."}\
 """

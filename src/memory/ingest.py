@@ -17,7 +17,6 @@ class IngestResult(BaseModel):
     tier: Tier = Tier.SESSION
     anchors: list[str] = Field(default_factory=list)
     label: str = ""
-    is_declaration: bool = False
     # Whether breaking the rule ruins the day. Its own judgement rather than a
     # field on the tier call: the tier prompt already answers four things, and
     # a prompt that names a category without giving the model something to key
@@ -92,7 +91,6 @@ async def ingest(
         tier=tier_j.tier,
         anchors=anchor_j.anchors,
         label=tier_j.label,
-        is_declaration=tier_j.is_declaration,
         is_binding=necessity_j.is_binding,
         start_date=tier_j.start_date,
         end_date=tier_j.end_date,

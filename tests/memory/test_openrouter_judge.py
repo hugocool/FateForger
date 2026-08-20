@@ -75,7 +75,6 @@ async def test_tier_parses_structured_output():
         client=_mock(
             {
                 "tier": "durable",
-                "is_declaration": True,
                 "label": "No work after 21:00",
                 "rationale": "policy",
             }
@@ -83,7 +82,6 @@ async def test_tier_parses_structured_output():
     )
     result = await judge.tier(_obs("never work after 21:00"))
     assert result.tier is Tier.DURABLE
-    assert result.is_declaration is True
     assert result.label == "No work after 21:00"
 
 

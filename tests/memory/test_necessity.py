@@ -54,11 +54,12 @@ async def test_an_emphatic_preference_is_not_binding(tmp_path):
     """The case that made necessity a constant.
 
     Wired to is_declaration, "I ALWAYS..." was a declaration and therefore
-    MUST. The question now asks what breaks instead of how it was said.
+    MUST. The question now asks what breaks instead of how it was said, and
+    that signal has since been removed rather than left computed and unread.
     """
     db = str(tmp_path / "m.db")
     text = "I ALWAYS start with deep work, never email first"
-    judge = StubJudge(tiers={text: Tier.DURABLE}, declarations={text: True})
+    judge = StubJudge(tiers={text: Tier.DURABLE})
     service = MemoryService(db, judge)
 
     outcome = await service.observe(
@@ -73,8 +74,7 @@ async def test_a_casually_stated_obligation_is_binding(tmp_path):
     db = str(tmp_path / "m.db")
     text = "oh and I've got the school run at 3"
     judge = StubJudge(
-        tiers={text: Tier.DURABLE},
-        declarations={text: False},   # not stated as a rule
+        tiers={text: Tier.DURABLE},   # not stated as a rule
         bindings={text: True},        # but breaking it is a failure
     )
     service = MemoryService(db, judge)
@@ -184,7 +184,6 @@ async def test_a_session_constraint_also_derives_necessity_from_the_judgement(
         uid=observation.uid,
         tier=Tier.SESSION,
         label="Demo day afternoon",
-        is_declaration=True,
         is_binding=False,
     )
 

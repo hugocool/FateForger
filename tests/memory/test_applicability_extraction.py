@@ -48,7 +48,7 @@ async def test_days_of_week_reaches_the_constraint(tmp_path):
     obs = _obs("go to client on Tuesdays and Thursdays")
     result = IngestResult(
         stored=True, uid=obs.uid, tier=Tier.DURABLE,
-        label="Client attendance days", is_declaration=True,
+        label="Client attendance days",
         days_of_week=[1, 3],
     )
     c = await project(obs, result, StubJudge(), store)
@@ -61,7 +61,7 @@ async def test_a_tuesday_thursday_rule_is_not_served_on_monday(tmp_path):
     obs = _obs("go to client on Tuesdays and Thursdays")
     result = IngestResult(
         stored=True, uid=obs.uid, tier=Tier.DURABLE,
-        label="Client attendance days", is_declaration=True,
+        label="Client attendance days",
         days_of_week=[1, 3],
     )
     await project(obs, result, StubJudge(), store)
@@ -74,7 +74,7 @@ async def test_a_date_range_reaches_the_constraint(tmp_path):
     obs = _obs("this sprint, cap framing at 15 minutes")
     result = IngestResult(
         stored=True, uid=obs.uid, tier=Tier.DURABLE,
-        label="Framing cap", is_declaration=True,
+        label="Framing cap",
         start_date=date(2026, 8, 1), end_date=date(2026, 8, 14),
     )
     c = await project(obs, result, StubJudge(), store)
