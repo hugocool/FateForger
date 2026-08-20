@@ -178,6 +178,86 @@ may contract the logical extent. Behavioural non-compliance carries finite weigh
 confidence only, and never touches the extent. Skipping oats before one hockey game is not
 evidence the rule is wrong.
 
+### The verdict procedure (#140)
+
+The shape above is a policy; this is the procedure. **Checks run in this order, and the order is
+load-bearing** — each stage is cheaper than the next and can reject alone, so a malformed
+proposal never reaches a model call and a structurally illegal one never reaches statistics.
+
+| # | check | cost | may reject | may authorise |
+|---|---|---|---|---|
+| 0 | **Diff-size bound** — a proposal touching more than the estimable fraction of sessions is split or refused, never adjudicated | free | ✓ | ✗ |
+| 1 | **Lattice legality** — closure of the instance set; siblings pairwise disjoint and unioning to the parent | free | ✓ | ✗ |
+| 2 | **Minimum support of 2 on the repair** | free | ✓ | ✗ |
+| 3 | **Deletion brake `n > s/e`** — required evidence scales with the syntactic mass being deleted | free | ✓ | ✗ |
+| 4 | **OntoClean rigidity/identity** — is the proposed parent a *kind*, or a *role*? | one model call | ✓ | ✗ |
+| 5 | **Leave-one-out influence replay** — regression filter against the noise floor | expensive | ✓ | ✗ |
+| 6 | **User confirmation** via binary-split questioning | one interaction | ✓ | **✓ — only here** |
+
+**Nothing before stage 6 can authorise anything.** That is I6 made operational: stages 0–5 are
+a sieve, and passing all of them means only *not yet rejected*. A proposal that clears every
+structural check and every veto is still not promoted until the user confirms. Read the table
+as six ways to say no and one way to say yes.
+
+**Minimum support of 2 is on the repair, not on the rule** (EITHER, Mooney & Ourston). If a
+correction applies to a single example, the example is the more likely error. This is the one
+to build first: it needs no statistics, no labels and no outcome data, and it provably
+strengthens as the corpus grows rather than requiring a corpus to begin working.
+
+**Stage 5 is uninterpretable without a noise floor, so the floor is a precondition, not a
+check.** Run the *unchanged* taxonomy twice and record the disagreement rate. Until that number
+exists, every influence-replay diff is confounded with LLM non-determinism, and a gate that
+cannot separate its own noise from a real regression is worse than no gate — it rejects
+proposals at whatever rate the sampler happens to disagree with itself.
+
+**The diff-size bound follows from the same number.** Worst-case bound width equals the
+disagreement rate, so a change touching 5% of sessions is estimable and one touching 60% is
+not. Stage 0 therefore has no fixed constant: it is *derived* from the measured floor, and it
+tightens as the sampler stabilises. A proposal exceeding it is decomposed and resubmitted as
+parts, never waved through as a special case.
+
+**Drift is diachronic and does not belong in this procedure at all** (Leake & Wilson). A
+population-level trend requires signed cumulative error exceeding a magnitude *and* persisting
+for a duration before trend analysis runs — signed summation being the trick that matters,
+since symmetric noise cancels while bias accumulates. A snapshot policy structurally cannot
+make that call, so drift proposes changes *into* stage 0; it is never a check *within* it.
+
+#### What a human can and cannot override
+
+- **Overridable: every statistical veto** (stages 2, 3, 5). These are brakes, not authorities —
+  they exist to slow a change the evidence does not yet support, and a user who says the rule
+  is right outranks a count that says it is unusual. This is the AGM success postulate, and it
+  is the same last-write-wins the rest of the design already commits to.
+- **Overridable with an explicit acknowledgement: OntoClean** (stage 4). Rigidity is a model
+  judgement at roughly 4% inaccuracy, so it is right far more often than a user is wrong — but
+  it is not certain, and a person naming their own domain may legitimately know better.
+- **Not overridable: lattice legality** (stage 1). Not because it is more authoritative, but
+  because overriding it does not produce a taxonomy the user disagrees with — it produces a
+  structure the read path silently answers wrongly from. Siblings that overlap make a traversal
+  return a rule twice; siblings that do not union to their parent make it return nothing on the
+  gap. **Both are invisible at the call site**, which puts this in the same class as the AST
+  guard and the query-plan assertion: an invariant no output reveals.
+
+**Forgetting is safer here than the CBR literature implies, and this is deliberate.** Smyth &
+Keane's warning about utility-based deletion holds because a pure case-based reasoner has no
+fallback generator — strip its cases and it cannot solve anything. There is an LLM behind this
+memory, so a deleted constraint degrades a plan rather than breaking the system. The deletion
+calculus is looser than imported caution suggests, which is why stage 3 is a scaling brake
+rather than a prohibition.
+
+**Retraction is still not free.** CRDR is the only Ripple-Down-Rules variant permitting true
+rule modification, and to get it it had to abandon the cornerstone gate, add explicit state
+tracking and conflict detection, and reintroduce precisely the maintenance-scaling risk RDR
+existed to eliminate. Stage 3 is what keeps this system from paying that bill by accident.
+
+**Everyone else refuses this adjudication, and that is the argument for stage 6 rather than an
+embarrassment.** AGM hands it to the input unconditionally. Both TMS papers push it to the
+problem solver by name. RDR pushes it to the human expert as explicit philosophy. IB3 and BBNR
+exist because instance-based learning had to face noisy data and could not push it anywhere.
+**A single contradiction is sufficient everywhere in classical belief revision, TMS and RDR** —
+so a design that lets statistics accumulate against a user's stated rule would be the outlier,
+not the rigorous choice.
+
 ### The verdict has three values, not two
 
 `keep` / `retract` is the defect. **IB3** (Aha, Kibler & Albert 1991) supplies the third, and it
