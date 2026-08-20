@@ -70,9 +70,14 @@ changing the taxonomy is a re-projection, not a data migration.
 Stated so they can be enforced rather than eroded. A change that violates one of these is a
 design change, not an implementation detail.
 
-- **I1 — The LLM proposes and names. The lattice decides structure.** No LLM call in the read
-  path; read-time traversal is a deterministic graph walk. Protects the interactive latency
-  budget (#93) and is grounded in measured LLM ceilings (see Evidence).
+- **I1 — The LLM proposes and names. The lattice decides structure.** No LLM call in *the
+  constraint projection's* read path; read-time traversal is a deterministic graph walk.
+  Scoped deliberately. `get_active_constraints` is model-free because planners call it inside
+  a loop — an earned constraint, not a law of memory. A projection whose economics differ
+  declares its own read-path contract: an admonishment read fires once per nag decision, not
+  once per planning iteration. Stated as a universal, this would force a wrong design on the
+  first projection that does not share the planner's latency budget. Protects the interactive
+  latency budget (#93) and is grounded in measured LLM ceilings (see Evidence).
 - **I2 — Canonicalisation is a projection, never destructive.** L1 is immutable and
   append-only. This is what stops the two loops from starving each other.
 - **I3 — Identity is minted, never content-derived.** Opaque, stable across edits. Semantics
@@ -82,6 +87,26 @@ design change, not an implementation detail.
 - **I6 — Promotion by structure, rejection by statistics.** Statistics may veto a taxonomy
   change; they may never authorise one. See Gate.
 
+### Enforcing an invariant that no output reveals
+
+Two of the above cannot be protected by asserting on behaviour, because the wrong
+implementation returns the right answer.
+
+- **I1's read path** is guarded by an AST test that walks `read_api` and fails if a judge call
+  appears. A model call there would return correct constraints — just slowly, and differently
+  on a second read of the same day.
+- **The anchor walk's query plan** is asserted directly via `EXPLAIN QUERY PLAN`. SQLite has no
+  cardinality estimate for a recursive co-routine, assumes it is large, and inverts the join to
+  `SCAN ca` — making the walk linear in total store size rather than in the neighbourhood
+  reached. `CROSS JOIN` forces the order: **85 ms to 0.43 ms, identical results.** Nothing
+  behavioural can catch the keyword's removal, because nothing about the output changes.
+
+The rule: **when correctness lives in something no output reveals, assert the mechanism.**
+
+The corollary is the uncomfortable one. These are exactly the invariants a green suite cannot
+protect — every finding in the 2026-08-17 sweep came from deliberately breaking something,
+never from running the tests.
+
 ## Retrieval
 
 Anchors arrive as **symbols**, not natural language — a calendar event hands the system
@@ -89,8 +114,9 @@ Anchors arrive as **symbols**, not natural language — a calendar event hands t
 language. That step is dead weight here.
 
 Conditional applicability is relational, not a field — a scalar `condition` column is
-unqueryable. **How it is encoded is an open fork, tracked on #137**, and it must be decided
-before any node/edge model is written:
+unqueryable. **This fork is now closed — #137 shipped path intersection.** The table below is
+kept because it records what was traded away, and the cross-day case under it is the debt that
+trade incurred:
 
 | | conditionality lives in | the cross-day case |
 |---|---|---|
@@ -107,6 +133,24 @@ An event carries *n* anchors, not one — four surface forms were observed for a
 titled `hockey/running` which is genuinely two. And offsets belong on the edge (`oats
 APPLIES_TO sport, −2h`), not on the constraint, or a rule cannot carry a different offset per
 anchor.
+
+### Substrate — SQLite, decided by measurement (#141)
+
+Recursive CTEs, no graph database. At **100× the real store, on disk, a depth-3 walk runs
+0.79 ms p50** — less than a localhost round trip, so a server-based graph cannot win on
+latency and loses on standalone-ness. Neo4j was deliberately not benchmarked; there is no
+figure it could return that would change the decision.
+
+The trap is recorded under *Enforcing an invariant that no output reveals* above: the obvious
+query is linear in total store size, costs 0.87 ms today, and degrades invisibly as the store
+grows. **A substrate decision was one missing `CROSS JOIN` away from being made wrongly.**
+
+### The hazard while the graph is empty
+
+With no edges, a constraint anchored to `sleep` is unreachable on any day whose events do not
+name `sleep` — the walk returns nothing and the caller cannot distinguish *no such rule* from
+*no path to it*. **Call without `anchor_uids` until #140 lands.** This is the thing a newcomer
+gets wrong: the surface exists, so it reads as ready.
 
 ## Gate (loop 2)
 
@@ -395,6 +439,43 @@ Facts about the existing system the design must survive. These are constraints, 
 
 Load-bearing findings from the research pass. Full reports in `docs/superpowers/research/`.
 
+**The two-layer design, validated on the real corpus.** Everything below this line is
+measurement on Hugo's own store rather than on a fixture or a fresh seed.
+
+Re-projecting the live seeded store — 37 constraints derived from 69 observations, written by a
+build that predated every judgement improvement since — inverted the necessity distribution:
+
+    frozen (schema v0)                reprojected (schema v2)
+    must 36, should 1                 should 34, must 3
+    proposed 37                       proposed 37
+    3 of 37 scoped                    4 of 37 scoped
+
+    34 changed · 3 unchanged · 0 skipped · 67s · migrated v0 -> v2 on open
+
+The three it held as hard boundaries were **Commute duration**, **Work cutoff time** and
+**Market opening hours** — one physical constraint and two facts about the outside world. Every
+rule it flexed is a preference: *Sci-Fi Reading before bed*, *Oats Timing*, *Maximum Deep Work
+blocks*, *Timeboxing Preference*.
+
+Three claims are settled by that run at once, and none of them could be settled by a fresh seed:
+
+- **I4 pays off.** These constraints were created before the necessity judgement existed. Under
+  the old fold path they would have kept `MUST` forever no matter how many times Hugo restated
+  them, because a fold refreshed one timestamp and nothing else. 34 of 37 acquiring a corrected
+  field is the invariant doing the thing it was specified for.
+- **The schema ladder handles a store older than the code.** The store opened at `user_version`
+  0 and migrated to 2 without intervention — the case that had never been exercised, because
+  every prior run re-seeded from scratch.
+- **`necessity` discriminates.** It was `MUST` on 36 of 37 because it derived from
+  `is_declaration`, which answers *was this stated outright*. Asking *what breaks* instead
+  separates a corpus that a consumer previously could not filter at all.
+
+Run conditions: `OpenRouterJudge` on `google/gemini-3.6-flash`, `reasoning.effort: minimal`, two
+questions re-asked per observation (`tier`, `necessity`) at concurrency 8. Executed against a
+**copy** of the store — the frozen original is retained, because re-projection rewrites derived
+state in place and the before-state is the exhibit.
+
+
 - **LLM structural ceiling.** LLMs4OL 2024: term typing F1 0.97–0.99, but taxonomy *discovery*
   peaks at 0.6557, drops to 0.21 on DBpedia and 0.03 zero-shot; relation extraction 0.078.
   Grounds I1.
@@ -525,12 +606,59 @@ a standalone server, that is a real limit rather than a closed gap.
 covers `project`. Nothing prevents a future caller from driving `ingest` concurrently over the
 same session in a way the design has not been reasoned about.
 
+## Scope — one server, several projections (#159)
+
+Whether this serves the planner or every agent. **One L1 with several L2 projections, not
+several servers.**
+
+**L1 already generalises.** An observation is text, channel, provenance, a minted uid, a
+timestamp and anchors — nothing constraint-shaped. L2 is where the constraint assumption lives.
+
+**Sharing L1 is safe because the contamination guard is already built and enforced.**
+`Provenance.GENERATED` exists so a rule emitting a calendar block cannot observe its own output
+as evidence, and `ingest` rejects anything that is not `OBSERVED`. System-authored records — an
+admonishment log among them — carry `GENERATED` and inherit that guard. This is the strongest
+argument for one server, and it is load-bearing today rather than aspirational.
+
+**Decay must not be shared, and this is the sharp edge.** A preference decays because relevance
+fades. *"The system nagged Hugo on Tuesday"* is a fact about history and is permanently true.
+Apply a half-life to it and the system forgets it nagged, then nags again — and the failure is
+**self-concealing**, not merely silent: a forgotten nag is indistinguishable from a first nag,
+the re-nag is logged, and the log then looks correct. **Each projection declares its own decay
+contract. The admonishment projection declares none.**
+
+**Admonishment state folds, so I2 holds.** Escalation is `count(nag events for a subject)` and
+a function of elapsed time — nothing mutable. The mutable state hides *in flight*, between
+deciding to nag and confirming delivery. Log only the decision and the ladder runs ahead of
+what the user actually experienced; log only the delivery and something must hold the decision
+across the gap — and that something is a mutable `pending` field wearing a memory costume. Two
+events, intent and outcome, folded. This is the same shape as `ingest` committing before
+`project` runs, which leaks an orphan observation per retry and **is still live**.
+
+**Acknowledgement is the hard fold, and it crosses provenance.** *"Stop nagging me about X"* is
+an `OBSERVED` user statement that must suppress nags derived from the system's own `GENERATED`
+log. So admonishment state is a fold over the union of both, latest-wins (AGM success
+postulate; see Gate). The design consequence is an asymmetry: **the admonishment projection
+reads both provenance classes, while the constraint projection reads only `OBSERVED`.**
+
+**Unsettled, and it needs settling before #140:** whether admonishment subjects share the
+constraint anchor space or get a disjoint one. Shared means a nag about `sleep` traverses to
+the bedtime rule — plausibly the feature, since it is how a nag would know *why* it is nagging,
+and plausibly a collision. Cheap to decide now, expensive once the taxonomy has edges. It
+belongs on the map as a decision, not as an emergent property of whichever code lands first.
+
 ## Open questions (fog)
 
 - Re-projection mechanics when L3 changes — incremental or full rebuild, and what invalidates.
-- **How conditionality is encoded** — path intersection vs trigger predicates. See Retrieval;
-  tracked on #137 and blocking the write path.
-- Migration of the 1,662 existing rows.
+- ~~How conditionality is encoded~~ — **closed**: #137 shipped path intersection.
+- Whether admonishment subjects share the constraint anchor space. See Scope; blocks #140.
+- Migration of the 1,662 existing rows. Note that **1,455 of them are SESSION-scoped** — 88%
+  of that table is per-thread chatter, not preference, and a migration treating it as a
+  preference store inherits all of it. And `frame_slot` is null on 1,562 of 1,662 (94%; 75%
+  even within PROFILE), where null means three incompatible things — genuinely unanchored,
+  extraction failed, or legacy row. Nothing can branch on null while it means all three; the
+  view needs an explicit discriminator, and classifying the legacy rows is a meaning judgement,
+  so one offline `:batch` pass.
 - Whether Notion survives as a human-editable view onto the graph.
 - Multi-user, or single-tenant forever.
 - Tuning the loop-2 induction prompt itself.
