@@ -13,6 +13,7 @@ from memory.judge import (
     AnchorResolutions,
     CanonicaliseJudgement,
     ConstraintLike,
+    DayJudgement,
     DedupJudgement,
     MetaJudgement,
     NecessityJudgement,
@@ -181,6 +182,23 @@ Respond with JSON only:
 """
 
 
+CLASSIFY_DAY_PROMPT = """You are told what is on a person's calendar for one day.
+Decide what KIND of day it is, because their working-day rules should not be applied
+to a day they are not working.
+
+Answer with exactly one of:
+  "working"  — an ordinary working day, whatever else is also on it
+  "vacation" — they are away: holiday, leave, a trip taken as time off
+  "holiday"  — a public holiday
+  "sick"     — they are unwell and not working
+  "weekend"  — a non-working day that is none of the above
+
+A single meeting does not make a vacation day a working day. Judge the day as a
+whole, by what dominates it.
+
+Return {"day_type": "<one of the above>", "rationale": "<one short sentence>"}."""
+
+
 class PromptJudge(ABC):
     """The seven questions, asked identically no matter who answers them.
 
@@ -269,6 +287,19 @@ class PromptJudge(ABC):
         if "duplicate_of" not in payload:
             raise ValueError(f"could not parse judge response: {payload!r}")
         return self._build(DedupJudgement, payload)
+
+    async def classify_day(self, events: list[str]) -> DayJudgement:
+        if not events:
+            # An empty calendar says nothing about the kind of day, and
+            # guessing would be worse than the caller's own default. This is
+            # a shortcut, not a fallback: no judgement is available to make.
+            return DayJudgement(day_type="working", rationale="no events")
+        payload = await self._ask(
+            CLASSIFY_DAY_PROMPT, "Calendar events:\n" + "\n".join(events)
+        )
+        if "day_type" not in payload:
+            raise ValueError(f"could not parse judge response: {payload!r}")
+        return self._build(DayJudgement, payload)
 
     async def resolve_anchors(
         self, names: list[str], candidates: list[AnchorLike]

@@ -124,6 +124,22 @@ class MemoryService:
             self._observations, self._constraints, self._judge, uid=uid
         )
 
+    async def classify_day(self, events: list[str]) -> str:
+        """What kind of day this is, from what is on the calendar.
+
+        Separate from the read path on purpose, and for the same reason
+        `resolve_anchor_names` is: deciding that "Vakantie Toscane" means the
+        user is on holiday is a judgement about meaning, so it needs a model —
+        and the read path must not have one. The caller classifies once, then
+        reads structurally as many times as it likes.
+
+        Weekday was standing in for this and is not equal to it. A rule scoped
+        Mon-Fri fires on a Tuesday spent on holiday; measured on the real
+        store, a vacation Friday returned 30 constraints including commute
+        duration and deep-work entry gates.
+        """
+        return (await self._judge.classify_day(events)).day_type
+
     async def resolve_anchor_names(self, names: list[str]) -> list[str]:
         """Anchor uids for names the caller pulled off a calendar or a plan.
 

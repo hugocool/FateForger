@@ -50,6 +50,20 @@ class Applicability(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     days_of_week: list[int] = Field(default_factory=list)  # 0=Mon .. 6=Sun
+    # Which kinds of day this rule applies to. Empty means every kind.
+    #
+    # Weekday is not a substitute for this and was used as one. A rule scoped
+    # to Mon-Fri fires on a Tuesday spent on holiday, on a public holiday, on
+    # a sick day and on a conference day — measured on the real store, a
+    # vacation Friday returned 30 constraints including commute duration and
+    # deep-work entry gates. "Working day" is a property of the day, and the
+    # calendar knows it; the weekday index only ever approximated it.
+    #
+    # The vocabulary is system-minted, so comparing these strings is set
+    # membership rather than a judgement about meaning. Deciding that a day
+    # *is* a working day reads the user's calendar and is a judgement — it
+    # happens before this, with a model, the same way anchor resolution does.
+    day_types: list[str] = Field(default_factory=list)
 
     @field_validator("days_of_week")
     @classmethod
@@ -69,12 +83,22 @@ class Applicability(BaseModel):
             )
         return value
 
-    def applies_on(self, day: date) -> bool:
+    def applies_on(self, day: date, day_type: str | None = None) -> bool:
+        """Whether this rule applies on `day`, optionally given its kind.
+
+        `day_type` is what the caller learned about the day from elsewhere —
+        the calendar, usually, classified by a model before this is called.
+        Omitting it keeps the pre-existing behaviour exactly: a caller that
+        does not know what kind of day it is gets every rule whose dates and
+        weekdays match, which is the safe direction to be wrong in.
+        """
         if self.start_date is not None and day < self.start_date:
             return False
         if self.end_date is not None and day > self.end_date:
             return False
         if self.days_of_week and day.weekday() not in self.days_of_week:
+            return False
+        if self.day_types and day_type is not None and day_type not in self.day_types:
             return False
         return True
 

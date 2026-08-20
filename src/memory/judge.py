@@ -93,6 +93,19 @@ class CanonicaliseJudgement(BaseModel):
     rationale: str = ""
 
 
+class DayJudgement(BaseModel):
+    """What kind of day this is, read off the calendar.
+
+    `day_type` is drawn from a system-minted vocabulary, so comparing it at
+    read time is set membership rather than a judgement about meaning. The
+    judgement is here, once, before the read path — which is the same
+    position anchor resolution occupies and for the same reason.
+    """
+
+    day_type: str = "working"
+    rationale: str = ""
+
+
 @runtime_checkable
 class AnchorLike(Protocol):
     """The shape resolve_anchors needs from an existing anchor.
@@ -135,6 +148,8 @@ class Judge(Protocol):
     async def resolve_anchors(
         self, names: list[str], candidates: list[AnchorLike]
     ) -> AnchorResolutions: ...
+
+    async def classify_day(self, events: list[str]) -> DayJudgement: ...
 
     async def meta(self, observation: Observation) -> MetaJudgement: ...
 
@@ -180,6 +195,7 @@ class StubJudge:
         decay_classes: dict[str, DecayClass] | None = None,
         bindings: dict[str, bool] | None = None,
         anchor_uids: dict[str, str] | None = None,
+        day_type: str = "working",
     ) -> None:
         self._anchors = anchors or {}
         self._tiers = tiers or {}
@@ -193,6 +209,7 @@ class StubJudge:
         self._decay_classes = decay_classes or {}
         self._bindings = bindings or {}
         self._anchor_uids = anchor_uids or {}
+        self._day_type = day_type
         self.calls: list[tuple[str, str]] = []
 
     async def anchors(self, observation: Observation) -> AnchorJudgement:
@@ -240,6 +257,10 @@ class StubJudge:
                 for n in names
             ]
         )
+
+    async def classify_day(self, events: list[str]) -> DayJudgement:
+        self.calls.append(("classify_day", ",".join(events)))
+        return DayJudgement(day_type=self._day_type)
 
     async def canonicalise(
         self, observation: Observation, candidates: list[ConstraintLike]

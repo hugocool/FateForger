@@ -13,6 +13,7 @@ def get_active_constraints(
     stage: str | None = None,
     *,
     reachable: set[str] | None = None,
+    day_type: str | None = None,
 ) -> list[ConstraintView]:
     """Constraints that apply on `day`, as views for the patcher.
 
@@ -48,7 +49,7 @@ def get_active_constraints(
     return [
         c.to_view()
         for c in store.durable()
-        if c.applicability.applies_on(day)
+        if c.applicability.applies_on(day, day_type)
         and not c.has_faded(day)
         and (reachable is None or c.uid in reachable)
     ]
@@ -69,4 +70,37 @@ def get_faded_constraints(
         c.to_view()
         for c in store.durable()
         if c.applicability.applies_on(day) and c.has_faded(day)
+    ]
+
+
+def get_suspended_constraints(
+    store: ConstraintStore,
+    day: date,
+    *,
+    day_type: str | None = None,
+) -> list[ConstraintView]:
+    """Rules that are true, and deliberately not in force on `day`.
+
+    Absence from `get_active_constraints` has three causes and one appearance:
+    no such rule exists, a rule exists and does not apply today, or a rule
+    exists and has faded. A caller cannot tell them apart, and they want
+    opposite responses — the first is a gap to fill by asking, the second is
+    correct and needs nothing, the third is a rule to confirm before losing it.
+    Returning a shorter list collapses all three into silence.
+
+    So suspension gets its own channel rather than being folded into
+    `get_faded_constraints`. The two are different states with different
+    remedies: faded asks *is this still true?*, suspended asserts *this is
+    true, and not today*. A planner on vacation should be able to say
+    "19 working-day rules are suspended" rather than behave as though Hugo
+    never had them.
+
+    Model-free, like every read here — a constraint is suspended when its
+    dates and decay admit it but its day kind or weekday does not.
+    """
+    return [
+        c.to_view()
+        for c in store.durable()
+        if not c.has_faded(day)
+        and not c.applicability.applies_on(day, day_type)
     ]
