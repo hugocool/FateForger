@@ -175,8 +175,8 @@ async def test_derivation_uses_the_whole_evidence_set_not_the_first(tmp_path):
     await reproject(observations, constraints, judge)
 
     result = constraints.get(stale.uid)
-    assert result.description == "lunch at 12:30 sharp"   # newest text
-    assert result.name == "Lunch"                          # newest label
+    # Prose is preserved, not re-derived — see the next test for why.
+    assert result.description == "lunch around noon"
     assert result.created_at == early.observed_at          # earliest evidence
     assert result.last_observed_at == late.observed_at     # latest evidence
     assert result.tier is Tier.DURABLE                     # tier moves up
@@ -386,3 +386,65 @@ async def test_a_folded_constraint_acquires_the_improvement_through_the_facade(
     assert "applicability" in report.changed[0].fields
     assert service.get_active_constraints(monday) == []
     assert len(service.get_active_constraints(date(2026, 8, 4))) == 1  # Tuesday
+
+
+async def test_reprojection_never_overwrites_a_rule_with_its_newest_mention(
+    tmp_path,
+):
+    """Regression, measured on the real corpus before it was caught.
+
+    Every other field in _derive folds across all observations. `name` and
+    `description` took only the newest, which does not flatten a contested
+    *value* — it replaces the rule with whichever statement was said last.
+
+    On Hugo's store that overwrote 8 of 12 multi-observation constraints. The
+    case below is real: eight observations asserting deep-work blocks run two
+    hours, three later ones proposing ninety minutes, and the result asserted
+    ninety — the eight were not outvoted, they were discarded. Deciding what
+    disagreeing statements jointly assert is a judgement, and re-projection is
+    not entitled to make it (#137 holds contested values, #140 resolves them).
+    """
+    observations, constraints = _stores(tmp_path)
+    majority = _observe(observations, "deep work blocks are usually 2 hours")
+    later = _observe(
+        observations,
+        "deep work blocks should be at least 90 minutes",
+        at=WHEN + timedelta(days=40),
+    )
+    stale = _stale_constraint(constraints, majority)
+    constraints.link_observation(stale.uid, later.uid)
+
+    judge = StubJudge(
+        tiers={majority.text: Tier.DURABLE, later.text: Tier.DURABLE},
+        labels={later.text: "Deep work duration"},
+    )
+    report = await reproject(observations, constraints, judge)
+
+    result = constraints.get(stale.uid)
+    assert result.description == majority.text, (
+        f"the rule was replaced by its newest mention: {result.description!r}"
+    )
+    assert "90 minutes" not in result.description
+    # Reported rather than silent — a caller reading only `changed` would
+    # otherwise take these for fully re-derived.
+    assert [c.uid for c in report.contested] == [stale.uid]
+    assert report.contested[0].observations == 2
+
+
+async def test_a_single_observation_constraint_still_gains_a_better_label(
+    tmp_path,
+):
+    """One observation cannot contradict itself, so there is nothing to decide
+    and an improved label must still reach it."""
+    observations, constraints = _stores(tmp_path)
+    observation = _observe(observations, "walk the dog at eight")
+    stale = _stale_constraint(constraints, observation)
+
+    judge = StubJudge(
+        tiers={observation.text: Tier.DURABLE},
+        labels={observation.text: "Dog walk"},
+    )
+    report = await reproject(observations, constraints, judge)
+
+    assert constraints.get(stale.uid).name == "Dog walk"
+    assert report.contested == []

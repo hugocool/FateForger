@@ -35,6 +35,14 @@ class ConstraintChange(BaseModel):
     fields: list[str] = Field(default_factory=list)
 
 
+class ContestedConstraint(BaseModel):
+    """A constraint whose prose was left alone because its evidence disagrees."""
+
+    uid: str
+    name: str
+    observations: int
+
+
 class ReprojectionReport(BaseModel):
     """The audit trail for a run that rewrote derived state in place.
 
@@ -47,6 +55,10 @@ class ReprojectionReport(BaseModel):
     changed: list[ConstraintChange] = Field(default_factory=list)
     unchanged: int = 0
     skipped: list[tuple[str, str]] = Field(default_factory=list)
+    # Multi-observation constraints whose name and description were preserved
+    # rather than re-derived. Reported rather than silent: a caller comparing
+    # counts would otherwise read "changed" as "fully re-derived".
+    contested: list[ContestedConstraint] = Field(default_factory=list)
 
 
 class _Judged(NamedTuple):
@@ -105,11 +117,27 @@ def _derive(observations: list[Observation], judgements: dict) -> dict:
     decided what each observation means; this decides only how several such
     decisions add up.
 
-    KNOWN FLATTENING: when two observations disagree on a value, the newer one
-    wins and the older is invisible in the result. That is the same silent
-    fold #137 decided against, and it stays until the edge table lands to hold
-    contested values side by side. Provenance survives either way, so the
-    disagreement is recoverable from L1 rather than lost.
+    `name` and `description` are NOT re-derived when a constraint has more than
+    one observation, and that restriction is the whole point. They carry the
+    rule's meaning in prose, so taking the newest does not flatten a contested
+    *value* — it replaces the rule with whichever statement happened to be
+    said last. Measured on the real corpus, that overwrote 8 of 12
+    multi-observation constraints: a rule asserting deep-work blocks are two
+    hours, supported by eight observations, became "at least 90 minutes" on
+    the strength of one later one; a rule about eating three meals a day
+    became "Lunch break".
+
+    Every other field here folds across all observations for exactly this
+    reason, and the comment below on necessity states the principle —
+    softening on the newest observation would be last-write-wins. That
+    reasoning was right and was applied one field away from where it was most
+    needed.
+
+    Deciding what several disagreeing statements jointly assert is a
+    judgement, not an arithmetic fold, and re-projection is not entitled to
+    make it: #137 put contested values in the edge table so disagreement
+    survives as data, and #140 owns who resolves it. Until then the existing
+    prose is preserved and the constraint is reported as contested.
     """
     ordered = sorted(observations, key=lambda o: o.observed_at)
     newest = ordered[-1]
@@ -139,9 +167,7 @@ def _derive(observations: list[Observation], judgements: dict) -> dict:
             )
             break
 
-    return {
-        "name": newest_j.label or newest.text,
-        "description": newest.text,
+    derived = {
         # Binding once, binding after: a casual later mention of a rule the
         # person stated as a hard boundary does not soften it. Same shape as
         # tier, and for the same reason — softening on the newest observation
@@ -157,6 +183,12 @@ def _derive(observations: list[Observation], judgements: dict) -> dict:
         "created_at": ordered[0].observed_at,
         "last_observed_at": ordered[-1].observed_at,
     }
+    if len(ordered) == 1:
+        # One observation cannot contradict itself, so there is nothing to
+        # decide and the label improvement should reach it.
+        derived["name"] = newest_j.label or newest.text
+        derived["description"] = newest.text
+    return derived
 
 
 async def reproject(
@@ -218,6 +250,14 @@ async def reproject(
 
         judgements = await _judge_all(observations, judge)
         derived = _derive(observations, judgements)
+        if len(observations) > 1:
+            report.contested.append(
+                ContestedConstraint(
+                    uid=constraint.uid,
+                    name=constraint.name,
+                    observations=len(observations),
+                )
+            )
 
         changed_fields = [
             field
