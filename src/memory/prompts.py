@@ -9,6 +9,8 @@ from pydantic import ValidationError
 
 from memory.judge import (
     AnchorJudgement,
+    AnchorLike,
+    AnchorResolutions,
     CanonicaliseJudgement,
     ConstraintLike,
     DedupJudgement,
@@ -144,6 +146,29 @@ point counts as a duplicate. A different rule about the same topic does not.
 Respond with JSON only: {"duplicate_of": "<id>"|null, "rationale": "..."}\
 """
 
+RESOLVE_ANCHORS_PROMPT = """\
+You are given anchor names pulled from one statement, and a list of anchors
+already known. For each name, say which known anchor it refers to, or that it
+is new.
+
+An anchor is a recurring kind of thing a person's rules attach to — an
+activity, a meal, a place, a commitment. Two names refer to the same anchor
+when a rule about one would obviously apply to the other: "gym", "the gym"
+and "gym session" are one anchor. "Gym" and "hockey" are two, even though both
+are exercise — a rule about gym times does not automatically govern hockey.
+
+Do not merge a specific thing into a general one. "Hockey" is not "sport",
+even if sport is in the list; they are different anchors and the relationship
+between them is recorded elsewhere. Merge only when the two names denote the
+same thing.
+
+Answer with the uid exactly as given. Never invent a uid: if no known anchor
+is the same thing, answer null and it will be created.
+
+Respond with JSON only:
+{"resolutions": [{"name": "...", "anchor_uid": "..."|null}, ...]}\
+"""
+
 CANONICALISE_PROMPT = """\
 You decide whether a new statement expresses a rule the system already knows.
 
@@ -161,7 +186,7 @@ Respond with JSON only:
 
 
 class PromptJudge(ABC):
-    """The six questions, asked identically no matter who answers them.
+    """The seven questions, asked identically no matter who answers them.
 
     A subclass supplies transport and nothing else. This exists because the
     server now has two ways to reach a model — its own provider, or the
@@ -248,6 +273,20 @@ class PromptJudge(ABC):
         if "duplicate_of" not in payload:
             raise ValueError(f"could not parse judge response: {payload!r}")
         return self._build(DedupJudgement, payload)
+
+    async def resolve_anchors(
+        self, names: list[str], candidates: list[AnchorLike]
+    ) -> AnchorResolutions:
+        if not names:
+            return AnchorResolutions()
+        known = "\n".join(f"{c.uid}: {c.name}" for c in candidates) or "(none yet)"
+        payload = await self._ask(
+            RESOLVE_ANCHORS_PROMPT,
+            f"Names:\n" + "\n".join(names) + f"\n\nKnown anchors:\n{known}",
+        )
+        if "resolutions" not in payload:
+            raise ValueError(f"could not parse judge response: {payload!r}")
+        return self._build(AnchorResolutions, payload)
 
     async def canonicalise(
         self, observation: Observation, candidates: list[ConstraintLike]

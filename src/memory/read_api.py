@@ -8,7 +8,11 @@ from memory.constraint_store import ConstraintStore
 
 
 def get_active_constraints(
-    store: ConstraintStore, day: date, stage: str | None = None
+    store: ConstraintStore,
+    day: date,
+    stage: str | None = None,
+    *,
+    reachable: set[str] | None = None,
 ) -> list[ConstraintView]:
     """Constraints that apply on `day`, as views for the patcher.
 
@@ -21,21 +25,32 @@ def get_active_constraints(
     lost: `get_faded_constraints` returns exactly those, so a rule the user
     still holds can be confirmed rather than silently dropped.
 
-    LIMITATION, deliberate and worth stating: this returns every durable,
-    unfaded constraint whose applicability window covers the day. It does NOT
-    do semantic relevance — "which of these matter for a day containing
-    hockey" — because that requires the anchor graph, which is a later plan.
-    Until then the caller may receive more constraints than are useful. The
-    patcher renders whatever it is handed by agreement, so memory owning this
-    filter is what keeps the two sides from diverging as it improves.
+    `reachable`, when given, is the set of constraint uids the day's anchors
+    can reach through the taxonomy — computed by the caller with a graph walk,
+    which is also model-free. Passing it narrows the result to rules that bear
+    on what is actually happening that day. Omitting it returns every
+    applicable rule, which is the behaviour every existing caller has.
+
+    Set membership over system-minted uids, explicitly outside the no-matching
+    rule: the judgement about which anchors the day involves happened earlier,
+    at write time and at resolution time, both with a model. Nothing here
+    decides what anything means.
+
+    A constraint carrying no anchors at all is returned regardless. It is not
+    unreachable, it is unanchored — a rule about the shape of the day rather
+    than about a thing in it — and dropping those would silently discard every
+    rule stored before the graph existed.
 
     `stage` is accepted and currently unused; it is part of the agreed call
-    shape and will select stage-relevant constraints once the graph exists.
+    shape and will select stage-relevant constraints once stage vocabulary
+    exists.
     """
     return [
         c.to_view()
         for c in store.durable()
-        if c.applicability.applies_on(day) and not c.has_faded(day)
+        if c.applicability.applies_on(day)
+        and not c.has_faded(day)
+        and (reachable is None or c.uid in reachable)
     ]
 
 

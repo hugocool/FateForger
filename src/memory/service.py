@@ -6,6 +6,8 @@ from datetime import date, datetime
 from pydantic import BaseModel
 
 from memory.constraint import ConstraintView
+from memory.anchor_store import AnchorStore
+from memory.anchoring import resolve_anchors
 from memory.constraint_store import ConstraintStore
 from memory.ingest import ingest
 from memory.judge import Judge
@@ -39,6 +41,7 @@ class MemoryService:
     def __init__(self, db_path: str, judge: Judge) -> None:
         self._observations = ObservationStore(db_path)
         self._constraints = ConstraintStore(db_path)
+        self._anchors = AnchorStore(db_path)
         self._judge = judge
 
     async def observe(
@@ -61,7 +64,7 @@ class MemoryService:
         if not result.stored:
             return ObserveOutcome(stored=False, suppressed_as=result.suppressed_as)
         constraint = await project(
-            observation, result, self._judge, self._constraints
+            observation, result, self._judge, self._constraints, self._anchors
         )
         return ObserveOutcome(
             stored=True,
@@ -86,10 +89,43 @@ class MemoryService:
             self._observations, self._constraints, self._judge, uid=uid
         )
 
+    async def resolve_anchor_names(self, names: list[str]) -> list[str]:
+        """Anchor uids for names the caller pulled off a calendar or a plan.
+
+        Separate from the read path on purpose. Deciding that "Hockey
+        practice" is the `hockey` anchor is a judgement about meaning, so it
+        needs a model — and the read path must not have one, because callers
+        hold it inside a planning loop and the same day read twice would
+        otherwise answer differently.
+
+        So a host calls this once when it knows the day's events, then reads
+        as many times as it likes with the uids it got back.
+        """
+        return await resolve_anchors(names, self._anchors, self._judge)
+
     def get_active_constraints(
-        self, day: date, stage: str | None = None
+        self,
+        day: date,
+        stage: str | None = None,
+        anchor_uids: list[str] | None = None,
     ) -> list[ConstraintView]:
-        return _read(self._constraints, day, stage)
+        """Rules applying on `day`, optionally narrowed to the day's anchors.
+
+        With `anchor_uids`, the taxonomy is walked from those anchors and only
+        rules they reach are returned — plus every unanchored rule, which is
+        about the shape of the day rather than a thing in it. Still no model:
+        the walk is a graph traversal and the filter is set membership over
+        uids this system minted.
+        """
+        reachable = None
+        if anchor_uids:
+            reachable = self._anchors.constraints_reachable_from(anchor_uids)
+            reachable |= {
+                c.uid
+                for c in self._constraints.durable()
+                if not self._anchors.anchors_for(c.uid)
+            }
+        return _read(self._constraints, day, stage, reachable=reachable)
 
     def get_faded_constraints(
         self, day: date, stage: str | None = None

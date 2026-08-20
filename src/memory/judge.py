@@ -41,6 +41,26 @@ class TierJudgement(BaseModel):
     decay_class: DecayClass = DecayClass.PERMANENT
 
 
+class AnchorResolution(BaseModel):
+    """One extracted anchor name, mapped to an anchor that already exists."""
+
+    name: str
+    anchor_uid: str | None = None
+
+
+class AnchorResolutions(BaseModel):
+    """Every anchor name in one observation, resolved together.
+
+    Deliberately one question rather than one per name, which is the exception
+    to the parallelise rule and needs its reason stated: the names are not
+    independent. "gym" and "the gym" appearing in one observation is a single
+    anchor, and asking about each alone against the same snapshot of existing
+    anchors would have both answered "new" and mint two.
+    """
+
+    resolutions: list[AnchorResolution] = Field(default_factory=list)
+
+
 class NecessityJudgement(BaseModel):
     """Whether breaking this rule ruins the day or merely worsens it.
 
@@ -75,6 +95,18 @@ class CanonicaliseJudgement(BaseModel):
 
 
 @runtime_checkable
+class AnchorLike(Protocol):
+    """The shape resolve_anchors needs from an existing anchor.
+
+    Structural rather than importing Anchor, so the port stays free of
+    knowledge about the layer above it.
+    """
+
+    uid: str
+    name: str
+
+
+@runtime_checkable
 class ConstraintLike(Protocol):
     """The shape canonicalise needs from a candidate.
 
@@ -101,11 +133,26 @@ class Judge(Protocol):
 
     async def necessity(self, observation: Observation) -> NecessityJudgement: ...
 
+    async def resolve_anchors(
+        self, names: list[str], candidates: list[AnchorLike]
+    ) -> AnchorResolutions: ...
+
     async def meta(self, observation: Observation) -> MetaJudgement: ...
 
     async def dedup(
         self, observation: Observation, recent: list[Observation]
     ) -> DedupJudgement: ...
+
+    async def resolve_anchors(
+        self, names: list[str], candidates: list[AnchorLike]
+    ) -> AnchorResolutions:
+        self.calls.append(("resolve_anchors", ",".join(names)))
+        return AnchorResolutions(
+            resolutions=[
+                AnchorResolution(name=n, anchor_uid=self._anchor_uids.get(n))
+                for n in names
+            ]
+        )
 
     async def canonicalise(
         self, observation: Observation, candidates: list[ConstraintLike]
@@ -134,6 +181,7 @@ class StubJudge:
         end_dates: dict[str, date] | None = None,
         decay_classes: dict[str, DecayClass] | None = None,
         bindings: dict[str, bool] | None = None,
+        anchor_uids: dict[str, str] | None = None,
     ) -> None:
         self._anchors = anchors or {}
         self._tiers = tiers or {}
@@ -147,6 +195,7 @@ class StubJudge:
         self._end_dates = end_dates or {}
         self._decay_classes = decay_classes or {}
         self._bindings = bindings or {}
+        self._anchor_uids = anchor_uids or {}
         self.calls: list[tuple[str, str]] = []
 
     async def anchors(self, observation: Observation) -> AnchorJudgement:
@@ -183,6 +232,17 @@ class StubJudge:
         self.calls.append(("dedup", observation.uid))
         return DedupJudgement(
             duplicate_of=self._duplicates.get(observation.text)
+        )
+
+    async def resolve_anchors(
+        self, names: list[str], candidates: list[AnchorLike]
+    ) -> AnchorResolutions:
+        self.calls.append(("resolve_anchors", ",".join(names)))
+        return AnchorResolutions(
+            resolutions=[
+                AnchorResolution(name=n, anchor_uid=self._anchor_uids.get(n))
+                for n in names
+            ]
         )
 
     async def canonicalise(

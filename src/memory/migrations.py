@@ -5,7 +5,7 @@ import sqlite3
 
 # The version this build of the code expects. Bump it in the same commit that
 # appends to _MIGRATIONS, never separately.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Version 1 is the shape that shipped before versioning existed. It is
 # reproduced here verbatim rather than being re-derived, because an existing
@@ -46,9 +46,34 @@ CREATE INDEX IF NOT EXISTS ix_co_observation
     ON constraint_observations(observation_uid);
 """
 
+# Version 2 adds the anchor graph: a pure taxonomy of anchors, and an edge
+# table joining constraints to it. The shape is #137's decision — conditionality
+# in typed edges rather than predicates — and the substrate is #141's, measured
+# rather than preferred.
+_V2 = """
+CREATE TABLE IF NOT EXISTS anchors (
+    uid  TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS anchor_edges (
+    parent_uid TEXT NOT NULL,
+    child_uid  TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    PRIMARY KEY (parent_uid, child_uid, kind)
+);
+CREATE INDEX IF NOT EXISTS ix_edge_child  ON anchor_edges(child_uid);
+CREATE INDEX IF NOT EXISTS ix_edge_parent ON anchor_edges(parent_uid);
+CREATE TABLE IF NOT EXISTS constraint_anchors (
+    constraint_uid TEXT NOT NULL,
+    anchor_uid     TEXT NOT NULL,
+    PRIMARY KEY (constraint_uid, anchor_uid)
+);
+CREATE INDEX IF NOT EXISTS ix_ca_anchor ON constraint_anchors(anchor_uid);
+"""
+
 # version -> DDL applied to reach it. Append only; never edit a shipped entry,
 # because a store that already ran it will not run it again.
-_MIGRATIONS: dict[int, str] = {1: _V1}
+_MIGRATIONS: dict[int, str] = {1: _V1, 2: _V2}
 
 # What each version must end up with. Checked after migrating, so a store whose
 # stamp disagrees with its actual shape fails loudly at connect time instead of
@@ -65,6 +90,11 @@ _EXPECTED_COLUMNS: dict[int, dict[str, set[str]]] = {
             "decay_class", "last_observed_at",
         },
         "constraint_observations": {"constraint_uid", "observation_uid"},
+    },
+    2: {
+        "anchors": {"uid", "name"},
+        "anchor_edges": {"parent_uid", "child_uid", "kind"},
+        "constraint_anchors": {"constraint_uid", "anchor_uid"},
     },
 }
 
@@ -96,8 +126,18 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 
 def _verify(conn: sqlite3.Connection, version: int) -> None:
-    expected = _EXPECTED_COLUMNS.get(version)
-    if expected is None:
+    """Check every version's tables, not only the newest one.
+
+    Each entry lists what that version ADDED, so checking only the highest
+    would stop verifying v1's columns the moment v2 shipped — the exact gap
+    #155 exists to close, reintroduced one migration later.
+    """
+    expected = {
+        table: columns
+        for v in range(1, version + 1)
+        for table, columns in _EXPECTED_COLUMNS.get(v, {}).items()
+    }
+    if not expected:
         return
     present = _table_names(conn)
     for table, columns in expected.items():

@@ -12,6 +12,8 @@ from memory.constraint import (
     Source,
     Status,
 )
+from memory.anchor_store import AnchorStore
+from memory.anchoring import resolve_anchors
 from memory.constraint_store import ConstraintStore
 from memory.ingest import IngestResult
 from memory.judge import Judge
@@ -46,6 +48,7 @@ async def project(
     ingest_result: IngestResult,
     judge: Judge,
     constraint_store: ConstraintStore,
+    anchor_store: AnchorStore | None = None,
 ) -> Constraint:
     """Turn a stored observation into, or fold it into, a constraint.
 
@@ -91,6 +94,7 @@ async def project(
                 last_observed_at=observation.observed_at,
             )
             constraint_store.upsert(created)
+            await _attach_anchors(created.uid, ingest_result, anchor_store, judge)
             return created
 
         candidates = constraint_store.durable()
@@ -123,6 +127,12 @@ async def project(
             if observation.observed_at > existing.last_observed_at:
                 existing.last_observed_at = observation.observed_at
             constraint_store.upsert(existing)
+            # A fold adds evidence, so it can add anchors the constraint was
+            # not previously reachable from. Links are replaced rather than
+            # appended, so the union is assembled here.
+            await _attach_anchors(
+                existing.uid, ingest_result, anchor_store, judge, extend=True
+            )
             # Tier only ever moves up. A durable rule is never demoted by a
             # later observation; that would be last-write-wins, which this
             # design rejects explicitly.
@@ -149,4 +159,27 @@ async def project(
             last_observed_at=observation.observed_at,
         )
         constraint_store.upsert(created)
+        await _attach_anchors(created.uid, ingest_result, anchor_store, judge)
         return created
+
+
+async def _attach_anchors(
+    constraint_uid: str,
+    ingest_result: IngestResult,
+    anchor_store: AnchorStore | None,
+    judge: Judge,
+    *,
+    extend: bool = False,
+) -> None:
+    """Link a constraint to the anchors its observation mentioned.
+
+    Optional store because the graph is additive: a host that has not built
+    one still gets the constraint layer it had before, and nothing here can
+    fail a write that would otherwise have succeeded.
+    """
+    if anchor_store is None or not ingest_result.anchors:
+        return
+    uids = await resolve_anchors(ingest_result.anchors, anchor_store, judge)
+    if extend:
+        uids = sorted(set(uids) | set(anchor_store.anchors_for(constraint_uid)))
+    anchor_store.replace_constraint_links(constraint_uid, uids)

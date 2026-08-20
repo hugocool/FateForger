@@ -24,6 +24,7 @@ async def test_the_server_exposes_exactly_the_session_verbs(tmp_path):
     assert tools == {
         "memory_observe",
         "memory_reproject",
+        "memory_resolve_anchors",
         "memory_get_active_constraints",
         "memory_get_faded_constraints",
     }

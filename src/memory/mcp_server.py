@@ -24,8 +24,9 @@ the server has no model of its own and asks yours.
 
 memory_get_active_constraints returns the durable rules applying on a day.
 It never samples — structural filtering only, so it is fast, repeatable, and
-safe to call inside a planning loop. Expect every applicable rule rather than
-a semantically ranked subset. memory_get_faded_constraints returns the rules
+safe to call inside a planning loop. Pass anchor_uids from
+memory_resolve_anchors to get only the rules bearing on what the day contains;
+without them you get every applicable rule. memory_get_faded_constraints returns the rules
 withheld because nothing has re-stated them lately; they are candidates for
 review, not for planning.
 
@@ -165,12 +166,35 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         report = await service.reproject(constraint_uid)
         return report.model_dump(mode="json")
 
+    @mcp.tool(name="memory_resolve_anchors")
+    async def memory_resolve_anchors(names: list[str]) -> list[str]:
+        """Anchor uids for the things a day involves, from their names.
+
+        Call this once when you know the day's events — pass the activities
+        they denote ("hockey", "school run") — then hold the uids and pass
+        them to memory_get_active_constraints as often as you like.
+
+        Separate from the read call because deciding that "Hockey practice"
+        means the hockey anchor needs a model, and the read path must not have
+        one: it sits inside a planning loop, and the same day read twice has
+        to answer the same way. Samples once. New anchors are created.
+        """
+        return await service.resolve_anchor_names(names)
+
     @mcp.tool(name="memory_get_active_constraints")
     def memory_get_active_constraints(
-        day: str, stage: str | None = None
+        day: str, stage: str | None = None, anchor_uids: list[str] | None = None
     ) -> list[dict]:
-        """Durable rules applying on `day` (YYYY-MM-DD). No model call."""
-        views = service.get_active_constraints(date.fromisoformat(day), stage)
+        """Durable rules applying on `day` (YYYY-MM-DD). No model call.
+
+        Pass `anchor_uids` from memory_resolve_anchors to get only the rules
+        bearing on what the day actually contains, rather than every standing
+        rule. Rules carrying no anchors are always included — those are about
+        the shape of the day rather than a thing in it.
+        """
+        views = service.get_active_constraints(
+            date.fromisoformat(day), stage, anchor_uids
+        )
         return [v.model_dump(mode="json") for v in views]
 
     @mcp.tool(name="memory_get_faded_constraints")
