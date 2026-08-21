@@ -15,6 +15,7 @@ from memory.models import Channel, Observation, Provenance, Tier
 from memory.projection import project
 from memory.read_api import get_active_constraints as _read
 from memory.read_api import get_faded_constraints as _read_faded
+from memory.read_api import get_session_constraints as _read_session
 from memory.read_api import get_suspended_constraints as _read_suspended
 from memory.reprojection import ReprojectionReport, reproject, split
 from memory.store import ObservationStore
@@ -109,7 +110,9 @@ class MemoryService:
             tier=constraint.tier,
         )
 
-    async def reproject(self, uid: str | None = None) -> ReprojectionReport:
+    async def reproject(
+        self, uid: str | None = None, apply: bool = False
+    ) -> ReprojectionReport:
         """Re-derive constraints from the observations that produced them.
 
         The entry point invariant I4 needs: without it, a judgement
@@ -122,7 +125,7 @@ class MemoryService:
         only record of what moved.
         """
         return await reproject(
-            self._observations, self._constraints, self._judge, uid=uid
+            self._observations, self._constraints, self._judge, uid=uid, apply=apply
         )
 
     async def classify_day(self, events: list[str]) -> str:
@@ -209,6 +212,17 @@ class MemoryService:
         self, day: date, stage: str | None = None
     ) -> list[ConstraintView]:
         return _read_faded(self._constraints, day, stage)
+
+    def get_session_constraints(self, session_id: str) -> list[ConstraintView]:
+        """What this conversation has established so far.
+
+        The session tier is the structured form of the chat history: it is how
+        a planning conversation keeps what the user said several replies ago.
+        Nothing could read it back until now — every read filtered to durable —
+        so the tier was write-only and the user restating themselves between
+        turns was the visible symptom.
+        """
+        return _read_session(self._constraints, session_id)
 
     def get_suspended_constraints(
         self, day: date, day_type: str | None = None

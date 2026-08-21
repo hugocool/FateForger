@@ -168,7 +168,9 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         return outcome.model_dump(mode="json")
 
     @mcp.tool(name="memory_reproject")
-    async def memory_reproject(constraint_uid: str | None = None) -> dict:
+    async def memory_reproject(
+        constraint_uid: str | None = None, apply: bool = False
+    ) -> dict:
         """Re-derive stored constraints from their source observations.
 
         Run this after the server's judgement of what statements mean has
@@ -177,12 +179,16 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         only its timestamp, so an old rule keeps whatever fields the build
         that created it produced.
 
+        Previews by default and writes nothing. Read the report, then call
+        again with apply=true to mean it — this rewrites derived state across
+        the whole store, and a report nothing gates on is not a safeguard.
+
         Samples once per source observation, so it is slow and costs the
         host's tokens — not something to call inside a planning loop. Pass
         `constraint_uid` to re-derive a single rule. Identity is preserved and
         the returned report names every field that moved.
         """
-        report = await service.reproject(constraint_uid)
+        report = await service.reproject(constraint_uid, apply=apply)
         return report.model_dump(mode="json")
 
     @mcp.tool(name="memory_resolve_anchors")
@@ -248,6 +254,23 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
             date.fromisoformat(day), stage, anchor_uids, day_type=day_type
         )
         return [v.model_dump(mode="json") for v in views]
+
+    @mcp.tool(name="memory_get_session_constraints")
+    def memory_get_session_constraints(session_id: str) -> list[dict]:
+        """What this conversation has established so far. No model call.
+
+        Call this at the start of every turn in a planning session, with the
+        same session_id you pass to memory_observe. It returns what the user
+        established earlier in *this* conversation — the structured form of the
+        chat history — so you do not have to re-read the transcript and the
+        user does not have to restate themselves.
+
+        Distinct from memory_get_active_constraints, which returns standing
+        rules that outlive the conversation. These two are meant to be used
+        together: durable rules for who the user is, session constraints for
+        what they just decided.
+        """
+        return [v.model_dump(mode="json") for v in service.get_session_constraints(session_id)]
 
     @mcp.tool(name="memory_get_suspended_constraints")
     def memory_get_suspended_constraints(

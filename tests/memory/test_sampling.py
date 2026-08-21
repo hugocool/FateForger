@@ -291,6 +291,7 @@ async def test_the_sampling_server_needs_no_api_key(tmp_path, monkeypatch):
         "memory_resolve_anchors",
         "memory_classify_day",
         "memory_get_active_constraints",
+        "memory_get_session_constraints",
         "memory_get_suspended_constraints",
         "memory_get_faded_constraints",
     }

@@ -150,6 +150,33 @@ class ConstraintStore:
             ).fetchall()
         return [self._row(r) for r in rows]
 
+    def for_session(self, session_id: str) -> list[Constraint]:
+        """Session-tier constraints belonging to one conversation.
+
+        A `Constraint` carries no `session_id` — only an `Observation` does —
+        so the scoping comes through provenance rather than through a column.
+        That is the right place for it: identity is minted (I3) and the link
+        back to what was said is exactly what `constraint_observations`
+        exists to hold. It also means no schema change, and no second copy of
+        a fact the store already knows.
+
+        DISTINCT because a constraint folds several observations and more than
+        one of them may belong to this session.
+
+        Ordered by creation so a caller reading them back gets the shape of
+        the conversation rather than an arbitrary permutation.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT c.* FROM constraints c "
+                "JOIN constraint_observations co ON co.constraint_uid = c.uid "
+                "JOIN observations o ON o.uid = co.observation_uid "
+                "WHERE c.tier = ? AND o.session_id = ? "
+                "ORDER BY c.created_at",
+                (Tier.SESSION.value, session_id),
+            ).fetchall()
+        return [self._row(r) for r in rows]
+
     def _row(self, row: sqlite3.Row) -> Constraint:
         return Constraint(
             uid=row["uid"],

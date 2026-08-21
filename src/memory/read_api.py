@@ -104,3 +104,29 @@ def get_suspended_constraints(
         if not c.has_faded(day)
         and not c.applicability.applies_on(day, day_type)
     ]
+
+
+def get_session_constraints(
+    store: ConstraintStore, session_id: str
+) -> list[ConstraintView]:
+    """What this conversation has established so far. No model call.
+
+    The session tier is how a planning conversation keeps what the user said
+    three replies ago without re-reading the transcript — it is the chat
+    history, in structured form. Until this existed, `Tier.SESSION` was a
+    write-only value: `ingest` judged it, `project` stored it, and all three
+    read functions filtered to `store.durable()`, so nothing could ever read
+    one back. The user restating themselves between turns was the symptom.
+
+    **No decay filter, deliberately.** Fading asks whether a standing rule is
+    still true, which is a question about weeks. A session is over in an hour,
+    and a constraint stated in this conversation is true for this conversation
+    by construction — applying a half-life to it could only ever remove
+    something the user just said. Scoping by `session_id` makes lifetime
+    structural: these rows stop being reachable when the conversation ends,
+    without anything needing to expire them.
+
+    No date filter either. A session constraint is not about a day; it is
+    about the exchange in progress.
+    """
+    return [c.to_view() for c in store.for_session(session_id)]
