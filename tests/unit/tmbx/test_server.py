@@ -657,3 +657,113 @@ async def test_a_clean_preview_is_marked_committable(built):
     assert body["ok"] is True
     assert body["committable"] is True
     assert body["violations"] == []
+
+
+# ---------------------------------------------------------------------------
+# A constraint-anchored pin is the boundary, not over-specification. The
+# refusal comes from validate_patch, so it surfaces through the existing
+# "invalid_patch" reason code — no sixth refusal cause.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def built_with_a_constraint_pin(tmp_path):
+    """PR1 anchors the chain; BED1 is pinned 22:00-23:00 because a MUST
+    sleep constraint says so — the block the joint session unpinned."""
+    calendar = FakeCalendar(
+        {
+            "primary": [
+                _event("e1", "PR1", 9, 10),
+                CalendarEvent(
+                    event_id="e2",
+                    summary="Bedtime",
+                    start=datetime(2026, 8, 17, 22, 0),
+                    end=datetime(2026, 8, 17, 23, 0),
+                    etag="v1",
+                    uid="u-e2",
+                    handle="BED1",
+                    block_type="R",
+                    timing_mode="fw",
+                    anchor_source="constraint",
+                ),
+            ]
+        }
+    )
+    store = JournalStore(await init_journal(tmp_path / "j.db"))
+    counter = itertools.count(1)
+    service = PlanService(calendar, store, mint_uid=lambda: f"u-new-{next(counter)}")
+    return build_server(service), service
+
+
+async def test_plan_apply_refuses_to_relax_a_constraint_anchored_pin(
+    built_with_a_constraint_pin,
+):
+    server, _service = built_with_a_constraint_pin
+    read = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
+    payload = json.loads(_text(read))
+
+    result = await server.call_tool(
+        "plan_apply",
+        {
+            "snapshot": payload["snapshot"],
+            "patch": {
+                "ops": [
+                    {
+                        "op": "update",
+                        "h": "BED1",
+                        "p": {"a": "ap", "dur": "PT1H"},
+                        "why": "Relax BED1 to ap mode to prevent overspecification",
+                    }
+                ]
+            },
+        },
+    )
+    body = json.loads(_text(result))
+    assert body["ok"] is False
+    assert body["reason"] == "invalid_patch"
+    assert "BED1" in body["message"]
+
+
+async def test_plan_commit_refuses_to_relax_a_constraint_anchored_pin_and_writes_nothing(
+    built_with_a_constraint_pin,
+):
+    server, service = built_with_a_constraint_pin
+    read = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
+    payload = json.loads(_text(read))
+
+    result = await server.call_tool(
+        "plan_commit",
+        {
+            "snapshot": payload["snapshot"],
+            "patch": {"ops": [{"op": "update", "h": "BED1", "p": {"a": "ap", "dur": "PT1H"}}]},
+        },
+    )
+    body = json.loads(_text(result))
+    assert body["committed"] is False
+    assert body["reason"] == "invalid_patch"
+
+    live = await service.calendar.list_day("primary", DAY_DATE, TZ)
+    bedtime = next(e for e in live if e.handle == "BED1")
+    assert bedtime.etag == "v1"
+    assert bedtime.anchor_source == "constraint"
+
+
+async def test_plan_apply_does_not_advertise_a_constraint_pin_as_overspecified(
+    built_with_a_constraint_pin,
+):
+    """BED1 sits exactly where ``ap`` would place it, so the measurement
+    alone calls it redundant. The advice must not."""
+    server, _service = built_with_a_constraint_pin
+    read = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
+    payload = json.loads(_text(read))
+
+    result = await server.call_tool(
+        "plan_apply",
+        {
+            "snapshot": payload["snapshot"],
+            "patch": {"ops": [{"op": "update", "h": "PR1", "n": "Planning"}]},
+        },
+    )
+    body = json.loads(_text(result))
+    assert body["ok"] is True
+    assert body["overspecified"] == []

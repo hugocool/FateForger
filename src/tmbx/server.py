@@ -35,7 +35,8 @@ correct response is never "retry the same call". Five refusal causes exist:
   ``options``. The remedy is re-plan or accept.
 * ``invalid_patch`` — the patch is shaped correctly but a domain rule
   rejects it (``apply_ops``'s own ``ValueError``: duplicate handle, a
-  cyclic move, ...). Safe to retry once fixed.
+  cyclic move, relaxing a constraint-anchored pin, ...). Safe to retry
+  once fixed.
 * ``malformed_input`` — the raw call doesn't match the expected shape at
   all (an unknown op literal, a snapshot missing ``tz``, a non-ISO
   ``day``). Safe to retry once fixed.
@@ -92,6 +93,16 @@ record which in anchor_source. Every gratuitous pin stops the chain from
 absorbing later edits: plan_apply reports handles that could be relaxed to
 ap with no change to any time as "overspecified" — treat those as mistakes
 to fix, not intentional choices.
+
+A pin can also be the only thing enforcing a boundary. A block with
+anchor_source "constraint" is pinned because a standing rule says so, and
+relaxing it would change nothing today while letting the next edit push
+straight through the boundary tomorrow. Such a block is never reported as
+overspecified, and an update that moves it out of fs/fw is refused with
+reason "invalid_patch". If the pin genuinely should go — the user said so
+— first update its anchor_source (keeping fs/fw), then relax it in a later
+patch: the record of why the boundary existed has to be handed over
+deliberately, not dropped in passing.
 
 Address blocks by handle, taken from the "H" column of the rendered plan —
 never by position. A handle is 2-5 uppercase letters then 1-2 digits (e.g.
@@ -264,7 +275,8 @@ def build_server(service: PlanService) -> FastMCP:
           instead of retrying as-is.
         - reason "invalid_patch": the patch is shaped correctly but fails
           a domain rule (duplicate handle, a fixed-timing block with no
-          anchor_source, a cyclic move, ...) — "message" says which. Fix it
+          anchor_source, a cyclic move, relaxing a constraint-anchored
+          pin, ...) — "message" says which. Fix it
           and call again.
 
         On success, "committable" says whether plan_commit would accept
@@ -281,7 +293,9 @@ def build_server(service: PlanService) -> FastMCP:
 
         On success, "overspecified" lists handles pinned to fs/fw that
         could be relaxed to ap with no change to any resolved time — treat
-        those as mistakes, per tmbx://policy/planning.
+        those as mistakes, per tmbx://policy/planning. Blocks whose
+        anchor_source is "constraint" are never listed: their pin is the
+        boundary being enforced, and relaxing one is refused outright.
         """
         try:
             snapshot_obj = Snapshot.model_validate(snapshot)

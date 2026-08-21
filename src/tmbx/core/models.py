@@ -151,6 +151,43 @@ Timing = Annotated[
 
 AnchorSource = Literal["user", "constraint", "calendar"]
 
+BOUNDARY_ANCHOR_SOURCES: frozenset[str] = frozenset({"constraint"})
+"""Anchor sources whose pin is a boundary, not a convenience.
+
+A pin can be the only thing in a plan enforcing a rule that lives outside
+it. ``overspecified()`` measures whether a pin changes any resolved time
+*today* and, by that measure alone, such a pin looks gratuitous — so the
+model is told to relax it, and the rule silently stops applying. Measured
+under a joint tmbx + constraint-memory session: 2 of 4 runs relaxed a
+bedtime pinned by a MUST sleep-at-23:00 constraint, one recording *"Relax
+BED1 to ap mode to prevent overspecification"*.
+
+Two rules read this set, deliberately the same one so they cannot drift:
+``commitment.overspecified`` will not flag such a pin, and
+``ops.validate_patch`` refuses an update that relaxes one out of fixed
+timing.
+
+Only ``constraint`` is in it, and the two exclusions are decisions, not
+oversights:
+
+* ``user`` is what this codebase reaches for whenever ``Block`` demands a
+  source and nothing better is at hand — every fs/fw fixture in the test
+  suite, and, in practice, the model's own default. ``Block`` has no way
+  to say "pinned for no attributable reason", so the *absence* of a real
+  reason is spelled ``user``. Treating it as a boundary would suppress the
+  flag for nearly every pin, which deletes the check rather than fixing
+  it — three existing tests assert that a ``user``-anchored gratuitous pin
+  is still flagged, and they are right. A user is also present in the
+  conversation and can restate a preference; a standing constraint cannot.
+* ``calendar`` is an observed fact, not an assertion of intent. It is also
+  the fallback for an event carrying no stored provenance at all, so
+  treating it as a boundary would grandfather every pre-existing calendar
+  event out of the check.
+
+Widening this set is a real decision about the model's advice, not a
+config tweak: everything in it becomes both un-flaggable and un-relaxable.
+"""
+
 
 class Block(BaseModel):
     """One timeboxed block."""
@@ -506,6 +543,7 @@ class Plan(BaseModel):
 __all__ = [
     "AfterPrev",
     "AnchorSource",
+    "BOUNDARY_ANCHOR_SOURCES",
     "BeforeNext",
     "Block",
     "ET",

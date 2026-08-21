@@ -16,7 +16,15 @@ from typing import Annotated, Callable, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models import AnchorSource, Block, ET, Plan, Timing, is_valid_handle
+from .models import (
+    BOUNDARY_ANCHOR_SOURCES,
+    ET,
+    AnchorSource,
+    Block,
+    Plan,
+    Timing,
+    is_valid_handle,
+)
 
 END = "END"
 
@@ -97,6 +105,62 @@ def _block_invariant_errors(t: ET, p: Timing, anchor_source: AnchorSource | None
     return errors
 
 
+def _boundary_relaxation_errors(index: int, op: UpdateBlock, target: Block) -> list[str]:
+    """Refuse an update that unpins a block whose pin is a boundary.
+
+    ``anchor_source`` records why a block is pinned. When that reason is in
+    ``BOUNDARY_ANCHOR_SOURCES`` the pin is not the model's convenience —
+    it is a rule stated outside this plan, and the pin is the only thing in
+    the plan enforcing it. Moving that block to ``ap``/``bn`` changes no
+    resolved time on the day it happens, which is precisely why it reads as
+    good hygiene; what it actually does is let the next edit push the block
+    past the boundary with nothing left to refuse.
+
+    Refused rather than allowed-with-the-source-preserved, for a reason
+    worth stating: the source is *already* preserved. ``UpdateBlock``
+    treats an unset field as untouched (see ``_apply_updates``), so an
+    update cannot clear ``anchor_source`` at all — "allow it but keep the
+    source" is the behaviour that already exists, and it is the behaviour
+    that produced the defect. Only refusing changes anything.
+
+    Deliberately narrow:
+
+    * ``fw`` -> ``fs`` (or any fixed-to-fixed retime) is allowed. The
+      boundary may legitimately move; a pin that stays a pin still holds
+      one.
+    * Overwriting ``anchor_source`` while keeping fixed timing is allowed.
+      That is how a boundary is handed over to the user, and it is the
+      escape hatch this refusal points at. It cannot be smuggled into the
+      same patch as the relaxation: ``validate_patch``'s "touched" rule
+      lets one op touch a handle once, so unpinning a boundary always
+      costs two patches and two ``why`` fields, both journalled.
+    * ``remove`` is allowed. Deleting a block is visible in the very next
+      rendered plan; quietly unpinning one is not — an unpinned block
+      renders identically to a pinned one apart from its mode column.
+
+    Surfaces through the existing ``invalid_patch`` reason code: this is
+    knowable from the patch and the plan alone, exactly like every other
+    ``validate_patch`` error, so it needs no new refusal path. (Contrast
+    ``foreign_block``, which is a separate code because only the service
+    knows which events tmbx owns.)
+    """
+    if target.anchor_source not in BOUNDARY_ANCHOR_SOURCES:
+        return []
+    if target.p.a not in ("fs", "fw"):
+        return []
+    if op.p is None or op.p.a in ("fs", "fw"):
+        return []
+    message = (
+        f"op {index}: {op.h} carries anchor_source={target.anchor_source!r} — "
+        f"its pin is enforcing a boundary, not over-specification. Relaxing "
+        f"it to {op.p.a} would drop that boundary and the record of why it "
+        f"existed. If the pin really should go, re-source it first (update "
+        f"anchor_source, keeping fs/fw timing), then relax it in a later "
+        f"patch."
+    )
+    return [message]
+
+
 def _validate_add(
     index: int,
     op: AddBlock,
@@ -159,6 +223,7 @@ def _validate_touch(
             f"op {index}: {op.h} {msg}"
             for msg in _block_invariant_errors(eff_t, eff_p, eff_anchor)
         )
+        errors.extend(_boundary_relaxation_errors(index, op, target))
     return errors
 
 
@@ -295,6 +360,12 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
     ``_plan_invariant_errors`` plus the effective-handle-set uniqueness
     check below, and every move-anchor dependency either resolves (see
     ``_apply_moves``) or is caught here as a cycle.
+
+    One check here is a policy rather than a construction invariant:
+    ``_boundary_relaxation_errors`` refuses an update that unpins a block
+    whose ``anchor_source`` marks its pin as a boundary. That patch would
+    construct perfectly valid objects — it is refused because of what it
+    would destroy, not because anything downstream would raise.
     """
     errors: list[str] = []
     existing_pre = {b.h for b in plan.blocks}

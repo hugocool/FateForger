@@ -1063,6 +1063,41 @@ async def test_changing_only_the_anchor_source_still_reaches_the_calendar(empty_
     assert plan.by_handle("BED1").anchor_source == "user"
 
 
+async def test_a_committed_constraint_pin_is_neither_flagged_nor_relaxable(empty_service):
+    """The whole ticket, end to end and through the calendar: the pin the
+    joint session unpinned. It must come back constraint-sourced, must not
+    be advertised as over-specified, and must refuse to be relaxed."""
+    svc = empty_service
+
+    async def _add(after, h, n, p, anchor_source):
+        _, snapshot = await svc.read("primary", DAY)
+        assert (
+            await svc.commit(
+                snapshot,
+                Patch(ops=[AddBlock(after=after, h=h, n=n, t=ET.R, p=p,
+                                    anchor_source=anchor_source)]),
+            )
+        ).committed
+
+    await _add(None, "GYM1", "Gym",
+               FixedStart(st=time(18, 30), dur=timedelta(hours=1)), "user")
+    await _add("GYM1", "WIND1", "Wind down",
+               AfterPrev(dur=timedelta(hours=2, minutes=30)), None)
+    await _add("WIND1", "BED1", "Bedtime",
+               FixedWindow(st=time(22, 0), et=time(23, 0)), "constraint")
+
+    _, snapshot = await svc.read("primary", DAY)
+    preview = await svc.apply(snapshot, Patch(ops=[UpdateBlock(h="GYM1", n="Gym session")]))
+    assert preview.overspecified == []
+
+    with pytest.raises(ValueError, match="invalid patch"):
+        await svc.apply(
+            snapshot,
+            Patch(ops=[UpdateBlock(h="BED1", p=AfterPrev(dur=timedelta(hours=1)),
+                                   why="Relax BED1 to ap mode to prevent overspecification")]),
+        )
+
+
 async def test_the_calendar_default_anchor_source_is_never_persisted(empty_service):
     """``"calendar"`` is the read-side default for an event with no
     recorded provenance, so storing it would persist "nothing is known" as

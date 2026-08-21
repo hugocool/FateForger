@@ -7,11 +7,21 @@ stop shifting — which is how buffer and constraint policies quietly stop
 applying.
 
 This check turns that principle into a measurement.
+
+The measurement alone is not the whole judgement, though. A pin can be the
+only thing in the plan enforcing a rule that lives outside it — a bedtime
+held at 23:00 because a MUST sleep constraint says so — and such a pin
+changes no resolved time today, which is exactly what makes it look
+gratuitous. ``anchor_source`` already records why a block is pinned, so
+this module reads it: a pin whose source is in
+``BOUNDARY_ANCHOR_SOURCES`` is the boundary being enforced, never
+over-specification. See that constant for which sources qualify and why
+``user`` and ``calendar`` do not.
 """
 
 from __future__ import annotations
 
-from .models import ET, AfterPrev, Block, Plan
+from .models import BOUNDARY_ANCHOR_SOURCES, ET, AfterPrev, Block, Plan
 
 
 def overspecified(plan: Plan) -> list[str]:
@@ -26,6 +36,13 @@ def overspecified(plan: Plan) -> list[str]:
     that has already crossed midnight can make two blocks land 24h apart
     while their time-of-day components coincide. Comparing bare ``time``
     would treat those as the same moment; they are not.
+
+    A block whose ``anchor_source`` is in ``BOUNDARY_ANCHOR_SOURCES`` is
+    never flagged: its pin is the boundary, not a convenience. The
+    exemption is applied after the first-anchor bookkeeping, so such a
+    block still consumes the first-anchor slot it would otherwise have
+    consumed — the result must not depend on why the chain's first anchor
+    happens to be pinned.
 
     Conservative by construction, not just in outcome: an ``fs``/``fw``
     block immediately preceded by an unresolved ``bn`` can never be
@@ -57,6 +74,14 @@ def overspecified(plan: Plan) -> list[str]:
             continue
         if not seen_anchor:
             seen_anchor = True
+            continue
+        if block.anchor_source in BOUNDARY_ANCHOR_SOURCES:
+            # The pin is enforcing a boundary stated outside this plan.
+            # Relaxing it would change no time today and drop the rule
+            # tomorrow, so it is never a candidate. Checked AFTER the
+            # first-anchor bookkeeping above: a constraint-anchored block
+            # is still an anchor, and skipping it earlier would hand the
+            # exemption to the next fs/fw block instead.
             continue
 
         candidate = plan.model_copy(deep=True)

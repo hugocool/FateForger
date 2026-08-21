@@ -175,3 +175,94 @@ def test_fixed_block_immediately_after_bn_is_never_flagged():
               p=FixedStart(st=time(9, 30), dur=timedelta(minutes=60)), anchor_source="user"),
     ])
     assert overspecified(plan) == []
+
+
+# ---------------------------------------------------------------------------
+# A pin can be the only thing enforcing a constraint. Flagging it tells the
+# model to unpin the boundary and call it hygiene — measured under a joint
+# tmbx + constraint-memory session (docs/superpowers/plans/
+# 2026-08-21-memory-integration-report.md, finding 2), where 2 of 4 runs
+# relaxed a MUST-backed bedtime pin "to prevent overspecification".
+# ---------------------------------------------------------------------------
+
+
+def test_a_constraint_anchored_pin_is_not_flagged_but_its_twin_is():
+    """The whole fix, as one pair: two plans identical in every field
+    except ``anchor_source``. The ``user``-anchored pin at 09:30 is a
+    gratuitous pin and stays flagged; the ``constraint``-anchored one is
+    the boundary being enforced and must not be.
+
+    Written as a single test on purpose — the two halves are only
+    meaningful together, and splitting them lets one drift green while the
+    other silently stops discriminating.
+    """
+
+    def _plan_with(anchor_source):
+        return _p(blocks=[
+            Block(uid="u1", h="PR1", n="Plan", t=ET.PR,
+                  p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)),
+                  anchor_source="user"),
+            Block(uid="u2", h="DW1", n="Work", t=ET.DW,
+                  p=FixedStart(st=time(9, 30), dur=timedelta(minutes=90)),
+                  anchor_source=anchor_source),
+        ])
+
+    assert overspecified(_plan_with("user")) == ["DW1"]
+    assert overspecified(_plan_with("constraint")) == []
+
+
+def test_suppression_is_scoped_to_constraint_and_does_not_leak():
+    """Three redundant pins, one per ``anchor_source`` value. Only the
+    constraint-anchored one is suppressed: ``user`` is the default filler
+    this codebase reaches for whenever ``Block`` demands a source, and
+    ``calendar`` is an observed fact rather than an assertion of intent —
+    treating either as deliberate would suppress essentially every pin and
+    delete the check rather than fix it.
+    """
+    plan = _p(blocks=[
+        Block(uid="u1", h="PR1", n="Plan", t=ET.PR,
+              p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)), anchor_source="user"),
+        Block(uid="u2", h="DW1", n="User pin", t=ET.DW,
+              p=FixedStart(st=time(9, 30), dur=timedelta(minutes=30)), anchor_source="user"),
+        Block(uid="u3", h="DW2", n="Constraint pin", t=ET.DW,
+              p=FixedStart(st=time(10, 0), dur=timedelta(minutes=30)),
+              anchor_source="constraint"),
+        Block(uid="u4", h="DW3", n="Calendar pin", t=ET.DW,
+              p=FixedStart(st=time(10, 30), dur=timedelta(minutes=30)),
+              anchor_source="calendar"),
+    ])
+    assert overspecified(plan) == ["DW1", "DW3"]
+
+
+def test_the_bedtime_pin_from_the_joint_session_is_not_flagged():
+    """The measured case, verbatim: gym pushed to 18:30, wind-down
+    shortened to absorb it, bedtime pinned 22:00-23:00 because a MUST
+    sleep-at-23:00 constraint says so. Relaxing BED1 to ``ap`` changes no
+    resolved time *today* — which is exactly why it looked gratuitous —
+    but it is the only thing in the plan holding the boundary, and the
+    next edit that grows WIND1 would push bedtime past 23:00 with nothing
+    to refuse.
+    """
+    plan = _p(blocks=[
+        Block(uid="u1", h="GYM1", n="Gym", t=ET.H,
+              p=FixedStart(st=time(18, 30), dur=timedelta(hours=1)), anchor_source="user"),
+        Block(uid="u2", h="WIND1", n="Wind down", t=ET.R,
+              p=AfterPrev(dur=timedelta(hours=2, minutes=30))),
+        Block(uid="u3", h="BED1", n="Bedtime", t=ET.R,
+              p=FixedWindow(st=time(22, 0), et=time(23, 0)), anchor_source="constraint"),
+    ])
+    assert overspecified(plan) == []
+
+
+def test_a_constraint_anchored_fixed_window_is_not_flagged_either():
+    """Suppression keys on the source, not on which fixed variant carries
+    it — ``fw`` pins are flagged in their own right (see
+    ``test_redundant_fixed_window_is_flagged``) and must be suppressed on
+    the same terms as ``fs``."""
+    plan = _p(blocks=[
+        Block(uid="u1", h="PR1", n="Plan", t=ET.PR,
+              p=FixedStart(st=time(9, 0), dur=timedelta(minutes=30)), anchor_source="user"),
+        Block(uid="u2", h="DW1", n="Work", t=ET.DW,
+              p=FixedWindow(st=time(9, 30), et=time(11, 0)), anchor_source="constraint"),
+    ])
+    assert overspecified(plan) == []

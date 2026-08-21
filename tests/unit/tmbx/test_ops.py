@@ -6,7 +6,15 @@ from datetime import date, time, timedelta
 
 import pytest
 
-from tmbx.core.models import ET, AfterPrev, Block, FixedStart, Plan
+from tmbx.core.models import (
+    ET,
+    AfterPrev,
+    BeforeNext,
+    Block,
+    FixedStart,
+    FixedWindow,
+    Plan,
+)
 from tmbx.core.ops import (
     AddBlock,
     MoveBlock,
@@ -602,3 +610,123 @@ def test_validate_rejects_a_cycle_composed_via_walk_back():
     with pytest.raises(ValueError) as excinfo:
         apply_ops(plan, Patch(ops=ops), mint_uid=_mint)
     assert str(excinfo.value).startswith("invalid patch:")
+
+
+# ---------------------------------------------------------------------------
+# Relaxing a constraint-anchored pin destroys the record of why the boundary
+# existed. Refused here, at validate_patch, so both the preview and the
+# commit path see the same answer -- and so the refusal surfaces as the
+# existing "invalid_patch" reason code rather than a sixth one.
+# ---------------------------------------------------------------------------
+
+
+def _plan_with_bedtime(anchor_source="constraint"):
+    """The joint-session day: a wind-down that flexes, then a bedtime pin
+    the sleep-at-23:00 MUST is holding."""
+    return Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            Block(uid="u1", h="GYM1", n="Gym", t=ET.H,
+                  p=FixedStart(st=time(18, 30), dur=timedelta(hours=1)),
+                  anchor_source="user"),
+            Block(uid="u2", h="WIND1", n="Wind down", t=ET.R,
+                  p=AfterPrev(dur=timedelta(hours=2, minutes=30))),
+            Block(uid="u3", h="BED1", n="Bedtime", t=ET.R,
+                  p=FixedWindow(st=time(22, 0), et=time(23, 0)),
+                  anchor_source=anchor_source),
+        ],
+    )
+
+
+def test_relaxing_a_constraint_anchored_pin_is_refused():
+    op = UpdateBlock(h="BED1", p=AfterPrev(dur=timedelta(hours=1)),
+                     why="Relax BED1 to ap mode to prevent overspecification")
+    errors = validate_patch(_plan_with_bedtime(), Patch(ops=[op]))
+    assert any("BED1" in e for e in errors)
+
+
+def test_relaxing_a_constraint_anchored_pin_raises_from_apply_ops():
+    """apply_ops turns any validate_patch error into the ValueError the
+    server already renders as reason "invalid_patch" — no new refusal
+    path, no new reason code."""
+    op = UpdateBlock(h="BED1", p=AfterPrev(dur=timedelta(hours=1)))
+    with pytest.raises(ValueError, match="invalid patch"):
+        apply_ops(_plan_with_bedtime(), Patch(ops=[op]), mint_uid=_mint)
+
+
+def test_relaxing_a_user_anchored_pin_is_allowed():
+    """The same op against the same block, differing only in
+    ``anchor_source``. A user can change their mind mid-conversation and
+    is right there to say so; a standing constraint is not."""
+    op = UpdateBlock(h="BED1", p=AfterPrev(dur=timedelta(hours=1)))
+    assert validate_patch(_plan_with_bedtime("user"), Patch(ops=[op])) == []
+
+
+def test_relaxing_a_calendar_anchored_pin_is_allowed():
+    op = UpdateBlock(h="BED1", p=AfterPrev(dur=timedelta(hours=1)))
+    assert validate_patch(_plan_with_bedtime("calendar"), Patch(ops=[op])) == []
+
+
+def test_retiming_a_constraint_anchored_pin_within_fixed_modes_is_allowed():
+    """fw -> fs is still a pin; the boundary survives. Only leaving fixed
+    timing altogether drops it, so only that is refused."""
+    op = UpdateBlock(h="BED1", p=FixedStart(st=time(22, 30), dur=timedelta(minutes=30)),
+                     why="constraint moved to 23:00 sharp")
+    assert validate_patch(_plan_with_bedtime(), Patch(ops=[op])) == []
+
+
+def test_a_constraint_pin_can_be_unpinned_by_re_sourcing_it_first():
+    """The escape hatch, and it is deliberately two patches: an op may
+    only touch a handle once, so re-sourcing and relaxing cannot be
+    smuggled into the same patch. Whoever drops the boundary has to say so
+    in its own op, with its own ``why``, and it lands in the journal as
+    two entries rather than one.
+    """
+    re_source = UpdateBlock(h="BED1", anchor_source="user",
+                            why="user said tonight is a late one")
+    plan = _plan_with_bedtime()
+    assert validate_patch(plan, Patch(ops=[re_source])) == []
+    re_sourced = apply_ops(plan, Patch(ops=[re_source]), mint_uid=_mint)
+    assert re_sourced.by_handle("BED1").anchor_source == "user"
+
+    relax = UpdateBlock(h="BED1", p=AfterPrev(dur=timedelta(hours=1)))
+    assert validate_patch(re_sourced, Patch(ops=[relax])) == []
+
+
+def test_relaxing_to_before_next_is_refused_too():
+    """``bn`` is a duration with no pinned edge, exactly like ``ap`` — the
+    rule is "leaves fixed timing", not "becomes ap"."""
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            Block(uid="u1", h="GYM1", n="Gym", t=ET.H,
+                  p=FixedStart(st=time(18, 30), dur=timedelta(hours=1)),
+                  anchor_source="user"),
+            Block(uid="u2", h="BED1", n="Bedtime", t=ET.R,
+                  p=FixedWindow(st=time(22, 0), et=time(23, 0)),
+                  anchor_source="constraint"),
+            Block(uid="u3", h="SLP1", n="Asleep", t=ET.R,
+                  p=FixedStart(st=time(23, 0), dur=timedelta(hours=8)),
+                  anchor_source="constraint"),
+        ],
+    )
+    op = UpdateBlock(h="BED1", p=BeforeNext(dur=timedelta(hours=1)))
+    assert any("BED1" in e for e in validate_patch(plan, Patch(ops=[op])))
+
+
+def test_an_update_that_does_not_touch_timing_is_never_refused():
+    """Renaming a constraint-anchored block leaves the pin exactly where
+    it was — ``UpdateBlock``'s unset fields are untouched, so an unset
+    ``p`` is not a relaxation and must not be read as one."""
+    op = UpdateBlock(h="BED1", n="Bed")
+    assert validate_patch(_plan_with_bedtime(), Patch(ops=[op])) == []
+
+
+def test_removing_a_constraint_anchored_block_is_not_refused():
+    """Deleting a block is a different act from quietly unpinning one: it
+    is visible in the rendered plan on the very next turn, where an
+    unpinned block looks identical to a pinned one. Documented, not
+    accidental — narrowing the rule to relaxation is what keeps its
+    refusal message honest."""
+    plan = _plan_with_bedtime()
+    assert validate_patch(plan, Patch(ops=[RemoveBlock(h="BED1")])) == []
