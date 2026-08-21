@@ -62,6 +62,22 @@ into `Evening Ritual` because the model can say "same rule" or "new rule" but no
 canonical layer. This is #137's hierarchy question (`PART_OF` vs `IS_A`) demanding to
 exist — the flat fold vocabulary forces a lossy choice.
 
+> **Correction, 2026-08-21 (#169).** The diagnosis above was wrong about the cause, and
+> this finding fed #137's edge-table decision on the strength of it. **The model was
+> never told the difference.** The canonicalise prompt had no part/whole discriminator
+> at all, so `Lunch` read as a restatement of `breakfast, lunch and dinner` and `Dinner`
+> read as a restatement of the evening sequence containing it. Given the instruction,
+> both go to 8/8 — `Dinner` vs `Evening Ritual` included. So this was a prompt gap, not
+> a vocabulary gap, and "the flat fold vocabulary forces a lossy choice" overstated it:
+> the fold vocabulary was never the binding constraint here.
+>
+> The structural argument for `PART_OF` may still hold — a rule about the evening
+> sequence and a rule about dinner are genuinely different objects and the graph should
+> be able to say so. But **this particular evidence for it does not survive**, and the
+> decision it fed should be re-examined on the arguments that remain rather than on this
+> one. That is the second time a measured "structural" failure has turned out to be a
+> prompt that had not been asked the right question.
+
 ## Applicability is extracted by nobody
 
 `Client attendance days` ("go to client on Tuesdays and Thursdays") fires on a
@@ -126,6 +142,10 @@ the real endpoint proves the system.
 - **`PART_OF` is not optional.** The composite-fold loss is already destroying anchors
   (`Dinner`). Whatever encoding wins must express component relationships, not just
   identity and applicability.
+  > **Superseded — see the correction under Gap 2.** `Dinner` was not lost to the
+  > encoding; it was lost to a prompt that had never been told a part is not a whole.
+  > With the instruction added, that case scores 8/8 without any change to the fold
+  > vocabulary. This bullet should not be counted as evidence for the fork.
 - **Same-rule-different-value is the other missing relation.** Contradiction handling
   (#145) interacts with the encoding choice: trigger predicates could carry a value
   slot per rule; a graph could version the edge. The fork should be decided with this

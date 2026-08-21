@@ -747,6 +747,33 @@ consumer and left the producer running, so the code actively performs work whose
 discarded, and looks intentional to anyone reading it fresh. The second shape has no natural
 detector: nothing fails, and the field's presence is its own argument for keeping it.
 
+### Open — a merge is irreversible, and L2 has no inverse
+
+**I2 protects the evidence and nothing protects the derivation.** L1 is append-only, so the
+observations behind a wrong merge all survive — the material needed to undo it is right there.
+But **no operation splits a constraint.** `project()` merges, `reproject()` re-derives from
+whatever provenance already says, and provenance is the input to that fold rather than
+something it can revise. A constraint that swallowed an observation it should not have keeps it
+forever, and re-projection faithfully re-derives the wrong thing every time it runs.
+
+This is not hypothetical and the repair has already been done by hand. `Lunch: Lunch break` was
+merged into `Daily Meals: include breakfast, lunch and dinner every day` (#169, a part read as a
+restatement of its whole). Undoing it meant deleting a row from `constraint_observations` with
+raw SQL, because the API has no verb for it. **The one corrective operation the store needed
+most had to be performed underneath the store.**
+
+The asymmetry is the finding: a wrong merge is *permanent in L2 while being fully recoverable
+from L1*. That is I2 doing exactly its job and L2 having no counterpart to it. Everything the
+design says about derived state being cheap to rebuild is true only for fields — the
+*partition* of observations into constraints is derived state that nothing can re-derive.
+
+What is needed is a `split(constraint_uid, observation_uids) -> (uid, uid)` that mints a new
+constraint, moves the named provenance links, and re-projects both. Minting rather than
+reusing, per I3. Whether the *decision* to split is a judgement the system may make on its own
+or one that belongs at stage 6 of the gate is the open half — #169 shows the model can now tell
+a part from a whole prospectively, which is not the same as trusting it to revise a merge it
+already made.
+
 ### Open — a shared idempotency key with divergent payloads
 
 Closed for the common case by #168, which gave the write a caller-supplied identity so a retry
