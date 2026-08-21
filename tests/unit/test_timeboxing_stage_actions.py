@@ -238,8 +238,8 @@ async def test_stage_action_redo_uses_refine_undo_path() -> None:
     agent._run_graph_turn.assert_not_awaited()  # type: ignore[attr-defined]
 
 
-def test_attach_presenter_blocks_review_stage_includes_submit_actions() -> None:
-    """Review stage should expose explicit submit controls and mark pending submit."""
+def test_attach_presenter_blocks_review_stage_enables_auto_submit_state() -> None:
+    """Review stage should enable pending submit without explicit submit controls."""
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
     session = Session(thread_ts="t1", channel_id="c1", user_id="u1")
     session.stage = TimeboxingStage.REVIEW_COMMIT
@@ -255,7 +255,7 @@ def test_attach_presenter_blocks_review_stage_includes_submit_actions() -> None:
 
     assert isinstance(wrapped, SlackBlockMessage)
     action_ids = _collect_action_ids(wrapped.blocks)
-    assert FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID in action_ids
+    assert FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID not in action_ids
     assert session.pending_submit is True
 
 
