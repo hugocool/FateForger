@@ -45,6 +45,12 @@ only: a specific appointment, a one-off adjustment, today's plan.
 Also give a short label naming the rule — a few words, the way someone would
 refer to it in a list. "Oats before gym", not a restatement of the sentence.
 
+The statement is given with the date it was said. Resolve anything relative
+against that date — "tomorrow", "next week", "Thursday" — and answer with real
+dates. Without this the rule expires by when it was last mentioned rather than
+by the day it is actually about, so a Monday statement about Thursday dies on
+Wednesday.
+
 Also say when the rule applies, if the statement scopes it:
 - days_of_week: weekday numbers it is limited to, Monday=0 through Sunday=6.
   Only when the statement names particular days. A rule that holds every day
@@ -54,6 +60,10 @@ Also say when the rule applies, if the statement scopes it:
 
 Do not invent scoping. "Sleep at 23:00" applies every day: empty list, null
 dates. "Go to client on Tuesdays and Thursdays" is [1, 3].
+
+A one-off does get dates. "Dentist tomorrow at 14:00" said on 2026-08-21 is
+start_date and end_date both 2026-08-22 — it is about one day, and that day is
+knowable. A standing rule with no period stays null on both.
 
 Also say how long the rule stays true if nobody mentions it again:
 - "permanent" — only changes if the person changes (sleep window, meal structure)
@@ -294,7 +304,17 @@ class PromptJudge(ABC):
         return self._build(AnchorJudgement, payload)
 
     async def tier(self, observation: Observation) -> TierJudgement:
-        payload = await self._ask(TIER_PROMPT, observation.text)
+        # The observation's own date goes with it. Without a reference point
+        # "tomorrow" is unresolvable in principle rather than merely hard, and
+        # a dateless one-off expires by when it was last mentioned instead of
+        # by the day it is about. Supplying a timestamp the system already
+        # holds is not a judgement about meaning; resolving the phrase against
+        # it is, which is why the model does that half.
+        payload = await self._ask(
+            TIER_PROMPT,
+            f"Said on {observation.observed_at.date().isoformat()}.\n\n"
+            f"{observation.text}",
+        )
         for required in ("tier", "label"):
             if required not in payload:
                 raise ValueError(f"could not parse judge response: {payload!r}")
