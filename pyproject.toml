@@ -52,6 +52,7 @@ dependencies = [
 plan = "fateforger.bots.planner_bot:main"
 haunt = "fateforger.bots.haunter_bot:main"
 watch = "fateforger.bots.calendar_watch_server:main"
+tmbx-mcp = "tmbx.server:main"
 
 [tool.poetry]
 name = "fateforger"
@@ -60,6 +61,7 @@ description = "AI-powered productivity system that forges your fate through inte
 authors = ["hugocool <hugo.evers@gmail.com>"]
 packages = [
     {include = "fateforger", from = "src"},
+    {include = "tmbx", from = "src"},
     {include = "scripts"}
 ]
 
