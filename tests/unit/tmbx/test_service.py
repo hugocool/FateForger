@@ -20,7 +20,14 @@ import pytest
 
 from tmbx.calendar.fake import FakeCalendar
 from tmbx.calendar.port import CalendarEvent
-from tmbx.core.models import ET, AfterPrev, BeforeNext, FixedStart, FixedWindow
+from tmbx.core.models import (
+    ET,
+    AfterPrev,
+    BeforeNext,
+    FixedStart,
+    FixedWindow,
+    ViolationKind,
+)
 from tmbx.core.ops import AddBlock, Patch, RemoveBlock, UpdateBlock
 from tmbx.journal.models import PatchOutcome
 from tmbx.journal.store import JournalStore, init_journal
@@ -28,6 +35,7 @@ from tmbx.service import (
     ConflictError,
     ForeignBlockError,
     PlanService,
+    PlanViolationError,
     _mint_event_id,
     is_valid_base32hex_event_id,
 )
@@ -156,8 +164,8 @@ async def test_apply_records_a_violation_for_an_overlap_without_raising(service)
     # it to start before PR1 ends.
     patch = Patch(ops=[UpdateBlock(h="DW1", p=FixedWindow(st=time(9, 30), et=time(11, 0)))])
     result = await service.apply(snapshot, patch)
-    assert result.violations
-    assert "Overlap" in result.violations[0]
+    (violation,) = result.violations
+    assert violation.kind is ViolationKind.OVERLAP
     assert result.rendered  # render still works despite the overlap
     rows = await service.store.by_day("primary", DAY)
     assert rows[-1].outcome == PatchOutcome.VALIDATION_FAILED
@@ -762,3 +770,209 @@ async def test_relaxing_timing_mode_alone_still_writes_to_the_calendar(empty_ser
     }
     assert live_after["RLX1"][1] == "ap"
     assert live_after["RLX1"][0] != live_before["RLX1"][0]  # etag bumped: really written
+
+
+# --- the violation gate ------------------------------------------------------
+#
+# #170: apply() reported an overlap as advisory data on an ok:true preview and
+# commit() never looked at it, so a model could quote the violation correctly
+# and commit it anyway — measured 4/4 under a real harness. Every prior
+# exercise of this path had a human reading the violation and declining; that
+# looked like the service refusing and it never was. These tests are that
+# human, with the human removed.
+
+
+def _overlapping_patch() -> Patch:
+    """DW1 (10:00-12:00) retimed to start while PR1 (09:00-10:00) still runs."""
+    return Patch(ops=[UpdateBlock(h="DW1", p=FixedWindow(st=time(9, 30), et=time(11, 0)))])
+
+
+async def test_commit_refuses_a_patch_whose_resulting_plan_violates(service):
+    _, snapshot = await service.read("primary", DAY)
+    before = {
+        e.event_id: (e.etag, e.start, e.end)
+        for e in await service.calendar.list_day("primary", DAY, TZ)
+    }
+
+    with pytest.raises(PlanViolationError):
+        await service.commit(snapshot, _overlapping_patch())
+
+    after = {
+        e.event_id: (e.etag, e.start, e.end)
+        for e in await service.calendar.list_day("primary", DAY, TZ)
+    }
+    assert after == before  # refusal means nothing was written, not partially written
+
+
+async def test_the_refusal_carries_what_a_card_needs_to_render_the_decision(service):
+    """A violation is a decision point for the user, not merely an error: the
+    plan does not fit and someone has to choose what gives way. The refusal
+    has to carry which blocks conflict, by how much, and what is being
+    decided — as data, not as a sentence a renderer would have to re-parse."""
+    _, snapshot = await service.read("primary", DAY)
+
+    with pytest.raises(PlanViolationError) as excinfo:
+        await service.commit(snapshot, _overlapping_patch())
+
+    error = excinfo.value
+    (violation,) = error.violations
+    assert violation.kind is ViolationKind.OVERLAP
+    assert [b.h for b in violation.blocks] == ["PR1", "DW1"]
+    assert [b.n for b in violation.blocks] == ["Block PR1", "Block DW1"]
+    assert violation.blocks[0].end == time(10, 0)
+    assert violation.blocks[1].start == time(9, 30)
+    assert violation.magnitude == timedelta(minutes=30)
+
+    # The remedy is a choice the user makes, so it ships as options, not prose.
+    assert [option.id for option in error.options] == ["replan", "accept"]
+    assert [option.expect for option in error.options] == [None, "force"]
+    assert all(option.label and option.consequence for option in error.options)
+
+
+async def test_the_refusal_is_a_refusal_not_a_domain_error(service):
+    """ConflictError and ForeignBlockError are RuntimeErrors; apply_ops'
+    own rejections are ValueErrors, and the server maps the two to different
+    reasons. A violation is a refusal, so it must land on the refusal side —
+    otherwise it surfaces as reason "invalid_patch", which tells the caller
+    to fix the patch when the actual choice is re-plan or accept."""
+    _, snapshot = await service.read("primary", DAY)
+    with pytest.raises(PlanViolationError) as excinfo:
+        await service.commit(snapshot, _overlapping_patch())
+    assert isinstance(excinfo.value, RuntimeError)
+    assert not isinstance(excinfo.value, ValueError)
+
+
+async def test_commit_journals_a_refused_violation_as_validation_failed(service):
+    """A refusal nobody can count is a refusal nobody can audit. plan_history
+    derives dispositions from these rows."""
+    _, snapshot = await service.read("primary", DAY)
+    with pytest.raises(PlanViolationError):
+        await service.commit(snapshot, _overlapping_patch())
+
+    rows = await service.store.by_day("primary", DAY)
+    assert rows[-1].outcome == PatchOutcome.VALIDATION_FAILED
+    assert rows[-1].tx_id is None  # nothing to undo: nothing was written
+    assert rows[-1].error
+
+
+async def test_commit_forces_past_a_violation_when_explicitly_asked(service):
+    """expect="force" is the existing deliberate override for the drift
+    refusal; a violation reuses it rather than inventing a second escape."""
+    _, snapshot = await service.read("primary", DAY)
+    result = await service.commit(snapshot, _overlapping_patch(), expect="force")
+    assert result.committed and result.tx_id
+
+    live = {e.handle: e for e in await service.calendar.list_day("primary", DAY, TZ)}
+    assert live["DW1"].start == datetime(2026, 8, 17, 9, 30)
+
+
+async def test_commit_still_writes_a_plan_with_no_violations(service):
+    """The gate must not refuse ordinary work — DW1 moved to a slot that
+    does not collide."""
+    _, snapshot = await service.read("primary", DAY)
+    result = await service.commit(
+        snapshot,
+        Patch(ops=[UpdateBlock(h="DW1", p=FixedWindow(st=time(10, 30), et=time(12, 0)))]),
+    )
+    assert result.committed
+
+    live = {e.handle: e for e in await service.calendar.list_day("primary", DAY, TZ)}
+    assert live["DW1"].start == datetime(2026, 8, 17, 10, 30)
+
+
+async def test_apply_reports_the_same_violation_object_the_refusal_carries(service):
+    """One shape for preview and refusal alike — a card built for one renders
+    the other. Two shapes would be two places the wording could drift."""
+    _, snapshot = await service.read("primary", DAY)
+    previewed = await service.apply(snapshot, _overlapping_patch())
+
+    with pytest.raises(PlanViolationError) as excinfo:
+        await service.commit(snapshot, _overlapping_patch())
+
+    assert previewed.violations == excinfo.value.violations
+    assert previewed.committable is False
+
+
+async def test_a_clean_preview_is_marked_committable(service):
+    _, snapshot = await service.read("primary", DAY)
+    previewed = await service.apply(
+        snapshot,
+        Patch(ops=[UpdateBlock(h="DW1", p=FixedWindow(st=time(10, 30), et=time(12, 0)))]),
+    )
+    assert previewed.violations == []
+    assert previewed.committable is True
+
+
+async def test_the_drift_refusal_still_takes_precedence_over_a_violation(service):
+    """Both gates trip at once: the snapshot is stale AND the patch overlaps.
+    Drift wins, because a patch built against stale state has to be rebuilt
+    before its violations mean anything — re-planning against a plan that no
+    longer exists is wasted work."""
+    _, snapshot = await service.read("primary", DAY)
+    service.calendar.mutate("primary", "e1")
+    with pytest.raises(ConflictError):
+        await service.commit(snapshot, _overlapping_patch())
+
+
+async def test_a_violation_that_cannot_be_written_at_all_offers_no_accept_option(service):
+    """Not every violation is equally forceable, and the difference is not a
+    severity anyone assigned — it is whether the plan resolves at all. An
+    overlap resolves (every block has real times; they collide), so force can
+    write it. Relaxing the day's only leading anchor to ap leaves the chain
+    with nothing to start from: there are no datetimes to send, so offering
+    "write it anyway" would be offering something that cannot happen."""
+    _, snapshot = await service.read("primary", DAY)
+    patch = Patch(ops=[UpdateBlock(h="PR1", p=AfterPrev(dur=timedelta(hours=1)))])
+
+    with pytest.raises(PlanViolationError) as excinfo:
+        await service.commit(snapshot, patch)
+
+    error = excinfo.value
+    assert error.violations[0].kind is ViolationKind.UNANCHORED_AFTER_PREV
+    assert error.forceable is False
+    assert [option.id for option in error.options] == ["replan"]
+
+
+async def test_force_cannot_write_a_plan_that_does_not_resolve(service):
+    """force is an override of the policy, not of arithmetic. The refusal
+    still has to be the structured one — surfacing this as a bare domain
+    error would tell the caller to fix the patch shape when the real answer
+    is that this plan has no times."""
+    _, snapshot = await service.read("primary", DAY)
+    patch = Patch(ops=[UpdateBlock(h="PR1", p=AfterPrev(dur=timedelta(hours=1)))])
+
+    with pytest.raises(PlanViolationError) as excinfo:
+        await service.commit(snapshot, patch, expect="force")
+    assert excinfo.value.forceable is False
+
+    live = await service.calendar.list_day("primary", DAY, TZ)
+    assert {e.handle for e in live} == {"PR1", "DW1"}
+
+
+async def test_undo_restores_a_violating_state_without_refusing(service):
+    """#170 asks whether undo can restore a state that now violates. It can,
+    and it must.
+
+    Undo's precondition is total — ``drift`` reports changed, vanished *and*
+    appeared events, so undo only proceeds when the live day is etag-identical
+    to the state captured right after the commit — which makes the restore
+    byte-exact. It can therefore only ever put back a violation that already
+    stood, reached deliberately via force or by a direct calendar edit; it can
+    never manufacture one. Gating it would strand the user in a state they
+    explicitly asked to reverse, with no way out: undo has no force by design.
+    """
+    _, snapshot = await service.read("primary", DAY)
+    await service.commit(snapshot, _overlapping_patch(), expect="force")
+
+    _, snapshot = await service.read("primary", DAY)
+    fix = await service.commit(
+        snapshot,
+        Patch(ops=[UpdateBlock(h="DW1", p=FixedWindow(st=time(10, 0), et=time(11, 0)))]),
+    )
+    assert fix.committed
+
+    undone = await service.undo(fix.tx_id)
+    assert undone.committed
+
+    live = {e.handle: e for e in await service.calendar.list_day("primary", DAY, TZ)}
+    assert live["DW1"].start == datetime(2026, 8, 17, 9, 30)  # the overlap is back

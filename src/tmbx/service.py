@@ -23,6 +23,19 @@ Two defects in the legacy engine this closes:
   after the commit it's undoing. ``undo`` compares live state against
   ``post_etags`` — captured immediately after the write, never re-derived —
   and refuses the same way.
+* It writes plans it has already reported as broken. ``commit`` resolves the
+  patched plan and refuses when it does not fit (#170), the same shape as
+  the drift refusal and past the same single override.
+
+``undo`` is deliberately not gated on violations. Its precondition is total
+— ``drift`` reports changed, vanished *and* appeared events, so undo only
+proceeds when the live day is etag-identical to the state captured right
+after the commit — which makes the restore byte-exact. It can therefore
+restore a day that violates, but only one that already existed and that the
+user reached deliberately (via ``expect="force"``, or by editing the
+calendar directly); it can never manufacture a violation that was not there.
+Gating it would strand the user in a state they explicitly asked to reverse,
+with no override, since undo has no ``force`` by design.
 """
 
 from __future__ import annotations
@@ -34,7 +47,7 @@ import uuid
 from datetime import date as date_type
 from typing import Callable, Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, computed_field
 
 from .calendar.port import CalendarEvent, CalendarPort, Snapshot, drift, make_snapshot
 from .core.commitment import overspecified
@@ -46,7 +59,9 @@ from .core.models import (
     FixedStart,
     FixedWindow,
     Plan,
+    PlanViolation,
     Timing,
+    Violation,
 )
 from .core.ops import MoveBlock, Patch, RemoveBlock, UpdateBlock, apply_ops
 from .core.render import render_plan
@@ -135,6 +150,105 @@ class ForeignBlockError(RuntimeError):
         self.handles = handles
 
 
+class RefusalOption(BaseModel):
+    """One thing the user can choose in response to a refusal.
+
+    Only the violation refusal carries these, because it is the only one
+    that is a *choice*. A stale snapshot has one correct response (re-read)
+    and a foreign block has one (drop the op) — neither asks the user
+    anything. A plan that does not fit does: the day they described cannot
+    be written as described, and someone has to say what gives way.
+
+    ``id`` is the stable key a renderer switches on; ``label`` and
+    ``consequence`` are default copy a generic card can use and a styled one
+    can ignore. ``expect`` carries the literal argument that enacts the
+    option, so a host never has to know that ``"force"`` is the word — the
+    remedy travels with the refusal instead of living in prose a caller has
+    to have read.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: Literal["replan", "accept"]
+    label: str
+    consequence: str
+    expect: Literal["force"] | None = None
+
+
+_REPLAN_OPTION = RefusalOption(
+    id="replan",
+    label="Change the plan",
+    consequence=(
+        "Nothing is written. Build a patch that resolves the conflict — move, "
+        "shorten, or drop one of the blocks named — and commit that instead."
+    ),
+)
+
+_ACCEPT_OPTION = RefusalOption(
+    id="accept",
+    label="Write it anyway",
+    consequence=(
+        "Writes the plan exactly as previewed, conflicts included. The "
+        "calendar will hold a day that does not fit."
+    ),
+    expect="force",
+)
+
+
+class PlanViolationError(RuntimeError):
+    """A write was refused because the resulting plan does not fit.
+
+    The third refusal cause, alongside ``ConflictError`` (the calendar
+    drifted — re-read) and ``ForeignBlockError`` (the patch names a block
+    tmbx does not own — route around it). This one's remedy is neither:
+    re-plan, or accept the plan as it is.
+
+    #170: this check did not exist. ``apply`` reported an overlap as
+    advisory data on an ``ok: true`` preview and ``commit`` never looked at
+    ``violations``, so a model could read the overlap, quote it correctly,
+    and commit it anyway — measured 4 of 4 resamples under a real harness.
+    Every earlier exercise of this path had a human reading the violation
+    and declining, which looked like the service refusing. It never was.
+
+    ``forceable`` says whether ``expect="force"`` can actually enact the
+    ``accept`` option. It is asked structurally, of the plan itself (see
+    ``_still_resolves``), never carried as a per-kind opinion — offering an
+    "accept" that would fail anyway is the same shape of misleading signal
+    this refusal exists to remove.
+    """
+
+    def __init__(self, violations: list[Violation], *, forceable: bool) -> None:
+        super().__init__(
+            "plan does not fit: " + "; ".join(v.message for v in violations)
+        )
+        self.violations = violations
+        self.forceable = forceable
+        self.options: list[RefusalOption] = (
+            [_REPLAN_OPTION, _ACCEPT_OPTION] if forceable else [_REPLAN_OPTION]
+        )
+
+
+def _still_resolves(plan: Plan) -> bool:
+    """Can this plan be turned into concrete times at all?
+
+    The line between a violation ``expect="force"`` can write past and one
+    it cannot. An overlap still resolves — every block has a real start and
+    end, they simply collide — so forcing it writes a real, bad day. An
+    unanchored or circular chain does not resolve at all: there are no
+    datetimes to send, and ``_write``'s own ``resolve(check_overlap=False)``
+    raises before the first calendar call, force or no force.
+
+    Asked of the plan rather than kept as a list of which kinds are
+    forceable: a list would be a second opinion about the same question,
+    free to drift from the one ``_write`` actually acts on.
+    """
+    try:
+        plan.resolve(check_overlap=False)
+    except PlanViolation:
+        return False
+    return True
+
+
 class ReadResult(BaseModel):
     """``read()``'s sibling for a caller that needs the plan as *text*.
 
@@ -150,10 +264,25 @@ class ReadResult(BaseModel):
 
 
 class ApplyResult(BaseModel):
+    """A preview. ``violations`` carries the same ``Violation`` objects a
+    ``PlanViolationError`` would — one shape, so a card built to render the
+    refusal renders the preview too, and neither can word it differently.
+
+    ``committable`` is derived, never stored: a preview that says it is
+    committable while carrying violations is exactly the mismatch #170 was.
+    It answers only "would ``commit`` refuse this plan?" — it says nothing
+    about calendar drift, which ``apply`` deliberately never checks.
+    """
+
     plan: Plan
     rendered: str
-    violations: list[str]
+    violations: list[Violation]
     overspecified: list[str]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def committable(self) -> bool:
+        return not self.violations
 
 
 class CommitResult(BaseModel):
@@ -454,7 +583,7 @@ class PlanService:
             await self._journal(snapshot, patch, PatchOutcome.APPLY_FAILED, error=error)
             raise ForeignBlockError(touched)
 
-        violations: list[str] = []
+        violations: list[Violation] = []
         outcome = PatchOutcome.APPLIED
         try:
             patched = apply_ops(plan, patch, mint_uid=self._mint_uid)
@@ -464,8 +593,8 @@ class PlanService:
 
         try:
             patched.resolve()
-        except ValueError as exc:
-            violations.append(str(exc))
+        except PlanViolation as exc:
+            violations.append(exc.violation)
             outcome = PatchOutcome.VALIDATION_FAILED
 
         await self._journal(snapshot, patch, outcome)
@@ -500,6 +629,26 @@ class PlanService:
             raise ConflictError(conflicts)
 
         patched = apply_ops(plan, patch, mint_uid=self._mint_uid)
+
+        # Gate on the plan the caller would actually get. Without this,
+        # ``apply``'s violations were advisory only and a host could read an
+        # overlap, report it accurately, and commit it in the next call
+        # (#170). ``expect="force"`` stays the single deliberate override —
+        # the same one the drift refusal above already uses — but it can
+        # only enact a plan that resolves at all; see ``_still_resolves``.
+        try:
+            patched.resolve()
+        except PlanViolation as exc:
+            forceable = _still_resolves(patched)
+            if not (forceable and expect == "force"):
+                await self._journal(
+                    snapshot,
+                    patch,
+                    PatchOutcome.VALIDATION_FAILED,
+                    error=exc.violation.message,
+                )
+                raise PlanViolationError([exc.violation], forceable=forceable) from exc
+
         before = [event.model_copy(deep=True) for event in live]
         await self._write(snapshot.calendar_id, patched, live, foreign_uids)
 
@@ -713,6 +862,8 @@ __all__ = [
     "ConflictError",
     "ForeignBlockError",
     "PlanService",
+    "PlanViolationError",
     "ReadResult",
+    "RefusalOption",
     "is_valid_base32hex_event_id",
 ]

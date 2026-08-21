@@ -193,6 +193,85 @@ class Block(BaseModel):
         return self
 
 
+class ViolationKind(str, Enum):
+    """Why a plan does not fit.
+
+    A closed set with exactly one member per raise site in
+    ``Plan.resolve()`` — which is what lets a renderer switch on it
+    exhaustively instead of reading the message. Adding a way for a plan to
+    fail means adding a member here; there is no "other".
+    """
+
+    OVERLAP = "overlap"
+    CIRCULAR_CHAIN = "circular_chain"
+    UNANCHORED_AFTER_PREV = "unanchored_after_prev"
+    UNANCHORED_BEFORE_NEXT = "unanchored_before_next"
+    NEGATIVE_DURATION = "negative_duration"
+
+
+class ViolationBlock(BaseModel):
+    """One block implicated in a violation, as a renderer needs to show it.
+
+    ``n`` rides along with ``h`` because a confirmation card shows the user
+    "Wind Down", not "WIND1"; a renderer holding only the handle would have
+    to go back to the plan to find the name, which is exactly the
+    re-derivation this payload exists to remove.
+
+    ``start``/``end`` are ``None`` when the block never resolved — an
+    unanchored or circular chain has no times to report, and inventing some
+    would be worse than saying so.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    h: str
+    n: str
+    start: time | None = None
+    end: time | None = None
+
+
+class Violation(BaseModel):
+    """A plan that does not fit, as data a decision is built from.
+
+    A violation is a decision point for a user, not merely an error: the day
+    they asked for does not fit and someone has to choose what gives way.
+    That choice surfaces in Slack as a confirmation card, so the payload has
+    to carry the situation itself — which blocks collide, and by how much —
+    rather than a sentence a renderer would have to take apart again.
+
+    ``magnitude`` is the size of the discrepancy where the violation has
+    one: how long two blocks overlap, or how far a block's end precedes its
+    own start. It is ``None`` for a structural failure (an unanchored or
+    circular chain), where "how much" has no answer — deliberately absent
+    rather than zero, which would read as "they overlap by nothing".
+
+    ``message`` stays on the model because a text host still needs a
+    sentence, and one place to compose it beats each host inventing its own.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: ViolationKind
+    blocks: list[ViolationBlock]
+    magnitude: timedelta | None = None
+    message: str
+
+
+class PlanViolation(ValueError):
+    """``Plan.resolve()`` could not produce a day that fits.
+
+    Subclasses ``ValueError`` deliberately: ``overspecified()``,
+    ``PlanService.apply`` and the server's ``invalid_patch`` branch all
+    catch ``ValueError`` around a resolve, and narrowing that would change
+    three call sites' behaviour silently. The structured ``violation`` is an
+    addition to what those callers already see, never a replacement.
+    """
+
+    def __init__(self, violation: Violation) -> None:
+        super().__init__(violation.message)
+        self.violation = violation
+
+
 class Resolved(BaseModel):
     """A block with concrete times computed.
 
@@ -259,6 +338,13 @@ class Plan(BaseModel):
         ends when the next block starts and ``ap`` starts when the previous
         block ends, so the pair defines each other with nothing to anchor
         on. That configuration is not mis-resolved here — it is rejected.
+
+        Every rejection raises ``PlanViolation`` (a ``ValueError``) carrying
+        a structured ``Violation``: which blocks are implicated, by how
+        much, and why. Callers gate on that — ``PlanService.commit`` refuses
+        a patch whose resulting plan violates — and hosts render it as a
+        decision for the user. Resolution stops at the first violation
+        found, so a ``Violation`` describes one problem, not all of them.
         """
         day = self.date
         rows: list[dict] = []
@@ -295,15 +381,34 @@ class Plan(BaseModel):
 
             if p.a == "ap":
                 if pending_bn_handle is not None:
-                    raise ValueError(
-                        f"{pending_bn_handle} and {block.h}: circular chain — "
-                        f"{pending_bn_handle} (bn) ends when {block.h} starts, "
-                        f"{block.h} (ap) starts when {pending_bn_handle} ends. "
-                        "An ap block may only follow a block whose end is "
-                        "already determined."
+                    pending = self.by_handle(pending_bn_handle)
+                    raise PlanViolation(
+                        Violation(
+                            kind=ViolationKind.CIRCULAR_CHAIN,
+                            blocks=[
+                                ViolationBlock(
+                                    h=pending_bn_handle,
+                                    n=pending.n if pending else pending_bn_handle,
+                                ),
+                                ViolationBlock(h=block.h, n=block.n),
+                            ],
+                            message=(
+                                f"{pending_bn_handle} and {block.h}: circular chain — "
+                                f"{pending_bn_handle} (bn) ends when {block.h} starts, "
+                                f"{block.h} (ap) starts when {pending_bn_handle} ends. "
+                                "An ap block may only follow a block whose end is "
+                                "already determined."
+                            ),
+                        )
                     )
                 if last_end is None:
-                    raise ValueError(f"{block.h}: after_previous has no preceding block")
+                    raise PlanViolation(
+                        Violation(
+                            kind=ViolationKind.UNANCHORED_AFTER_PREV,
+                            blocks=[ViolationBlock(h=block.h, n=block.n)],
+                            message=f"{block.h}: after_previous has no preceding block",
+                        )
+                    )
                 start_dt, end_dt = last_end, last_end + p.dur
             elif p.a == "fs":
                 start_dt = datetime.combine(day, p.st)
@@ -333,7 +438,13 @@ class Plan(BaseModel):
                 continue  # BG never participates in chain propagation
             if "_pending_dur" in row:
                 if next_start_dt is None:
-                    raise ValueError(f"{row['h']}: before_next has no following block")
+                    raise PlanViolation(
+                        Violation(
+                            kind=ViolationKind.UNANCHORED_BEFORE_NEXT,
+                            blocks=[ViolationBlock(h=row["h"], n=row["n"])],
+                            message=f"{row['h']}: before_next has no following block",
+                        )
+                    )
                 dur = row.pop("_pending_dur")
                 start_dt = next_start_dt - dur
                 row.update(
@@ -356,7 +467,17 @@ class Plan(BaseModel):
         # adjacent pairs assuming monotonic, non-negative resolved times.
         for r in resolved:
             if r.dur < timedelta(0):
-                raise ValueError(f"{r.h}: resolved duration is negative ({r.dur})")
+                raise PlanViolation(
+                    Violation(
+                        kind=ViolationKind.NEGATIVE_DURATION,
+                        blocks=[ViolationBlock(h=r.h, n=r.n, start=r.start, end=r.end)],
+                        # How far the end precedes the start: a positive
+                        # size for a negative quantity, so "by how much"
+                        # reads the same way it does for an overlap.
+                        magnitude=-r.dur,
+                        message=f"{r.h}: resolved duration is negative ({r.dur})",
+                    )
+                )
 
         if check_overlap:
             chain = [r for r in resolved if r.t is not ET.BG]
@@ -365,8 +486,18 @@ class Plan(BaseModel):
                 # a block that legitimately crosses midnight must still be
                 # comparable to its neighbours on the following day.
                 if a.end_dt > b.start_dt:
-                    raise ValueError(
-                        f"Overlap: {a.h} ends {a.end} but {b.h} starts {b.start}"
+                    raise PlanViolation(
+                        Violation(
+                            kind=ViolationKind.OVERLAP,
+                            blocks=[
+                                ViolationBlock(h=a.h, n=a.n, start=a.start, end=a.end),
+                                ViolationBlock(h=b.h, n=b.n, start=b.start, end=b.end),
+                            ],
+                            magnitude=a.end_dt - b.start_dt,
+                            message=(
+                                f"Overlap: {a.h} ends {a.end} but {b.h} starts {b.start}"
+                            ),
+                        )
                     )
 
         return resolved
@@ -381,7 +512,11 @@ __all__ = [
     "FixedStart",
     "FixedWindow",
     "Plan",
+    "PlanViolation",
     "Resolved",
     "Timing",
+    "Violation",
+    "ViolationBlock",
+    "ViolationKind",
     "is_valid_handle",
 ]

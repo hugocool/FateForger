@@ -56,6 +56,7 @@ from tmbx.service import PlanService
 
 DAY = "2026-08-17"
 DAY_DATE = date_type(2026, 8, 17)
+TZ = "Europe/Amsterdam"
 
 
 def _text(result) -> str:
@@ -522,3 +523,137 @@ def test_build_calendar_port_rejects_an_unknown_backend(monkeypatch):
     monkeypatch.setenv(_CALENDAR_BACKEND_ENV_VAR, "carrier-pigeon")
     with pytest.raises(ValueError, match="carrier-pigeon"):
         _build_calendar_port()
+
+
+# --- the violation gate, driven with no human in the loop --------------------
+#
+# #170. These are the tests whose absence is why the defect shipped: every
+# prior exercise of this path had a human reading the violation and choosing
+# not to commit, which looked like the service refusing. Here nothing reads
+# anything — the tool is called with a violating patch and the wire response
+# is asserted.
+
+_OVERLAPPING_PATCH = {
+    "ops": [
+        {
+            "op": "add",
+            "after": "PR1",
+            "h": "DW1",
+            "n": "Deep Work",
+            "t": "DW",
+            "p": {"a": "fw", "st": "09:30:00", "et": "10:30:00"},
+            "anchor_source": "user",
+        }
+    ]
+}
+
+
+async def test_plan_commit_refuses_a_violating_patch_and_writes_nothing(built):
+    server, service = built
+    read = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
+    payload = json.loads(_text(read))
+    before = [
+        e.model_dump()
+        for e in await service.calendar.list_day("primary", DAY_DATE, TZ)
+    ]
+
+    result = await server.call_tool(
+        "plan_commit", {"snapshot": payload["snapshot"], "patch": _OVERLAPPING_PATCH}
+    )
+    body = json.loads(_text(result))
+
+    assert body["committed"] is False
+    assert body["reason"] == "plan_violation"
+    assert body["conflicts"] == []
+    after = [
+        e.model_dump()
+        for e in await service.calendar.list_day("primary", DAY_DATE, TZ)
+    ]
+    assert after == before
+
+
+async def test_the_violation_refusal_carries_a_renderable_decision(built):
+    """Slack (#165) renders this as a confirmation card: the user sees the
+    conflict and decides what gives way. Everything the card needs has to be
+    on the wire as data — which blocks, by how much, and the choice being
+    offered — never a sentence a renderer would have to take apart again."""
+    server, _service = built
+    read = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
+    payload = json.loads(_text(read))
+
+    result = await server.call_tool(
+        "plan_commit", {"snapshot": payload["snapshot"], "patch": _OVERLAPPING_PATCH}
+    )
+    body = json.loads(_text(result))
+
+    (violation,) = body["violations"]
+    assert violation["kind"] == "overlap"
+    assert violation["blocks"] == [
+        {"h": "PR1", "n": "Block PR1", "start": "09:00:00", "end": "10:00:00"},
+        {"h": "DW1", "n": "Deep Work", "start": "09:30:00", "end": "10:30:00"},
+    ]
+    assert violation["magnitude"] == "PT30M"
+    assert violation["message"]
+
+    assert [option["id"] for option in body["options"]] == ["replan", "accept"]
+    accept = body["options"][1]
+    assert accept["expect"] == "force"
+    assert all(option["label"] and option["consequence"] for option in body["options"])
+    assert body["message"]
+
+
+async def test_plan_commit_forces_past_a_violation_when_asked(built):
+    server, service = built
+    read = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
+    payload = json.loads(_text(read))
+
+    result = await server.call_tool(
+        "plan_commit",
+        {"snapshot": payload["snapshot"], "patch": _OVERLAPPING_PATCH, "expect": "force"},
+    )
+    body = json.loads(_text(result))
+    assert body["committed"] is True
+    assert body["tx_id"]
+
+    live = {
+        e.handle for e in await service.calendar.list_day("primary", DAY_DATE, TZ)
+    }
+    assert "DW1" in live
+
+
+async def test_plan_apply_still_previews_a_violating_patch_but_marks_it_uncommittable(built):
+    """plan_apply stays ok:true — it did its job, and the rendered preview is
+    the single most useful thing for re-planning, so turning it into a refusal
+    would throw that away. What was misleading was that nothing on the preview
+    said commit would refuse it. "committable" says so."""
+    server, _service = built
+    read = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
+    payload = json.loads(_text(read))
+
+    result = await server.call_tool(
+        "plan_apply", {"snapshot": payload["snapshot"], "patch": _OVERLAPPING_PATCH}
+    )
+    body = json.loads(_text(result))
+
+    assert body["ok"] is True
+    assert body["committable"] is False
+    assert body["rendered"]
+    assert body["violations"][0]["kind"] == "overlap"
+
+
+async def test_a_clean_preview_is_marked_committable(built):
+    server, _service = built
+    read = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
+    payload = json.loads(_text(read))
+
+    result = await server.call_tool(
+        "plan_apply",
+        {
+            "snapshot": payload["snapshot"],
+            "patch": {"ops": [{"op": "update", "h": "PR1", "n": "Renamed"}]},
+        },
+    )
+    body = json.loads(_text(result))
+    assert body["ok"] is True
+    assert body["committable"] is True
+    assert body["violations"] == []

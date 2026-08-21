@@ -18,7 +18,7 @@ is expected to have read separately.
 Every write path (``plan_commit``, ``plan_undo``) can *refuse*. A refusal
 is reported as a normal JSON result with a ``"reason"`` code — never raised
 as a tool-call exception — because a refusal is not a transient error: the
-correct response is never "retry the same call". Four refusal causes exist:
+correct response is never "retry the same call". Five refusal causes exist:
 
 * ``stale_snapshot`` (``ConflictError``) — the calendar drifted since the
   snapshot. The remedy is re-read, then rebuild the patch. Not safe to
@@ -27,16 +27,22 @@ correct response is never "retry the same call". Four refusal causes exist:
   event tmbx does not own (someone else's meeting, an invite). The remedy
   is to drop that op; tmbx can never edit a foreign block, force or no
   force. Not safe to retry as-is.
+* ``plan_violation`` (``PlanViolationError``) — the patch applies cleanly
+  but the plan it produces does not fit: blocks collide, or a chain has
+  nothing to anchor on. The only refusal that is a *decision* rather than a
+  correction — the day the user described cannot be written as described,
+  and someone has to choose what gives way — so the only one that carries
+  ``options``. The remedy is re-plan or accept.
 * ``invalid_patch`` — the patch is shaped correctly but a domain rule
   rejects it (``apply_ops``'s own ``ValueError``: duplicate handle, a
-  cyclic move, an overlap, ...). Safe to retry once fixed.
+  cyclic move, ...). Safe to retry once fixed.
 * ``malformed_input`` — the raw call doesn't match the expected shape at
   all (an unknown op literal, a snapshot missing ``tz``, a non-ISO
   ``day``). Safe to retry once fixed.
 
-``ConflictError``/``ForeignBlockError`` are ``RuntimeError`` subclasses;
-plain ``ValueError`` (which also covers pydantic's ``ValidationError``)
-covers the other two.
+``ConflictError``/``ForeignBlockError``/``PlanViolationError`` are
+``RuntimeError`` subclasses; plain ``ValueError`` (which also covers
+pydantic's ``ValidationError``) covers the other two.
 
 ``snapshot`` and ``patch`` are typed ``dict[str, Any]`` at the tool
 boundary, not ``Snapshot``/``Patch`` directly, and validated by hand with
@@ -65,7 +71,12 @@ from .calendar.port import CalendarPort, Snapshot
 from .core.models import Plan
 from .core.ops import Patch
 from .journal.disposition import derive_dispositions
-from .service import ConflictError, ForeignBlockError, PlanService
+from .service import (
+    ConflictError,
+    ForeignBlockError,
+    PlanService,
+    PlanViolationError,
+)
 
 PLANNING_POLICY = """\
 Use the weakest timing mode that expresses the intent.
@@ -137,6 +148,29 @@ def _foreign_block_message(handles: list[str]) -> str:
         "never edit, retime, or remove one, force or no force. Drop this "
         "op; anchoring a new block after it is fine, editing it is not."
     )
+
+
+def _plan_violation_message(error: PlanViolationError) -> str:
+    """Refusal text for a plan that does not fit.
+
+    A sentence for a text host. The structured ``violations``/``options``
+    beside it are what a card renders — this must never be the only place
+    the situation is described, or every renderer ends up taking it apart
+    again.
+    """
+    detail = "; ".join(violation.message for violation in error.violations)
+    if error.forceable:
+        remedy = (
+            "Re-plan so the conflict is gone and commit that, or pass "
+            'expect="force" — only if the user has said to write the day as '
+            "it stands."
+        )
+    else:
+        remedy = (
+            "This plan has no resolvable times at all, so there is nothing "
+            'force could write: expect="force" is refused too. Re-plan.'
+        )
+    return f"Refused — nothing was written. {detail}. {remedy}"
 
 
 def build_server(service: PlanService) -> FastMCP:
@@ -230,8 +264,20 @@ def build_server(service: PlanService) -> FastMCP:
           instead of retrying as-is.
         - reason "invalid_patch": the patch is shaped correctly but fails
           a domain rule (duplicate handle, a fixed-timing block with no
-          anchor_source, a cyclic move, an overlap, ...) — "message" says
-          which. Fix it and call again.
+          anchor_source, a cyclic move, ...) — "message" says which. Fix it
+          and call again.
+
+        On success, "committable" says whether plan_commit would accept
+        this plan. It is false whenever "violations" is non-empty: the
+        patch applied, but the resulting day does not fit (blocks collide,
+        or a chain has nothing to anchor on) and plan_commit will refuse
+        it. A violation is not advice — do not commit past one. Fix the
+        plan and preview again, or put the choice to the user. (It says
+        nothing about calendar drift; plan_apply never checks that.)
+
+        Each violation carries "kind", the "blocks" involved with their
+        names and resolved times, and "magnitude" — how much they collide
+        by, where that has an answer.
 
         On success, "overspecified" lists handles pinned to fs/fw that
         could be relaxed to ap with no change to any resolved time — treat
@@ -259,8 +305,11 @@ def build_server(service: PlanService) -> FastMCP:
         return json.dumps(
             {
                 "ok": True,
+                "committable": result.committable,
                 "rendered": result.rendered,
-                "violations": result.violations,
+                "violations": [
+                    violation.model_dump(mode="json") for violation in result.violations
+                ],
                 "overspecified": result.overspecified,
             }
         )
@@ -295,6 +344,18 @@ def build_server(service: PlanService) -> FastMCP:
           does not own (e.g. a meeting someone else made). Drop that op;
           tmbx can never edit or delete it, force or no force. Anchoring a
           new block after it is fine.
+        - reason "plan_violation": the patch applied, but the resulting
+          day does not fit. "violations" describes each one — "kind", the
+          "blocks" involved with names and resolved times, and "magnitude"
+          (how much they collide by). Nothing was written. This is the one
+          refusal that is a decision rather than a correction: "options"
+          lists what can be chosen, each with a stable "id" — "replan"
+          (build a different patch) and, when the plan can be written at
+          all, "accept" (carrying expect="force"). Take "accept" only if
+          the user has said to write the day as it stands; never as a way
+          to get past your own overlap. When "options" holds only
+          "replan", the plan has no resolvable times and force is refused
+          too.
         - reason "invalid_patch": the patch is shaped correctly but fails
           a domain rule — "message" says how. Fix it and call again.
 
@@ -337,6 +398,19 @@ def build_server(service: PlanService) -> FastMCP:
                     "handles": exc.handles,
                     "conflicts": [],
                     "message": _foreign_block_message(exc.handles),
+                }
+            )
+        except PlanViolationError as exc:
+            return json.dumps(
+                {
+                    "committed": False,
+                    "reason": "plan_violation",
+                    "conflicts": [],
+                    "violations": [
+                        violation.model_dump(mode="json") for violation in exc.violations
+                    ],
+                    "options": [option.model_dump(mode="json") for option in exc.options],
+                    "message": _plan_violation_message(exc),
                 }
             )
         except ValueError as exc:
