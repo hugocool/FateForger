@@ -177,6 +177,21 @@ The same rule restated, reworded, or given in more detail is the SAME rule.
 A different rule about the same topic is NOT — "oats before gym" and "protein
 after gym" are two rules about gym nutrition, not one.
 
+Two things must never be merged, and both look like restatements.
+
+A rule about a PART is not the rule about the WHOLE that contains it. "Lunch"
+is one of the meals in "include breakfast, lunch and dinner every day", so a
+rule naming lunch is not that rule — merging them would lose breakfast and
+dinner entirely. Same for a single block and the ritual it sits inside.
+
+A rule about a SPECIFIC thing is not the rule about the general CATEGORY it
+belongs to. A rule about hockey is not a rule about sport. A rule about how
+long a block runs is not a rule about when blocks may be scheduled.
+
+In both cases the two are related and the relationship is recorded elsewhere.
+Merge only when the two statements assert the same thing about the same thing.
+If one would still be true while the other was false, they are two rules.
+
 Respond with JSON only:
 {"constraint_uid": "<id>"|null, "rationale": "..."}\
 """

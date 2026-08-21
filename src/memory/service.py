@@ -15,6 +15,7 @@ from memory.models import Channel, Observation, Provenance, Tier
 from memory.projection import project
 from memory.read_api import get_active_constraints as _read
 from memory.read_api import get_faded_constraints as _read_faded
+from memory.read_api import get_suspended_constraints as _read_suspended
 from memory.reprojection import ReprojectionReport, reproject
 from memory.store import ObservationStore
 
@@ -159,6 +160,7 @@ class MemoryService:
         day: date,
         stage: str | None = None,
         anchor_uids: list[str] | None = None,
+        day_type: str | None = None,
     ) -> list[ConstraintView]:
         """Rules applying on `day`, optionally narrowed to the day's anchors.
 
@@ -176,9 +178,24 @@ class MemoryService:
                 for c in self._constraints.durable()
                 if not self._anchors.anchors_for(c.uid)
             }
-        return _read(self._constraints, day, stage, reachable=reachable)
+        return _read(self._constraints, day, stage, reachable=reachable,
+            day_type=day_type,
+        )
 
     def get_faded_constraints(
         self, day: date, stage: str | None = None
     ) -> list[ConstraintView]:
         return _read_faded(self._constraints, day, stage)
+
+    def get_suspended_constraints(
+        self, day: date, day_type: str | None = None
+    ) -> list[ConstraintView]:
+        """Rules that are true and deliberately not in force on `day`.
+
+        Separate from faded because the two states have different remedies:
+        faded asks *is this still true?*, suspended asserts *this is true, and
+        not today*. A planner on a vacation day should be able to say that 21
+        working-day rules are suspended rather than behave as though the user
+        never had them.
+        """
+        return _read_suspended(self._constraints, day, day_type=day_type)

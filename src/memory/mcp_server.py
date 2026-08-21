@@ -202,7 +202,10 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
 
     @mcp.tool(name="memory_get_active_constraints")
     def memory_get_active_constraints(
-        day: str, stage: str | None = None, anchor_uids: list[str] | None = None
+        day: str,
+        stage: str | None = None,
+        anchor_uids: list[str] | None = None,
+        day_type: str | None = None,
     ) -> list[dict]:
         """Durable rules applying on `day` (YYYY-MM-DD). No model call.
 
@@ -210,11 +213,49 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         bearing on what the day actually contains, rather than every standing
         rule. Rules carrying no anchors are always included — those are about
         the shape of the day rather than a thing in it.
+
+        **Pass `day_type` whenever you know it.** Most rules here are working-day
+        rules, and weekday is not a reliable stand-in for a working day: without
+        this, a day the user is on holiday returns their entire working week —
+        commute duration, deep-work entry gates, no-meetings-before-13:00. One of
+        "working", "vacation", "holiday", "sick", "weekend". Omitting it is safe
+        but broad. If your host supports sampling, memory_classify_day derives it
+        from calendar event titles; if it does not, classify the day yourself and
+        pass the string — that judgement has to happen somewhere, and this server
+        cannot make it without a model.
         """
         views = service.get_active_constraints(
-            date.fromisoformat(day), stage, anchor_uids
+            date.fromisoformat(day), stage, anchor_uids, day_type=day_type
         )
         return [v.model_dump(mode="json") for v in views]
+
+    @mcp.tool(name="memory_get_suspended_constraints")
+    def memory_get_suspended_constraints(
+        day: str, day_type: str | None = None
+    ) -> list[dict]:
+        """Rules that are true, and deliberately not in force on `day`. No model call.
+
+        Render these; do not plan against them. Absence from the active list has
+        three causes that look identical — no such rule, a rule that does not
+        apply today, a rule that has gone stale — and they need opposite
+        responses. This separates the second out, so a planner can say "21
+        working-day rules are suspended, today is vacation" rather than quietly
+        returning a shorter list and looking like it forgot.
+        """
+        views = service.get_suspended_constraints(
+            date.fromisoformat(day), day_type=day_type
+        )
+        return [v.model_dump(mode="json") for v in views]
+
+    @mcp.tool(name="memory_classify_day")
+    async def memory_classify_day(events: list[str]) -> str:
+        """What kind of day this is, from calendar event titles. Samples once.
+
+        Feed the result to memory_get_active_constraints as `day_type`. This
+        needs the sampling capability; a host without it gets a loud failure
+        rather than a wrong answer, and should classify the day itself.
+        """
+        return await service.classify_day(events)
 
     @mcp.tool(name="memory_get_faded_constraints")
     def memory_get_faded_constraints(
