@@ -243,3 +243,9 @@ logs/
 
 # Local safety bundles
 .git-backups/
+
+# SDD scratch workspace
+.superpowers/
+
+# seeded memory stores and run artifacts — real user data, never commit
+data/memory.db*

@@ -1,0 +1,323 @@
+# Seeding Run Findings — the Real Corpus Through the Real Pipeline
+
+**Date:** 2026-08-17 · **Ticket context:** map B (#133), feeds #137 / #145 / #149
+**What ran:** all 97 legacy PROFILE rows replayed through `MemoryService.observe` —
+five LLM judgements per stored row on `google/gemini-3.6-flash`, sequential, zero
+pattern matching anywhere. Six attempts; the last completed. `data/memory.db` is the
+seeded store (uncommitted).
+
+## Final numbers
+
+| | run 4 (two-category meta prompt) | run 6 (final) |
+|---|---|---|
+| rows read | 97 | 97 |
+| stored | 47 | **69** |
+| suppressed: meta | **39** | **6** |
+| suppressed: duplicate | 11 | 22 |
+| constraints created | 25 | **38** |
+| folds | 22 | 31 |
+| Monday `get_active_constraints` | 23 | 36 |
+
+Hand-measured distinct PROFILE concepts was ~55; 38 canonical constraints + 6 tool-talk
++ genuine duplicate collapse is in the right neighbourhood. The six meta suppressions
+are exactly the tool-talk family (`Timeboxing Preference/Practice/Strategy`,
+`Todo Alignment`, `TaskWordingAlignment`, `Task System Integration`) — zero real
+preferences lost.
+
+## The headline defect found and fixed: meta over-suppression
+
+Run 4's meta judgement suppressed **39 of 97 rows**, of which ~32 were real scheduling
+rules — `Daily Meals`, the entire deep-work-duration family, `Work Block Alternation`,
+the C2F caps, `Remove 17:00 disconnect`, `Always include planning session`. Cause: the
+prompt named two categories (about the conversation vs about the person's life) and the
+corpus is dominated by a third it never mentioned — **rules about the schedule being
+produced**. The model had to guess which side block-lengths and block-counts fall on,
+and guessed meta.
+
+Fix: the prompt now names all three categories. 12/12 evals passed on the first
+iteration, including both boundary directions, and run 6's suppressions collapsed to
+exactly the predicted tool-talk set.
+
+**Lesson worth generalising:** a judgement prompt fails not on the categories it
+defines but on the category it forgot to mention. The eval suite now pins all three.
+
+## Canonicalise quality: strong, with two structural gaps it cannot express
+
+**It works.** `Oats timing before gym` folded 4 surface forms; `Bedtime sci-fi reading`
+folded 3 while `Sci-fi reading breaks` — a different rule about the same topic —
+correctly stayed separate. The protein-shake distinction held on real data.
+
+**Gap 1 — contradiction folded as restatement.** The `Deep Work duration` group folded
+**11 observations carrying three different values**: "2 hours" ×7, "at least 90
+minutes", "90 minute blocks", "bounded to 60–90 minutes". Canonicalise's judgement
+("same rule") is correct — but the system has no way to represent that the rule's
+*value* is contested, so the stored description silently carries whichever phrasing the
+constraint happened to keep. This is #145's supersession question demonstrated in the
+first 97 rows of real data: same-rule-different-value needs its own handling (TOKI's
+valid-time shape), and until it exists, folding erases disagreement.
+
+**Gap 2 — components folded into composites.** `Dinner`, `Shower`, `Afruimen` folded
+into `Evening Ritual` because the model can say "same rule" or "new rule" but not
+"**part of** that rule". `Dinner` as a standalone anchor no longer exists in the
+canonical layer. This is #137's hierarchy question (`PART_OF` vs `IS_A`) demanding to
+exist — the flat fold vocabulary forces a lossy choice.
+
+> **Correction, 2026-08-21 (#169).** The diagnosis above was wrong about the cause, and
+> this finding fed #137's edge-table decision on the strength of it. **The model was
+> never told the difference.** The canonicalise prompt had no part/whole discriminator
+> at all, so `Lunch` read as a restatement of `breakfast, lunch and dinner` and `Dinner`
+> read as a restatement of the evening sequence containing it. Given the instruction,
+> both go to 8/8 — `Dinner` vs `Evening Ritual` included. So this was a prompt gap, not
+> a vocabulary gap, and "the flat fold vocabulary forces a lossy choice" overstated it:
+> the fold vocabulary was never the binding constraint here.
+>
+> The structural argument for `PART_OF` may still hold — a rule about the evening
+> sequence and a rule about dinner are genuinely different objects and the graph should
+> be able to say so. But **this particular evidence for it does not survive**, and the
+> decision it fed should be re-examined on the arguments that remain rather than on this
+> one. That is the second time a measured "structural" failure has turned out to be a
+> prompt that had not been asked the right question.
+
+## Applicability is extracted by nobody
+
+`Client attendance days` ("go to client on Tuesdays and Thursdays") fires on a
+**Monday** query. So do `Wednesday revenue-first precedence` and `Systems-work
+quarantine before Friday`. Projection always writes an unconstrained `Applicability()`;
+the structural filter exists but nothing populates it from the text. The day-scoping
+words are sitting right there in the descriptions. **A judgement (or a field on an
+existing one) that extracts date/day applicability is the single cheapest flood
+reduction available** — it would trim the Monday 36 immediately and it needs no graph.
+
+## The flood, quantified
+
+36 durable constraints on an arbitrary Monday. For a patcher prompt that is heavy but
+survivable for session one; it is also honest — everything returned genuinely is a
+standing rule. Reduction comes in three tiers: applicability extraction (cheap, above),
+decay for the sprint-scoped C2F family (below), then semantic relevance via the anchor
+graph (#137).
+
+## The C2F family landed durable | must
+
+`C2F framing cap`, `Artifact-first scheduling gate`, `Strategic outcome daily limit`,
+`Wednesday revenue-first` — all judged durable, all MUST. Reasonable judgements from
+the text alone, and precisely #116's problem restated: these were sprint-scoped when
+written and nothing in the text says so. They will now fire forever until decay exists.
+Decay is not an optimisation; on this data it is the difference between a store that
+tracks a life and one that fossilises each sprint.
+
+## Tier judgement on thin text
+
+`Lunch break: Lunch break` (name ≈ description, no detail) was judged session-tier —
+twice, producing two invisible session rows, because session tier skips canonicalise
+(by design) so cross-session session-tier duplicates are structural. Thin text gets
+read as "today". Fine for now (session rows are never served), but worth knowing: the
+tier judgement's failure mode on low-information input is *demotion*, which is at least
+the safe direction.
+
+## Infrastructure gauntlet: three transients, three fixes, none visible to unit tests
+
+A ~500-call sequential run died three times on three different transport failures
+before completing:
+
+1. **httpx's 5s default read timeout** — one slow model response killed the run.
+   → explicit `Timeout(60, connect=10)`.
+2. **Valid JSON + one stray apostrophe** — `json_object` mode is not airtight on this
+   endpoint; a *correct* judgement with one trailing character killed the run.
+   → `raw_decode`: first complete JSON value wins, leading junk still raises.
+3. **HTTP 200 with an error body** — OpenRouter surfaces provider hiccups as 200s with
+   no `choices`; `raise_for_status` passes and a bare `KeyError` hid the real error.
+   → bounded retry (3 attempts, 2s/5s) on timeout/429/5xx/no-choices only; semantic
+   failures still raise immediately; exhausted retries surface the provider's message.
+
+Plus: `python -m memory.backfill` needs `PYTHONPATH=src` (the venv's `.pth` points at a
+different worktree) — the MCP server invocation has the same requirement.
+
+**All four were invisible to 83 green unit tests**, and all four would have hit the
+thin host in session one. This is the strongest concrete argument yet for the
+unit/eval split the project mandates: the unit suite proves plumbing, only contact with
+the real endpoint proves the system.
+
+## What this feeds into #137 (the encoding fork)
+
+- **`PART_OF` is not optional.** The composite-fold loss is already destroying anchors
+  (`Dinner`). Whatever encoding wins must express component relationships, not just
+  identity and applicability.
+  > **Superseded — see the correction under Gap 2.** `Dinner` was not lost to the
+  > encoding; it was lost to a prompt that had never been told a part is not a whole.
+  > With the instruction added, that case scores 8/8 without any change to the fold
+  > vocabulary. This bullet should not be counted as evidence for the fork.
+- **Same-rule-different-value is the other missing relation.** Contradiction handling
+  (#145) interacts with the encoding choice: trigger predicates could carry a value
+  slot per rule; a graph could version the edge. The fork should be decided with this
+  case on the table.
+- **Applicability extraction is orthogonal to the fork** and should not wait for it.
+- **Decay is orthogonal too** and the C2F family is its live test set.
+
+## Update: applicability extraction shipped, and it corrects this document
+
+`Applicability` is now extracted at write time (#151) — riding on the `tier` judgement, so no
+extra model call. 16 evals pass including the adversarial one (a daily rule must acquire *no*
+day filter). Re-seeded over the same 97 rows.
+
+| day | before | after |
+|---|---|---|
+| Mon | 36 | **34** |
+| Tue–Thu | 36 | 35 |
+| Fri | 36 | **34** |
+
+**Three** of 38 constraints acquired any scoping — exactly the day-scoped rules, with nothing
+inventing scoping it should not have:
+
+- `Client attendance days` → Tue, Thu
+- `Wednesday revenue-first precedence` → Wed
+- `Systems-work quarantine before Friday` → Mon–Fri
+
+**This falsifies a claim made above.** The "flood, quantified" section asserted applicability
+extraction would reduce the Monday flood *more than semantic relevance would*. It does not: two
+constraints. The extraction is correct — the premise was wrong.
+
+**The real finding is why.** The flood is not caused by rules that should be scoped and are not.
+The user genuinely holds ~34 standing daily rules. That reorders what is left:
+
+- **Decay matters more than credited.** The C2F project family is ~8 of the 34, and nothing
+  about their text says they were sprint-scoped. Decay is now the largest single reduction
+  available.
+- **Semantic relevance is needed after all.** It was being deferred as the expensive option; on
+  this corpus it is the only mechanism that can distinguish "applies today" from "matters for a
+  day containing hockey" once decay has removed the genuinely expired.
+- Applicability extraction remains correct and worth having — it is simply a correctness fix
+  (Tue/Thu rules no longer fire on Mondays) rather than a volume fix.
+
+**One judgement worth flagging:** `Systems-work quarantine before Friday` was scoped Mon–Fri.
+The rule reads *"no system-refinement blocks before Friday 15:00"*, which arguably means
+Mon–Thu. Defensible either way; the eval set does not pin this edge.
+
+**One hazard closed along the way.** Nothing validated the weekday range. Had the model reverted
+to ISO numbering (Monday=1..Sunday=7), a Sunday rule would encode as `[7]`, match no real date,
+and be silently served on **no day at all** — worse than the flood. `Applicability` now rejects
+out-of-range indices loudly rather than clamping or filtering, since dropping the bad index would
+substitute a different answer.
+
+## Store state
+
+`data/memory.db` — 69 observations, 38 constraints (36 durable), full provenance links,
+every constraint traceable to the legacy rows that produced it. Partial stores from the
+failed attempts kept as `data/memory.db.{partial-timeout,partial-jsonerr,run4-overmeta,run5-partial}`
+for comparison; all uncommitted, deletable once this document is agreed.
+
+## Update: decay class shipped, evaluated, and re-seeded — the flood number was smaller than expected, and not for the reason hoped
+
+Decay (#152) is now live: the `tier` judgement also returns a `decay_class`
+(`permanent`/`seasonal`/`project`/`daily`), each constraint tracks
+`last_observed_at`, and `get_active_constraints` withholds anything whose
+evidence has gone stale past its class's half-life — `get_faded_constraints`
+returns exactly those, as a review queue, not a deletion. Four new evals pin
+the judgement; the corpus was re-seeded from scratch under the full decay
+pipeline. `data/memory.db` (not committed) now holds **69 observations, 37
+constraints** — one fewer constraint than the previous run, attributable to
+the same canonicalise/dedup non-determinism this document already flags
+("Six attempts; the last completed") rather than anything in this change.
+
+**A prompt fix was needed, and the way the bug hid itself is the more
+interesting part.** The eval for the case decay exists to solve —
+`C2F framing cap 15m: ... capped at 15 minutes ...` should classify
+`project` — passed on the first `pytest -m slow` run. Before trusting that,
+the model was resampled on the identical text outside pytest: it returned
+`permanent`. Sampling eight more times: **8 of 9 total calls returned
+`permanent`**; the pytest green was the one-in-nine outlier, not the modal
+answer. `TIER_PROMPT` named the "project" category but gave the model no
+textual signal to key off, so it fell back to the prompt's own "when unsure,
+answer permanent" default — safe in isolation, wrong for the one case the
+whole mechanism was built for. Fix: the prompt now says a cap/gate/limit that
+only makes sense while a *named initiative or workstream* is active is
+"project" even without an explicit deadline, and explicitly rules out
+"project" as a second default alongside "permanent" — naming a workstream is
+required evidence, not a coin flip. After the fix: 8/8 repeat samples on the
+C2F text return `project`; all 20 evals (16 pre-existing + 4 new) pass
+twice in a row; none of the 16 pre-existing evals regressed, so this is not
+reported as a prompt-budget finding.
+
+**Lesson worth generalising, on top of the one already in this document
+about categories a prompt forgets to name:** a single-shot pass on a
+stochastic judge is not evidence for a boundary case. The pytest run and the
+resampling run asked the identical question of the identical model and got
+different majority answers depending on which one call landed. Anything this
+document reports as "N/N evals passed" for a boundary-adjacent case should be
+read as "N/N on this sample," not as a guarantee — the C2F case specifically
+should be periodically resampled if `TIER_PROMPT` moves again.
+
+**Decay-class distribution across the 37 constraints:** permanent 34,
+seasonal 2 (`Commute duration`, `Client attendance days`), project 1
+(`C2F framing cap`), daily 0. Zero `daily` is expected, not a gap: a "today"
+statement is judged `session` tier, and session-tier observations are never
+projected into a durable constraint, so `daily` cannot appear in this table
+by construction — the class exists for the judgement layer, not this store.
+
+**Monday active count, measured two ways** to keep the "historical corpus"
+caveat honest instead of asserted:
+
+| reference day | active | faded (review queue) |
+|---|---|---|
+| 2026-03-09 (the Monday the pre-decay baseline of 34 was itself measured on) | 35 | 0 |
+| 2026-08-17 (today — ~5–6 months after the last legacy row) | 34 | 1 |
+
+On the corpus-native Monday every `last_observed_at` is days old, so decay
+removes nothing. On real "today," exactly one constraint has fallen out of
+`get_active_constraints` and into `get_faded_constraints`: `C2F framing cap`
+(`last_observed_at` 2026-02-28, 170 days before today, against a 90-day
+project half-life). Not deleted — withheld and queued, exactly as designed.
+
+**This inverts the expectation this document set up for itself.** The
+previous entry warned a historical re-seed would produce a *large* faded
+count because `project`/`daily` rows are months stale. The mechanism fired —
+but the count is 1, not large, because only one of the 37 constraints was
+ever classified `project` to begin with, and none were `daily`. The small
+number is not decay being lenient; it is the classifier correctly declining
+to guess `project` without textual evidence, which is the direction the
+prompt asks for. A corpus whose rules more often named their own workstream
+in the text would produce a much larger faded count under the identical
+mechanism. **State this plainly for whoever reads this next: a faded count
+measured on this one historical backfill, in either direction — small here,
+large in the original warning — is a property of what this corpus's text
+happens to say, not a general claim about decay's effect in live use.**
+
+**The C2F family hand-check is the sharpest illustration of that limitation.**
+This document has referred to four constraints as "the C2F family"
+(`C2F framing cap`, `Artifact-first scheduling gate`, `Strategic outcome
+daily limit`, `Wednesday revenue-first precedence`) since the applicability
+update above. Checking all four against this run's actual decay_class:
+
+| named constraint | decay_class | does the legacy text name a workstream? |
+|---|---|---|
+| `C2F framing cap` | **project** | yes — "C2F framing" |
+| `Artifact-first scheduling gate` | permanent | no — "Only schedule blocks for tasks with a binary DoD and named artifact…" |
+| `Max parallel strategic outcomes` (this run's label for what was called `Strategic outcome daily limit`) | permanent | no — "Never schedule more than two parallel strategic outcomes in one day…" |
+| `Wednesday revenue-first precedence` | permanent | no — "On Wednesday, Revenue lane must run before any build/system cognitive block…" |
+
+Only one of the four carries a named-workstream token in its own text; the
+other three read, from text alone, as generic scheduling-discipline rules —
+indistinguishable from a permanent methodology preference. This is the same
+gap already named above ("these were sprint-scoped when written and nothing
+in the text says so"), now concrete on three of the four examples this
+document itself uses to talk about the problem. Forcing the other three to
+`project` would mean inventing scoping the text does not carry — the thing
+the decay prompt, and the project's rules generally, forbid. **The fix for
+these three is not a better decay prompt; it is the user (or a future
+review-queue interaction) supplying the missing scope, which is what the
+faded/review-queue design exists to make possible once a constraint's
+evidence goes stale on its own schedule** — these three simply haven't gone
+stale yet, because nothing in their text ever told the classifier they could.
+
+**Hand-check, the other direction: did anything permanent get wrongly marked
+short-lived?** No. All 37 constraints were read by uid/decay_class/tier —
+every row outside the one `project` and two `seasonal` above is `permanent`,
+including every constraint that obviously must never expire on its own:
+`Sleep schedule`, `Oats Timing`, `Three daily meals`, `Deep work block
+duration`, `Work Block Alternation`, `Block exit criteria`, and the rest.
+
+## Store state (superseded by the decay re-seed above)
+
+`data/memory.db` now holds 69 observations, 37 constraints (37 durable, one
+project-class, two seasonal-class), re-seeded fresh under the decay pipeline
+described above. The pre-decay store is preserved at `data/memory.db.pre-decay`
+for comparison; not committed.

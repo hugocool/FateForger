@@ -55,8 +55,12 @@ Re-read it before editing and add only the two lines below.
 - Create: `src/memory/identity.py`
 - Create: `src/memory/models.py`
 - Create: `src/memory/store.py`
-- Create: `tests/memory/__init__.py`
 - Test: `tests/memory/test_store.py`
+
+**Do not create `tests/memory/__init__.py`.** This repo has no `__init__.py` anywhere under
+`tests/`. Adding one makes pytest name the module `memory.test_store`, which poisons
+`sys.modules["memory"]` before the test's own `from memory.models import ...` runs, and
+`--import-mode=importlib` does not fix it. Verified 2026-08-16.
 
 **Interfaces:**
 - Consumes: nothing.
@@ -402,8 +406,14 @@ def _obs(text: str, offset_s: int = 0, session_id: str = "s1") -> Observation:
     )
 
 
-def test_normalize_collapses_case_and_punctuation():
-    assert normalize("Work Window: 14:30 to 21:30!") == "work window 14:30 to 21:30"
+def test_normalize_collapses_case_and_punctuation_but_keeps_times():
+    """Colons survive because times are semantically load-bearing.
+
+    A char class cannot tell the colon in "Window:" from the one in "14:30",
+    and preserving both is harmless here: machine replays are byte-identical,
+    so an extra colon never prevents a match.
+    """
+    assert normalize("Work Window: 14:30 to 21:30!") == "work window: 14:30 to 21:30"
 
 
 def test_identical_text_within_window_is_replay():
@@ -936,12 +946,16 @@ from pydantic import BaseModel, Field
 from memory.anchors import AnchorVocabulary, extract_anchors
 from memory.models import Channel, Observation, Provenance, Tier
 
+# Only markers naming the tool itself. Generic phrases like "begin the session"
+# were removed: the meta guard short-circuits to SESSION unconditionally, so a
+# real preference ("always start the session with a five-minute stretch") would
+# be permanently blocked from durable memory — the very failure this task fixes.
+# They also caught nothing extra: the polluting row "the user wants to begin the
+# timeboxing session immediately" already matches "timeboxing session".
 META_MARKERS = (
     "timeboxing session",
     "timeboxing format",
     "timeboxing methodology",
-    "begin the session",
-    "start the session",
 )
 
 

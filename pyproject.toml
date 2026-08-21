@@ -62,6 +62,7 @@ authors = ["hugocool <hugo.evers@gmail.com>"]
 packages = [
     {include = "fateforger", from = "src"},
     {include = "tmbx", from = "src"},
+    {include = "memory", from = "src"},
     {include = "scripts"}
 ]
 
@@ -154,6 +155,7 @@ module = [
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
+pythonpath = ["src"]
 testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"

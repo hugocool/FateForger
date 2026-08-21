@@ -70,9 +70,14 @@ changing the taxonomy is a re-projection, not a data migration.
 Stated so they can be enforced rather than eroded. A change that violates one of these is a
 design change, not an implementation detail.
 
-- **I1 — The LLM proposes and names. The lattice decides structure.** No LLM call in the read
-  path; read-time traversal is a deterministic graph walk. Protects the interactive latency
-  budget (#93) and is grounded in measured LLM ceilings (see Evidence).
+- **I1 — The LLM proposes and names. The lattice decides structure.** No LLM call in *the
+  constraint projection's* read path; read-time traversal is a deterministic graph walk.
+  Scoped deliberately. `get_active_constraints` is model-free because planners call it inside
+  a loop — an earned constraint, not a law of memory. A projection whose economics differ
+  declares its own read-path contract: an admonishment read fires once per nag decision, not
+  once per planning iteration. Stated as a universal, this would force a wrong design on the
+  first projection that does not share the planner's latency budget. Protects the interactive
+  latency budget (#93) and is grounded in measured LLM ceilings (see Evidence).
 - **I2 — Canonicalisation is a projection, never destructive.** L1 is immutable and
   append-only. This is what stops the two loops from starving each other.
 - **I3 — Identity is minted, never content-derived.** Opaque, stable across edits. Semantics
@@ -82,6 +87,26 @@ design change, not an implementation detail.
 - **I6 — Promotion by structure, rejection by statistics.** Statistics may veto a taxonomy
   change; they may never authorise one. See Gate.
 
+### Enforcing an invariant that no output reveals
+
+Two of the above cannot be protected by asserting on behaviour, because the wrong
+implementation returns the right answer.
+
+- **I1's read path** is guarded by an AST test that walks `read_api` and fails if a judge call
+  appears. A model call there would return correct constraints — just slowly, and differently
+  on a second read of the same day.
+- **The anchor walk's query plan** is asserted directly via `EXPLAIN QUERY PLAN`. SQLite has no
+  cardinality estimate for a recursive co-routine, assumes it is large, and inverts the join to
+  `SCAN ca` — making the walk linear in total store size rather than in the neighbourhood
+  reached. `CROSS JOIN` forces the order: **85 ms to 0.43 ms, identical results.** Nothing
+  behavioural can catch the keyword's removal, because nothing about the output changes.
+
+The rule: **when correctness lives in something no output reveals, assert the mechanism.**
+
+The corollary is the uncomfortable one. These are exactly the invariants a green suite cannot
+protect — every finding in the 2026-08-17 sweep came from deliberately breaking something,
+never from running the tests.
+
 ## Retrieval
 
 Anchors arrive as **symbols**, not natural language — a calendar event hands the system
@@ -89,8 +114,9 @@ Anchors arrive as **symbols**, not natural language — a calendar event hands t
 language. That step is dead weight here.
 
 Conditional applicability is relational, not a field — a scalar `condition` column is
-unqueryable. **How it is encoded is an open fork, tracked on #137**, and it must be decided
-before any node/edge model is written:
+unqueryable. **This fork is now closed — #137 shipped path intersection.** The table below is
+kept because it records what was traded away, and the cross-day case under it is the debt that
+trade incurred:
 
 | | conditionality lives in | the cross-day case |
 |---|---|---|
@@ -107,6 +133,24 @@ An event carries *n* anchors, not one — four surface forms were observed for a
 titled `hockey/running` which is genuinely two. And offsets belong on the edge (`oats
 APPLIES_TO sport, −2h`), not on the constraint, or a rule cannot carry a different offset per
 anchor.
+
+### Substrate — SQLite, decided by measurement (#141)
+
+Recursive CTEs, no graph database. At **100× the real store, on disk, a depth-3 walk runs
+0.79 ms p50** — less than a localhost round trip, so a server-based graph cannot win on
+latency and loses on standalone-ness. Neo4j was deliberately not benchmarked; there is no
+figure it could return that would change the decision.
+
+The trap is recorded under *Enforcing an invariant that no output reveals* above: the obvious
+query is linear in total store size, costs 0.87 ms today, and degrades invisibly as the store
+grows. **A substrate decision was one missing `CROSS JOIN` away from being made wrongly.**
+
+### The hazard while the graph is empty
+
+With no edges, a constraint anchored to `sleep` is unreachable on any day whose events do not
+name `sleep` — the walk returns nothing and the caller cannot distinguish *no such rule* from
+*no path to it*. **Call without `anchor_uids` until #140 lands.** This is the thing a newcomer
+gets wrong: the surface exists, so it reads as ready.
 
 ## Gate (loop 2)
 
@@ -133,6 +177,123 @@ sessions do not help. The gate is therefore shaped as:
 may contract the logical extent. Behavioural non-compliance carries finite weight, adjusts
 confidence only, and never touches the extent. Skipping oats before one hockey game is not
 evidence the rule is wrong.
+
+### The verdict procedure (#140)
+
+The shape above is a policy; this is the procedure. **Checks run in this order, and the order is
+load-bearing** — each stage is cheaper than the next and can reject alone, so a malformed
+proposal never reaches a model call and a structurally illegal one never reaches statistics.
+
+| # | check | cost | may reject | may authorise |
+|---|---|---|---|---|
+| 0 | **Diff-size bound** — a proposal touching more than the estimable fraction of sessions is split or refused, never adjudicated | free | ✓ | ✗ |
+| 1 | **Lattice legality** — closure of the instance set; siblings pairwise disjoint and unioning to the parent | free | ✓ | ✗ |
+| 2 | **Minimum support of 2 on the repair** | free | ✓ | ✗ |
+| 3 | **Deletion brake `n > s/e`** — required evidence scales with the syntactic mass being deleted | free | ✓ | ✗ |
+| 4 | **OntoClean rigidity/identity** — is the proposed parent a *kind*, or a *role*? | one model call | ✓ | ✗ |
+| 5 | **Leave-one-out influence replay** — regression filter against the noise floor | expensive | ✓ | ✗ |
+| 6 | **User confirmation** via binary-split questioning | one interaction | ✓ | **✓ — only here** |
+
+**Nothing before stage 6 can authorise anything.** That is I6 made operational: stages 0–5 are
+a sieve, and passing all of them means only *not yet rejected*. A proposal that clears every
+structural check and every veto is still not promoted until the user confirms. Read the table
+as six ways to say no and one way to say yes.
+
+**Minimum support of 2 is on the repair, not on the rule** (EITHER, Mooney & Ourston). If a
+correction applies to a single example, the example is the more likely error. This is the one
+to build first: it needs no statistics, no labels and no outcome data, and it provably
+strengthens as the corpus grows rather than requiring a corpus to begin working.
+
+**A noise floor is a precondition, not a check** — a gate that cannot separate its own noise
+from a real regression is worse than no gate, because it rejects proposals at whatever rate the
+sampler happens to disagree with itself. **There are two floors, and they are not the same
+measurement.**
+
+**The judge-side floor is measured** (`2026-08-20-sampler-noise-floor.md`, two identical passes
+over the real 69-observation corpus):
+
+| field | unpinned | `temperature: 0` |
+|---|---|---|
+| `tier`, `decay_class`, `is_binding` | 0.0% | 1.4% |
+| `days_of_week` | 1.4% | 1.4% |
+| `label` (free text) | **44.9%** | **53.6%** |
+| any field | 46.4% | 56.5% |
+
+**Every categorical judgement is effectively deterministic; the whole-record figure is
+paraphrase and nothing else.** Two runs render one rule as *"Oats before gym"* and *"Oats
+timing"* and neither is wrong.
+
+**So the diff-size bound is computed per field over categoricals — `tier`, `decay_class`,
+`is_binding`, `days_of_week` — and never over whole records.** This matters more than it
+sounds: whole-record gives ~46% and categorical gives ~1.4%, two orders of magnitude apart, and
+**the obvious way to compute it is the wrong one.** Derived from 46% the bound admits almost
+anything; derived from 1.4% it constrains. Stage 0 has no fixed constant either way — it is
+derived from the measured floor and tightens as the sampler stabilises. A proposal exceeding it
+is decomposed and resubmitted as parts, never waved through.
+
+**The planner-side floor is not measured, and stage 5 needs it rather than the one above.**
+Influence replay re-runs *the planner* with a constraint removed; its confound is planner
+non-determinism, not judge non-determinism. The judge measurement unblocks stage 0 and makes
+re-projection trustworthy (#154) — it says nothing about how much two identical planning runs
+differ. Expect that floor to be **worse**, because a plan is mostly not categorical, and the
+paraphrase effect that dominates `label` is the general case rather than the exception.
+**Categorical determinism is the lucky special case.**
+
+**Pinning `temperature: 0` does not buy determinism here.** It was not lower on any field, and
+whole-record was higher. The single-field differences are one observation each and one pair of
+runs cannot show that zero is *worse* — but it is enough to retire the assumption that pinning
+delivers a stable draw. Plausibly the endpoint still samples reasoning tokens: `minimal`
+reduces them and this API rejects `{"enabled": false}` outright, so there is no floor below
+minimal. **Determinism comes from comparing the right fields, not from a sampling parameter.**
+
+**Limit worth stating rather than discovering: replay cannot police free text.** Stage 5's
+discriminating power rests on the compared fields being near-deterministic. A judgement
+returning prose — a rationale, a proposed anchor *name*, a constraint label — sits above the
+paraphrase floor and is invisible to the filter. **The gate is therefore blind to precisely the
+part of a taxonomy proposal that carries its meaning**, and that part is the part a human reads
+at stage 6. This is an argument for stage 6 being the only authorising step, not a gap in it.
+
+**Drift is diachronic and does not belong in this procedure at all** (Leake & Wilson). A
+population-level trend requires signed cumulative error exceeding a magnitude *and* persisting
+for a duration before trend analysis runs — signed summation being the trick that matters,
+since symmetric noise cancels while bias accumulates. A snapshot policy structurally cannot
+make that call, so drift proposes changes *into* stage 0; it is never a check *within* it.
+
+#### What a human can and cannot override
+
+- **Overridable: every statistical veto** (stages 2, 3, 5). These are brakes, not authorities —
+  they exist to slow a change the evidence does not yet support, and a user who says the rule
+  is right outranks a count that says it is unusual. This is the AGM success postulate, and it
+  is the same last-write-wins the rest of the design already commits to.
+- **Overridable with an explicit acknowledgement: OntoClean** (stage 4). Rigidity is a model
+  judgement at roughly 4% inaccuracy, so it is right far more often than a user is wrong — but
+  it is not certain, and a person naming their own domain may legitimately know better.
+- **Not overridable: lattice legality** (stage 1). Not because it is more authoritative, but
+  because overriding it does not produce a taxonomy the user disagrees with — it produces a
+  structure the read path silently answers wrongly from. Siblings that overlap make a traversal
+  return a rule twice; siblings that do not union to their parent make it return nothing on the
+  gap. **Both are invisible at the call site**, which puts this in the same class as the AST
+  guard and the query-plan assertion: an invariant no output reveals.
+
+**Forgetting is safer here than the CBR literature implies, and this is deliberate.** Smyth &
+Keane's warning about utility-based deletion holds because a pure case-based reasoner has no
+fallback generator — strip its cases and it cannot solve anything. There is an LLM behind this
+memory, so a deleted constraint degrades a plan rather than breaking the system. The deletion
+calculus is looser than imported caution suggests, which is why stage 3 is a scaling brake
+rather than a prohibition.
+
+**Retraction is still not free.** CRDR is the only Ripple-Down-Rules variant permitting true
+rule modification, and to get it it had to abandon the cornerstone gate, add explicit state
+tracking and conflict detection, and reintroduce precisely the maintenance-scaling risk RDR
+existed to eliminate. Stage 3 is what keeps this system from paying that bill by accident.
+
+**Everyone else refuses this adjudication, and that is the argument for stage 6 rather than an
+embarrassment.** AGM hands it to the input unconditionally. Both TMS papers push it to the
+problem solver by name. RDR pushes it to the human expert as explicit philosophy. IB3 and BBNR
+exist because instance-based learning had to face noisy data and could not push it anywhere.
+**A single contradiction is sufficient everywhere in classical belief revision, TMS and RDR** —
+so a design that lets statistics accumulate against a user's stated rule would be the outlier,
+not the rigorous choice.
 
 ### The verdict has three values, not two
 
@@ -302,6 +463,26 @@ they were filed as permanent when they were sprint-scoped, and the scope vocabul
 Initial rates are defaulted by kind, overridable, and adjustable at weekly review — which is
 also the natural moment to say a sprint focus is finished.
 
+### Why tier is judged at write time but not stored there
+
+A design question worth settling before promotion is built on top, because the code alone
+cannot tell you which reading was intended.
+
+Tier is asked of the model during ingest, alongside anchors, meta and dedup — but it is not
+persisted on the observation. Under I2 and I4 that is correct rather than wasteful: **tier is
+an L2 property, and L2 is derived from L1 by re-projection.** Writing a tier onto an immutable
+observation would freeze a judgement that must be free to change when the taxonomy does.
+
+So why ask at all, if the answer isn't kept? Because the **ambient proposal surface** needs an
+answer at the moment of the observation. The agent proposes a tier and the user can correct it
+without breaking the flow of conversation — and that proposal has to exist while the context is
+still fresh. Re-deriving it later would mean the user sees nothing at the moment it would have
+been cheapest to correct.
+
+The judgement is therefore **transient by design**: it exists to be shown, not to be stored.
+It also rides free in the existing `asyncio.gather`, so it costs no additional round-trip.
+**L2 remains the authority**; a stored tier would compete with it.
+
 ### The operator surface is ambient
 
 The agent **proposes** a tier assignment and the user can change it, without impeding the flow
@@ -375,6 +556,43 @@ Facts about the existing system the design must survive. These are constraints, 
 
 Load-bearing findings from the research pass. Full reports in `docs/superpowers/research/`.
 
+**The two-layer design, validated on the real corpus.** Everything below this line is
+measurement on Hugo's own store rather than on a fixture or a fresh seed.
+
+Re-projecting the live seeded store — 37 constraints derived from 69 observations, written by a
+build that predated every judgement improvement since — inverted the necessity distribution:
+
+    frozen (schema v0)                reprojected (schema v2)
+    must 36, should 1                 should 34, must 3
+    proposed 37                       proposed 37
+    3 of 37 scoped                    4 of 37 scoped
+
+    34 changed · 3 unchanged · 0 skipped · 67s · migrated v0 -> v2 on open
+
+The three it held as hard boundaries were **Commute duration**, **Work cutoff time** and
+**Market opening hours** — one physical constraint and two facts about the outside world. Every
+rule it flexed is a preference: *Sci-Fi Reading before bed*, *Oats Timing*, *Maximum Deep Work
+blocks*, *Timeboxing Preference*.
+
+Three claims are settled by that run at once, and none of them could be settled by a fresh seed:
+
+- **I4 pays off.** These constraints were created before the necessity judgement existed. Under
+  the old fold path they would have kept `MUST` forever no matter how many times Hugo restated
+  them, because a fold refreshed one timestamp and nothing else. 34 of 37 acquiring a corrected
+  field is the invariant doing the thing it was specified for.
+- **The schema ladder handles a store older than the code.** The store opened at `user_version`
+  0 and migrated to 2 without intervention — the case that had never been exercised, because
+  every prior run re-seeded from scratch.
+- **`necessity` discriminates.** It was `MUST` on 36 of 37 because it derived from
+  `is_declaration`, which answers *was this stated outright*. Asking *what breaks* instead
+  separates a corpus that a consumer previously could not filter at all.
+
+Run conditions: `OpenRouterJudge` on `google/gemini-3.6-flash`, `reasoning.effort: minimal`, two
+questions re-asked per observation (`tier`, `necessity`) at concurrency 8. Executed against a
+**copy** of the store — the frozen original is retained, because re-projection rewrites derived
+state in place and the before-state is the exhibit.
+
+
 - **LLM structural ceiling.** LLMs4OL 2024: term typing F1 0.97–0.99, but taxonomy *discovery*
   peaks at 0.6557, drops to 0.21 on DBpedia and 0.03 zero-shot; relation extraction 0.078.
   Grounds I1.
@@ -406,13 +624,221 @@ Load-bearing findings from the research pass. Full reports in `docs/superpowers/
   survived intact.
 - **Mem0 is a confirmed non-fit.** Its own Table 2 reports full-context 72.90 beating
   Mem0-graph 68.44. The claim is cost, not quality.
+- **The clearest live illustration of why I1 exists**, found in this repo at
+  `graphiti_constraint_memory.py:94-138`. The constraint-retrieval relevance function is
+  hand-rolled bag-of-words: `score = sum(1 for term in query_terms if term in blob)`, where
+  `query_terms` is the query lowercased and split, and `blob` includes `json.dumps(episode)` —
+  so terms also match field names, statuses and uuids, making non-zero scores noise.
+
+  Zero-score episodes are **not** filtered; every episode is appended, then sorted by
+  `(-score, updated_at)` **ascending** and truncated. `-score` ascending is correct — best
+  first — but the `updated_at` tiebreak is ascending over ISO strings, so among equal scores
+  the order is **oldest first**.
+
+  Consequence: whenever the query's literal words are absent from the episode text — which,
+  per the `gym` case above, is the common case — the ranker silently returns the *oldest* N
+  constraints and truncates away everything current. Not "returns nothing", and not "falls
+  back to recency": it falls back to **reverse-chronological**. The longer the store runs, the
+  more reliably it surfaces the least relevant rows, and nothing raises.
+
+  (This was initially suspected as the cause of #114, "Graphiti returns 0 durable
+  constraints". It is not — the function never returns empty. #114 should be debugged upstream
+  at `get_episodes` or a filter above it.)
+
+## Known gaps in the built code
+
+### Closed
+
+**Provenance links were add-only (I4).** `link_observation` inserted and never deleted, so a
+re-projection that dropped an observation left the stale link behind and over-reported the
+evidence counts promotion and decay rely on. Closed by `ConstraintStore.replace_links`, which
+deletes then inserts inside one transaction so a concurrent reader never sees a constraint with
+no provenance at all.
+
+**Duplicate constraints under concurrent projection (I5).** Two projections of the same rule
+could each snapshot a candidate list lacking the other's constraint, each be told "this is new",
+and each create a row — duplication in the layer whose whole job is canonicalisation. The race
+window spans a full model round-trip, so it was wide. Closed by serialising the read-judge-write
+span with one lock per constraint store.
+
+### Open — `upsert` is destructive to provenance links
+
+`ConstraintStore.upsert` calls `replace_links(uid, constraint.source_observation_uids)`. That
+was the fix that closed I4 — re-projection must be able to *drop* an observation, not only add
+one — and it is correct for re-projection. It also makes `upsert` **destructive to any link not
+present on the object handed to it**.
+
+Consequence: **upserting a stale `Constraint` silently destroys links added since it was read.**
+This has now bitten twice, both times in the fold path, where `existing` comes from a
+pre-fold `durable()` snapshot and `link_observation` has run in between. Both times the symptom
+was a lost provenance link with nothing raised; the second time it broke an existing test, which
+is the only reason it was caught.
+
+The current mitigation is a re-read immediately after `link_observation`, which works but leaves
+the trap armed for the next caller. The real fix is to make the destructive behaviour opt-in
+rather than default — `upsert` leaves links alone, and re-projection calls `replace_links`
+explicitly — so that the dangerous operation is the one you have to ask for.
+
+Worth noting the shape of the mistake: closing I4 made one operation authoritative over
+provenance, and nothing was done to stop *other* callers of that operation from inheriting the
+authority. A fix that widens a method's power needs to narrow who may use it.
+
+### Open — carried from review, not yet fixed
+
+**Typing is documented, not enforced.** There is no `src/memory/py.typed`, so mypy treats the
+package as an untyped library and degrades cross-module references to `Any`. The enums on
+`ConstraintView` and the `ConstraintLike` protocol are therefore documentation until that file
+exists — a wrong type crossing the process seam would not be caught.
+
+**Two comments overstate what the code does.** `projection` claims skipping the session tier
+"bounds the candidate list so the write-path prompt cannot grow without limit". It does not:
+`durable()` has no `LIMIT`, and durable constraints grow without bound — the legacy store held
+~606 concepts. Every canonicalise call serialises all of them into a prompt, now inside a
+per-store lock. Likewise `ingest` binds `store.by_session(...)` to a variable named `recent`
+when it is every observation in the session, unbounded, fed straight into the dedup prompt.
+Both need real windows.
+
+**Session-tier constraints are written and never removed**, despite the design saying the
+session tier "dies at session end". They are also never read — `get_active_constraints` returns
+durable only — so their sole current effect is to exist.
+
+**The fold branch drops the assertion signal.** When a later declaration restates an existing
+`SHOULD` rule, `project` links the observation and returns without upgrading `necessity` to
+`MUST`. The assertion promotion path is therefore lost on every restatement.
+
+**Neither store exposes `close()`**, both default to `check_same_thread=True`, and `project`
+does synchronous sqlite I/O on the event loop. An MCP server dispatching to a thread pool would
+raise.
+
+### Open — concurrency
+
+**Serialisation is per process and per store instance.** The lock closing the
+duplicate-creation race is mutual exclusion over one `ConstraintStore` object,
+weak-keyed so a collected store does not leak its lock. Two store instances on
+the same file, or two processes, can still both create a constraint for one
+rule: there is no database-level uniqueness. For a design whose stated shape is
+a standalone server, that is a real limit rather than a closed gap.
+
+**Per-session serialisation is enforced for projection but assumed everywhere else.** The lock
+covers `project`. Nothing prevents a future caller from driving `ingest` concurrently over the
+same session in a way the design has not been reasoned about.
+
+### Open — fields that advertise a discriminator and carry no signal
+
+**This spec describes a richer information model than the pipeline implements, and every gap
+is silent.** A consumer reading `models.py` sees a field, builds a filter on it, and gets all
+or nothing — with no test failing, because no fixture uses a value the pipeline can produce.
+Verified against the code on 2026-08-19:
+
+| field | state | why it is not merely unfinished |
+|---|---|---|
+| `Reliability` | **never wired.** Defined in `models.py`, exported from `__init__`, read by nothing — not stored, not weighted, not consulted, not even in a test | It is the field that should bound the #168 evidence-inflation harm: three retries are three `UNEXAMINED` rows, not three confirmations. Without it the gate has no notion of confirmation at all |
+| `is_declaration` | **was newly orphaned; deleted in `40e041f`.** Judged, carried on `IngestResult`, plumbed through the prompt and the `Judge` protocol — and consumed by nothing from #156, which gave `necessity` its own judgement and removed its only reader, until it was found four commits later | Kept in this table because the *shape* outlived the field. A reader saw a value carefully computed and threaded through four modules and reasonably concluded it mattered; the fix that killed it left the producer running |
+| `Status` | **unreachable value.** `projection.py` hardcodes `Status.PROPOSED` on both branches, so `LOCKED` is never emitted | Anything filtering for locked rules gets an empty set, which is indistinguishable from "nothing is locked yet" |
+| `frame_slot` | **null on 94%** (1,562 of 1,662; 75% within PROFILE), where null means three incompatible things | See Open questions. Nothing can branch on it correctly until the meanings are separated |
+
+`channel` is **not** in this list, though a sweep finding about judges not receiving it invites
+the confusion: it is genuinely consumed, driving `source` via `_SOURCE_BY_CHANNEL` in both
+`projection` and `reprojection`.
+
+The two failure shapes are worth separating, because they need different fixes. **Never wired**
+is unfinished work. **Newly orphaned** is a regression artifact — a fix removed the only
+consumer and left the producer running, so the code actively performs work whose result is
+discarded, and looks intentional to anyone reading it fresh. The second shape has no natural
+detector: nothing fails, and the field's presence is its own argument for keeping it.
+
+### Open — a merge is irreversible, and L2 has no inverse
+
+**I2 protects the evidence and nothing protects the derivation.** L1 is append-only, so the
+observations behind a wrong merge all survive — the material needed to undo it is right there.
+But **no operation splits a constraint.** `project()` merges, `reproject()` re-derives from
+whatever provenance already says, and provenance is the input to that fold rather than
+something it can revise. A constraint that swallowed an observation it should not have keeps it
+forever, and re-projection faithfully re-derives the wrong thing every time it runs.
+
+This is not hypothetical and the repair has already been done by hand. `Lunch: Lunch break` was
+merged into `Daily Meals: include breakfast, lunch and dinner every day` (#169, a part read as a
+restatement of its whole). Undoing it meant deleting a row from `constraint_observations` with
+raw SQL, because the API has no verb for it. **The one corrective operation the store needed
+most had to be performed underneath the store.**
+
+The asymmetry is the finding: a wrong merge is *permanent in L2 while being fully recoverable
+from L1*. That is I2 doing exactly its job and L2 having no counterpart to it. Everything the
+design says about derived state being cheap to rebuild is true only for fields — the
+*partition* of observations into constraints is derived state that nothing can re-derive.
+
+What is needed is a `split(constraint_uid, observation_uids) -> (uid, uid)` that mints a new
+constraint, moves the named provenance links, and re-projects both. Minting rather than
+reusing, per I3. Whether the *decision* to split is a judgement the system may make on its own
+or one that belongs at stage 6 of the gate is the open half — #169 shows the model can now tell
+a part from a whole prospectively, which is not the same as trusting it to revise a merge it
+already made.
+
+### Open — a shared idempotency key with divergent payloads
+
+Closed for the common case by #168, which gave the write a caller-supplied identity so a retry
+is a no-op rather than a blind replay (I5, applied to L1 appends for the first time). One path
+survives and is asserted rather than fixed: **same key, different text**, from a mangled retry
+or a caller reusing a key. `append` is a no-op on a known uid so L1 keeps the original, but
+projection would run on the incoming text — yielding a constraint that describes a statement
+existing nowhere in the observation log, with provenance pointing at a row that says something
+else. Re-projection would later "correct" it, so the store appears to change its mind
+unprompted. **First payload wins.** Found by mutation testing, and reachable only where two
+failure modes meet, which is why two earlier tests passed against the bug.
+
+## Scope — one server, several projections (#159)
+
+Whether this serves the planner or every agent. **One L1 with several L2 projections, not
+several servers.**
+
+**L1 already generalises.** An observation is text, channel, provenance, a minted uid, a
+timestamp and anchors — nothing constraint-shaped. L2 is where the constraint assumption lives.
+
+**Sharing L1 is safe because the contamination guard is already built and enforced.**
+`Provenance.GENERATED` exists so a rule emitting a calendar block cannot observe its own output
+as evidence, and `ingest` rejects anything that is not `OBSERVED`. System-authored records — an
+admonishment log among them — carry `GENERATED` and inherit that guard. This is the strongest
+argument for one server, and it is load-bearing today rather than aspirational.
+
+**Decay must not be shared, and this is the sharp edge.** A preference decays because relevance
+fades. *"The system nagged Hugo on Tuesday"* is a fact about history and is permanently true.
+Apply a half-life to it and the system forgets it nagged, then nags again — and the failure is
+**self-concealing**, not merely silent: a forgotten nag is indistinguishable from a first nag,
+the re-nag is logged, and the log then looks correct. **Each projection declares its own decay
+contract. The admonishment projection declares none.**
+
+**Admonishment state folds, so I2 holds.** Escalation is `count(nag events for a subject)` and
+a function of elapsed time — nothing mutable. The mutable state hides *in flight*, between
+deciding to nag and confirming delivery. Log only the decision and the ladder runs ahead of
+what the user actually experienced; log only the delivery and something must hold the decision
+across the gap — and that something is a mutable `pending` field wearing a memory costume. Two
+events, intent and outcome, folded. This is the same shape as `ingest` committing before
+`project` runs, which leaks an orphan observation per retry and **is still live**.
+
+**Acknowledgement is the hard fold, and it crosses provenance.** *"Stop nagging me about X"* is
+an `OBSERVED` user statement that must suppress nags derived from the system's own `GENERATED`
+log. So admonishment state is a fold over the union of both, latest-wins (AGM success
+postulate; see Gate). The design consequence is an asymmetry: **the admonishment projection
+reads both provenance classes, while the constraint projection reads only `OBSERVED`.**
+
+**Unsettled, and it needs settling before #140:** whether admonishment subjects share the
+constraint anchor space or get a disjoint one. Shared means a nag about `sleep` traverses to
+the bedtime rule — plausibly the feature, since it is how a nag would know *why* it is nagging,
+and plausibly a collision. Cheap to decide now, expensive once the taxonomy has edges. It
+belongs on the map as a decision, not as an emergent property of whichever code lands first.
 
 ## Open questions (fog)
 
 - Re-projection mechanics when L3 changes — incremental or full rebuild, and what invalidates.
-- **How conditionality is encoded** — path intersection vs trigger predicates. See Retrieval;
-  tracked on #137 and blocking the write path.
-- Migration of the 1,662 existing rows.
+- ~~How conditionality is encoded~~ — **closed**: #137 shipped path intersection.
+- Whether admonishment subjects share the constraint anchor space. See Scope; blocks #140.
+- Migration of the 1,662 existing rows. Note that **1,455 of them are SESSION-scoped** — 88%
+  of that table is per-thread chatter, not preference, and a migration treating it as a
+  preference store inherits all of it. And `frame_slot` is null on 1,562 of 1,662 (94%; 75%
+  even within PROFILE), where null means three incompatible things — genuinely unanchored,
+  extraction failed, or legacy row. Nothing can branch on null while it means all three; the
+  view needs an explicit discriminator, and classifying the legacy rows is a meaning judgement,
+  so one offline `:batch` pass.
 - Whether Notion survives as a human-editable view onto the graph.
 - Multi-user, or single-tenant forever.
 - Tuning the loop-2 induction prompt itself.
