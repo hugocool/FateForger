@@ -237,6 +237,9 @@ async def _probe_runtime_mcp_server(
         )
     except Exception as exc:
         message = str(exc).strip() or repr(exc)
+        if isinstance(exc, ExceptionGroup):
+            sub_messages = [str(e) for e in exc.exceptions]
+            message += " [" + ", ".join(sub_messages) + "]"
         return _McpStartupProbeResult(
             server=server,
             ok=False,
