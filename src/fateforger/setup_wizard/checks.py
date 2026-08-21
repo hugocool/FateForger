@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -89,6 +88,65 @@ async def _probe_mcp_tools(
     return [], attempted_urls[-1], last_err
 
 
+def _extract_text_from_result(result: Any) -> str | None:
+    """Extract plain text from an MCP tool call result.
+
+    Handles: plain str, dict with content list, dict with text/url fields,
+    and list of TextContent-like objects (autogen MCP tool responses).
+    """
+    if isinstance(result, str):
+        return result
+    if isinstance(result, list):
+        # autogen returns [TextContent(type='text', text='...')] for MCP tool results
+        for item in result:
+            if hasattr(item, "type") and getattr(item, "type", "") == "text":
+                text = getattr(item, "text", None)
+                if text is not None:
+                    return text
+            if isinstance(item, dict) and item.get("type") == "text":
+                return item.get("text")
+        return None
+    if isinstance(result, dict):
+        content = result.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    return item.get("text")
+        if "text" in result:
+            return result["text"]
+        if "url" in result:
+            return result["url"]
+    return None
+
+
+async def call_mcp_tool(
+    *,
+    url: str,
+    tool_name: str,
+    params: dict[str, Any],
+    timeout_s: float = 5.0,
+) -> tuple[Any, str | None]:
+    """Find a named tool on the MCP server and call it with params.
+
+    Returns (result, error_string). result is None on error.
+    """
+    tools, _, err = await _probe_mcp_tools(
+        name=tool_name, url=url, timeout_s=timeout_s, try_mcp_suffix=False
+    )
+    if err:
+        return None, err
+    tool = next((t for t in tools if getattr(t, "name", "") == tool_name), None)
+    if tool is None:
+        return None, f"tool '{tool_name}' not found on MCP server"
+    try:
+        from autogen_core import CancellationToken
+
+        result = await tool.run_json(params, CancellationToken())
+        return result, None
+    except Exception as e:
+        return None, _safe_error(e)
+
+
 async def check_calendar_mcp() -> CheckResult:
     """Verify Calendar MCP is reachable and exposes tools."""
     port = os.getenv("PORT", "3000")
@@ -105,6 +163,11 @@ async def check_calendar_mcp() -> CheckResult:
         )
         tool_names = [getattr(t, "name", None) for t in tools]
         ok = bool(tools) and err is None
+
+        from .calendar_prefs import read_accounts
+
+        account_count = len(read_accounts(Path("/config/calendar-mcp-tokens/tokens.json")))
+
         return CheckResult(
             ok=ok,
             name="calendar-mcp",
@@ -112,6 +175,7 @@ async def check_calendar_mcp() -> CheckResult:
                 "url": resolved,
                 "tool_count": len(tools),
                 "tool_names_sample": [n for n in tool_names if n][:8],
+                "account_count": account_count,
             },
             error=err,
         )

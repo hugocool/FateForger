@@ -122,6 +122,23 @@ Rules
 """.strip()
 
 
+FRAME_SLOT_CANONICAL_VALUES: frozenset[str] = frozenset({
+    "morning_ritual",
+    "commute_out",
+    "work_window",
+    "lunch_break",
+    "commute_back",
+    "gym",
+    "pre_gym_meal",
+    "dinner",
+    "evening_wind_down",
+    "music_making",
+    "shutdown",
+    "dog_walk",
+    "sleep_target",
+    "reading",
+})
+
 CONSTRAINT_INTERPRETER_PROMPT = """
 You are Schedular, interpreting whether a message contains explicit scheduling constraints/preferences and what scope the user intended.
 
@@ -153,8 +170,15 @@ object with the following fields:
 - category (string): open category string. Use one of these well-known values when applicable:
     sleep | work | exercise | family | pet | social | transport | hobby | nutrition | health | learning
   Use any other meaningful string for categories not in this list.
-- frame_slot (string or null): set ONLY when the constraint maps to a legacy slot used by the
-  planning agent. Valid values: "sleep_target" or "work_window". Null otherwise.
+- frame_slot (string or null): use this to anchor the constraint to a fixed daily slot.
+  Canonical values (reuse when an exact match exists):
+    morning_ritual | commute_out | work_window | lunch_break | commute_back |
+    gym | pre_gym_meal | dinner | evening_wind_down | music_making |
+    shutdown | dog_walk | sleep_target | reading
+  If the activity is genuinely novel and none of the above fits, invent a concise
+  lowercase_snake_case slug (e.g. "saxophone_practice", "evening_run").
+  Never leave frame_slot null for a recurring daily routine or lifestyle anchor.
+  Null is only correct for one-off or purely conditional constraints.
 - is_startup_prefetch (bool): true when this constraint anchors the day and should be loaded at
   session start BEFORE the user has said anything (sleep schedule, work window, primary transport).
   False for activity preferences that are only needed during planning.
@@ -185,7 +209,7 @@ Example hints for a conditional exercise constraint:
   "hints": {
     "aspect_classification": {
       "aspect_id": "gym_training", "aspect_label": "Gym training",
-      "category": "exercise", "frame_slot": null,
+      "category": "exercise", "frame_slot": "gym",
       "is_startup_prefetch": false,
       "schedule_start": "07:00", "schedule_end": "08:30",
       "duration_min": 90, "is_conditional": true,

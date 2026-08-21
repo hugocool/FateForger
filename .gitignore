@@ -217,7 +217,7 @@ __marimo__/
 poetry.lock
 
 # VS Code
-.vscode/
+.vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
@@ -234,7 +234,12 @@ poetry.lock
 # Database files
 data/*.db
 *.db
+# Local Graphiti fallback artifact
+data/graphiti_memory.json
 
 # Logs
 logs/
 *.log
+
+# Local safety bundles
+.git-backups/

@@ -14,6 +14,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | Calendar sync + undo controls | Implemented, Tested (submit-time baseline refresh + deterministic reconciliation summary in Stage 5) | `test_timeboxing_submit_flow.py`, `test_slack_timebox_buttons.py` | 2026-03-07 |
 | Stage 1 constraint-template coverage UX | Implemented, Tested (collect-stage calendar anchor merge + anchor summary line) | `test_timeboxing_stage_message_template_coverage.py`, `test_timeboxing_calendar_prefetch_feedback.py`, `test_timeboxing_durable_constraints.py` | 2026-03-07 |
 | Durable profile/date-span constraint auto-upsert + Stage 1 prefetch wait | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_constraint_memory_client_tool_name.py` | — |
+| Graphiti durable memory cutover (Neo4j-backed MCP, no Mem0/file fallback) | Implemented, Tested | `test_graphiti_constraint_memory.py`, `test_settings_mcp_endpoints.py`, `test_runtime_mcp_startup_checks.py`, `test_timeboxing_memory_backend_selection.py` | 2026-03-10 |
 | Constraint-memory MCP payload decoding hardening | Implemented, Tested | `test_timeboxing_constraint_memory_client_tool_name.py` | — |
 | Stage 1 lookup-first defaults + session override suppression | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_stage_gate_json_context.py` | — |
 | Stage 3 markdown-first skeleton overview | Implemented, Tested | `test_timeboxing_skeleton_draft_contract.py` | — |
@@ -49,6 +50,8 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | `calendar_reconciliation.py` | Deterministic desired-vs-remote matching (`id -> canonical -> fuzzy`) and op-bucket planning (`create/update/delete/noop/skip`). |
 | `submitter.py` | `CalendarSubmitter`: high-level `submit_plan()`, `undo_last()`, and `undo_transaction()` over the sync engine. |
 | `mcp_clients.py` | `McpCalendarClient` (list/create/update/delete events via MCP), `McpConstraintMemoryClient` (Notion constraint MCP). Internal to coordinator. |
+| `graphiti_constraint_memory.py` | Active Graphiti durable-memory adapter. Uses Graphiti MCP in runtime and requires Neo4j-backed deployment config. |
+| `constraint_record_memory.py` | Backend-neutral durable constraint serialization/query/update contract used by the active Graphiti adapter. |
 
 ### LLM Patching
 
@@ -73,6 +76,8 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | `nlu.py` | `PlannedDateResult`, `ConstraintInterpretation`: structured LLM outputs for multilingual date/scope inference. No regex/keyword matching. |
 | `preferences.py` | `ConstraintStore`: SQLite-backed session constraint persistence. |
 | `constraint_retriever.py` | `ConstraintRetriever`: gap-driven durable constraint fetch from Notion MCP. |
+| `graphiti_constraint_memory.py` | Graphiti MCP transport for durable constraint memory (active runtime path; Neo4j-backed deployment contract). |
+| `constraint_record_memory.py` | Shared durable constraint behavior used by the Graphiti adapter. |
 | `constraint_search_tool.py` | Stage-gating Notion search tool (`search_constraints`) with strict FunctionTool schema for structured-output compatibility. |
 | `notion_constraint_extractor.py` | **TODO(deprecate)** — dead code. The Notion-MCP extraction path is never reached; the live write path is `_upsert_constraints_to_durable_store`. Do not import from new code. |
 

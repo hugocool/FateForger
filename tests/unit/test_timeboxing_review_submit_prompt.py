@@ -95,24 +95,10 @@ async def test_stage_capture_inputs_queues_skeleton_pre_generation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stage_review_does_not_enable_submit_prompt() -> None:
-    """Stage 5 should summarize review without enabling submit-button state."""
+async def test_stage_review_enables_submit_prompt() -> None:
+    """Stage 5 should immediately enable pending_submit state to auto-commit."""
     agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
 
-    async def _run_review_commit(*, timebox) -> StageGateOutput:
-        return StageGateOutput(
-            stage_id=TimeboxingStage.REVIEW_COMMIT,
-            ready=True,
-            summary=["reviewed"],
-            missing=[],
-            question=None,
-            facts={},
-        )
-
-    agent._run_review_commit = types.MethodType(  # type: ignore[attr-defined]
-        lambda self, **kwargs: _run_review_commit(**kwargs),
-        agent,
-    )
     submitter = AsyncMock()
     agent._calendar_submitter = types.SimpleNamespace(submit_plan=submitter)
 
@@ -140,5 +126,6 @@ async def test_stage_review_does_not_enable_submit_prompt() -> None:
         CancellationToken(),
     )
 
-    assert session.pending_submit is False
+    assert session.pending_submit is True
+    # The actual submission happens later in the flow orchestration (agent.py)
     submitter.assert_not_called()

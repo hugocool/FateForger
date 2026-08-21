@@ -8,39 +8,28 @@ from fateforger.core.config import settings
 
 
 @pytest.fixture(autouse=True)
-def _reset_backend_mode_tracking(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    TaskDefaultsMemoryStore._reported_fallback_modes.clear()
+def _reset_backend_mode_tracking() -> None:
+    TaskDefaultsMemoryStore._reported_unavailable_modes.clear()
     TaskDefaultsMemoryStore._reported_durable_modes.clear()
-    monkeypatch.setenv(
-        "TASKS_DEFAULTS_CACHE_PATH", str(tmp_path / "task_defaults_cache.json")
-    )
 
 
 @pytest.mark.asyncio
-async def test_disk_fallback_persists_across_store_instances(
+async def test_in_memory_defaults_survive_within_store_when_durable_backend_unavailable(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
 ) -> None:
-    cache_path = tmp_path / "task_defaults_cache.json"
-    monkeypatch.setenv("TASKS_DEFAULTS_CACHE_PATH", str(cache_path))
-
-    store1 = TaskDefaultsMemoryStore()
-    monkeypatch.setattr(store1, "_ensure_store", lambda: None)
+    store = TaskDefaultsMemoryStore()
+    monkeypatch.setattr(store, "_ensure_store", lambda: None)
     defaults = TaskDueDefaults(
         user_id="U1",
         source="ticktick",
         ticktick_project_ids=["P1"],
         ticktick_project_names=["tasks"],
     )
-    assert await store1.upsert_user_defaults(defaults) is True
 
-    store2 = TaskDefaultsMemoryStore()
-    monkeypatch.setattr(store2, "_ensure_store", lambda: None)
-    loaded = await store2.get_user_defaults(user_id="U1")
+    persisted = await store.upsert_user_defaults(defaults)
+    loaded = await store.get_user_defaults(user_id="U1")
 
+    assert persisted is False
     assert loaded is not None
     assert loaded.ticktick_project_ids == ["P1"]
     assert loaded.ticktick_project_names == ["tasks"]
@@ -49,7 +38,7 @@ async def test_disk_fallback_persists_across_store_instances(
 def test_backend_selection_defaults_to_task_specific_setting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings, "timeboxing_memory_backend", "mem0", raising=False)
+    monkeypatch.setattr(settings, "timeboxing_memory_backend", "graphiti", raising=False)
     monkeypatch.setattr(
         settings, "tasks_defaults_memory_backend", "constraint_mcp", raising=False
     )
@@ -60,16 +49,16 @@ def test_backend_selection_defaults_to_task_specific_setting(
 def test_backend_selection_can_inherit_timeboxing_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings, "timeboxing_memory_backend", "mem0", raising=False)
+    monkeypatch.setattr(settings, "timeboxing_memory_backend", "graphiti", raising=False)
     monkeypatch.setattr(
         settings, "tasks_defaults_memory_backend", "inherit_timeboxing", raising=False
     )
     store = TaskDefaultsMemoryStore()
-    assert store._backend == "mem0"
+    assert store._backend == "graphiti"
 
 
 @pytest.mark.asyncio
-async def test_missing_openai_key_falls_back_with_one_warning_per_user(
+async def test_missing_openai_key_marks_backend_unavailable_with_one_warning_per_user(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -94,7 +83,7 @@ async def test_missing_openai_key_falls_back_with_one_warning_per_user(
     warning_lines = [
         rec.message
         for rec in caplog.records
-        if "backend mode=fallback_cache" in rec.message
+        if "backend mode=unavailable" in rec.message
     ]
     assert len(warning_lines) == 2
     assert all("reason_code=missing_openai_api_key" in msg for msg in warning_lines)
@@ -153,7 +142,7 @@ async def test_durable_backend_logs_mode_once_and_reads_constraint(
 
 
 @pytest.mark.asyncio
-async def test_runtime_durable_lookup_failure_downgrades_to_fallback_once(
+async def test_runtime_durable_lookup_failure_marks_backend_unavailable_once(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -187,12 +176,12 @@ async def test_runtime_durable_lookup_failure_downgrades_to_fallback_once(
 
     assert first is None
     assert second is None
-    fallback_lines = [
+    unavailable_lines = [
         rec.message
         for rec in caplog.records
-        if "backend mode=fallback_cache" in rec.message
+        if "backend mode=unavailable" in rec.message
     ]
-    assert len(fallback_lines) == 1
+    assert len(unavailable_lines) == 1
 
 
 def test_defaults_store_uses_graphiti_backend_selection(monkeypatch: pytest.MonkeyPatch) -> None:

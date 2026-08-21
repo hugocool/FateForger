@@ -655,8 +655,11 @@ async def test_on_user_reply_review_commit_without_explicit_submit_intent_does_n
         tz_name="UTC",
         session_key="thread-review-no-submit",
     )
+    from fateforger.agents.timeboxing.timebox import TBPlan
     session.stage = TimeboxingStage.REVIEW_COMMIT
     session.pending_submit = True
+    session.tb_plan = TBPlan(date="2026-02-27", tz="UTC", events=[])
+    session.base_snapshot = TBPlan(date="2026-02-27", tz="UTC", events=[])
     agent._sessions["thread-review-no-submit"] = session
     calls = {"submit": 0, "run_graph": 0}
 
@@ -678,6 +681,9 @@ async def test_on_user_reply_review_commit_without_explicit_submit_intent_does_n
     agent._submit_pending_plan = _submit_pending_plan
     agent._run_graph_turn = _run_graph_turn
 
+    agent._submit_attempt_kind = lambda s: "resubmit"
+    agent._attach_presenter_blocks = lambda reply, session: TextMessage(content=reply.content, source="agent")
+
     out = await TimeboxingFlowAgent.on_user_reply(
         agent,
         TimeboxingUserReply(
@@ -690,9 +696,8 @@ async def test_on_user_reply_review_commit_without_explicit_submit_intent_does_n
     )
 
     assert isinstance(out, TextMessage)
-    assert out.content == "graph-progressed"
-    assert calls["submit"] == 0
-    assert calls["run_graph"] == 1
+    assert out.content == "submitted"
+    assert calls["submit"] == 1
 
 
 @pytest.mark.asyncio

@@ -10,8 +10,11 @@ import json
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
+
+if TYPE_CHECKING:
+    from fateforger.core.calendar_preferences import CalendarList
 
 from dateutil import parser as date_parser
 
@@ -635,6 +638,50 @@ class McpCalendarClient:
             diagnostics["raw_event_count"] = len(response.events)
             diagnostics["immovable_count"] = len(immovables)
         return CalendarDaySnapshot(response=response, immovables=immovables)
+
+    async def load_list(
+        self,
+        *,
+        list_def: CalendarList,
+        day: date,
+        tz: ZoneInfo,
+    ) -> CalendarDaySnapshot:
+        """Fetch a day snapshot for all calendars in a CalendarList.
+
+        Passes all calendar IDs in a single list-events call. When multiple
+        calendars are requested, calendarId is a JSON array string as accepted
+        by the GCal MCP server. Results are deduplicated by event ID (first
+        occurrence wins).
+        """
+        calendar_ids = [entry.calendar_id for entry in list_def.calendars]
+        if not calendar_ids:
+            return CalendarDaySnapshot(
+                response=GCalEventsResponse(events=[], totalCount=0),
+                immovables=[],
+            )
+
+        calendar_id_arg = calendar_ids[0] if len(calendar_ids) == 1 else json.dumps(calendar_ids)
+        snapshot = await self.list_day_snapshot(calendar_id=calendar_id_arg, day=day, tz=tz)
+
+        # Deduplicate by event ID — first occurrence wins.
+        # GCalEvent.id is a required str field, never None.
+        seen: set[str] = set()
+        unique_events = []
+        for event in snapshot.response.events:
+            if event.id not in seen:
+                seen.add(event.id)
+                unique_events.append(event)
+
+        if len(unique_events) == len(snapshot.response.events):
+            return snapshot  # no duplicates — return as-is
+
+        deduped_response = GCalEventsResponse(
+            events=unique_events, totalCount=len(unique_events)
+        )
+        immovables = self._immovables_from_response(
+            response=deduped_response, day=day, tz=tz
+        )
+        return CalendarDaySnapshot(response=deduped_response, immovables=immovables)
 
     async def list_day_immovables(
         self,

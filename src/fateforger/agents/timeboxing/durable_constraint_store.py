@@ -1,7 +1,7 @@
 """Backend-agnostic durable constraint store adapter.
 
-This module wraps the concrete durable-memory clients (Mem0, etc.)
-behind one small interface so orchestration code can stay backend-neutral.
+This module wraps the concrete durable-memory clients behind one small
+interface so orchestration code can stay backend-neutral.
 """
 
 from __future__ import annotations
@@ -315,7 +315,7 @@ class DurableConstraintStore(Protocol):
 
 @dataclass
 class ClientBackedDurableConstraintStore:
-    """Thin adapter around existing MCP/Mem0 client implementations."""
+    """Thin adapter around existing durable-memory client implementations."""
 
     client: Any
 

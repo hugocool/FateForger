@@ -727,10 +727,17 @@ class StageReviewCommitNode(_StageNodeBase):
                     content=FlowSignal(kind="stage", note="missing-timebox"),
                 )
             )
-        gate = await self._orchestrator._run_review_commit(
-            timebox=self._session.timebox
-        )  # noqa: SLF001
-        self._session.pending_submit = False
+        # Skip the LLM call because we auto-commit directly from this stage.
+        # This resolves the 30s Slack route timeout issue.
+        gate = StageGateOutput(
+            stage_id=TimeboxingStage.REVIEW_COMMIT,
+            ready=True,
+            summary=["Auto-committing your timebox..."],
+            question="Submitting...",
+            missing=[],
+            facts={},
+        )
+        self._session.pending_submit = True
         self._session.stage_ready = True
         self._session.stage_missing = []
         self._session.stage_question = gate.question

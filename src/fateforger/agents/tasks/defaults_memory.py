@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
@@ -30,7 +28,6 @@ _DEFAULTS_NAME_PREFIX = "taskmarshal-defaults:"
 _DEFAULTS_DESC_PREFIX = "task_defaults_json:"
 _TASK_DEFAULTS_BACKENDS = {
     "constraint_mcp",
-    "mem0",
     "graphiti",
     "disabled",
     "inherit_timeboxing",
@@ -55,7 +52,7 @@ class TaskDefaultsMemoryStore:
 
     timeout_s: float = 10.0
     _backend_mode_lock: ClassVar[threading.Lock] = threading.Lock()
-    _reported_fallback_modes: ClassVar[set[tuple[str, str, str]]] = set()
+    _reported_unavailable_modes: ClassVar[set[tuple[str, str, str]]] = set()
     _reported_durable_modes: ClassVar[set[tuple[str, str]]] = set()
 
     def __post_init__(self) -> None:
@@ -64,13 +61,7 @@ class TaskDefaultsMemoryStore:
         self._backend = self._resolve_backend()
         self._unavailable_reason: str | None = None
         self._unavailable_reason_code: str | None = None
-        self._fallback_path = Path(
-            os.getenv("TASKS_DEFAULTS_CACHE_PATH", "logs/taskmarshal_defaults_cache.json")
-        )
-        self._cache_lock = threading.Lock()
-        self._cache_mtime_ns: int | None = None
         self._local_defaults_by_user: dict[str, TaskDueDefaults] = {}
-        self._refresh_local_cache_from_disk(force=True)
 
     def _ensure_store(self) -> DurableConstraintStore | None:
         if self._store is not None:
@@ -110,9 +101,8 @@ class TaskDefaultsMemoryStore:
             self._report_backend_mode(
                 user_id=user_id,
                 operation="get_user_defaults",
-                mode="fallback_cache",
+                mode="unavailable",
             )
-            self._refresh_local_cache_from_disk()
             return self._local_defaults_by_user.get(user_id)
         self._report_backend_mode(
             user_id=user_id,
@@ -141,9 +131,8 @@ class TaskDefaultsMemoryStore:
             self._report_backend_mode(
                 user_id=user_id,
                 operation="get_user_defaults",
-                mode="fallback_cache",
+                mode="unavailable",
             )
-            self._refresh_local_cache_from_disk()
             return self._local_defaults_by_user.get(user_id)
         for row in rows:
             parsed = self._parse_entry_to_defaults(entry=row, user_id=user_id)
@@ -155,15 +144,14 @@ class TaskDefaultsMemoryStore:
     async def upsert_user_defaults(self, defaults: TaskDueDefaults) -> bool:
         """Persist task defaults for one user."""
         self._local_defaults_by_user[defaults.user_id] = defaults
-        self._write_defaults_to_disk(defaults)
         store = self._ensure_store()
         if not store:
             self._report_backend_mode(
                 user_id=defaults.user_id,
                 operation="upsert_user_defaults",
-                mode="fallback_cache",
+                mode="unavailable",
             )
-            return True
+            return False
         self._report_backend_mode(
             user_id=defaults.user_id,
             operation="upsert_user_defaults",
@@ -215,9 +203,9 @@ class TaskDefaultsMemoryStore:
             self._report_backend_mode(
                 user_id=defaults.user_id,
                 operation="upsert_user_defaults",
-                mode="fallback_cache",
+                mode="unavailable",
             )
-            return True
+            return False
         return bool((result or {}).get("uid"))
 
     @staticmethod
@@ -246,10 +234,6 @@ class TaskDefaultsMemoryStore:
         message = str(exc).lower()
         if "openai_api_key" in message:
             return "missing_openai_api_key"
-        if "mem0_api_key" in message:
-            return "missing_mem0_api_key"
-        if "mem0 backend requires" in message:
-            return "missing_mem0_runtime_config"
         if "notion_timeboxing_parent_page_id" in message:
             return "missing_notion_parent_page_id"
         if "notion_token" in message:
@@ -269,7 +253,7 @@ class TaskDefaultsMemoryStore:
         *,
         user_id: str,
         operation: str,
-        mode: Literal["durable", "fallback_cache"],
+        mode: Literal["durable", "unavailable"],
     ) -> None:
         clean_user_id = str(user_id or "").strip()
         if not clean_user_id:
@@ -291,11 +275,11 @@ class TaskDefaultsMemoryStore:
         reason_code = self._unavailable_reason_code or "backend_unavailable"
         key = (self._backend, reason_code, clean_user_id)
         with self._backend_mode_lock:
-            if key in self._reported_fallback_modes:
+            if key in self._reported_unavailable_modes:
                 return
-            self._reported_fallback_modes.add(key)
+            self._reported_unavailable_modes.add(key)
         logger.warning(
-            "Task defaults backend mode=fallback_cache backend=%s reason_code=%s user_id=%s operation=%s reason=%s",
+            "Task defaults backend mode=unavailable backend=%s reason_code=%s user_id=%s operation=%s reason=%s",
             self._backend,
             reason_code,
             clean_user_id,
@@ -333,62 +317,6 @@ class TaskDefaultsMemoryStore:
         except Exception:
             return None
 
-    def _refresh_local_cache_from_disk(self, *, force: bool = False) -> None:
-        try:
-            stat = self._fallback_path.stat()
-        except FileNotFoundError:
-            return
-        except Exception:
-            return
-        if not force and self._cache_mtime_ns == stat.st_mtime_ns:
-            return
-        try:
-            payload = json.loads(self._fallback_path.read_text(encoding="utf-8"))
-        except Exception:
-            return
-        if not isinstance(payload, dict):
-            return
-        loaded: dict[str, TaskDueDefaults] = {}
-        for user_id, raw in payload.items():
-            if not isinstance(raw, dict):
-                continue
-            raw.setdefault("user_id", str(user_id))
-            try:
-                loaded[str(user_id)] = TaskDueDefaults.model_validate(raw)
-            except Exception:
-                continue
-        if loaded:
-            self._local_defaults_by_user.update(loaded)
-        self._cache_mtime_ns = stat.st_mtime_ns
-
-    def _write_defaults_to_disk(self, defaults: TaskDueDefaults) -> None:
-        try:
-            self._fallback_path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            return
-        with self._cache_lock:
-            disk_payload: dict[str, Any] = {}
-            if self._fallback_path.exists():
-                try:
-                    parsed = json.loads(self._fallback_path.read_text(encoding="utf-8"))
-                    if isinstance(parsed, dict):
-                        disk_payload = parsed
-                except Exception:
-                    disk_payload = {}
-            disk_payload[defaults.user_id] = defaults.model_dump(mode="json")
-            tmp_path = self._fallback_path.with_suffix(self._fallback_path.suffix + ".tmp")
-            try:
-                tmp_path.write_text(
-                    json.dumps(disk_payload, ensure_ascii=True, sort_keys=True, indent=2),
-                    encoding="utf-8",
-                )
-                tmp_path.replace(self._fallback_path)
-                self._cache_mtime_ns = self._fallback_path.stat().st_mtime_ns
-            except Exception:
-                try:
-                    tmp_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
 
 
 __all__ = ["TaskDueDefaults", "TaskDefaultsMemoryStore"]

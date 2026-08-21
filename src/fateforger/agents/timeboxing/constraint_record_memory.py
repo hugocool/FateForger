@@ -1,7 +1,7 @@
-"""Mem0-backed durable constraint memory adapter.
+"""Shared durable constraint memory contract.
 
-This module preserves the existing durable constraint datamodel used by the
-timeboxing agent while replacing the backing store/retrieval path with Mem0.
+This module preserves the durable constraint datamodel and query/update behavior
+used by timeboxing while remaining agnostic to the underlying memory backend.
 """
 
 from __future__ import annotations
@@ -14,9 +14,6 @@ from typing import Any, Sequence
 import jsonpatch
 from autogen_core.memory import MemoryContent, MemoryQueryResult
 from pydantic import TypeAdapter, ValidationError
-
-from fateforger.core.config import settings
-
 
 def _derive_uid(constraint: dict[str, Any]) -> str:
     """Build a deterministic uid when one is not provided."""
@@ -122,58 +119,23 @@ def _apply_json_patch_document(
     return patched
 
 
-class Mem0ConstraintMemoryClient:
-    """Mem0-backed constraint memory with the same API as ConstraintMemoryClient."""
+class ConstraintRecordMemoryClient:
+    """Backend-neutral constraint memory with the durable store contract."""
 
     def __init__(
         self,
         *,
         user_id: str,
         limit: int = 200,
-        is_cloud: bool = True,
-        api_key: str | None = None,
-        local_config: dict[str, Any] | None = None,
-        memory_backend: Any | None = None,
+        memory_backend: Any,
     ) -> None:
         self._user_id = user_id
         self._limit = max(1, int(limit))
-        self._is_cloud = bool(is_cloud)
-
-        if memory_backend is not None:
-            self._memory = memory_backend
-            return
-
-        try:
-            from autogen_ext.memory.mem0 import Mem0Memory
-        except (
-            ImportError,
-            ModuleNotFoundError,
-        ) as exc:  # pragma: no cover - env dependent
-            raise RuntimeError(
-                "Mem0 backend selected but Mem0 dependencies are missing. "
-                "Install autogen-ext[mem0] and configure MEM0_API_KEY."
-            ) from exc
-
-        if self._is_cloud:
-            self._memory = Mem0Memory(
-                user_id=self._user_id,
-                limit=self._limit,
-                is_cloud=True,
-                api_key=api_key or None,
-            )
-        else:
-            if local_config is None:
-                local_config = {"path": "./data/mem0"}
-            self._memory = Mem0Memory(
-                user_id=self._user_id,
-                limit=self._limit,
-                is_cloud=False,
-                config=local_config,
-            )
+        self._memory = memory_backend
 
     @staticmethod
     def _build_content_text(constraint: dict[str, Any], uid: str) -> str:
-        """Build searchable content text for Mem0 semantic retrieval.
+        """Build searchable content text for durable semantic retrieval.
 
         Includes aspect classification fields (aspect_id, aspect_label, category,
         frame_slot) so that semantic queries like "what are my sleep constraints?"
@@ -257,10 +219,9 @@ class Mem0ConstraintMemoryClient:
     async def get_store_info(self) -> dict[str, Any]:
         """Return backend metadata for diagnostics."""
         return {
-            "backend": "mem0",
+            "backend": "generic",
             "user_id": self._user_id,
             "limit": self._limit,
-            "is_cloud": self._is_cloud,
         }
 
     async def upsert_constraint(
@@ -280,12 +241,12 @@ class Mem0ConstraintMemoryClient:
                 content=f"constraint_event uid:{uid}",
                 metadata=event_metadata,
             )
-        return {"uid": uid, "backend": "mem0"}
+        return {"uid": uid, "backend": "generic"}
 
     async def _add_memory_text(self, *, content: str, metadata: dict[str, Any]) -> None:
         """Store one memory entry with deterministic direct-import semantics.
 
-        Prefer direct vector-store insertion on local Mem0 clients to avoid
+        Prefer direct backend insertion when supported to avoid
         threaded infer-path behavior (`infer=True`) and preserve exact payloads.
         """
         client = getattr(self._memory, "_client", None)
@@ -295,8 +256,8 @@ class Mem0ConstraintMemoryClient:
         if client is not None and callable(
             getattr(client, "_add_to_vector_store", None)
         ):
-            # Keep direct-import writes on the current thread. Local mem0 backends
-            # may hold SQLite connections that are thread-affine.
+            # Keep direct-import writes on the current thread. Local vector-store
+            # backends may hold thread-affine resources.
             client._add_to_vector_store(
                 [{"role": "user", "content": content}],
                 payload_metadata,
@@ -344,7 +305,7 @@ class Mem0ConstraintMemoryClient:
         type_ids: list[str] | None,
         tags: list[str] | None,
     ) -> str:
-        """Build a broad retrieval query string for Mem0 semantic search."""
+        """Build a broad retrieval query string for durable semantic search."""
         parts: list[str] = ["timeboxing constraint preference"]
         if filters.get("text_query"):
             parts.append(str(filters["text_query"]))
@@ -438,7 +399,7 @@ class Mem0ConstraintMemoryClient:
         query_text: str,
         limit: int,
     ) -> MemoryQueryResult:
-        """Run a Mem0 query with graceful fallback."""
+        """Run a durable-memory query with graceful fallback."""
         query_limit = max(limit, self._limit)
         result = await self._memory.query(query_text, limit=query_limit)
         return (
@@ -706,7 +667,7 @@ class Mem0ConstraintMemoryClient:
     async def query_types(
         self, *, stage: str | None = None, event_types: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        """Aggregate type counts from active Mem0 constraint rows."""
+        """Aggregate type counts from active durable constraint rows."""
         filters = {
             "as_of": datetime.utcnow().date().isoformat(),
             "stage": stage,
@@ -745,17 +706,4 @@ class Mem0ConstraintMemoryClient:
         return ranked
 
 
-def build_mem0_client_from_settings(*, user_id: str) -> Mem0ConstraintMemoryClient:
-    """Create a Mem0 constraint client from application settings."""
-    local_config_raw = (getattr(settings, "mem0_local_config_json", "") or "").strip()
-    local_config = json.loads(local_config_raw) if local_config_raw else None
-    return Mem0ConstraintMemoryClient(
-        user_id=user_id,
-        limit=int(getattr(settings, "mem0_query_limit", 200) or 200),
-        is_cloud=bool(getattr(settings, "mem0_is_cloud", True)),
-        api_key=(getattr(settings, "mem0_api_key", "") or "").strip() or None,
-        local_config=local_config,
-    )
-
-
-__all__ = ["Mem0ConstraintMemoryClient", "build_mem0_client_from_settings"]
+__all__ = ["ConstraintRecordMemoryClient"]
