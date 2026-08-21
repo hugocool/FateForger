@@ -200,6 +200,26 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         """
         return await service.resolve_anchor_names(names)
 
+    @mcp.tool(name="memory_split_constraint")
+    async def memory_split_constraint(
+        constraint_uid: str, observation_uids: list[str]
+    ) -> dict:
+        """Separate observations wrongly folded into one rule.
+
+        Use when one constraint is visibly two rules — a rule about a part
+        merged into the rule about the whole containing it, or two unrelated
+        statements sharing vocabulary. Read the constraint's provenance first
+        and name the observations that should become their own rule.
+
+        You decide what belongs apart; the server does not re-judge it. Both
+        halves are re-derived from the observations they end up with, the
+        original keeps its id, and the observation log is untouched.
+        """
+        original, newborn = await service.split_constraint(
+            constraint_uid, observation_uids
+        )
+        return {"original_uid": original, "new_uid": newborn}
+
     @mcp.tool(name="memory_get_active_constraints")
     def memory_get_active_constraints(
         day: str,

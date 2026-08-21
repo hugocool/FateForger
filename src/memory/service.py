@@ -16,7 +16,7 @@ from memory.projection import project
 from memory.read_api import get_active_constraints as _read
 from memory.read_api import get_faded_constraints as _read_faded
 from memory.read_api import get_suspended_constraints as _read_suspended
-from memory.reprojection import ReprojectionReport, reproject
+from memory.reprojection import ReprojectionReport, reproject, split
 from memory.store import ObservationStore
 
 
@@ -154,6 +154,29 @@ class MemoryService:
         as many times as it likes with the uids it got back.
         """
         return await resolve_anchors(names, self._anchors, self._judge)
+
+    async def split_constraint(
+        self, uid: str, observation_uids: list[str]
+    ) -> tuple[str, str]:
+        """Separate observations that were wrongly folded into one constraint.
+
+        The counterpart to a merge, which the store could do and could not
+        undo. L1 keeps every observation, so the evidence to split was always
+        present — what was missing is that the partition of observations into
+        constraints is derived state nothing re-derives.
+
+        Mechanical: you name which observations leave, and nothing here judges
+        whether they should. Both halves are re-projected from the evidence
+        they end up holding, and the original keeps its uid.
+        """
+        return await split(
+            self._observations,
+            self._constraints,
+            self._judge,
+            uid=uid,
+            observation_uids=observation_uids,
+            anchor_store=self._anchors,
+        )
 
     def get_active_constraints(
         self,

@@ -287,6 +287,7 @@ async def test_the_sampling_server_needs_no_api_key(tmp_path, monkeypatch):
     assert tools == {
         "memory_observe",
         "memory_reproject",
+        "memory_split_constraint",
         "memory_resolve_anchors",
         "memory_classify_day",
         "memory_get_active_constraints",

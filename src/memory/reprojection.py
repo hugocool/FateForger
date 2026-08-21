@@ -6,7 +6,9 @@ from typing import NamedTuple
 
 from pydantic import BaseModel, Field
 
-from memory.constraint import Applicability, Necessity, Scope, Source
+from memory.anchor_store import AnchorStore
+from memory.anchoring import resolve_anchors
+from memory.constraint import Applicability, Constraint, Necessity, Scope, Source
 from memory.constraint_store import ConstraintStore
 from memory.judge import Judge
 from memory.models import Channel, Observation, Tier
@@ -282,3 +284,102 @@ async def reproject(
         )
 
     return report
+
+
+async def split(
+    observation_store: ObservationStore,
+    constraint_store: ConstraintStore,
+    judge: Judge,
+    *,
+    uid: str,
+    observation_uids: list[str],
+    anchor_store: "AnchorStore | None" = None,
+) -> tuple[str, str]:
+    """Separate observations wrongly folded into one constraint.
+
+    The store could merge and could not un-merge. A wrong merge was permanent
+    in L2 while being fully recoverable from L1 — I2 doing exactly its job and
+    L2 having no counterpart to it. Undoing the one that reached the real
+    corpus required deleting a row from `constraint_observations` by hand,
+    which is the corrective operation the store most needed being performed
+    underneath the store.
+
+    Mechanical on purpose: the caller names which observations leave, and
+    nothing here judges whether they should. Deciding that two statements are
+    not the same rule is the same judgement `canonicalise` makes, and asking a
+    model to revise its own merge unattended is a different and worse thing
+    than asking it prospectively.
+
+    Available without ceremony, deliberately. Merges happen unattended in the
+    write path, so gating the repair while leaving the damage ungated makes
+    corruption cheap and correction expensive — a ratchet in the wrong
+    direction. Whoever may write may repair.
+
+    Identity: the original keeps its uid (I3), the remainder is a newly minted
+    constraint. Both are re-projected from the observations they end up with,
+    so their derived fields describe what each actually holds.
+
+    Returns (original_uid, new_uid).
+    """
+    constraint = constraint_store.get(uid)
+    if constraint is None:
+        raise ValueError(f"cannot split unknown constraint {uid!r}")
+
+    present = set(constraint_store.observations_for(uid))
+    moving = list(dict.fromkeys(observation_uids))
+    if not moving:
+        raise ValueError(
+            f"refusing to split constraint {uid!r} with no observations named; "
+            f"a split that moves nothing would mint an empty constraint"
+        )
+    unknown = [o for o in moving if o not in present]
+    if unknown:
+        raise ValueError(
+            f"observation(s) {sorted(unknown)} are not provenance of constraint "
+            f"{uid!r}; splitting would attach evidence it never had"
+        )
+    remaining = [o for o in present if o not in set(moving)]
+    if not remaining:
+        raise ValueError(
+            f"refusing to move every observation off constraint {uid!r}; that "
+            f"is a rename, and it would leave a constraint with no evidence "
+            f"that re-projection could never re-derive"
+        )
+
+    # Mint rather than reuse (I3). Fields are placeholders: both constraints
+    # are re-projected below, from the evidence each ends up holding.
+    newborn = Constraint(
+        name=constraint.name,
+        description=constraint.description,
+        necessity=constraint.necessity,
+        scope=constraint.scope,
+        status=constraint.status,
+        source=constraint.source,
+        tier=constraint.tier,
+        applicability=constraint.applicability,
+        source_observation_uids=moving,
+        created_at=constraint.created_at,
+        decay_class=constraint.decay_class,
+        last_observed_at=constraint.last_observed_at,
+    )
+    constraint_store.upsert(newborn)
+    constraint_store.replace_links(uid, remaining)
+
+    for target in (uid, newborn.uid):
+        await reproject(observation_store, constraint_store, judge, uid=target)
+
+    if anchor_store is not None:
+        # A split constraint with no anchors is unreachable from any walk,
+        # which is indistinguishable from a rule that does not apply today.
+        for target, uids in ((uid, remaining), (newborn.uid, moving)):
+            names: list[str] = []
+            for observation_uid in uids:
+                observation = observation_store.get(observation_uid)
+                if observation is not None:
+                    names.extend(observation.anchors)
+            resolved = await resolve_anchors(
+                list(dict.fromkeys(names)), anchor_store, judge
+            )
+            anchor_store.replace_constraint_links(target, resolved)
+
+    return uid, newborn.uid
