@@ -160,7 +160,14 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-addopts = "-v --tb=short --strict-markers"
+# importlib mode so two test files may share a basename in different
+# directories. tests/memory/ and tests/unit/tmbx/ each grew their own
+# test_service.py and test_read_api.py on separate branches; under the default
+# prepend mode pytest imports both as the top-level module "test_service" and
+# the second collection fails. The usual fix -- an __init__.py per directory --
+# is not available here: tests/memory/__init__.py shadows the `memory` package
+# itself and had to be deleted once already.
+addopts = "-v --tb=short --strict-markers --import-mode=importlib"
 asyncio_mode = "auto"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
