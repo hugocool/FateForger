@@ -24,8 +24,20 @@ def _lock_for(anchor_store: AnchorStore) -> asyncio.Lock:
     return lock
 
 
+# How many anchors one call may create. A day involves a handful of things;
+# a caller passing raw calendar titles, or a test harness passing junk, would
+# otherwise grow the taxonomy without bound and every new anchor is a node the
+# gate must later reason about. Arithmetic on a count, not a judgement about
+# the names.
+MAX_NEW_ANCHORS_PER_CALL = 8
+
+
 async def resolve_anchors(
-    names: list[str], anchor_store: AnchorStore, judge: Judge
+    names: list[str],
+    anchor_store: AnchorStore,
+    judge: Judge,
+    *,
+    max_new: int = MAX_NEW_ANCHORS_PER_CALL,
 ) -> list[str]:
     """Map extracted anchor names onto minted anchor identity (loop 1).
 
@@ -48,6 +60,7 @@ async def resolve_anchors(
 
         by_name = {r.name: r.anchor_uid for r in resolved.resolutions}
         uids: list[str] = []
+        minted = 0
         for name in names:
             uid = by_name.get(name)
             if uid is not None:
@@ -63,6 +76,14 @@ async def resolve_anchors(
                     )
                 uids.append(uid)
                 continue
+            minted += 1
+            if minted > max_new:
+                raise ValueError(
+                    f"refusing to mint more than {max_new} new anchors in one "
+                    f"call ({len(names)} names given, {minted - 1} already "
+                    f"created); a call this unfamiliar is more likely raw text "
+                    f"than a day's activities, and every anchor is permanent"
+                )
             anchor = Anchor(name=name)
             anchor_store.upsert(anchor)
             uids.append(anchor.uid)

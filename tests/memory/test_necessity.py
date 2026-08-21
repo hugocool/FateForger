@@ -123,7 +123,7 @@ async def test_a_binding_rule_is_not_softened_by_a_later_aside(tmp_path):
         tiers={declaration.text: Tier.DURABLE, aside.text: Tier.DURABLE},
         bindings={declaration.text: True},   # the aside says nothing binding
     )
-    await reproject(observations, constraints, judge)
+    await reproject(observations, constraints, judge, apply=True)
 
     assert constraints.get(constraint.uid).necessity is Necessity.MUST
 
@@ -157,7 +157,7 @@ async def test_the_improvement_reaches_constraints_that_already_exist(tmp_path):
         tiers={boundary: Tier.DURABLE, preference: Tier.DURABLE},
         bindings={boundary: True},   # preference is no longer binding
     )
-    report = await service.reproject()
+    report = await service.reproject(apply=True)
 
     assert len(report.changed) == 1
     by_description = {c.description: c for c in service._constraints.all()}

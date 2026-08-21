@@ -53,6 +53,11 @@ class ReprojectionReport(BaseModel):
     is what makes a judgement improvement measurable rather than asserted.
     """
 
+    # Whether anything was written. Without it a preview and a real run return
+    # the same shape, and a caller cannot tell which it got — which is the
+    # advisory-data failure this flag exists to prevent, reproduced in the fix
+    # for it.
+    applied: bool = False
     examined: int = 0
     changed: list[ConstraintChange] = Field(default_factory=list)
     unchanged: int = 0
@@ -199,6 +204,7 @@ async def reproject(
     judge: Judge,
     *,
     uid: str | None = None,
+    apply: bool = False,
 ) -> ReprojectionReport:
     """Re-derive constraints from the observations that produced them (I4).
 
@@ -212,6 +218,17 @@ async def reproject(
     exactly the observations used, via replace_links, because re-projection can
     drop an observation as well as keep one.
 
+    Previews by default and writes nothing unless `apply=True`. Re-projection
+    rewrites derived state across the whole store, and until now it reported
+    what it changed as advisory data with nothing gating on it — so every safe
+    run was safe because a person read the report and would have stopped. That
+    is not a property of the code. It destroyed the description of 8 of 12
+    multi-observation constraints on a copy of the real corpus, and nothing
+    here would have refused.
+
+    A caller that wants the change asks for it twice: once to see it, once to
+    mean it.
+
     This deliberately does NOT re-run canonicalise. Deciding afresh which
     constraints are the same rule is a different operation — it merges and
     splits rows rather than re-deriving their fields — and it belongs to the
@@ -223,7 +240,7 @@ async def reproject(
         if uid is not None
         else constraint_store.all()
     )
-    report = ReprojectionReport(examined=len(targets))
+    report = ReprojectionReport(examined=len(targets), applied=apply)
 
     for constraint in targets:
         observation_uids = constraint_store.observations_for(constraint.uid)
@@ -268,6 +285,14 @@ async def reproject(
         ]
         if not changed_fields:
             report.unchanged += 1
+            continue
+
+        if not apply:
+            report.changed.append(
+                ConstraintChange(
+                    uid=constraint.uid, name=constraint.name, fields=changed_fields
+                )
+            )
             continue
 
         for field, value in derived.items():
@@ -366,7 +391,12 @@ async def split(
     constraint_store.replace_links(uid, remaining)
 
     for target in (uid, newborn.uid):
-        await reproject(observation_store, constraint_store, judge, uid=target)
+        # apply=True: the caller already committed to the split by calling
+        # this, and leaving the halves un-derived would be worse than either
+        # outcome — each would keep describing the merge it came from.
+        await reproject(
+            observation_store, constraint_store, judge, uid=target, apply=True
+        )
 
     if anchor_store is not None:
         # A split constraint with no anchors is unreachable from any walk,

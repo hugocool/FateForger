@@ -84,7 +84,7 @@ async def test_an_existing_constraint_acquires_applicability(tmp_path):
         tiers={"physio on tuesdays and thursdays": Tier.DURABLE},
         days_of_week={"physio on tuesdays and thursdays": [1, 3]},
     )
-    report = await reproject(observations, constraints, judge)
+    report = await reproject(observations, constraints, judge, apply=True)
 
     assert report.examined == 1
     assert len(report.changed) == 1
@@ -103,7 +103,7 @@ async def test_identity_survives_reprojection(tmp_path):
         tiers={"gym at six": Tier.DURABLE},
         days_of_week={"gym at six": [0, 2, 4]},
     )
-    await reproject(observations, constraints, judge)
+    await reproject(observations, constraints, judge, apply=True)
 
     assert constraints.get(stale.uid) is not None
     assert len(constraints.all()) == 1
@@ -119,8 +119,8 @@ async def test_reprojection_is_idempotent(tmp_path):
         days_of_week={"no meetings before ten": [0, 1, 2, 3, 4]},
     )
 
-    first = await reproject(observations, constraints, judge)
-    second = await reproject(observations, constraints, judge)
+    first = await reproject(observations, constraints, judge, apply=True)
+    second = await reproject(observations, constraints, judge, apply=True)
 
     assert len(first.changed) == 1
     assert second.changed == []
@@ -140,7 +140,7 @@ async def test_provenance_survives(tmp_path):
     constraints.link_observation(stale.uid, second.uid)
 
     judge = StubJudge(tiers={"deep work in the morning": Tier.DURABLE})
-    await reproject(observations, constraints, judge)
+    await reproject(observations, constraints, judge, apply=True)
 
     assert set(constraints.observations_for(stale.uid)) == {
         first.uid,
@@ -172,7 +172,7 @@ async def test_derivation_uses_the_whole_evidence_set_not_the_first(tmp_path):
         bindings={"lunch at 12:30 sharp": True},
         decay_classes={"lunch at 12:30 sharp": DecayClass.SEASONAL},
     )
-    await reproject(observations, constraints, judge)
+    await reproject(observations, constraints, judge, apply=True)
 
     result = constraints.get(stale.uid)
     # Prose is preserved, not re-derived — see the next test for why.
@@ -199,7 +199,7 @@ async def test_a_later_restatement_does_not_widen_a_scoped_rule(tmp_path):
                "physio matters": Tier.DURABLE},
         days_of_week={"physio tuesdays and thursdays": [1, 3]},  # bare: none
     )
-    await reproject(observations, constraints, judge)
+    await reproject(observations, constraints, judge, apply=True)
 
     assert constraints.get(stale.uid).applicability.days_of_week == [1, 3]
 
@@ -225,7 +225,7 @@ async def test_reprojection_never_re_merges(tmp_path):
         tiers={"oats before gym": Tier.DURABLE,
                "oats two hours before gym": Tier.DURABLE}
     )
-    await reproject(observations, constraints, judge)
+    await reproject(observations, constraints, judge, apply=True)
 
     assert len(constraints.all()) == 2
 
@@ -248,7 +248,7 @@ async def test_a_constraint_with_no_provenance_is_skipped_not_guessed(tmp_path):
     )
     constraints.upsert(orphan)
 
-    report = await reproject(observations, constraints, StubJudge())
+    report = await reproject(observations, constraints, StubJudge(), apply=True)
 
     assert report.changed == []
     assert len(report.skipped) == 1
@@ -266,7 +266,7 @@ async def test_dangling_provenance_is_skipped_rather_than_partially_derived(
     stale = _stale_constraint(constraints, present)
     constraints.link_observation(stale.uid, "deadbeef" * 4)
 
-    report = await reproject(observations, constraints, StubJudge())
+    report = await reproject(observations, constraints, StubJudge(), apply=True)
 
     assert report.changed == []
     assert len(report.skipped) == 1
@@ -284,7 +284,7 @@ async def test_a_single_constraint_can_be_reprojected_alone(tmp_path):
         tiers={"swim on fridays": Tier.DURABLE, "call mum on sundays": Tier.DURABLE},
         days_of_week={"swim on fridays": [4], "call mum on sundays": [6]},
     )
-    report = await reproject(observations, constraints, judge, uid=target.uid)
+    report = await reproject(observations, constraints, judge, uid=target.uid, apply=True)
 
     assert report.examined == 1
     assert constraints.get(target.uid).applicability.days_of_week == [4]
@@ -311,7 +311,7 @@ async def test_an_old_durable_statement_is_not_demoted_by_a_newer_aside(
     judge = StubJudge(
         tiers={"I never work past six": Tier.DURABLE},  # aside stays SESSION
     )
-    await reproject(observations, constraints, judge)
+    await reproject(observations, constraints, judge, apply=True)
 
     result = constraints.get(stale.uid)
     assert result.tier is Tier.DURABLE
@@ -331,7 +331,7 @@ async def test_created_at_moves_when_the_earliest_evidence_changes(tmp_path):
     )
     judge = StubJudge(tiers={"sleep by eleven": Tier.DURABLE})
 
-    await reproject(observations, constraints, judge)
+    await reproject(observations, constraints, judge, apply=True)
 
     assert constraints.get(stale.uid).created_at == early.observed_at
 
@@ -380,7 +380,7 @@ async def test_a_folded_constraint_acquires_the_improvement_through_the_facade(
     # The fold alone does not close it — this is the defect, asserted.
     assert len(service.get_active_constraints(monday)) == 1
 
-    report = await service.reproject()
+    report = await service.reproject(apply=True)
 
     assert len(report.changed) == 1
     assert "applicability" in report.changed[0].fields
@@ -418,7 +418,7 @@ async def test_reprojection_never_overwrites_a_rule_with_its_newest_mention(
         tiers={majority.text: Tier.DURABLE, later.text: Tier.DURABLE},
         labels={later.text: "Deep work duration"},
     )
-    report = await reproject(observations, constraints, judge)
+    report = await reproject(observations, constraints, judge, apply=True)
 
     result = constraints.get(stale.uid)
     assert result.description == majority.text, (
@@ -444,7 +444,35 @@ async def test_a_single_observation_constraint_still_gains_a_better_label(
         tiers={observation.text: Tier.DURABLE},
         labels={observation.text: "Dog walk"},
     )
-    report = await reproject(observations, constraints, judge)
+    report = await reproject(observations, constraints, judge, apply=True)
 
     assert constraints.get(stale.uid).name == "Dog walk"
     assert report.contested == []
+
+
+async def test_reprojection_writes_nothing_unless_asked(tmp_path):
+    """It rewrites derived state across the whole store, and until this
+    existed it reported what it changed as advisory data with nothing gating
+    on it. Every safe run was safe because a person read the report and would
+    have stopped — which is not a property of the code. It destroyed the
+    description of 8 of 12 multi-observation constraints on a copy of the real
+    corpus, and nothing refused.
+    """
+    observations, constraints = _stores(tmp_path)
+    observation = _observe(observations, "physio on tuesdays and thursdays")
+    stale = _stale_constraint(constraints, observation)
+    judge = StubJudge(
+        tiers={observation.text: Tier.DURABLE},
+        days_of_week={observation.text: [1, 3]},
+    )
+
+    preview = await reproject(observations, constraints, judge)
+
+    assert preview.applied is False
+    assert len(preview.changed) == 1              # it says what it would do
+    assert constraints.get(stale.uid).applicability.days_of_week == []  # and did not
+
+    real = await reproject(observations, constraints, judge, apply=True)
+
+    assert real.applied is True
+    assert constraints.get(stale.uid).applicability.days_of_week == [1, 3]

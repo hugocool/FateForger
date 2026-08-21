@@ -365,3 +365,24 @@ def test_a_rule_beyond_the_depth_bound_is_not_reached(tmp_path):
     assert "beyond" not in reachable, (
         f"a rule {leaf} hops up was reached with the bound at {depth}"
     )
+
+
+async def test_minting_is_bounded_so_a_careless_caller_cannot_flood_it(tmp_path):
+    """Nothing refused before this.
+
+    Every unresolved name became a permanent anchor, so a caller passing raw
+    calendar titles — or a test harness passing junk — grew the taxonomy
+    without bound, and every anchor is a node the gate must later reason
+    about. Counting is arithmetic; nothing here judges the names.
+    """
+    from memory.anchoring import MAX_NEW_ANCHORS_PER_CALL
+
+    store = AnchorStore(str(tmp_path / "a.db"))
+    too_many = [f"thing {i}" for i in range(MAX_NEW_ANCHORS_PER_CALL + 3)]
+
+    with pytest.raises(ValueError, match="refusing to mint more than"):
+        await resolve_anchors(too_many, StubJudge(), max_new=MAX_NEW_ANCHORS_PER_CALL)
+
+    # A day's worth of activities is well inside the bound.
+    fine = await resolve_anchors(["hockey", "dinner", "school run"], StubJudge())
+    assert len(fine) == 3
