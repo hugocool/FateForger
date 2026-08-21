@@ -257,7 +257,7 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         return [v.model_dump(mode="json") for v in views]
 
     @mcp.tool(name="memory_get_session_constraints")
-    def memory_get_session_constraints(session_id: str) -> list[dict]:
+    def memory_get_session_constraints(session_id: str) -> dict:
         """What this conversation has established so far. No model call.
 
         Call this at the start of every turn in a planning session, with the
@@ -269,9 +269,25 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         Distinct from memory_get_active_constraints, which returns standing
         rules that outlive the conversation. These two are meant to be used
         together: durable rules for who the user is, session constraints for
-        what they just decided.
+        what they just decided. An empty list means this conversation has not
+        established anything yet, which is the normal state of a first turn.
+
+        Returns an object rather than a bare list, and that is deliberate: an
+        empty list has no content for the transport to render, so it arrives
+        at a tools-only host as prose saying nothing was returned. A caller
+        parsing that as JSON raises instead of reading a length of zero — and
+        it happens on the first turn of every session, which is precisely when
+        a turn loop is least able to tell "nothing yet" from "something broke".
+        The object always has content, so zero is stated rather than implied.
+        Same reason suspended constraints got their own channel: absence must
+        not be the thing carrying the meaning.
         """
-        return [v.model_dump(mode="json") for v in service.get_session_constraints(session_id)]
+        views = service.get_session_constraints(session_id)
+        return {
+            "session_id": session_id,
+            "count": len(views),
+            "constraints": [v.model_dump(mode="json") for v in views],
+        }
 
     @mcp.tool(name="memory_get_suspended_constraints")
     def memory_get_suspended_constraints(
