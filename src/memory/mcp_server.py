@@ -11,6 +11,7 @@ from mcp.server.session import ServerSession
 from mcp.shared.exceptions import McpError
 
 from memory.models import Channel
+from memory.openrouter_judge import OpenRouterJudge
 from memory.sampling import SamplingDeclined, SamplingJudge, SamplingUnavailable
 from memory.service import MemoryService
 
@@ -338,9 +339,65 @@ def build_sampling_server(db_path: str) -> FastMCP:
     return mcp
 
 
+def build_bridged_server(db_path: str, *, api_key: str, base_url: str) -> FastMCP:
+    """A server that judges with its own provider because the host cannot.
+
+    The compromise, and it should stay one. #150 removed the model and the key
+    so the host's model governs quality and one server serves every host
+    without configuration drift; this gives that back.
+
+    It exists because the chosen harness has no MCP sampling — its bridge is
+    tools-only — and without it the write path does not run at all. The case
+    for taking it now rather than waiting for upstream sampling is not
+    convenience: every quality number this package has is measured against
+    `google/gemini-3.6-flash`, so this is the better-*measured* option. Host
+    sampling is the right architecture with quality nobody has looked at.
+    Re-run the evals against whatever model answers before trusting either.
+
+    Chosen at boot and never per call. A runtime fallback would make the
+    store's contents depend on which path a given write happened to take,
+    which is the transport drift the shared PromptJudge exists to prevent.
+    """
+    mcp = FastMCP(name="memory", instructions=INSTRUCTIONS)
+    judge = OpenRouterJudge(api_key=api_key, base_url=base_url)
+    register_tools(mcp, MemoryService(db_path, judge))
+    return mcp
+
+
 def main() -> None:
     db_path = os.environ.get("MEMORY_DB_PATH", "data/memory.db")
-    build_sampling_server(db_path).run()  # stdio transport
+
+    # Explicit opt-in. Never inferred from a key happening to be in the
+    # environment: a server that quietly stops asking its host because a
+    # variable was set elsewhere is the silent-wrong-answer shape this project
+    # is organised against, and the wrong one is invisible — the store keeps
+    # filling, just judged by someone nobody chose.
+    judge_kind = os.environ.get("MEMORY_JUDGE", "host")
+    if judge_kind == "host":
+        build_sampling_server(db_path).run()  # stdio transport
+        return
+    if judge_kind != "openrouter":
+        raise SystemExit(
+            f"MEMORY_JUDGE={judge_kind!r} is not a judge this build knows; "
+            f"use 'host' to sample the connected client, or 'openrouter' to "
+            f"judge with this server's own provider"
+        )
+
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise SystemExit(
+            "MEMORY_JUDGE=openrouter needs OPENROUTER_API_KEY. Refusing to "
+            "start rather than falling back to host sampling: a server that "
+            "silently judges differently from how it was configured is one "
+            "nobody can reason about."
+        )
+    build_bridged_server(
+        db_path,
+        api_key=api_key,
+        base_url=os.environ.get(
+            "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+        ),
+    ).run()  # stdio transport
 
 
 if __name__ == "__main__":
