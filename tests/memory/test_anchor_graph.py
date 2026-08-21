@@ -381,8 +381,12 @@ async def test_minting_is_bounded_so_a_careless_caller_cannot_flood_it(tmp_path)
     too_many = [f"thing {i}" for i in range(MAX_NEW_ANCHORS_PER_CALL + 3)]
 
     with pytest.raises(ValueError, match="refusing to mint more than"):
-        await resolve_anchors(too_many, StubJudge(), max_new=MAX_NEW_ANCHORS_PER_CALL)
+        await resolve_anchors(
+            too_many, store, StubJudge(), max_new=MAX_NEW_ANCHORS_PER_CALL
+        )
 
     # A day's worth of activities is well inside the bound.
-    fine = await resolve_anchors(["hockey", "dinner", "school run"], StubJudge())
+    fine = await resolve_anchors(
+        ["hockey", "dinner", "school run"], store, StubJudge()
+    )
     assert len(fine) == 3
