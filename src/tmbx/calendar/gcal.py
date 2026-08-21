@@ -9,19 +9,27 @@ module already solved the argument shapes and response normalisation
 against this exact server; see each helper's docstring for what changed and
 why.
 
-``extendedProperties.private`` under the ``tmbx`` namespace carries five
+``extendedProperties.private`` under the ``tmbx`` namespace carries six
 values round-tripped verbatim: identity (``uid``/``handle``/``slug``, as
-before) plus ``block_type``/``timing_mode``. Without the latter two, every
+before) plus ``block_type``/``timing_mode``/``anchor_source``. Without
+``block_type``/``timing_mode``, every
 block reads back as a plain fixed window regardless of what it actually
 was — an event has no field of its own for "this is a deep-work block" or
 "this was meant to float after the previous one"; without persisting
 them, that information is invented fresh on every read (always ``ET.M``,
 always ``fw``), which ossifies every chain into a wall of independently
-pinned blocks the moment it round-trips through the calendar. This module
-only carries the two raw strings through; reconstructing them into a real
-``ET``/``Timing`` (and what happens when they're missing or unparseable
-on an otherwise-owned event) is ``service._event_to_block``'s job — see
-its docstring.
+pinned blocks the moment it round-trips through the calendar.
+
+``anchor_source`` is the same failure one field over. It records *why* a
+block is pinned, and both ``commitment.overspecified`` and
+``ops.validate_patch`` key on it to tell a boundary from a convenience
+pin. Unpersisted, every pin reads back as ``"calendar"`` — provenance
+gone — and a constraint-backed boundary becomes advice to unpin.
+
+This module only carries the raw strings through; reconstructing them
+into a real ``ET``/``Timing``/``AnchorSource`` (and what happens when
+they're missing or unparseable on an otherwise-owned event) is
+``service._event_to_block``'s job — see its docstring.
 
 Two things the port's ``CalendarPort`` protocol does not give this adapter,
 that a real provider needs:
@@ -90,6 +98,7 @@ _PRIVATE_HANDLE_KEY = "tmbx.handle"
 _PRIVATE_SLUG_KEY = "tmbx.slug"
 _PRIVATE_TYPE_KEY = "tmbx.type"
 _PRIVATE_MODE_KEY = "tmbx.mode"
+_PRIVATE_ANCHOR_KEY = "tmbx.anchor"
 
 _CANCELLED_STATUS = "cancelled"
 
@@ -293,10 +302,10 @@ def _write_event_args(event: CalendarEvent, *, tz: str) -> dict[str, Any]:
     not a nested ``{dateTime, timeZone}`` object; that nested shape shows
     up only in this repo's throwaway dev seed scripts, not the tool's
     actual schema. ``extendedProperties.private`` carries identity plus
-    ``block_type``/``timing_mode`` — see the module docstring — and is
-    included only when at least one of those five is set, since a foreign
-    event is never written here at all (the service never calls
-    create/update for one).
+    ``block_type``/``timing_mode``/``anchor_source`` — see the module
+    docstring — and is included only when at least one of those six is
+    set, since a foreign event is never written here at all (the service
+    never calls create/update for one).
     """
     private = {
         key: value
@@ -306,6 +315,7 @@ def _write_event_args(event: CalendarEvent, *, tz: str) -> dict[str, Any]:
             (_PRIVATE_SLUG_KEY, event.slug),
             (_PRIVATE_TYPE_KEY, event.block_type),
             (_PRIVATE_MODE_KEY, event.timing_mode),
+            (_PRIVATE_ANCHOR_KEY, event.anchor_source),
         )
         if value is not None
     }
@@ -403,14 +413,16 @@ def _parse_event_dt(raw: dict[str, Any] | None, *, tz: ZoneInfo) -> datetime | N
 def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
     """Build a ``CalendarEvent`` from one raw provider event dict.
 
-    Reads identity, plus ``block_type``/``timing_mode``, from
-    ``extendedProperties.private`` under the ``tmbx`` namespace; an event
-    with none of those keys is foreign — ``uid`` (and ``handle``/``slug``/
-    ``block_type``/``timing_mode``) come back ``None``, never invented,
-    which is exactly what ``PlanService`` needs to treat it as read-only.
+    Reads identity, plus ``block_type``/``timing_mode``/
+    ``anchor_source``, from ``extendedProperties.private`` under the
+    ``tmbx`` namespace; an event with none of those keys is foreign —
+    ``uid`` (and ``handle``/``slug``/``block_type``/``timing_mode``/
+    ``anchor_source``) come back ``None``, never invented, which is
+    exactly what ``PlanService`` needs to treat it as read-only.
     This function only carries the raw wire values through — it does not
-    validate ``block_type`` against ``ET`` or ``timing_mode`` against a
-    known mode, and it does not decide what happens when they're absent
+    validate ``block_type`` against ``ET``, ``timing_mode`` against a
+    known mode, or ``anchor_source`` against ``AnchorSource``, and it
+    does not decide what happens when they're absent
     on an otherwise-owned event; that reconstruction, and its documented
     fallback, live in ``service._event_to_block``, which is where a
     provider-neutral decision like that belongs. ``etag`` is the
@@ -441,6 +453,7 @@ def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
         slug=private.get(_PRIVATE_SLUG_KEY),
         block_type=private.get(_PRIVATE_TYPE_KEY),
         timing_mode=private.get(_PRIVATE_MODE_KEY),
+        anchor_source=private.get(_PRIVATE_ANCHOR_KEY),
     )
 
 

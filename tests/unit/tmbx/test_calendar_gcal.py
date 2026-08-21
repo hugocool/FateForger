@@ -647,3 +647,74 @@ def test_explicit_server_url_wins_over_env(monkeypatch):
     monkeypatch.setenv(SERVER_URL_ENV_VAR, "http://ignored:1")
     adapter = GoogleCalendarAdapter(tz=TZ, server_url="http://explicit:3000")
     assert adapter._server_url == "http://explicit:3000"
+
+
+# ---------------------------------------------------------------------------
+# tmbx.anchor — the third round-tripped domain field, after tmbx.type and
+# tmbx.mode. Without it every pin reads back as calendar-sourced and a
+# constraint-backed boundary is indistinguishable from a convenience pin.
+# ---------------------------------------------------------------------------
+
+
+async def test_list_day_reads_tmbx_anchor_from_extended_properties():
+    payload = {
+        "events": [
+            _raw_event(
+                event_id="owned3",
+                private={"tmbx.uid": "u-7", "tmbx.mode": "fw", "tmbx.anchor": "constraint"},
+            )
+        ]
+    }
+    adapter, _ = make_adapter({"list-events": [_text_result(payload)]})
+    events = await adapter.list_day("primary", DAY, TZ)
+    assert events[0].anchor_source == "constraint"
+
+
+async def test_list_day_leaves_tmbx_anchor_none_when_absent():
+    """A foreign event carries none of these keys; the adapter must never
+    invent one, exactly as it already refuses to invent a uid."""
+    payload = {"events": [_raw_event(event_id="foreign2", private=None)]}
+    adapter, _ = make_adapter({"list-events": [_text_result(payload)]})
+    events = await adapter.list_day("primary", DAY, TZ)
+    assert events[0].anchor_source is None
+
+
+async def test_create_writes_tmbx_anchor_into_extended_properties():
+    event = CalendarEvent(
+        event_id="tmbxabc124",
+        summary="Bedtime",
+        start=datetime(2026, 8, 17, 22, 0),
+        end=datetime(2026, 8, 17, 23, 0),
+        uid="u-2",
+        handle="BED1",
+        block_type="R",
+        timing_mode="fw",
+        anchor_source="constraint",
+    )
+    response = _raw_event(
+        event_id="tmbxabc124",
+        summary="Bedtime",
+        start="2026-08-17T22:00:00+02:00",
+        end="2026-08-17T23:00:00+02:00",
+        private={
+            "tmbx.uid": "u-2",
+            "tmbx.handle": "BED1",
+            "tmbx.type": "R",
+            "tmbx.mode": "fw",
+            "tmbx.anchor": "constraint",
+        },
+    )
+    adapter, caller = make_adapter({"create-event": [_text_result({"event": response})]})
+    created = await adapter.create("primary", event)
+
+    _, args = caller.calls[0]
+    assert args["extendedProperties"] == {
+        "private": {
+            "tmbx.uid": "u-2",
+            "tmbx.handle": "BED1",
+            "tmbx.type": "R",
+            "tmbx.mode": "fw",
+            "tmbx.anchor": "constraint",
+        }
+    }
+    assert created.anchor_source == "constraint"

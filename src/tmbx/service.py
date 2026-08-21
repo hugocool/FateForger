@@ -45,7 +45,7 @@ import logging
 import secrets
 import uuid
 from datetime import date as date_type
-from typing import Callable, Literal
+from typing import Callable, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, ValidationError, computed_field
 
@@ -54,6 +54,7 @@ from .core.commitment import overspecified
 from .core.models import (
     ET,
     AfterPrev,
+    AnchorSource,
     BeforeNext,
     Block,
     FixedStart,
@@ -344,6 +345,60 @@ def _reconstruct_block_type(value: str) -> ET | None:
         return None
 
 
+_ANCHOR_SOURCES: frozenset[str] = frozenset(get_args(AnchorSource))
+
+_DEFAULT_ANCHOR_SOURCE: AnchorSource = "calendar"
+
+
+def _stored_anchor_source(block: Block) -> str | None:
+    """What a write should persist for a block's ``anchor_source``.
+
+    ``"calendar"`` is deliberately not stored: it *is* the read-side
+    default for an event carrying no recorded provenance (see
+    ``_anchor_for``), so persisting it would be storing "nothing is known"
+    as a value. Eliding it keeps the round trip lossless in both
+    directions and keeps ``_event_unchanged`` honest — every event already
+    on a real calendar predates this field, and writing the default would
+    make the next commit rewrite every single one of them, an etag bump
+    and a change notification per event, to record nothing at all.
+
+    Paired with ``_anchor_for``; the two are only correct together, so
+    either changing must change both.
+    """
+    if block.anchor_source == _DEFAULT_ANCHOR_SOURCE:
+        return None
+    return block.anchor_source
+
+
+def _anchor_for(timing: Timing, stored: AnchorSource | None) -> AnchorSource | None:
+    """The ``anchor_source`` a rebuilt block should carry.
+
+    Stored provenance wins whenever there is any. Otherwise fixed timing
+    gets ``"calendar"`` — ``Block`` requires a source for ``fs``/``fw``,
+    and "it is where the calendar says it is" is the only claim tmbx can
+    honestly make about an event it has no record for. Non-fixed timing
+    gets ``None``: an ``ap`` block needs no source, and filling one in
+    would leave stale provenance on a block that is not pinned at all.
+    """
+    if stored is not None:
+        return stored
+    return _DEFAULT_ANCHOR_SOURCE if timing.a in ("fs", "fw") else None
+
+
+def _reconstruct_anchor_source(value: str | None) -> AnchorSource | None:
+    """Validate a stored ``anchor_source`` string against ``AnchorSource``.
+
+    Membership in a closed literal set the system itself minted and is
+    reading back — the documented ``CLAUDE.md`` exception, exactly like
+    ``_reconstruct_block_type`` above. The set comes from ``get_args`` on
+    the type, never a hand-typed list, so widening ``AnchorSource`` cannot
+    leave a second copy behind to drift.
+    """
+    if value is None or value not in _ANCHOR_SOURCES:
+        return None
+    return value  # type: ignore[return-value]
+
+
 def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
     """Build a block from a calendar event, minting a handle if absent.
 
@@ -353,14 +408,26 @@ def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
     that exists only to satisfy ``Block.uid: str`` and must never be
     mistaken for a durable, correlatable identity.
 
-    Every calendar event is a fixed window *at minimum* — its start/end
-    are the observed fact, never the model's intent — so ``anchor_source``
-    is always ``"calendar"`` regardless of which ``Timing`` variant comes
-    back. Type and mode are reconstructed from ``event.block_type``/
-    ``event.timing_mode`` (round-tripped through provider extended
-    properties by a real adapter — see ``gcal.py``) when both are present
-    and valid; a plain ``FixedWindow``/``ET.M`` fallback covers four
-    distinct cases, three of which are logged:
+    Type, mode and ``anchor_source`` are reconstructed from
+    ``event.block_type``/``event.timing_mode``/``event.anchor_source``
+    (round-tripped through provider extended properties by a real adapter
+    — see ``gcal.py``).
+
+    ``anchor_source`` is reconstructed independently of the other two: it
+    says why a block is pinned, not how, so an event whose type/mode are
+    unusable can still have perfectly good provenance and must not lose it
+    to an unrelated fallback. An absent or unrecognised value defaults to
+    ``"calendar"``, which is the honest answer in both cases it actually
+    occurs — a foreign event, whose time is an observed fact tmbx neither
+    chose nor may change, and an event written before this round trip
+    existed, where tmbx genuinely has no record of why. It is also the
+    only default ``Block`` accepts: fixed timing requires *some* source,
+    and inventing ``"user"`` or ``"constraint"`` would manufacture the
+    exact provenance this field exists to keep honest.
+
+    Type and mode are used only when both are present and valid; a plain
+    ``FixedWindow``/``ET.M`` fallback covers four distinct cases, three of
+    which are logged:
 
     * **Foreign** (``event.uid is None``): never carries these fields at
       all. Expected, permanent, not an anomaly — never logged. This is
@@ -389,6 +456,7 @@ def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
     handle = event.handle or f"EVT{index + 1}"
     block_type = _reconstruct_block_type(event.block_type) if event.block_type else None
     timing = _reconstruct_timing(event.timing_mode, event) if event.timing_mode else None
+    anchor_source = _reconstruct_anchor_source(event.anchor_source)
 
     if block_type is not None and timing is not None:
         try:
@@ -400,7 +468,7 @@ def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
                 d=event.description,
                 t=block_type,
                 p=timing,
-                anchor_source="calendar",
+                anchor_source=_anchor_for(timing, anchor_source),
             )
         except ValidationError:
             reason = "jointly inconsistent"
@@ -420,6 +488,7 @@ def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
             _FALLBACK_TYPE.value,
         )
 
+    fallback_timing = _fallback_timing(event)
     return Block(
         uid=uid,
         h=handle,
@@ -427,8 +496,8 @@ def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
         n=event.summary,
         d=event.description,
         t=_FALLBACK_TYPE,
-        p=_fallback_timing(event),
-        anchor_source="calendar",
+        p=fallback_timing,
+        anchor_source=_anchor_for(fallback_timing, anchor_source),
     )
 
 
@@ -443,13 +512,18 @@ def _event_unchanged(existing: CalendarEvent, candidate: CalendarEvent) -> bool:
     not be re-``update``d just because some *other* block in the same
     commit changed.
 
-    ``block_type``/``timing_mode`` matter here for the same reason the
-    identity fields do: a patch that only relaxes ``fs`` to ``ap``, or
-    only retypes ``M`` to ``DW``, changes neither the resolved time nor
-    any other currently-compared field, so without these two in the
+    ``block_type``/``timing_mode``/``anchor_source`` matter here for the
+    same reason the identity fields do: a patch that only relaxes ``fs``
+    to ``ap``, only retypes ``M`` to ``DW``, or only re-sources a pin from
+    ``constraint`` to ``user``, changes neither the resolved time nor any
+    other currently-compared field, so without these three in the
     comparison that edit would be (wrongly) treated as a no-op and never
     actually reach the calendar — silently reintroducing the exact
-    round-trip loss this comparison exists to close.
+    round-trip loss this comparison exists to close. Re-sourcing is the
+    one sanctioned way to hand a constraint-held boundary back to the user
+    (see ``ops._boundary_relaxation_errors``); a re-source that never
+    reached the calendar would make that handover a no-op and leave the
+    block un-relaxable forever.
     """
     return (
         existing.summary == candidate.summary
@@ -461,6 +535,7 @@ def _event_unchanged(existing: CalendarEvent, candidate: CalendarEvent) -> bool:
         and existing.slug == candidate.slug
         and existing.block_type == candidate.block_type
         and existing.timing_mode == candidate.timing_mode
+        and existing.anchor_source == candidate.anchor_source
     )
 
 
@@ -783,12 +858,15 @@ class PlanService:
         and a change notification for every event on the day, on every
         commit.
 
-        ``block_type``/``timing_mode`` are set from the resolved block's
-        own ``t``/``p.a`` on every write — a real provider round-trips
-        these through extended properties (see ``gcal.py``) so a later
-        read can reconstruct the actual ``Timing`` variant via
-        ``_event_to_block`` instead of always seeing a plain fixed
-        window.
+        ``block_type``/``timing_mode``/``anchor_source`` are set from the
+        block's own ``t``/``p.a``/``anchor_source`` on every write (the
+        last via ``_stored_anchor_source``, which elides the read-side
+        default) — a
+        real provider round-trips these through extended properties (see
+        ``gcal.py``) so a later read can reconstruct the actual ``Timing``
+        variant, and the reason the block is pinned, via
+        ``_event_to_block`` instead of always seeing a plain fixed window
+        pinned for no stated reason.
         """
         resolved = {row.h: row for row in plan.resolve(check_overlap=False)}
         existing_by_id = {event.event_id: event for event in existing}
@@ -813,6 +891,7 @@ class PlanService:
                 slug=block.slug,
                 block_type=block.t.value,
                 timing_mode=block.p.a,
+                anchor_source=_stored_anchor_source(block),
             )
             existing_event = existing_by_id.get(event_id)
             if existing_event is None:

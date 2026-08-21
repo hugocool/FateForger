@@ -41,13 +41,20 @@ class CalendarEvent(BaseModel):
     representation itself before handing an event back.
 
     ``uid``, ``handle`` and ``slug`` live in provider extended properties.
-    So do ``block_type``/``timing_mode`` — the raw, unvalidated strings a
-    provider round-trips verbatim (e.g. ``block_type="DW"``,
-    ``timing_mode="ap"``); reconstructing them into a real ``ET``/
-    ``Timing`` object, and deciding what to do when they're absent or
+    So do ``block_type``/``timing_mode``/``anchor_source`` — the raw,
+    unvalidated strings a provider round-trips verbatim (e.g.
+    ``block_type="DW"``, ``timing_mode="ap"``, ``anchor_source=
+    "constraint"``); reconstructing them into a real ``ET``/``Timing``/
+    ``AnchorSource`` value, and deciding what to do when they're absent or
     unparseable, is domain logic that lives in
     ``service._event_to_block`` — this model only carries the wire value
     through, exactly as it already does for identity.
+
+    ``anchor_source`` is carried for the same reason the other two are:
+    without it every block reads back pinned-for-no-stated-reason, and a
+    pin a constraint is holding becomes indistinguishable from one added
+    for convenience. That is not cosmetic — ``commitment.overspecified``
+    and ``ops.validate_patch`` both key on it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -63,6 +70,7 @@ class CalendarEvent(BaseModel):
     slug: str | None = None
     block_type: str | None = None
     timing_mode: str | None = None
+    anchor_source: str | None = None
 
 
 class Snapshot(BaseModel):

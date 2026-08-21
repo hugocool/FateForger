@@ -976,3 +976,113 @@ async def test_undo_restores_a_violating_state_without_refusing(service):
 
     live = {e.handle: e for e in await service.calendar.list_day("primary", DAY, TZ)}
     assert live["DW1"].start == datetime(2026, 8, 17, 9, 30)  # the overlap is back
+
+
+# ---------------------------------------------------------------------------
+# anchor_source must survive commit -> re-read. Without it the field is
+# rewritten to "calendar" on every read, so a constraint-backed pin is
+# indistinguishable from any other pin the moment it lands on the calendar
+# — and both halves of the constraint-pin fix are inert in the only path
+# that matters. Same defect shape, one field over, as the block_type/
+# timing_mode round trip above.
+# ---------------------------------------------------------------------------
+
+
+async def test_anchor_source_round_trips_through_commit_and_reread(empty_service):
+    svc = empty_service
+
+    async def _add(after, h, n, p, anchor_source):
+        _, snapshot = await svc.read("primary", DAY)
+        result = await svc.commit(
+            snapshot,
+            Patch(ops=[AddBlock(after=after, h=h, n=n, t=ET.R, p=p,
+                                anchor_source=anchor_source)]),
+        )
+        assert result.committed
+
+    await _add(None, "GYM1", "Gym",
+               FixedStart(st=time(18, 30), dur=timedelta(hours=1)), "user")
+    await _add("GYM1", "WIND1", "Wind down",
+               AfterPrev(dur=timedelta(hours=2, minutes=30)), None)
+    await _add("WIND1", "BED1", "Bedtime",
+               FixedWindow(st=time(22, 0), et=time(23, 0)), "constraint")
+
+    plan, _snapshot = await svc.read("primary", DAY)
+    by_handle = {b.h: b for b in plan.blocks}
+    assert by_handle["GYM1"].anchor_source == "user"
+    assert by_handle["BED1"].anchor_source == "constraint"
+
+
+async def test_a_foreign_event_still_reads_back_as_calendar_sourced(tmp_path):
+    """A foreign event carries no tmbx extended properties at all, so there
+    is no source to read — and "calendar" is the honest answer for one: its
+    time is an observed fact tmbx neither chose nor may change."""
+    calendar = FakeCalendar({"primary": [_foreign_event("e3", 13, 14)]})
+    store = JournalStore(await init_journal(tmp_path / "j.db"))
+    svc = PlanService(calendar, store)
+    plan, _snapshot = await svc.read("primary", DAY)
+    assert plan.blocks[0].anchor_source == "calendar"
+
+
+async def test_an_event_written_before_this_round_trip_reads_back_as_calendar(service):
+    """``_event`` writes no anchor_source, standing in for every event
+    already on a real calendar. Missing provenance must default to
+    "calendar", never to a guess and never to None (which ``Block`` would
+    reject outright for fixed timing)."""
+    plan, _snapshot = await service.read("primary", DAY)
+    assert all(b.anchor_source == "calendar" for b in plan.blocks)
+
+
+async def test_changing_only_the_anchor_source_still_reaches_the_calendar(empty_service):
+    """An op that re-sources a pin without moving it changes no time and no
+    other compared field. If ``_event_unchanged`` ignored anchor_source the
+    write would be skipped as a no-op and the provenance would silently
+    revert on the next read — reintroducing exactly the loss this round
+    trip closes."""
+    svc = empty_service
+    _, snapshot = await svc.read("primary", DAY)
+    assert (
+        await svc.commit(
+            snapshot,
+            Patch(ops=[AddBlock(after=None, h="BED1", n="Bedtime", t=ET.R,
+                                p=FixedWindow(st=time(22, 0), et=time(23, 0)),
+                                anchor_source="constraint")]),
+        )
+    ).committed
+
+    _, snapshot = await svc.read("primary", DAY)
+    assert (
+        await svc.commit(
+            snapshot,
+            Patch(ops=[UpdateBlock(h="BED1", anchor_source="user",
+                                   why="user said tonight is a late one")]),
+        )
+    ).committed
+
+    plan, _snapshot = await svc.read("primary", DAY)
+    assert plan.by_handle("BED1").anchor_source == "user"
+
+
+async def test_the_calendar_default_anchor_source_is_never_persisted(empty_service):
+    """``"calendar"`` is the read-side default for an event with no
+    recorded provenance, so storing it would persist "nothing is known" as
+    a value — and would make the first commit after this field shipped
+    rewrite every pre-existing event on the day to record nothing. Elided
+    on write, re-derived on read: the round trip stays lossless.
+    """
+    svc = empty_service
+    _, snapshot = await svc.read("primary", DAY)
+    assert (
+        await svc.commit(
+            snapshot,
+            Patch(ops=[AddBlock(after=None, h="MTG1", n="Standup", t=ET.M,
+                                p=FixedWindow(st=time(9, 0), et=time(9, 15)),
+                                anchor_source="calendar")]),
+        )
+    ).committed
+
+    stored = await svc.calendar.list_day("primary", DAY, TZ)
+    assert stored[0].anchor_source is None
+
+    plan, _snapshot = await svc.read("primary", DAY)
+    assert plan.by_handle("MTG1").anchor_source == "calendar"
