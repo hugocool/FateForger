@@ -214,6 +214,45 @@ whole, by what dominates it.
 Return {"day_type": "<one of the above>", "rationale": "<one short sentence>"}."""
 
 
+def _first_json_object(content: str) -> dict[str, Any] | None:
+    """The first complete JSON object in a reply, whatever surrounds it.
+
+    Neither transport guarantees an airtight envelope, and they fail
+    differently. OpenRouter accepts `response_format: {"type": "json_object"}`
+    and returns bare JSON; a real run there still saw a correct object
+    followed by one stray apostrophe, which strict parsing turned into 400
+    dead calls.
+
+    MCP sampling has no equivalent field — the protocol offers no way to
+    constrain output format at all — so models fence their answers. Gemini and
+    Claude both do; of four models measured over that path only one returned
+    bare JSON. So this is not noise to be tolerated but a weaker contract to
+    be parsed, and the difference is why it belongs here rather than in a
+    transport: a host stripping fences on our behalf would hide a protocol
+    difference and leave this parser working only under that host.
+
+    Scanning for `{` is not the banned kind of matching. It looks for where a
+    JSON value begins in an envelope this system asked for — wire syntax, not
+    a judgement about anything the user said. Every candidate position is
+    tried in turn, so a preamble containing a brace costs an attempt rather
+    than the answer.
+    """
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(content):
+        if character != "{":
+            continue
+        try:
+            payload, _end = decoder.raw_decode(content[index:])
+        except json.JSONDecodeError:
+            continue
+        # No isinstance check: the loop only attempts positions starting with
+        # "{", and raw_decode there yields an object or raises. An earlier
+        # draft guarded for it and no mutation could tell the guard apart from
+        # its absence.
+        return payload
+    return None
+
+
 class PromptJudge(ABC):
     """The seven questions, asked identically no matter who answers them.
 
@@ -234,21 +273,8 @@ class PromptJudge(ABC):
 
     async def _ask(self, system: str, user: str) -> dict[str, Any]:
         content = await self.complete(system, user)
-        try:
-            # raw_decode takes the first complete JSON value and tells us where
-            # it ended. Neither transport guarantees an airtight envelope: a
-            # real OpenRouter run saw a correct object followed by one stray
-            # apostrophe, and strict parsing killed 400 calls over it. A host
-            # sampling on our behalf is looser still — it may not support a
-            # JSON response format at all, so a fenced code block or a
-            # sentence of preamble is a live possibility. A complete object at
-            # the start is unambiguous; trailing junk cannot change its
-            # meaning. If no valid JSON starts the reply we still raise: this
-            # tolerates noise around the answer, never a missing answer.
-            payload, _end = json.JSONDecoder().raw_decode(content.strip())
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"could not parse judge response: {content!r}") from exc
-        if not isinstance(payload, dict):
+        payload = _first_json_object(content)
+        if payload is None:
             raise ValueError(f"could not parse judge response: {content!r}")
         return payload
 

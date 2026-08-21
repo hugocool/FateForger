@@ -197,14 +197,27 @@ async def test_a_declined_request_propagates(tmp_path):
         )
 
 
-async def test_a_reply_that_is_not_json_names_what_came_back():
-    """A host cannot be asked for JSON mode, so a fenced reply is possible.
+async def test_a_fenced_reply_is_read_rather_than_rejected():
+    """This asserted a raise, and the reasoning was sound at the time:
+    *guessing at an unobserved failure is how silent wrongness gets in.*
 
-    Nothing here tries to unwrap a fence: guessing at an unobserved failure
-    is how silent wrongness gets in. It raises, carrying the raw reply, so
-    the first host that does this is diagnosed in one look.
+    The failure is no longer unobserved. Proving MCP sampling against the real
+    server, three runs sampled correctly and failed anyway — the protocol has
+    no `response_format`, so models fence. Measured across four models, only
+    `openai/gpt-5-mini` returned bare JSON for both prompts.
+
+    Parsed here rather than stripped by the host on purpose. A host removing
+    fences on the server's behalf would hide a protocol difference and leave
+    this parser working only under that host.
     """
     judge = SamplingJudge(RecordingSampler("```json\n{\"is_meta\": false}\n```"))
+    result = await judge.meta(_obs("anything"))
+    assert result.is_meta is False
+
+
+async def test_a_reply_with_no_object_names_what_came_back():
+    """Tolerating an envelope must never become tolerating a missing answer."""
+    judge = SamplingJudge(RecordingSampler("I would rather not say."))
     with pytest.raises(ValueError, match="could not parse judge response"):
         await judge.meta(_obs("anything"))
 

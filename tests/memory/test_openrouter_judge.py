@@ -149,13 +149,33 @@ async def test_trailing_junk_after_a_complete_object_is_tolerated():
     assert result.anchors == ["gym"]
 
 
-async def test_leading_junk_still_fails_loudly():
+async def test_leading_prose_no_longer_fails():
+    """Contract change, on evidence rather than preference.
+
+    This asserted a raise while the only transport could force
+    `response_format: json_object`. MCP sampling has no such field, and of
+    four models measured over that path only one returned bare JSON — so
+    leading prose is what several models actually do, not a malformed reply.
+
+    Tolerating noise around an answer is still not tolerating a missing one:
+    the test below keeps that half.
+    """
+    judge = OpenRouterJudge(
+        api_key="k",
+        base_url="https://example.invalid",
+        client=_mock_raw('I think: {"anchors": ["gym"]}'),
+    )
+    result = await judge.anchors(_obs("gym at 18:00"))
+    assert result.anchors == ["gym"]
+
+
+async def test_a_reply_with_no_object_still_fails_loudly():
     import pytest
 
     judge = OpenRouterJudge(
         api_key="k",
         base_url="https://example.invalid",
-        client=_mock_raw('I think: {"anchors": ["gym"]}'),
+        client=_mock_raw("I would rather not say."),
     )
     with pytest.raises(ValueError, match="could not parse"):
         await judge.anchors(_obs("gym at 18:00"))
