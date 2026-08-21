@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 from datetime import date
 
 from pydantic import BaseModel, Field
@@ -32,6 +33,33 @@ class IngestResult(BaseModel):
     decay_class: DecayClass = DecayClass.PERMANENT
 
 
+# One lock per (store, session), weak-keyed so a collected store does not leak
+# its locks. Same shape and same reason as projection's and anchoring's: the
+# span below reads the session's observations, asks a model whether this
+# restates one of them, and appends — so two statements arriving concurrently
+# on one session each see a candidate list without the other, and dedup misses
+# a restatement it would have caught sequentially.
+#
+# Measured: two concurrent identical observes produced two observations where
+# two sequential ones produced one. L1 is append-only, so that duplicate is
+# permanent, and evidence is what promotion and decay count — the same harm as
+# #168, arriving by concurrency rather than by retry. write_uid cannot help
+# here, because two genuinely concurrent statements carry different write ids.
+#
+# Keyed per session rather than per store on purpose: a host running several
+# conversations must not serialise them against each other.
+_SESSION_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _lock_for(store: ObservationStore, session_id: str) -> asyncio.Lock:
+    locks = _SESSION_LOCKS.setdefault(store, {})
+    lock = locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[session_id] = lock
+    return lock
+
+
 async def ingest(
     observation: Observation, judge: Judge, store: ObservationStore
 ) -> IngestResult:
@@ -46,9 +74,25 @@ async def ingest(
         # it costs no LLM call.
         return IngestResult(stored=False, suppressed_as="generated")
 
-    recent = (
-        store.by_session(observation.session_id) if observation.session_id else []
-    )
+    if observation.session_id is None:
+        # Nothing to be stale against: dedup only ever compares within a
+        # session, so an unscoped observation needs no lock and takes none.
+        return await _ingest(observation, judge, store, recent=[])
+
+    async with _lock_for(store, observation.session_id):
+        return await _ingest(
+            observation, judge, store, recent=store.by_session(observation.session_id)
+        )
+
+
+async def _ingest(
+    observation: Observation,
+    judge: Judge,
+    store: ObservationStore,
+    *,
+    recent: list[Observation],
+) -> IngestResult:
+    """The judged span. Callers hold the session lock around this."""
     # return_exceptions=True so a failing judgement cannot orphan its four
     # siblings: with the default, gather propagates the first exception but
     # leaves the others running, discarding their results and errors. We
