@@ -1081,6 +1081,20 @@ class TimeboxingFlowAgent(RoutedAgent):
                     self._constraint_memory_client = ConstraintMemoryClient(
                         timeout=timeout
                     )
+                case "memory_kg":
+                    # The store the standalone memory server owns -- the same
+                    # corpus /dsh reads. Read-only by design: a constraint there
+                    # is projected from the observation log, so writes go
+                    # through memory_observe rather than straight into L2.
+                    from .kg_constraint_client import KGConstraintMemoryClient
+
+                    configured = str(
+                        getattr(settings, "memory_db_path", "") or ""
+                    ).strip()
+                    self._constraint_memory_client = KGConstraintMemoryClient(
+                        configured
+                        or str(Path(__file__).resolve().parents[3] / "data" / "memory.db")
+                    )
                 case "graphiti":
                     user_id = (
                         str(getattr(settings, "graphiti_user_id", "") or "").strip()

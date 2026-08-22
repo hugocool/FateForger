@@ -194,6 +194,9 @@ class Settings(BaseSettings):
         default="constraint_mcp"
     )
     tasks_defaults_memory_backend: str = Field(default="constraint_mcp")
+    #: Absolute path to the standalone memory server's sqlite store, used by the
+    #: "memory_kg" backend. Empty means "use the repo's data/memory.db".
+    memory_db_path: str = Field(default="")
 
     # Graphiti Memory Configuration
     graphiti_user_id: str = Field(default="timeboxing")
@@ -268,21 +271,28 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_timeboxing_memory_backend(cls, value: str) -> str:
         backend = (value or "").strip().lower()
-        if backend in {"constraint_mcp", "graphiti"}:
+        if backend in {"constraint_mcp", "graphiti", "memory_kg"}:
             return backend
         raise ValueError(
-            "TIMEBOXING_MEMORY_BACKEND must be one of: constraint_mcp, graphiti"
+            "TIMEBOXING_MEMORY_BACKEND must be one of: "
+            "constraint_mcp, graphiti, memory_kg"
         )
 
     @field_validator("tasks_defaults_memory_backend")
     @classmethod
     def _validate_tasks_defaults_memory_backend(cls, value: str) -> str:
         backend = (value or "").strip().lower()
-        if backend in {"constraint_mcp", "graphiti", "disabled", "inherit_timeboxing"}:
+        if backend in {
+            "constraint_mcp",
+            "graphiti",
+            "memory_kg",
+            "disabled",
+            "inherit_timeboxing",
+        }:
             return backend
         raise ValueError(
             "TASKS_DEFAULTS_MEMORY_BACKEND must be one of: "
-            "constraint_mcp, graphiti, disabled, inherit_timeboxing"
+            "constraint_mcp, graphiti, memory_kg, disabled, inherit_timeboxing"
         )
 
     @field_validator("autogen_events_log")
