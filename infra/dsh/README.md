@@ -36,3 +36,27 @@ ln -sfn $DSH/packages/hooks/hook-protocol   ~/.dsh/profiles/node_modules/@deepse
 The bridge itself contains a read failure: a bad `configPath` logs a warning and
 registers nothing rather than crashing boot. It is only the *plugin* being
 unresolvable that is fatal, which is why this file exists.
+
+## The profile's policy file is versioned here
+
+`profile/memory-policy.md` is the copy of record. The harness reads
+`~/.dsh/profiles/tmbx/memory-policy.md`, which is outside any repo — the same
+shape as the CLAUDE.md that lived untracked on one machine and was invisible to
+every clone and every CI run.
+
+Deploy with:
+
+```sh
+cp infra/dsh/profile/memory-policy.md ~/.dsh/profiles/tmbx/memory-policy.md
+```
+
+It carries two things neither MCP server states: when to read constraints and
+why `day_type` is not optional, and the stage sequence plus the rule that every
+block is attributed to what Hugo said, what memory holds, or what was assumed.
+
+That attribution is instruction, not machinery, so it can quietly stop
+happening. Measured against `google/gemini-3.6-flash` at 6 draws on a planted
+case: 6/6 marked assumptions, 6/6 attributed to memory, 6/6 quoted the user,
+and **5/6 stayed inside the stage they were asked for** — one draw reached for
+`plan_apply` during the skeleton. Instruction does not hold a stage boundary;
+a `PreToolUse` deny does.
