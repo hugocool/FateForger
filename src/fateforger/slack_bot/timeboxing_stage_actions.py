@@ -166,6 +166,7 @@ class TimeboxingStageActionCoordinator:
             meta=meta,
             message=msg,
             failure_text="Stage action failed. Please try again.",
+            action=action,
         )
 
     async def _dispatch_to_timeboxing(
@@ -175,6 +176,7 @@ class TimeboxingStageActionCoordinator:
         meta: TimeboxingStageActionMeta,
         message: TimeboxingStageAction,
         failure_text: str,
+        action: str = "stage action",
     ) -> None:
         """Send stage-control message to runtime and update Slack in-place."""
         thread_key = f"{meta.channel_id}:{meta.thread_ts}"
@@ -192,14 +194,55 @@ class TimeboxingStageActionCoordinator:
             )
             return
         response_payload = _slack_payload_from_result(result)
-        update: dict[str, Any] = {
-            "channel": payload.prompt_channel_id,
-            "ts": payload.prompt_ts,
-            "text": response_payload.get("text", "") or "",
-        }
-        if response_payload.get("blocks"):
-            update["blocks"] = response_payload["blocks"]
-        await self._client.chat_update(**update)
+
+        # Post the stage result as a NEW message rather than rewriting the one
+        # the button sits on. That message accumulated the whole stage -- day
+        # overview, constraint list, expanded bodies, buttons -- and every
+        # subsequent stage rewrote the lot, so it grew until chat.update
+        # returned msg_too_long and the session went silent with no channel
+        # left to say why. The repair is not fewer edits but never re-editing
+        # the part that accumulates: artifacts need to *arrive*, not to be
+        # rewritten.
+        #
+        # Nothing needs rebinding for this. A stage button carries its session
+        # identity in its own `value` (channel, thread, user), so the controls
+        # do not depend on sharing a message with the artifacts, and
+        # `prompt_ts` only ever meant "wherever the button was".
+        posted = await self._client.chat_postMessage(
+            channel=payload.prompt_channel_id,
+            thread_ts=meta.thread_ts or None,
+            text=response_payload.get("text", "") or "",
+            **(
+                {"blocks": response_payload["blocks"]}
+                if response_payload.get("blocks")
+                else {}
+            ),
+        )
+
+        # The button's own message becomes a short, bounded receipt. It is the
+        # one message still being edited, so it must stay small enough that the
+        # edit cannot fail -- it is also the only place a failure can be
+        # reported once the artifacts have moved out.
+        await self._client.chat_update(
+            channel=payload.prompt_channel_id,
+            ts=payload.prompt_ts,
+            text=_stage_action_receipt_text(action),
+            blocks=[build_text_section_block(text=_stage_action_receipt_text(action))],
+        )
+        return posted
+
+
+def _stage_action_receipt_text(action: str) -> str:
+    """What the button's message says once its result has been posted below.
+
+    Deliberately fixed-size, and named after the action rather than the stage:
+    the button's metadata carries channel, thread and user, not which stage it
+    belongs to, and inventing a stage name here would be a guess rendered as
+    fact. This is the only message still edited after decomposition, so
+    anything that grows with the plan reintroduces the failure the split
+    exists to remove.
+    """
+    return f":white_check_mark: {action} — result posted below."
 
 
 def _slack_payload_from_result(result: Any) -> dict[str, Any]:
