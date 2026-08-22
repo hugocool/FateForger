@@ -4551,6 +4551,13 @@ class TimeboxingFlowAgent(RoutedAgent):
         previous_timebox = (
             session.timebox.model_copy(deep=True) if session.timebox is not None else None
         )
+        # Cleared before the pass, not after. It is written only inside the
+        # selector, so a Stage 4 render that happens before or without a
+        # patcher call reported the *previous* pass's number as this one's --
+        # which is how a stale 0 came to look like a filter dropping every
+        # constraint, and sent two of us after a narrowing step that does not
+        # exist.
+        session.last_refine_selected_constraints_count = 0
         constraints = await self._collect_constraints(session)
         patch_constraints = self._select_constraints_for_refine_patcher(
             session=session,
@@ -6857,11 +6864,41 @@ class TimeboxingFlowAgent(RoutedAgent):
     def _filter_local_constraints_for_relevance(
         self, *, session: Session, constraints: list[Constraint]
     ) -> list[Constraint]:
-        """Keep local constraints relevant to this stage/day to avoid mirror overflow."""
+        """Keep local constraints that apply on the planned day.
+
+        Filtering is by *applicability* only: a constraint the user declined,
+        or one scoped to days that are not this one, does not apply. Nothing
+        else is dropped here.
+
+        This used to also require a PROFILE-scoped constraint to carry at
+        least one of five incidental fields -- an aspect classification, a
+        frame slot, LOCKED status, a startup-prefetch tag, or a date window --
+        and silently discarded it otherwise. That is a proxy for importance
+        that has nothing to do with importance: it dropped a MUST the user
+        stated plainly because the row lacked a classification blob, while
+        keeping a lesser rule that happened to have one.
+
+        It was also a *second* bound on the same overflow that
+        `_select_constraints_for_refine_patcher` already handles -- and that
+        one is principled, ranking by necessity and status and keeping the top
+        `refine_patcher_constraint_limit`. Two bounds, the outer one cruder
+        than the inner, and the outer one running first.
+
+        The trap it set: constraints derived by the memory server carry none of
+        those four non-date fields. `status` is hardcoded PROPOSED so LOCKED is
+        unreachable, there are no `hints`, and `frame_slot` is null on 94% of
+        rows. Measured on the legacy store 66 of 97 PROFILE constraints
+        survived this gate, saved by exactly the fields the new store does not
+        populate -- so as the corpus moved across, an increasing share of the
+        user's own rules vanished before any model saw them, with nothing
+        raised and nothing logged.
+        """
         if not constraints:
             return []
         planned_day = self._parse_session_planned_day(session)
         out: list[Constraint] = []
+        declined = 0
+        wrong_day = 0
         for constraint in constraints:
             if constraint.scope not in (
                 ConstraintScope.PROFILE,
@@ -6870,28 +6907,25 @@ class TimeboxingFlowAgent(RoutedAgent):
                 out.append(constraint)
                 continue
             if constraint.status == ConstraintStatus.DECLINED:
+                declined += 1
                 continue
             if not self._constraint_matches_planned_day(constraint, planned_day):
+                wrong_day += 1
                 continue
-            hints = constraint.hints if isinstance(constraint.hints, dict) else {}
-            tags = {
-                str(tag).strip().lower()
-                for tag in (constraint.tags or [])
-                if str(tag).strip()
-            }
-            classification = ConstraintAspectClassification.from_hints(hints)
-            has_temporal_window = bool(
-                constraint.start_date or constraint.end_date or (constraint.days_of_week or [])
+            out.append(constraint)
+        if declined or wrong_day:
+            # Say what was dropped. Every constraint that disappears here is one
+            # the user stated and will not see honoured, and the previous
+            # version of this filter discarded rows without a word.
+            self._session_debug(
+                session,
+                "local_constraints_filtered",
+                received=len(constraints),
+                kept=len(out),
+                dropped_declined=declined,
+                dropped_wrong_day=wrong_day,
+                planned_day=str(planned_day) if planned_day else None,
             )
-            is_structured = bool(classification is not None)
-            is_startup_prefetch = bool(
-                STARTUP_PREFETCH_TAG in tags
-                or (classification.is_startup_prefetch if classification else False)
-            )
-            is_frame_anchor = bool(classification and classification.frame_slot)
-            is_locked = constraint.status == ConstraintStatus.LOCKED
-            if is_startup_prefetch or is_frame_anchor or is_locked or is_structured or has_temporal_window:
-                out.append(constraint)
         return out
 
     def _select_constraints_for_refine_patcher(
