@@ -730,6 +730,7 @@ async def _handle_dsh_command(*, body, client, logger) -> None:
     a planner that declined to act must not look the same in the thread.
     """
     from .harness_bridge import HarnessError, ask
+    from .progress import ProgressChannel
 
     channel = body.get("channel_id")
     text = (body.get("text") or "").strip()
@@ -740,10 +741,27 @@ async def _handle_dsh_command(*, body, client, logger) -> None:
     posted = await client.chat_postMessage(channel=channel, text=f"*{text}*\n_asking the harness…_")
     thread_ts = posted["ts"]
 
+    progress = ProgressChannel(client, channel=channel, thread_ts=thread_ts)
+    loop = asyncio.get_running_loop()
+
+    def on_tool_call(step: str) -> None:
+        """Forward one completed tool call from the tailing thread to Slack.
+
+        Called off the event loop, so the coroutine is scheduled rather than
+        awaited. The future is deliberately dropped: `ProgressChannel` already
+        swallows its own Slack errors, and blocking the tailing thread on a
+        Slack round-trip would delay every step behind it.
+        """
+        asyncio.run_coroutine_threadsafe(progress.done(step), loop)
+
     try:
-        reply = await asyncio.to_thread(ask, text)
+        reply = await asyncio.to_thread(ask, text, on_event=on_tool_call)
     except HarnessError as exc:
         logger.warning("dsh: harness failed: %s", exc)
+        # Into the checklist, not just the log. It is the one message small
+        # enough that Slack is still willing to edit it when something larger
+        # has just failed.
+        await progress.fail("harness", str(exc))
         await client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
@@ -751,8 +769,16 @@ async def _handle_dsh_command(*, body, client, logger) -> None:
         )
         return
 
+    await progress.close()
+    # The answer is an artifact: posted once, never re-edited. Rewriting it on
+    # every update is what grew a message past Slack's limit elsewhere.
     await client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=reply.text[:3000])
-    await client.chat_update(channel=channel, ts=thread_ts, text=f"*{text}*\n_answered by `{reply.profile}`_")
+    elapsed = (reply.timings or {}).get("elapsed_s")
+    calls = (reply.timings or {}).get("tool_calls")
+    summary = f"_answered by `{reply.profile}`_"
+    if elapsed is not None:
+        summary += f" _· {elapsed}s · {calls} tool calls_"
+    await client.chat_update(channel=channel, ts=thread_ts, text=f"*{text}*\n{summary}")
 
 
 async def _handle_timebox_command(

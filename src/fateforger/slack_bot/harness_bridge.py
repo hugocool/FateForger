@@ -23,11 +23,19 @@ as context.
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
+import tempfile
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from .dsh_progress_hook import PROGRESS_FILE_ENV
+
+logger = logging.getLogger(__name__)
 
 _DSH_HOME = Path(os.environ.get("DSH_HOME", Path.home() / ".dsh"))
 _REPO = Path(os.environ.get("DSH_REPO", Path.home() / "VScode-projects/deepseek-harness"))
@@ -113,138 +121,130 @@ def compose_task(text: str, *, history: list[tuple[str, str]] | None = None) -> 
     return f"Earlier in this thread:\n{prior}\n\nHugo now says:\n{text}"
 
 
+#: How often the progress file is checked while a turn runs. Half a second is
+#: below the threshold where a person reads a checklist as frozen, and the cost
+#: is one `stat` on a local file.
+_POLL_INTERVAL_S = float(os.environ.get("DSH_PROGRESS_POLL_SECONDS", "0.5"))
+
+
+def _tail_progress(
+    path: Path,
+    on_event: Callable[[str], None],
+    stop: threading.Event,
+) -> int:
+    """Report each line the hook appends, until stopped and drained.
+
+    A polling thread rather than the subprocess's own output, because that
+    stream stays silent until the answer arrives -- the whole point is to say
+    something while the run is still going. It also survives the servers moving
+    between stdio and ``streamable-http``, which is what killed the two earlier
+    approaches.
+
+    Returns the number of steps seen, which is the run's completed tool calls.
+    """
+    offset = 0
+    seen = 0
+    while True:
+        finished = stop.is_set()
+        try:
+            with path.open("rb") as handle:
+                handle.seek(offset)
+                chunk = handle.read()
+        except OSError:
+            chunk = b""
+        # Consume only up to the last newline. Many hook processes append
+        # concurrently, so a read can land mid-write; holding the fragment back
+        # until its newline arrives is what stops a tool name being reported in
+        # two halves.
+        consumed = chunk.rfind(b"\n") + 1
+        if consumed:
+            offset += consumed
+            for line in chunk[:consumed].decode("utf-8", "replace").splitlines():
+                step = line.strip()
+                if not step:
+                    continue
+                seen += 1
+                try:
+                    on_event(step)
+                except Exception as exc:  # noqa: BLE001 - see below
+                    # A failing progress consumer must not take down the turn
+                    # it is describing. Same rule ProgressChannel follows, for
+                    # the same reason.
+                    logger.warning("progress consumer raised: %s: %s", type(exc).__name__, exc)
+        if finished:
+            return seen
+        stop.wait(_POLL_INTERVAL_S)
+
+
 def ask(
     text: str,
     *,
     history: list[tuple[str, str]] | None = None,
     profile: str = _PROFILE,
     env: dict[str, str] | None = None,
+    on_event: Callable[[str], None] | None = None,
 ) -> HarnessReply:
-    """Run one Slack turn through the harness and return what it said."""
+    """Run one Slack turn through the harness and return what it said.
+
+    With ``on_event``, each completed tool call is reported as it happens: the
+    profile's ``PostToolUse`` hook appends the tool's name to a per-run file and
+    a polling thread forwards it. Without it, nothing is set and the hook is a
+    no-op, so a headless run costs nothing for a feature it is not using.
+    """
     child_env = {
         **os.environ,
         **_repo_env(),
         "DSH_HOME": str(_DSH_HOME),
         **(env or {}),
     }
-    try:
-        done = subprocess.run(
-            _cli_args(compose_task(text, history=history), profile),
-            capture_output=True,
-            text=True,
-            timeout=_TIMEOUT_S,
-            cwd=str(_REPO),
-            env=child_env,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise HarnessError(f"harness exceeded {_TIMEOUT_S:.0f}s") from exc
+    started = time.monotonic()
+    steps = 0
+
+    with tempfile.TemporaryDirectory(prefix="dsh-progress-") as workspace:
+        progress = Path(workspace) / "steps"
+        progress.touch()
+        stop = threading.Event()
+        tail: threading.Thread | None = None
+        collected: list[int] = []
+
+        if on_event is not None:
+            child_env[PROGRESS_FILE_ENV] = str(progress)
+            tail = threading.Thread(
+                target=lambda: collected.append(_tail_progress(progress, on_event, stop)),
+                daemon=True,
+            )
+            tail.start()
+
+        try:
+            done = subprocess.run(
+                _cli_args(compose_task(text, history=history), profile),
+                capture_output=True,
+                text=True,
+                timeout=_TIMEOUT_S,
+                cwd=str(_REPO),
+                env=child_env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise HarnessError(f"harness exceeded {_TIMEOUT_S:.0f}s") from exc
+        finally:
+            # Set before joining so the thread makes one final pass and drains
+            # whatever landed between its last poll and the process exiting.
+            stop.set()
+            if tail is not None:
+                tail.join(timeout=_POLL_INTERVAL_S * 4)
+                steps = collected[0] if collected else 0
 
     if done.returncode != 0:
-        tail = (done.stderr or "").strip().splitlines()[-5:]
+        tail_lines = (done.stderr or "").strip().splitlines()[-5:]
         raise HarnessError(
-            f"harness exited {done.returncode}: " + " / ".join(tail)
+            f"harness exited {done.returncode}: " + " / ".join(tail_lines)
         )
 
     answer = (done.stdout or "").strip()
     if not answer:
         raise HarnessError("harness produced no output")
-    return HarnessReply(text=answer, profile=profile)
-
-
-#: Markers the harness and the MCP servers emit on their way to an answer.
-#: These are *our own* servers' log lines and the harness's own protocol
-#: chatter — system-minted strings, not user content — so recognising them is
-#: identifier matching, not a judgement about what anyone meant.
-_BOOTED = "memory-allowlist:"
-_TOOLS_READY = "ListToolsRequest"
-_TOOL_CALL = "CallToolRequest"
-
-#: Log lines our own MCP servers and their libraries write to the same stream
-#: the answer arrives on. Fixed strings emitted by code in this repo or its
-#: dependencies — never anything a person wrote.
-_CHATTER = (
-    "server.py:",
-    "Processing request of type",
-    "warnings.warn",
-    "IncompleteFieldDefinitionWarning",
-    "/site-packages/",
-)
-
-
-def _is_runtime_chatter(line: str) -> bool:
-    """True for log output rather than answer text.
-
-    stderr is merged into stdout so progress stays observable in order, which
-    means the answer and the servers' logging share one stream and have to be
-    told apart here.
-    """
-    return any(marker in line for marker in _CHATTER)
-
-
-def ask_streaming(
-    text: str,
-    *,
-    on_event: Callable[[str], None],
-    history: list[tuple[str, str]] | None = None,
-    profile: str = _PROFILE,
-) -> HarnessReply:
-    """Run a turn, reporting progress as it happens.
-
-    The CLI does not token-stream — the answer arrives in one block at the end
-    — so there is no partial text to forward. What *is* observable is the shape
-    of the run, and on a cold start that is most of the wall clock: roughly two
-    thirds of a turn is the Node runtime and two Python MCP servers booting
-    before a single token is generated.
-
-    So ``on_event`` reports phases, not prose. It turns a silent minute into
-    something a person can watch, which is the actual complaint.
-    """
-    proc = subprocess.Popen(
-        _cli_args(compose_task(text, history=history), profile),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        cwd=str(_REPO),
-        env={**os.environ, **_repo_env(), "DSH_HOME": str(_DSH_HOME)},
+    return HarnessReply(
+        text=answer,
+        profile=profile,
+        timings={"elapsed_s": round(time.monotonic() - started, 1), "tool_calls": steps},
     )
-
-    started = time.monotonic()
-    timings: dict[str, float] = {}
-    answer: list[str] = []
-    tool_calls = 0
-    announced: set[str] = set()
-
-    def mark(phase: str) -> None:
-        timings.setdefault(phase, round(time.monotonic() - started, 1))
-
-    def announce(key: str, message: str) -> None:
-        if key not in announced:
-            announced.add(key)
-            on_event(message)
-
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        if _BOOTED in line:
-            mark("boot")
-            announce("boot", "servers up")
-        elif _TOOLS_READY in line:
-            mark("tools_ready")
-            announce("tools", "tools ready")
-        elif _TOOL_CALL in line:
-            mark("first_tool_call")
-            tool_calls += 1
-            on_event(f"working — {tool_calls} tool call{'s' if tool_calls > 1 else ''}")
-        elif _is_runtime_chatter(line):
-            continue
-        else:
-            answer.append(line)
-
-    if proc.wait() != 0:
-        raise HarnessError(f"harness exited {proc.returncode}")
-    mark("answer")
-    timings["tool_calls"] = tool_calls
-    joined = "".join(answer).strip()
-    if not joined:
-        raise HarnessError("harness produced no output")
-    return HarnessReply(text=joined, profile=profile, timings=timings)
