@@ -273,12 +273,20 @@ async def test_suggest_next_slot_uses_mcp_datetime_shape_without_offset() -> Non
         None,
     )
     assert result.ok is True
-    assert len(workbench.calls) == 1
-    _, args = workbench.calls[0]
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", args["timeMin"])
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", args["timeMax"])
-    assert "+" not in args["timeMin"]
-    assert "Z" not in args["timeMin"]
+    # Every query, not the first of exactly one. The number of days probed
+    # depends on the wall clock: with work_end_hour=23, a 30-minute slot no
+    # longer fits after about 22:30, so the search spills into tomorrow and
+    # this asserted 1 == 2 every evening. The shape is what the test is named
+    # for; the call count was scaffolding that made it fail on the hour rather
+    # than on the behaviour.
+    assert workbench.calls
+    for _, args in workbench.calls:
+        for field in ("timeMin", "timeMax"):
+            assert re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", args[field]
+            )
+            assert "+" not in args[field]
+            assert "Z" not in args[field]
 
 
 @pytest.mark.asyncio
