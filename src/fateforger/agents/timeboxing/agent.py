@@ -321,6 +321,26 @@ class RefineQualityFacts(BaseModel):
     next_suggestion: str
 
 
+# How many consecutive Stage 4 passes may produce no plan change before the
+# session stops rather than trying again. Three because one is ordinary -- a day
+# that already satisfies its constraints legitimately needs no patch -- and two
+# in a row is plausible after a user's no-op instruction. Nine, which is what a
+# real session did, is a loop.
+_REFINE_NO_CHANGE_LIMIT = 3
+
+
+class RefineMadeNoProgress(RuntimeError):
+    """Stage 4 could not change the plan, repeatedly.
+
+    Raised rather than returned so it reaches the user. The failure it replaces
+    was silent: Refine re-entered, produced no patch, and left the constraint
+    list as the only thing to render -- so each pass appended another copy until
+    the message crossed Slack's size limit and `chat.update` began refusing.
+    At that point the error channel and the progress channel were the same
+    message, so the session went quiet with no way to say why.
+    """
+
+
 @dataclass
 class Session:
     """State container for an active timeboxing run."""
@@ -351,6 +371,11 @@ class Session:
     active_constraints_selected_count: int = 0
     last_extracted_constraints_count: int = 0
     last_refine_selected_constraints_count: int = 0
+    # Consecutive Stage 4 passes that produced no plan change. Refine re-entering
+    # with nothing to do is not progress, and left uncapped it renders the
+    # constraint list again on every pass -- which is what grew one message past
+    # Slack's limit and turned a live session into twelve minutes of silence.
+    consecutive_refine_no_change: int = 0
     durable_constraints_by_stage: Dict[str, List[Constraint]] = field(
         default_factory=dict
     )
@@ -4554,12 +4579,36 @@ class TimeboxingFlowAgent(RoutedAgent):
             mode="json"
         )
         if plan_changed:
+            session.consecutive_refine_no_change = 0
             session.last_refine_undo_tb_plan = previous_plan
             session.last_refine_undo_timebox = previous_timebox
             note = "Plan updated locally. Review Stage 5 and click Submit to sync to calendar."
         else:
+            session.consecutive_refine_no_change += 1
             session.last_refine_undo_tb_plan = None
             session.last_refine_undo_timebox = None
+            self._session_debug(
+                session,
+                "refine_no_change",
+                consecutive=session.consecutive_refine_no_change,
+                limit=_REFINE_NO_CHANGE_LIMIT,
+                constraints_in=len(constraints or []),
+                constraints_selected=len(patch_constraints or []),
+            )
+            if session.consecutive_refine_no_change >= _REFINE_NO_CHANGE_LIMIT:
+                # Advance-or-fail. A stage that cannot change anything has
+                # nothing to add by running again, and each pass re-renders the
+                # constraint list -- so the loop is not merely wasteful, it is
+                # what grows the message until Slack refuses the edit and the
+                # only error channel goes down with it. Raising converts a hang
+                # into something the user can see.
+                session.consecutive_refine_no_change = 0
+                raise RefineMadeNoProgress(
+                    f"Refine ran {_REFINE_NO_CHANGE_LIMIT} times without changing "
+                    f"the plan. It received {len(constraints or [])} constraints "
+                    f"and selected {len(patch_constraints or [])} for patching. "
+                    f"Stopping rather than re-rendering the same day again."
+                )
             note = "No local schedule changes were needed. Review Stage 5 and click Submit to sync."
         return CalendarSyncOutcome(
             status="staged",
