@@ -237,3 +237,52 @@ def test_a_failing_harness_still_raises_with_the_listener_attached(monkeypatch):
     monkeypatch.setattr(harness_bridge.subprocess, "run", lambda *a, **k: _Done())
     with pytest.raises(harness_bridge.HarnessError):
         harness_bridge.ask("plan tuesday", on_event=lambda step: None)
+
+
+# -- the commit gate's approval file --------------------------------------
+
+
+class _Ok:
+    returncode = 0
+    stdout = "done"
+    stderr = ""
+
+
+def _capture_env(monkeypatch) -> dict:
+    captured: dict = {}
+
+    def fake_run(args, **kwargs):
+        captured.update(kwargs["env"])
+        return _Ok()
+
+    monkeypatch.setattr(harness_bridge.subprocess, "run", fake_run)
+    return captured
+
+
+def test_the_gate_is_told_where_approval_will_be_written(tmp_path, monkeypatch):
+    env = _capture_env(monkeypatch)
+    target = tmp_path / "approval-token"
+    harness_bridge.ask("plan tuesday", approval_file=target)
+    assert env[harness_bridge.APPROVAL_FILE_ENV] == str(target.resolve())
+
+
+def test_the_path_reaches_the_hook_absolute(tmp_path, monkeypatch):
+    """The hook runs with the session workspace as its cwd.
+
+    A relative path would resolve somewhere neither side agreed on, which the
+    gate reads as "no approval" — denying a commit the user actually granted.
+    """
+    monkeypatch.chdir(tmp_path)
+    env = _capture_env(monkeypatch)
+    harness_bridge.ask("plan tuesday", approval_file="approval-token")
+    assert Path(env[harness_bridge.APPROVAL_FILE_ENV]).is_absolute()
+
+
+def test_without_an_approval_path_the_variable_is_absent(monkeypatch):
+    """Absence is not neutral — the gate denies without it, which is the safe
+    direction. What must not happen is this module inventing a path the Slack
+    button handler cannot find, leaving the gate looking configured while
+    denying everything."""
+    env = _capture_env(monkeypatch)
+    harness_bridge.ask("plan tuesday")
+    assert harness_bridge.APPROVAL_FILE_ENV not in env

@@ -35,6 +35,11 @@ from pathlib import Path
 
 from .dsh_progress_hook import PROGRESS_FILE_ENV
 
+#: Where the PreToolUse commit gate looks for a Slack approval token. Named
+#: here because this module is what puts it in the child's environment; the
+#: gate hook and the Slack button handler both read the same name.
+APPROVAL_FILE_ENV = "FF_DSH_APPROVAL_FILE"
+
 logger = logging.getLogger(__name__)
 
 _DSH_HOME = Path(os.environ.get("DSH_HOME", Path.home() / ".dsh"))
@@ -183,6 +188,7 @@ def ask(
     profile: str = _PROFILE,
     env: dict[str, str] | None = None,
     on_event: Callable[[str], None] | None = None,
+    approval_file: str | Path | None = None,
 ) -> HarnessReply:
     """Run one Slack turn through the harness and return what it said.
 
@@ -190,6 +196,13 @@ def ask(
     profile's ``PostToolUse`` hook appends the tool's name to a per-run file and
     a polling thread forwards it. Without it, nothing is set and the hook is a
     no-op, so a headless run costs nothing for a feature it is not using.
+
+    ``approval_file`` is where the commit gate looks for a Slack approval
+    token. **The caller owns the path, not this module.** A path minted here
+    would be invisible to the Slack button handler that has to write into it,
+    so the two would never meet -- and the gate would deny every commit while
+    looking correctly configured. Absence is not neutral: with no path set the
+    gate denies, which is the safe direction and the intended default.
     """
     child_env = {
         **os.environ,
@@ -197,6 +210,12 @@ def ask(
         "DSH_HOME": str(_DSH_HOME),
         **(env or {}),
     }
+    if approval_file is not None:
+        # Absolute, because the hook runs with the session workspace as its cwd
+        # and a relative path would resolve somewhere neither side agreed on --
+        # which reads as "no approval" and denies a commit the user did grant.
+        child_env[APPROVAL_FILE_ENV] = str(Path(approval_file).resolve())
+
     started = time.monotonic()
     steps = 0
 
