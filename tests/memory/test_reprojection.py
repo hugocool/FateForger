@@ -26,6 +26,7 @@ from memory.judge import StubJudge
 from memory.models import Channel, DecayClass, Observation, Provenance, Tier
 from memory.reprojection import reproject
 from memory.store import ObservationStore
+from memory.reprojection import _judge_all
 
 WHEN = datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc)
 
@@ -476,3 +477,52 @@ async def test_reprojection_writes_nothing_unless_asked(tmp_path):
 
     assert real.applied is True
     assert constraints.get(stale.uid).applicability.days_of_week == [1, 3]
+
+
+async def test_reprojection_preserves_day_types_nothing_can_re_derive(tmp_path):
+    """A field no judgement produces must survive re-derivation.
+
+    Applicability was rebuilt from the tier judgement, which carries dates and
+    weekdays but no day kind -- so re-projection dropped `day_types` from every
+    constraint that had one. Measured on the real store that silently unscoped
+    22 of 33 and returned the whole working week on a day off, while the run
+    reported `changed` and looked like a success.
+
+    Same rule as prose: a field nothing can re-derive must not be rebuilt from
+    something unable to express it.
+    """
+    from memory.constraint import Applicability, Constraint, Necessity, Scope, Source, Status
+    from memory.models import DecayClass, Observation, Provenance
+    from memory.reprojection import _derive
+
+    observed_at = datetime(2026, 8, 22, 9, 0, tzinfo=timezone.utc)
+    observation = Observation(
+        text="No meetings before 13:00",
+        channel=Channel.PLANNING,
+        provenance=Provenance.OBSERVED,
+        session_id=None,
+        observed_at=observed_at,
+    )
+    existing = Constraint(
+        name="No morning meetings",
+        description="No meetings before 13:00",
+        necessity=Necessity.MUST,
+        scope=Scope.PROFILE,
+        status=Status.PROPOSED,
+        source=Source.USER,
+        tier=Tier.DURABLE,
+        applicability=Applicability(days_of_week=[0, 1, 2, 3, 4], day_types=["working"]),
+        created_at=observed_at,
+        decay_class=DecayClass.PERMANENT,
+        last_observed_at=observed_at,
+    )
+    judge = StubJudge(tiers={observation.text: Tier.DURABLE})
+    judgements = await _judge_all([observation], judge)
+
+    carried = _derive([observation], judgements, existing)
+    assert carried["applicability"].day_types == ["working"]
+
+    # The old behaviour, reproduced exactly: with no existing constraint to
+    # carry from, the field is rebuilt from a judgement that cannot express it.
+    dropped = _derive([observation], judgements, None)
+    assert dropped["applicability"].day_types == []

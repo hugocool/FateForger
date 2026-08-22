@@ -3,6 +3,16 @@
 Hosts forget to report outcomes; the journal cannot. Deriving keeps the
 training label honest, which matters because it feeds both the prompt
 compiler and the constraint memory server.
+
+Comparisons here are ``==`` rather than ``is``, deliberately. EntryKind and
+PatchOutcome are str-enums, and an entry that reached this function without
+pydantic validation -- ``model_construct``, or a row rebuilt from raw SQL,
+where the column stores the enum *name* while the member carries its *value*
+-- holds a plain ``str``. Identity then fails for every row, and because the
+first check is ``outcome != APPLIED``, the whole batch silently derives
+FAILED. Equality holds in both cases and costs nothing, so ``is`` bought
+strictness the caller could not rely on and a failure mode nothing would
+surface.
 """
 
 from __future__ import annotations
@@ -36,7 +46,7 @@ def derive_dispositions(entries: list[JournalEntry]) -> dict[int, Disposition]:
     undone_tx = {
         e.undoes_tx
         for e in ordered
-        if e.undoes_tx and e.outcome is PatchOutcome.APPLIED
+        if e.undoes_tx and e.outcome == PatchOutcome.APPLIED
     }
 
     # Only COMMIT rows determine supersession; UNDO rows don't supersede
@@ -44,7 +54,7 @@ def derive_dispositions(entries: list[JournalEntry]) -> dict[int, Disposition]:
     later_commit_ids = [
         e.id
         for e in ordered
-        if e.kind is EntryKind.COMMIT and e.id is not None
+        if e.kind == EntryKind.COMMIT and e.id is not None
     ]
     last_commit_id = later_commit_ids[-1] if later_commit_ids else None
 
@@ -54,7 +64,7 @@ def derive_dispositions(entries: list[JournalEntry]) -> dict[int, Disposition]:
             continue
 
         # Precedence order (Important 3 fix): evaluate in documented order.
-        if entry.outcome is not PatchOutcome.APPLIED:
+        if entry.outcome != PatchOutcome.APPLIED:
             result[entry.id] = Disposition.FAILED
             continue
 
@@ -65,12 +75,12 @@ def derive_dispositions(entries: list[JournalEntry]) -> dict[int, Disposition]:
 
         # Only commits can be superseded by later commits. Gate prevents ATTEMPT/UNDO
         # rows reaching this check (Critical 3 fix).
-        if entry.kind is EntryKind.COMMIT and last_commit_id is not None and entry.id < last_commit_id:
+        if entry.kind == EntryKind.COMMIT and last_commit_id is not None and entry.id < last_commit_id:
             result[entry.id] = Disposition.SUPERSEDED
             continue
 
         # Only attempts that weren't committed are abandoned.
-        if entry.kind is EntryKind.ATTEMPT:
+        if entry.kind == EntryKind.ATTEMPT:
             result[entry.id] = Disposition.ABANDONED
             continue
 

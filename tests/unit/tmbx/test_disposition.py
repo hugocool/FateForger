@@ -152,3 +152,85 @@ def test_undo_row_not_superseded_by_later_commit():
     assert result[2] == Disposition.ACCEPTED, "UNDO row should be ACCEPTED, not SUPERSEDED"
     assert result[1] == Disposition.UNDONE
     assert result[3] == Disposition.ACCEPTED
+
+
+# --- #177: ACCEPTED is the terminal fallback, not a ratification -----------
+#
+# derive_dispositions ends with an unguarded `result[entry.id] = ACCEPTED`
+# after FAILED -> UNDONE -> SUPERSEDED -> ABANDONED. So any applied, un-undone,
+# latest COMMIT is ACCEPTED. That only ever *meant* "the user approved this"
+# because a human gate stood upstream of every commit; 2360304 made
+# StageReviewCommitNode auto-commit, and the label kept its old name.
+#
+# The disposition is a training label -- disposition.py's own docstring says it
+# "feeds both the prompt compiler and the constraint memory server" -- so an
+# unratified commit now teaches the memory server that Hugo approved a plan he
+# was never asked about. The memory design rejects exactly this inference:
+# Reliability is three-valued because silence is not evidence.
+#
+# These cannot be written as "build an unattended row and check its
+# disposition", because JournalEntry has no field that can say a row was
+# unattended. That absence is the defect. The fix has to reach the schema
+# before it can reach the derivation.
+
+
+def test_journal_entry_can_record_whether_a_human_ratified_a_commit():
+    """#177 -- the schema must be able to say 'nobody ruled on this'.
+
+    Strict xfail: when a ratification field lands this XPASSes and fails,
+    which is the signal to delete the marker rather than leave a passing
+    test that no longer asserts anything.
+    """
+    import pytest
+
+    field_names = set(JournalEntry.model_fields)
+    ratification_fields = field_names & {
+        "ratified",
+        "ratified_by",
+        "ratified_at",
+        "approval",
+        "human_ruling",
+    }
+    if not ratification_fields:
+        pytest.xfail(
+            "JournalEntry carries no ratification field, so an auto-committed "
+            "row is indistinguishable from one the user approved (#177)"
+        )
+
+
+def test_a_lone_commit_is_accepted_without_any_evidence_of_approval():
+    """Pins the defect rather than the intent, so the gap stays visible.
+
+    This asserts today's behaviour on purpose. A commit derives ACCEPTED with
+    nothing anywhere recording that a human saw it -- there is no field to
+    record it in. When #177 lands, this test should change to expect
+    UNRATIFIED, and the change should be deliberate rather than incidental.
+    """
+    entries = [_entry(1, EntryKind.COMMIT, tx_id="tx1")]
+    assert derive_dispositions(entries) == {1: Disposition.ACCEPTED}
+
+
+def test_dispositions_survive_an_entry_that_skipped_validation():
+    """A str-typed outcome must not turn every row into FAILED.
+
+    EntryKind and PatchOutcome are str-enums. An entry built without pydantic
+    validation -- model_construct, or a row reassembled from raw SQL, where
+    the column stores the enum name while the member carries its value --
+    holds a plain str. Under identity comparison the first check
+    (outcome != APPLIED) matched every row and the whole batch derived FAILED,
+    silently and in a direction that looks like a real result.
+
+    Found while reading the live journal: 173 real rows, every one of which
+    would have been reported as FAILED by a raw-SQL reader.
+    """
+    entry = JournalEntry.model_construct(
+        id=1,
+        kind="COMMIT",
+        calendar_id="primary",
+        plan_date=DAY,
+        ops_json="{}",
+        outcome="applied",
+        tx_id="tx1",
+        undoes_tx=None,
+    )
+    assert derive_dispositions([entry]) == {1: Disposition.ACCEPTED}

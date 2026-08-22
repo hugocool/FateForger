@@ -116,7 +116,11 @@ async def _judge_all(
     }
 
 
-def _derive(observations: list[Observation], judgements: dict) -> dict:
+def _derive(
+    observations: list[Observation],
+    judgements: dict,
+    existing: Constraint | None = None,
+) -> dict:
     """Combine per-observation judgements into one constraint's fields.
 
     Every rule here is arithmetic over judgements already made — a max, a
@@ -163,7 +167,21 @@ def _derive(observations: list[Observation], judgements: dict) -> dict:
     # Applicability from the most recent observation that supplies any. A
     # later restatement that happens to omit the scoping words should not
     # widen a rule back to every day.
-    applicability = Applicability()
+    #
+    # `day_types` is carried across from the existing constraint rather than
+    # re-derived, because nothing derives it: no judgement produces a day
+    # kind, so rebuilding applicability from scratch drops the field entirely.
+    # Measured on the real store, that silently unscoped 22 of 33 constraints
+    # and returned the whole working week on a day off -- a run that reports
+    # `changed` and looks like a success. Same rule as prose above: a field
+    # nothing can re-derive must not be rebuilt from something that cannot
+    # express it.
+    #
+    # A judgement that produces day kinds would change this. Until one exists,
+    # preserving is the only honest option.
+    carried_day_types = list(existing.applicability.day_types) if existing else []
+
+    applicability = Applicability(day_types=carried_day_types)
     for observation in reversed(ordered):
         judgement = judgements[observation.uid].tier
         if judgement.start_date or judgement.end_date or judgement.days_of_week:
@@ -171,6 +189,7 @@ def _derive(observations: list[Observation], judgements: dict) -> dict:
                 start_date=judgement.start_date,
                 end_date=judgement.end_date,
                 days_of_week=judgement.days_of_week,
+                day_types=carried_day_types,
             )
             break
 
@@ -268,7 +287,7 @@ async def reproject(
             continue
 
         judgements = await _judge_all(observations, judge)
-        derived = _derive(observations, judgements)
+        derived = _derive(observations, judgements, constraint)
         if len(observations) > 1:
             report.contested.append(
                 ContestedConstraint(

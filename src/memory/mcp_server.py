@@ -257,7 +257,9 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         return [v.model_dump(mode="json") for v in views]
 
     @mcp.tool(name="memory_get_session_constraints")
-    def memory_get_session_constraints(session_id: str) -> dict:
+    def memory_get_session_constraints(
+        session_id: str, day: str | None = None
+    ) -> dict:
         """What this conversation has established so far. No model call.
 
         Call this at the start of every turn in a planning session, with the
@@ -282,7 +284,9 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         Same reason suspended constraints got their own channel: absence must
         not be the thing carrying the meaning.
         """
-        views = service.get_session_constraints(session_id)
+        views = service.get_session_constraints(
+            session_id, date.fromisoformat(day) if day else None
+        )
         return {
             "session_id": session_id,
             "count": len(views),

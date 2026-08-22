@@ -107,26 +107,43 @@ def get_suspended_constraints(
 
 
 def get_session_constraints(
-    store: ConstraintStore, session_id: str
+    store: ConstraintStore, session_id: str, day: date | None = None
 ) -> list[ConstraintView]:
-    """What this conversation has established so far. No model call.
+    """What this conversation has established, as of `day`. No model call.
 
     The session tier is how a planning conversation keeps what the user said
-    three replies ago without re-reading the transcript — it is the chat
-    history, in structured form. Until this existed, `Tier.SESSION` was a
-    write-only value: `ingest` judged it, `project` stored it, and all three
-    read functions filtered to `store.durable()`, so nothing could ever read
-    one back. The user restating themselves between turns was the symptom.
+    several replies ago without re-reading the transcript. Until it existed,
+    `Tier.SESSION` was write-only: `ingest` judged it, `project` stored it, and
+    every read filtered to `store.durable()`.
 
-    **No decay filter, deliberately.** Fading asks whether a standing rule is
-    still true, which is a question about weeks. A session is over in an hour,
-    and a constraint stated in this conversation is true for this conversation
-    by construction — applying a half-life to it could only ever remove
-    something the user just said. Scoping by `session_id` makes lifetime
-    structural: these rows stop being reachable when the conversation ends,
-    without anything needing to expire them.
+    **Two expiry signals, and they disagree.** A session constraint now carries
+    both an `applicability` window -- which day the rule is *about* -- and a
+    decay class, which asks whether anything has restated it lately. They
+    coincide for a rule about tomorrow and diverge for one stated on Monday
+    about a date three weeks out: that rule fades long before the day it names
+    arrives.
 
-    No date filter either. A session constraint is not about a day; it is
-    about the exchange in progress.
+    So applicability wins wherever it exists, and decay is the fallback for
+    rules that name no date. A rule that said when it stops mattering has given
+    better evidence than the absence of recent mentions, which only ever
+    estimated the same thing. Where a rule names no date, decay is all there
+    is.
+
+    Passing no `day` disables both filters and returns everything the session
+    ever established -- which is what a caller reconstructing a transcript
+    wants, and not what a planner wants.
     """
-    return [c.to_view() for c in store.for_session(session_id)]
+    constraints = store.for_session(session_id)
+    if day is None:
+        return [c.to_view() for c in constraints]
+
+    live: list[ConstraintView] = []
+    for c in constraints:
+        app = c.applicability
+        dated = app.start_date is not None or app.end_date is not None
+        if dated:
+            if app.applies_on(day):
+                live.append(c.to_view())
+        elif not c.has_faded(day):
+            live.append(c.to_view())
+    return live

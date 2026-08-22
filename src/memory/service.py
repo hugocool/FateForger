@@ -213,7 +213,9 @@ class MemoryService:
     ) -> list[ConstraintView]:
         return _read_faded(self._constraints, day, stage)
 
-    def get_session_constraints(self, session_id: str) -> list[ConstraintView]:
+    def get_session_constraints(
+        self, session_id: str, day: date | None = None
+    ) -> list[ConstraintView]:
         """What this conversation has established so far.
 
         The session tier is the structured form of the chat history: it is how
@@ -222,7 +224,7 @@ class MemoryService:
         so the tier was write-only and the user restating themselves between
         turns was the visible symptom.
         """
-        return _read_session(self._constraints, session_id)
+        return _read_session(self._constraints, session_id, day)
 
     def get_suspended_constraints(
         self, day: date, day_type: str | None = None
