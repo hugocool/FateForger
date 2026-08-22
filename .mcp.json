@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+    "tmbx": {
+      "command": "poetry",
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "tmbx.server"
+      ],
+      "cwd": "/Users/hugoevers/VScode-projects/admonish-1",
+      "env": {
+        "TMBX_CALENDAR_BACKEND": "google",
+        "TMBX_CALENDAR_TZ": "Europe/Amsterdam",
+        "MCP_CALENDAR_SERVER_URL": "http://localhost:3000"
+      }
+    },
+    "memory": {
+      "command": "python3",
+      "args": [
+        "-m",
+        "memory.mcp_server"
+      ],
+      "cwd": "/Users/hugoevers/VScode-projects/admonish-1",
+      "env": {
+        "PYTHONPATH": "src",
+        "MEMORY_DB_PATH": "/Users/hugoevers/VScode-projects/admonish-1/data/memory.db"
+      }
+    }
+  }
+}

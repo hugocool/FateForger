@@ -588,8 +588,15 @@ def _build_calendar_port() -> CalendarPort:
 
 
 def main() -> None:
-    """stdio entrypoint. See ``_build_calendar_port`` for backend selection."""
+    """Server entrypoint. See ``_build_calendar_port`` for backend selection.
+
+    Transport defaults to stdio, where the host spawns a process per session and
+    pays this module's import cost every time. ``TMBX_MCP_TRANSPORT`` selects
+    ``streamable-http`` instead, so the server is started once and connected to
+    — the difference between a warm reply and a cold boot on every turn.
+    """
     import asyncio
+    import os
 
     from .journal.store import JournalStore, init_journal
 
@@ -597,7 +604,12 @@ def main() -> None:
         store = JournalStore(await init_journal())
         return build_server(PlanService(_build_calendar_port(), store))
 
-    asyncio.run(_build()).run()
+    server = asyncio.run(_build())
+    transport = os.environ.get("TMBX_MCP_TRANSPORT", "stdio")
+    if transport == "streamable-http":
+        server.settings.host = os.environ.get("TMBX_MCP_HOST", "127.0.0.1")
+        server.settings.port = int(os.environ.get("TMBX_MCP_PORT", "8011"))
+    server.run(transport=transport)
 
 
 __all__ = ["PLANNING_POLICY", "build_server", "main"]

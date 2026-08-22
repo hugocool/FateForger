@@ -993,6 +993,25 @@ async def route_slack_event(
                 f"{type(exc).__name__}: {_safe_exc_summary(exc)}",
             )
 
+    # Give the conversation a memory. Fired without awaiting: `observe` costs a
+    # model round trip and this route has a 30s budget, and the task reports
+    # its own failure into the thread rather than into a log line -- a judge
+    # failure must stay loud, or a misconfigured bot and a user who said
+    # nothing memorable look identical.
+    if text.strip() and user not in (None, "unknown"):
+        from .thread_memory import remember, session_id_for
+
+        asyncio.create_task(
+            remember(
+                client=client,
+                channel=channel,
+                session_id=session_id_for(channel, thread_ts, is_dm),
+                user_id=user,
+                text=_strip_bot_mention(text, bot_user_id),
+                thread_ts=thread_ts,
+            )
+        )
+
     # In DMs, avoid creating a new "focus thread" per message (ts changes every message).
     # Instead, keep a stable key so multi-turn conversations work without requiring threads.
     if is_dm and not thread_ts:

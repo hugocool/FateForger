@@ -44,6 +44,12 @@
         "command": "/ff-status",
         "description": "Show current thread focus",
         "should_escape": false
+      },
+      {
+        "command": "/dsh",
+        "description": "Ask DeepSeek Harness (timebox + constraint memory)",
+        "usage_hint": "plan tomorrow afternoon",
+        "should_escape": false
       }
     ]
   },

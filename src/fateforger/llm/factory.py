@@ -10,7 +10,7 @@ from langchain_openai import ChatOpenAI
 
 from fateforger.core.config import settings
 
-ReasoningEffort = Literal["low", "medium", "high"]
+ReasoningEffort = Literal["minimal", "low", "medium", "high"]
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,7 @@ def _reasoning_effort_for_agent(agent_type: str) -> ReasoningEffort | None:
 
     def normalize(value: str) -> ReasoningEffort | None:
         value = _clean(value).lower()
-        if value in ("low", "medium", "high"):
+        if value in ("minimal", "low", "medium", "high"):
             return value  # type: ignore[return-value]
         return None
 
@@ -147,7 +147,8 @@ def _reasoning_effort_for_agent(agent_type: str) -> ReasoningEffort | None:
         return normalize(settings.llm_reasoning_effort_tasks) or "medium"
     if agent_type == "timebox_patcher":
         return normalize(settings.llm_reasoning_effort_timebox_patcher) or "high"
-    return None
+    # Everything else is routing or phrasing, not deliberation.
+    return "low"
 
 
 def _max_tokens_for_agent(agent_type: str) -> int | None:
