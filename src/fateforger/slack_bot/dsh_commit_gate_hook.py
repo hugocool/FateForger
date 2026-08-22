@@ -68,6 +68,24 @@ def gate_decision(event: dict, approval_path: str | None) -> dict | None:
 
     if not raw:
         return _deny("not approved yet")
+
+    # Consumed on use. One press authorises one commit.
+    #
+    # The token has to outlive the turn that was denied -- the harness runs a
+    # turn to completion, so the plan is only shown *after* the commit was
+    # refused, and Hugo presses Approve between turns. That makes it durable
+    # by necessity, and durable-plus-reusable means Monday's approval silently
+    # authorises Thursday's commit against a plan he never saw. Same shape as
+    # the ACCEPTED disposition this gate exists to stop: consent granted once,
+    # then inferred forever.
+    #
+    # Clearing can fail on a read-only path. Deny in that case rather than
+    # allow: an approval that cannot be spent is one that would be spent
+    # again.
+    try:
+        Path(approval_path).write_text("", encoding="utf-8")
+    except OSError:
+        return _deny("approval could not be consumed, so it is not being spent")
     return None
 
 

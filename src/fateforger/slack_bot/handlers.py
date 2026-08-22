@@ -733,8 +733,15 @@ async def _harness_turn(*, text: str, thread_key: str, on_phase) -> TextMessage:
     """
     from .harness_bridge import HarnessError, ask
 
+    from .thread_approval import approval_path
+
     try:
-        reply = await asyncio.to_thread(ask, text, on_event=on_phase)
+        reply = await asyncio.to_thread(
+            ask,
+            text,
+            on_event=on_phase,
+            approval_file=str(approval_path(thread_key)),
+        )
     except HarnessError as exc:
         # Surfaced, not swallowed. A harness that could not be reached and a
         # planner that declined to act must not read the same in the thread.
@@ -770,6 +777,31 @@ def _note_harness_phase(client, processing_msg, agent_type: str, line: str) -> N
         # Called from the harness's polling thread, which has no loop of its
         # own. Nothing to do but skip this line.
         return
+
+
+#: The one control that opens the commit gate.
+FF_HARNESS_APPROVE_ACTION_ID = "ff_harness_approve"
+
+
+def harness_approve_block(thread_key: str) -> dict:
+    """The Approve control, offered beside a plan rather than after it.
+
+    Deliberately unlabelled with the day: the approval is spent on whatever
+    commit comes next in this thread, and naming a date here would claim a
+    precision the token does not carry.
+    """
+    return {
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "action_id": FF_HARNESS_APPROVE_ACTION_ID,
+                "style": "primary",
+                "text": {"type": "plain_text", "text": "Approve this plan"},
+                "value": thread_key,
+            }
+        ],
+    }
 
 
 def _timebox_backend() -> str:
@@ -2160,6 +2192,36 @@ def register_handlers(
     async def cmd_ff_setup(ack, body, respond, client, logger):
         await ack()
         await _run_setup(respond, client, user_id=body.get("user_id"))
+
+    @app.action(FF_HARNESS_APPROVE_ACTION_ID)
+    async def act_harness_approve(ack, body, client, logger):
+        """Spend one approval on the next commit in this thread.
+
+        The only thing that opens the commit gate. It is a button rather than
+        a phrase because reading consent out of prose is a judgement about
+        meaning, and a model in the path protecting the calendar is a failure
+        surface exactly where failure is least acceptable.
+        """
+        await ack()
+        from .thread_approval import grant
+
+        channel = (body.get("channel") or {}).get("id") or ""
+        message = body.get("message") or {}
+        thread_root = message.get("thread_ts") or message.get("ts") or ""
+        user_id = (body.get("user") or {}).get("id") or "unknown"
+        if not (channel and thread_root):
+            logger.warning("approve pressed with no thread to approve for")
+            return
+
+        grant(f"{channel}:{thread_root}", user_id)
+        await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_root,
+            text=(
+                ":white_check_mark: Approved — ask me to commit and I will. "
+                "This covers one commit; press again for the next."
+            ),
+        )
 
     @app.command("/dsh")
     async def cmd_dsh(ack, body, client, logger):

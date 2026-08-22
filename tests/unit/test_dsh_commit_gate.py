@@ -122,3 +122,48 @@ def test_the_hook_never_exits_nonzero(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", type("S", (), {"read": lambda self: json.dumps(_commit())})())
     monkeypatch.delenv(APPROVAL_FILE_ENV, raising=False)
     assert main() == 0
+
+
+# --- one press, one commit ------------------------------------------------
+
+
+def test_an_approval_is_spent_when_it_is_used(tmp_path):
+    """Monday's press must not authorise Thursday's commit.
+
+    The token has to outlive its turn — the harness runs to completion, so the
+    plan is only shown after the commit was refused, and the button is pressed
+    between turns. Durable plus reusable is consent granted once and inferred
+    forever, which is the ACCEPTED disposition this gate exists to stop.
+    """
+    path = tmp_path / "approval"
+    path.write_text("approved-by-U_HUGO-at-1772000000")
+
+    assert gate_decision(_commit(), str(path)) is None       # first commit
+    assert _denied(gate_decision(_commit(), str(path)))      # second is refused
+    assert path.read_text() == ""
+
+
+def test_a_second_press_authorises_a_second_commit(tmp_path):
+    path = tmp_path / "approval"
+    path.write_text("first")
+    assert gate_decision(_commit(), str(path)) is None
+    path.write_text("second")
+    assert gate_decision(_commit(), str(path)) is None
+
+
+def test_an_approval_that_cannot_be_spent_is_not_honoured(tmp_path, monkeypatch):
+    """An approval that cannot be cleared is one that would be spent again."""
+    path = tmp_path / "approval"
+    path.write_text("approved")
+
+    import pathlib
+
+    original = pathlib.Path.write_text
+
+    def refuse(self, *a, **kw):
+        if str(self) == str(path):
+            raise OSError("read-only")
+        return original(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", refuse)
+    assert _denied(gate_decision(_commit(), str(path)))
