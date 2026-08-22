@@ -1,0 +1,91 @@
+"""The Schedular's thread messages go to the harness, not the AutoGen flow.
+
+Same persona, same thread, different brain. The legacy flow reached a
+constraint store that spent months reading a Notion page returning 404, so it
+planned while knowing nothing it had ever been told.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from fateforger.slack_bot import handlers
+
+
+class _Reply:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.timings = None
+
+
+@pytest.fixture
+def _harness(monkeypatch):
+    """Stub the subprocess. Reaching a real harness in a unit test is a bug."""
+    calls: list[dict] = []
+
+    def fake_ask(text, *, on_event=None, **kw):
+        calls.append({"text": text, "on_event": on_event})
+        if on_event:
+            on_event("mcp__memory__memory_get_active_constraints")
+        return _Reply("Here is tomorrow.")
+
+    import fateforger.slack_bot.harness_bridge as hb
+
+    monkeypatch.setattr(hb, "ask", fake_ask)
+    return calls
+
+
+async def test_a_turn_reaches_the_harness_and_comes_back_renderable(_harness):
+    """The reply must be shaped like a runtime reply, or every renderer breaks."""
+    result = await handlers._harness_turn(
+        text="plan tomorrow", thread_key="C1:1772.0", on_phase=lambda _l: None
+    )
+    assert result.content == "Here is tomorrow."
+    assert result.source == "timeboxing_agent"
+    assert _harness[0]["text"] == "plan tomorrow"
+
+
+async def test_progress_is_offered_so_a_long_turn_is_not_a_blank_wait(_harness):
+    seen: list[str] = []
+    await handlers._harness_turn(
+        text="plan tomorrow", thread_key="C1:1772.0", on_phase=seen.append
+    )
+    assert seen == ["mcp__memory__memory_get_active_constraints"]
+
+
+async def test_a_harness_failure_is_surfaced_not_swallowed(monkeypatch):
+    """A harness that could not be reached and a planner that declined to act
+    must not read the same in the thread."""
+    import fateforger.slack_bot.harness_bridge as hb
+
+    def boom(text, **kw):
+        raise hb.HarnessError("node not found")
+
+    monkeypatch.setattr(hb, "ask", boom)
+
+    result = await handlers._harness_turn(
+        text="plan tomorrow", thread_key="C1:1772.0", on_phase=lambda _l: None
+    )
+    assert "did not answer" in result.content
+    assert "node not found" in result.content
+
+
+def test_the_legacy_flow_is_still_reachable(monkeypatch):
+    """A migration nobody can reverse is a rewrite.
+
+    The legacy path is the only one carrying the five-stage machine and the
+    confirm buttons, so it stays wired until the harness has an equivalent.
+    """
+    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "legacy")
+    assert handlers._timebox_backend() == "legacy"
+    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
+    assert handlers._timebox_backend() != "legacy"
+
+
+def test_a_phase_line_from_a_thread_without_a_loop_does_not_raise():
+    """The progress poller runs on the harness's own thread, which has no loop.
+
+    Raising there would kill progress reporting for the rest of the turn, and
+    the turn would look stalled rather than quiet.
+    """
+    handlers._note_harness_phase(object(), {"channel": "C1", "ts": "1.0"}, "a", "step")

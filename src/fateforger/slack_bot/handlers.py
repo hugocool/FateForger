@@ -720,6 +720,58 @@ def _plan_sessions_channel_id() -> str | None:
     return None
 
 
+async def _harness_turn(*, text: str, thread_key: str, on_phase) -> TextMessage:
+    """One Slack turn through the harness, shaped like a runtime reply.
+
+    Returned as a TextMessage so every renderer downstream -- personas, block
+    compaction, thread updates -- keeps working untouched. The migration
+    changes which system thinks, not how the answer reaches Slack.
+
+    The harness call is a blocking subprocess and a planning turn runs for tens
+    of seconds, so it goes to a worker thread; leaving it on the loop would
+    stall every other Slack event in the workspace.
+    """
+    from .harness_bridge import HarnessError, ask
+
+    try:
+        reply = await asyncio.to_thread(ask, text, on_event=on_phase)
+    except HarnessError as exc:
+        # Surfaced, not swallowed. A harness that could not be reached and a
+        # planner that declined to act must not read the same in the thread.
+        return TextMessage(
+            content=(
+                f":warning: The harness did not answer.\n```{exc}```"
+            ),
+            source="timeboxing_agent",
+        )
+    return TextMessage(content=reply.text, source="timeboxing_agent")
+
+
+def _note_harness_phase(client, processing_msg, agent_type: str, line: str) -> None:
+    """Show a tool call as it completes, rather than a silent wait.
+
+    Fire-and-forget: progress must never delay or fail the turn it reports on.
+    The heartbeat keeps running underneath, so a dropped phase line costs
+    nothing beyond that phase not being shown.
+    """
+    async def _update() -> None:
+        try:
+            await client.chat_update(
+                channel=processing_msg["channel"],
+                ts=processing_msg["ts"],
+                text=f":hourglass_flowing_sand: *{agent_type}* — {line}",
+            )
+        except Exception:
+            return
+
+    try:
+        asyncio.get_running_loop().create_task(_update())
+    except RuntimeError:
+        # Called from the harness's polling thread, which has no loop of its
+        # own. Nothing to do but skip this line.
+        return
+
+
 def _timebox_backend() -> str:
     """Which system answers /timebox. "harness" unless told otherwise."""
     return (os.environ.get("FF_TIMEBOX_BACKEND") or "harness").strip().lower()
@@ -1336,9 +1388,23 @@ async def route_slack_event(
 
     heartbeat_task = asyncio.create_task(_turn_heartbeat())
     try:
-        result = await runtime.send_message(
-            msg, recipient=AgentId(agent_type, key=recipient_key)
-        )
+        if agent_type == "timeboxing_agent" and _timebox_backend() != "legacy":
+            # The Schedular answers through the harness now. Same persona, same
+            # thread, different brain: the harness owns the loop and reaches
+            # tmbx and the memory server over the warm MCP mounts, instead of
+            # the AutoGen flow reaching a constraint store that spent months
+            # reading a Notion page returning 404.
+            result = await _harness_turn(
+                text=cleaned_text,
+                thread_key=recipient_key,
+                on_phase=lambda line: _note_harness_phase(
+                    client, origin_processing_msg, agent_type, line
+                ),
+            )
+        else:
+            result = await runtime.send_message(
+                msg, recipient=AgentId(agent_type, key=recipient_key)
+            )
     except asyncio.TimeoutError:
         record_error(component="slack_routing", error_type="stage_compute_failure")
         await _origin_update(

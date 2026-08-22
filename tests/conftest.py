@@ -71,3 +71,18 @@ async def scheduler():
     sched.start()
     yield sched
     sched.shutdown(wait=False)
+
+
+@pytest.fixture(autouse=True)
+def _timebox_backend_is_legacy_unless_asked(monkeypatch):
+    """Keep the suite off the harness.
+
+    Routing timeboxing to DSH means route_slack_event would otherwise spawn a
+    real harness subprocess per test -- the suite went from 15s to 7m36s and
+    started depending on a node install, a profile directory and two symlinks
+    outside this repo. A test that silently shells out is not a unit test.
+
+    Tests that want the harness path set the variable themselves and stub
+    `_harness_turn`, so reaching it is always a deliberate act.
+    """
+    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "legacy")
