@@ -45,10 +45,15 @@ class _Client:
 
     def __init__(self) -> None:
         self.updates: list[dict[str, Any]] = []
+        self.posts: list[dict[str, Any]] = []
 
     async def chat_update(self, **payload: Any) -> dict[str, Any]:
         self.updates.append(payload)
         return {"ok": True}
+
+    async def chat_postMessage(self, **payload: Any) -> dict[str, Any]:
+        self.posts.append(payload)
+        return {"ok": True, "ts": "M2", "channel": payload.get("channel")}
 
 
 def _action_payload() -> TimeboxingStageActionPayload:
@@ -66,8 +71,14 @@ def _action_payload() -> TimeboxingStageActionPayload:
 
 
 @pytest.mark.asyncio
-async def test_stage_proceed_button_dispatches_and_replaces_message() -> None:
-    """Proceed action should send a typed stage-action message and update the prompt."""
+async def test_stage_proceed_button_dispatches_and_posts_the_result() -> None:
+    """Proceed dispatches the typed action, then posts the result separately.
+
+    Renamed from ..._and_replaces_message: replacing the prompt with the stage
+    result is what grew one message until Slack refused to edit it. The result
+    now arrives as its own threaded message and the prompt becomes a fixed-size
+    receipt.
+    """
     runtime = _Runtime()
     client = _Client()
     coordinator = TimeboxingStageActionCoordinator(runtime=runtime, client=client)
@@ -80,4 +91,8 @@ async def test_stage_proceed_button_dispatches_and_replaces_message() -> None:
     assert dispatched.action == "proceed"
     assert client.updates
     assert "Proceeding to the next stage" in (client.updates[0].get("text") or "")
-    assert "CaptureInputs" in (client.updates[-1].get("text") or "")
+    # The stage result arrives as a new message...
+    assert client.posts, "stage result was not posted as its own message"
+    assert "CaptureInputs" in (client.posts[-1].get("text") or "")
+    # ...and the button's message is left as a small receipt, not the artifact.
+    assert "CaptureInputs" not in (client.updates[-1].get("text") or "")
