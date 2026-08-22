@@ -376,6 +376,11 @@ class Session:
     # constraint list again on every pass -- which is what grew one message past
     # Slack's limit and turned a live session into twelve minutes of silence.
     consecutive_refine_no_change: int = 0
+    # How many constraints the Refine selection had to leave out. The limit is
+    # correct -- the patcher prompt has to be bounded and ranking by necessity
+    # is the right way to bound it -- but dropping a rule the user stated and
+    # never saying so is the failure this whole system keeps rediscovering.
+    last_refine_dropped_constraints_count: int = 0
     durable_constraints_by_stage: Dict[str, List[Constraint]] = field(
         default_factory=dict
     )
@@ -6953,6 +6958,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         limit = max(1, TIMEBOXING_LIMITS.refine_patcher_constraint_limit)
         if len(ranked) <= limit:
             session.last_refine_selected_constraints_count = len(ranked)
+            session.last_refine_dropped_constraints_count = 0
             self._session_debug(
                 session,
                 "refine_constraints_selected",
@@ -6980,6 +6986,9 @@ class TimeboxingFlowAgent(RoutedAgent):
                 break
 
         session.last_refine_selected_constraints_count = len(selected)
+        session.last_refine_dropped_constraints_count = max(
+            0, len(ranked) - len(selected)
+        )
         self._session_debug(
             session,
             "refine_constraints_selected",
@@ -8673,10 +8682,23 @@ def _constraint_count_summary_line(
     if raw_total > applicable_total:
         parts.append(f"Raw active rows before filtering: {raw_total}.")
     if session.stage == TimeboxingStage.REFINE:
-        parts.append(
-            "Selected for Refine patching: "
-            f"{max(0, int(session.last_refine_selected_constraints_count or 0))}."
+        selected_for_refine = max(
+            0, int(session.last_refine_selected_constraints_count or 0)
         )
+        dropped_for_refine = max(
+            0, int(session.last_refine_dropped_constraints_count or 0)
+        )
+        line = f"Selected for Refine patching: {selected_for_refine}."
+        if dropped_for_refine:
+            # Said out loud, in Slack. Ranking by necessity means the rules
+            # left out are the softer ones -- exactly the preferences a user
+            # is most likely to notice missing and least likely to guess the
+            # reason for.
+            line += (
+                f" {dropped_for_refine} lower-priority constraint"
+                f"{'s' if dropped_for_refine != 1 else ''} did not fit this pass."
+            )
+        parts.append(line)
     elif 0 < selected_total < applicable_total:
         parts.append(f"Selected for this stage: {selected_total}.")
     return " ".join(parts)

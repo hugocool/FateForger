@@ -153,3 +153,68 @@ def test_it_is_an_exception_so_it_reaches_the_user():
     assert issubclass(RefineMadeNoProgress, Exception)
     with pytest.raises(RefineMadeNoProgress):
         raise RefineMadeNoProgress("looped")
+
+
+# --- the constraints that do not fit -------------------------------------
+
+
+def test_a_short_list_reports_nothing_dropped(refine_agent):
+    agent, session = refine_agent
+    from fateforger.agents.timeboxing.agent import (
+        TIMEBOXING_LIMITS,
+        TimeboxingFlowAgent,
+    )
+
+    limit = TIMEBOXING_LIMITS.refine_patcher_constraint_limit
+    # The real method, not the fixture's stub — which is what the loop tests
+    # replace it with and would silently make this assert nothing.
+    kept = TimeboxingFlowAgent._select_constraints_for_refine_patcher(
+        agent, session=session, constraints=[_c("must", i) for i in range(limit - 2)]
+    )
+    assert len(kept) == limit - 2
+    assert session.last_refine_dropped_constraints_count == 0
+
+
+def test_constraints_that_do_not_fit_are_counted(refine_agent):
+    """Measured on the real store: 18 MUST and 12 SHOULD against a limit of 24
+    means six of the user's preferences never reach the patcher. The limit is
+    right; dropping them without a word is not.
+    """
+    agent, session = refine_agent
+    from fateforger.agents.timeboxing.agent import (
+        TIMEBOXING_LIMITS,
+        TimeboxingFlowAgent,
+    )
+
+    limit = TIMEBOXING_LIMITS.refine_patcher_constraint_limit
+    constraints = [_c("must", i) for i in range(18)] + [
+        _c("should", i) for i in range(12)
+    ]
+
+    kept = TimeboxingFlowAgent._select_constraints_for_refine_patcher(
+        agent, session=session, constraints=constraints
+    )
+    assert len(kept) == limit
+    assert session.last_refine_dropped_constraints_count == len(constraints) - limit
+
+
+def _c(necessity: str, index: int = 0):
+    """A real Constraint, not a stub.
+
+    The selector reads a dozen fields across ranking and identity; a
+    hand-rolled stand-in fails on whichever one it forgot, and passing that
+    way would only mean the test stopped short of the code under test.
+    """
+    from datetime import datetime, timezone
+
+    from fateforger.agents.timeboxing.preferences import Constraint
+
+    now = datetime.now(timezone.utc)
+    return Constraint(
+        name=f"{necessity}-rule-{index}",
+        description=f"a {necessity} rule ({index})",
+        necessity=necessity,
+        user_id="U_HUGO",
+        created_at=now,
+        updated_at=now,
+    )
