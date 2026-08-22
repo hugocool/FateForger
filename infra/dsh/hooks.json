@@ -11,6 +11,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.venv/bin/python -m fateforger.slack_bot.dsh_commit_gate_hook",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }
