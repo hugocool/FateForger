@@ -5,7 +5,7 @@ import sqlite3
 
 # The version this build of the code expects. Bump it in the same commit that
 # appends to _MIGRATIONS, never separately.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Version 1 is the shape that shipped before versioning existed. It is
 # reproduced here verbatim rather than being re-derived, because an existing
@@ -73,7 +73,24 @@ CREATE INDEX IF NOT EXISTS ix_ca_anchor ON constraint_anchors(anchor_uid);
 
 # version -> DDL applied to reach it. Append only; never edit a shipped entry,
 # because a store that already ran it will not run it again.
-_MIGRATIONS: dict[int, str] = {1: _V1, 2: _V2}
+# Version 3 records *why* an observation produced no constraint. ingest has
+# always decided this -- meta, generated, a restatement of something already
+# held -- and always thrown the answer away, so an observation that was
+# deliberately not projected and one whose constraint was later removed by hand
+# were indistinguishable: both simply have no row in constraint_observations.
+#
+# A separate table rather than a column, because L1 is append-only (I2). The
+# observation is never rewritten; a suppression is a later judgement *about* it
+# and is appended alongside.
+_V3 = """
+CREATE TABLE IF NOT EXISTS observation_suppressions (
+    observation_uid TEXT PRIMARY KEY,
+    reason          TEXT NOT NULL,
+    decided_at      TEXT NOT NULL
+);
+"""
+
+_MIGRATIONS: dict[int, str] = {1: _V1, 2: _V2, 3: _V3}
 
 # What each version must end up with. Checked after migrating, so a store whose
 # stamp disagrees with its actual shape fails loudly at connect time instead of
@@ -95,6 +112,9 @@ _EXPECTED_COLUMNS: dict[int, dict[str, set[str]]] = {
         "anchors": {"uid", "name"},
         "anchor_edges": {"parent_uid", "child_uid", "kind"},
         "constraint_anchors": {"constraint_uid", "anchor_uid"},
+    },
+    3: {
+        "observation_suppressions": {"observation_uid", "reason", "decided_at"},
     },
 }
 

@@ -4,10 +4,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 from memory.migrations import apply_migrations
 from memory.models import Channel, Observation, Provenance
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 class ObservationStore:
     """Append-only log of observations.
@@ -68,6 +72,40 @@ class ObservationStore:
                 "SELECT * FROM observations ORDER BY observed_at"
             ).fetchall()
         return [self._row_to_obs(r) for r in rows]
+
+    def suppress(self, observation_uid: str, reason: str) -> None:
+        """Record that this observation deliberately produced no constraint.
+
+        Appended rather than written onto the observation: L1 is immutable
+        (I2), and a suppression is a later judgement *about* a statement
+        rather than a correction of it. Re-suppressing with a new reason
+        replaces the old one -- the judgement is current, not historical, and
+        an append-only list of reasons would need its own precedence rule for
+        no benefit anyone has asked for.
+
+        Without this, an observation that was deliberately not projected and
+        one whose constraint was later removed by hand look identical: both
+        simply have no row in `constraint_observations`. A rebuild cannot tell
+        them apart, so it recreates exactly the constraints someone decided
+        should not exist.
+        """
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO observation_suppressions "
+                "(observation_uid, reason, decided_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(observation_uid) DO UPDATE SET "
+                "reason = excluded.reason, decided_at = excluded.decided_at",
+                (observation_uid, reason, _now_iso()),
+            )
+            self._conn.commit()
+
+    def suppressions(self) -> dict[str, str]:
+        """Observation uid -> why it produced no constraint."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT observation_uid, reason FROM observation_suppressions"
+            ).fetchall()
+        return {r["observation_uid"]: r["reason"] for r in rows}
 
     def by_session(self, session_id: str) -> list[Observation]:
         with self._lock:
