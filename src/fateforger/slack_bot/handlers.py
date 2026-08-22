@@ -719,6 +719,42 @@ def _plan_sessions_channel_id() -> str | None:
     return None
 
 
+async def _handle_dsh_command(*, body, client, logger) -> None:
+    """Carry one Slack turn to DeepSeek Harness and the answer back.
+
+    The harness call is a blocking subprocess, so it goes to a worker thread —
+    a planning turn runs for tens of seconds and would otherwise stall every
+    other Slack event on the loop.
+
+    Failures are posted, not swallowed. A harness that could not be reached and
+    a planner that declined to act must not look the same in the thread.
+    """
+    from .harness_bridge import HarnessError, ask
+
+    channel = body.get("channel_id")
+    text = (body.get("text") or "").strip()
+    if not text:
+        await client.chat_postMessage(channel=channel, text="Give me something to plan.")
+        return
+
+    posted = await client.chat_postMessage(channel=channel, text=f"*{text}*\n_asking the harness…_")
+    thread_ts = posted["ts"]
+
+    try:
+        reply = await asyncio.to_thread(ask, text)
+    except HarnessError as exc:
+        logger.warning("dsh: harness failed: %s", exc)
+        await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=f":warning: The harness did not answer.\n```{exc}```",
+        )
+        return
+
+    await client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=reply.text[:3000])
+    await client.chat_update(channel=channel, ts=thread_ts, text=f"*{text}*\n_answered by `{reply.profile}`_")
+
+
 async def _handle_timebox_command(
     *,
     runtime,
@@ -1944,6 +1980,20 @@ def register_handlers(
     async def cmd_ff_setup(ack, body, respond, client, logger):
         await ack()
         await _run_setup(respond, client, user_id=body.get("user_id"))
+
+    @app.command("/dsh")
+    async def cmd_dsh(ack, body, client, logger):
+        """Route one turn to DeepSeek Harness.
+
+        The harness owns the loop and the tools; this handler only carries the
+        message there and the answer back. Everything runs in a thread off the
+        posted message, so the thread is the unit of conversation the way it
+        already is everywhere else in Slack.
+        """
+        await ack()
+        asyncio.create_task(
+            _handle_dsh_command(body=body, client=client, logger=logger)
+        )
 
     @app.command("/timebox")
     async def cmd_timebox(ack, body, respond, client, logger):
