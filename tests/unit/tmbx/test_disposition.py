@@ -208,3 +208,29 @@ def test_a_lone_commit_is_accepted_without_any_evidence_of_approval():
     """
     entries = [_entry(1, EntryKind.COMMIT, tx_id="tx1")]
     assert derive_dispositions(entries) == {1: Disposition.ACCEPTED}
+
+
+def test_dispositions_survive_an_entry_that_skipped_validation():
+    """A str-typed outcome must not turn every row into FAILED.
+
+    EntryKind and PatchOutcome are str-enums. An entry built without pydantic
+    validation -- model_construct, or a row reassembled from raw SQL, where
+    the column stores the enum name while the member carries its value --
+    holds a plain str. Under identity comparison the first check
+    (outcome != APPLIED) matched every row and the whole batch derived FAILED,
+    silently and in a direction that looks like a real result.
+
+    Found while reading the live journal: 173 real rows, every one of which
+    would have been reported as FAILED by a raw-SQL reader.
+    """
+    entry = JournalEntry.model_construct(
+        id=1,
+        kind="COMMIT",
+        calendar_id="primary",
+        plan_date=DAY,
+        ops_json="{}",
+        outcome="applied",
+        tx_id="tx1",
+        undoes_tx=None,
+    )
+    assert derive_dispositions([entry]) == {1: Disposition.ACCEPTED}
