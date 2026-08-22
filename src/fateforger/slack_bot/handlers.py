@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import json
 import logging
 import re
@@ -719,6 +720,30 @@ def _plan_sessions_channel_id() -> str | None:
     return None
 
 
+def _timebox_backend() -> str:
+    """Which system answers /timebox. "harness" unless told otherwise."""
+    return (os.environ.get("FF_TIMEBOX_BACKEND") or "harness").strip().lower()
+
+
+def _timebox_body_for_harness(body: dict) -> dict:
+    """Give a bare /timebox something to plan.
+
+    The harness handler refuses an empty message, which is right for /dsh --
+    there is nothing to infer from silence. /timebox is not silence: the
+    command names the intent, and the day is the obvious default. Without this
+    a bare /timebox answers "Give me something to plan", which reads as the
+    bot not knowing what its own command is for.
+    """
+    text = (body.get("text") or "").strip()
+    if not text:
+        text = (
+            "Plan my day. Read today's calendar and my active constraints "
+            "first, then propose a timebox. Do not commit anything without "
+            "being asked."
+        )
+    return {**body, "text": text}
+
+
 async def _handle_dsh_command(*, body, client, logger) -> None:
     """Carry one Slack turn to DeepSeek Harness and the answer back.
 
@@ -1271,6 +1296,45 @@ async def route_slack_event(
     recipient_key = origin_key
     if forced_thread_root:
         recipient_key = f"{channel}:{forced_thread_root}"
+    # The turn behind this call runs for tens of seconds -- measured at 43-54s
+    # of graph on a real Refine turn, with prefetch and stage decision before
+    # it. The ack posted above then sits unchanged for that whole minute, which
+    # from the thread is indistinguishable from the bot having died. A user who
+    # cannot tell those apart replies again, which is how one session reached
+    # nine Refine passes.
+    #
+    # This edits that same message rather than posting new ones, and swallows
+    # every failure: a progress indicator that spams the channel, or that takes
+    # down the work it is reporting on, is worse than no indicator at all. Same
+    # discipline ProgressChannel follows, for the same reason.
+    heartbeat_stop = asyncio.Event()
+
+    async def _turn_heartbeat() -> None:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        while True:
+            try:
+                await asyncio.wait_for(heartbeat_stop.wait(), timeout=8.0)
+                return
+            except asyncio.TimeoutError:
+                pass
+            elapsed = int(loop.time() - started)
+            try:
+                await client.chat_update(
+                    channel=origin_processing_msg["channel"],
+                    ts=origin_processing_msg["ts"],
+                    text=(
+                        f":hourglass_flowing_sand: *{agent_type}* is working"
+                        f" — {elapsed}s elapsed…"
+                    ),
+                )
+            except Exception:
+                # One failed edit means the next will probably fail too, and a
+                # retry loop against Slack helps nobody. Stop quietly; the real
+                # reply still goes out through _origin_update.
+                return
+
+    heartbeat_task = asyncio.create_task(_turn_heartbeat())
     try:
         result = await runtime.send_message(
             msg, recipient=AgentId(agent_type, key=recipient_key)
@@ -1295,6 +1359,11 @@ async def route_slack_event(
             text=f":warning: {type(e).__name__}: {_safe_exc_summary(e)}"
         )
         return
+    finally:
+        # Stop the heartbeat before anything writes the real reply, so it can
+        # never overwrite the answer with a stale "still working" edit.
+        heartbeat_stop.set()
+        heartbeat_task.cancel()
     chat_message = getattr(result, "chat_message", result)
     handoff_target = _extract_handoff_target(chat_message)
 
@@ -2042,17 +2111,36 @@ def register_handlers(
 
     @app.command("/timebox")
     async def cmd_timebox(ack, body, respond, client, logger):
+        """Plan a day, through the harness by default.
+
+        Migrating one agent at a time, timeboxing first: it is the one with a
+        working harness equivalent already answering against the real
+        constraint store, so this step is mostly deciding to trust it.
+
+        FF_TIMEBOX_BACKEND=legacy routes back to the AutoGen flow, which stays
+        wired and reachable. A migration nobody can reverse is a rewrite, and
+        the legacy path is still the only one with the five-stage machine.
+        """
         await ack()
-        # Fire off in background to avoid blocking Slack's 3-second timeout
+        if _timebox_backend() == "legacy":
+            # Fire off in background to avoid blocking Slack's 3-second timeout
+            asyncio.create_task(
+                _handle_timebox_command(
+                    runtime=runtime,
+                    focus=focus,
+                    default_agent=default_agent,
+                    body=body,
+                    client=client,
+                    respond=respond,
+                    get_constraint_store=_get_constraint_store,
+                )
+            )
+            return
         asyncio.create_task(
-            _handle_timebox_command(
-                runtime=runtime,
-                focus=focus,
-                default_agent=default_agent,
-                body=body,
+            _handle_dsh_command(
+                body=_timebox_body_for_harness(body),
                 client=client,
-                respond=respond,
-                get_constraint_store=_get_constraint_store,
+                logger=logger,
             )
         )
 
