@@ -1,0 +1,684 @@
+{
+ "system_chars": 26352,
+ "tools_full": 34,
+ "tools_narrow": 11,
+ "samples": 5,
+ "tasks": {
+  "patch": "A structured plan_apply patch. Correctness matters more than speed, and long structured output is where throughput bites."
+ },
+ "cells": [
+  {
+   "contender": "nemotron-3.5-lightning",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 0.5097319580381736,
+     "total": 0.9066841670428403,
+     "out_tokens": 347,
+     "prompt_tokens": 16373,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": {\"ops\": [{\"op\": \"add\", \"h\": \"DW1\", \"n\": \"Deep work\", \"t\": \"D\", \"p\": {\"a\": \"bn\", \"dur\": \"4h\"}, \"why\": \"Morning deep work\"}, {\"op\": \"add\", \"h\": \"EVT1\", \"n\": \"No meetings before 13:00\", \"t\": \"R\", \"p\": {\"a\": \"fs\", \"st\": \"00:00:00\", \"dur\": \"13:00:00\"}, \"why\": \"Constraint: no meetings before 13:00\"}, {\"op\": \"add\", \"h\": \"GYM1\", \"n\": \"Gym\", \"t\": \"R\", \"p\": {\"a\": \"fw\", \"st\": \"18:00:00\", \"et\": \"20:00:00\"}, \"why\": \"Gym at 18:00\"}, {\"op\": \"add\", \"h\": \"OATS1\", \"n\": \"Oats\", \"t\": \"R\", \"p\": {\"a\": \"bn\", \"dur\": \"2h\"}, \"why\": \"Oats 2h before\"}], \"reason\": \"tomorrow plan\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.7628684579976834,
+     "total": 0.7894132079673,
+     "out_tokens": 52,
+     "prompt_tokens": 16373,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\": \"2026-08-24\", \"day_type\": \"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.5691171670332551,
+     "total": 0.8811308750300668,
+     "out_tokens": 261,
+     "prompt_tokens": 16373,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": \"{\\\"ops\\\": [{\\\"op\\\": \\\"add\\\", \\\"h\\\": \\\"DEE1\\\", \\\"n\\\": \\\"Deep work\\\", \\\"t\\\": \\\"DW\\\", \\\"p\\\": {\\\"a\\\": \\\"bn\\\", \\\"dur\\\": \\\"06:00h\\\"}, \\\"why\\\": \\\"deep work\\\"}, {\\\"op\\\": \\\"add\\\", \\\"h\\\": \\\"GYM1\\\", \\\"n\\\": \\\"Gym\\\", \\\"t\\\": \\\"SW\\\", \\\"p\\\": {\\\"a\\\": \\\"fw\\\", \\\"st\\\": \\\"18:00:00\\\", \\\"et\\\": \\\"19:00:00\\\"}, \\\"why\\\": \\\"gym at 18:00\\\"}, {\\\"op\\\": \\\"add\\\", \\\"h\\\": \\\"OATS1\\\", \\\"n\\\": \\\"Oats\\\", \\\"t\\\": \\\"BG\\\", \\\"p\\\": {\\\"a\\\": \\\"bn\\\", \\\"dur\\\": \\\"02:00h\\\"}, \\\"why\\\": \\\"oats 2h before\\\"}}]\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.3938727500499226,
+     "total": 0.7933507499983534,
+     "out_tokens": 328,
+     "prompt_tokens": 16373,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": {\"ops\": [{\"op\": \"add\", \"h\": \"MTG1\", \"n\": \"Meeting Buffer\", \"t\": \"M\", \"p\": {\"a\": \"bn\", \"dur\": \"PT2H\"}, \"why\": \"no meetings before 13:00 MUST\"}, {\"op\": \"add\", \"h\": \"DW1\", \"n\": \"Deep Work\", \"t\": \"DW\", \"p\": {\"a\": \"ap\", \"dur\": \"PT4H\"}, \"why\": \"deep work in morning out per user\"}, {\"op\": \"add\", \"h\": \"GYM1\", \"n\": \"Gym\", \"t\": \"H\", \"p\": {\"a\": \"fw\", \"st\": \"18:00:00\", \"et\": \"19:00:00\"}, \"why\": \"gym at 18:00\"}, {\"op\": \"add\", \"h\": \"OATS1\", \"n\": \"Oats\", \"t\": \"BG\", \"p\": {\"a\": \"bn\", \"dur\": \"PT2H\"}, \"why\": \"oats 2h before\"}], \"reason\": \"initial plan blockout\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.4852490830235183,
+     "total": 0.8564070830470882,
+     "out_tokens": 272,
+     "prompt_tokens": 16373,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": \"{\\\"ops\\\": [{\\\"op\\\": \\\"add\\\", \\\"h\\\": \\\"DW1\\\", \\\"n\\\": \\\"Deep work\\\", \\\"t\\\": \\\"DW\\\", \\\"p\\\": \\\"ap\\\", \\\"d\\\": \\\"4h\\\", \\\"why\\\": \\\"user: deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early)\\\"}, {\\\"op\\\": \\\"add\\\", \\\"h\\\": \\\"GY1\\\", \\\"n\\\": \\\"Gym\\\", \\\"t\\\": \\\"BU\\\", \\\"p\\\": \\\"fw\\\", \\\"st\\\": \\\"18:00:00\\\", \\\"et\\\": \\\"19:00:00\\\", \\\"why\\\": \\\"user: gym at 18:00\\\"}, {\\\"op\\\": \\\"add\\\", \\\"h\\\": \\\"OA1\\\", \\\"n\\\": \\\"Oats\\\", \\\"t\\\": \\\"BU\\\", \\\"p\\\": \\\"bn\\\", \\\"d\\\": \\\"2h\\\", \\\"why\\\": \\\"user: oats 2h before\\\"}]\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.7-flash @minimal",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 2.8203310840181075,
+     "total": 2.8602321249782108,
+     "out_tokens": 214,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\":{\"events\":[],\"calendar_id\":\"primary\",\"day\":\"2026-08-24\"},\"patch\":{\"ops\":[{\"h\":\"OT1\",\"why\":\"Oats 2h before gym at 18:00\",\"n\":\"Oats\",\"d\":\"Pre-workout oats\",\"t\":\"PR\",\"anchor_source\":\"user\",\"p\":{\"a\":\"fs\",\"dur\":\"PT30M\",\"st\":\"16:00:00\"}},{\"p\":{\"st\":\"18:00:00\",\"a\":\"fs\",\"dur\":\"PT1H\"},\"t\":\"H\",\"d\":\"Workout session\",\"why\":\"Gym at 18:00\",\"n\":\"Gym\",\"anchor_source\":\"user\",\"h\":\"GYM1\"}]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.7638128750259057,
+     "total": 2.764782209007535,
+     "out_tokens": 155,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"h\":\"OAT1\",\"t\":\"R\",\"anchor_source\":\"user\",\"p\":{\"dur\":\"PT15M\",\"st\":\"16:00:00\"},\"n\":\"Oats\"},{\"n\":\"Gym\",\"anchor_source\":\"user\",\"p\":{\"dur\":\"PT1H\",\"st\":\"18:00:00\"},\"h\":\"GYM1\",\"t\":\"H\"}]},\"snapshot\":{\"events\":[],\"day\":\"2026-08-24\",\"calendar_id\":\"primary\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.223919083015062,
+     "total": 2.260877166001592,
+     "out_tokens": 167,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"anchor_source\":\"user\",\"n\":\"Oats\",\"h\":\"OATS1\",\"t\":\"PR\",\"p\":{\"st\":\"16:00:00\",\"a\":\"fs\",\"dur\":\"PT30M\"}},{\"n\":\"Gym\",\"anchor_source\":\"user\",\"h\":\"GYM1\",\"p\":{\"st\":\"18:00:00\",\"dur\":\"PT1H\",\"a\":\"fs\"},\"t\":\"H\"}]},\"snapshot\":{\"events\":[],\"calendar_id\":\"primary\",\"day\":\"2026-08-24\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.880842125043273,
+     "total": 2.98064995900495,
+     "out_tokens": 206,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\":{\"events\":[],\"day\":\"2026-08-24\",\"calendar_id\":\"primary\"},\"patch\":{\"ops\":[{\"n\":\"Deep Work\",\"h\":\"DW1\",\"anchor_source\":\"user\",\"t\":\"DW\",\"p\":{\"st\":\"09:00:00\",\"dur\":\"PT2H\"}},{\"t\":\"R\",\"h\":\"OAT1\",\"p\":{\"dur\":\"PT30M\",\"st\":\"16:00:00\"},\"anchor_source\":\"user\",\"n\":\"Oats\"},{\"p\":{\"dur\":\"PT1H\",\"st\":\"18:00:00\"},\"t\":\"H\",\"h\":\"GYM1\",\"anchor_source\":\"user\",\"n\":\"Gym\"}]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.6504019170533866,
+     "total": 2.6792557919980027,
+     "out_tokens": 197,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\":{\"calendar_id\":\"primary\",\"day\":\"2026-08-24\",\"events\":[]},\"patch\":{\"ops\":[{\"anchor_source\":\"user\",\"t\":\"PR\",\"d\":\"\",\"op\":\"add\",\"h\":\"OATS1\",\"n\":\"Oats\",\"p\":{\"dur\":\"PT30M\",\"st\":\"16:00:00\",\"a\":\"fs\"}},{\"p\":{\"dur\":\"PT1H\",\"a\":\"fs\",\"st\":\"18:00:00\"},\"n\":\"Gym\",\"h\":\"GYM1\",\"anchor_source\":\"user\",\"op\":\"add\",\"after\":\"OATS1\",\"d\":\"\",\"t\":\"H\"}]}}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gpt-oss-120b @medium #latency",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 2.884556207980495,
+     "total": 3.3515235419617966,
+     "out_tokens": 1015,
+     "prompt_tokens": 13068,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": {\"ops\": [{\"op\":\"add\",\"h\":\"DW1\",\"n\":\"Deep work\",\"t\":\"DW\",\"p\":{\"a\":\"fs\",\"st\":\"09:00:00\",\"dur\":\"PT3H\"},\"after\":null,\"anchor_source\":\"user\"},{\"op\":\"add\",\"h\":\"BU1\",\"n\":\"Oats\",\"t\":\"BU\",\"p\":{\"a\":\"fs\",\"st\":\"16:00:00\",\"dur\":\"PT30M\"},\"after\":\"DW1\"},{\"op\":\"add\",\"h\":\"BG1\",\"n\":\"Gym\",\"t\":\"BG\",\"p\":{\"a\":\"fs\",\"st\":\"18:00:00\",\"dur\":\"PT1H\"},\"after\":\"BU1\"}]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.889163124957122,
+     "total": 3.3395248749875464,
+     "out_tokens": 962,
+     "prompt_tokens": 13068,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": {\"ops\": [{\"op\": \"add\", \"h\": \"OAT1\", \"n\": \"Oats\", \"t\": \"C\", \"p\": {\"a\": \"fs\", \"st\": \"16:00:00\", \"dur\": \"PT0H30M\"}, \"after\": null}, {\"op\": \"add\", \"h\": \"GYM1\", \"n\": \"Gym\", \"t\": \"C\", \"p\": {\"a\": \"fs\", \"st\": \"18:00:00\", \"dur\": \"PT1H\"}, \"after\": \"OAT1\"}]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.3983580829808488,
+     "total": 1.8607644169824198,
+     "out_tokens": 452,
+     "prompt_tokens": 13068,
+     "tool_calls": 0,
+     "text": "Before I create the plan, I want to be sure I understand your request correctly.\n\nYou said:\n\n* \u201cdeep work in the morning is out (no meetings before\u202f13:00 is a\u202fMUST, and deep work is fine early)\u201d\n* \u201cgym at\u202f18:00\u201d\n* \u201coats\u202f2\u202fh before\u201d\n\nDo you want **no deep\u2011work block in the morning**, leaving the morning free (or only for other activities you\u2019ll add later), while still respecting the MUST that **no meetings occur before\u202f13:00**? Or would you like a **deep\u2011work block\u202fearly\u202fin the morning** (e.g.,\u202f08:00\u201110:00) and then keep the rest of the morning clear of meetings?\n\nJust let me know which of those you prefer, and I\u2019ll craft the patch accordingly.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 2.815525333979167,
+     "total": 3.4530783749651164,
+     "out_tokens": 1080,
+     "prompt_tokens": 13068,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": {\"ops\": [ {\"op\": \"add\", \"h\": \"DW1\", \"n\": \"Deep work\", \"t\": \"DW\", \"p\": {\"a\": \"ap\", \"dur\": \"PT3H\"}, \"after\": null, \"anchor_source\": \"user\"}, {\"op\": \"add\", \"h\": \"OT1\", \"n\": \"Eat oats\", \"t\": \"BG\", \"p\": {\"a\": \"fs\", \"st\": \"16:00:00\", \"dur\": \"PT30M\"}, \"after\": \"DW1\", \"anchor_source\": \"user\"}, {\"op\": \"add\", \"h\": \"GY1\", \"n\": \"Gym\", \"t\": \"H\", \"p\": {\"a\": \"fs\", \"st\": \"18:00:00\", \"dur\": \"PT1H\"}, \"after\": \"OT1\", \"anchor_source\": \"user\"} ]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 3.678543041984085,
+     "total": 3.740632208005991,
+     "out_tokens": 1200,
+     "prompt_tokens": 13068,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gpt-oss-120b @high #latency",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": null,
+     "total": 4.0471194999990985,
+     "out_tokens": 1200,
+     "prompt_tokens": 13068,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 4.892057500022929,
+     "out_tokens": 1200,
+     "prompt_tokens": 13068,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 3.704766875016503,
+     "out_tokens": 1200,
+     "prompt_tokens": 13068,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 3.8578564999625087,
+     "out_tokens": 1200,
+     "prompt_tokens": 13068,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 3.7838382499758154,
+     "out_tokens": 1200,
+     "prompt_tokens": 13068,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.7-flash @high",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 5.240178958047181,
+     "total": 5.687859541038051,
+     "out_tokens": 777,
+     "prompt_tokens": 13696,
+     "tool_calls": 3,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 639,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-20260824-01\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 4.233699375006836,
+     "total": 5.248113041976467,
+     "out_tokens": 720,
+     "prompt_tokens": 13696,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 460,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"session_id\":\"session-2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"observed_at\":\"2026-08-23T10:00:00Z\",\"session_id\":\"session-2026-08-24\",\"write_uid\":\"obs-1\",\"text\":\"Block out tomorrow: deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 6.097919459047262,
+     "total": 7.084928959026001,
+     "out_tokens": 852,
+     "prompt_tokens": 13696,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 623,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"session_id\":\"session-2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"channel\":\"planning\",\"text\":\"Block out tomorrow: deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.\",\"session_id\":\"session-2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 5.633995292009786,
+     "total": 5.698113874997944,
+     "out_tokens": 646,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 604,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 4.436229458020534,
+     "total": 4.467369583027903,
+     "out_tokens": 482,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 428,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess_20260824_01\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "claude-haiku-4.5 @high",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 8.414998540945817,
+     "total": 8.7296484579565,
+     "out_tokens": 1200,
+     "prompt_tokens": 17374,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 505,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": {\n  \"ops\": [\n    {\n      \"op\": \"add\",\n      \"h\": \"DW1\",\n      \"n\": \"Deep work\",\n      \"t\": \"DW\",\n      \"p\": {\"a\": \"fw\", \"st\": \"09:00\", \"et\": \"12:00\"},\n      \"anchor_source\": \"user\",\n      \"why\": \"you said: deep work in the morning\"\n    },\n    {\n      \"op\": \"add\",\n      \"h\": \"OATS1\",\n      \"n\": \"Oats\",\n      \"t\": \"H\",\n      \"p\": {\"a\": \"fw\", \"st\": \"16:00\", \"et\": \"16:30\"},\n      \"anchor_source\": \"user\",\n      \"why\": \"you said: oats 2h before gym\"\n    },\n    {\n      \"op\": \"add\",\n      \"h\": \"GYM1\",\n      \"n\": \"Gym\",\n      \"t\": \"PR\",\n      \"p\": {\"a\": \"fw\", \"st\": \"18:00\", \"et\": \"19:00\"},\n      \""
+      }
+     ]
+    },
+    {
+     "ttft": 10.303635374992155,
+     "total": 10.359788958972786,
+     "out_tokens": 1200,
+     "prompt_tokens": 17374,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 600,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": {\n  \"ops\": [\n    {\n      \"op\": \"add\",\n      \"h\": \"DW1\",\n      \"n\": \"Deep work\",\n      \"t\": \"DW\",\n      \"p\": {\"a\": \"fs\", \"st\": \"09:00\", \"dur\": \"PT3H\"},\n      \"anchor_source\": \"user\",\n      \"why\": \"you said: deep work in the morning\"\n    },\n    {\n      \""
+      }
+     ]
+    },
+    {
+     "ttft": 9.869210084027145,
+     "total": 9.887790124979801,
+     "out_tokens": 1200,
+     "prompt_tokens": 17374,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 573,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": {\n  \"ops\": [\n    {\n      \"op\": \"add\",\n      \"h\": \"DW1\",\n      \"n\": \"Deep work\",\n      \"t\":"
+      }
+     ]
+    },
+    {
+     "ttft": 4.230693165969569,
+     "total": 6.131846749980468,
+     "out_tokens": 805,
+     "prompt_tokens": 17374,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 320,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\": \"2026-08-24\", \"day_type\": \"working\"}"
+      },
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": {\n  \"ops\": [\n    {\n      \"op\": \"add\",\n      \"h\": \"DW1\",\n      \"n\": \"Deep work\",\n      \"t\": \"DW\",\n      \"p\": {\"a\": \"ap\", \"dur\": \"PT4H\"},\n      \"after\": null,\n      \"anchor_source\": \"user\"\n    },\n    {\n      \"op\": \"add\",\n      \"h\": \"OATS1\",\n      \"n\": \"Oats\",\n      \"t\": \"BG\",\n      \"p\": {\"a\": \"fs\", \"st\": \"16:00\", \"dur\": \"PT1H\"},\n      \"after\": \"DW1\",\n      \"anchor_source\": \"user\"\n    },\n    {\n      \"op\": \"add\",\n      \"h\": \"GYM1\",\n      \"n\": \"Gym\",\n      \"t\": \"H\",\n      \"p\": {\"a\": \"fs\", \"st\": \"18:00\", \"dur\": \"PT1H\"},\n      \"after\": \"OATS1\",\n      \"anchor_source\": \"user\"\n    }\n  ]\n}}"
+      }
+     ]
+    },
+    {
+     "ttft": 7.709191458008718,
+     "total": 8.435911957989447,
+     "out_tokens": 1117,
+     "prompt_tokens": 17374,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 422,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": {\n  \"ops\": [\n    {\n      \"op\": \"add\",\n      \"h\": \"DW1\",\n      \"n\": \"Deep work\",\n      \"t\": \"DW\",\n      \"p\": {\n        \"a\": \"fs\",\n        \"st\": \"09:00\",\n        \"dur\": \"PT4H\"\n      },\n      \"anchor_source\": \"user\",\n      \"why\": \"you said: deep work in the morning\"\n    },\n    {\n      \"op\": \"add\",\n      \"h\": \"OATS1\",\n      \"n\": \"Oats\",\n      \"t\": \"C\",\n      \"p\": {\n        \"a\": \"fs\",\n        \"st\": \"16:00\",\n        \"dur\": \"PT30M\"\n      },\n      \"anchor_source\": \"user\",\n      \"why\": \"you said: oats 2h before gym\"\n    },\n    {\n      \"op\": \"add\",\n      \"h\": \"GYM1\",\n      \"n\": \"Gym\",\n      \"t\": \"BU\",\n      \"p\": {\n        \"a\": \"fs\",\n        \"st\": \"18:00\",\n        \"dur\": \"PT1H30M\"\n      },\n      \"anchor_source\": \"user\",\n      \"why\": \"you said: gym at 18:00\"\n    }\n  ]\n}}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.1-pro @high",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 3.873955625051167,
+     "total": 4.532995625049807,
+     "out_tokens": 243,
+     "prompt_tokens": 13696,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 119,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess_20260824_1\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"session_id\":\"sess_20260824_1\",\"text\":\"Block out tomorrow: deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 4.201383290986996,
+     "total": 4.230352915998083,
+     "out_tokens": 333,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 291,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": null,
+     "total": 12.418588707980234,
+     "out_tokens": 1151,
+     "prompt_tokens": 13696,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 1151,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 12.560741500055883,
+     "out_tokens": 1154,
+     "prompt_tokens": 13696,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 1154,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 13.284424833022058,
+     "out_tokens": 1155,
+     "prompt_tokens": 13696,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 1155,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.1-pro @minimal",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 8.005103959003463,
+     "total": 8.045452959020622,
+     "out_tokens": 938,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 690,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\":{\"calendar_id\":\"primary\",\"day\":\"2026-08-24\",\"events\":[]},\"patch\":{\"ops\":[{\"t\":\"DW\",\"anchor_source\":\"user\",\"p\":{\"dur\":\"PT3H\",\"a\":\"fs\",\"st\":\"09:00\"},\"op\":\"add\",\"h\":\"DW1\",\"d\":\"\",\"n\":\"Deep Work\"},{\"anchor_source\":\"user\",\"t\":\"PR\",\"op\":\"add\",\"p\":{\"st\":\"16:00\",\"a\":\"fs\",\"dur\":\"PT30M\"},\"h\":\"OATS1\",\"n\":\"Oats\",\"d\":\"\"},{\"h\":\"GYM1\",\"anchor_source\":\"user\",\"n\":\"Gym\",\"d\":\"\",\"op\":\"add\",\"t\":\"PR\",\"p\":{\"a\":\"fs\",\"dur\":\"PT1H\",\"st\":\"18:00\"}}]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 6.69583145796787,
+     "total": 6.754385457956232,
+     "out_tokens": 769,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 478,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\":{\"calendar_id\":\"primary\",\"events\":[],\"day\":\"2026-08-24\"},\"patch\":{\"ops\":[{\"n\":\"Deep Work\",\"op\":\"add\",\"p\":{\"et\":\"13:00:00\",\"st\":\"09:00:00\",\"a\":\"fw\"},\"t\":\"DW\",\"anchor_source\":\"user\",\"h\":\"DW1\",\"why\":\"deep work in the morning\"},{\"n\":\"Oats\",\"anchor_source\":\"user\",\"h\":\"OATS1\",\"why\":\"oats 2h before gym\",\"op\":\"add\",\"t\":\"M\",\"p\":{\"a\":\"fw\",\"et\":\"16:15:00\",\"st\":\"16:00:00\"}},{\"n\":\"Gym\",\"why\":\"gym at 18:00\",\"t\":\"PR\",\"p\":{\"et\":\"19:00:00\",\"a\":\"fw\",\"st\":\"18:00:00\"},\"anchor_source\":\"user\",\"h\":\"GYM1\",\"op\":\"add\"}]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 9.375110541004688,
+     "total": 9.40136999997776,
+     "out_tokens": 1083,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 841,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"op\":\"add\",\"t\":\"DW\",\"p\":{\"a\":\"fs\",\"dur\":\"PT2H\",\"st\":\"09:00:00\"},\"h\":\"DW1\",\"n\":\"Deep Work\",\"anchor_source\":\"user\"},{\"t\":\"M\",\"op\":\"add\",\"n\":\"Oats\",\"h\":\"OATS1\",\"anchor_source\":\"user\",\"p\":{\"st\":\"16:00:00\",\"dur\":\"PT15M\",\"a\":\"fs\"}},{\"p\":{\"st\":\"18:00:00\",\"a\":\"fs\",\"dur\":\"PT1H\"},\"h\":\"GYM1\",\"n\":\"Gym\",\"t\":\"H\",\"op\":\"add\",\"anchor_source\":\"user\"}]},\"snapshot\":{\"calendar_id\":\"primary\",\"events\":[],\"day\":\"2026-08-24\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": null,
+     "total": 12.017380291013978,
+     "out_tokens": 1047,
+     "prompt_tokens": 13696,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 1047,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 12.362392458016984,
+     "out_tokens": 1012,
+     "prompt_tokens": 13696,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 1012,
+     "calls": []
+    }
+   ]
+  }
+ ]
+}
