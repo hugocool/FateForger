@@ -32,6 +32,17 @@ from pathlib import Path
 #: ordinary headless run rather than a Slack turn — so there is nothing to do.
 PROGRESS_FILE_ENV = "FF_DSH_PROGRESS_FILE"
 
+#: Where a committed transaction id is recorded, so Slack can offer to reverse
+#: it. Separate from the progress file because the two have different readers
+#: and different lifetimes: progress is consumed as it streams, a transaction
+#: id outlives the turn and is read once at the end.
+COMMIT_FILE_ENV = "FF_DSH_COMMIT_FILE"
+
+#: The tool whose result carries a reversible transaction. Matched by suffix
+#: because the harness namespaces MCP tools as ``mcp__<server>__<name>`` --
+#: identifiers this system minted, not anything a person wrote.
+_COMMIT_TOOL = "plan_commit"
+
 #: What each tool is called when a person reads it.
 #:
 #: These keys are harness- and server-minted identifiers -- they name tools
@@ -83,6 +94,30 @@ def step_line(event: dict) -> str | None:
     return f"{phase}\t{label_for(tool.strip())}"
 
 
+def committed_tx_id(event: dict) -> str | None:
+    """The transaction id from a ``plan_commit`` result, if this is one.
+
+    Read structurally out of the JSON tmbx returned, never scraped from prose:
+    ``plan_commit`` answers ``{"committed": true, "tx_id": ...}``, so the id is
+    a field lookup. A refused commit carries no ``tx_id`` and yields ``None``,
+    which is what stops Slack offering to reverse a write that never happened.
+    """
+    tool = event.get("tool_name")
+    if not isinstance(tool, str) or not tool.endswith(_COMMIT_TOOL):
+        return None
+    response = event.get("tool_response")
+    if not isinstance(response, str):
+        return None
+    try:
+        payload = json.loads(response)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or not payload.get("committed"):
+        return None
+    tx_id = payload.get("tx_id")
+    return tx_id if isinstance(tx_id, str) and tx_id.strip() else None
+
+
 def main(argv: list[str] | None = None) -> int:
     destination = os.environ.get(PROGRESS_FILE_ENV)
     if not destination:
@@ -102,20 +137,39 @@ def main(argv: list[str] | None = None) -> int:
         print("dsh-progress-hook: event was not an object", file=sys.stderr)
         return 0
 
+    tx_id = committed_tx_id(event)
+    if tx_id:
+        _append(os.environ.get(COMMIT_FILE_ENV), tx_id, what="commit id")
+
     line = step_line(event)
     if line is None:
         return 0
 
+    _append(destination, line)
+    return 0
+
+
+def _append(destination: str | None, line: str, *, what: str = "progress") -> None:
+    """Add one line, or do nothing when nobody is listening.
+
+    ``what`` names the kind of record, because this now serves two files with
+    different readers -- a failure that says only "could not write" leaves the
+    reader guessing which one, and they fail for different reasons.
+
+    Append-only and opened per call: many hook processes write concurrently,
+    and a single short line under O_APPEND is not interleaved by the kernel.
+    Nothing reads back, so there is no state to keep consistent.
+    """
+    if not destination:
+        return
     try:
-        # Append-only and opened per call: many hook processes write here
-        # concurrently, and a single short line under O_APPEND is not
-        # interleaved by the kernel. Nothing reads back, so there is no state
-        # to keep consistent -- only lines to add.
         with Path(destination).open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
     except OSError as exc:
-        print(f"dsh-progress-hook: could not write progress: {exc}", file=sys.stderr)
-    return 0
+        print(
+            f"dsh-progress-hook: could not write {what} to {destination}: {exc}",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover - process entry point

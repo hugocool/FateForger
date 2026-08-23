@@ -841,6 +841,51 @@ async def instant_ack(client, event: dict) -> dict | None:
         return None
 
 
+FF_HARNESS_UNDO_ACTION_ID = "ff_harness_undo"
+
+
+def harness_undo_block(tx_id: str) -> dict:
+    """The Undo control, offered beside a commit that actually landed.
+
+    Carries the transaction id in `value` rather than reversing "the last
+    commit": a thread may commit more than once, and undoing whichever was most
+    recent globally would reverse someone else's write from another thread.
+    The id names exactly the write this message reported.
+    """
+    return {
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "action_id": FF_HARNESS_UNDO_ACTION_ID,
+                "style": "danger",
+                "text": {"type": "plain_text", "text": "Undo this change"},
+                "value": tx_id,
+            }
+        ],
+    }
+
+
+def _undo_outcome_text(payload: dict) -> str:
+    """What to say in Slack about tmbx's answer.
+
+    Refusals are reported with their reason, never as a button that quietly did
+    nothing. `plan_undo` declines when the day has drifted since the commit --
+    its precondition is total, which is what makes the restore byte-exact -- and
+    "someone changed the day, so this cannot be cleanly reversed" is a different
+    problem from "that transaction does not exist", with a different remedy.
+    """
+    # tmbx answers an undo with `committed`, the same field a commit uses --
+    # an undo is itself a write. Reading a field it never sets would report
+    # every reversal, successful or refused, as a failure.
+    if payload.get("committed"):
+        return ":leftwards_arrow_with_hook: Reversed. The calendar is back to how it was before that commit."
+    reason = str(payload.get("reason") or "").strip() or "unknown"
+    detail = str(payload.get("message") or payload.get("raw") or "").strip()
+    text = f":warning: Could not undo that change — `{reason}`."
+    return f"{text}\n```{detail[:400]}```" if detail else text
+
+
 def _timebox_backend() -> str:
     """Which system answers /timebox. "harness" unless told otherwise."""
     return (os.environ.get("FF_TIMEBOX_BACKEND") or "harness").strip().lower()
@@ -932,7 +977,23 @@ async def _handle_dsh_command(*, body, client, logger) -> None:
     await progress.close()
     # The answer is an artifact: posted once, never re-edited. Rewriting it on
     # every update is what grew a message past Slack's limit elsewhere.
-    await client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=reply.text[:3000])
+    # Offered only when a write actually landed. A refused commit carries no
+    # transaction id, so there is nothing to reverse and no button appears --
+    # which is what stops Undo implying a change that never happened.
+    answer_blocks = (
+        [
+            {"type": "section", "text": {"type": "mrkdwn", "text": reply.text[:2900]}},
+            harness_undo_block(reply.committed_tx_id),
+        ]
+        if reply.committed_tx_id
+        else None
+    )
+    await client.chat_postMessage(
+        channel=channel,
+        thread_ts=thread_ts,
+        text=reply.text[:3000],
+        **({"blocks": answer_blocks} if answer_blocks else {}),
+    )
     elapsed = (reply.timings or {}).get("elapsed_s")
     calls = (reply.timings or {}).get("tool_calls")
     summary = f"_answered by `{reply.profile}`_"
@@ -2286,6 +2347,46 @@ def register_handlers(
     async def cmd_ff_setup(ack, body, respond, client, logger):
         await ack()
         await _run_setup(respond, client, user_id=body.get("user_id"))
+
+    @app.action(FF_HARNESS_UNDO_ACTION_ID)
+    async def act_harness_undo(ack, body, client, logger):
+        """Reverse the commit this message reported, by its own transaction id.
+
+        Calls tmbx directly rather than asking the harness to undo. A button
+        that means "reverse that" must reverse that: routing it through a
+        planning turn would let a model decide whether to call plan_undo and
+        with which id, which is a judgement in a mechanical path guarding the
+        calendar.
+
+        Every outcome is posted. A refusal carries its reason -- a day that has
+        drifted since the commit and a transaction that never existed are
+        different problems -- and an unreachable server says so rather than
+        being reported as a refusal tmbx never made.
+        """
+        await ack()
+        from .tmbx_client import TmbxClient, UndoUnavailable
+
+        action = (body.get("actions") or [{}])[0]
+        tx_id = (action.get("value") or "").strip()
+        channel = (body.get("channel") or {}).get("id") or ""
+        message = body.get("message") or {}
+        thread_root = message.get("thread_ts") or message.get("ts") or ""
+        if not (channel and tx_id):
+            logger.warning("undo pressed with no transaction to reverse")
+            return
+
+        try:
+            payload = await TmbxClient().undo(tx_id)
+            text = _undo_outcome_text(payload)
+        except UndoUnavailable as exc:
+            logger.warning("undo could not reach tmbx: %s", exc)
+            text = (
+                ":warning: Could not reach the calendar service, so nothing was "
+                f"undone and the commit still stands.\n```{exc}```"
+            )
+        await client.chat_postMessage(
+            channel=channel, thread_ts=thread_root or None, text=text
+        )
 
     @app.action(FF_HARNESS_APPROVE_ACTION_ID)
     async def act_harness_approve(ack, body, client, logger):

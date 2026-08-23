@@ -33,7 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .dsh_progress_hook import PROGRESS_FILE_ENV
+from .dsh_progress_hook import COMMIT_FILE_ENV, PROGRESS_FILE_ENV
 from .mrkdwn import to_mrkdwn
 
 #: Where the PreToolUse commit gate looks for a Slack approval token. Named
@@ -80,6 +80,10 @@ class HarnessReply:
     #: process boot, not the model, and optimising the wrong one is free to do
     #: and useless.
     timings: dict[str, float] | None = None
+    #: The transaction this turn committed, if it committed one. Present only
+    #: for a write that actually landed -- a refused commit carries no id --
+    #: so Slack can offer to reverse exactly what happened and nothing else.
+    committed_tx_id: str | None = None
 
 
 def _repo_env() -> dict[str, str]:
@@ -223,10 +227,14 @@ def ask(
 
     started = time.monotonic()
     steps = 0
+    last_tx_id: str | None = None
 
     with tempfile.TemporaryDirectory(prefix="dsh-progress-") as workspace:
         progress = Path(workspace) / "steps"
         progress.touch()
+        commits = Path(workspace) / "commits"
+        commits.touch()
+        child_env[COMMIT_FILE_ENV] = str(commits)
         stop = threading.Event()
         tail: threading.Thread | None = None
         collected: list[int] = []
@@ -257,6 +265,18 @@ def ask(
             if tail is not None:
                 tail.join(timeout=_POLL_INTERVAL_S * 4)
                 steps = collected[0] if collected else 0
+            # Read before the workspace is removed. The last id wins: a turn
+            # may commit more than once, and the most recent write is the one
+            # an Undo control offered now would reverse.
+            try:
+                recorded = [
+                    line.strip()
+                    for line in commits.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+            except OSError:
+                recorded = []
+            last_tx_id = recorded[-1] if recorded else None
 
     if done.returncode != 0:
         tail_lines = (done.stderr or "").strip().splitlines()[-5:]
