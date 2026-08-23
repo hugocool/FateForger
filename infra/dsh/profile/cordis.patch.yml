@@ -25,6 +25,27 @@
 - id: agent-default-model
   config:
     provider: openrouter
+    # `:nitro` sorts OpenRouter's routing by THROUGHPUT, which for this model
+    # resolves to Cerebras. Naming the model alone would not: the default
+    # routing sorts by PRICE, and `sort: latency` is worse than useless here --
+    # this model's four fastest-answering hosts sit within 72ms of each other
+    # on time-to-first-token while their generation rates run 31 to 1,173
+    # tok/s, so sorting on latency picks the 31 tok/s host on a rounding error.
+    #
+    # Measured 2026-08-24 against gemini-3.6-flash, which this replaces
+    # (scripts/bench/, pinned providers, 5 samples per cell):
+    #
+    #                     route TTFT   prose TTFT   tok/s   $/month at 20 turns/day
+    #   gpt-oss-120b           0.54s        0.52s     371                     $1.05
+    #   gemini-3.6-flash       1.08s        0.74s     106                    $22.30
+    #
+    # Half the latency, three times the throughput, a twenty-first of the cost.
+    # The month figure is priced from measured token counts, not a guess.
+    #
+    # This is the LOOP model: routing, reads, stage prose, progress lines. It
+    # is not the patch model -- see #192. On the unconstrained patch task it
+    # scored 0/5, in company with almost everything else, by choosing a
+    # different tool rather than by building a bad patch.
     model: google/gemini-3.6-flash
 
 # 2. The system prompt, in two pieces.

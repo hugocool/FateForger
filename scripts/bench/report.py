@@ -4,12 +4,20 @@
 from __future__ import annotations
 
 import json
+import os
 import statistics
 import sys
+import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
-TASK_ORDER = ["route", "parallel_reads", "stage_prose", "progress_line", "patch"]
+#: A turn is not one call. The five task shapes here stand in for the five
+#: model round trips a real planning turn makes, so summing their measured
+#: token counts prices one turn rather than one request -- which is the number
+#: anyone deciding between models actually needs.
+TURNS_PER_DAY = 20
+
+TASK_ORDER = ["route", "parallel_reads", "stage_prose", "progress_line", "patch", "patch_forced"]
 
 
 def med(values):
@@ -19,6 +27,38 @@ def med(values):
 
 def fmt(value, suffix="", width=6):
     return f"{value:.2f}{suffix}".rjust(width) if value is not None else "  —".rjust(width)
+
+
+def pricing(models: set[str]) -> dict[str, tuple[float, float]]:
+    """Prompt and completion price per token, from the live catalogue.
+
+    Fetched rather than hardcoded: prices move, and a stale constant in a cost
+    table is worse than no cost table -- it looks authoritative. A model whose
+    price cannot be read is priced at zero and reported as unknown rather than
+    guessed.
+    """
+    key = os.environ.get("OPENROUTER_API_KEY")
+    if not key:
+        return {}
+    try:
+        request = urllib.request.Request(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            catalogue = json.load(response)["data"]
+    except Exception:
+        return {}
+    out = {}
+    for entry in catalogue:
+        if entry["id"] not in models:
+            continue
+        price = entry.get("pricing") or {}
+        out[entry["id"]] = (
+            float(price.get("prompt") or 0),
+            float(price.get("completion") or 0),
+        )
+    return out
 
 
 def main() -> int:
@@ -67,6 +107,42 @@ def main() -> int:
         calls = med(s["tool_calls"] for s in par)
         print(c.ljust(34) + fmt(tps, "", 16) + fmt(reasoning, "", 16)
               + fmt(rt, "s", 16) + fmt(calls, "", 14))
+
+    print()
+    print("=" * 104)
+    print(f"COST — one turn priced from MEASURED tokens, and {TURNS_PER_DAY} turns/day for a month")
+    print("=" * 104)
+    models = {c.get("model") for c in data["cells"] if c.get("model")}
+    prices = pricing(models)
+    if not prices:
+        print("pricing unavailable (no OPENROUTER_API_KEY, or the catalogue could not be read)")
+    else:
+        model_of = {c["contender"]: c.get("model", "") for c in data["cells"]}
+        print("contender".ljust(34) + "prompt tok".rjust(12) + "output tok".rjust(12)
+              + "per turn".rjust(12) + "per month".rjust(12))
+        print("-" * 104)
+        rows = []
+        for c in contenders:
+            prompt_total = output_total = 0
+            for t in TASK_ORDER:
+                ok = [s for s in by.get((c, t), []) if not s["error"]]
+                if not ok:
+                    continue
+                prompt_total += med(s["prompt_tokens"] for s in ok) or 0
+                output_total += med(s["out_tokens"] for s in ok) or 0
+            price = prices.get(model_of.get(c, ""))
+            if price is None:
+                rows.append((c, prompt_total, output_total, None))
+                continue
+            per_turn = prompt_total * price[0] + output_total * price[1]
+            rows.append((c, prompt_total, output_total, per_turn))
+        for c, pt, ot, per_turn in sorted(rows, key=lambda r: r[3] if r[3] is not None else 9e9):
+            if per_turn is None:
+                print(c.ljust(34) + f"{pt:.0f}".rjust(12) + f"{ot:.0f}".rjust(12) + "unknown".rjust(12))
+                continue
+            month = per_turn * TURNS_PER_DAY * 30
+            print(c.ljust(34) + f"{pt:.0f}".rjust(12) + f"{ot:.0f}".rjust(12)
+                  + f"${per_turn:.4f}".rjust(12) + f"${month:.2f}".rjust(12))
 
     print()
     print("=" * 104)

@@ -88,11 +88,19 @@ class Contender:
     #: OpenRouter provider routing. **Its default sorts by PRICE**, so naming a
     #: model does not get you the endpoint the model is capable of -- the first
     #: two sweeps here measured the cheapest host of each model and reported it
-    #: as the model's speed. `latency` sorts by time to first token, which is
-    #: the term that dominates this agent; `throughput` sorts by tokens after
-    #: it, which is the wrong knob for a workload whose steps mostly emit a
-    #: tool call and stop.
+    #: as the model's speed.
+    #:
+    #: `sort` is the blunt instrument and it misleads when the spread is
+    #: uneven. On `gpt-oss-120b` the four fastest-answering providers sit
+    #: within 72ms of each other on time-to-first-token -- noise -- while
+    #: their generation rates run 31 to 1,173 tok/s, a factor of 38.
+    #: `sort: latency` duly picked the 31 tok/s host and threw the rest away.
     sort: str | None = None
+    #: Exact provider, e.g. "Cerebras". Pins `provider: {order, allow_fallbacks:
+    #: false}` so the measurement names a host rather than whatever routing
+    #: chose that minute. Prefer this to `sort` for any comparison anyone will
+    #: quote: a sorted result is not reproducible and does not say what it ran on.
+    provider: str | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +113,12 @@ class Task:
     #: None means "no tools this call" -- prose only.
     tools: str | None = "full"
     max_tokens: int = 700
+    #: Force one specific tool. The unforced patch task cannot tell "chose not
+    #: to patch" apart from "could not build a patch", and four of six models
+    #: scored 0/5 on it by calling `memory_get_session_constraints` instead --
+    #: a routing decision, and arguably a reasonable one. Forcing the call
+    #: removes the choice, so what is left is the generation.
+    force_tool: str | None = None
 
 
 @dataclass
@@ -117,6 +131,11 @@ class Sample:
     text: str = ""
     error: str | None = None
     reasoning_tokens: int = 0
+    #: Which host actually served this call. Recorded because routing is a
+    #: moving target and an unrecorded provider makes a number unquotable --
+    #: the gpt-oss-120b rows in the earlier sweeps cannot be attributed to a
+    #: host at all, so they say nothing about what that model can do.
+    served_by: str = ""
     #: name + arguments per call. Without these the patch task cannot be
     #: graded at all: its entire output IS a tool call, so counting calls and
     #: discarding what they said measures that the model answered, never
@@ -128,6 +147,9 @@ class Sample:
 class Cell:
     contender: str
     task: str
+    #: Carried so the report can price the run. Without it a cost column has to
+    #: guess the model from a display label, and a label is not an identifier.
+    model: str = ""
     samples: list[Sample] = field(default_factory=list)
 
 
@@ -176,6 +198,23 @@ def build_tasks(system: str) -> list[Task]:
         ],
         "suspended_count": 2,
     })
+
+    # Built once and shared by `patch` and `patch_forced`, so the only
+    # difference between those two rows is `tool_choice` and nothing else can
+    # drift into the comparison.
+    patch_conversation = convo(
+        "Block out tomorrow: deep work in the morning is out (no meetings before 13:00 "
+        "is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.",
+        assistant_turns=[
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "mcp__tmbx__plan_read",
+                                          "arguments": json.dumps({"calendar_id": "primary", "day": "2026-08-24"})}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": plan_read_result},
+            {"role": "user", "content":
+                "Call plan_apply once with a patch that adds the blocks. Pass the snapshot back verbatim."},
+        ],
+    )
 
     return [
         Task(
@@ -248,20 +287,15 @@ def build_tasks(system: str) -> list[Task]:
             # a limit this file imposed rather than on anything they did. A
             # cap that binds is not a measurement, and reasoning effort is the
             # dimension it binds hardest against.
-            messages=convo(
-                "Block out tomorrow: deep work in the morning is out (no meetings before 13:00 "
-                "is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.",
-                assistant_turns=[
-                    {"role": "assistant", "content": "",
-                     "tool_calls": [{"id": "c1", "type": "function",
-                                     "function": {"name": "mcp__tmbx__plan_read",
-                                                  "arguments": json.dumps({"calendar_id": "primary", "day": "2026-08-24"})}}]},
-                    {"role": "tool", "tool_call_id": "c1", "content": plan_read_result},
-                    {"role": "user", "content":
-                        "Call plan_apply once with a patch that adds the blocks. Pass the snapshot back verbatim."},
-                ],
-            ),
+            messages=patch_conversation,
             max_tokens=2400,
+        ),
+        Task(
+            key="patch_forced",
+            why="The same patch, with the tool forced. Separates instruction-following from patch generation — a model that scored 0/5 by reading constraints instead has not been shown unable to build a patch.",
+            messages=patch_conversation,
+            max_tokens=2400,
+            force_tool="mcp__tmbx__plan_apply",
         ),
     ]
 
@@ -271,7 +305,7 @@ async def one_sample(
     contender: Contender,
     task: Task,
     tools: list[dict[str, Any]] | None,
-) -> Sample:
+) -> Sample:  # noqa: D401 - see Task.force_tool
     body: dict[str, Any] = {
         "model": contender.model,
         "messages": task.messages,
@@ -281,9 +315,19 @@ async def one_sample(
     }
     if tools:
         body["tools"] = tools
+        if task.force_tool:
+            body["tool_choice"] = {
+                "type": "function",
+                "function": {"name": task.force_tool},
+            }
     if contender.effort:
         body["reasoning"] = {"effort": contender.effort}
-    if contender.sort:
+    if contender.provider:
+        # allow_fallbacks False on purpose: a silent failover would report
+        # another host's numbers under this one's name, which is the exact
+        # confusion this field exists to remove.
+        body["provider"] = {"order": [contender.provider], "allow_fallbacks": False}
+    elif contender.sort:
         body["provider"] = {"sort": contender.sort}
 
     sample = Sample()
@@ -306,6 +350,8 @@ async def one_sample(
                     event = json.loads(payload)
                 except ValueError:
                     continue
+                if not sample.served_by and event.get("provider"):
+                    sample.served_by = event["provider"]
                 usage = event.get("usage")
                 if usage:
                     sample.out_tokens = usage.get("completion_tokens", 0) or 0
@@ -366,7 +412,7 @@ async def run_contender(
     }
     async with httpx.AsyncClient(headers=headers, timeout=180.0) as client:
         for task in tasks:
-            cell = Cell(contender=contender.label, task=task.key)
+            cell = Cell(contender=contender.label, task=task.key, model=contender.model)
             tools = tool_sets.get(task.tools) if task.tools else None
             for _ in range(samples):
                 # Serial within a contender: concurrent self-samples would
@@ -431,10 +477,13 @@ def main() -> int:
         for spec in args.contenders.split(","):
             label, _, rest = spec.partition("=")
             model, _, tail = rest.partition("@")
-            effort, _, sort = tail.partition("#")
+            effort, _, routing = tail.partition("#")
+            # "#Cerebras" pins that host; "#latency"/"#throughput" sort.
+            sort = routing if routing in {"latency", "throughput", "price"} else None
+            provider = routing if routing and sort is None else None
             contenders.append(Contender(
-                label.strip(), model.strip(),
-                effort.strip() or None, sort.strip() or None,
+                label.strip(), model.strip(), effort.strip() or None,
+                sort, (provider or "").strip() or None,
             ))
     else:
         contenders = default_contenders()
@@ -463,7 +512,8 @@ def write_results(out, system, full, narrow, samples, tasks, cells) -> None:
         "samples": samples,
         "tasks": {t.key: t.why for t in tasks},
         "cells": [
-            {"contender": c.contender, "task": c.task, "samples": [vars(s) for s in c.samples]}
+            {"contender": c.contender, "task": c.task, "model": c.model,
+             "samples": [vars(s) for s in c.samples]}
             for c in cells
         ],
     }

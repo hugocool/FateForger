@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import json
 import os
+import statistics
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -75,12 +76,21 @@ async def grade(client, task: str, rendered: str) -> dict | None:
     keys = SCHEMA_KEYS[task]
     body = {
         "model": JUDGE,
-        # Without this OpenRouter RESERVES the model's whole context against
-        # the key's limit and 402s before judging anything — which it did, on
-        # 60 of 60 samples, and the failure surfaced as an empty quality table
-        # that read as though every model had failed. A verdict is five
-        # booleans and a note.
-        "max_tokens": 400,
+        # Two failures, opposite directions, same table of zeroes.
+        #
+        # With no cap, OpenRouter RESERVES the model's whole context against
+        # the key's monthly limit and 402s before judging anything: 60 of 60.
+        # Capped at 400, the judge's own REASONING consumed the budget and
+        # `content` came back null with finish_reason=length: 49 of 70. That
+        # is precisely the defect this benchmark found in the contenders --
+        # reasoning eating the visible-output budget on a short answer --
+        # reintroduced in the instrument that measures it.
+        #
+        # So: a cap large enough to finish, and reasoning turned down so the
+        # cap is spent on the verdict. Grading is rubric application, not
+        # deliberation.
+        "max_tokens": 2000,
+        "reasoning": {"effort": "minimal"},
         "messages": [
             {"role": "system", "content": RUBRICS[task]},
             {"role": "user", "content": f"Here is the output to grade:\n\n<<<\n{rendered}\n>>>"},
@@ -168,6 +178,20 @@ async def main() -> int:
               f"table below is incomplete and the gaps are the GRADER's, not "
               f"the models'.\n")
 
+    # A failed patch is not free: the model gets the refusal back and tries
+    # again, so what a person waits through is not one attempt but however many
+    # it takes. At a success rate p and a median attempt t, the expected wait is
+    # t/p -- which reorders the field, because a model twice as slow that fails
+    # half as often finishes first. Hugo's point, and it is the only ranking
+    # that matches what the step costs in practice.
+    latency = defaultdict(list)
+    for cell in data["cells"]:
+        if not cell["task"].startswith("patch"):
+            continue
+        for sample in cell["samples"]:
+            if not sample.get("error") and sample.get("total"):
+                latency[(cell["contender"], cell["task"])].append(sample["total"])
+
     for task in RUBRICS:
         keys = SCHEMA_KEYS[task]
         print("=" * 108)
@@ -183,6 +207,42 @@ async def main() -> int:
                 row += (f"{hit}/{total}" if total else "—").rjust(15)
             print(row)
         print()
+
+    print("=" * 108)
+    print("EXPECTED TIME TO A CORRECT PATCH  =  median attempt / success rate")
+    print("=" * 108)
+    print("A patch is counted correct only if EVERY criterion passed; a plan that")
+    print("breaks a MUST is not a partial success, it is a wrong calendar.")
+    print()
+    print("contender".ljust(34) + "attempt".rjust(11) + "success".rjust(11)
+          + "expected".rjust(12) + "  verdict")
+    print("-" * 108)
+    rows = []
+    for (contender, task), _ in sorted(tally.items()):
+        if not task.startswith("patch"):
+            continue
+        counts = tally[(contender, task)]
+        total = max((slot[1] for slot in counts.values()), default=0)
+        if not total:
+            continue
+        # Strict: one draw counts only if it cleared every column.
+        worst = min(slot[0] for slot in counts.values())
+        rate = worst / total
+        attempts = latency.get((contender, task)) or []
+        median = statistics.median(attempts) if attempts else None
+        expected = (median / rate) if (median and rate) else None
+        rows.append((contender, task, median, rate, expected))
+    for contender, task, median, rate, expected in sorted(
+        rows, key=lambda r: r[4] if r[4] is not None else 9e9
+    ):
+        label = f"{contender} [{task.replace('patch_forced', 'forced')}]"
+        verdict = "never succeeded" if expected is None else ""
+        print(label[:33].ljust(34)
+              + (f"{median:.2f}s" if median else "—").rjust(11)
+              + f"{rate*100:.0f}%".rjust(11)
+              + (f"{expected:.1f}s" if expected else "∞").rjust(12)
+              + f"  {verdict}")
+    print()
     return 0
 
 
