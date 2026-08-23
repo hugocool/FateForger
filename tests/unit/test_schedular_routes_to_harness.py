@@ -89,3 +89,45 @@ def test_a_phase_line_from_a_thread_without_a_loop_does_not_raise():
     the turn would look stalled rather than quiet.
     """
     handlers._note_harness_phase(object(), {"channel": "C1", "ts": "1.0"}, "a", "step")
+
+
+# --- the handoff path, which the up-front interception missed -------------
+
+
+def test_both_entry_points_reach_the_harness():
+    """A message can resolve to timeboxing two ways, and only one was covered.
+
+    /timebox and a thread already bound to timeboxing hit the up-front route.
+    But saying something in a channel goes to the receptionist, which resolves
+    the target *inside* the AutoGen runtime — so agent_type was still
+    receptionist_agent and the interception never saw it. Caught by driving a
+    real Slack turn, not by the suite: the reply came back from AutoGen while
+    every unit test said the reroute worked.
+    """
+    import inspect
+
+    source = inspect.getsource(handlers.route_slack_event)
+    guards = [
+        line.strip()
+        for line in source.splitlines()
+        if "_timebox_backend()" in line and "!=" in line
+    ]
+    assert len(guards) >= 2, (
+        "only one path routes to the harness; the receptionist handoff still "
+        f"reaches AutoGen. found: {guards}"
+    )
+
+
+def test_the_handoff_interception_uses_the_redirected_thread():
+    """The session must be keyed to the timeboxing thread, not the origin.
+
+    The redirect anchors the durable workspace in the timeboxing channel, and
+    memory is scoped by that key — keying off the origin channel would file the
+    conversation under a thread nobody continues in.
+    """
+    import inspect
+
+    source = inspect.getsource(handlers.route_slack_event)
+    start = source.rindex("_harness_turn(")
+    window = source[start : start + 400]
+    assert "redirect.target_key" in window, window[:300]

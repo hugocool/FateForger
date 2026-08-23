@@ -1593,10 +1593,34 @@ async def route_slack_event(
                     force_reply=False,
                 )
                 try:
-                    result = await runtime.send_message(
-                        handoff_msg,
-                        recipient=AgentId(handoff_target, key=redirect.target_key),
-                    )
+                    if (
+                        handoff_target == "timeboxing_agent"
+                        and _timebox_backend() != "legacy"
+                    ):
+                        # The handoff path reaches the harness too.
+                        #
+                        # Intercepting only the up-front route was not enough,
+                        # and the gap was invisible: /timebox and a thread
+                        # already bound to timeboxing went to the harness,
+                        # while the way Hugo actually starts -- saying
+                        # something in a channel and letting the receptionist
+                        # decide -- resolved to timeboxing_agent *inside* the
+                        # AutoGen runtime, where agent_type was still
+                        # receptionist_agent and this interception never saw
+                        # it. So "The Schedular runs on the harness" was true
+                        # only for the doors he does not use.
+                        result = await _harness_turn(
+                            text=cleaned_text,
+                            thread_key=redirect.target_key,
+                            on_phase=lambda line: _note_harness_phase(
+                                client, processing, handoff_target, line
+                            ),
+                        )
+                    else:
+                        result = await runtime.send_message(
+                            handoff_msg,
+                            recipient=AgentId(handoff_target, key=redirect.target_key),
+                        )
                 except asyncio.TimeoutError:
                     await client.chat_update(
                         channel=target_channel,
