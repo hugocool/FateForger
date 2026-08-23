@@ -791,6 +791,7 @@ class PresenterNode(BaseChatAgent):
             background_notes=background_notes,
             constraints=self._session.active_constraints,
             immovables=self._session.frame_facts.get("immovables"),
+            timebox=self._session.timebox,
         )
         if self._session.pending_submit:
             self._session.pending_presenter_blocks = (

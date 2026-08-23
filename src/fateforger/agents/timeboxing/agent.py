@@ -6145,6 +6145,30 @@ class TimeboxingFlowAgent(RoutedAgent):
             lines.append(f"...and {remaining} more")
         return lines
 
+    @staticmethod
+    def _format_schedule_lines(timebox: Timebox | None) -> list[str]:
+        """Render the plan's blocks as clock-time lines.
+
+        Stage 4 tells the user to "review the refined schedule above". Whether
+        a schedule was actually rendered was left to the stage model, and in a
+        real session (2026-03-08) it never was: five passes of prose overview
+        while the patcher successfully grew the plan from 6 events to 13. The
+        user said "you don't show the schedule", then "you didn't add
+        anything" -- about blocks that had in fact been added.
+        """
+        lines: list[str] = []
+        for event in list(getattr(timebox, "events", None) or []):
+            title = (getattr(event, "summary", None) or "Untitled block").strip()
+            start = getattr(event, "start_time", None)
+            end = getattr(event, "end_time", None)
+            if start and end:
+                lines.append(f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')} {title}")
+            elif start:
+                lines.append(f"{start.strftime('%H:%M')} {title}")
+            else:
+                lines.append(title)
+        return lines
+
     def _format_stage_message(
         self,
         gate: StageGateOutput,
@@ -6152,11 +6176,31 @@ class TimeboxingFlowAgent(RoutedAgent):
         background_notes: list[str] | None = None,
         constraints: list[Constraint] | None = None,
         immovables: list[dict[str, str]] | None = None,
+        timebox: Timebox | None = None,
     ) -> str:
         """Render a markdown stage update, preferring structured section payloads."""
         if gate.response_message and gate.response_message.sections:
+            message = gate.response_message
+            if gate.stage_id == TimeboxingStage.REFINE:
+                # Rendered unconditionally from the plan, never by inspecting
+                # what the stage model chose to write. Asking whether its prose
+                # "already showed the schedule" would be a judgement about text,
+                # and the answer was wrong five times out of five.
+                schedule_lines = self._format_schedule_lines(timebox)
+                if schedule_lines:
+                    message = SessionMessage(
+                        sections=[
+                            FreeformSection(
+                                heading="Schedule",
+                                content="\n".join(
+                                    f"- {line}" for line in schedule_lines
+                                ),
+                            ),
+                            *message.sections,
+                        ]
+                    )
             ordered = self._apply_stage_response_contract(
-                gate=gate, message=gate.response_message
+                gate=gate, message=message
             )
             rendered = self._render_session_message(ordered)
             if rendered.strip():
@@ -7407,20 +7451,37 @@ class TimeboxingFlowAgent(RoutedAgent):
                     planned_date=resolved_planned_date,
                     blocking=True,
                 )
-            if was_committed:
-                await self._scheduler_prefetch.ensure_collect_stage_ready(
-                    session=session
+            # These two are independent and used to run in sequence, which put
+            # an LLM round-trip behind an I/O round-trip on every reply. The
+            # prefetch fetches calendar and constraints; the decision reads only
+            # stage-machine state carried from the previous turn (stage,
+            # stage_ready, stage_question, stage_missing) plus the user's text,
+            # and nothing the prefetch writes. Measured on a real session, the
+            # gap between `user_reply` and `graph_turn_start` was 8-14s before
+            # the graph's own 43-54s had even begun. CLAUDE.md: independent
+            # judgements go out concurrently, never in sequence.
+            prefetch_task = (
+                self._scheduler_prefetch.ensure_collect_stage_ready(session=session)
+                if was_committed
+                else None
+            )
+            decide_task = (
+                self._decide_next_action(session, user_message=message.text)
+                if session.stage
+                in (
+                    TimeboxingStage.SKELETON,
+                    TimeboxingStage.REFINE,
+                    TimeboxingStage.REVIEW_COMMIT,
                 )
+                else None
+            )
             decision: StageDecision | None = None
-            if session.stage in (
-                TimeboxingStage.SKELETON,
-                TimeboxingStage.REFINE,
-                TimeboxingStage.REVIEW_COMMIT,
-            ):
-                decision = await self._decide_next_action(
-                    session,
-                    user_message=message.text,
-                )
+            if prefetch_task is not None and decide_task is not None:
+                _, decision = await asyncio.gather(prefetch_task, decide_task)
+            elif prefetch_task is not None:
+                await prefetch_task
+            elif decide_task is not None:
+                decision = await decide_task
             if decision is not None:
                 if decision.submit_intent:
                     session.queued_submit_intent = True
