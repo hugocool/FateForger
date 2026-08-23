@@ -1,0 +1,2394 @@
+{
+ "system_chars": 26352,
+ "tools_full": 34,
+ "tools_narrow": 11,
+ "samples": 5,
+ "tasks": {
+  "route": "First move: pick a skill and start reading. Tiny output, huge prefix \u2014 pure TTFT, and the 3-7s target lands here.",
+  "parallel_reads": "Three independent reads are available. Batching them costs one TTFT; serialising costs three.",
+  "stage_prose": "The user-facing stage message. Throughput-dominated and the thing quality is judged on.",
+  "progress_line": "One intermittent update while work is in flight. Shortest possible output \u2014 isolates TTFT from everything else.",
+  "patch": "A structured plan_apply patch. Correctness matters more than speed, and long structured output is where throughput bites."
+ },
+ "cells": [
+  {
+   "contender": "gemini-3.5-flash-lite @minimal",
+   "task": "route",
+   "samples": [
+    {
+     "ttft": 1.041900957992766,
+     "total": 1.339656665979419,
+     "out_tokens": 90,
+     "prompt_tokens": 9397,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "memory__memory_get_session_constraints",
+       "arguments": "{\"day\":\"2025-05-15\",\"session_id\":\"timebox-session-2025-05-14\"}"
+      },
+      {
+       "name": "tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"primary\",\"day\":\"2025-05-15\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.7557256250292994,
+     "total": 0.7878527920111082,
+     "out_tokens": 38,
+     "prompt_tokens": 9397,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"timebox-session-2026-03-29\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.9138431659666821,
+     "total": 1.1677466659457423,
+     "out_tokens": 41,
+     "prompt_tokens": 9397,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"timebox-session-2026-03-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.7107041660347022,
+     "total": 0.733263666043058,
+     "out_tokens": 38,
+     "prompt_tokens": 9397,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-timebox-2026-03-29\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.8470153330126777,
+     "total": 0.8689141669892706,
+     "out_tokens": 38,
+     "prompt_tokens": 9397,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-timebox-2026-03-29\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.6-flash @minimal",
+   "task": "route",
+   "samples": [
+    {
+     "ttft": 1.2291832080227323,
+     "total": 1.2335914999712259,
+     "out_tokens": 65,
+     "prompt_tokens": 9832,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "skill",
+       "arguments": "{\"name\":\"mcp__memory__memory_get_session_constraints\"}"
+      },
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"day\":\"2026-08-18\",\"calendar_id\":\"default\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.0225683330208994,
+     "total": 1.0238923330325633,
+     "out_tokens": 16,
+     "prompt_tokens": 9832,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "skill",
+       "arguments": "{\"name\":\"tmbx\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.9005462090135552,
+     "total": 0.9053126670187339,
+     "out_tokens": 16,
+     "prompt_tokens": 9832,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "skill",
+       "arguments": "{\"name\":\"tmbx\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.9883952499949373,
+     "total": 0.9937383750220761,
+     "out_tokens": 16,
+     "prompt_tokens": 9832,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "skill",
+       "arguments": "{\"name\":\"tmbx\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.8495770000154153,
+     "total": 0.8551379999844357,
+     "out_tokens": 16,
+     "prompt_tokens": 9832,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "skill",
+       "arguments": "{\"name\":\"tmbx\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.5-flash-lite @minimal",
+   "task": "parallel_reads",
+   "samples": [
+    {
+     "ttft": 0.6616722919861786,
+     "total": 0.6685818329569884,
+     "out_tokens": 40,
+     "prompt_tokens": 9908,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"primary\",\"day\":\"2026-06-07\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.6839463750366122,
+     "total": 0.6843514580396004,
+     "out_tokens": 40,
+     "prompt_tokens": 9908,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"day\":\"2026-06-07\",\"calendar_id\":\"primary\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.5565965000423603,
+     "total": 0.5596821670187637,
+     "out_tokens": 40,
+     "prompt_tokens": 9908,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"primary\",\"day\":\"2026-06-11\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.6852812499855645,
+     "total": 0.687086540972814,
+     "out_tokens": 40,
+     "prompt_tokens": 9908,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"day\":\"2026-06-15\",\"calendar_id\":\"primary\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.6745050000026822,
+     "total": 0.7241527090081945,
+     "out_tokens": 95,
+     "prompt_tokens": 9908,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"day\":\"2026-06-07\",\"calendar_id\":\"primary\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"day\":\"2026-06-07\",\"session_id\":\"planning-session-2026-06-06\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.6-flash @minimal",
+   "task": "parallel_reads",
+   "samples": [
+    {
+     "ttft": 0.9375695000053383,
+     "total": 0.9379442919744179,
+     "out_tokens": 40,
+     "prompt_tokens": 9908,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"default\",\"day\":\"2026-08-18\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.0240541670355015,
+     "total": 1.0248858340200968,
+     "out_tokens": 40,
+     "prompt_tokens": 9908,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"primary\",\"day\":\"2026-08-18\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.0858033749973401,
+     "total": 1.167128707980737,
+     "out_tokens": 81,
+     "prompt_tokens": 9908,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-2026-03-31-01\"}"
+      },
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"primary\",\"day\":\"2026-04-01\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.200991875026375,
+     "total": 1.242056582996156,
+     "out_tokens": 80,
+     "prompt_tokens": 9908,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-2026-03-29-tomorrow\"}"
+      },
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"default\",\"day\":\"2026-03-30\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.0671680830419064,
+     "total": 1.113284792052582,
+     "out_tokens": 86,
+     "prompt_tokens": 9908,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_2026-08-17_001\",\"day\":null}"
+      },
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"primary\",\"day\":\"2026-08-18\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "claude-haiku-4.5",
+   "task": "route",
+   "samples": [
+    {
+     "ttft": 1.539085292024538,
+     "total": 2.242090791987721,
+     "out_tokens": 55,
+     "prompt_tokens": 11351,
+     "tool_calls": 0,
+     "text": "I'll help you plan tomorrow. Let me start by reading tomorrow's calendar and your standing constraints.\n\nFirst, what is tomorrow's date? (I need it in YYYY-MM-DD format, for example 2025-01-15.)",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.4047344169812277,
+     "total": 2.295465792005416,
+     "out_tokens": 86,
+     "prompt_tokens": 11351,
+     "tool_calls": 0,
+     "text": "I'd be happy to help you timebox tomorrow! Let me start by getting the information I need.\n\nFirst, what is tomorrow's date? (Please provide it in YYYY-MM-DD format, e.g., 2025-01-15)\n\nOnce I have that, I'll read your calendar for that day and check your constraints, and then we can work through planning together.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.3821752920048311,
+     "total": 2.493610459030606,
+     "out_tokens": 114,
+     "prompt_tokens": 11351,
+     "tool_calls": 0,
+     "text": "I'll help you with timeboxing for tomorrow. Let me start by reading your calendar for tomorrow to see what's already scheduled.\n\nFirst, I need to know: **what is tomorrow's date?** Please provide it in YYYY-MM-DD format (e.g., 2026-08-17).\n\nOnce you give me the date, I'll:\n1. Read your calendar for that day\n2. Check your standing rules and constraints\n3. Walk through the planning stages with you to build a solid day",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.5037276249495335,
+     "total": 2.395816417003516,
+     "out_tokens": 96,
+     "prompt_tokens": 11351,
+     "tool_calls": 0,
+     "text": "I'll help you plan tomorrow! Let me start by reading tomorrow's calendar to see what's already scheduled.\n\nFirst, what is tomorrow's date? (I need it in YYYY-MM-DD format, e.g., 2024-01-15)\n\nOnce I have that, I'll:\n1. Read your calendar for that day\n2. Check your standing rules and constraints\n3. Walk you through building a plan together",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.7711227919789962,
+     "total": 2.5627108750049956,
+     "out_tokens": 96,
+     "prompt_tokens": 11351,
+     "tool_calls": 0,
+     "text": "I'd be happy to help you with timeboxing for tomorrow! Let me start by reading what's already on your calendar and checking your planning constraints.\n\nFirst, I need to know tomorrow's date. What is tomorrow's date? (Please provide it in YYYY-MM-DD format, e.g., 2025-01-15)\n\nAlso, I'll need your calendar ID to access your schedule. What is your calendar ID?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.5-flash-lite @minimal",
+   "task": "stage_prose",
+   "samples": [
+    {
+     "ttft": 0.693371000001207,
+     "total": 1.3663817920023575,
+     "out_tokens": 188,
+     "prompt_tokens": 6998,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere is what we have loaded for tomorrow (Monday, August 24, 2026):\n- **Calendar events:** None currently scheduled.\n- **Active constraints (from memory):**\n  - *(must)* Sleep window: 23:00\u201307:00\n  - *(must)* Commute: 30 minutes each way\n  - *(must)* No morning meetings: nothing before 13:00\n  - *(should)* Gym session: 18:00\u201319:00\n  - *(should)* Oats timing: oats exactly 2h before gym\n- **Suspended constraints:** 2 rules suspended today (since today is a working day, these are your non-working rules).\n\nWhat are your main goals or tasks for tomorrow that we need to fit into the schedule?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.6192259159870446,
+     "total": 1.2223401660448872,
+     "out_tokens": 184,
+     "prompt_tokens": 6998,
+     "tool_calls": 0,
+     "text": "We are in **Stage 1: Collect**.\n\nHere is what is currently loaded for tomorrow (Monday, 2026-08-24):\n- **Calendar events:** None.\n- **Constraints loaded (Active):**\n  - Sleep window: 23:00\u201307:00 *(must)*\n  - Commute: 30 minutes each way *(must)*\n  - No morning meetings: nothing before 13:00 *(must)*\n  - Oats timing: oats exactly 2h before gym *(should)*\n  - Gym session: 18:00\u201319:00 *(should)*\n- **Suspended rules:** 2 working-day rules are suspended (today is working).\n\nWhat would you like to accomplish tomorrow, and what are your primary goals or tasks that need to land?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.6485967920161784,
+     "total": 1.256198166985996,
+     "out_tokens": 189,
+     "prompt_tokens": 6998,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere is what I have loaded for tomorrow (Monday, 2026-08-24):\n- **Calendar events:** None currently scheduled.\n- **Constraints (Active):**\n  - Sleep window: 23:00\u201307:00 (*must*)\n  - Commute: 30 minutes each way (*must*)\n  - No morning meetings: nothing before 13:00 (*must*)\n  - Oats timing: oats exactly 2h before gym (*should*)\n  - Gym session: 18:00\u201319:00 (*should*)\n- **Suspended rules:** 2 working-day rules are suspended (today is classified as working).\n\nWhat is the one primary thing that has to land tomorrow, and do you have any specific fixed times or meetings already in mind?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.6660561250173487,
+     "total": 1.1920293750008568,
+     "out_tokens": 175,
+     "prompt_tokens": 6998,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere is what we have loaded for tomorrow (Monday, 2026-08-24):\n- **Calendar events:** None (clean slate).\n- **Constraints (from memory):**\n  - Sleep window: 23:00\u201307:00 *(must)*\n  - Commute: 30 minutes each way *(must)*\n  - No morning meetings: nothing before 13:00 *(must)*\n  - Gym session: 18:00\u201319:00 *(should)*\n  - Oats timing: oats exactly 2h before gym *(should)*\n- **Suspended rules:** 2 working-day rules are suspended (today is working).\n\nWhat primary goal or task do you need to land tomorrow?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.7405655840411782,
+     "total": 1.3430176670080982,
+     "out_tokens": 176,
+     "prompt_tokens": 6998,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere is what is fixed for tomorrow (Monday, August 24, 2026):\n- **Calendar events:** None currently scheduled.\n- **Commute:** 30 minutes each way (from memory: Commute, `must`).\n- **Sleep window:** 23:00\u201307:00 (from memory: Sleep window, `must`).\n- **Active constraints:** No morning meetings before 13:00 (`must`), Gym session at 18:00\u201319:00 (`should`), and Oats timing: oats exactly 2h before gym (`should`).\n- **Suspended rules:** 2 working-day rules are suspended (today is working).\n\nWhat is the main thing or goal that has to land for you tomorrow?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.6-flash @low (LIVE)",
+   "task": "route",
+   "samples": [
+    {
+     "ttft": null,
+     "total": 4.365371541003697,
+     "out_tokens": 388,
+     "prompt_tokens": 9832,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 388,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 4.050503125006799,
+     "out_tokens": 390,
+     "prompt_tokens": 9832,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 390,
+     "calls": []
+    },
+    {
+     "ttft": 0.8765212910366245,
+     "total": 0.8769765830365941,
+     "out_tokens": 16,
+     "prompt_tokens": 9832,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "skill",
+       "arguments": "{\"name\":\"tmbx\"}"
+      }
+     ]
+    },
+    {
+     "ttft": null,
+     "total": 4.024067916965578,
+     "out_tokens": 390,
+     "prompt_tokens": 9832,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 390,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 3.8587866249727085,
+     "out_tokens": 382,
+     "prompt_tokens": 9832,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 382,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gpt-5.4-mini @minimal",
+   "task": "route",
+   "samples": [
+    {
+     "ttft": 2.114241166971624,
+     "total": 2.2552350420155562,
+     "out_tokens": 190,
+     "prompt_tokens": 8645,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 153,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"default\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.3988268750254065,
+     "total": 2.473567417007871,
+     "out_tokens": 199,
+     "prompt_tokens": 8645,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 109,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"default\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess-20260823-01\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": null,
+     "total": 7.072151041007601,
+     "out_tokens": 400,
+     "prompt_tokens": 8645,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 400,
+     "calls": []
+    },
+    {
+     "ttft": 2.25820191699313,
+     "total": 2.3120202920399606,
+     "out_tokens": 165,
+     "prompt_tokens": 8645,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 75,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"default\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess-20260823-1\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 3.1345632919692434,
+     "total": 3.207927874987945,
+     "out_tokens": 277,
+     "prompt_tokens": 8645,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 240,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"default\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.5-flash-lite @minimal",
+   "task": "progress_line",
+   "samples": [
+    {
+     "ttft": 0.465286125021521,
+     "total": 0.7524702919763513,
+     "out_tokens": 9,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "Reading the plan and tomorrow's constraints.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.7135176250012591,
+     "total": 0.7232450830051675,
+     "out_tokens": 10,
+     "prompt_tokens": 51,
+     "tool_calls": 0,
+     "text": "Reading tomorrow's existing plan and constraint data.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.6883459590026177,
+     "total": 0.7031006669858471,
+     "out_tokens": 10,
+     "prompt_tokens": 51,
+     "tool_calls": 0,
+     "text": "Reading the existing plan and checking constraints for tomorrow.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.5478214580216445,
+     "total": 0.6707233750494197,
+     "out_tokens": 8,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "Reading the plan and constraints for tomorrow.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.524676000000909,
+     "total": 0.6711245840415359,
+     "out_tokens": 8,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "Reading tomorrow's plan and constraints.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.6-flash @minimal",
+   "task": "stage_prose",
+   "samples": [
+    {
+     "ttft": 0.7695598340360448,
+     "total": 1.5199758750386536,
+     "out_tokens": 191,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow (Monday, August 24, 2026):\n\n**Calendar & Fixed Events:**\n- No existing calendar events found on primary calendar.\n\n**Active Constraints:**\n- **Sleep window:** 23:00 - 07:00 (`must`)\n- **Commute:** 30 minutes each way (`must`)\n- **No morning meetings:** Nothing before 13:00 (`must`)\n- **Gym session:** 18:00 - 19:00 (`should`)\n- **Oats timing:** Oats exactly 2h before gym (`should`)\n\n**Suspended Rules:**\n- 2 working-day rules suspended.\n\n---\n\n**Question:** Are there any external calendar commitments, fixed appointment times, or commute specifics for tomorrow that aren't listed above?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.0404110830277205,
+     "total": 1.9306259999866597,
+     "out_tokens": 184,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow:\n\n* **Calendar Events:** None (your calendar is completely clear for the day).\n* **Stored Active Rules:**\n  * **Sleep window:** 23:00\u201307:00 (`must`)\n  * **Commute:** 30 minutes each way (`must`)\n  * **No morning meetings:** Nothing before 13:00 (`must`)\n  * **Gym session:** 18:00\u201319:00 (`should`)\n  * **Oats timing:** Eats oats exactly 2h before gym (`should`)\n\n* **Suspended Rules:** 2 working-day rules are suspended today.\n\n**Question:**\nIs tomorrow a standard working day, or is it a different day type (such as vacation, weekend, or holiday)?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.0767480419599451,
+     "total": 1.8441323339939117,
+     "out_tokens": 184,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow:\n\n* **Calendar Events:** None currently scheduled on your calendar.\n* **Stored Active Constraints:**\n  * **Sleep window** (`MUST`): 23:00\u201307:00\n  * **Commute** (`MUST`): 30 minutes each way\n  * **No morning meetings** (`MUST`): Nothing before 13:00\n  * **Oats timing** (`SHOULD`): Oats exactly 2 hours before gym\n  * **Gym session** (`SHOULD`): 18:00\u201319:00\n* **Suspended Rules:** 2 rules suspended for today.\n\nDoes tomorrow count as a standard **working** day, or is it a different day type (e.g., vacation, holiday, weekend)?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.8492180000175722,
+     "total": 2.0058359170216136,
+     "out_tokens": 194,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere is what I have loaded for tomorrow (Monday, August 24, 2026):\n\n* **Calendar Events:** None currently on the calendar.\n* **Constraints from Memory:**\n  * `Sleep window` (MUST): 23:00\u201307:00\n  * `Commute` (MUST): 30 minutes each way\n  * `No morning meetings` (MUST): Nothing scheduled before 13:00\n  * `Gym session` (SHOULD): 18:00\u201319:00\n  * `Oats timing` (SHOULD): Oats exactly 2 hours before gym\n\n* **Suspended Rules:** 2 working-day rules are suspended today.\n\nCould you confirm if tomorrow is a standard working day, or if there are any specific events or travel plans already fixed on your side?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.9275067920098081,
+     "total": 1.8561179590178654,
+     "out_tokens": 195,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere is what I have loaded for **Monday, August 24, 2026**:\n\n* **Calendar Events**: None (your calendar is completely clear).\n* **Constraints from Memory**:\n  * **Sleep window** (`must`): 23:00\u201307:00\n  * **Commute** (`must`): 30 minutes each way\n  * **No morning meetings** (`must`): Nothing before 13:00\n  * **Gym session** (`should`): 18:00\u201319:00\n  * **Oats timing** (`should`): Eats oats exactly 2 hours before gym\n\n* **Suspended Constraints**: 2 working-day rules are currently suspended.\n\n***\n\n**Question**: What is the single main thing or priority you want to make sure lands on your schedule tomorrow?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.6-flash @minimal",
+   "task": "progress_line",
+   "samples": [
+    {
+     "ttft": 0.5851162500330247,
+     "total": 0.620188542001415,
+     "out_tokens": 10,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "Reading tomorrow's plan and checking schedule constraints.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.8552104170084931,
+     "total": 0.8559932920034043,
+     "out_tokens": 12,
+     "prompt_tokens": 51,
+     "tool_calls": 0,
+     "text": "Reviewing tomorrow's plan alongside the relevant scheduling constraints.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.7898915000259876,
+     "total": 0.7912520830286667,
+     "out_tokens": 11,
+     "prompt_tokens": 51,
+     "tool_calls": 0,
+     "text": "Reviewing tomorrow's plan and checking schedule constraints.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.5496561249601655,
+     "total": 0.5550256249844097,
+     "out_tokens": 10,
+     "prompt_tokens": 51,
+     "tool_calls": 0,
+     "text": "Checking tomorrow's plan and reviewing relevant constraints.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.7511289999820292,
+     "total": 0.7520019999938086,
+     "out_tokens": 11,
+     "prompt_tokens": 51,
+     "tool_calls": 0,
+     "text": "Reviewing tomorrow's plan alongside its associated constraints.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.5-flash-lite @minimal",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 1.1451281670015305,
+     "total": 1.1485077089746483,
+     "out_tokens": 108,
+     "prompt_tokens": 9978,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"write_uid\":\"obs-1\",\"observed_at\":null,\"text\":\"Block out tomorrow: deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.\",\"channel\":\"planning\",\"session_id\":\"2026-08-23-session\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.0951366249937564,
+     "total": 2.0955606250208803,
+     "out_tokens": 246,
+     "prompt_tokens": 9978,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"op\":\"add\",\"d\":\"No meetings before 13:00 MUST rule\",\"h\":\"NMB13\",\"anchor_source\":\"constraint\",\"st\":\"09:00:00\",\"n\":\"Morning window / No meetings before 13:00\",\"p\":\"fs\"},{\"anchor_source\":\"user\",\"st\":\"16:00:00\",\"n\":\"Oats\",\"p\":\"fs\",\"h\":\"OATS1\",\"op\":\"add\",\"d\":\"Oats 2h before gym\"},{\"anchor_source\":\"user\",\"op\":\"add\",\"p\":\"fs\",\"n\":\"Gym\",\"h\":\"GYM1\",\"st\":\"18:00:00\",\"d\":\"Gym at 18:00\"}]},\"snapshot\":{\"events\":[],\"day\":\"2026-08-24\",\"calendar_id\":\"primary\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.9626221669605002,
+     "total": 1.9630258749821223,
+     "out_tokens": 275,
+     "prompt_tokens": 9978,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"p\":\"fs\",\"d\":\"oats timing rule\",\"why\":\"oats 2h before gym at 18:00\",\"t\":\"PR\",\"h\":\"OATS\",\"n\":\"Oats\",\"anchor_source\":\"constraint\",\"st\":\"16:00:00\"},{\"n\":\"Gym\",\"st\":\"18:00:00\",\"p\":\"fs\",\"anchor_source\":\"user\",\"d\":\"gym at 18:00\",\"why\":\"gym at 18:00\",\"t\":\"R\",\"h\":\"GYM\"},{\"p\":\"fs\",\"d\":\"deep work in the morning\",\"h\":\"DW1\",\"anchor_source\":\"user\",\"t\":\"DW\",\"n\":\"Deep Work\",\"why\":\"deep work is fine early but no meetings before 13:00\",\"st\":\"13:00:00\"}]},\"snapshot\":{\"events\":[],\"day\":\"2026-08-24\",\"calendar_id\":\"primary\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.1128018340095878,
+     "total": 1.1159930840367451,
+     "out_tokens": 220,
+     "prompt_tokens": 9978,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"slug\":\"oats\",\"d\":\"Oats before gym\",\"anchor_source\":\"constraint\",\"h\":\"OATS\",\"t\":\"R\",\"p\":{\"dur\":\"PT30M\",\"a\":\"fs\",\"st\":\"16:00\"},\"n\":\"Oats\",\"why\":\"Oats 2h before gym at 18:00\"},{\"slug\":\"gym\",\"d\":\"Gym workout\",\"h\":\"GYM\",\"t\":\"SW\",\"p\":{\"st\":\"18:00\",\"a\":\"fs\",\"dur\":\"PT1H\"},\"why\":\"Gym at 18:00\",\"n\":\"Gym\",\"anchor_source\":\"user\"}]},\"snapshot\":{\"calendar_id\":\"primary\",\"day\":\"2026-08-24\",\"events\":[]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.0919712080503814,
+     "total": 1.0960689579951577,
+     "out_tokens": 227,
+     "prompt_tokens": 9978,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"d\":\"Oats preparation / eating before gym\",\"n\":\"Oats\",\"p\":{\"a\":\"fs\",\"st\":\"16:00\",\"dur\":\"PT30M\"},\"slug\":\"oats\",\"op\":\"add\",\"h\":\"OATS\",\"anchor_source\":\"user\",\"why\":\"User wants oats 2h before gym at 18:00\"},{\"op\":\"add\",\"anchor_source\":\"user\",\"slug\":\"gym\",\"h\":\"GYM\",\"d\":\"Evening gym workout\",\"why\":\"User requested gym at 18:00\",\"p\":{\"a\":\"fs\",\"st\":\"18:00\",\"dur\":\"PT1H\"},\"n\":\"Gym\"}]},\"snapshot\":{\"day\":\"2026-08-24\",\"events\":[],\"calendar_id\":\"primary\"}}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "claude-haiku-4.5",
+   "task": "parallel_reads",
+   "samples": [
+    {
+     "ttft": 1.3693082079989836,
+     "total": 2.310483707988169,
+     "out_tokens": 108,
+     "prompt_tokens": 11468,
+     "tool_calls": 1,
+     "text": "Now I need to know what day tomorrow is. Let me read the calendar for tomorrow to collect what's fixed.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\": \"default\", \"day\": \"2025-01-10\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.8151543749845587,
+     "total": 3.1461240419885144,
+     "out_tokens": 150,
+     "prompt_tokens": 11468,
+     "tool_calls": 0,
+     "text": "Now I need to know tomorrow's date. Let me read the calendar and constraints. First, let me establish what \"tomorrow\" is. I'll need to get today's date context. Let me try reading tomorrow - I'll use a reasonable date. Actually, I should ask you directly for the date or use context clues.\n\nCould you provide tomorrow's date in YYYY-MM-DD format? For example, \"2025-01-15\". Also, which calendar should I plan on? (I need the calendar_id).\n\nAlternatively, if you'd prefer I determine today's date from context, I can work with that too \u2014 just let me know the calendar ID so I can read it.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 2.4526870420086198,
+     "total": 2.8192145000211895,
+     "out_tokens": 41,
+     "prompt_tokens": 11468,
+     "tool_calls": 0,
+     "text": "I need to know what day \"tomorrow\" is. Could you provide tomorrow's date in YYYY-MM-DD format, or tell me today's date so I can calculate it?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.5555303750443272,
+     "total": 2.805663541017566,
+     "out_tokens": 145,
+     "prompt_tokens": 11468,
+     "tool_calls": 1,
+     "text": "Now I'll start the planning process. First, I need to know what today's date is to determine tomorrow's date. Let me read tomorrow's plan directly \u2014 I'll use tomorrow from the current context. Since I don't have today's date explicitly, let me check what calendar is available:",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\": \"primary\", \"day\": \"2025-01-09\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.7664571249624714,
+     "total": 3.452367416000925,
+     "out_tokens": 258,
+     "prompt_tokens": 11468,
+     "tool_calls": 1,
+     "text": "Now I need to know what tomorrow's date is. Let me get the calendar ID from the working directory context. I'll read the plan for tomorrow.\n\nLet me start by reading tomorrow's plan. I need to determine tomorrow's date first. Based on standard practice, I'll assume tomorrow is relative to today. Let me attempt to read the plan and also get your constraints:",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "todo_write",
+       "arguments": "{\"todos\": [{\"content\": \"Determine tomorrow's date and read the plan\", \"status\": \"in_progress\"}, {\"content\": \"Read active and suspended constraints\", \"status\": \"pending\"}, {\"content\": \"Collect fixed commitments\", \"status\": \"pending\"}, {\"content\": \"Capture what you want from the day\", \"status\": \"pending\"}, {\"content\": \"Build skeleton plan\", \"status\": \"pending\"}, {\"content\": \"Refine with plan_apply\", \"status\": \"pending\"}, {\"content\": \"Commit when ready\", \"status\": \"pending\"}]}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gpt-5.4-mini @minimal",
+   "task": "parallel_reads",
+   "samples": [
+    {
+     "ttft": 2.274663167016115,
+     "total": 2.3294846250209957,
+     "out_tokens": 242,
+     "prompt_tokens": 8721,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 79,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess-20260823-1\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"default\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"stage\":\"Collect\",\"anchor_uids\":null,\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.015332957962528,
+     "total": 2.144999874988571,
+     "out_tokens": 139,
+     "prompt_tokens": 8721,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 49,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess-20260823-1\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"default\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.7625353329931386,
+     "total": 1.044682040985208,
+     "out_tokens": 41,
+     "prompt_tokens": 8721,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess-20260823-1\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.1207158329780214,
+     "total": 1.2592901659663767,
+     "out_tokens": 88,
+     "prompt_tokens": 8721,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-20260823-1\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"primary\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.9996803329559043,
+     "total": 3.0774545409949496,
+     "out_tokens": 293,
+     "prompt_tokens": 8721,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 130,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"default\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess-20260823-1\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"stage\":\"collect\",\"anchor_uids\":null,\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.6-flash @minimal",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 1.046853290987201,
+     "total": 1.0477246660157107,
+     "out_tokens": 40,
+     "prompt_tokens": 9978,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-20260824-001\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.0463154999888502,
+     "total": 1.0467887910199352,
+     "out_tokens": 41,
+     "prompt_tokens": 9978,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-2026-08-24-01\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.049796624982264,
+     "total": 1.5765500830020756,
+     "out_tokens": 212,
+     "prompt_tokens": 9978,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_2026_08_24_planning\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"text\":\"Block out tomorrow: deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.\",\"session_id\":\"session_2026_08_24_planning\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.13810000004014,
+     "total": 1.7970986670115963,
+     "out_tokens": 278,
+     "prompt_tokens": 9978,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"session_id\":\"session-2026-08-24-01\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"write_uid\":\"obs-2026-08-24-01\",\"observed_at\":\"2026-08-23T10:00:00Z\",\"session_id\":\"session-2026-08-24-01\",\"text\":\"Block out tomorrow: deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.0792296250001527,
+     "total": 1.0796864579897374,
+     "out_tokens": 55,
+     "prompt_tokens": 9978,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-2026-08-24-1\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.7-flash @minimal",
+   "task": "route",
+   "samples": [
+    {
+     "ttft": 3.5947495839791372,
+     "total": 3.7010615000035614,
+     "out_tokens": 298,
+     "prompt_tokens": 9397,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 266,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_default_01\"}"
+      }
+     ]
+    },
+    {
+     "ttft": null,
+     "total": 6.281327000004239,
+     "out_tokens": 382,
+     "prompt_tokens": 9397,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 382,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 6.806106165982783,
+     "out_tokens": 381,
+     "prompt_tokens": 9397,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 381,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 6.434831416991074,
+     "out_tokens": 390,
+     "prompt_tokens": 9397,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 390,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 6.596805792010855,
+     "out_tokens": 382,
+     "prompt_tokens": 9397,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 382,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.6-flash @low (LIVE)",
+   "task": "parallel_reads",
+   "samples": [
+    {
+     "ttft": 2.9162489579757676,
+     "total": 2.916586290986743,
+     "out_tokens": 479,
+     "prompt_tokens": 9908,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 445,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"hugo-session-001\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.048046791984234,
+     "total": 1.2473098750342615,
+     "out_tokens": 93,
+     "prompt_tokens": 9908,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"default\",\"day\":\"2026-08-18\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-2026-08-18\",\"day\":\"2026-08-18\"}"
+      }
+     ]
+    },
+    {
+     "ttft": null,
+     "total": 4.680067583976779,
+     "out_tokens": 483,
+     "prompt_tokens": 9908,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 483,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 4.558117665990721,
+     "out_tokens": 478,
+     "prompt_tokens": 9908,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 478,
+     "calls": []
+    },
+    {
+     "ttft": 2.7879891670309007,
+     "total": 2.7959018330438994,
+     "out_tokens": 324,
+     "prompt_tokens": 9908,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 293,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_001\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gpt-5.4-mini @minimal",
+   "task": "stage_prose",
+   "samples": [
+    {
+     "ttft": 1.9191797910025343,
+     "total": 2.0893892080057412,
+     "out_tokens": 174,
+     "prompt_tokens": 6430,
+     "tool_calls": 0,
+     "text": "**Stage 1 \u2014 Collect**\n\nLoaded:\n- Calendar for tomorrow, 2026-08-24: no events yet\n- Active constraints for a **working** day:\n  - Sleep window: 23:00\u201307:00\n  - Commute: 30 minutes each way\n  - No morning meetings: nothing before 13:00\n  - Oats timing: oats exactly 2h before gym\n  - Gym session: 18:00\u201319:00\n\nAlso: **2 rules are suspended** today.\n\nWhat\u2019s the one thing you want to make sure lands tomorrow?",
+     "error": null,
+     "reasoning_tokens": 43,
+     "calls": []
+    },
+    {
+     "ttft": 2.2049394159694202,
+     "total": 2.384091374988202,
+     "out_tokens": 206,
+     "prompt_tokens": 6430,
+     "tool_calls": 0,
+     "text": "**Stage 1 \u2014 Collect**\n\nLoaded:\n- Calendar for **2026-08-24**: no events\n- Active rules for a **working day**:\n  - Sleep window: 23:00\u201307:00\n  - Commute: 30 minutes each way\n  - No morning meetings: nothing before 13:00\n  - Oats timing: exactly 2h before gym\n  - Gym session: 18:00\u201319:00\n\n**2 rules are suspended** today.\n\nWhat\u2019s the one thing you want to make sure lands tomorrow?",
+     "error": null,
+     "reasoning_tokens": 80,
+     "calls": []
+    },
+    {
+     "ttft": 2.0644282500143163,
+     "total": 2.2887048330157995,
+     "out_tokens": 161,
+     "prompt_tokens": 6430,
+     "tool_calls": 0,
+     "text": "**Stage 1 \u2014 Collect**\n\nLoaded:\n- Calendar for **tomorrow, 2026-08-24**: no events yet.\n- Active constraints for **working** day:\n  - Sleep window: **23:00\u201307:00**\n  - Commute: **30 minutes each way**\n  - No morning meetings: **nothing before 13:00**\n  - Oats timing: **exactly 2h before gym**\n  - Gym session: **18:00\u201319:00**\n\n**2 rules are suspended, today is working.**\n\nWhat would you most like to timebox tomorrow?",
+     "error": null,
+     "reasoning_tokens": 28,
+     "calls": []
+    },
+    {
+     "ttft": 1.8521447500097565,
+     "total": 2.0085721249924973,
+     "out_tokens": 154,
+     "prompt_tokens": 6430,
+     "tool_calls": 0,
+     "text": "**Stage 1 \u2014 Collect**\n\nLoaded:\n- Calendar snapshot for tomorrow: no events yet\n- Active constraints for tomorrow, a **working** day:\n  - Sleep window: 23:00\u201307:00\n  - Commute: 30 minutes each way\n  - No morning meetings: nothing before 13:00\n  - Oats timing: oats exactly 2h before gym\n  - Gym session: 18:00\u201319:00\n\n**2 rules are suspended** today.\n\nWhat would you like to be the one thing that has to land tomorrow?",
+     "error": null,
+     "reasoning_tokens": 28,
+     "calls": []
+    },
+    {
+     "ttft": 1.1453087910194881,
+     "total": 1.7162760409992188,
+     "out_tokens": 155,
+     "prompt_tokens": 6430,
+     "tool_calls": 0,
+     "text": "**Stage 1 \u2014 Collect**\n\nLoaded for tomorrow, 2026-08-24:\n- Calendar: no events on the plan yet\n- Active constraints:\n  - Sleep window: 23:00\u201307:00\n  - Commute: 30 minutes each way\n  - No morning meetings: nothing before 13:00\n  - Oats timing: should be exactly 2h before gym\n  - Gym session: should be 18:00\u201319:00\n\n2 rules are suspended; tomorrow is a working day.\n\nWhat\u2019s the one main thing you want to timebox tomorrow?",
+     "error": null,
+     "reasoning_tokens": 23,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "claude-haiku-4.5",
+   "task": "stage_prose",
+   "samples": [
+    {
+     "ttft": 1.4201770839863457,
+     "total": 3.0761384589714,
+     "out_tokens": 188,
+     "prompt_tokens": 7451,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere's what I've loaded for tomorrow (Monday, 24 August 2026):\n\n**Calendar:** Empty \u2014 no events yet.\n\n**Active constraints:**\n- Sleep window: 23:00\u201307:00 (must)\n- Commute: 30 minutes each way (must)\n- No morning meetings: nothing before 13:00 (must)\n- Oats timing: oats exactly 2h before gym (should)\n- Gym session: 18:00\u201319:00 (should)\n\n**Suspended rules:** 2 working-day rules suspended (you're on a normal working day, so these don't apply today).\n\n---\n\n**One question to start:** What's the one thing that has to land tomorrow \u2014 the commitment or goal that matters most?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.9522750420146622,
+     "total": 2.41619899997022,
+     "out_tokens": 177,
+     "prompt_tokens": 7451,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere's what I've loaded for tomorrow (Monday, 2026-08-24):\n\n**Calendar:** Empty \u2014 no events yet.\n\n**Constraints:** 5 active working-day rules:\n- Sleep window 23:00\u201307:00 (must)\n- Commute 30 minutes each way (must)\n- No morning meetings before 13:00 (must)\n- Oats timing: exactly 2 hours before gym (should)\n- Gym session 18:00\u201319:00 (should)\n\n**Suspended:** 2 working-day rules suspended today.\n\n---\n\n**One question to start:**\n\nWhat is the one thing that has to land tomorrow? (The primary goal for the day.)",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.6816090419888496,
+     "total": 2.8817642079666257,
+     "out_tokens": 177,
+     "prompt_tokens": 7451,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere's what I've loaded for tomorrow (Monday, 2026-08-24):\n\n**Calendar:**\n- No events yet \u2014 a blank slate\n\n**Constraints (5 active):**\n- Sleep window: 23:00\u201307:00 (must)\n- Commute: 30 minutes each way (must)\n- No morning meetings: nothing before 13:00 (must)\n- Gym session: 18:00\u201319:00 (should)\n- Oats timing: exactly 2h before gym (should)\n\n**Suspended:** 2 working-day rules are suspended today.\n\n---\n\n**One question:** What's the one thing that has to land tomorrow \u2014 your primary goal for the day?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.1113604169804603,
+     "total": 2.50535716698505,
+     "out_tokens": 184,
+     "prompt_tokens": 7451,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere's what I have:\n\n**Calendar (tomorrow, Aug 24):**\n- Empty \u2014 no fixed events yet\n\n**Active constraints (5 rules):**\n- Sleep window: 23:00\u201307:00 (must)\n- Commute: 30 minutes each way (must)\n- No morning meetings: nothing before 13:00 (must)\n- Oats timing: oats exactly 2h before gym (should)\n- Gym session: 18:00\u201319:00 (should)\n\n**Suspended rules:** 2 working-day rules suspended (tomorrow is a working day)\n\n---\n\n**One question to confirm:** Is tomorrow a regular working day, or is there anything special about it (vacation, sick day, etc.)?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.177863749966491,
+     "total": 2.9475752500002272,
+     "out_tokens": 203,
+     "prompt_tokens": 7451,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere's what I've loaded for tomorrow, 2026-08-24:\n\n**Calendar:**\n- No events scheduled yet \u2014 a blank slate to work with.\n\n**Active constraints (5 rules):**\n- Sleep window: 23:00\u201307:00 (must)\n- Commute: 30 minutes each way (must)\n- No morning meetings: nothing before 13:00 (must)\n- Oats timing: oats exactly 2h before gym (should)\n- Gym session: 18:00\u201319:00 (should)\n\n**Suspended:** 2 working-day rules suspended for today.\n\n---\n\n**One question:**\n\nWhat time do you need to leave tomorrow, and where are you commuting to \u2014 or should I assume a standard 9-to-5 workday starting after your commute?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.7-flash @minimal",
+   "task": "parallel_reads",
+   "samples": [
+    {
+     "ttft": 1.9005138750071637,
+     "total": 2.1834948749747127,
+     "out_tokens": 81,
+     "prompt_tokens": 9461,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess-2026-08-17-hugo\"}"
+      },
+      {
+       "name": "mcp__tmbx__plan_history",
+       "arguments": "{\"day\":\"2026-08-17\",\"calendar_id\":\"primary\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.598635040980298,
+     "total": 2.7697690830100328,
+     "out_tokens": 118,
+     "prompt_tokens": 9461,
+     "tool_calls": 2,
+     "text": "I will first check the current time and establish the target date for tomorrow. Let's record the observation and read session constraints, calendar, and active/suspended constraints.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_2026_planning\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"session_id\":\"session_2026_planning\",\"write_uid\":\"obs_1\",\"text\":\"Plan tomorrow for me.\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.0810797910089605,
+     "total": 2.436243125004694,
+     "out_tokens": 100,
+     "prompt_tokens": 9461,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_2026_04_07_plan\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"text\":\"Plan tomorrow for me.\",\"write_uid\":\"obs_plan_tomorrow_1\",\"session_id\":\"session_2026_04_07_plan\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.9469221250037663,
+     "total": 1.9846718339831568,
+     "out_tokens": 35,
+     "prompt_tokens": 9461,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_2026_01\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.864975000033155,
+     "total": 2.2202605420025066,
+     "out_tokens": 94,
+     "prompt_tokens": 9461,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-2026-08-18\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"text\":\"Plan tomorrow for me.\",\"write_uid\":\"obs-init-1\",\"session_id\":\"session-2026-08-18\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.6-flash @low (LIVE)",
+   "task": "stage_prose",
+   "samples": [
+    {
+     "ttft": 1.4833800839842297,
+     "total": 2.170712542021647,
+     "out_tokens": 191,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow (**Monday, August 24, 2026**):\n\n* **Calendar Events:** None (your calendar is completely clear).\n* **Active Constraints:**\n  * **Sleep window:** 23:00\u201307:00 (`must`)\n  * **Commute:** 30 minutes each way (`must`)\n  * **No morning meetings:** Nothing before 13:00 (`must`)\n  * **Gym session:** 18:00\u201319:00 (`should`)\n  * **Oats timing:** Oats exactly 2h before gym (`should`)\n* **Suspended Rules:** 2 working-day rules are currently suspended.\n\nIs tomorrow indeed a standard **working** day, or are you on a different schedule (e.g., vacation, holiday)?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.8487990830326453,
+     "total": 2.6073218749952503,
+     "out_tokens": 474,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I loaded for tomorrow (Monday, August 24, 2026):\n\n* **Calendar Events:** None (0 events on primary calendar)\n* **Active Constraints loaded (working day):**\n  * **Sleep window:** 23:00\u201307:00 (MUST)\n  * **Commute:** 30 minutes each way (MUST)\n  * **No morning meetings:** Nothing before 13:00 (MUST)\n  * **Oats timing:** Oats exactly 2h before gym (SHOULD)\n  * **Gym session:** 18:00\u201319:00 (SHOULD)\n\n* **Suspended Constraints:** 2 working-day rules suspended.\n\nDoes this calendar and set of constraints match what you expect for tomorrow, or are there any additional fixed commitments or changes to note?",
+     "error": null,
+     "reasoning_tokens": 280,
+     "calls": []
+    },
+    {
+     "ttft": 0.8585122090298682,
+     "total": 1.6232175420154817,
+     "out_tokens": 187,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow (**Monday, August 24, 2026**):\n\n- **Calendar Events:** None (calendar is currently clear).\n- **Constraints / Fixed Windows:**\n  - **Sleep window:** 23:00\u201307:00 (*must*)\n  - **No morning meetings:** Nothing before 13:00 (*must*)\n  - **Commute:** 30 minutes each way (*must*)\n  - **Gym session:** 18:00\u201319:00 (*should*)\n  - **Oats timing:** Oats exactly 2h before gym (*should*)\n- **Suspended Rules:** 2 working-day rules are currently suspended.\n\nAre there any other fixed commitments, appointments, or calendar events for tomorrow that aren't listed above?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.9261352500179783,
+     "total": 1.941553125041537,
+     "out_tokens": 259,
+     "prompt_tokens": 7101,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 221,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.9197797080269083,
+     "total": 1.5311116250231862,
+     "out_tokens": 158,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow (working day):\n\n* **Sleep window:** 23:00\u201307:00 (MUST)\n* **Commute:** 30 minutes each way (MUST)\n* **No morning meetings:** Nothing before 13:00 (MUST)\n* **Gym session:** 18:00\u201319:00 (SHOULD)\n* **Oats timing:** Oats exactly 2h before gym (SHOULD)\n* **Calendar:** No existing calendar events found.\n\n*(2 working-day rules suspended)*\n\nAre there any fixed calendar commitments, hard appointments, or travel times for tomorrow that aren't on your calendar yet?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gpt-5.4-mini @minimal",
+   "task": "progress_line",
+   "samples": [
+    {
+     "ttft": 1.3422322910046205,
+     "total": 1.4765477500041015,
+     "out_tokens": 31,
+     "prompt_tokens": 59,
+     "tool_calls": 0,
+     "text": "I\u2019m reading the plan and checking tomorrow\u2019s constraints.",
+     "error": null,
+     "reasoning_tokens": 14,
+     "calls": []
+    },
+    {
+     "ttft": 0.8723496660240926,
+     "total": 0.9945282500120811,
+     "out_tokens": 33,
+     "prompt_tokens": 59,
+     "tool_calls": 0,
+     "text": "Reviewing the plan and tomorrow\u2019s constraints now.",
+     "error": null,
+     "reasoning_tokens": 17,
+     "calls": []
+    },
+    {
+     "ttft": 1.4387039160355926,
+     "total": 1.5543461660272442,
+     "out_tokens": 52,
+     "prompt_tokens": 59,
+     "tool_calls": 0,
+     "text": "I\u2019m reading tomorrow\u2019s constraints and drafting the plan.",
+     "error": null,
+     "reasoning_tokens": 35,
+     "calls": []
+    },
+    {
+     "ttft": 1.0484169169794768,
+     "total": 1.1671097499784082,
+     "out_tokens": 56,
+     "prompt_tokens": 59,
+     "tool_calls": 0,
+     "text": "I\u2019m reviewing tomorrow\u2019s plan and the two constraint reads now.",
+     "error": null,
+     "reasoning_tokens": 37,
+     "calls": []
+    },
+    {
+     "ttft": 1.5728665409842506,
+     "total": 1.6962257080012932,
+     "out_tokens": 50,
+     "prompt_tokens": 59,
+     "tool_calls": 0,
+     "text": "I\u2019m reviewing the plan and both tomorrow constraint reads now.",
+     "error": null,
+     "reasoning_tokens": 32,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "claude-haiku-4.5",
+   "task": "progress_line",
+   "samples": [
+    {
+     "ttft": 1.2223660420277156,
+     "total": 1.536643167026341,
+     "out_tokens": 15,
+     "prompt_tokens": 61,
+     "tool_calls": 0,
+     "text": "Reading tomorrow's schedule and checking for conflicts with availability constraints.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.2468147500185296,
+     "total": 1.4983932920149527,
+     "out_tokens": 13,
+     "prompt_tokens": 61,
+     "tool_calls": 0,
+     "text": "Reading your plan for tomorrow and checking two constraints.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.1716827920172364,
+     "total": 1.465483582986053,
+     "out_tokens": 18,
+     "prompt_tokens": 61,
+     "tool_calls": 0,
+     "text": "Reading your calendar for tomorrow and checking what constraints need to work around it.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.1324107079999521,
+     "total": 1.4307358330115676,
+     "out_tokens": 12,
+     "prompt_tokens": 61,
+     "tool_calls": 0,
+     "text": "Reading tomorrow's schedule and checking for conflicts.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.181261874968186,
+     "total": 1.726582957955543,
+     "out_tokens": 15,
+     "prompt_tokens": 61,
+     "tool_calls": 0,
+     "text": "Reading tomorrow's schedule and checking for conflicts with existing constraints.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.6-flash @low (LIVE)",
+   "task": "progress_line",
+   "samples": [
+    {
+     "ttft": 0.8124980000429787,
+     "total": 0.8442276670248248,
+     "out_tokens": 76,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "Review",
+     "error": null,
+     "reasoning_tokens": 75,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 1.714072083006613,
+     "out_tokens": 76,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 76,
+     "calls": []
+    },
+    {
+     "ttft": 1.0365917090093717,
+     "total": 1.067039042012766,
+     "out_tokens": 76,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "Reviewing tomorrow",
+     "error": null,
+     "reasoning_tokens": 73,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 1.7660898340400308,
+     "out_tokens": 77,
+     "prompt_tokens": 51,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 77,
+     "calls": []
+    },
+    {
+     "ttft": 0.8118773750029504,
+     "total": 0.812459749984555,
+     "out_tokens": 76,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "Review",
+     "error": null,
+     "reasoning_tokens": 75,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gpt-5.4-mini @minimal",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 1.7235202500014566,
+     "total": 1.8563561249757186,
+     "out_tokens": 220,
+     "prompt_tokens": 8786,
+     "tool_calls": 3,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 88,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess-20260823-1\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"stage\":\"Collect\",\"anchor_uids\":null,\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.8673847079626285,
+     "total": 1.9641162919579074,
+     "out_tokens": 249,
+     "prompt_tokens": 8786,
+     "tool_calls": 3,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 49,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess-20260824-1\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"stage\":\"Collect\",\"anchor_uids\":null,\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"text\":\"Block out tomorrow: deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.\",\"session_id\":\"sess-20260824-1\",\"channel\":\"planning\",\"observed_at\":\"2026-08-23T00:00:00Z\",\"write_uid\":\"u1\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.376464999979362,
+     "total": 1.572146457969211,
+     "out_tokens": 133,
+     "prompt_tokens": 8786,
+     "tool_calls": 3,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"planning-2026-08-23-1\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"stage\":\"Collect\",\"anchor_uids\":null,\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 3.02692787500564,
+     "total": 3.145973625010811,
+     "out_tokens": 156,
+     "prompt_tokens": 8786,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 56,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess-20260823-1\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"stage\":\"Collect\",\"anchor_uids\":null,\"day_type\":\"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.7261092909611762,
+     "total": 1.8663985829916783,
+     "out_tokens": 166,
+     "prompt_tokens": 8786,
+     "tool_calls": 3,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 34,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess-20260823-1\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"stage\":\"collect\",\"anchor_uids\":null,\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.7-flash @minimal",
+   "task": "stage_prose",
+   "samples": [
+    {
+     "ttft": 1.4908687910065055,
+     "total": 2.6339243330294266,
+     "out_tokens": 190,
+     "prompt_tokens": 6998,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently loaded for tomorrow (2026-08-24):\n\n* **Calendar Events:** None currently scheduled.\n* **Active Constraints (Working day):**\n  * `MUST`: Sleep window (23:00\u201307:00)\n  * `MUST`: Commute (30 minutes each way)\n  * `MUST`: No morning meetings (nothing before 13:00)\n  * `SHOULD`: Oats timing (oats exactly 2h before gym)\n  * `SHOULD`: Gym session (18:00\u201319:00)\n* **Suspended Constraints:** 2 working-day rules suspended.\n\nDoes this list of fixed constraints and calendar state match your expectation for tomorrow, or are there any external commitments/changes to note before we capture your goals?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.5501240830053575,
+     "total": 2.864635416015517,
+     "out_tokens": 223,
+     "prompt_tokens": 6998,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently loaded for tomorrow (assuming a working day):\n\n- **Calendar events:** None (calendar is clear).\n- **Active constraints:**\n  - **Sleep window** (`must`): 23:00\u201307:00 (from memory: Sleep window)\n  - **Commute** (`must`): 30 minutes each way (from memory: Commute)\n  - **No morning meetings** (`must`): nothing before 13:00 (from memory: No morning meetings)\n  - **Gym session** (`should`): 18:00\u201319:00 (from memory: Gym session)\n  - **Oats timing** (`should`): oats exactly 2h before gym (from memory: Oats timing)\n- **Suspended rules:** 2 working-day rules are suspended.\n\nDoes tomorrow count as a standard working day, or is it a different day type (e.g., vacation, holiday, sick, weekend)?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.6507429159828462,
+     "total": 2.9042193749919534,
+     "out_tokens": 216,
+     "prompt_tokens": 6998,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently loaded for tomorrow (2026-08-24):\n\n* **Calendar Events:** None currently scheduled on the calendar.\n* **Active Constraints:**\n  * **Sleep window:** 23:00\u201307:00 (`must`) (from memory: Sleep window)\n  * **Commute:** 30 minutes each way (`must`) (from memory: Commute)\n  * **No morning meetings:** Nothing before 13:00 (`must`) (from memory: No morning meetings)\n  * **Gym session:** 18:00\u201319:00 (`should`) (from memory: Gym session)\n  * **Oats timing:** Exactly 2h before gym (`should`) (from memory: Oats timing)\n* **Suspended Rules:** 2 working-day rules suspended.\n\nAre there any other fixed events, appointments, or changes to these constraints for tomorrow before we capture your priorities?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 2.403347500017844,
+     "total": 3.81280166702345,
+     "out_tokens": 224,
+     "prompt_tokens": 6998,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently fixed and loaded for tomorrow (working day):\n\n* **Calendar Events:** None (calendar is currently empty).\n* **Active Constraints:**\n  * **Sleep window** (`must`): 23:00\u201307:00 (from memory: Sleep window)\n  * **Commute** (`must`): 30 minutes each way (from memory: Commute)\n  * **No morning meetings** (`must`): nothing before 13:00 (from memory: No morning meetings)\n  * **Gym session** (`should`): 18:00\u201319:00 (from memory: Gym session)\n  * **Oats timing** (`should`): oats exactly 2h before gym (from memory: Oats timing)\n\n**Suspended Rules:** 2 working-day rules are suspended.\n\n---\n\nDoes this capture all the fixed constraints and starting context for tomorrow, or are there any existing appointments/commitments not yet on the calendar?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 2.2089175840374082,
+     "total": 3.469794584030751,
+     "out_tokens": 214,
+     "prompt_tokens": 6998,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently loaded for tomorrow (assuming a working day):\n\n* **Calendar Events:** None currently scheduled.\n* **Active Constraints:**\n  * `Sleep window` (MUST): 23:00\u201307:00 (from memory: Sleep window)\n  * `Commute` (MUST): 30 minutes each way (from memory: Commute)\n  * `No morning meetings` (MUST): nothing before 13:00 (from memory: No morning meetings)\n  * `Gym session` (SHOULD): 18:00\u201319:00 (from memory: Gym session)\n  * `Oats timing` (SHOULD): oats exactly 2h before gym (from memory: Oats timing)\n\n* **Suspended Rules:** 2 rules suspended for today's profile.\n\nIs tomorrow a standard working day with a commute, or are you working from home / is this a different day type?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.6-flash @low (LIVE)",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 2.7626529169501737,
+     "total": 3.5324100419529714,
+     "out_tokens": 584,
+     "prompt_tokens": 9978,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 338,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-20260824\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"session_id\":\"session-20260824\",\"write_uid\":\"w-20260824-01\",\"text\":\"deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early), gym at 18:00, oats 2h before\",\"observed_at\":\"2026-08-24T08:00:00Z\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.079266041982919,
+     "total": 1.0846899169846438,
+     "out_tokens": 40,
+     "prompt_tokens": 9978,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_2026_08_24_planning\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.0457864169729874,
+     "total": 2.0470123749691993,
+     "out_tokens": 268,
+     "prompt_tokens": 9978,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\":{\"events\":[],\"day\":\"2026-08-24\",\"calendar_id\":\"primary\"},\"patch\":{\"ops\":[{\"t\":\"DW\",\"n\":\"Deep Work\",\"anchor_source\":\"user\",\"why\":\"User requested deep work in the morning\",\"h\":\"DW1\",\"p\":{\"dur\":\"PT3H\",\"st\":\"08:30:00\",\"a\":\"fs\"}},{\"p\":{\"st\":\"16:00:00\",\"a\":\"fs\",\"dur\":\"PT30M\"},\"h\":\"OATS1\",\"anchor_source\":\"user\",\"n\":\"Oats\",\"t\":\"R\",\"why\":\"Oats 2h before gym at 18:00\"},{\"anchor_source\":\"user\",\"n\":\"Gym\",\"t\":\"H\",\"why\":\"Gym at 18:00\",\"p\":{\"a\":\"fs\",\"st\":\"18:00:00\",\"dur\":\"PT1H\"},\"h\":\"GYM1\"}]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.0988123749848455,
+     "total": 1.6162590829771943,
+     "out_tokens": 221,
+     "prompt_tokens": 9978,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"sess_20260824_01\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"session_id\":\"sess_20260824_01\",\"write_uid\":\"obs_20260824_01\",\"text\":\"deep work in the morning is fine early, gym at 18:00, oats 2h before\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.1589963750448078,
+     "total": 1.6796672500204295,
+     "out_tokens": 204,
+     "prompt_tokens": 9978,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-20260824\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"session_id\":\"session-20260824\",\"text\":\"Block out tomorrow: deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "claude-haiku-4.5",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 2.1390775829786435,
+     "total": 2.85264679096872,
+     "out_tokens": 101,
+     "prompt_tokens": 11542,
+     "tool_calls": 1,
+     "text": "I'll first read the constraints for tomorrow, then build the patch.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\": \"2026-08-24\", \"day_type\": \"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.2795030829729512,
+     "total": 2.348806790949311,
+     "out_tokens": 154,
+     "prompt_tokens": 11542,
+     "tool_calls": 2,
+     "text": "I need to read constraints and session context first before building the patch.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\": \"2026-08-24\", \"day_type\": \"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\": \"hugo-session-20260823\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.586789749970194,
+     "total": 3.2900877079810016,
+     "out_tokens": 360,
+     "prompt_tokens": 11542,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\": {\"calendar_id\": \"primary\", \"day\": \"2026-08-24\", \"events\": []}, \"patch\": {\n  \"ops\": [\n    {\n      \"op\": \"add\",\n      \"h\": \"DW1\",\n      \"n\": \"Deep work\",\n      \"t\": \"DW\",\n      \"p\": {\"a\": \"ap\", \"dur\": \"PT2H\"},\n      \"why\": \"you said: deep work in the morning\"\n    },\n    {\n      \"op\": \"add\",\n      \"h\": \"OAT1\",\n      \"n\": \"Oats\",\n      \"t\": \"H\",\n      \"p\": {\"a\": \"ap\", \"dur\": \"PT30M\"},\n      \"why\": \"you said: oats 2h before gym\"\n    },\n    {\n      \"op\": \"add\",\n      \"h\": \"GYM1\",\n      \"n\": \"Gym\",\n      \"t\": \"H\",\n      \"p\": {\"a\": \"fs\", \"st\": \"18:00\", \"dur\": \"PT1H\"},\n      \"anchor_source\": \"user\",\n      \"why\": \"you said: gym at 18:00\"\n    }\n  ]\n}}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.3581923749879934,
+     "total": 2.074610957992263,
+     "out_tokens": 106,
+     "prompt_tokens": 11542,
+     "tool_calls": 1,
+     "text": "I need to read the constraints first to understand what rules apply tomorrow, then build the patch.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\": \"2026-08-24\", \"day_type\": \"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.4487732079578564,
+     "total": 2.1452304169652052,
+     "out_tokens": 102,
+     "prompt_tokens": 11542,
+     "tool_calls": 1,
+     "text": "I need to read the constraints first to ensure the plan respects them.",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\": \"2026-08-24\", \"day_type\": \"working\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.7-flash @minimal",
+   "task": "progress_line",
+   "samples": [
+    {
+     "ttft": 1.6596596249728464,
+     "total": 1.7775779999792576,
+     "out_tokens": 76,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "Reviewing tomorrow'",
+     "error": null,
+     "reasoning_tokens": 72,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 2.4556118749896996,
+     "out_tokens": 77,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 77,
+     "calls": []
+    },
+    {
+     "ttft": 3.430101832957007,
+     "total": 3.433079832990188,
+     "out_tokens": 76,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "Reviewing",
+     "error": null,
+     "reasoning_tokens": 74,
+     "calls": []
+    },
+    {
+     "ttft": null,
+     "total": 2.6872802089783363,
+     "out_tokens": 76,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 76,
+     "calls": []
+    },
+    {
+     "ttft": 2.0348795839818195,
+     "total": 2.080346833972726,
+     "out_tokens": 76,
+     "prompt_tokens": 49,
+     "tool_calls": 0,
+     "text": "Reviewing",
+     "error": null,
+     "reasoning_tokens": 74,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "gemini-3.7-flash @minimal",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 4.212618624966126,
+     "total": 4.264492082991637,
+     "out_tokens": 365,
+     "prompt_tokens": 9516,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 323,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.8985255830339156,
+     "total": 2.89912604104029,
+     "out_tokens": 239,
+     "prompt_tokens": 9516,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\":{\"events\":[],\"calendar_id\":\"primary\",\"day\":\"2026-08-24\"},\"patch\":{\"ops\":[{\"d\":\"\",\"t\":\"DW\",\"p\":{\"dur\":\"PT2H\",\"st\":\"09:00:00\",\"a\":\"fs\"},\"n\":\"Deep Work\",\"h\":\"DW1\",\"anchor_source\":\"user\"},{\"t\":\"M\",\"d\":\"\",\"anchor_source\":\"user\",\"n\":\"Oats\",\"h\":\"MEAL1\",\"p\":{\"a\":\"fs\",\"st\":\"16:00:00\",\"dur\":\"PT30M\"}},{\"t\":\"H\",\"d\":\"\",\"anchor_source\":\"user\",\"n\":\"Gym\",\"h\":\"GYM1\",\"p\":{\"dur\":\"PT1H\",\"a\":\"fs\",\"st\":\"18:00:00\"}}]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 3.665890624979511,
+     "total": 3.6779563750023954,
+     "out_tokens": 167,
+     "prompt_tokens": 9516,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"n\":\"Oats\",\"t\":\"R\",\"h\":\"OATS1\",\"p\":{\"a\":\"fs\",\"st\":\"16:00:00\",\"dur\":\"PT30M\"},\"anchor_source\":\"user\"},{\"t\":\"H\",\"h\":\"GYM1\",\"anchor_source\":\"user\",\"p\":{\"st\":\"18:00:00\",\"dur\":\"PT1H\",\"a\":\"fs\"},\"n\":\"Gym\"}]},\"snapshot\":{\"calendar_id\":\"primary\",\"events\":[],\"day\":\"2026-08-24\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.807436458999291,
+     "total": 2.858875000034459,
+     "out_tokens": 198,
+     "prompt_tokens": 9516,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"anchor_source\":\"user\",\"t\":\"M\",\"p\":{\"a\":\"fs\",\"dur\":\"PT30M\",\"st\":\"16:00:00\"},\"h\":\"MEAL1\",\"d\":\"Oats 2h before gym\",\"n\":\"Oats\",\"op\":\"add\"},{\"h\":\"GYM1\",\"op\":\"add\",\"anchor_source\":\"user\",\"d\":\"Gym workout\",\"n\":\"Gym\",\"t\":\"H\",\"p\":{\"dur\":\"PT1H\",\"st\":\"18:00:00\",\"a\":\"fs\"}}]},\"snapshot\":{\"events\":[],\"calendar_id\":\"primary\",\"day\":\"2026-08-24\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 4.145543958002236,
+     "total": 4.189881665981375,
+     "out_tokens": 386,
+     "prompt_tokens": 9516,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 344,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
