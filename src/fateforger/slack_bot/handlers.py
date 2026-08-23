@@ -805,6 +805,42 @@ def harness_approve_block(thread_key: str) -> dict:
     }
 
 
+async def instant_ack(client, event: dict) -> dict | None:
+    """Say "heard you" before anything slow runs.
+
+    First visible output was 3.6s, because everything ahead of it is work the
+    user cannot see: a workspace-registry ensure, a user-invite call, a
+    registration guard that has been observed *timing out* at 3s, then agent
+    resolution, and only then the first post. None of that is thinking. The
+    user cannot tell a system that is working from one that dropped the
+    message, and 3.6s of nothing is the difference between responsive and
+    broken.
+
+    So this goes first and is deliberately trivial: one API call, no lookups,
+    no model, nothing that can be slow. Its `ts` is handed to the router so the
+    "thinking" state edits this message rather than posting a second one --
+    otherwise the fast ack buys a duplicate.
+
+    Returns None on any failure. An acknowledgement that could break the turn
+    it is acknowledging would be a bad trade.
+    """
+    channel = event.get("channel")
+    if not channel:
+        return None
+    # Threaded under the message being acknowledged, including when that
+    # message started no thread of its own -- a top-level ack reads as an
+    # unrelated post, and the reply that follows lands in the thread anyway,
+    # so the two would be separated.
+    thread_ts = event.get("thread_ts") or event.get("ts")
+    payload: dict = {"channel": channel, "text": ":eyes:"}
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
+    try:
+        return await client.chat_postMessage(**payload)
+    except Exception:
+        return None
+
+
 def _timebox_backend() -> str:
     """Which system answers /timebox. "harness" unless told otherwise."""
     return (os.environ.get("FF_TIMEBOX_BACKEND") or "harness").strip().lower()
@@ -1098,6 +1134,7 @@ async def route_slack_event(
     client: AsyncWebClient,
     get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]] | None = None,
     planning: PlanningCoordinator | None = None,
+    acked: dict | None = None,
 ) -> None:
     channel = event["channel"]
     user = event.get("user") or event.get("bot_id") or "unknown"
@@ -1182,7 +1219,23 @@ async def route_slack_event(
         origin_processing_payload["icon_emoji"] = persona.icon_emoji
     if persona and persona.icon_url:
         origin_processing_payload["icon_url"] = persona.icon_url
-    origin_processing_msg = await client.chat_postMessage(**origin_processing_payload)
+    if acked is not None:
+        # Reuse the instant acknowledgement rather than posting beside it. The
+        # ack exists to make the first frame fast; a second message would make
+        # it noisy instead.
+        origin_processing_msg = acked
+        try:
+            await client.chat_update(
+                channel=acked["channel"],
+                ts=acked["ts"],
+                text=origin_processing_payload["text"],
+            )
+        except Exception:
+            pass
+    else:
+        origin_processing_msg = await client.chat_postMessage(
+            **origin_processing_payload
+        )
 
     async def _origin_update(*, text: str, blocks=None) -> None:
         compact = _compact_slack_payload(text=text, blocks=blocks)
@@ -2011,6 +2064,7 @@ def register_handlers(
         bot_user_id: str | None,
         client: AsyncWebClient,
         origin: str,
+        acked: dict | None = None,
     ) -> None:
         def _fallback_thread_root() -> str | None:
             candidate = str(event.get("thread_ts") or "").strip()
@@ -2044,6 +2098,7 @@ def register_handlers(
         try:
             await asyncio.wait_for(
                 route_slack_event(
+                    acked=acked,
                     runtime=runtime,
                     focus=focus,
                     default_agent=default_agent,
@@ -3015,6 +3070,11 @@ def register_handlers(
     # --- App mention in public channels ---
     @app.event("app_mention")
     async def on_app_mention(body, say, context, client, logger):
+        # Before anything else. Everything below is invisible work -- a
+        # registry ensure, an invite, a registration guard observed timing out
+        # at 3s -- and until one of them finishes the user cannot tell a
+        # working system from a dropped message.
+        acked = await instant_ack(client, body.get("event", {}))
         await _ensure_workspace_registry(client)
         event = body.get("event", {})
         user_id = event.get("user") or ""
@@ -3029,6 +3089,7 @@ def register_handlers(
                 origin="app_mention",
             )
         await _route_slack_event_with_guard(
+            acked=acked,
             event=event,
             say=say,
             bot_user_id=context.get("bot_user_id"),
