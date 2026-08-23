@@ -111,3 +111,54 @@ def test_refine_message_gives_each_block_a_time() -> None:
 
     assert "16:30" in message
     assert "21:00" in message
+
+
+def test_the_plan_is_rendered_even_when_the_model_wrote_its_own_schedule() -> None:
+    """The render is unconditional, not "only if the model forgot".
+
+    The two tests above use a prose-only gate, so they prove that a gate with
+    no schedule gets one. They do not prove the invariant, and the difference
+    is not academic: this mutation passes both of them --
+
+        _already = any("schedule" in (sec.heading or "").lower()
+                       for sec in gate.response_message.sections)
+        schedule_lines = [] if _already else self._format_schedule_lines(timebox)
+
+    "Don't duplicate what the model already wrote" is a plausible,
+    well-intentioned refactor. It also reinstates exactly the failure this file
+    exists for, because the incident *was* a stage model writing something that
+    read like a schedule. Whether its prose really showed the plan is a
+    judgement about generated text, and it was wrong five times out of five.
+
+    So: a gate that already carries a "Schedule" section, holding a stale plan
+    that shares not one block with the real one. The authoritative render comes
+    from `session.timebox` regardless, and the blocks that actually exist are
+    the ones the user sees.
+
+    Found by admonish-1-c5, who mutated the invariant rather than the renderer.
+    """
+    agent = TimeboxingFlowAgent.__new__(TimeboxingFlowAgent)
+    gate = StageGateOutput(
+        stage_id=TimeboxingStage.REFINE,
+        ready=True,
+        summary=[],
+        missing=[],
+        question="Review the refined schedule above.",
+        facts={},
+        response_message=SessionMessage(
+            sections=[
+                FreeformSection(
+                    heading="Schedule",
+                    content="- 09:00-10:00 Yesterday's Standup\n- 10:00-11:00 Inbox",
+                ),
+            ]
+        ),
+    )
+
+    message = agent._format_stage_message(
+        gate, constraints=[], immovables=[], timebox=_timebox()
+    )
+
+    assert "Deep Work: Secondary Lane" in message
+    assert "Evening Wind-Down" in message
+    assert "16:30" in message
