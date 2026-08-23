@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from autogen_agentchat.messages import TextMessage
 from autogen_core import AgentId
 from pydantic import BaseModel
 from slack_sdk.web.async_client import AsyncWebClient
@@ -15,6 +14,7 @@ from fateforger.agents.timeboxing.messages import (
     TimeboxingUndoSubmit,
 )
 from fateforger.slack_bot.constraint_review import decode_metadata
+from fateforger.slack_bot.reply_guard import agent_reply_text
 
 FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID = "ff_timebox_confirm_submit"
 FF_TIMEBOX_CANCEL_SUBMIT_ACTION_ID = "ff_timebox_cancel_submit"
@@ -252,10 +252,8 @@ def _slack_payload_from_result(result: Any) -> dict[str, Any]:
         if blocks is not None:
             return {"text": text or "", "blocks": blocks}
         return {"text": text or ""}
-    content = getattr(chat_message, "content", None)
-    if content is None and isinstance(result, TextMessage):
-        content = result.content
-    return {"text": content or "(no response)"}
+    # `chat_message` already collapsed to `result` above, so this is the whole non-Slack case.
+    return {"text": agent_reply_text(chat_message)}
 
 
 __all__ = [

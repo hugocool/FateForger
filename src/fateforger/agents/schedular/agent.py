@@ -96,6 +96,17 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         self._delegate: AssistantAgent | None = None
         self._workbench: McpWorkbench | None = None
 
+    def _source_name(self) -> str:
+        """Agent name safe to stamp on a reply we built ourselves.
+
+        ``self.id`` is only bound once the runtime has registered this agent, so reaching for
+        it while assembling a failure reply can raise and swallow the failure it was reporting.
+        """
+        try:
+            return self.id.type
+        except Exception:
+            return "planner_agent"
+
     def _ensure_workbench(self) -> McpWorkbench:
         if self._workbench:
             return self._workbench
@@ -711,13 +722,19 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         )
 
         self._delegate = AssistantAgent(
-            self.id.type,
+            self._source_name(),
             system_message=prompt,
             model_client=build_autogen_chat_client(
                 "planner_agent", parallel_tool_calls=False
             ),
             tools=tools,
-            reflect_on_tool_use=False,
+            # The calendar tools return raw Google Calendar payloads — htmlLink, creator email,
+            # iCalUID, tickTaskId. With reflect_on_tool_use=False AutoGen makes the tool output
+            # itself the agent's reply (a ToolCallSummaryMessage), so asking "what's on Sunday?"
+            # published that payload straight into #scheduling (#180). Reflection costs one extra
+            # model call and buys the thing the user actually asked for: an answer in prose, with
+            # only the fields the model chose to mention.
+            reflect_on_tool_use=True,
             max_tool_iterations=3,
         )
 
@@ -752,29 +769,30 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                     "Please try again in a moment (or ask a narrower question like "
                     '"what\'s on my calendar on Sunday between 9 and 12?").'
                 ),
-                source=self.id.type,
+                source=self._source_name(),
             )
 
         chat_message = getattr(resp, "chat_message", None)
-        content = getattr(chat_message, "content", None)
-        if content is None:
-            content = getattr(resp, "content", None)
 
-        # AutoGen can return other BaseTextChatMessage variants (e.g. ToolCallSummaryMessage)
-        # when tools were called. The RoutedAgent return type must remain stable (TextMessage),
-        # so coerce to TextMessage for downstream Slack handlers.
+        # The RoutedAgent return type must stay TextMessage, but reaching that by stringifying
+        # whatever came back is what leaked the calendar payload in #180: a ToolCallSummaryMessage
+        # wrapped in a TextMessage is indistinguishable from an answer to every layer downstream,
+        # including the Slack boundary. With reflect_on_tool_use=True the delegate should always
+        # end on prose; if it does not — max_tool_iterations exhausted, a client that stopped
+        # early — that is a bug in this agent, so say so and drop the payload rather than
+        # laundering it into something that looks like an answer.
         if type(chat_message) is not TextMessage:
-            source = getattr(chat_message, "source", None)
-            if not source:
-                try:
-                    source = self.id.type
-                except Exception:
-                    source = "planner_agent"
+            logger.error(
+                "PlannerAgent delegate returned %s instead of a text answer; "
+                "withholding its payload. Tool output must be summarised, not returned.",
+                type(chat_message).__name__,
+            )
             chat_message = TextMessage(
-                content=str(
-                    getattr(chat_message, "content", None) or content or "(no response)"
+                content=(
+                    "I got the calendar data back but failed to turn it into an answer. "
+                    "Please ask again, or narrow the question to a single day."
                 ),
-                source=source,
+                source=self._source_name(),
             )
 
         follow_up = self._follow_up_plan(chat_message.content)

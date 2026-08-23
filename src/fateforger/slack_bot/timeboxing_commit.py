@@ -7,13 +7,13 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from autogen_agentchat.messages import TextMessage
 from autogen_core import AgentId
 from slack_sdk.web.async_client import AsyncWebClient
 
 from fateforger.agents.timeboxing.messages import TimeboxingCommitDate
 from fateforger.slack_bot.constraint_review import decode_metadata, encode_metadata
 from fateforger.slack_bot.messages import SlackBlockMessage
+from fateforger.slack_bot.reply_guard import agent_reply_text
 from fateforger.slack_bot.ui import link_button
 from fateforger.slack_bot.workspace import WorkspaceRegistry
 
@@ -388,10 +388,8 @@ def _slack_payload_from_result(result: Any) -> dict[str, Any]:
         if blocks is not None:
             return {"text": text or "", "blocks": blocks}
         return {"text": text or ""}
-    content = getattr(chat_message, "content", None)
-    if content is None and isinstance(result, TextMessage):
-        content = result.content
-    return {"text": content or "(no response)"}
+    # `chat_message` already collapsed to `result` above, so this is the whole non-Slack case.
+    return {"text": agent_reply_text(chat_message)}
 
 
 def _append_thread_button(

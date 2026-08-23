@@ -58,6 +58,7 @@ from fateforger.slack_bot.planning import (
     PlanningCoordinator,
     parse_draft_id_from_value,
 )
+from fateforger.slack_bot.reply_guard import agent_reply_text
 from fateforger.slack_bot.task_cards import (
     FF_TASK_DETAILS_ACTION_ID,
     FF_TASK_EDIT_MODAL_CALLBACK_ID,
@@ -3107,10 +3108,8 @@ def _slack_payload_from_result(result) -> dict:
         return payload
     if isinstance(chat_message, SlackBlockMessage):
         return {"text": chat_message.text, "blocks": chat_message.blocks}
-    content = getattr(chat_message, "content", None)
-    if content is None and isinstance(result, TextMessage):
-        content = result.content
-    return {"text": content or "(no response)"}
+
+    return {"text": agent_reply_text(chat_message if chat_message is not None else result)}
 
 
 # TODO: this seems like something that shouldnt exist
