@@ -1,0 +1,178 @@
+# ---------------------------------------------------------------------------
+# dsh profile "tmbx" — mounts the FateForger timebox MCP server (map A, #158)
+# and the constraint-memory MCP server (map B, #133). Joint session: #149.
+#
+# Layers below @deepseek-ai/dsh-base + @deepseek-ai/dsh-headless. Three edits:
+#   1. route the model at OpenRouter (settings live in $DSH_HOME/settings.yaml)
+#   2. the system prompt: tmbx's own MCP *resources*, inlined because this
+#      host's MCP bridge is tools-only (tmbx-persona.py), followed by the
+#      constraint-handling policy neither server states (memory-policy.md)
+#   3. two @deepseek-ai/dsh-mcp-client rows, one per stdio server
+#
+# The calendar backend is pinned to the in-memory fake. tmbx's own default is
+# also "fake", so this is belt and braces: nothing here can reach a real
+# Google Calendar. TMBX_CALENDAR_BACKEND=google is the only value that would,
+# and it must never be written into this file.
+#
+# The memory mount is allow-listed, and structurally so — see the mcp-memory row.
+# It may now write (memory_observe) and it may borrow the host's model
+# (sampling.enabled), and it does both against a throwaway copy of the store.
+# ---------------------------------------------------------------------------
+
+# 1. Default model for new agents. The provider route "openrouter" is defined
+#    in $DSH_HOME/settings.yaml; the key resolves per request from the
+#    OPENROUTER_API_KEY environment variable.
+- id: agent-default-model
+  config:
+    provider: openrouter
+    model: google/gemini-3.6-flash
+
+# 2. The system prompt, in two pieces.
+#
+#    Piece one is tmbx's. Harness's MCP bridge declares `{ capabilities: {} }`
+#    (packages/mcp/mcp-client/src/connection.ts), so MCP Resources never reach
+#    the model — but tmbx's five tool descriptions point at two of them by URI
+#    (tmbx://policy/planning, tmbx://schema/ops). Rather than copy that text
+#    here, where it would drift the first time tmbx changed, this reads it out
+#    of the running tmbx source at profile load. A failure throws and boot
+#    stops, which is the intended failure: a silently policy-less model would
+#    emit worse patches with no signal at all.
+#
+#    Piece two is neither server's. memory-policy.md says when to read the
+#    constraints, that `day_type` is mandatory, that MUST is a hard boundary
+#    rather than a preference, and what the two correct moves are when a
+#    request cannot be granted without breaking one. It is a static file and
+#    not a generated one precisely because it quotes nothing from either
+#    server's source — there is nothing for it to drift from. The per-tool
+#    detail it would otherwise have to restate (argument shapes, day_type
+#    vocabulary) arrives on its own: tool *descriptions* are bridged even
+#    though resources are not.
+- id: system-prompt
+  config:
+    persona: !!js >-
+      process.getBuiltinModule('node:child_process').execFileSync(
+      '/Users/hugoevers/VScode-projects/admonish-1/.venv/bin/python',
+      ['/Users/hugoevers/.dsh/profiles/tmbx/tmbx-persona.py'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: '/Users/hugoevers/VScode-projects/admonish-1',
+      env: Object.assign({}, process.env, { PYTHONPATH:
+      '/Users/hugoevers/VScode-projects/admonish-1/src' }) })
+      + process.getBuiltinModule('node:fs').readFileSync(
+      '/Users/hugoevers/.dsh/profiles/tmbx/memory-policy.md', 'utf8')
+
+# 3. The servers. stdio; the generic client starts and stops each child with
+#    the plugin lifecycle. Tools arrive as mcp__tmbx__<name>, mcp__memory__<name>.
+- insert:
+    - id: mcp-tmbx
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: tmbx
+        transport: streamable-http
+        # Started once, outside the harness, so a turn connects instead of
+        # spawning Python and paying its import cost again. Calendar backend
+        # and timezone are set on THAT process, not here.
+        url: http://127.0.0.1:8011/mcp
+        toolCallTimeoutMs: 120000
+        failOnStartupError: true
+
+    # The memory server, behind a tool allow-list.
+    #
+    # The plain mount would be `command: <venv>/bin/python`, `args: ['-m',
+    # 'memory.mcp_server']`. It is still not used, because dsh-mcp-client
+    # still has no tool allow-list — its config schema is transport,
+    # serverName, command, args, env, cwd, toolCallTimeoutMs,
+    # failOnStartupError, reconnect.* and (new on feat/mcp-client-sampling)
+    # sampling.*, and nothing else — so a plain mount hands the model all
+    # nine tools, four of which write.
+    #
+    # What changed: this host now DECLARES the sampling capability on this
+    # mount, so the three write tools that sample no longer fail loudly.
+    # memory_observe is therefore allow-listed — it is the write path #149
+    # exists to exercise. memory_split_constraint stays withheld, and that
+    # argument never depended on sampling: it does not sample, so it would
+    # have run even under the old mount, and a split is the inverse of a
+    # merge that cannot currently be undone. memory_classify_day stays
+    # withheld deliberately — deriving the day type from what the user said
+    # is the host's judgement and is the thing the acceptance test measures.
+    #
+    # memory-readonly-server.py builds the same server the ordinary entry
+    # point builds and then drops everything outside the allow-list through
+    # FastMCP's public remove_tool. It copies no tool definition and modifies
+    # nothing in src/memory; the four that survive are the server's own.
+    #
+    # MEMORY_DB_PATH must be ABSOLUTE. memory's own default is the relative
+    # "data/memory.db", which resolves against the child's cwd and quietly
+    # opens an empty store — indistinguishable from a user who has never
+    # stated a rule. The launcher refuses a relative value rather than
+    # letting that happen.
+    #
+    # It points at a THROWAWAY COPY of the corpus. memory_observe now
+    # genuinely writes, and the worktree store holds 33 real preferences of
+    # Hugo's that an acceptance run has no business appending to. Repoint it
+    # only for a run that is meant to keep what it learns.
+    - id: mcp-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: memory
+        transport: streamable-http
+        # Same: one long-lived process. The allow-list still applies -- it is
+        # enforced inside memory-readonly-server.py before it serves anything.
+        url: http://127.0.0.1:8010/mcp
+        sampling:
+          enabled: true
+          maxTokens: 2048
+        toolCallTimeoutMs: 120000
+        failOnStartupError: true
+
+    # 4. Progress. The bridge runs a Claude-Code-shaped hook config on the
+    #    harness's own interception points, so one PostToolUse command hook is
+    #    enough to see inside a run — no polling of anything the servers print.
+    #
+    #    That distinction is the whole reason this row exists. Reading the MCP
+    #    servers' stderr worked only while they ran under stdio and went blind
+    #    the moment the two rows above moved to streamable-http. This does not
+    #    care which transport they use, because the harness reports its own
+    #    tool calls rather than the servers reporting theirs.
+    #
+    #    configPath is PROCESS-level and a relative path would resolve against
+    #    the launch cwd, so it is absolute. The hook itself is versioned in the
+    #    repo with its tests (tests/unit/test_dsh_progress_hook.py) rather than
+    #    living here, where nothing would run it.
+    #
+    #    It cannot affect a run. Every path in the hook exits 0 and writes
+    #    nothing to stdout — exit 2 would block the tool call and stdout is
+    #    parsed as a permission decision. With FF_DSH_PROGRESS_FILE unset, which
+    #    is every run except a Slack turn, it reads stdin and returns.
+    - id: hooks-progress
+      name: '@deepseek-ai/dsh-hooks-claude-code'
+      config:
+        configPath: /Users/hugoevers/VScode-projects/admonish-1/infra/dsh/hooks.json
+        projectDir: /Users/hugoevers/VScode-projects/admonish-1
+
+# 5. Skills: exactly the ones this repo versions, and nothing else.
+#
+#    dsh-skill-filesystem is ALREADY loaded by dsh-base with no config, which
+#    means every default root is scanned. Measured before this block existed:
+#    the model was offered a catalog of 53 skills -- 11 from the harness repo's
+#    own .agents/skills and the rest from ~/.agents/skills. Things like
+#    `dsh-merging-stacked-prs`, `record-browser-gif` and `frontend-design`,
+#    offered to an agent whose job is planning Hugo's day. The catalog is
+#    chosen by the model, so an unreviewed skill body is a prompt nobody wrote
+#    for this system and nobody reviewed.
+#
+#    The second half of the same measurement: the intended skill was NOT among
+#    them. Discovery resolves the project root to the nearest .git ancestor of
+#    the process cwd, and harness_bridge runs the CLI with cwd=<deepseek-harness>
+#    -- so `<projectRoot>/.dsh/skills` meant the HARNESS repo, not this one, and
+#    admonish-1/.dsh/skills/admonisher was invisible. Turning the feature on
+#    naively would have exposed 53 unintended prompts while delivering none of
+#    the intended one.
+#
+#    includeDefaultRoots: false drops all five default rows. customSkillDirs
+#    then names the one root that matters, absolutely -- it cannot depend on
+#    cwd, which is what broke the default.
+- id: skill-filesystem
+  config:
+    includeDefaultRoots: false
+    customSkillDirs:
+      - /Users/hugoevers/VScode-projects/admonish-1/.dsh/skills

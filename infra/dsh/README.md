@@ -60,3 +60,39 @@ case: 6/6 marked assumptions, 6/6 attributed to memory, 6/6 quoted the user,
 and **5/6 stayed inside the stage they were asked for** — one draw reached for
 `plan_apply` during the skeleton. Instruction does not hold a stage boundary;
 a `PreToolUse` deny does.
+
+## The profile is versioned here, but the harness loads `~/.dsh`
+
+`profile/` holds a copy of what `~/.dsh/profiles/tmbx/` contains. The harness
+reads the `~/.dsh` copy — **this directory is a record, not the source** — so a
+change here reaches nothing until it is copied across, and a change there is
+invisible to review until it is copied back. Check them before trusting either:
+
+```sh
+diff -r infra/dsh/profile ~/.dsh/profiles/tmbx
+```
+
+It is versioned because the alternative was worse. `cordis.patch.yml` pins the
+model, the system prompt, both MCP mounts and the skill roots, and it existed on
+exactly one machine with no copy anywhere.
+
+## Skills are restricted to this repo, deliberately
+
+`dsh-base` already loads `dsh-skill-filesystem` with **no config**, so every
+default root is scanned. Measured on 2026-08-23 before this was constrained: the
+planning agent was offered **53 skills** — 11 from the harness repo's own
+`.agents/skills`, the rest from `~/.agents/skills`. `dsh-merging-stacked-prs`,
+`record-browser-gif`, `frontend-design`, offered to an agent whose job is
+planning a day. The model chooses from that catalog, so each unreviewed skill
+body is a prompt nobody wrote for this system.
+
+The same measurement showed the intended skill was **not** among them. Discovery
+resolves the project root to the nearest `.git` ancestor of the process cwd, and
+`harness_bridge` runs the CLI with `cwd=<deepseek-harness>` — so
+`<projectRoot>/.dsh/skills` meant the *harness* repo. Enabling the feature
+naively would have exposed 53 unintended prompts and delivered none of the
+intended one.
+
+`includeDefaultRoots: false` plus an absolute `customSkillDirs` fixes both: the
+root cannot depend on cwd, which is what broke the default. Verified after the
+change — the catalog is exactly `admonisher`.
