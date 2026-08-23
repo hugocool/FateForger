@@ -249,3 +249,7 @@ logs/
 
 # seeded memory stores and run artifacts — real user data, never commit
 data/memory.db*
+
+# demo stack supervisor: pids, git sha and source fingerprints of the
+# processes this checkout started. Machine-local by definition.
+.demo/

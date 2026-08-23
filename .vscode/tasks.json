@@ -2,6 +2,124 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Demo: Status",
+      "detail": "Reports each of the three processes: alive, actually serving its port, and whether it is running the code currently on disk. Exits 1 if any answer is no.",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "${workspaceFolder}/scripts/demo.py",
+        "status"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Demo: Start",
+      "detail": "Starts tmbx (8011), the memory server (8010) and the Slack bot; records their pids plus a hash of the sources they imported, and waits for the ports.",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "${workspaceFolder}/scripts/demo.py",
+        "start"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Demo: Stop",
+      "detail": "Stops everything the state file records. Idempotent -- an already-dead process is a normal outcome, not an error.",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "${workspaceFolder}/scripts/demo.py",
+        "stop"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Demo: Restart",
+      "detail": "Stop, then start. What to run after editing src/; without it 'Demo: Status' keeps reporting STALE-CODE.",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "${workspaceFolder}/scripts/demo.py",
+        "restart"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Demo: Start MCP Servers Only",
+      "detail": "tmbx + memory without the Slack bot -- the pairing for debugging the bot inside VS Code, since two Socket Mode connections to one app both answer.",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "${workspaceFolder}/scripts/demo.py",
+        "start",
+        "tmbx",
+        "memory"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Demo: Stop MCP Servers Only",
+      "detail": "Stops tmbx and memory, leaving a separately-launched Slack bot alone.",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "${workspaceFolder}/scripts/demo.py",
+        "stop",
+        "tmbx",
+        "memory"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "FateForger: Ensure Docker",
       "detail": "Check if Docker is running and start Docker Desktop if needed",
       "type": "shell",

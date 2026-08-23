@@ -2,6 +2,25 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "FateForger: Slack Bot (supervised MCP servers)",
+      "type": "python",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "module": "fateforger.slack_bot.bot",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      },
+      "preLaunchTask": "Demo: Start MCP Servers Only",
+      "postDebugTask": "Demo: Stop MCP Servers Only",
+      "presentation": {
+        "hidden": false,
+        "group": "FateForger",
+        "order": 0
+      }
+    },
+    {
       "name": "🎨 TRMNL Dashboard (Dev Server)",
       "type": "node",
       "request": "launch",

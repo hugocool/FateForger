@@ -45,7 +45,8 @@ dependencies = [
     "python-multipart (>=0.0.21,<0.0.22)",
     "itsdangerous (>=2.2.0,<3.0.0)",
     "llama-index-tools-artifact-editor (>=0.2.1,<0.3.0)",
-    "toonify (>=1.5.1,<2.0.0)"
+    "toonify (>=1.5.1,<2.0.0)",
+    "marimo>=0.23.9",
 ]
 
 [project.scripts]
@@ -53,6 +54,10 @@ plan = "fateforger.bots.planner_bot:main"
 haunt = "fateforger.bots.haunter_bot:main"
 watch = "fateforger.bots.calendar_watch_server:main"
 tmbx-mcp = "tmbx.server:main"
+# Supervises the three-process demo stack. Usable without installing, as
+# `./.venv/bin/python scripts/demo.py`; this name only materialises after
+# a `poetry install`.
+ff-demo = "scripts.demo:main"
 
 [tool.poetry]
 name = "fateforger"
