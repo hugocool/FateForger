@@ -85,6 +85,14 @@ class Contender:
     label: str
     model: str
     effort: str | None = None
+    #: OpenRouter provider routing. **Its default sorts by PRICE**, so naming a
+    #: model does not get you the endpoint the model is capable of -- the first
+    #: two sweeps here measured the cheapest host of each model and reported it
+    #: as the model's speed. `latency` sorts by time to first token, which is
+    #: the term that dominates this agent; `throughput` sorts by tokens after
+    #: it, which is the wrong knob for a workload whose steps mostly emit a
+    #: tool call and stop.
+    sort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -234,6 +242,12 @@ def build_tasks(system: str) -> list[Task]:
         Task(
             key="patch",
             why="A structured plan_apply patch. Correctness matters more than speed, and long structured output is where throughput bites.",
+            # 2400, not 1200. At 1200 `gpt-oss-120b @high` consumed the budget
+            # exactly and emitted no call at all, and haiku @high hit the
+            # ceiling too -- so the first patch sweep scored two contenders on
+            # a limit this file imposed rather than on anything they did. A
+            # cap that binds is not a measurement, and reasoning effort is the
+            # dimension it binds hardest against.
             messages=convo(
                 "Block out tomorrow: deep work in the morning is out (no meetings before 13:00 "
                 "is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.",
@@ -247,7 +261,7 @@ def build_tasks(system: str) -> list[Task]:
                         "Call plan_apply once with a patch that adds the blocks. Pass the snapshot back verbatim."},
                 ],
             ),
-            max_tokens=1200,
+            max_tokens=2400,
         ),
     ]
 
@@ -269,6 +283,8 @@ async def one_sample(
         body["tools"] = tools
     if contender.effort:
         body["reasoning"] = {"effort": contender.effort}
+    if contender.sort:
+        body["provider"] = {"sort": contender.sort}
 
     sample = Sample()
     t0 = time.monotonic()
@@ -369,11 +385,19 @@ def main() -> int:
     parser.add_argument("--out", default="bench_results.json")
     parser.add_argument("--narrow", action="store_true", help="also run the 11-tool prefix")
     parser.add_argument(
+        "--tasks",
+        help="comma-separated task keys, for sweeping one response shape at a time. "
+             "The patch is the one worth isolating: it tolerates latency the "
+             "conversation does not, so it gets its own model and its own effort.",
+    )
+    parser.add_argument(
         "--contenders",
         help="comma-separated label=model[@effort] specs, replacing the default set. "
              "Omit @effort to send no reasoning parameter and let the provider default "
              "stand -- which is itself worth measuring, since the reasoning tokens it "
-             "then burns show up in the results.",
+             "then burns show up in the results. Append #latency or #throughput to "
+             "pick an OpenRouter provider sort; the default sorts by PRICE and will "
+             "not give you the endpoint the model is capable of.",
     )
     args = parser.parse_args()
 
@@ -387,6 +411,11 @@ def main() -> int:
     narrow = [t for t in full if t["function"]["name"] in NEEDED_TOOLS]
     tool_sets = {"full": full, "narrow": narrow}
     tasks = build_tasks(system)
+    if args.tasks:
+        wanted = {k.strip() for k in args.tasks.split(",")}
+        tasks = [t for t in tasks if t.key in wanted]
+        if not tasks:
+            raise SystemExit(f"no task matched {sorted(wanted)}")
 
     if args.narrow:
         # Same model, same prompts, fewer tool schemas. Prices the config
@@ -401,8 +430,12 @@ def main() -> int:
         contenders = []
         for spec in args.contenders.split(","):
             label, _, rest = spec.partition("=")
-            model, _, effort = rest.partition("@")
-            contenders.append(Contender(label.strip(), model.strip(), effort.strip() or None))
+            model, _, tail = rest.partition("@")
+            effort, _, sort = tail.partition("#")
+            contenders.append(Contender(
+                label.strip(), model.strip(),
+                effort.strip() or None, sort.strip() or None,
+            ))
     else:
         contenders = default_contenders()
 
