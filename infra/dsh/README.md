@@ -96,3 +96,25 @@ intended one.
 `includeDefaultRoots: false` plus an absolute `customSkillDirs` fixes both: the
 root cannot depend on cwd, which is what broke the default. Verified after the
 change — the catalog is exactly `admonisher`.
+
+## `memory-readonly-server.py` is a symlink, on purpose
+
+The copy the warm server on `:8010` runs is a symlink to the versioned file here:
+
+```sh
+~/.dsh/profiles/tmbx/memory-readonly-server.py
+  -> infra/dsh/profile/memory-readonly-server.py
+```
+
+Before 2026-08-23 they were two independent files, byte-identical by luck. The
+running process followed the **untracked** one, so the next edit to either would
+have diverged with nothing to notice — and the copy under version control would
+have been the one *not* running. That is the same mechanism that let this file's
+docstring claim it wrote to a throwaway store while the live process was pointed
+at Hugo's real corpus (#185).
+
+Symlinked rather than generated at install, because generation adds a step that
+can be skipped and leaves the same two-files-one-truth shape when it is. The
+other profile files are still plain copies — `cordis.patch.yml` cannot be
+symlinked safely while the harness may rewrite it, so `diff -r` remains the
+check for those.
