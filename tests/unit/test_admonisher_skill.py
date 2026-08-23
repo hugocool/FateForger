@@ -24,14 +24,43 @@ def parts():
     return match.group(1), match.group(2)
 
 
-def test_the_skill_is_where_the_harness_looks(parts):
-    """Rank 100 is <projectRoot>/.dsh/skills, project root being the git root.
+def test_the_skill_is_where_the_profile_points(parts):
+    """`.dsh/skills/` in this repo, reached by an ABSOLUTE customSkillDirs.
 
-    In the repo rather than ~/.dsh, so it is versioned — the profile and its
-    symlinks already live unversioned outside any repo and nothing announces
-    their absence on a rebuild.
+    Not by rank-100 project discovery, which was the original assumption here
+    and was wrong. Discovery resolves the project root from the *process cwd*,
+    and harness_bridge runs the CLI with cwd set to the harness checkout — so
+    `<projectRoot>/.dsh/skills` meant the harness repo and this file was
+    invisible. It would have looked like it worked.
+
+    The profile now sets `includeDefaultRoots: false` and names this directory
+    absolutely, precisely so the root cannot depend on a cwd this module does
+    not own. Moving or renaming this path silently empties the catalog, so the
+    profile entry and this file are one change, not two.
     """
     assert SKILL.exists()
+    profile = (
+        Path(__file__).resolve().parents[2]
+        / "infra" / "dsh" / "profile" / "cordis.patch.yml"
+    )
+    if profile.exists():
+        text = profile.read_text(encoding="utf-8")
+        assert str(SKILL.parent.parent) in text, (
+            "the profile no longer names this skill root, so nothing indexes it"
+        )
+        # Non-comment lines only. The file explains this setting in prose
+        # directly above it, so a substring search matches the explanation and
+        # passes even with the setting flipped — caught by mutation, not by
+        # reading it.
+        settings = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        assert "includeDefaultRoots: false" in settings, (
+            "default roots re-enabled: the catalog silently regains 53 skills "
+            "from the harness repo and ~/.agents that nobody reviewed"
+        )
 
 
 def test_it_declares_a_name_and_a_description(parts):
