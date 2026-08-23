@@ -24,7 +24,16 @@ This is what makes an out-of-band seed safe under a live server.
 inode. What happens next is not deterministic — either `disk I/O error` or an
 answer from cached pages — so only the invariant is asserted: the replacement
 never becomes visible. **Replace a store and you must restart whatever holds it
-open.**
+open**, which concretely is:
+
+```sh
+./.venv/bin/python scripts/demo.py restart memory
+```
+
+`scripts/demo.py status` is the check afterwards: it exits 0 only when every
+service is running, serving, **and running the code currently on disk**, which
+is the same class of mistake one layer up — a process that looks healthy while
+executing something that no longer exists.
 
 **The versioned `memory-readonly-server.py` is now the one that runs.** It was
 two independent files; `~/.dsh/profiles/tmbx/` is now a symlink into
@@ -46,6 +55,14 @@ suite failed it. Do not pin non-deterministic behaviour.
 backup was called stale because live had 35 more observations than it. All 35
 carried one session id — they *were* the change being backed out. `group by
 session_id` answered in one query what a count could not.
+
+These are one shape, not three, and naming it is worth more than the three
+instances: **an instrument that is measuring itself, and looks credible doing
+it.** The CLI reports its own connection's timeout. The count describes the
+file rather than the change. A timing harness on this stack was separately
+found reporting its own poll budget as system latency. In each case the reading
+is real, precise, and about the wrong subject — so it survives a sanity check.
+Ask what the instrument is attached to before believing the number.
 
 ## What the "readonly" server taught, beyond the fix
 
