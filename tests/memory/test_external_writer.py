@@ -23,6 +23,22 @@ setting: tidying the transaction model is allowed, and should keep them green.
 If it does not, that is the signal to re-check these two facts rather than to
 restore the default.
 
+These tests establish that contract rather than record an existing decision, so
+whoever wants to change it is changing something deliberate for the first time
+here, not overturning a prior choice.
+
+One measurement trap, because it cost an hour: `PRAGMA busy_timeout` run from
+the `sqlite3` CLI reports `0`, which reads as "no timeout is set anywhere". It
+is reporting the CLI's own connection. The stores inherit Python's
+`sqlite3.connect(timeout=5.0)` default, so theirs is 5000ms. Check it from the
+driver, not the shell.
+
+The reason someone will eventually want explicit transactions is atomic
+ingest — `observe()` writes an observation and then projects a constraint, and
+a crash between the two leaves the first without the second. These tests do not
+stand in the way of fixing that; the stores each holding their own connection
+to the same file does. That is #186, and it comes first.
+
 The second test pins the case that is NOT safe, and that would have bitten a
 wipe: replacing the file leaves the open connection attached to the unlinked
 inode. What happens then is deliberately asserted loosely, because measuring it
