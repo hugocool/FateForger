@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .dsh_progress_hook import PROGRESS_FILE_ENV
+from .mrkdwn import to_mrkdwn
 
 #: Where the PreToolUse commit gate looks for a Slack approval token. Named
 #: here because this module is what puts it in the child's environment; the
@@ -68,6 +69,10 @@ class HarnessError(RuntimeError):
 
 @dataclass(frozen=True)
 class HarnessReply:
+    #: Already Slack ``mrkdwn``, never the Markdown the harness emitted. The
+    #: conversion happens in ``ask`` rather than at either posting site so a
+    #: caller added later cannot forget it -- there were two such sites the day
+    #: this landed and both had the same bug (#179).
     text: str
     profile: str
     #: Wall-clock seconds per phase. Recorded because the shape of a slow turn
@@ -262,8 +267,11 @@ def ask(
     answer = (done.stdout or "").strip()
     if not answer:
         raise HarnessError("harness produced no output")
+    # Emptiness is judged on what the harness said, not on what survives
+    # conversion: a reply that renders to nothing is still a reply, and
+    # reporting it as "no output" would blame the wrong side.
     return HarnessReply(
-        text=answer,
+        text=to_mrkdwn(answer),
         profile=profile,
         timings={"elapsed_s": round(time.monotonic() - started, 1), "tool_calls": steps},
     )

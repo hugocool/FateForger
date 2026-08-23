@@ -47,6 +47,10 @@ dependencies = [
     "llama-index-tools-artifact-editor (>=0.2.1,<0.3.0)",
     "toonify (>=1.5.1,<2.0.0)",
     "marimo>=0.23.9",
+    # Markdown → Slack mrkdwn (#179). Already present transitively via
+    # ultimate-notion; named here because a transitive pin is not a promise,
+    # and losing it would break every harness reply rather than a doc build.
+    "mistune (>=3.0.0,<4.0.0)",
 ]
 
 [project.scripts]
