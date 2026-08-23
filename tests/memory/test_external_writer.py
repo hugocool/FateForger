@@ -14,6 +14,15 @@ an external commit is visible to the next statement. Setting `isolation_level=No
 with an explicit `BEGIN`, or holding a read transaction open across calls, would
 break that silently — the store would keep answering, from a frozen view.
 
+That last part rests on a driver default that nobody chose. `isolation_level`
+appears nowhere in `src/memory/` or its tests, all three stores pass only
+`check_same_thread=False`, and `constraint_store.py` commits explicitly in two
+places and via `with self._conn:` in a third — transaction handling here grew
+rather than being designed. So these tests assert the *behaviour* and never the
+setting: tidying the transaction model is allowed, and should keep them green.
+If it does not, that is the signal to re-check these two facts rather than to
+restore the default.
+
 The second test pins the case that is NOT safe, and that would have bitten a
 wipe: replacing the file leaves the open connection attached to the unlinked
 inode. What happens then is deliberately asserted loosely, because measuring it
