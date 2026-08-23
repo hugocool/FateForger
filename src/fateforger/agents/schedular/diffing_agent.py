@@ -8,7 +8,6 @@ list-events MCP tool for diff-against-calendar logic.
 import json
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
-from dotenv import load_dotenv
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
@@ -23,8 +22,6 @@ from fateforger.llm import (
     build_autogen_chat_client,
 )
 from ...tools_config import get_calendar_mcp_params
-
-load_dotenv()
 
 
 # TODO: use deepdiff for this instead
