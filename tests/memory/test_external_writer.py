@@ -111,11 +111,27 @@ def test_replacing_the_file_leaves_the_connection_on_the_old_inode(
     db.unlink()
     replacement.rename(db)
 
-    # Either outcome is allowed; both mean the same thing operationally.
+    # Either outcome is allowed; both mean the same thing operationally. But an
+    # allowed-either-way test can pass without exercising anything, so both
+    # branches first prove the setup was real: the replacement is on disk, under
+    # the original name, and it does contain the row the held connection must
+    # not be showing.
+    def _setup_was_real() -> None:
+        fresh = sqlite3.connect(db)
+        try:
+            assert fresh.execute(
+                "SELECT count(*) FROM observations WHERE uid = ?",
+                ("only-in-replacement",),
+            ).fetchone()[0] == 1, "the file was never actually replaced"
+        finally:
+            fresh.close()
+
     try:
         after = len(store.all())
     except sqlite3.OperationalError:
-        return  # the loud version: the unlinked file is gone from under it
+        _setup_was_real()  # the loud version: the unlinked file went out from under it
+        return
+    _setup_was_real()
     assert after == before, (
         "the connection picked up the replacement file, which SQLite does not "
         "promise; if this starts passing differently, re-check the restart advice"
