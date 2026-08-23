@@ -25,7 +25,10 @@ from pathlib import Path
 import httpx
 
 BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-JUDGE = "google/gemini-3.1-pro-preview"
+#: Overridable, because the grader is not the thing under test. The default is
+#: deliberately NOT one of the contenders: a model grading its own output in a
+#: comparison is a bias nobody can see in the table.
+JUDGE = os.environ.get("BENCH_JUDGE", "google/gemini-3.5-flash")
 
 RUBRICS = {
     "stage_prose": """You are grading one message from a day-planning assistant to its user.
@@ -72,6 +75,12 @@ async def grade(client, task: str, rendered: str) -> dict | None:
     keys = SCHEMA_KEYS[task]
     body = {
         "model": JUDGE,
+        # Without this OpenRouter RESERVES the model's whole context against
+        # the key's limit and 402s before judging anything — which it did, on
+        # 60 of 60 samples, and the failure surfaced as an empty quality table
+        # that read as though every model had failed. A verdict is five
+        # booleans and a note.
+        "max_tokens": 400,
         "messages": [
             {"role": "system", "content": RUBRICS[task]},
             {"role": "user", "content": f"Here is the output to grade:\n\n<<<\n{rendered}\n>>>"},
@@ -130,7 +139,11 @@ async def main() -> int:
 
     print(f"grading {len(jobs)} samples with {JUDGE}\n")
     headers = {"Authorization": f"Bearer {api_key}", "X-Title": "FateForger bench judge"}
-    sem = asyncio.Semaphore(8)
+    # 8 lost most verdicts on a 60-sample run: the judge silently returns None
+    # on any failure, so a rate-limited pass reports a near-empty table that
+    # looks like the models failed rather than the grader. Halved, and the
+    # skipped count is now printed rather than inferred from a sparse table.
+    sem = asyncio.Semaphore(4)
 
     async with httpx.AsyncClient(headers=headers, timeout=180.0) as client:
         async def run(job):
@@ -139,14 +152,21 @@ async def main() -> int:
         graded = await asyncio.gather(*(run(j) for j in jobs))
 
     tally = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+    skipped = 0
     for (contender, task, _), verdict in graded:
         if verdict is None:
+            skipped += 1
             continue
         for key in SCHEMA_KEYS[task]:
             slot = tally[(contender, task)][key]
             slot[1] += 1
             if verdict.get(key):
                 slot[0] += 1
+
+    if skipped:
+        print(f"!! {skipped}/{len(graded)} samples returned no verdict — the "
+              f"table below is incomplete and the gaps are the GRADER's, not "
+              f"the models'.\n")
 
     for task in RUBRICS:
         keys = SCHEMA_KEYS[task]

@@ -1,0 +1,978 @@
+{
+ "system_chars": 26352,
+ "tools_full": 34,
+ "tools_narrow": 11,
+ "samples": 5,
+ "tasks": {
+  "stage_prose": "The user-facing stage message. Throughput-dominated and the thing quality is judged on.",
+  "patch": "A structured plan_apply patch. Correctness matters more than speed, and long structured output is where throughput bites."
+ },
+ "cells": [
+  {
+   "contender": "3.7-flash @minimal",
+   "task": "stage_prose",
+   "samples": [
+    {
+     "ttft": 0.9637170829810202,
+     "total": 1.3254842499736696,
+     "out_tokens": 175,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently loaded for tomorrow (working day):\n\n- **Calendar Events:** None currently on the calendar.\n- **Active Constraints:**\n  - **Sleep window** (`MUST`): 23:00 \u2013 07:00\n  - **Commute** (`MUST`): 30 minutes each way\n  - **No morning meetings** (`MUST`): Nothing before 13:00\n  - **Gym session** (`SHOULD`): 18:00 \u2013 19:00\n  - **Oats timing** (`SHOULD`): Exactly 2 hours before gym\n\n*2 working-day rules suspended.*\n\nAre there any other fixed commitments, calendar events, or commute changes for tomorrow before we move to capturing your goals?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.023770334024448,
+     "total": 1.329066000005696,
+     "out_tokens": 173,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently loaded for tomorrow (assuming a working day):\n\n- **Calendar events:** None currently scheduled.\n- **Active constraints:**\n  - **Sleep window** (MUST): 23:00\u201307:00\n  - **Commute** (MUST): 30 minutes each way\n  - **No morning meetings** (MUST): Nothing before 13:00\n  - **Oats timing** (SHOULD): Exactly 2 hours before gym\n  - **Gym session** (SHOULD): 18:00\u201319:00\n\n*2 working-day rules suspended.*\n\n---\n\n**Question:** Are there any specific fixed commitments, appointments, or travel times for tomorrow that aren't on the calendar yet?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.1261807910050265,
+     "total": 1.417817500012461,
+     "out_tokens": 177,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what was loaded for tomorrow (**2026-08-24**, working day):\n\n- **Calendar events:** None currently scheduled.\n- **Active constraints:**\n  - **Sleep window:** 23:00\u201307:00 *(MUST)*\n  - **Commute:** 30 minutes each way *(MUST)*\n  - **No morning meetings:** Nothing before 13:00 *(MUST)*\n  - **Oats timing:** Exactly 2h before gym *(SHOULD)*\n  - **Gym session:** 18:00\u201319:00 *(SHOULD)*\n- **Suspended rules:** 2 working-day rules suspended.\n\n---\n\n**Question:** Are you working from home tomorrow, or commuting into the office?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.8837196250096895,
+     "total": 1.3743126249755733,
+     "out_tokens": 180,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere is what I've loaded for tomorrow (treated as a working day):\n\n- **Calendar Events:** None found on your calendar.\n- **Active Constraints:**\n  - *Sleep window* (`must`): 23:00\u201307:00\n  - *Commute* (`must`): 30 minutes each way\n  - *No morning meetings* (`must`): nothing before 13:00\n  - *Gym session* (`should`): 18:00\u201319:00\n  - *Oats timing* (`should`): oats exactly 2h before gym\n- **Suspended Rules:** 2 rules suspended.\n\nAre there any fixed calendar events, appointments, or travel commitments for tomorrow that aren't on your calendar yet?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.0060733340214938,
+     "total": 1.5408803340396844,
+     "out_tokens": 219,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently fixed and loaded for tomorrow:\n\n* **Calendar:** Clear (no existing events or foreign invites).\n* **Active Constraints:**\n  * `MUST`: **Sleep window** (23:00\u201307:00) *(from memory: Sleep window)*\n  * `MUST`: **Commute** (30 mins each way) *(from memory: Commute)*\n  * `MUST`: **No morning meetings** (nothing before 13:00) *(from memory: No morning meetings)*\n  * `SHOULD`: **Gym session** (18:00\u201319:00) *(from memory: Gym session)*\n  * `SHOULD`: **Oats timing** (exactly 2h before gym) *(from memory: Oats timing)*\n* **Suspended Rules:** 2 rules suspended for this working day.\n\nAre there any other fixed calendar events, appointments, or commutes for tomorrow that aren't on the calendar yet?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "3.7-flash @medium",
+   "task": "stage_prose",
+   "samples": [
+    {
+     "ttft": 0.9484372919541784,
+     "total": 1.346324083977379,
+     "out_tokens": 184,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently loaded for tomorrow (2026-08-24):\n\n* **Calendar Events:** None (empty calendar).\n* **Active Constraints (Working Day):**\n  * `MUST`: Sleep window (23:00\u201307:00)\n  * `MUST`: Commute (30 minutes each way)\n  * `MUST`: No morning meetings (nothing before 13:00)\n  * `SHOULD`: Oats timing (oats exactly 2h before gym)\n  * `SHOULD`: Gym session (18:00\u201319:00)\n\n**Suspended Rules:** 2 working-day rules are suspended.\n\n---\n\nIs tomorrow a regular working day at the office, or do you have a different setup/location in mind?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.9126104169990867,
+     "total": 1.4363990419660695,
+     "out_tokens": 181,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently loaded for tomorrow (2026-08-24):\n\n* **Calendar:** No existing events scheduled.\n* **Active Constraints (Working day):**\n  * **MUST:** Sleep window (`23:00\u201307:00`)\n  * **MUST:** Commute (`30 minutes each way`)\n  * **MUST:** No morning meetings (`nothing before 13:00`)\n  * **SHOULD:** Oats timing (`oats exactly 2h before gym`)\n  * **SHOULD:** Gym session (`18:00\u201319:00`)\n* **Suspended Rules:** 2 rules suspended for today.\n\n---\n\nIs tomorrow a standard working day with commute and gym, or are there any changes to your fixed routine?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.4788480420247652,
+     "total": 1.7893966669798829,
+     "out_tokens": 409,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow (working day):\n\n* **Calendar Events:** None currently scheduled.\n* **Active Constraints (from memory):**\n  * **Sleep window:** 23:00\u201307:00 (*must*)\n  * **Commute:** 30 minutes each way (*must*)\n  * **No morning meetings:** Nothing before 13:00 (*must*)\n  * **Gym session:** 18:00\u201319:00 (*should*)\n  * **Oats timing:** Exactly 2 hours before gym (*should*)\n* **Suspended Constraints:** 2 rules suspended.\n\nDo you have any fixed appointments, hard calendar commitments, or travel times for tomorrow that aren't on the calendar yet?",
+     "error": null,
+     "reasoning_tokens": 236,
+     "calls": []
+    },
+    {
+     "ttft": 0.8038447920116596,
+     "total": 1.2107754169846885,
+     "out_tokens": 193,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently loaded for tomorrow (2026-08-24):\n\n* **Calendar Events:** None (empty calendar).\n* **Active Constraints (Working Day):**\n  * **Sleep window** (`must`): 23:00\u201307:00\n  * **Commute** (`must`): 30 minutes each way\n  * **No morning meetings** (`must`): Nothing before 13:00\n  * **Oats timing** (`should`): Oats exactly 2h before gym\n  * **Gym session** (`should`): 18:00\u201319:00\n\n* **Suspended Rules:** 2 working-day rules suspended.\n\n---\n\n**Question:** Is tomorrow a regular working day at the office, or are you working from home / taking the day off?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.9100748330238275,
+     "total": 1.2760598750319332,
+     "out_tokens": 173,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently fixed and loaded for tomorrow:\n\n- **Calendar Events:** None currently scheduled.\n- **Active Constraints:**\n  - `MUST` **Sleep window**: 23:00\u201307:00\n  - `MUST` **Commute**: 30 minutes each way\n  - `MUST` **No morning meetings**: Nothing before 13:00\n  - `SHOULD` **Gym session**: 18:00\u201319:00\n  - `SHOULD` **Oats timing**: Exactly 2h before gym\n- **Suspended Constraints:** 2 working-day rules suspended (day type: working).\n\nAre there any specific hard commitments or fixed appointments for tomorrow that aren't on your calendar yet?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "3.6-flash @minimal",
+   "task": "stage_prose",
+   "samples": [
+    {
+     "ttft": 1.059899875021074,
+     "total": 1.8776652500382625,
+     "out_tokens": 194,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere is what I have loaded for tomorrow (Monday, August 24, 2026):\n\n**Calendar Events:**\n- No existing calendar events found for tomorrow.\n\n**Stored Active Constraints (from memory):**\n- **Sleep window** (MUST): 23:00\u201307:00\n- **Commute** (MUST): 30 minutes each way\n- **No morning meetings** (MUST): Nothing scheduled before 13:00\n- **Gym session** (SHOULD): 18:00\u201319:00\n- **Oats timing** (SHOULD): Oats exactly 2 hours before gym\n\n*Note: 2 working-day rules are suspended today.*\n\n---\n\n**Question:**\nAre there any other fixed calendar events, hard commitments, or specific travel times for tomorrow that are not listed above?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.8150650410098024,
+     "total": 1.5384362080367282,
+     "out_tokens": 182,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere is what I have loaded for tomorrow (Monday, August 24, 2026):\n\n* **Calendar Events:** None (your calendar is completely clear).\n* **Active Constraints:**\n  * **Sleep window:** 23:00\u201307:00 (`must`)\n  * **Commute:** 30 minutes each way (`must`)\n  * **No morning meetings:** Nothing before 13:00 (`must`)\n  * **Gym session:** 18:00\u201319:00 (`should`)\n  * **Oats timing:** Oats exactly 2h before gym (`should`)\n\n* **Suspended Rules:** 2 working-day rules are suspended today.\n\nAre there any fixed appointments or commitments tomorrow that aren't on your calendar yet?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.8405312919639982,
+     "total": 1.435122249997221,
+     "out_tokens": 172,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "**Stage 1: Collect**\n\nHere is what I have loaded for tomorrow (Monday, August 24, 2026):\n\n* **Calendar Events:** None currently scheduled.\n* **Active Constraints:**\n  * **Sleep window:** 23:00\u201307:00 (MUST)\n  * **Commute:** 30 minutes each way (MUST)\n  * **No morning meetings:** Nothing before 13:00 (MUST)\n  * **Gym session:** 18:00\u201319:00 (SHOULD)\n  * **Oats timing:** Oats exactly 2h before gym (SHOULD)\n\n*(2 working-day rules suspended)*\n\nAre there any fixed appointments or hard commitments tomorrow that are not yet on your calendar?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.9568358750548214,
+     "total": 1.9749830420478247,
+     "out_tokens": 216,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow (Monday, August 24, 2026):\n\n**Calendar & Fixed Events:**\n- No existing calendar events found for tomorrow.\n\n**Active Constraints:**\n- **Sleep window** (*must*): 23:00 - 07:00\n- **Commute** (*must*): 30 minutes each way\n- **No morning meetings** (*must*): Nothing before 13:00\n- **Gym session** (*should*): 18:00 - 19:00\n- **Oats timing** (*should*): Oats exactly 2h before gym\n\n**Rule Summary:**\n- **2 working-day rules suspended** (today is classified as a working day).\n\n---\n\n**Question:**\nCould you confirm if tomorrow is indeed a regular working day for you, or do you have a different day type in mind (e.g., vacation, weekend, holiday)?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.7967528339941055,
+     "total": 1.573547417006921,
+     "out_tokens": 182,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently fixed and loaded for tomorrow:\n\n* **Calendar Events:** None (calendar is completely clear)\n* **Active Constraints Loaded:**\n  * **Sleep window:** 23:00\u201307:00 (*must*)\n  * **Commute:** 30 minutes each way (*must*)\n  * **No morning meetings:** Nothing before 13:00 (*must*)\n  * **Gym session:** 18:00\u201319:00 (*should*)\n  * **Oats timing:** Oats exactly 2h before gym (*should*)\n* **Suspended Constraints:** 2 working-day rules suspended.\n\n---\n\n**Question:** Are you planning a standard working day tomorrow, or are you working under a different schedule (e.g., vacation or weekend)?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "3.6-flash @low",
+   "task": "stage_prose",
+   "samples": [
+    {
+     "ttft": 1.9137103329994716,
+     "total": 2.864997749973554,
+     "out_tokens": 402,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I loaded for tomorrow (2026-08-24):\n\n* **Calendar Events:** None currently scheduled.\n* **Active Constraints:**\n  * **Sleep window:** 23:00\u201307:00 (*MUST*)\n  * **Commute:** 30 minutes each way (*MUST*)\n  * **No morning meetings:** Nothing scheduled before 13:00 (*MUST*)\n  * **Oats timing:** Oats eaten exactly 2 hours before gym (*SHOULD*)\n  * **Gym session:** 18:00\u201319:00 (*SHOULD*)\n\n*(Note: 2 working-day rules are currently suspended.)*\n\n**Question:** Does tomorrow count as a standard working day, or is it a holiday/vacation day for you?",
+     "error": null,
+     "reasoning_tokens": 219,
+     "calls": []
+    },
+    {
+     "ttft": 0.9495215000351891,
+     "total": 1.8585565829998814,
+     "out_tokens": 212,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow (working day):\n\n**Fixed & Stored Constraints:**\n* **Sleep Window:** 23:00\u201307:00 *(from memory: Sleep window [must])*\n* **Commute:** 30 minutes each way *(from memory: Commute [must])*\n* **No Morning Meetings:** Nothing before 13:00 *(from memory: No morning meetings [must])*\n* **Gym Session:** Preferred 18:00\u201319:00 *(from memory: Gym session [should])*\n* **Oats Timing:** Oats exactly 2 hours before gym *(from memory: Oats timing [should])*\n\n**Calendar Events:**\n* None currently scheduled on your calendar for tomorrow.\n\n**Suspended Rules:**\n* 2 working-day rules suspended.\n\n---\n\n**Question:**\nAre there any fixed calendar appointments, meetings, or hard commitments tomorrow that aren't currently on your calendar?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.8278178330510855,
+     "total": 1.5975715000531636,
+     "out_tokens": 176,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow (working day):\n\n**Fixed & Stored Constraints:**\n- **Sleep window:** 23:00\u201307:00 *(must)*\n- **Commute:** 30 minutes each way *(must)*\n- **No morning meetings:** Nothing scheduled before 13:00 *(must)*\n- **Gym session:** 18:00\u201319:00 *(should)*\n- **Oats timing:** Oats exactly 2h before gym *(should)*\n\n*Note: 2 working-day rules are currently suspended.*\n\n**Calendar Events:**\n- No existing calendar events found for tomorrow.\n\n---\n\n**Question:** Are there any fixed commitments, appointments, or scheduled events for tomorrow that are not yet on your calendar?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.9173916250001639,
+     "total": 1.625520333996974,
+     "out_tokens": 171,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow (working day):\n\n**Calendar Events & Fixed Items:**\n* No existing calendar events found.\n\n**Active Rules & Constraints:**\n* **Sleep window:** 23:00\u201307:00 (`must`)\n* **Commute:** 30 minutes each way (`must`)\n* **No morning meetings:** Nothing before 13:00 (`must`)\n* **Gym session:** 18:00\u201319:00 (`should`)\n* **Oats timing:** Oats exactly 2h before gym (`should`)\n\n2 working-day rules are currently suspended.\n\n***\n\n**Question:** Are there any hard appointments, meetings, or fixed commitments for tomorrow that aren't already listed above?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.8557919170125388,
+     "total": 1.5737369999988005,
+     "out_tokens": 205,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow (**Monday, August 24, 2026**):\n\n* **Calendar Events:** None (your calendar is completely open).\n* **Active Constraints:**\n  * **Sleep window** (*MUST*): 23:00\u201307:00\n  * **Commute** (*MUST*): 30 minutes each way\n  * **No morning meetings** (*MUST*): Nothing before 13:00\n  * **Gym session** (*SHOULD*): 18:00\u201319:00\n  * **Oats timing** (*SHOULD*): Oats exactly 2h before gym (16:00)\n\n**Suspended Rules:** 2 working-day rules suspended.\n\n---\n\n**Question:**\nAre you working tomorrow as a standard working day, or do you have a different schedule or day type in mind?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "3.7-flash @low",
+   "task": "stage_prose",
+   "samples": [
+    {
+     "ttft": 4.8221543750260025,
+     "total": 5.276432458020281,
+     "out_tokens": 176,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently loaded for tomorrow (assuming a working day):\n\n* **Calendar Events:** None currently scheduled.\n* **Active Constraints:**\n  * `MUST` **Sleep window:** 23:00\u201307:00\n  * `MUST` **Commute:** 30 minutes each way\n  * `MUST` **No morning meetings:** Nothing before 13:00\n  * `SHOULD` **Oats timing:** Exactly 2h before gym\n  * `SHOULD` **Gym session:** 18:00\u201319:00\n\n*2 working-day rules suspended.*\n\n---\n\n**Question:** Is tomorrow a standard working day, and do you have any fixed calendar commitments or commute plans to add before we capture your goals?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.0368726669694297,
+     "total": 1.4165980420075357,
+     "out_tokens": 189,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently fixed and loaded for tomorrow:\n\n- **Calendar Events:** None (empty calendar).\n- **Active Constraints (Working Day):**\n  - `MUST`: **Sleep window** (23:00\u201307:00)\n  - `MUST`: **Commute** (30 minutes each way)\n  - `MUST`: **No morning meetings** (Nothing before 13:00)\n  - `SHOULD`: **Oats timing** (Exactly 2 hours before gym)\n  - `SHOULD`: **Gym session** (18:00\u201319:00)\n- **Suspended Rules:** 2 rules suspended for today's day type.\n\nAre you working from the office tomorrow (which requires the 30-minute commutes), or will you be working from home?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 3.290985458996147,
+     "total": 3.6392862499924377,
+     "out_tokens": 184,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what was loaded for tomorrow (**2026-08-24**, working day):\n\n- **Calendar events:** None currently on the calendar.\n- **Active constraints:**\n  - **Sleep window** (MUST): 23:00\u201307:00\n  - **Commute** (MUST): 30 minutes each way\n  - **No morning meetings** (MUST): Nothing before 13:00\n  - **Gym session** (SHOULD): 18:00\u201319:00\n  - **Oats timing** (SHOULD): Exactly 2 hours before gym\n\n*2 working-day rules are suspended.*\n\n---\n\n**Question:** Are there any specific fixed commitments, appointments, or travel times for tomorrow that aren't on the calendar yet?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 0.9900477500050329,
+     "total": 1.4263719579903409,
+     "out_tokens": 175,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I loaded for tomorrow (treating it as a working day):\n\n- **Calendar Events:** None currently scheduled.\n- **Active Constraints:**\n  - **Sleep window** (MUST): 23:00\u201307:00\n  - **Commute** (MUST): 30 minutes each way\n  - **No morning meetings** (MUST): Nothing before 13:00\n  - **Oats timing** (SHOULD): Oats exactly 2h before gym\n  - **Gym session** (SHOULD): 18:00\u201319:00\n\n**Suspended rules:** 2 working-day rules suspended.\n\n---\n\nDo you have any fixed commitments, appointments, or travel tomorrow that aren't on your calendar yet?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    },
+    {
+     "ttft": 1.1999756660079584,
+     "total": 1.7365086660138331,
+     "out_tokens": 219,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what is currently loaded for tomorrow (assuming a working day):\n\n**Calendar Events:**\n- None (calendar is currently clear)\n\n**Active Constraints:**\n- **Sleep window** (`must`): 23:00\u201307:00 (from memory: Sleep window)\n- **Commute** (`must`): 30 minutes each way (from memory: Commute)\n- **No morning meetings** (`must`): Nothing before 13:00 (from memory: No morning meetings)\n- **Gym session** (`should`): 18:00\u201319:00 (from memory: Gym session)\n- **Oats timing** (`should`): Oats exactly 2h before gym (from memory: Oats timing)\n\n**Suspended Rules:**\n- 2 working-day rules suspended.\n\n---\n\nIs tomorrow a standard working day with your usual commute and gym routine, or does it have any specific fixed schedule or day type changes?",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": []
+    }
+   ]
+  },
+  {
+   "contender": "3.6-flash @minimal",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 1.096939458977431,
+     "total": 1.0974486250197515,
+     "out_tokens": 40,
+     "prompt_tokens": 15246,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_2026_08_24_planning\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.0005575839895755,
+     "total": 1.0044716250267811,
+     "out_tokens": 53,
+     "prompt_tokens": 15246,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"session_id\":\"session_20260824_1\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 0.9371975000249222,
+     "total": 0.9376744580222294,
+     "out_tokens": 40,
+     "prompt_tokens": 15246,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"day\":\"2026-08-25\",\"calendar_id\":\"primary\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.1553524999762885,
+     "total": 1.1563611249439418,
+     "out_tokens": 40,
+     "prompt_tokens": 15246,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"day\":\"2026-08-25\",\"calendar_id\":\"primary\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.236930500017479,
+     "total": 1.2426511669764295,
+     "out_tokens": 40,
+     "prompt_tokens": 15246,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"calendar_id\":\"primary\",\"day\":\"2026-08-25\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "3.6-flash @low",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 0.9698678329586983,
+     "total": 0.9705962079460733,
+     "out_tokens": 40,
+     "prompt_tokens": 15246,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"day\":\"2026-08-25\",\"calendar_id\":\"primary\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.0678832499543205,
+     "total": 1.0683982499758713,
+     "out_tokens": 40,
+     "prompt_tokens": 15246,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_2026_08_24_planning\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.0289227499742992,
+     "total": 1.0298934580059722,
+     "out_tokens": 41,
+     "prompt_tokens": 15246,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_2026_08_24_01\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.046617916028481,
+     "total": 1.0476529159932397,
+     "out_tokens": 40,
+     "prompt_tokens": 15246,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"day\":\"2026-08-25\",\"calendar_id\":\"primary\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 1.2619322499958798,
+     "total": 1.26699745899532,
+     "out_tokens": 40,
+     "prompt_tokens": 15246,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_read",
+       "arguments": "{\"day\":\"2026-08-25\",\"calendar_id\":\"primary\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "3.6-flash @medium",
+   "task": "stage_prose",
+   "samples": [
+    {
+     "ttft": 2.9104383339872584,
+     "total": 3.684887291979976,
+     "out_tokens": 564,
+     "prompt_tokens": 7101,
+     "tool_calls": 0,
+     "text": "### Stage 1: Collect\n\nHere is what I have loaded for tomorrow (**2026-08-24**):\n\n* **Calendar Events:** None (calendar is currently empty for tomorrow).\n* **Active Constraints (Working Day):**\n  * **Sleep window** (*MUST*): 23:00\u201307:00\n  * **Commute** (*MUST*): 30 minutes each way\n  * **No morning meetings** (*MUST*): Nothing before 13:00\n  * **Gym session** (*SHOULD*): 18:00\u201319:00\n  * **Oats timing** (*SHOULD*): Oats exactly 2h before gym\n* **Suspended Rules:** 2 working-day rules are suspended.\n\n**Question:** Is tomorrow a standard working day, and are there any other fixed commitments or calendar events we need to factor in?",
+     "error": null,
+     "reasoning_tokens": 364,
+     "calls": []
+    },
+    {
+     "ttft": 3.27363016695017,
+     "total": 3.2878194579971023,
+     "out_tokens": 498,
+     "prompt_tokens": 7101,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 458,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"tb-2026-08-24-session\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 3.657795334002003,
+     "total": 3.6761472919606604,
+     "out_tokens": 506,
+     "prompt_tokens": 7101,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 467,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-20260824-hugo\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.5477984590106644,
+     "total": 2.561381542007439,
+     "out_tokens": 402,
+     "prompt_tokens": 7101,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 363,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-20260824-01\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 3.565673000004608,
+     "total": 3.5701264169765636,
+     "out_tokens": 629,
+     "prompt_tokens": 7101,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 593,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-20260824\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "3.7-flash @minimal",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 2.7638424999895506,
+     "total": 2.803602874977514,
+     "out_tokens": 167,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\":{\"day\":\"2026-08-24\",\"calendar_id\":\"primary\",\"events\":[]},\"patch\":{\"ops\":[{\"p\":{\"st\":\"16:00:00\",\"dur\":\"PT30M\",\"a\":\"fs\"},\"t\":\"PR\",\"anchor_source\":\"user\",\"h\":\"OATS1\",\"n\":\"Oats\"},{\"p\":{\"a\":\"fs\",\"st\":\"18:00:00\",\"dur\":\"PT1H\"},\"t\":\"H\",\"anchor_source\":\"user\",\"h\":\"GYM1\",\"n\":\"Gym\"}]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 3.2169938340084627,
+     "total": 3.348115917004179,
+     "out_tokens": 221,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"anchor_source\":\"user\",\"p\":{\"dur\":\"PT2H\",\"st\":\"09:00:00\"},\"h\":\"DW1\",\"t\":\"DW\",\"n\":\"Deep work\"},{\"t\":\"R\",\"h\":\"BRK1\",\"p\":{\"dur\":\"PT30M\",\"st\":\"16:00:00\"},\"n\":\"Oats\",\"after\":\"DW1\",\"anchor_source\":\"user\"},{\"t\":\"PR\",\"anchor_source\":\"user\",\"h\":\"GYM1\",\"p\":{\"st\":\"18:00:00\",\"dur\":\"PT1H\"},\"n\":\"Gym\",\"after\":\"BRK1\"}]},\"snapshot\":{\"day\":\"2026-08-24\",\"events\":[],\"calendar_id\":\"primary\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.6825600000447594,
+     "total": 2.7234222080442123,
+     "out_tokens": 222,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"n\":\"Deep work\",\"t\":\"DW\",\"p\":{\"dur\":\"PT2H\",\"st\":\"09:00:00\",\"a\":\"fs\"},\"anchor_source\":\"user\",\"h\":\"DW1\"},{\"anchor_source\":\"user\",\"h\":\"BU1\",\"n\":\"Oats\",\"t\":\"BU\",\"p\":{\"dur\":\"PT30M\",\"st\":\"16:00:00\",\"a\":\"fs\"}},{\"p\":{\"st\":\"18:00:00\",\"a\":\"fs\",\"dur\":\"PT1H\"},\"t\":\"H\",\"n\":\"Gym\",\"h\":\"H1\",\"anchor_source\":\"user\"}]},\"snapshot\":{\"calendar_id\":\"primary\",\"events\":[],\"day\":\"2026-08-24\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.5186335000325926,
+     "total": 2.527233833039645,
+     "out_tokens": 175,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\":{\"calendar_id\":\"primary\",\"day\":\"2026-08-24\",\"events\":[]},\"patch\":{\"ops\":[{\"h\":\"OATS1\",\"anchor_source\":\"user\",\"t\":\"M\",\"p\":{\"dur\":\"PT30M\",\"st\":\"16:00:00\",\"a\":\"fs\"},\"n\":\"Oats\"},{\"p\":{\"st\":\"18:00:00\",\"a\":\"fs\",\"dur\":\"PT1H\"},\"after\":\"OATS1\",\"t\":\"SW\",\"h\":\"GYM1\",\"anchor_source\":\"user\",\"n\":\"Gym\"}]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.6130625840160064,
+     "total": 2.646053959033452,
+     "out_tokens": 250,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\":{\"calendar_id\":\"primary\",\"events\":[],\"day\":\"2026-08-24\"},\"patch\":{\"ops\":[{\"anchor_source\":\"user\",\"t\":\"DW\",\"h\":\"DW1\",\"p\":{\"a\":\"fs\",\"st\":\"09:00:00\",\"dur\":\"PT2H\"},\"why\":\"Morning deep work session\",\"n\":\"Deep Work\"},{\"n\":\"Oats\",\"why\":\"Eat oats 2 hours before gym\",\"p\":{\"a\":\"fs\",\"dur\":\"PT30M\",\"st\":\"16:00:00\"},\"t\":\"BG\",\"h\":\"BG1\",\"anchor_source\":\"user\"},{\"n\":\"Gym\",\"anchor_source\":\"user\",\"why\":\"Gym session\",\"t\":\"H\",\"h\":\"H1\",\"p\":{\"st\":\"18:00:00\",\"dur\":\"PT1H\",\"a\":\"fs\"}}]}}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "3.7-flash @low",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 3.827300750010181,
+     "total": 3.827748416981194,
+     "out_tokens": 260,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"snapshot\":{\"day\":\"2026-08-24\",\"calendar_id\":\"primary\",\"events\":[]},\"patch\":{\"ops\":[{\"anchor_source\":\"user\",\"h\":\"DW1\",\"d\":\"Deep work block in the morning\",\"n\":\"Deep Work\",\"p\":{\"st\":\"09:00:00\",\"dur\":\"PT2H\",\"a\":\"fs\"},\"t\":\"DW\"},{\"t\":\"BU\",\"p\":{\"a\":\"fs\",\"dur\":\"PT30M\",\"st\":\"16:00:00\"},\"n\":\"Oats\",\"d\":\"Oats 2h before gym\",\"h\":\"OAT1\",\"anchor_source\":\"user\"},{\"n\":\"Gym\",\"p\":{\"a\":\"fs\",\"st\":\"18:00:00\",\"dur\":\"PT1H\"},\"t\":\"H\",\"anchor_source\":\"user\",\"h\":\"GYM1\",\"d\":\"Gym at 18:00\"}]}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.4629195840097964,
+     "total": 2.6207512919791043,
+     "out_tokens": 224,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"h\":\"DW1\",\"t\":\"DW\",\"anchor_source\":\"user\",\"p\":{\"a\":\"fs\",\"st\":\"09:00:00\",\"dur\":\"PT2H\"},\"n\":\"Deep Work\"},{\"h\":\"MEAL1\",\"anchor_source\":\"user\",\"t\":\"R\",\"n\":\"Oats\",\"p\":{\"dur\":\"PT30M\",\"st\":\"16:00:00\",\"a\":\"fs\"}},{\"n\":\"Gym\",\"p\":{\"st\":\"18:00:00\",\"dur\":\"PT1H\",\"a\":\"fs\"},\"t\":\"H\",\"h\":\"GYM1\",\"anchor_source\":\"user\"}]},\"snapshot\":{\"day\":\"2026-08-24\",\"events\":[],\"calendar_id\":\"primary\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.9067480000085197,
+     "total": 2.94831291702576,
+     "out_tokens": 269,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"h\":\"DW1\",\"why\":\"morning deep work\",\"d\":\"\",\"n\":\"Deep Work\",\"t\":\"DW\",\"p\":{\"st\":\"09:00:00\",\"dur\":\"PT2H\",\"a\":\"fs\"},\"anchor_source\":\"user\"},{\"anchor_source\":\"user\",\"p\":{\"a\":\"fs\",\"dur\":\"PT30M\",\"st\":\"16:00:00\"},\"t\":\"M\",\"why\":\"2 hours before gym\",\"h\":\"OAT1\",\"n\":\"Oats\",\"d\":\"\"},{\"p\":{\"st\":\"18:00:00\",\"dur\":\"PT1H\",\"a\":\"fs\"},\"t\":\"H\",\"n\":\"Gym\",\"d\":\"\",\"anchor_source\":\"user\",\"why\":\"gym at 18:00\",\"h\":\"GYM1\"}]},\"snapshot\":{\"calendar_id\":\"primary\",\"events\":[],\"day\":\"2026-08-24\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.365476083010435,
+     "total": 2.405722792027518,
+     "out_tokens": 167,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"n\":\"Oats\",\"p\":{\"dur\":\"PT30M\",\"st\":\"16:00:00\",\"a\":\"fs\"},\"t\":\"R\",\"anchor_source\":\"user\",\"h\":\"OATS1\"},{\"h\":\"GYM1\",\"n\":\"Gym\",\"p\":{\"st\":\"18:00:00\",\"a\":\"fs\",\"dur\":\"PT1H\"},\"t\":\"H\",\"anchor_source\":\"user\"}]},\"snapshot\":{\"events\":[],\"day\":\"2026-08-24\",\"calendar_id\":\"primary\"}}"
+      }
+     ]
+    },
+    {
+     "ttft": 2.270396540989168,
+     "total": 2.3007657499983907,
+     "out_tokens": 179,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 0,
+     "calls": [
+      {
+       "name": "mcp__tmbx__plan_apply",
+       "arguments": "{\"patch\":{\"ops\":[{\"after\":null,\"n\":\"Oats\",\"t\":\"R\",\"p\":{\"a\":\"fs\",\"st\":\"16:00:00\",\"dur\":\"PT30M\"},\"anchor_source\":\"user\",\"h\":\"OAT1\"},{\"after\":\"OAT1\",\"h\":\"GYM1\",\"p\":{\"dur\":\"PT1H\",\"a\":\"fs\",\"st\":\"18:00:00\"},\"t\":\"H\",\"anchor_source\":\"user\",\"n\":\"Gym\"}]},\"snapshot\":{\"events\":[],\"calendar_id\":\"primary\",\"day\":\"2026-08-24\"}}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "3.7-flash @medium",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 2.930344583990518,
+     "total": 2.9630361670278944,
+     "out_tokens": 259,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 217,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 4.717399583023507,
+     "total": 4.759632957982831,
+     "out_tokens": 568,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 526,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 3.1598217919818126,
+     "total": 3.206755874969531,
+     "out_tokens": 335,
+     "prompt_tokens": 13696,
+     "tool_calls": 1,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 293,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 5.7689571249648,
+     "total": 5.965225374966394,
+     "out_tokens": 731,
+     "prompt_tokens": 13696,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 638,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"session_id\":\"s_20260824\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 8.169349083967973,
+     "total": 8.608092667011078,
+     "out_tokens": 1196,
+     "prompt_tokens": 13696,
+     "tool_calls": 2,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 1118,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-20260824\"}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "contender": "3.6-flash @medium",
+   "task": "patch",
+   "samples": [
+    {
+     "ttft": 3.907202582980972,
+     "total": 4.7146771249827,
+     "out_tokens": 885,
+     "prompt_tokens": 15246,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 621,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_tmbx_20260824\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"text\":\"Block out tomorrow: deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.\",\"write_uid\":\"obs_1\",\"observed_at\":\"2026-08-23T10:00:00Z\",\"session_id\":\"session_tmbx_20260824\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 4.331899041950237,
+     "total": 4.94524916697992,
+     "out_tokens": 911,
+     "prompt_tokens": 15246,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 705,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"s-20260824-01\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"text\":\"Deep work in the morning, gym at 18:00, oats 2h before. No meetings before 13:00.\",\"write_uid\":\"w-001\",\"session_id\":\"s-20260824-01\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 4.029796500049997,
+     "total": 4.695614291005768,
+     "out_tokens": 835,
+     "prompt_tokens": 15246,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 580,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"s_20260824\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"session_id\":\"s_20260824\",\"observed_at\":\"2026-08-24\",\"write_uid\":\"w_20260824_1\",\"text\":\"Block out tomorrow: deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 5.619196166982874,
+     "total": 5.899332917004358,
+     "out_tokens": 1092,
+     "prompt_tokens": 15246,
+     "tool_calls": 3,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 953,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session_2026-08-24_1\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    },
+    {
+     "ttft": 3.044683833955787,
+     "total": 3.707675916957669,
+     "out_tokens": 715,
+     "prompt_tokens": 15246,
+     "tool_calls": 4,
+     "text": "",
+     "error": null,
+     "reasoning_tokens": 501,
+     "calls": [
+      {
+       "name": "mcp__memory__memory_get_session_constraints",
+       "arguments": "{\"session_id\":\"session-hugo-2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_observe",
+       "arguments": "{\"session_id\":\"session-hugo-2026-08-24\",\"text\":\"Block out tomorrow: deep work in the morning is out (no meetings before 13:00 is a MUST, and deep work is fine early), gym at 18:00, oats 2h before.\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_active_constraints",
+       "arguments": "{\"day_type\":\"working\",\"day\":\"2026-08-24\"}"
+      },
+      {
+       "name": "mcp__memory__memory_get_suspended_constraints",
+       "arguments": "{\"day\":\"2026-08-24\",\"day_type\":\"working\"}"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
