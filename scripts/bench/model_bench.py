@@ -368,6 +368,13 @@ def main() -> int:
     parser.add_argument("--scratch", default=os.environ.get("BENCH_SCRATCH", "."))
     parser.add_argument("--out", default="bench_results.json")
     parser.add_argument("--narrow", action="store_true", help="also run the 11-tool prefix")
+    parser.add_argument(
+        "--contenders",
+        help="comma-separated label=model[@effort] specs, replacing the default set. "
+             "Omit @effort to send no reasoning parameter and let the provider default "
+             "stand -- which is itself worth measuring, since the reasoning tokens it "
+             "then burns show up in the results.",
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -381,15 +388,6 @@ def main() -> int:
     tool_sets = {"full": full, "narrow": narrow}
     tasks = build_tasks(system)
 
-    contenders = [
-        Contender("gemini-3.6-flash @low (LIVE)", "google/gemini-3.6-flash", "low"),
-        Contender("gemini-3.6-flash @minimal", "google/gemini-3.6-flash", "minimal"),
-        Contender("gemini-3.7-flash @minimal", "google/gemini-3.7-flash", "minimal"),
-        Contender("gemini-3.5-flash-lite @minimal", "google/gemini-3.5-flash-lite", "minimal"),
-        Contender("claude-haiku-4.5", "anthropic/claude-haiku-4.5", None),
-        Contender("gpt-5.4-mini @minimal", "openai/gpt-5.4-mini", "minimal"),
-    ]
-
     if args.narrow:
         # Same model, same prompts, fewer tool schemas. Prices the config
         # change separately from the model choice, since it applies to
@@ -398,6 +396,15 @@ def main() -> int:
             if task.tools == "full":
                 object.__setattr__(task, "tools", "narrow")
         print("PREFIX: narrow (11 tools)")
+
+    if args.contenders:
+        contenders = []
+        for spec in args.contenders.split(","):
+            label, _, rest = spec.partition("=")
+            model, _, effort = rest.partition("@")
+            contenders.append(Contender(label.strip(), model.strip(), effort.strip() or None))
+    else:
+        contenders = default_contenders()
 
     print(f"system prompt: {len(system)} chars | tools: full={len(full)} narrow={len(narrow)}")
     print(f"{len(contenders)} contenders x {len(tasks)} tasks x {args.samples} samples\n")
@@ -411,25 +418,35 @@ def main() -> int:
         ))
 
     asyncio.run(sweep())
+    write_results(args.out, system, full, narrow, args.samples, tasks, cells)
+    return 0
 
+
+def write_results(out, system, full, narrow, samples, tasks, cells) -> None:
     payload = {
         "system_chars": len(system),
         "tools_full": len(full),
         "tools_narrow": len(narrow),
-        "samples": args.samples,
+        "samples": samples,
         "tasks": {t.key: t.why for t in tasks},
         "cells": [
-            {
-                "contender": c.contender,
-                "task": c.task,
-                "samples": [vars(s) for s in c.samples],
-            }
+            {"contender": c.contender, "task": c.task, "samples": [vars(s) for s in c.samples]}
             for c in cells
         ],
     }
-    Path(args.out).write_text(json.dumps(payload, indent=1), encoding="utf-8")
-    print(f"\nwrote {args.out}")
-    return 0
+    Path(out).write_text(json.dumps(payload, indent=1), encoding="utf-8")
+    print(f"\nwrote {out}")
+
+
+def default_contenders() -> list[Contender]:
+    return [
+        Contender("gemini-3.6-flash @low (LIVE)", "google/gemini-3.6-flash", "low"),
+        Contender("gemini-3.6-flash @minimal", "google/gemini-3.6-flash", "minimal"),
+        Contender("gemini-3.7-flash @minimal", "google/gemini-3.7-flash", "minimal"),
+        Contender("gemini-3.5-flash-lite @minimal", "google/gemini-3.5-flash-lite", "minimal"),
+        Contender("claude-haiku-4.5", "anthropic/claude-haiku-4.5", None),
+        Contender("gpt-5.4-mini @minimal", "openai/gpt-5.4-mini", "minimal"),
+    ]
 
 
 if __name__ == "__main__":
