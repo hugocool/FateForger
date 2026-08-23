@@ -17,14 +17,55 @@ from pathlib import Path
 import pytest
 
 from fateforger.slack_bot import harness_bridge
-from fateforger.slack_bot.dsh_progress_hook import PROGRESS_FILE_ENV, main, step_line
+from fateforger.slack_bot.dsh_progress_hook import (
+    DONE,
+    PROGRESS_FILE_ENV,
+    START,
+    label_for,
+    main,
+    step_line,
+)
 
 
 # -- the hook ------------------------------------------------------------
 
 
-def test_it_reports_the_tool_the_harness_named():
-    assert step_line({"tool_name": "plan_read"}) == "plan_read"
+def test_it_reports_the_tool_under_a_name_a_person_would_use():
+    """`mcp__memory__memory_get_suspended_constraints` is not a progress update.
+
+    The checklist is read by someone waiting on their calendar, and a wall of
+    mangled identifiers tells them only that something is happening — which
+    they already knew, because they are waiting.
+    """
+    assert step_line({"tool_name": "mcp__tmbx__plan_read"}) == f"{DONE}\tReading the day"
+    assert label_for("mcp__memory__memory_observe") == "Remembering what you said"
+
+
+def test_a_tool_nobody_labelled_still_reports_itself():
+    """Dropping it would make a slow run look like an idle one.
+
+    An unlabelled step is ugly; a missing step is a lie about what the system
+    is doing, and the whole point here is to stop silence being ambiguous.
+    """
+    assert step_line({"tool_name": "some_new_tool"}) == f"{DONE}\tsome_new_tool"
+
+
+def test_a_call_that_started_is_distinguishable_from_one_that_finished():
+    """Both hook points run this script, and the phase decides what Slack shows.
+
+    Without it the first step appears only once the first tool has returned —
+    measured at 5.6s into a turn, with nothing in the thread before it.
+    """
+    started = step_line({"tool_name": "mcp__tmbx__plan_read", "hook_event_name": "PreToolUse"})
+    finished = step_line({"tool_name": "mcp__tmbx__plan_read", "hook_event_name": "PostToolUse"})
+    assert started == f"{START}\tReading the day"
+    assert finished == f"{DONE}\tReading the day"
+    assert started != finished
+
+
+def test_an_event_with_no_phase_is_read_as_finished():
+    """A step opened and never resolved spins forever in the checklist."""
+    assert step_line({"tool_name": "mcp__tmbx__plan_read"}).startswith(f"{DONE}\t")
 
 
 def test_an_event_naming_no_tool_produces_no_step():
@@ -37,11 +78,12 @@ def test_it_writes_the_step_where_the_bridge_will_look(tmp_path, monkeypatch, ca
     destination = tmp_path / "steps"
     monkeypatch.setenv(PROGRESS_FILE_ENV, str(destination))
     monkeypatch.setattr(
-        "sys.stdin", _stdin(json.dumps({"tool_name": "memory_get_active_constraints"}))
+        "sys.stdin",
+        _stdin(json.dumps({"tool_name": "mcp__memory__memory_get_active_constraints"})),
     )
 
     assert main() == 0
-    assert destination.read_text().splitlines() == ["memory_get_active_constraints"]
+    assert destination.read_text().splitlines() == [f"{DONE}\tLoading your rules"]
     # Exit 2 blocks the tool call and stdout is parsed as a decision, so a
     # reporter that wrote either would change what the agent is allowed to do.
     assert capsys.readouterr().out == ""
@@ -50,12 +92,17 @@ def test_it_writes_the_step_where_the_bridge_will_look(tmp_path, monkeypatch, ca
 def test_it_appends_rather_than_replacing(tmp_path, monkeypatch):
     """One process runs per tool call, so a truncating write keeps only the last."""
     destination = tmp_path / "steps"
-    destination.write_text("plan_read\n")
+    destination.write_text(f"{DONE}\tReading the day\n")
     monkeypatch.setenv(PROGRESS_FILE_ENV, str(destination))
-    monkeypatch.setattr("sys.stdin", _stdin(json.dumps({"tool_name": "plan_write"})))
+    monkeypatch.setattr(
+        "sys.stdin", _stdin(json.dumps({"tool_name": "mcp__tmbx__plan_apply"}))
+    )
 
     main()
-    assert destination.read_text().splitlines() == ["plan_read", "plan_write"]
+    assert destination.read_text().splitlines() == [
+        f"{DONE}\tReading the day",
+        f"{DONE}\tDrafting the changes",
+    ]
 
 
 def test_without_the_env_var_it_does_nothing_at_all(tmp_path, monkeypatch, capsys):

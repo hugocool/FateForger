@@ -124,6 +124,28 @@
         toolCallTimeoutMs: 120000
         failOnStartupError: true
 
+    # 4b. The clock.
+    #
+    #     Measured 2026-08-23: the model's SECOND action on "plan tomorrow"
+    #     was `bash: date "+%Y-%m-%d %A"`. Its own system prompt says "Do not
+    #     shell out", and it shelled out anyway, because planning a day
+    #     requires knowing which day today is and nothing in the context said
+    #     so. The instruction was not being ignored; it was impossible to
+    #     follow. That cost a whole round trip -- model call, tool, model call
+    #     -- for a fact the harness already knows.
+    #
+    #     This belongs under `insert:` and not at the top level. A top-level
+    #     entry PATCHES an existing id; `time-context` is not in the composed
+    #     profile, so writing it there matched nothing, changed nothing, and
+    #     failed silently -- verified by the runtime-context block reaching the
+    #     model with a file policy and an approval policy and no clock.
+    #
+    #     refreshIntervalMs is left unset: a planning turn is short, and
+    #     re-injecting per eligible step is cheap next to being wrong about
+    #     the date. The zone comes from the process, which is where Hugo is.
+    - id: time-context
+      name: '@deepseek-ai/dsh-time-context'
+
     # 4. Progress. The bridge runs a Claude-Code-shaped hook config on the
     #    harness's own interception points, so one PostToolUse command hook is
     #    enough to see inside a run — no polling of anything the servers print.

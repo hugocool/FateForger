@@ -32,17 +32,55 @@ from pathlib import Path
 #: ordinary headless run rather than a Slack turn — so there is nothing to do.
 PROGRESS_FILE_ENV = "FF_DSH_PROGRESS_FILE"
 
+#: What each tool is called when a person reads it.
+#:
+#: These keys are harness- and server-minted identifiers -- they name tools
+#: this system published, not anything a user wrote -- so selecting on them is
+#: identification and not a judgement about meaning. An unknown tool is
+#: reported under its own name rather than dropped: a step nobody labelled is
+#: still a step that happened, and hiding it would make a slow run look idle.
+_LABELS = {
+    "mcp__tmbx__plan_read": "Reading the day",
+    "mcp__tmbx__plan_apply": "Drafting the changes",
+    "mcp__tmbx__plan_commit": "Writing it to the calendar",
+    "mcp__tmbx__plan_undo": "Undoing the last change",
+    "mcp__tmbx__plan_history": "Checking what changed",
+    "mcp__memory__memory_get_active_constraints": "Loading your rules",
+    "mcp__memory__memory_get_suspended_constraints": "Checking what is suspended today",
+    "mcp__memory__memory_get_session_constraints": "Recalling this conversation",
+    "mcp__memory__memory_observe": "Remembering what you said",
+    "skill": "Getting my bearings",
+    "todo_write": "Sketching the steps",
+}
+
+#: Written ahead of the tool call and again after it, so a step appears while
+#: it is running instead of only once it is over. The gap this closes is the
+#: whole complaint: the first tool result landed 5.6s in, and until then the
+#: thread said nothing at all.
+START = "start"
+DONE = "done"
+
+
+def label_for(tool: str) -> str:
+    """The human name for a tool, or the tool's own name if it has none."""
+    return _LABELS.get(tool, tool)
+
 
 def step_line(event: dict) -> str | None:
     """Render one progress line, or ``None`` if the event names no tool.
 
     ``tool_name`` is a harness-minted identifier, not user prose, so reading it
     is identification rather than a judgement about what anyone meant.
+
+    The phase comes from ``hook_event_name`` -- also harness-minted -- so one
+    script serves both hook points and the reader can tell a call that started
+    from one that finished.
     """
     tool = event.get("tool_name")
     if not isinstance(tool, str) or not tool.strip():
         return None
-    return tool.strip()
+    phase = START if event.get("hook_event_name") == "PreToolUse" else DONE
+    return f"{phase}\t{label_for(tool.strip())}"
 
 
 def main(argv: list[str] | None = None) -> int:

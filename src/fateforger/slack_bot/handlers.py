@@ -875,6 +875,8 @@ async def _handle_dsh_command(*, body, client, logger) -> None:
     Failures are posted, not swallowed. A harness that could not be reached and
     a planner that declined to act must not look the same in the thread.
     """
+    from .dsh_progress_hook import DONE as PROGRESS_DONE
+    from .dsh_progress_hook import START as PROGRESS_START
     from .harness_bridge import HarnessError, ask
     from .progress import ProgressChannel
 
@@ -891,14 +893,26 @@ async def _handle_dsh_command(*, body, client, logger) -> None:
     loop = asyncio.get_running_loop()
 
     def on_tool_call(step: str) -> None:
-        """Forward one completed tool call from the tailing thread to Slack.
+        """Forward one tool-call event from the tailing thread to Slack.
+
+        Two phases, because a step that only appears once it is finished
+        cannot say "this is taking a while" -- which is the one thing a person
+        waiting actually wants to know. `PreToolUse` opens the step as running
+        and `PostToolUse` resolves it.
 
         Called off the event loop, so the coroutine is scheduled rather than
         awaited. The future is deliberately dropped: `ProgressChannel` already
         swallows its own Slack errors, and blocking the tailing thread on a
         Slack round-trip would delay every step behind it.
         """
-        asyncio.run_coroutine_threadsafe(progress.done(step), loop)
+        phase, _, label = step.partition("\t")
+        if not label:
+            # A line from before the phase prefix existed, or a hook that could
+            # not name one. Reporting it as finished is the safe reading: the
+            # alternative leaves a step spinning forever.
+            phase, label = PROGRESS_DONE, step
+        coro = progress.step(label) if phase == PROGRESS_START else progress.done(label)
+        asyncio.run_coroutine_threadsafe(coro, loop)
 
     try:
         reply = await asyncio.to_thread(ask, text, on_event=on_tool_call)
