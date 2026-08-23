@@ -22,7 +22,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / ".dsh" / "skills"
 TMBX_SERVER = ROOT / "src" / "tmbx" / "server.py"
-MEMORY_LAUNCHER = ROOT / "infra" / "dsh" / "profile" / "memory-readonly-server.py"
+MEMORY_LAUNCHER = ROOT / "infra" / "dsh" / "profile" / "memory-allowlisted-server.py"
 
 #: What each skill tells the model to call. Declared rather than extracted:
 #: the point is to pin the dependency, and a list scraped out of prose would

@@ -23,12 +23,21 @@ ENTIRELY by MEMORY_DB_PATH at launch, and nothing here enforces the safe
 answer. This file said "it writes to a throwaway copy" as though that were a
 property of the server; it is a property of one way of starting it, and the
 process serving 127.0.0.1:8010 on 2026-08-22 was started against
-data/memory.db -- Hugo's real preference corpus. The name
-"memory-readonly-server" describes the allow-list, not the store: three of the
-four surviving tools read, and this one writes wherever it was pointed.
+data/memory.db -- Hugo's real preference corpus. It still was on 2026-08-23,
+because scripts/demo.py hardcodes that path and every start has used it.
+
+This file used to be called "memory-readonly-server.py", which named the
+allow-list and was read as naming the store (#188). Three of the four
+surviving tools read; this one writes, wherever it was pointed. A docstring
+correcting that is read only by someone who already opened the file, and the
+belief forms earlier than that -- in a profile row, in `ps` output, in a
+directory listing. So the name changed too.
 
 Check before assuming, because the failure is silent in the direction that
-matters -- an unintended write is indistinguishable from a real preference:
+matters -- an unintended write is indistinguishable from a real preference.
+`scripts/demo.py status` now reports it per process, read from the running
+process rather than from its spec, which is the same read this once asked
+people to do by hand and nobody did:
 
     ps eww <pid> | tr ' ' '\n' | grep MEMORY_DB_PATH
 
@@ -60,7 +69,7 @@ looks identical to a store with nothing in it. A tool that is new and
 unlisted is removed and named on stderr — the safe direction to be wrong in,
 since a new *write* tool must never be reachable by default.
 
-    PYTHONPATH=<memory>/src MEMORY_DB_PATH=<absolute> python memory-readonly-server.py
+    PYTHONPATH=<memory>/src MEMORY_DB_PATH=<absolute> python memory-allowlisted-server.py
 """
 
 import asyncio

@@ -95,7 +95,7 @@
     # withheld deliberately — deriving the day type from what the user said
     # is the host's judgement and is the thing the acceptance test measures.
     #
-    # memory-readonly-server.py builds the same server the ordinary entry
+    # memory-allowlisted-server.py builds the same server the ordinary entry
     # point builds and then drops everything outside the allow-list through
     # FastMCP's public remove_tool. It copies no tool definition and modifies
     # nothing in src/memory; the four that survive are the server's own.
@@ -116,7 +116,7 @@
         serverName: memory
         transport: streamable-http
         # Same: one long-lived process. The allow-list still applies -- it is
-        # enforced inside memory-readonly-server.py before it serves anything.
+        # enforced inside memory-allowlisted-server.py before it serves anything.
         url: http://127.0.0.1:8010/mcp
         sampling:
           enabled: true

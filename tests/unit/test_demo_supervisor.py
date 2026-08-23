@@ -27,12 +27,14 @@ from scripts.demo import (
     classify,
     fingerprint_sources,
     listener_pids,
+    memory_store_path,
     parse_listener_pids,
     port_accepting,
     python_files,
     read_state,
     selected_specs,
     service_specs,
+    serving,
     state_path,
     stop_record,
     write_state,
@@ -185,11 +187,78 @@ def test_non_python_files_are_ignored(tmp_path: Path) -> None:
 def test_an_explicit_file_root_is_fingerprinted_even_without_a_py_suffix(tmp_path: Path) -> None:
     """The memory launcher is named by path, and it is the file most likely to
     move without anyone in this repository noticing."""
-    launcher = tmp_path / "memory-readonly-server"
+    launcher = tmp_path / "memory-allowlisted-server"
     launcher.write_text("print(1)\n")
     before = fingerprint_sources([launcher])
     launcher.write_text("print(2)\n")
     assert fingerprint_sources([launcher]) != before
+
+
+# ---------------------------------------------------------------------------
+# serving -- what the process is pointed at, versus what the spec says
+# ---------------------------------------------------------------------------
+
+
+def test_serving_reads_the_running_process_not_the_spec() -> None:
+    """#188. The spec and the process disagreeing is the entire failure.
+
+    A memory server started by hand, or by an older revision of demo.py,
+    answers on the same port with the same sha and serves a different store.
+    Every other column reports it as healthy, because it is.
+    """
+    env = (
+        "/venv/bin/python /x/memory-allowlisted-server.py "
+        "MEMORY_JUDGE=openrouter MEMORY_DB_PATH=/real/memory.db PYTHONPATH=/src"
+    )
+    assert serving(4242, "MEMORY_DB_PATH", runner=lambda cmd: _completed(env)) == "/real/memory.db"
+    assert serving(4242, "MEMORY_JUDGE", runner=lambda cmd: _completed(env)) == "openrouter"
+
+
+def test_serving_is_silent_rather_than_wrong_when_it_cannot_look() -> None:
+    """A dead pid and an unset variable both answer None.
+
+    Reporting a guess here would be worse than reporting nothing: the column
+    exists to be trusted at a glance, and a fabricated store path is exactly
+    the belief it was added to stop forming.
+    """
+    assert serving(4242, "MEMORY_DB_PATH", runner=lambda cmd: _completed("", 1)) is None
+    assert serving(4242, "MEMORY_DB_PATH", runner=lambda cmd: _completed("/bin/x A=1")) is None
+
+
+def test_serving_does_not_match_a_variable_that_merely_ends_the_same_way() -> None:
+    """`DB_PATH=` must not answer for `MEMORY_DB_PATH=`, or the column lies."""
+    env = "/bin/python OTHER_MEMORY_DB_PATH=/decoy MEMORY_DB_PATH=/real.db"
+    assert serving(1, "MEMORY_DB_PATH", runner=lambda cmd: _completed(env)) == "/real.db"
+
+
+# ---------------------------------------------------------------------------
+# memory_store_path -- the choice, named
+# ---------------------------------------------------------------------------
+
+
+def test_the_memory_store_defaults_to_the_real_corpus(tmp_path: Path, monkeypatch) -> None:
+    """Unchanged on purpose.
+
+    #188 is that the store was decided silently, not that it was decided
+    wrongly. Flipping the default to a throwaway would swap one silent
+    surprise for another, and the new one loses writes instead of making them.
+    """
+    monkeypatch.delenv("DEMO_MEMORY_DB", raising=False)
+    assert memory_store_path(tmp_path) == tmp_path / "data" / "memory.db"
+
+
+def test_the_memory_store_can_be_named(tmp_path: Path, monkeypatch) -> None:
+    """So a run that might observe without a person behind it can say so."""
+    monkeypatch.setenv("DEMO_MEMORY_DB", "/tmp/throwaway.db")
+    assert memory_store_path(tmp_path) == Path("/tmp/throwaway.db")
+
+
+def test_a_relative_store_is_refused_rather_than_resolved(tmp_path: Path, monkeypatch) -> None:
+    """It would open an empty store, which reads as a user with no rules."""
+    monkeypatch.setenv("DEMO_MEMORY_DB", "data/throwaway.db")
+    with pytest.raises(SystemExit) as excinfo:
+        memory_store_path(tmp_path)
+    assert "absolute" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -563,10 +632,10 @@ def test_every_service_runs_with_src_on_the_python_path() -> None:
 
 
 def test_the_memory_service_watches_the_out_of_repo_launcher(monkeypatch) -> None:
-    monkeypatch.setenv("DEMO_MEMORY_SERVER", "/elsewhere/memory-readonly-server.py")
+    monkeypatch.setenv("DEMO_MEMORY_SERVER", "/elsewhere/memory-allowlisted-server.py")
     memory = {spec.name: spec for spec in service_specs(Path("/repo"))}["memory"]
-    assert Path("/elsewhere/memory-readonly-server.py") in memory.source_roots
-    assert "/elsewhere/memory-readonly-server.py" in memory.argv
+    assert Path("/elsewhere/memory-allowlisted-server.py") in memory.source_roots
+    assert "/elsewhere/memory-allowlisted-server.py" in memory.argv
 
 
 def test_the_slack_bot_is_stale_when_either_package_it_imports_moves() -> None:

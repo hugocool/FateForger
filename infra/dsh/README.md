@@ -97,13 +97,13 @@ intended one.
 root cannot depend on cwd, which is what broke the default. Verified after the
 change — the catalog is exactly `admonisher`.
 
-## `memory-readonly-server.py` is a symlink, on purpose
+## `memory-allowlisted-server.py` is a symlink, on purpose
 
 The copy the warm server on `:8010` runs is a symlink to the versioned file here:
 
 ```sh
-~/.dsh/profiles/tmbx/memory-readonly-server.py
-  -> infra/dsh/profile/memory-readonly-server.py
+~/.dsh/profiles/tmbx/memory-allowlisted-server.py
+  -> infra/dsh/profile/memory-allowlisted-server.py
 ```
 
 Before 2026-08-23 they were two independent files, byte-identical by luck. The

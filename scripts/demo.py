@@ -69,7 +69,7 @@ SLACK_BOT_CODE = (
 # Owned by another session (`~/.dsh/profiles/tmbx/`). Read, fingerprinted,
 # never written. DEMO_MEMORY_SERVER overrides it, which is also how the tests
 # point at a file they control.
-DEFAULT_MEMORY_SERVER = Path.home() / ".dsh" / "profiles" / "tmbx" / "memory-readonly-server.py"
+DEFAULT_MEMORY_SERVER = Path.home() / ".dsh" / "profiles" / "tmbx" / "memory-allowlisted-server.py"
 
 
 class Problem(Enum):
@@ -92,6 +92,11 @@ class ServiceSpec:
     env: Mapping[str, str]
     port: int | None
     source_roots: tuple[Path, ...]
+    #: The environment variable that decides which real thing this process
+    #: touches. Reported by `status` from the RUNNING process rather than from
+    #: this spec, because the two disagreeing is the whole failure (#188): a
+    #: server started by hand against a different store looks identical here.
+    data_var: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +130,36 @@ class Observed:
 def memory_server_path() -> Path:
     override = os.environ.get("DEMO_MEMORY_SERVER")
     return Path(override) if override else DEFAULT_MEMORY_SERVER
+
+
+def memory_store_path(repo_root: Path) -> Path:
+    """Which store the memory server is pointed at.
+
+    The default is unchanged and is Hugo's real preference corpus, because
+    that is what every start since this file existed has used and quietly
+    changing it would swap one silent surprise for another (#188). What
+    changes is that the choice is now nameable: a verification run, an
+    acceptance test, or anything that might call `memory_observe` without a
+    person behind it can say so.
+
+        DEMO_MEMORY_DB=<absolute> python scripts/demo.py restart memory
+
+    Absolute only. The memory launcher refuses a relative path for the reason
+    that makes this whole area dangerous -- it would resolve against the
+    child's cwd and open an empty store, which is indistinguishable from a
+    user who has never stated a rule. Refuse it here too, where the message
+    can name the variable that was wrong.
+    """
+    override = os.environ.get("DEMO_MEMORY_DB")
+    if not override:
+        return repo_root / "data" / "memory.db"
+    path = Path(override)
+    if not path.is_absolute():
+        raise SystemExit(
+            f"DEMO_MEMORY_DB must be absolute; got {override!r}. A relative "
+            f"path silently opens an empty store."
+        )
+    return path
 
 
 def port_offset() -> int:
@@ -174,6 +209,7 @@ def service_specs(repo_root: Path) -> tuple[ServiceSpec, ...]:
             },
             port=tmbx_port,
             source_roots=(src / "tmbx",),
+            data_var="TMBX_CALENDAR_BACKEND",
         ),
         ServiceSpec(
             name="memory",
@@ -182,11 +218,12 @@ def service_specs(repo_root: Path) -> tuple[ServiceSpec, ...]:
                 "MEMORY_JUDGE": "openrouter",
                 "MEMORY_MCP_TRANSPORT": "streamable-http",
                 "MEMORY_MCP_PORT": str(memory_port),
-                "MEMORY_DB_PATH": str(repo_root / "data" / "memory.db"),
+                "MEMORY_DB_PATH": str(memory_store_path(repo_root)),
                 "PYTHONPATH": str(src),
             },
             port=memory_port,
             source_roots=(src / "memory", mem_server),
+            data_var="MEMORY_DB_PATH",
         ),
         ServiceSpec(
             name="slack-bot",
@@ -366,6 +403,33 @@ def observe(record: Record, spec: ServiceSpec, repo_root: Path) -> Observed:
         fingerprint=fingerprint_sources(spec.source_roots),
         git_sha=git_head(repo_root),
     )
+
+
+def serving(pid: int, var: str, runner: Runner = _run) -> str | None:
+    """What the RUNNING process is pointed at, read from its own environment.
+
+    Not from the spec. A server started by hand, or from an older revision of
+    this file, serves whatever it was given at launch and looks identical in
+    every other column -- which is exactly how the memory server came to be
+    answering on :8010 against Hugo's real preference corpus while the profile
+    that mounts it documented a throwaway copy (#188).
+
+    The documented check for that was
+    ``ps eww <pid> | tr ' ' '\\n' | grep MEMORY_DB_PATH``, and a check nobody
+    runs is not a check. This is the same read, in the tool people already run.
+
+    `var` is a name this repo minted and the value is a path or a backend
+    identifier, so splitting on `=` here decides nothing about anything a user
+    wrote.
+    """
+    result = runner(["ps", "eww", "-o", "command=", str(pid)])
+    if result.returncode != 0:
+        return None
+    prefix = f"{var}="
+    for token in result.stdout.split():
+        if token.startswith(prefix):
+            return token[len(prefix):]
+    return None
 
 
 def describe(problem: Problem, record: Record, observed: Observed) -> str:
@@ -670,6 +734,11 @@ def _status_rows(repo_root: Path, names: Sequence[str] = ()) -> list[dict[str, o
         rows.append(
             {
                 "service": spec.name,
+                "serving": (
+                    serving(record.pid, spec.data_var)
+                    if spec.data_var and observed.pid_alive
+                    else None
+                ),
                 "pid": record.pid,
                 "port": record.port,
                 "problems": [p.value for p in problems],
@@ -696,6 +765,11 @@ def cmd_status(repo_root: Path, as_json: bool, names: Sequence[str] = ()) -> int
             port = row["port"] if row["port"] is not None else "-"
             sha = (row.get("git_sha") or "-")[:9] if row.get("git_sha") else "-"
             print(f"{str(row['service']):<{width}}  pid={pid:<8} port={port:<6} sha={sha:<10} {state}")
+            # Printed for every healthy service that touches real data, not
+            # only when something is wrong: the case this exists for looks
+            # entirely healthy.
+            if row.get("serving"):
+                print(f"{'':<{width}}    serving {row['serving']}")
             details = row["detail"]
             assert isinstance(details, list)
             for line in details:
