@@ -2008,16 +2008,40 @@ async def route_slack_event(
     payload = _with_agent_attribution(
         _compact_slack_payload(**_slack_payload_from_result(result)), agent_type
     )
+    await _origin_update(text=payload.get("text", ""), blocks=payload.get("blocks"))
     if take_pending_approval(recipient_key):
         # The commit gate refused this turn, so the answer above ends by asking
-        # Hugo to press Approve. Offer it in the same message: a plan and the
-        # control that accepts it belong together, and until this existed the
-        # instruction pointed at a button nobody had posted.
-        blocks = list(payload.get("blocks") or [])
-        if blocks:
-            blocks.append(harness_approve_block(recipient_key))
-            payload["blocks"] = blocks
-    await _origin_update(text=payload.get("text", ""), blocks=payload.get("blocks"))
+        # Hugo to press Approve. Until this existed there was no Approve to
+        # press: `harness_approve_block` was written and called from nowhere.
+        #
+        # Its own message rather than appended to the plan. A plain harness
+        # reply carries text and NO blocks -- `_slack_payload_from_result`
+        # returns `{"text": ...}` and Slack renders it -- so appending to
+        # `payload["blocks"]` attached the button to an empty list and dropped
+        # it silently. That was the first attempt at this fix and it failed
+        # exactly the way the bug it was fixing failed. A separate message also
+        # keeps the control small and editable when the plan above it is not.
+        try:
+            await client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text="Ready to commit — this needs your approval.",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": ":lock: *This plan has not been committed.* "
+                            "Nothing reaches your calendar until you approve it.",
+                        },
+                    },
+                    harness_approve_block(recipient_key),
+                ],
+            )
+        except Exception:
+            # The plan is already posted; failing to offer the button must not
+            # take the answer with it. It is recoverable by asking again.
+            logger.exception("could not offer the approval control")
     await _maybe_update_timeboxing_thread_header(
         client=client,
         focus=focus,
