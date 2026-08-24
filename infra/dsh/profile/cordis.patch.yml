@@ -80,6 +80,8 @@
       '/Users/hugoevers/VScode-projects/admonish-1/src' }) })
       + process.getBuiltinModule('node:fs').readFileSync(
       '/Users/hugoevers/.dsh/profiles/tmbx/memory-policy.md', 'utf8')
+      + process.getBuiltinModule('node:fs').readFileSync(
+      '/Users/hugoevers/VScode-projects/admonish-1/infra/dsh/profile/deployment.md', 'utf8')
 
 # 3. The servers. stdio; the generic client starts and stops each child with
 #    the plugin lifecycle. Tools arrive as mcp__tmbx__<name>, mcp__memory__<name>.

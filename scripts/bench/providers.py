@@ -68,10 +68,19 @@ def endpoints(model: str, api_key: str) -> list[dict]:
         latency = _num(entry.get("latency_last_30m"))
         if not throughput or latency is None:
             continue
-        if "tools" not in (entry.get("supported_parameters") or []):
+        params = entry.get("supported_parameters") or []
+        if "tools" not in params:
             continue
         rows.append({
             "provider": entry.get("provider_name"),
+            # Schema enforcement is a PROVIDER property, not a model one, and
+            # the split can be severe: of deepseek-v4-flash-0731's 30
+            # tool-capable hosts, 21 enforce `structured_outputs` and 9 do not.
+            # Under default (price) routing you land on one or the other by
+            # accident, and the failure is a schema quietly not applied rather
+            # than an error -- so a run can look fine and return unvalidated
+            # shapes. Reported per endpoint, because that is where it is true.
+            "schema": "structured_outputs" in params,
             "throughput": throughput,
             "ttft": latency / 1000.0,
             "to_200": latency / 1000.0 + 200.0 / throughput,
@@ -105,10 +114,15 @@ def main() -> int:
         if not rows:
             print("    no tool-capable endpoint reporting stats")
             continue
-        print(f"    {'provider':<20}{'to 200 tok':>12}{'TTFT':>9}{'tok/s':>9}{'$/M out':>10}{'max out':>10}")
+        print(f"    {'provider':<20}{'to 200 tok':>12}{'TTFT':>9}{'tok/s':>9}{'$/M out':>10}{'schema':>8}")
         for row in rows[:args.top]:
             print(f"    {row['provider']:<20}{row['to_200']:>11.2f}s{row['ttft']:>8.2f}s"
-                  f"{row['throughput']:>9.0f}{row['out_price']:>10.2f}{str(row['max_out']):>10}")
+                  f"{row['throughput']:>9.0f}{row['out_price']:>10.2f}"
+                  f"{('yes' if row['schema'] else 'NO'):>8}")
+        enforcing = sum(1 for r in rows if r["schema"])
+        if enforcing < len(rows):
+            print(f"    -- {enforcing}/{len(rows)} tool-capable hosts enforce structured_outputs; "
+                  f"unpinned routing may reach one that does not")
         best = rows[0]
         label = f"{model.split('/')[-1]} {best['provider']}"
         pins.append(f"{label}={model}@{args.effort}#{best['provider']}")
