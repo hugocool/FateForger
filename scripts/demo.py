@@ -432,6 +432,15 @@ def profile_boots(runner: Runner = _run, home: Path | None = None) -> str | None
     which is the whole failure class this catches. Sending a real prompt would
     price a status check at a model call and tempt everyone to stop running it.
 
+    **It does not validate the model.** Model resolution happens per request,
+    not at boot, so a profile naming a model the catalogue does not carry passes
+    this check and fails on the first turn with `UNKNOWN_MODEL`. Measured while
+    probing which models are selectable: `--help` accepted six ids, three of
+    which a real prompt then refused. Catching that needs a request, which is
+    the token spend this deliberately avoids -- so the gap is named here rather
+    than closed, and `UNKNOWN_MODEL` names its own problem clearly enough that
+    it does not need help.
+
     A profile lives in $DSH_HOME and is edited by hand, by several sessions,
     with no version control -- so it goes wrong in ways nothing else here
     watches.
