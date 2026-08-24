@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from fateforger.slack_bot import harness_bridge
+from fateforger.slack_bot.harness_bridge import compose_task
 from fateforger.slack_bot.dsh_progress_hook import (
     DONE,
     PROGRESS_FILE_ENV,
@@ -333,3 +334,46 @@ def test_without_an_approval_path_the_variable_is_absent(monkeypatch):
     env = _capture_env(monkeypatch)
     harness_bridge.ask("plan tuesday")
     assert harness_bridge.APPROVAL_FILE_ENV not in env
+
+
+# -- the thread's identity ------------------------------------------------
+
+
+def test_a_turn_carries_the_session_id_it_was_given():
+    """The harness spawns a fresh process per turn and remembers nothing.
+
+    What survives is the memory server, keyed by this id. Without it in the
+    task the model cannot read back what the thread established, and the
+    memory policy's instruction that both tools share "the *same* value" names
+    a value nothing supplies.
+    """
+    task = compose_task("plan tomorrow", session_id="C123:1772.9")
+    assert "C123:1772.9" in task
+    assert "plan tomorrow" in task
+
+
+def test_it_tells_the_model_to_read_the_session_back_not_only_to_write_it():
+    """Recording without reading is a store nobody queries."""
+    task = compose_task("plan tomorrow", session_id="C1:1.0")
+    assert "memory_get_session_constraints" in task
+    assert "memory_observe" in task
+
+
+def test_without_a_session_id_the_task_is_the_bare_text():
+    """Headless callers have no thread, and must not be handed a fake one.
+
+    An invented id would write into a session nothing ever reads — which is
+    exactly the failure this parameter exists to fix, reintroduced one level
+    up.
+    """
+    assert compose_task("plan tomorrow") == "plan tomorrow"
+
+
+def test_history_and_session_id_compose_rather_than_replace():
+    """A caller that genuinely holds a transcript keeps working."""
+    task = compose_task(
+        "and the gym?",
+        history=[("Hugo", "plan tomorrow"), ("agent", "which day?")],
+        session_id="C1:1.0",
+    )
+    assert "C1:1.0" in task and "which day?" in task and "and the gym?" in task

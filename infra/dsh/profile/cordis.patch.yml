@@ -241,6 +241,74 @@
     - id: time-context
       name: '@deepseek-ai/dsh-time-context'
 
+    # 3b. The patch agent: a second `dsh-tool-subagent` instance whose child
+    #     can do one thing.
+    #
+    #     Measured: four of six models scored 0/5 on building a patch by
+    #     calling `memory_get_session_constraints` instead — including the one
+    #     that was running at the time. Given 34 tools and a sentence asking
+    #     for a patch, fetching more context first is a defensible choice. The
+    #     original stage machine did not have this problem because its stages
+    #     were separate agents with separate tool sets, and that property was
+    #     lost in the migration rather than discarded.
+    #
+    #     `toolFilter` takes the choice away instead of asking for it: filtered
+    #     tools disappear from the child's prompt AND reject execution, so
+    #     calling the wrong one is not instructed against, it is impossible.
+    #     Same argument as the memory mount's allow-list.
+    #
+    #     `plan_commit` is deliberately absent. Committing stays with the
+    #     parent, behind the Slack approval gate, so no failure mode inside
+    #     this child reaches the calendar.
+    #
+    #     `maxDepth: 0` forbids it delegating onward. A patch agent that can
+    #     spawn is a patch agent that can do anything.
+    #
+    #     The model is DeepSeek V4 Pro on Sail Research (`:nitro`), which is
+    #     slower per call than the loop model and is the right trade here: a
+    #     wrong patch costs a retry, so the expected wait is attempt divided by
+    #     success rate, and the faster model is not the faster step. Sail
+    #     Research also enforces `structured_outputs`, which a patch requires
+    #     and which most of its hosts do not do.
+    - id: tool-subagent-timebox-patch
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        # Distinct per instance; the default `subagent` is already taken.
+        toolName: timebox_patch
+        # One call, one answer. A patch is not a conversation.
+        backgroundMode: one-shot
+        enableRunInBackground: false
+        maxDepth: 0
+        agentOptions:
+          provider: openrouter
+          model: deepseek/deepseek-v4-pro-0813:nitro
+        toolFilter:
+          allow:
+            - mcp__tmbx__plan_read
+            - mcp__tmbx__plan_apply
+        persona: >-
+          You build one timebox patch and return what happened. Nothing else.
+
+          You have exactly two tools. `mcp__tmbx__plan_read` gives you the
+          snapshot for the day; `mcp__tmbx__plan_apply` patches it. There is no
+          commit here and there cannot be — the calendar is changed by someone
+          else, after Hugo approves it, so nothing you do reaches it directly.
+
+          Call plan_read first and pass its snapshot back verbatim. Then apply
+          one patch. The constraints you must satisfy are in the task you were
+          given: you cannot look them up, so treat them as complete and do not
+          plan around rules that were not stated.
+
+          A result carrying "ok": false is a REFUSAL, not a crash. Read its
+          reason, fix the patch, and try once more. If it refuses again, stop
+          and report the refusal and what you tried — an unbuildable patch
+          reported honestly is a usable answer, and a forced one is not.
+
+          Report the handles you created or moved, and say plainly if you could
+          not satisfy something you were asked for. You are not talking to
+          Hugo; your answer goes back to the agent that called you.
+
     # 4. Progress. The bridge runs a Claude-Code-shaped hook config on the
     #    harness's own interception points, so one PostToolUse command hook is
     #    enough to see inside a run — no polling of anything the servers print.

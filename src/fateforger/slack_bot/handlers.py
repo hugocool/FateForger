@@ -721,7 +721,9 @@ def _plan_sessions_channel_id() -> str | None:
     return None
 
 
-async def _harness_turn(*, text: str, thread_key: str, on_phase) -> TextMessage:
+async def _harness_turn(
+    *, text: str, thread_key: str, on_phase, session_id: str | None = None
+) -> TextMessage:
     """One Slack turn through the harness, shaped like a runtime reply.
 
     Returned as a TextMessage so every renderer downstream -- personas, block
@@ -742,6 +744,10 @@ async def _harness_turn(*, text: str, thread_key: str, on_phase) -> TextMessage:
             text,
             on_event=on_phase,
             approval_file=str(approval_path(thread_key)),
+            # Without this the harness starts every turn with no idea the
+            # thread has a past. `thread_key` was already threaded here for the
+            # approval file; the conversation's own identity was not.
+            session_id=session_id,
         )
     except HarnessError as exc:
         # Surfaced, not swallowed. A harness that could not be reached and a
@@ -1575,6 +1581,7 @@ async def route_slack_event(
             result = await _harness_turn(
                 text=cleaned_text,
                 thread_key=recipient_key,
+                session_id=recipient_key,
                 on_phase=lambda line: _note_harness_phase(
                     client, origin_processing_msg, agent_type, line
                 ),
@@ -1757,6 +1764,7 @@ async def route_slack_event(
                         result = await _harness_turn(
                             text=cleaned_text,
                             thread_key=redirect.target_key,
+                            session_id=redirect.target_key,
                             on_phase=lambda line: _note_harness_phase(
                                 client, processing, handoff_target, line
                             ),

@@ -121,18 +121,53 @@ def _cli_args(task: str, profile: str) -> list[str]:
     ]
 
 
-def compose_task(text: str, *, history: list[tuple[str, str]] | None = None) -> str:
+def compose_task(
+    text: str,
+    *,
+    history: list[tuple[str, str]] | None = None,
+    session_id: str | None = None,
+) -> str:
     """Build the task string for one turn.
 
-    ``history`` is ``(speaker, message)`` oldest-first — the thread so far.
-    Replayed verbatim rather than summarised: a summary is a judgement about
-    what mattered, and that judgement belongs to the model reading it, not to
-    this adapter.
+    ``session_id`` is how a thread remembers itself. The harness spawns a fresh
+    process per turn, so nothing survives in the model's context -- but the
+    memory server holds what this conversation established, keyed by exactly
+    this value, and `memory_get_session_constraints` reads it back.
+
+    **It has to be supplied, because the model cannot know it.** The memory
+    policy tells the model both memory tools share a session id and that it has
+    to be "the *same* value"; nothing told it which. So it invented one per turn
+    -- `session_2026_08_24_plan` and `tmbx-session-2026-08-24` are both from
+    real traces -- and each turn wrote into a store the next turn could not
+    find. Observed 2026-08-24: Hugo said he was on vacation and going to a
+    nature reserve at 13:00, answered a follow-up question, and the next turn
+    asked him which date he wanted to plan. Same failure shape as the calendar
+    id: a required identifier nothing supplied, invented plausibly, wrong
+    silently.
+
+    ``history`` remains for callers that genuinely have a transcript, but the
+    Slack path deliberately does not use it. Replaying the thread grows the
+    prompt every turn and rebuilds it from the front, so the only stable prefix
+    is the system prompt and every turn pays full price. Carrying a session id
+    instead keeps the prefix identical turn to turn -- which is what a provider
+    cache can actually reuse -- and moves the state into the store built to
+    hold it, where it is structured rather than a transcript to re-read.
     """
-    if not history:
+    parts = []
+    if session_id:
+        parts.append(
+            f"Session id for this conversation: {session_id}\n"
+            f"Pass it as `session_id` to memory_get_session_constraints and to "
+            f"memory_observe. Read it back before you answer -- it is what this "
+            f"thread already established, and you cannot see the earlier turns."
+        )
+    if history:
+        prior = "\n".join(f"{speaker}: {message}" for speaker, message in history)
+        parts.append(f"Earlier in this thread:\n{prior}")
+    if not parts:
         return text
-    prior = "\n".join(f"{speaker}: {message}" for speaker, message in history)
-    return f"Earlier in this thread:\n{prior}\n\nHugo now says:\n{text}"
+    parts.append(f"Hugo now says:\n{text}")
+    return "\n\n".join(parts)
 
 
 #: How often the progress file is checked while a turn runs. Half a second is
@@ -194,6 +229,7 @@ def ask(
     text: str,
     *,
     history: list[tuple[str, str]] | None = None,
+    session_id: str | None = None,
     profile: str = _PROFILE,
     env: dict[str, str] | None = None,
     on_event: Callable[[str], None] | None = None,
@@ -249,7 +285,7 @@ def ask(
 
         try:
             done = subprocess.run(
-                _cli_args(compose_task(text, history=history), profile),
+                _cli_args(compose_task(text, history=history, session_id=session_id), profile),
                 capture_output=True,
                 text=True,
                 timeout=_TIMEOUT_S,
