@@ -91,11 +91,24 @@ def endpoints(model: str, api_key: str) -> list[dict]:
     return rows
 
 
+def enforcing_only(rows: list[dict]) -> list[dict]:
+    """The hosts that actually apply a JSON schema, fastest first."""
+    return [r for r in rows if r["schema"]]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("models", nargs="+")
     parser.add_argument("--top", type=int, default=3)
     parser.add_argument("--effort", default="", help="effort to bake into the emitted pins")
+    parser.add_argument(
+        "--schema-only",
+        action="store_true",
+        help="rank only hosts that enforce structured_outputs. For any step whose "
+             "output IS a schema — patch generation, extraction — a faster host "
+             "that does not enforce is not a cheaper option, it is a different "
+             "and unchecked one.",
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -114,6 +127,20 @@ def main() -> int:
         if not rows:
             print("    no tool-capable endpoint reporting stats")
             continue
+        if args.schema_only:
+            kept = enforcing_only(rows)
+            if not kept:
+                print(f"    NO host enforces structured_outputs "
+                      f"({len(rows)} tool-capable). Unusable where the output is a schema.")
+                continue
+            # Named, not hidden: the gap between the fastest host and the
+            # fastest ENFORCING host is the price of correctness here, and it
+            # is the number worth seeing.
+            if kept[0]["provider"] != rows[0]["provider"]:
+                print(f"    (fastest overall is {rows[0]['provider']} at "
+                      f"{rows[0]['to_200']:.2f}s and does NOT enforce — "
+                      f"skipping it costs {kept[0]['to_200'] - rows[0]['to_200']:+.2f}s)")
+            rows = kept
         print(f"    {'provider':<20}{'to 200 tok':>12}{'TTFT':>9}{'tok/s':>9}{'$/M out':>10}{'schema':>8}")
         for row in rows[:args.top]:
             print(f"    {row['provider']:<20}{row['to_200']:>11.2f}s{row['ttft']:>8.2f}s"
