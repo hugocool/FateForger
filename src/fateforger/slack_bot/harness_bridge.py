@@ -279,10 +279,18 @@ def ask(
             last_tx_id = recorded[-1] if recorded else None
 
     if done.returncode != 0:
-        tail_lines = (done.stderr or "").strip().splitlines()[-5:]
-        raise HarnessError(
-            f"harness exited {done.returncode}: " + " / ".join(tail_lines)
-        )
+        # Both streams, because a failing turn does not reliably use stderr.
+        # Two intermittent failures on 2026-08-24 -- one PI_AI_ERROR, one bare
+        # exit 1 -- produced an empty stderr, so this raised "harness exited 1:"
+        # with nothing after the colon. An error that names no cause is the
+        # same silent-wrong-answer shape as no error at all: it tells the
+        # reader something broke and denies them any way to find out what.
+        detail = " / ".join((done.stderr or "").strip().splitlines()[-5:])
+        if not detail:
+            detail = " / ".join((done.stdout or "").strip().splitlines()[-5:])
+        if not detail:
+            detail = "no output on either stream"
+        raise HarnessError(f"harness exited {done.returncode}: {detail}")
 
     answer = (done.stdout or "").strip()
     if not answer:

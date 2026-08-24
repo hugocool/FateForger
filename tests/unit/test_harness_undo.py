@@ -12,6 +12,7 @@ import json
 
 import pytest
 
+from fateforger.slack_bot import harness_bridge
 from fateforger.slack_bot.dsh_progress_hook import committed_tx_id
 from fateforger.slack_bot.handlers import (
     FF_HARNESS_UNDO_ACTION_ID,
@@ -173,3 +174,46 @@ def test_a_response_arrives_as_content_blocks_not_a_string():
 def test_a_successful_undo_in_content_blocks_is_recognised():
     payload = _as_payload([_TextContent('{"committed": true, "tx_id": "abc"}')])
     assert payload["committed"] is True
+
+
+# -- a failure that names no cause ---------------------------------------
+
+
+def _failing(monkeypatch, *, stdout: str, stderr: str, code: int = 1):
+    class _Done:
+        returncode = code
+    _Done.stdout, _Done.stderr = stdout, stderr
+    monkeypatch.setattr(harness_bridge.subprocess, "run", lambda *a, **k: _Done())
+
+
+def test_a_failure_with_empty_stderr_still_names_something():
+    """Observed twice on 2026-08-24: the harness exited 1 writing nothing to
+    stderr, so the error read `harness exited 1:` and stopped. An error that
+    names no cause denies the reader any way to find out what broke."""
+    import pytest as _pytest
+
+    with _pytest.MonkeyPatch.context() as mp:
+        _failing(mp, stdout="PI_AI_ERROR: Invalid thought signature.", stderr="")
+        with _pytest.raises(harness_bridge.HarnessError) as caught:
+            harness_bridge.ask("plan tuesday")
+    assert "Invalid thought signature" in str(caught.value)
+
+
+def test_a_failure_with_no_output_at_all_says_so():
+    import pytest as _pytest
+
+    with _pytest.MonkeyPatch.context() as mp:
+        _failing(mp, stdout="", stderr="")
+        with _pytest.raises(harness_bridge.HarnessError) as caught:
+            harness_bridge.ask("plan tuesday")
+    assert "no output on either stream" in str(caught.value)
+
+
+def test_stderr_still_wins_when_it_has_something():
+    import pytest as _pytest
+
+    with _pytest.MonkeyPatch.context() as mp:
+        _failing(mp, stdout="partial answer", stderr="NO_ADAPTER: openrouter")
+        with _pytest.raises(harness_bridge.HarnessError) as caught:
+            harness_bridge.ask("plan tuesday")
+    assert "NO_ADAPTER" in str(caught.value)
