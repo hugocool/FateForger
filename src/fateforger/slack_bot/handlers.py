@@ -899,13 +899,30 @@ def _timebox_body_for_harness(body: dict) -> dict:
     command names the intent, and the day is the obvious default. Without this
     a bare /timebox answers "Give me something to plan", which reads as the
     bot not knowing what its own command is for.
+
+    **The day is not hardcoded, and is not decided here.** This asked for
+    "today" until 2026-08-24, which is wrong every evening: at 20:00 there is
+    no day left to plan and the useful answer is tomorrow. Picking a cutoff
+    hour in Python would replace one wrong answer with a differently wrong one
+    -- 18:00 is late for someone who plans over dinner and early for someone
+    who works past it.
+
+    So the model chooses, from the clock it already reads, and **says which day
+    it chose in its first line**. That is the same discipline the standing
+    instructions apply to every block: an assumption the user can see is one
+    they can correct, in one reply rather than a wasted turn. It also means
+    this is a default rather than a decision, which is what a bare command
+    should be (#195).
     """
     text = (body.get("text") or "").strip()
     if not text:
         text = (
-            "Plan my day. Read today's calendar and my active constraints "
-            "first, then propose a timebox. Do not commit anything without "
-            "being asked."
+            "Plan a day for me. Work out which day I most likely mean from the "
+            "current date and time -- the rest of today if there is usefully "
+            "any left, otherwise tomorrow -- and say which day you chose and "
+            "why in your first line, so I can correct it in one reply. Read "
+            "that day's calendar and my active constraints before proposing "
+            "anything. Do not commit without being asked."
         )
     return {**body, "text": text}
 
