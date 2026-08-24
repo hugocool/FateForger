@@ -26,13 +26,36 @@
 #
 # `minimal` is the floor, not zero: this endpoint rejects
 # `{"enabled": false}` outright (CLAUDE.md), so there is nothing below it.
+# MEASURED 2026-08-24, because two sessions disagreed and both were partly
+# wrong. Adding a `models:` entry to this route disables the whole namespace
+# and every turn dies at boot with:
+#
+#     dsh: NO_ADAPTER: no adapter registered for provider "openrouter"
+#
+# Four states, each run against a live turn:
+#
+#     api + baseURL, no models   -> works
+#     neither, no models         -> works      <- the shipped shape
+#     models, no api/baseURL     -> NO_ADAPTER
+#     models + api + baseURL     -> NO_ADAPTER
+#
+# So `api` and `baseURL` are inert: openrouter is a catalogue route and pi-ai
+# already knows its endpoint and protocol. They were added once as a fix and
+# were not one -- the route had recovered for an unrelated reason. Not left in
+# place, because config that looks load-bearing and is not is how the next
+# person loses an hour.
+#
+# The consequence worth knowing: **there is currently no way to add a model to
+# this route from settings.** Pinning an OpenRouter sub-provider (`:nitro` and
+# friends) needs a `models:` entry, and a `models:` entry breaks the namespace.
+# `resolveProfiles` throws rather than dropping a bad route, so NO_ADAPTER is a
+# symptom of a swallowed error, not the error itself. Unresolved -- do not
+# retry the obvious fix without reading that function.
 llm-pi-ai:
   providers:
     openrouter:
       displayName: OpenRouter
       apiKeyEnv: OPENROUTER_API_KEY
-      api: openai-completions
-      baseURL: https://openrouter.ai/api/v1
       reasoning: minimal
       headers:
         HTTP-Referer: https://github.com/hugocool/FateForger
