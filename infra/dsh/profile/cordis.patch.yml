@@ -22,6 +22,78 @@
 # 1. Default model for new agents. The provider route "openrouter" is defined
 #    in $DSH_HOME/settings.yaml; the key resolves per request from the
 #    OPENROUTER_API_KEY environment variable.
+# 0. Models this deployment names, registered on the PLUGIN ENTRY.
+#
+#    Not in settings.yaml. A `models:` entry there disables the whole
+#    llm-pi-ai namespace and every turn dies at boot with `NO_ADAPTER` (#199,
+#    six states measured). The pi-ai README explains why this layer is
+#    different: the plugin registers its settings namespace "with this same
+#    Config schema and its cordis.yml entry as the composition base", and the
+#    base and the user's settings merge per provider. The base is this. It
+#    fails plugin load loudly if it is wrong, rather than silently emptying
+#    the namespace.
+#
+#    THE `:nitro` SUFFIX IS LOAD-BEARING. OpenRouter's default routing sorts by
+#    PRICE, and pi-ai's model profile has no field for provider routing --
+#    `id`, `name`, `contextWindow`, `maxTokens`, `input`, `reasoningEfforts`,
+#    `compat` and nothing else -- so the model id is the only place a routing
+#    preference can live. `:nitro` sorts by throughput. Verified against the
+#    live API, not assumed:
+#
+#      deepseek/deepseek-v4-pro-0813:nitro  -> served by Sail Research
+#      openai/gpt-oss-120b:nitro            -> served by Cerebras
+#
+#    Both of those hosts enforce `structured_outputs`, which is a per-HOST
+#    property and not a per-model one: of minimax-m2.7's eleven tool-capable
+#    hosts only two enforce, and its fastest is not among them. A patch IS
+#    structured output, so an unenforcing host accepts a malformed one in
+#    silence. Routing is a correctness requirement here, not a speed one.
+- id: llm-pi-ai
+  config:
+    providers:
+      openrouter:
+        models:
+          # The loop: routing, reads, stage prose, progress lines. Measured
+          # 0.28-0.54s to first token and 371 tok/s against gemini-3.6-flash's
+          # 0.74-1.08s and 106, at $1.05/month against $22.30 priced from
+          # measured tokens.
+          - id: openai/gpt-oss-120b:nitro
+            name: GPT-OSS 120B (Cerebras via :nitro)
+            contextWindow: 131072
+            # Cerebras caps completions here. Claiming more would fail only
+            # once an answer got long, which is the worst time to find out.
+            maxTokens: 40960
+            input:
+              - text
+            # `false`, not a level map. The route default is `reasoning: minimal`
+            # and this family has no `minimal`, so pi-ai resolved it to the
+            # disable branch and OpenRouter answered
+            # `400 Reasoning is mandatory for this endpoint and cannot be
+            # disabled` -- the same refusal CLAUDE.md records for gemini,
+            # reached by a different road. `false` declares the model as
+            # non-reasoning, which makes pi-ai OMIT the reasoning option
+            # entirely rather than send a level, leaving the provider's own
+            # default in force. That is what this step wants anyway: the loop
+            # is routing and prose, and reasoning tokens land before the first
+            # visible one.
+            reasoningEfforts: false
+
+          # The patch. Slower per call and that is accepted -- a wrong patch
+          # costs a retry, so expected time is attempt/success-rate and the
+          # faster model is not the faster step.
+          - id: deepseek/deepseek-v4-pro-0813:nitro
+            name: DeepSeek V4 Pro (Sail Research via :nitro)
+            contextWindow: 163840
+            maxTokens: 65536
+            input:
+              - text
+            reasoningEfforts:
+              "off": null
+              minimal: minimal
+              low: low
+              medium: medium
+              high: high
+
 - id: agent-default-model
   config:
     provider: openrouter
@@ -46,7 +118,7 @@
     # is not the patch model -- see #192. On the unconstrained patch task it
     # scored 0/5, in company with almost everything else, by choosing a
     # different tool rather than by building a bad patch.
-    model: google/gemini-3.6-flash
+    model: openai/gpt-oss-120b:nitro
 
 # 2. The system prompt, in two pieces.
 #
