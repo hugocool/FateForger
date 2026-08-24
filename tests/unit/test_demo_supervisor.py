@@ -29,6 +29,7 @@ from scripts.demo import (
     listener_pids,
     memory_store_path,
     parse_listener_pids,
+    profile_boots,
     port_accepting,
     python_files,
     read_state,
@@ -192,6 +193,67 @@ def test_an_explicit_file_root_is_fingerprinted_even_without_a_py_suffix(tmp_pat
     before = fingerprint_sources([launcher])
     launcher.write_text("print(2)\n")
     assert fingerprint_sources([launcher]) != before
+
+
+# ---------------------------------------------------------------------------
+# profile_boots -- three healthy processes and no turn possible
+# ---------------------------------------------------------------------------
+
+
+def test_a_loadable_profile_reports_nothing() -> None:
+    """Silence is the healthy answer, so it composes with the other checks."""
+    assert profile_boots(runner=lambda cmd: _completed("usage: dsh ...")) is None
+
+
+def test_a_broken_route_is_caught_though_every_process_is_healthy() -> None:
+    """The case this exists for, and the reason `status` was not enough.
+
+    On 2026-08-24 a settings edit left the openrouter route unresolvable. All
+    three services were up, every column read HEALTHY, and not one turn could
+    run -- the failure has no process to be unhealthy. "Are the processes up"
+    and "can a turn happen" are different questions.
+    """
+    stderr = 'dsh: NO_ADAPTER: no adapter registered for provider "openrouter"'
+    detail = profile_boots(
+        runner=lambda cmd: subprocess.CompletedProcess(
+            args=list(cmd), returncode=1, stdout="", stderr=stderr
+        )
+    )
+    assert detail is not None
+    assert "NO_ADAPTER" in detail
+
+
+def test_it_reports_the_message_and_not_just_the_exit_code() -> None:
+    """An exit code names nothing a reader can act on.
+
+    The whole value here is handing over the harness's own sentence, because
+    that sentence is what says which route and which field.
+    """
+    detail = profile_boots(
+        runner=lambda cmd: subprocess.CompletedProcess(
+            args=list(cmd), returncode=1, stdout="", stderr=""
+        )
+    )
+    assert detail is not None and "exit 1" in detail
+
+
+def test_it_loads_the_profile_and_does_not_run_a_turn() -> None:
+    """`--help` resolves the routes and exits.
+
+    A status check that costs a model call is one people stop running, and it
+    would bill a token spend to a command whose whole job is to be cheap enough
+    to run before anything else.
+    """
+    seen: list[list[str]] = []
+
+    def runner(cmd):
+        seen.append(list(cmd))
+        return _completed("usage")
+
+    profile_boots(runner=runner)
+    assert seen, "the check never invoked the harness"
+    assert "--help" in seen[0]
+    assert "--profile" in seen[0]
 
 
 # ---------------------------------------------------------------------------

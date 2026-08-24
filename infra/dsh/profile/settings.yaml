@@ -1,0 +1,48 @@
+# $DSH_HOME/settings.yaml — user settings, hot-reloaded, shared by every
+# profile. The `llm-pi-ai:` section registers provider routes on the dormant
+# pi-ai adapter that dsh-base mounts with zero routes.
+#
+# pi-ai ships an installed catalog for OpenRouter, so this is a *catalog*
+# route: it names no baseURL, protocol or model list, and the catalog supplies
+# all three (openai-completions, https://openrouter.ai/api/v1, and every
+# OpenRouter model including google/gemini-3.6-flash).
+#
+# One correction is needed. The catalog marks gemini-3.6-flash
+# `reasoning: true` with `thinkingFormat: openrouter` and no thinking-level
+# map, so when a request carries no reasoning effort pi-ai takes the "turn it
+# off" branch and sends `reasoning: {effort: "none"}`. OpenRouter answers that
+# with 400 "Reasoning is mandatory for this endpoint and cannot be disabled" —
+# every request fails, including the session-title call. Mapping `off` to null
+# means "supported, send nothing", which skips that branch entirely; the other
+# levels give the agent something real to select.
+#
+# The route default is `minimal`, not `low`, and it was measured rather than
+# guessed (2026-08-23, scripts/bench/). At `low` this model spends ~72
+# reasoning tokens on a one-line progress update and the visible sentence is
+# cut off mid-word: 10 of 10 draws across two independent runs truncated. At
+# `minimal`, 0 of 10, and the same five quality checks on the user-facing
+# stage message pass 5/5 either way. TTFT is indistinguishable between them,
+# so this buys correctness on short outputs and costs nothing.
+#
+# `minimal` is the floor, not zero: this endpoint rejects
+# `{"enabled": false}` outright (CLAUDE.md), so there is nothing below it.
+llm-pi-ai:
+  providers:
+    openrouter:
+      displayName: OpenRouter
+      apiKeyEnv: OPENROUTER_API_KEY
+      api: openai-completions
+      baseURL: https://openrouter.ai/api/v1
+      reasoning: minimal
+      headers:
+        HTTP-Referer: https://github.com/hugocool/FateForger
+        X-Title: FateForger tmbx
+      modelOverrides:
+        google/gemini-3.6-flash:
+          reasoningEfforts:
+            # Quoted: bare `off` is YAML 1.1 boolean false.
+            "off": null
+            minimal: minimal
+            low: low
+            medium: medium
+            high: high

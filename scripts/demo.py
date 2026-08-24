@@ -69,6 +69,19 @@ SLACK_BOT_CODE = (
 # Owned by another session (`~/.dsh/profiles/tmbx/`). Read, fingerprinted,
 # never written. DEMO_MEMORY_SERVER overrides it, which is also how the tests
 # point at a file they control.
+#: Same resolution as harness_bridge, and for the same reason: this must be the
+#: interpreter that actually runs a turn, not whatever is first on PATH in
+#: whichever shell happened to invoke the supervisor.
+_NODE = os.environ.get("DSH_NODE", "/opt/homebrew/bin/node")
+
+#: Where the harness CLI lives. The profile is loaded from $DSH_HOME, but the
+#: binary that loads it is in the harness checkout, and a status check that
+#: cannot find it must stay silent rather than report a healthy stack as broken.
+HARNESS_REPO = Path(
+    os.environ.get("DSH_REPO", Path.home() / "VScode-projects" / "deepseek-harness")
+)
+PROFILE = os.environ.get("FF_DSH_PROFILE", "tmbx")
+
 DEFAULT_MEMORY_SERVER = Path.home() / ".dsh" / "profiles" / "tmbx" / "memory-allowlisted-server.py"
 
 
@@ -403,6 +416,46 @@ def observe(record: Record, spec: ServiceSpec, repo_root: Path) -> Observed:
         fingerprint=fingerprint_sources(spec.source_roots),
         git_sha=git_head(repo_root),
     )
+
+
+def profile_boots(runner: Runner = _run, home: Path | None = None) -> str | None:
+    """``None`` if the harness profile can start a turn, else why it cannot.
+
+    Every service can be up and the system still answer nothing. On 2026-08-24
+    a settings edit left `NO_ADAPTER: no adapter registered for provider
+    "openrouter"` -- three processes HEALTHY, three columns green, and not one
+    turn able to run. `status` was built to stop exactly that shape and stopped
+    one question short: "are the processes up" is not "can a turn happen".
+
+    Deliberately cheap and deliberately not a model call. `--help` loads the
+    profile, resolves the provider routes and exits; a broken route fails there,
+    which is the whole failure class this catches. Sending a real prompt would
+    price a status check at a model call and tempt everyone to stop running it.
+
+    A profile lives in $DSH_HOME and is edited by hand, by several sessions,
+    with no version control -- so it goes wrong in ways nothing else here
+    watches.
+    """
+    home = home or Path.home() / ".dsh"
+    cli = HARNESS_REPO / "apps" / "cli" / "lib" / "bin.js"
+    if not cli.is_file():
+        return None
+    env_note = _harness_env(home)
+    result = runner([_NODE, str(cli), "--profile", PROFILE, "--help"])
+    if result.returncode == 0:
+        return None
+    # The message is on stderr and is the useful half; the exit code alone
+    # says nothing a reader can act on.
+    detail = (result.stderr or result.stdout or "").strip().splitlines()
+    first = next((line for line in detail if line.strip()), f"exit {result.returncode}")
+    return f"{first.strip()[:160]}{env_note}"
+
+
+def _harness_env(home: Path) -> str:
+    """A hint when the failure is a missing key rather than a broken profile."""
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        return "  (note: OPENROUTER_API_KEY is unset in this shell)"
+    return ""
 
 
 def serving(pid: int, var: str, runner: Runner = _run) -> str | None:
@@ -754,7 +807,12 @@ def _status_rows(repo_root: Path, names: Sequence[str] = ()) -> list[dict[str, o
 def cmd_status(repo_root: Path, as_json: bool, names: Sequence[str] = ()) -> int:
     rows = _status_rows(repo_root, names)
     if as_json:
-        print(json.dumps({"services": rows}, indent=2))
+        broken = profile_boots()
+        print(json.dumps(
+            {"services": rows, "profile": {"name": PROFILE, "boots": broken is None,
+                                           "detail": broken}},
+            indent=2,
+        ))
     else:
         width = max((len(str(row["service"])) for row in rows), default=7)
         for row in rows:
@@ -774,7 +832,17 @@ def cmd_status(repo_root: Path, as_json: bool, names: Sequence[str] = ()) -> int
             assert isinstance(details, list)
             for line in details:
                 print(f"{'':<{width}}    {line}")
-    return 0 if all(not row["problems"] for row in rows) else 1
+
+    # Not a service, so it gets its own line rather than a column: the profile
+    # is one shared thing every turn goes through, and it is the piece with no
+    # process to be healthy.
+    broken = profile_boots()
+    if broken is None:
+        print(f"\n{'profile':<{width}}  {PROFILE} loads")
+    else:
+        print(f"\n{'profile':<{width}}  {PROFILE} CANNOT BOOT -- no turn can run")
+        print(f"{'':<{width}}    {broken}")
+    return 0 if (broken is None and all(not row["problems"] for row in rows)) else 1
 
 
 def cmd_stop(repo_root: Path, names: Sequence[str] = ()) -> int:
