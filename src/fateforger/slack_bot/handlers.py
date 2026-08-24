@@ -734,7 +734,7 @@ async def _harness_turn(
     of seconds, so it goes to a worker thread; leaving it on the loop would
     stall every other Slack event in the workspace.
     """
-    from .harness_bridge import HarnessError, ask
+    from .harness_bridge import PLANNING_MODEL, HarnessError, ask
 
     from .thread_approval import approval_path
 
@@ -748,6 +748,10 @@ async def _harness_turn(
             # thread has a past. `thread_key` was already threaded here for the
             # approval file; the conversation's own identity was not.
             session_id=session_id,
+            # Every turn that reaches here is a planning turn: this function is
+            # the timeboxing path. The receptionist and the fast conversational
+            # replies do not come through it.
+            model=PLANNING_MODEL,
         )
     except HarnessError as exc:
         # Surfaced, not swallowed. A harness that could not be reached and a
@@ -758,6 +762,13 @@ async def _harness_turn(
             ),
             source="timeboxing_agent",
         )
+    if reply.needs_approval:
+        # The gate refused a commit for want of an approval, so the model has
+        # just told Hugo to press Approve. Until this line existed there was no
+        # Approve to press: `harness_approve_block` was written and called from
+        # nowhere, so the instruction pointed at a control that did not exist
+        # and the plan could not be committed at all.
+        _pending_approval.add(thread_key)
     return TextMessage(content=reply.text, source="timeboxing_agent")
 
 
@@ -788,6 +799,26 @@ def _note_harness_phase(client, processing_msg, agent_type: str, line: str) -> N
 
 #: The one control that opens the commit gate.
 FF_HARNESS_APPROVE_ACTION_ID = "ff_harness_approve"
+
+#: Threads whose last turn had a commit refused for want of approval. Held here
+#: rather than returned through the renderer because the reply travels as a
+#: `TextMessage`, which carries text and a source and nothing else -- widening
+#: it would touch every renderer for one boolean that only this path reads.
+_pending_approval: set[str] = set()
+
+
+def take_pending_approval(thread_key: str) -> bool:
+    """Whether this thread is waiting on an Approve, clearing the flag.
+
+    Consumed on read: the button is offered once per refusal. A flag that
+    stayed set would re-offer approval beside a later message that asked for
+    none, which is how a person ends up approving something they were not
+    looking at.
+    """
+    if thread_key not in _pending_approval:
+        return False
+    _pending_approval.discard(thread_key)
+    return True
 
 
 def harness_approve_block(thread_key: str) -> dict:
@@ -1977,6 +2008,15 @@ async def route_slack_event(
     payload = _with_agent_attribution(
         _compact_slack_payload(**_slack_payload_from_result(result)), agent_type
     )
+    if take_pending_approval(recipient_key):
+        # The commit gate refused this turn, so the answer above ends by asking
+        # Hugo to press Approve. Offer it in the same message: a plan and the
+        # control that accepts it belong together, and until this existed the
+        # instruction pointed at a button nobody had posted.
+        blocks = list(payload.get("blocks") or [])
+        if blocks:
+            blocks.append(harness_approve_block(recipient_key))
+            payload["blocks"] = blocks
     await _origin_update(text=payload.get("text", ""), blocks=payload.get("blocks"))
     await _maybe_update_timeboxing_thread_header(
         client=client,

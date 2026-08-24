@@ -13,9 +13,18 @@ from fateforger.slack_bot import handlers
 
 
 class _Reply:
-    def __init__(self, text: str) -> None:
+    """Mirrors `HarnessReply`'s shape, because the handler reads its fields.
+
+    Kept in step deliberately rather than letting the handler use `getattr`
+    with a default: a stub that silently tolerates a missing field is a stub
+    that stops testing the contract the moment the contract grows.
+    """
+
+    def __init__(self, text: str, *, needs_approval: bool = False) -> None:
         self.text = text
         self.timings = None
+        self.committed_tx_id = None
+        self.needs_approval = needs_approval
 
 
 @pytest.fixture

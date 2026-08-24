@@ -84,6 +84,9 @@ class HarnessReply:
     #: for a write that actually landed -- a refused commit carries no id --
     #: so Slack can offer to reverse exactly what happened and nothing else.
     committed_tx_id: str | None = None
+    #: True when the commit gate refused this turn for want of an approval.
+    #: The model says "press Approve"; this is what makes the button appear.
+    needs_approval: bool = False
 
 
 def _repo_env() -> dict[str, str]:
@@ -176,10 +179,17 @@ def compose_task(
 _POLL_INTERVAL_S = float(os.environ.get("DSH_PROGRESS_POLL_SECONDS", "0.5"))
 
 
+#: Written by the commit gate, read here. Imported rather than restated so the
+#: two halves cannot drift into never matching -- which would present as the
+#: button simply never appearing.
+from .dsh_commit_gate_hook import NEEDS_APPROVAL as _NEEDS_APPROVAL
+
+
 def _tail_progress(
     path: Path,
     on_event: Callable[[str], None],
     stop: threading.Event,
+    refused: list[bool] | None = None,
 ) -> int:
     """Report each line the hook appends, until stopped and drained.
 
@@ -212,6 +222,12 @@ def _tail_progress(
                 step = line.strip()
                 if not step:
                     continue
+                if refused is not None and step == _NEEDS_APPROVAL:
+                    # Not a progress step: it is the gate telling Slack to
+                    # offer the button. Counting it would report a tool call
+                    # that never happened.
+                    refused.append(True)
+                    continue
                 seen += 1
                 try:
                     on_event(step)
@@ -225,11 +241,27 @@ def _tail_progress(
         stop.wait(_POLL_INTERVAL_S)
 
 
+#: The model a planning turn runs on, overriding the profile's fast default.
+#:
+#: The loop and the planner want different things and share a process. The loop
+#: is latency-bound and mostly emits tool calls; timeboxing and patching are
+#: correctness-bound and tolerate a slower call, because a wrong patch costs a
+#: retry and the expected wait is one attempt divided by the success rate.
+#:
+#: Sail Research via `:nitro`, which is also one of the hosts that enforces
+#: `structured_outputs` -- a per-host property, and a patch IS structured
+#: output, so an unenforcing host would accept a malformed one in silence.
+PLANNING_MODEL = os.environ.get(
+    "FF_PLANNING_MODEL", "deepseek/deepseek-v4-pro-0813:nitro"
+)
+
+
 def ask(
     text: str,
     *,
     history: list[tuple[str, str]] | None = None,
     session_id: str | None = None,
+    model: str | None = None,
     profile: str = _PROFILE,
     env: dict[str, str] | None = None,
     on_event: Callable[[str], None] | None = None,
@@ -253,6 +285,10 @@ def ask(
         **os.environ,
         **_repo_env(),
         "DSH_HOME": str(_DSH_HOME),
+        # Read by the profile's `agent-default-model` entry. Absent leaves the
+        # profile's own fast default in force, which is what a headless or
+        # non-planning call should get.
+        **({"FF_HARNESS_MODEL": model} if model else {}),
         **(env or {}),
     }
     if approval_file is not None:
@@ -274,11 +310,13 @@ def ask(
         stop = threading.Event()
         tail: threading.Thread | None = None
         collected: list[int] = []
+        # One entry per gate refusal seen this turn; presence is the whole signal.
+        refused: list[bool] = []
 
         if on_event is not None:
             child_env[PROGRESS_FILE_ENV] = str(progress)
             tail = threading.Thread(
-                target=lambda: collected.append(_tail_progress(progress, on_event, stop)),
+                target=lambda: collected.append(_tail_progress(progress, on_event, stop, refused)),
                 daemon=True,
             )
             tail.start()
@@ -338,4 +376,5 @@ def ask(
         text=to_mrkdwn(answer),
         profile=profile,
         timings={"elapsed_s": round(time.monotonic() - started, 1), "tool_calls": steps},
+        needs_approval=bool(refused),
     )

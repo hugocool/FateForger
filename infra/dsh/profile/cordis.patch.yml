@@ -118,7 +118,22 @@
     # is not the patch model -- see #192. On the unconstrained patch task it
     # scored 0/5, in company with almost everything else, by choosing a
     # different tool rather than by building a bad patch.
-    model: openai/gpt-oss-120b:nitro
+    # Overridable per turn, because the two halves of this system want
+    # different models and they run in the same process.
+    #
+    # The loop -- routing, the receptionist, reads, progress lines -- wants the
+    # fastest thing that can hold a conversation, and gpt-oss-120b on Cerebras
+    # is 0.28-0.54s to first token at $1.05/month.
+    #
+    # Timeboxing and patching want the better model, and can afford to be
+    # slower: a wrong patch costs a retry, so the expected wait is attempt
+    # divided by success rate and the quicker model is not the quicker step.
+    # `harness_bridge` sets FF_HARNESS_MODEL for those turns.
+    #
+    # An env override rather than a second profile: a copied profile is two
+    # files that must be edited together and silently disagree when they are
+    # not, which is the defect that cost a day on the memory launcher (#188).
+    model: !!js process.env.FF_HARNESS_MODEL || 'openai/gpt-oss-120b:nitro'
 
 # 2. The system prompt, in two pieces.
 #

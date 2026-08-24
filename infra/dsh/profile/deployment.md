@@ -61,3 +61,21 @@ means asking him again next turn.
 Do not invent a session id. It is given to you. Two turns writing under
 different ids is the same as not recording anything, except that it looks like
 it worked.
+
+
+**A day type, once established, is part of what the session holds.** Read it
+back with the rest of the session constraints; do not re-derive it every turn.
+
+Observed 2026-08-24: Hugo opened by saying he was on vacation. The first turn
+got it right and recorded it. Two turns later the draft was headed "Draft for
+2026-08-24 (working day)" — the plan under it was still a vacation plan, so
+nothing broke, but the header was confidently wrong and the constraint read
+that produced it asked for the wrong day's rules. A `day_type` that changes
+between turns of one conversation means one of those turns loaded the wrong
+constraint set, and the one that looks right is not necessarily the later one.
+
+So: if the session already says what kind of day it is, that is the answer.
+Derive it only on the first turn, or when he says something that changes it —
+and if he does change it, say so plainly, because a day that quietly switched
+type explains every difference between the plan he saw last and the one he is
+looking at now.

@@ -167,3 +167,73 @@ def test_an_approval_that_cannot_be_spent_is_not_honoured(tmp_path, monkeypatch)
 
     monkeypatch.setattr(pathlib.Path, "write_text", refuse)
     assert _denied(gate_decision(_commit(), str(path)))
+
+
+# --- the other half of the loop -------------------------------------------
+
+
+def test_a_refusal_is_reported_where_slack_can_see_it(tmp_path, monkeypatch):
+    """A gate that only the model hears about is half a loop.
+
+    Observed on a real plan, 2026-08-24: the gate denied, the model dutifully
+    told Hugo to press Approve, and no Approve button had ever been posted —
+    `harness_approve_block` was written, tested, and called from nowhere. The
+    plan could not be committed at all, and both halves looked correct on their
+    own.
+    """
+    from fateforger.slack_bot.dsh_commit_gate_hook import (
+        NEEDS_APPROVAL,
+        PROGRESS_FILE_ENV,
+        gate_decision,
+    )
+
+    progress = tmp_path / "steps"
+    monkeypatch.setenv(PROGRESS_FILE_ENV, str(progress))
+
+    decision = gate_decision({"tool_name": "mcp__tmbx__plan_commit"}, None)
+    assert decision is not None, "an unapproved commit must still be denied"
+    assert progress.read_text().splitlines() == [NEEDS_APPROVAL]
+
+
+def test_an_allowed_commit_reports_no_refusal(tmp_path, monkeypatch):
+    """Offering the button beside a plan that already committed is noise."""
+    from fateforger.slack_bot.dsh_commit_gate_hook import PROGRESS_FILE_ENV, gate_decision
+
+    progress = tmp_path / "steps"
+    monkeypatch.setenv(PROGRESS_FILE_ENV, str(progress))
+    token = tmp_path / "approval"
+    token.write_text("approved by U1 at 2026-08-24T10:00:00+00:00\n")
+
+    assert gate_decision({"tool_name": "mcp__tmbx__plan_commit"}, str(token)) is None
+    assert not progress.exists() or progress.read_text() == ""
+
+
+def test_reporting_never_blocks_the_gate(tmp_path, monkeypatch):
+    """An unwritable progress file must not turn a denial into an allow.
+
+    The reporting path is cosmetic; the gate is not. If those two ever trade
+    places the failure is a calendar nobody agreed to.
+    """
+    from fateforger.slack_bot.dsh_commit_gate_hook import PROGRESS_FILE_ENV, gate_decision
+
+    monkeypatch.setenv(PROGRESS_FILE_ENV, str(tmp_path / "no" / "such" / "dir" / "f"))
+    assert gate_decision({"tool_name": "mcp__tmbx__plan_commit"}, None) is not None
+
+
+def test_the_marker_is_not_counted_as_a_tool_call(tmp_path):
+    """It shares the progress file, and a checklist row for it would be a lie."""
+    import threading
+
+    from fateforger.slack_bot.dsh_commit_gate_hook import NEEDS_APPROVAL
+    from fateforger.slack_bot.harness_bridge import _tail_progress
+
+    progress = tmp_path / "steps"
+    progress.write_text(f"done\tReading the day\n{NEEDS_APPROVAL}\n")
+    stop = threading.Event()
+    stop.set()
+    seen: list[str] = []
+    refused: list[bool] = []
+    steps = _tail_progress(progress, seen.append, stop, refused)
+    assert steps == 1, "the marker was counted as a tool call"
+    assert seen == ["done\tReading the day"]
+    assert refused == [True]

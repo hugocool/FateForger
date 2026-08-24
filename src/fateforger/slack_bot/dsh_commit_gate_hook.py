@@ -35,6 +35,36 @@ from pathlib import Path
 #: than a Slack turn -- and the gate holds shut rather than assuming consent.
 APPROVAL_FILE_ENV = "FF_DSH_APPROVAL_FILE"
 
+#: Where the bridge tails a run's progress. The gate writes one line here when
+#: it refuses, because a refusal that only the model can see is half a loop:
+#: the model duly tells Hugo to press Approve, and nothing ever offers him the
+#: button. Observed 2026-08-24 on a real plan -- `harness_approve_block` was
+#: written, tested and called from nowhere, so the gate was shut and the only
+#: thing that opens it was never shown.
+PROGRESS_FILE_ENV = "FF_DSH_PROGRESS_FILE"
+
+#: The line the bridge watches for. A marker rather than prose: the bridge is
+#: reading a value this process wrote, not judging a sentence.
+NEEDS_APPROVAL = "needs-approval\tcommit"
+
+
+def _record_refusal() -> None:
+    """Tell the Slack side a commit was refused for want of approval.
+
+    Best effort and silent on failure, like everything else in this file's
+    reporting path: a gate that cannot write a progress line must still deny,
+    and must never fail the turn it is protecting.
+    """
+    destination = os.environ.get(PROGRESS_FILE_ENV)
+    if not destination:
+        return
+    try:
+        with Path(destination).open("a", encoding="utf-8") as handle:
+            handle.write(NEEDS_APPROVAL + "\n")
+    except OSError:
+        return
+
+
 #: Only tools that write to the real calendar are gated. Reading, drafting and
 #: patching a local plan are all reversible and cost nothing to get wrong.
 GATED_TOOLS = frozenset({"mcp__tmbx__plan_commit"})
@@ -90,6 +120,7 @@ def gate_decision(event: dict, approval_path: str | None) -> dict | None:
 
 
 def _deny(detail: str) -> dict:
+    _record_refusal()
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
