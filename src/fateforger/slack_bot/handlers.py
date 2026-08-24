@@ -2497,14 +2497,68 @@ def register_handlers(
             logger.warning("approve pressed with no thread to approve for")
             return
 
-        grant(f"{channel}:{thread_root}", user_id)
+        thread_key = f"{channel}:{thread_root}"
+        grant(thread_key, user_id)
+
+        # Pressing Approve has to COMMIT, not merely permit. It used to write
+        # the token and say "ask me to commit and I will" — so the one control
+        # offered beside a finished plan changed nothing a person could see,
+        # and the day reached the calendar only if they then typed another
+        # message. A button that does not do what its label says is the same
+        # defect as a button that was never posted, one step later.
+        posted = await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_root,
+            text=":white_check_mark: Approved — committing now…",
+        )
+
+        # `ask` rather than `_harness_turn`: the latter returns a TextMessage,
+        # which carries content and a source and no transaction id, so the Undo
+        # control could never be offered from here.
+        from .harness_bridge import PLANNING_MODEL, HarnessError, ask
+        from .thread_approval import approval_path
+
+        try:
+            reply = await asyncio.to_thread(
+                ask,
+                "I have approved the plan. Rebuild exactly the day you last "
+                "showed me and call plan_commit now. Do not ask me anything.",
+                session_id=thread_key,
+                model=PLANNING_MODEL,
+                approval_file=str(approval_path(thread_key)),
+                on_event=lambda line: _note_harness_phase(
+                    client, posted, "timeboxing_agent", line
+                ),
+            )
+        except HarnessError as exc:
+            logger.warning("approve: harness failed: %s", exc)
+            await client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_root,
+                text=(
+                    ":warning: Approved, but the commit could not run.\n"
+                    f"```{exc}```\nYour approval is still unspent — ask me to "
+                    "commit and it will be used."
+                ),
+            )
+            return
+
+        blocks = None
+        tx_id = reply.committed_tx_id
+        if tx_id:
+            # Offer the reversal beside the thing it reverses, and only when
+            # something actually landed: a refused commit carries no id, so
+            # there is nothing to take back.
+            blocks = [
+                {"type": "section",
+                 "text": {"type": "mrkdwn", "text": reply.text[:2900]}},
+                harness_undo_block(tx_id),
+            ]
         await client.chat_postMessage(
             channel=channel,
             thread_ts=thread_root,
-            text=(
-                ":white_check_mark: Approved — ask me to commit and I will. "
-                "This covers one commit; press again for the next."
-            ),
+            text=reply.text,
+            **({"blocks": blocks} if blocks else {}),
         )
 
     @app.command("/dsh")

@@ -377,4 +377,10 @@ def ask(
         profile=profile,
         timings={"elapsed_s": round(time.monotonic() - started, 1), "tool_calls": steps},
         needs_approval=bool(refused),
+        # Computed a few lines up and, until now, dropped on the floor: the
+        # hook recorded it, the bridge read it, and nothing carried it out, so
+        # `handlers` offered Undo only when `reply.committed_tx_id` was set and
+        # it never was. Third wire this week that was built at both ends and
+        # joined nowhere.
+        committed_tx_id=last_tx_id,
     )
