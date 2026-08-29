@@ -315,6 +315,20 @@ def build_server(service: PlanService) -> FastMCP:
         those as mistakes, per tmbx://policy/planning. Blocks whose
         anchor_source is "constraint" are never listed: their pin is the
         boundary being enforced, and relaxing one is refused outright.
+
+        On success, "unallocated" is the other direction — the stretches of
+        the day no block occupies. Each carries "start", "end", "duration",
+        and the handles it sits between ("after"/"before", null where there
+        is no block on that side). Gaps between two placed blocks are always
+        listed; leading and trailing time is listed only where a BG block
+        declares the day available, because without one the day has stated
+        neither a start nor an end.
+
+        It is arithmetic, not advice. Nothing here says a gap is too long or
+        ought to be filled — whether three unclaimed hours are a problem, an
+        opportunity, or an ordinary afternoon depends on what the user meant
+        by their day. Where that is genuinely open, put the choice to them
+        instead of closing it with one confident guess.
         """
         try:
             snapshot_obj = Snapshot.model_validate(snapshot)
@@ -345,6 +359,7 @@ def build_server(service: PlanService) -> FastMCP:
                     violation.model_dump(mode="json") for violation in result.violations
                 ],
                 "overspecified": result.overspecified,
+                "unallocated": [gap.model_dump(mode="json") for gap in result.unallocated],
             }
         )
 

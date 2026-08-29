@@ -68,6 +68,7 @@ from .core.models import (
 )
 from .core.ops import MoveBlock, Patch, RemoveBlock, UpdateBlock, apply_ops
 from .core.render import render_plan
+from .core.unallocated import Gap, unallocated
 from .journal.models import EntryKind, JournalEntry, PatchOutcome
 from .journal.store import JournalStore
 
@@ -275,12 +276,21 @@ class ApplyResult(BaseModel):
     committable while carrying violations is exactly the mismatch #170 was.
     It answers only "would ``commit`` refuse this plan?" — it says nothing
     about calendar drift, which ``apply`` deliberately never checks.
+
+    ``overspecified`` and ``unallocated`` are the two directions of least
+    commitment and neither gates ``committable``: a day may be pinned harder
+    than it needs to be, or have three hours in the middle with nothing in
+    them, and still be a day the calendar will accept. They are what a
+    caller reads to tell a reasoned plan from an arbitrary one — which is
+    the difference the user cannot see in a rendered plan and cannot correct
+    without being told.
     """
 
     plan: Plan
     rendered: str
     violations: list[Violation]
     overspecified: list[str]
+    unallocated: list[Gap]
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -682,6 +692,7 @@ class PlanService:
             rendered=render_plan(patched, foreign_uids),
             violations=violations,
             overspecified=overspecified(patched),
+            unallocated=unallocated(patched),
         )
 
     async def commit(
