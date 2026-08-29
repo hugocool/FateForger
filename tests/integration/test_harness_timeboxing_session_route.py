@@ -727,7 +727,12 @@ def _day_type_overrides(blocks: list[dict]) -> dict[DayType, str]:
         for element in block.get("elements") or ():
             if not isinstance(element, dict):
                 continue
-            if element.get("action_id") != FF_TIMEBOX_DAY_TYPE_ACTION_ID:
+            # One id per day type since 2026-08-30: Slack rejects a message
+            # whose controls share one, so the family is matched by prefix over
+            # ids this system minted, not by a single constant.
+            if not str(element.get("action_id") or "").startswith(
+                FF_TIMEBOX_DAY_TYPE_ACTION_ID
+            ):
                 continue
             meta = TimeboxCommitMeta.from_value(str(element.get("value") or ""))
             assert meta is not None
@@ -1344,9 +1349,8 @@ def _stamped_identity(action_id: str, value: str) -> tuple[str, int]:
     button that carries neither, and a decoder that shrugged at the unknown
     case would pass instead.
     """
-    if action_id in (
-        FF_TIMEBOX_COMMIT_START_ACTION_ID,
-        FF_TIMEBOX_DAY_TYPE_ACTION_ID,
+    if action_id == FF_TIMEBOX_COMMIT_START_ACTION_ID or action_id.startswith(
+        FF_TIMEBOX_DAY_TYPE_ACTION_ID
     ):
         meta = TimeboxCommitMeta.from_value(value)
         assert meta is not None

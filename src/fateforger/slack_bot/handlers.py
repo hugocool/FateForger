@@ -49,6 +49,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     AwaitingUser,
     Cancelled,
     Committed,
+    DayType,
     FactKind,
     PlanningArtifact,
     PlanningDay,
@@ -110,6 +111,7 @@ from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID,
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
     FF_TIMEBOX_DAY_TYPE_ACTION_ID,
+    day_type_action_id,
     TimeboxCommitMeta,
     TimeboxingCommitCoordinator,
     build_timebox_date_card,
@@ -4707,7 +4709,13 @@ def register_handlers(
             interaction_id=str(action.get("action_ts") or message_ts),
         )
 
-    @app.action(FF_TIMEBOX_DAY_TYPE_ACTION_ID)
+    # One registration per button: Slack refuses a message whose interactive
+    # elements share an action_id, so the five day types each carry their own.
+    @app.action(day_type_action_id(DayType.WORKING))
+    @app.action(day_type_action_id(DayType.WEEKEND))
+    @app.action(day_type_action_id(DayType.VACATION))
+    @app.action(day_type_action_id(DayType.HOLIDAY))
+    @app.action(day_type_action_id(DayType.SICK))
     async def on_timebox_day_type_action(ack, body, client, logger):
         """Lock the day with the type the user pressed rather than derived.
 

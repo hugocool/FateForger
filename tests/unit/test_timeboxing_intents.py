@@ -729,3 +729,38 @@ def test_an_implausible_offset_is_refused_by_the_schema(offset: int) -> None:
         InterpretedTimeboxTurn.model_validate(
             {"decision": "confirm_planning_day", "day_offset": offset}
         )
+
+
+def test_every_control_on_the_date_card_has_its_own_action_id() -> None:
+    """Slack refuses the whole message when two controls share an action_id.
+
+    Measured live on 2026-08-30: all five day-type buttons carried
+    `ff_timebox_day_type`, Slack answered `invalid_blocks` with no partial
+    render, and the bot fell back to truncated text. The visible symptom was a
+    date card with no controls at all -- a day nobody could confirm -- and the
+    only trace was one `Slack origin update failed ... error=invalid_blocks`
+    line. Nothing in the suite looked at the card as Slack does.
+    """
+
+    from fateforger.slack_bot.timeboxing_commit import build_timebox_date_card
+
+    card = build_timebox_date_card(
+        session_key="C1:1.0",
+        expected_revision=1,
+        user_id="U1",
+        channel_id="C1",
+        thread_ts="1.0",
+        planned_date="2026-08-30",
+        tz_name="Europe/Amsterdam",
+    )
+
+    action_ids = [
+        element["action_id"]
+        for block in card.blocks
+        if block.get("type") == "actions"
+        for element in block.get("elements", ())
+    ]
+
+    assert action_ids, "the date card rendered no controls at all"
+    duplicated = sorted({a for a in action_ids if action_ids.count(a) > 1})
+    assert not duplicated, f"Slack will reject the whole card: {duplicated}"

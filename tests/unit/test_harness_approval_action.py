@@ -37,7 +37,8 @@ from fateforger.slack_bot.timebox_candidate import (
     PendingTimeboxCandidates,
     ValidatedTimeboxCandidate,
 )
-from fateforger.slack_bot.timeboxing_commit import FF_TIMEBOX_DAY_TYPE_ACTION_ID
+from fateforger.agents.timeboxing.session_contracts import DayType
+from fateforger.slack_bot.timeboxing_commit import day_type_action_id
 
 
 class _Runtime:
@@ -656,9 +657,15 @@ async def test_the_kernel_review_controls_are_registered(monkeypatch):
         handlers.FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
         handlers.FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
         handlers.FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
-        FF_TIMEBOX_DAY_TYPE_ACTION_ID,
         FF_HARNESS_APPROVE_ACTION_ID,
     } <= set(app.actions)
+    # Every day type separately: Slack refuses a card whose controls share an
+    # action_id, so the five buttons carry five ids and each needs its own
+    # listener. A registration loop that stopped after the first would leave
+    # four live-looking buttons that answer nothing.
+    assert {day_type_action_id(day_type) for day_type in DayType} <= set(
+        app.actions
+    )
 
 
 async def test_thread_context_recovers_latest_proposal_and_recent_user_turns():

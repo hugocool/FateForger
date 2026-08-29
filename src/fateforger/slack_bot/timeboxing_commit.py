@@ -26,6 +26,20 @@ FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID = "ff_timebox_day_select"
 FF_TIMEBOX_DAY_TYPE_ACTION_ID = "ff_timebox_day_type"
 
 
+def day_type_action_id(day_type: "DayType") -> str:
+    """One action id per day-type button, because Slack requires it.
+
+    Slack refuses a whole message when two interactive elements share an
+    action_id -- `invalid_blocks`, with no partial render. All five buttons
+    carried the same one, so the card came back as truncated text with no
+    controls at all, and the only visible symptom was a day nobody could
+    confirm. The chosen type still travels in the button value; the id exists
+    to be unique.
+    """
+
+    return f"{FF_TIMEBOX_DAY_TYPE_ACTION_ID}_{day_type.value}"
+
+
 def _persona_payload(agent_type: str) -> dict[str, Any]:
     """Return Slack message persona overrides for a given agent type."""
     directory = WorkspaceRegistry.get_global()
@@ -337,7 +351,7 @@ def build_day_type_override_blocks(meta: TimeboxCommitMeta) -> list[dict[str, An
     elements: list[dict[str, Any]] = [
         {
             "type": "button",
-            "action_id": FF_TIMEBOX_DAY_TYPE_ACTION_ID,
+            "action_id": day_type_action_id(day_type),
             "text": {"type": "plain_text", "text": _DAY_TYPE_LABELS[day_type]},
             "value": meta.with_day_type(day_type).to_value(),
         }
@@ -589,6 +603,7 @@ __all__ = [
     "FF_TIMEBOX_COMMIT_START_ACTION_ID",
     "FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID",
     "FF_TIMEBOX_DAY_TYPE_ACTION_ID",
+    "day_type_action_id",
     "TimeboxCommitMeta",
     "TimeboxingCommitCoordinator",
     "build_day_type_override_blocks",
