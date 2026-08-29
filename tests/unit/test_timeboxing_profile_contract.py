@@ -204,3 +204,35 @@ def test_the_general_rules_the_anecdote_carried_survive_it() -> None:
     assert "An absence is an answer." in prose
     assert "Ask at most once per thing, and never twice." in prose
     assert "work window is a boundary constraint" in prose
+
+
+# -- the two halves load from one root -------------------------------------
+
+
+def test_both_persona_halves_load_from_the_repository() -> None:
+    """The assertions above are worthless if the model reads a different file.
+
+    `memory-policy.md` was once read from `~/.dsh/profiles/tmbx/` while
+    `deployment.md` was read from the repo. Everything in this module reads the
+    repo copies, so the suite stayed green while the deployed half still carried
+    the retired stage section — green in exactly the state where the live
+    persona violated the contract. A prompt test that cannot see the prompt the
+    model is given tests nothing, so this one checks the wiring instead of the
+    words.
+    """
+
+    profile = (PROFILE / "cordis.patch.yml").read_text(encoding="utf-8")
+    reads = [
+        line
+        for line in profile.splitlines()
+        if "memory-policy.md" in line or "deployment.md" in line
+    ]
+    persona_reads = [line for line in reads if "'utf8')" in line]
+
+    assert len(persona_reads) == 2, (
+        "expected the persona stanza to read exactly two markdown halves; "
+        f"found {persona_reads}"
+    )
+    for line in persona_reads:
+        assert "/infra/dsh/profile/" in line
+        assert ".dsh/profiles" not in line

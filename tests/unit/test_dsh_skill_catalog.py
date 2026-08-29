@@ -226,7 +226,7 @@ def test_the_catalog_holds_no_skill_for_a_backend_that_is_not_connected() -> Non
     servers = re.findall(
         r"^\s*serverName:\s*(\S+)\s*$", profile, re.MULTILINE
     )
-    assert set(servers) == {"tmbx", "memory", "progress"}, (
+    assert set(servers) == {"tmbx", "memory", "progress", "planning_result"}, (
         f"the mount changed to {sorted(set(servers))}; if a task backend is now "
         f"connected, a tasks skill can exist and the admonisher should route to it"
     )

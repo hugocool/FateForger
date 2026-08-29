@@ -35,6 +35,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from pydantic import ValidationError
+
+from fateforger.agents.timeboxing.session_contracts import (
+    PlanningBrief,
+    PlanningResult,
+)
+
 from .dsh_progress_hook import COMMIT_FILE_ENV, PROGRESS_FILE_ENV, ProgressEvent
 from .mrkdwn import to_mrkdwn
 from .progress_events import (
@@ -58,6 +65,14 @@ from .validated_timebox_draft import (
 #: here because this module is what puts it in the child's environment; the
 #: gate hook and the Slack button handler both read the same name.
 APPROVAL_FILE_ENV = "FF_DSH_APPROVAL_FILE"
+
+#: Where the planning-result server writes the one typed result a planning turn
+#: owes. Provisioned here per turn, because the file *is* the turn: an empty one
+#: means nothing has been submitted yet, and a fresh one per run is what makes
+#: the server's idempotency check turn-scoped without any state of its own.
+#: ``planning_result_mcp`` restates this literal rather than importing it, and
+#: ``test_planning_result_mcp`` asserts the two agree.
+PLANNING_RESULT_FILE_ENV = "FF_DSH_PLANNING_RESULT_FILE"
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +132,10 @@ class HarnessReply:
     #: Exact snapshot+patch validated by tmbx in this run. Private host state;
     #: only its opaque id crosses Slack transport.
     validated_candidate: ValidatedTimeboxCandidate | None = None
+    #: The typed artifact this turn produced, when a planning brief demanded
+    #: one. Never derived from ``text``: prose is what the turn looked like,
+    #: and this is what it did.
+    planning_result: PlanningResult | None = None
 
 
 def _repo_env() -> dict[str, str]:
@@ -162,6 +181,7 @@ def compose_task(
     proposed_calendar_id: str | None = None,
     proposed_day: str | None = None,
     session_id: str | None = None,
+    planning_brief: PlanningBrief | None = None,
 ) -> str:
     """Build the task string for one turn.
 
@@ -185,6 +205,11 @@ def compose_task(
     three owner turns. That small intent window is paired with the exact
     proposal message named by its approval card; durable constraints still
     live behind ``session_id`` rather than growing an unbounded transcript.
+
+    ``planning_brief`` replaces all of that for an adaptive timeboxing turn.
+    The kernel already holds the day, the facts, the artifacts and the
+    approvals as typed state, so the brief is the context and the transcript
+    is not -- and with it comes the obligation to submit one typed result.
     """
     parts = []
     if session_id:
@@ -210,10 +235,54 @@ def compose_task(
             f"{target}\n"
             f"{proposed_timebox}"
         )
+    if planning_brief is not None:
+        parts.append(_planning_obligation(planning_brief))
     if not parts:
         return text
-    parts.append(f"Hugo now says:\n{text}")
+    if text.strip():
+        # A planning turn has no utterance to quote: what Hugo said reached the
+        # kernel as typed facts, and the runner's own request is not his. An
+        # empty "Hugo now says:" would attribute the host's words to him, which
+        # is the invented-provenance defect that cost this system a session id
+        # and a calendar id already.
+        parts.append(f"Hugo now says:\n{text}")
     return "\n\n".join(parts)
+
+
+def _planning_obligation(brief: PlanningBrief) -> str:
+    """State the host's authority over this turn, then the call that ends it."""
+
+    target = brief.target_artifact.value
+    return (
+        "This planning turn is host-driven. The brief below is authoritative "
+        "for the day, the facts, the prior artifacts and the approvals; do not "
+        "re-derive any of them from calendar content or from prose.\n"
+        f"{_canonical_brief(brief)}\n"
+        f"Produce exactly one `{target}` and end this turn by calling "
+        f"`submit_planning_result` once, with target_artifact `{target}`. Your "
+        "final message is presentation only: it records nothing, and a turn "
+        "that ends without that call has produced nothing."
+    )
+
+
+def _canonical_brief(brief: PlanningBrief) -> str:
+    """Serialize the brief the same way every time.
+
+    The brief *is* the prompt. Two identical turns whose context reorders are
+    two different prompts: a surprising answer stops being reproducible, and no
+    prefix repeats often enough for a provider to cache it. Sorted keys settle
+    the mappings; ``allowed_outputs`` is a set, which is the one part Python
+    will not settle on its own.
+    """
+
+    payload = brief.model_dump(mode="json")
+    payload["allowed_outputs"] = sorted(payload["allowed_outputs"])
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 #: How often the progress file is checked while a turn runs. Half a second is
@@ -379,6 +448,7 @@ def ask(
     proposed_calendar_id: str | None = None,
     proposed_day: str | None = None,
     session_id: str | None = None,
+    planning_brief: PlanningBrief | None = None,
     model: str | None = None,
     profile: str = _PROFILE,
     env: dict[str, str] | None = None,
@@ -392,6 +462,14 @@ def ask(
     profile's ``PostToolUse`` hook appends the tool's name to a per-run file and
     a polling thread forwards it. Without it, nothing is set and the hook is a
     no-op, so a headless run costs nothing for a feature it is not using.
+
+    ``planning_brief`` turns this into an adaptive timeboxing turn. The brief
+    goes into the task, a result file is provisioned for the planning-result
+    server, and the reply carries whatever typed artifact the planner
+    submitted. A brief with no result is a failed turn and raises: prose cannot
+    satisfy the contract, because the kernel has to hand the user something
+    reviewable and prose is not it. Without a brief nothing changes, which is
+    what every non-timeboxing ``/dsh`` call depends on.
 
     ``approval_file`` is where the commit gate looks for a Slack approval
     token. **The caller owns the path, not this module.** A path minted here
@@ -425,6 +503,7 @@ def ask(
     steps = 0
     last_tx_id: str | None = None
     candidate: ValidatedTimeboxCandidate | None = None
+    planning_result: PlanningResult | None = None
 
     with tempfile.TemporaryDirectory(prefix="dsh-progress-") as workspace:
         progress = Path(workspace) / "steps"
@@ -436,6 +515,14 @@ def ask(
         child_env[DRAFT_STATE_FILE_ENV] = str(validated_draft)
         candidate_output = Path(workspace) / "candidate.json"
         child_env[CANDIDATE_OUTPUT_FILE_ENV] = str(candidate_output)
+        planning_result_file: Path | None = None
+        if planning_brief is not None:
+            # Created empty rather than left absent: the server reads the file
+            # to learn whether this turn has already submitted, and "missing"
+            # and "nothing yet" would otherwise be the same thing.
+            planning_result_file = Path(workspace) / "planning-result.json"
+            planning_result_file.touch()
+            child_env[PLANNING_RESULT_FILE_ENV] = str(planning_result_file)
         stop = threading.Event()
         tail: threading.Thread | None = None
         collected: list[int] = []
@@ -468,6 +555,7 @@ def ask(
                     proposed_calendar_id=proposed_calendar_id,
                     proposed_day=proposed_day,
                     session_id=session_id,
+                    planning_brief=planning_brief,
                 ),
                 profile,
             )
@@ -511,6 +599,7 @@ def ask(
                 recorded = []
             last_tx_id = recorded[-1] if recorded else None
             candidate = read_validated_candidate(candidate_output)
+            planning_result = _read_planning_result(planning_result_file)
 
     if done.returncode != 0:
         # Both streams, because a failing turn does not reliably use stderr.
@@ -526,6 +615,12 @@ def ask(
             detail = "no output on either stream"
         raise HarnessError(f"harness exited {done.returncode}: {detail}")
 
+    if planning_brief is not None and planning_result is None:
+        # The regression this seam closes. A planner can exit zero having
+        # described a plan it never submitted, and every earlier version of
+        # this call would have returned that prose as the turn's work.
+        raise HarnessError("planner exited without the required typed planning result")
+
     # A candidate offered for approval is displayed from tmbx's own validated
     # render, never from model prose that could describe a different draft.
     answer = (
@@ -533,7 +628,10 @@ def ask(
         if candidate is not None and candidate.rendered.strip()
         else (done.stdout or "").strip()
     )
-    if not answer:
+    if not answer and planning_result is None:
+        # Silence is only a failure when nothing else stands in for the answer.
+        # A planning turn renders from its typed artifact, so an empty stdout
+        # there is a quiet planner, not an empty turn.
         raise HarnessError("harness produced no output")
     # Emptiness is judged on what the harness said, not on what survives
     # conversion: a reply that renders to nothing is still a reply, and
@@ -553,7 +651,36 @@ def ask(
         # joined nowhere.
         committed_tx_id=last_tx_id,
         validated_candidate=candidate,
+        planning_result=planning_result,
     )
+
+
+def _read_planning_result(source: Path | None) -> PlanningResult | None:
+    """Load the turn's typed result, or nothing at all.
+
+    Only ``planning_result_mcp`` writes this file, and only after validating it
+    and renaming it into place, so anything unreadable here means the
+    submission never happened. There is no partial credit: an unparseable
+    document and an empty one are the same failed turn to the caller, and
+    reporting them differently would suggest a result it could act on.
+    """
+
+    if source is None:
+        return None
+    try:
+        document = source.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not document:
+        return None
+    try:
+        return PlanningResult.model_validate_json(document)
+    except ValidationError as exc:
+        logger.warning(
+            "planning result did not validate error_type=%s",
+            type(exc).__name__,
+        )
+        return None
 
 
 def _run_cancellable(

@@ -162,6 +162,16 @@
 #    detail it would otherwise have to restate (argument shapes, day_type
 #    vocabulary) arrives on its own: tool *descriptions* are bridged even
 #    though resources are not.
+#
+#    Both halves load from FF_FATEFORGER_ROOT. memory-policy.md used to be read
+#    from ~/.dsh/profiles/tmbx/ while deployment.md was read from the repo, so
+#    half the persona was versioned and half was a deployed copy. "There is
+#    nothing for it to drift from" was true of the file's contents and false of
+#    its deployment: #206 rewrote the stage section, the repo copy changed, the
+#    deployed copy did not, and the model would have been handed a new
+#    deployment.md against an old memory-policy.md that still told it to derive
+#    the day type itself. The contract test reads the repo copies, so it was
+#    green in exactly that state. One root, and the drift has nowhere to live.
 - id: system-prompt
   config:
     persona: !!js >-
@@ -175,7 +185,9 @@
       (process.env.FF_FATEFORGER_ROOT ||
       '/Users/hugoevers/VScode-projects/admonish-1') + '/src' }) })
       + process.getBuiltinModule('node:fs').readFileSync(
-      '/Users/hugoevers/.dsh/profiles/tmbx/memory-policy.md', 'utf8')
+      (process.env.FF_FATEFORGER_ROOT ||
+      '/Users/hugoevers/VScode-projects/admonish-1') +
+      '/infra/dsh/profile/memory-policy.md', 'utf8')
       + process.getBuiltinModule('node:fs').readFileSync(
       (process.env.FF_FATEFORGER_ROOT ||
       '/Users/hugoevers/VScode-projects/admonish-1') +
@@ -263,6 +275,44 @@
           PYTHONPATH: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/src'
           FF_DSH_PROGRESS_FILE: !!js process.env.FF_DSH_PROGRESS_FILE
           FF_DSH_SESSION_KEY: !!js process.env.FF_DSH_SESSION_KEY
+        toolCallTimeoutMs: 5000
+        failOnStartupError: true
+
+    # 3c. The typed planning result — the one thing a timeboxing turn owes.
+    #
+    #     Its own server and not a second tool on the progress one, because the
+    #     two have opposite failure rules and a shared mount would settle that
+    #     argument by accident. A dropped progress line costs a status update,
+    #     so that server swallows its failures. A dropped planning result costs
+    #     the turn: the host reads this file after the child exits, and a
+    #     planner that described a plan in prose and submitted nothing has
+    #     produced nothing reviewable. `harness_bridge` raises rather than
+    #     returning the prose.
+    #
+    #     Two variables and no more. PYTHONPATH because this repo is not
+    #     installed as a package, and FF_DSH_PLANNING_RESULT_FILE because it is
+    #     the whole interface: the bridge mints one empty file per turn, and
+    #     the server treats it as that turn's memory of whether it has already
+    #     submitted. Nothing else about the session belongs in this child.
+    #
+    #     5s, matching the progress mount: one validation and one rename to a
+    #     local file. A slower answer than that is a stuck child, not a busy
+    #     one. failOnStartupError, because a turn that cannot record its result
+    #     should fail at boot rather than at the end, when the work is done and
+    #     there is nowhere to put it.
+    - id: mcp-planning-result
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: planning_result
+        transport: stdio
+        command: /Users/hugoevers/VScode-projects/admonish-1/.venv/bin/python
+        args:
+          - -m
+          - fateforger.slack_bot.planning_result_mcp
+        cwd: !!js process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1'
+        env:
+          PYTHONPATH: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/src'
+          FF_DSH_PLANNING_RESULT_FILE: !!js process.env.FF_DSH_PLANNING_RESULT_FILE
         toolCallTimeoutMs: 5000
         failOnStartupError: true
 

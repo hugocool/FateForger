@@ -8,6 +8,7 @@ parameter and therefore cannot become planner state through this seam.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from datetime import datetime
@@ -15,6 +16,7 @@ from typing import Any, Protocol
 
 from fateforger.agents.timeboxing.adaptive_timeboxing import ProgressSink
 from fateforger.agents.timeboxing.session_contracts import PlanningBrief, PlanningResult
+from fateforger.slack_bot import harness_bridge
 from fateforger.slack_bot.tmbx_client import TmbxClient
 
 logger = logging.getLogger(__name__)
@@ -134,10 +136,60 @@ class DeepSeekTimeboxPlanner:
             raise DependencyUnavailable("planner dependency unavailable") from exc
 
 
+class HarnessBridgeRunner:
+    """Run one planning turn as a fresh harness process behind the result file.
+
+    The brief is the whole context. This class deliberately has no parameter
+    for a Slack transcript, an assistant message, or an utterance, so none of
+    those can reach the model through this seam -- and none is needed, because
+    what Hugo said already reached the kernel as typed facts.
+
+    ``harness_bridge.ask`` is synchronous and owns a child process, so it runs
+    on a worker thread; progress arrives on that thread and is handed back to
+    the loop the turn is running on.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str = harness_bridge.PLANNING_MODEL,
+        ask: Callable[..., harness_bridge.HarnessReply] = harness_bridge.ask,
+    ) -> None:
+        self._model = model
+        self._ask = ask
+
+    async def run(self, brief: PlanningBrief, progress: ProgressSink) -> PlanningResult:
+        loop = asyncio.get_running_loop()
+
+        def forward(event: object) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(progress.emit(event), loop)
+            except RuntimeError:
+                # The turn has already finished with this run's outcome.
+                # Progress observes it and must never decide it.
+                logger.warning("planner progress arrived after its turn closed")
+
+        reply = await asyncio.to_thread(
+            self._ask,
+            "",
+            session_id=brief.session_key,
+            planning_brief=brief,
+            model=self._model,
+            on_event=forward,
+        )
+        if reply.planning_result is None:
+            # ``ask`` raises before this on a brief with no result. Kept so a
+            # substituted ``ask`` cannot return an empty turn as a successful
+            # one, which is the failure the whole seam exists to make loud.
+            raise DependencyUnavailable("planner produced no typed result")
+        return reply.planning_result
+
+
 __all__ = [
     "ConstraintReader",
     "DeepSeekTimeboxPlanner",
     "DependencyUnavailable",
+    "HarnessBridgeRunner",
     "HarnessRunner",
     "UnavailableConstraintReader",
 ]
