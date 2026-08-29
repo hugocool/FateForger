@@ -10,9 +10,11 @@ double, and one of them refuses the transcript API outright.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -29,18 +31,23 @@ from fateforger.agents.timeboxing.session_contracts import (
     Advance,
     ArtifactDraft,
     ArtifactKind,
+    BlockerOption,
     DayType,
     FactKind,
     PlanningBrief,
     PlanningFact,
     PlanningResult,
     ProvidePlanningFacts,
+    UserBlockerDraft,
 )
 from fateforger.slack_bot import handlers
 from fateforger.slack_bot.handlers import HarnessApproveActionPayload
 from fateforger.slack_bot.timebox_candidate import PendingTimeboxCandidates
 from fateforger.slack_bot.focus import FocusManager
-from fateforger.slack_bot.timeboxing_intents import ArtifactActionMeta
+from fateforger.slack_bot.timeboxing_intents import (
+    ArtifactActionMeta,
+    TimeboxingIntentInterpreter,
+)
 from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID,
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
@@ -271,6 +278,29 @@ class ScriptedInterpreter:
         if not self._intents:
             raise AssertionError("the route asked for one interpretation too many")
         return self._intents.pop(0)
+
+
+class ScriptedModel:
+    """Stand in for the model the real interpreter asks, and keep its prompts.
+
+    The interpreter itself is under test here -- stubbing it out would leave the
+    chat surface asserted only where a fake already agreed with it -- so what is
+    faked is the one thing that cannot be: the judgement.
+    """
+
+    def __init__(self, *responses: dict[str, Any]) -> None:
+        self._responses = list(responses)
+        self.prompts: list[str] = []
+        self.schemas: list[Any] = []
+
+    async def create(self, messages: Any, *, json_output: Any) -> Any:
+        self.prompts.append(
+            "\n".join(str(message.content) for message in messages)
+        )
+        self.schemas.append(json_output)
+        if not self._responses:
+            raise AssertionError("the route asked for one interpretation too many")
+        return SimpleNamespace(content=json.dumps(self._responses.pop(0)))
 
 
 def _fact(fact_id: str, kind: FactKind, value: Any) -> PlanningFact:
@@ -1325,6 +1355,7 @@ def _stamped_identity(action_id: str, value: str) -> tuple[str, int]:
         handlers.FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
         handlers.FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
         handlers.FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
+        handlers.FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID,
     ):
         artifact_meta = ArtifactActionMeta.model_validate_json(value)
         return artifact_meta.session_key, artifact_meta.expected_revision
@@ -1451,3 +1482,539 @@ async def test_every_rendered_control_names_its_session_and_revision(
     for surface, revision in zip(surfaces, revisions, strict=True):
         assert surface, "a reviewable surface rendered no control at all"
         assert surface == {(session_key, revision)}
+
+
+async def test_a_typed_vacation_gets_past_the_date_card_without_a_press(
+    repository: SqlAlchemyTimeboxingSessionRepository,
+) -> None:
+    """The date card was the one stage chat could not answer at all.
+
+    `_display_context` allowed exactly one decision before the day was locked --
+    cancel -- so a session driven by typing stopped at stage 0 and every day
+    type that a calendar cannot see was reachable only by pressing a button. An
+    agent driving this session has no hands.
+    """
+
+    planner = RecordedPlanner()
+    runtime = Runtime(repository=repository, planner=planner)
+    model = ScriptedModel(
+        {"decision": "confirm_planning_day", "day_type": "vacation", "facts": []}
+    )
+    runtime.timeboxing_intent_interpreter = TimeboxingIntentInterpreter(model)
+    client = Client()
+
+    await handlers.route_slack_event(
+        runtime=runtime,
+        focus=_focus(),
+        default_agent="timeboxing_agent",
+        event={"channel": "C1", "user": "U1", "text": "plan my day", "ts": "111"},
+        bot_user_id=None,
+        say=None,
+        client=client,
+    )
+    # The card is on screen and nobody pressed it.
+    assert not model.prompts
+
+    await handlers.route_slack_event(
+        runtime=runtime,
+        focus=_focus(),
+        default_agent="timeboxing_agent",
+        event={
+            "channel": "C1",
+            "user": "U1",
+            "text": "go ahead, I'm on vacation this week",
+            "ts": "222",
+            "thread_ts": "p1",
+        },
+        bot_user_id=None,
+        say=None,
+        client=client,
+    )
+
+    snapshot = await repository.load_or_create("C1:p1", owner_user_id="U1")
+    assert snapshot.planning_day is not None
+    assert snapshot.planning_day.date == SATURDAY
+    assert snapshot.planning_day.iso_weekday == 6
+    assert snapshot.planning_day.day_type is DayType.VACATION
+    # The same basis the button records. `PlanningDay` refuses a `calendar`
+    # basis that disagrees with the weekday, so a chat override that skipped it
+    # would raise rather than quietly claim the calendar said so.
+    assert snapshot.planning_day.classification_basis == "user_override"
+    assert len(model.prompts) == 1
+
+
+def _closed_choice_requirements() -> type:
+    """Borrow the kernel tests' fake catalog rather than grow a second one.
+
+    Nothing in the shipped catalog is a soft, user-owned gap yet (Task 15), so
+    the option path has no live requirement to render and one has to be stood
+    in. Defining a second fake here would be a second definition of the same
+    intended requirement, and the two would drift the moment either moved.
+    """
+
+    module_path = Path(__file__).parents[1] / "unit" / "test_adaptive_timeboxing.py"
+    spec = importlib.util.spec_from_file_location("_kernel_catalog", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._ClosedChoiceRequirements
+
+
+def _shape_options() -> list[BlockerOption]:
+    return [
+        BlockerOption(
+            option_id="option-1",
+            label="Deep work first",
+            effect="puts the gym after dinner, and the afternoon stays quiet",
+        ),
+        BlockerOption(
+            option_id="option-2",
+            label="Gym first",
+            effect="puts deep work in the evening, after you have moved",
+        ),
+    ]
+
+
+class ShapePlanner(PlannerPort):
+    """Ask which shape the afternoon takes until told, then plan around it."""
+
+    def __init__(self) -> None:
+        self.briefs: list[PlanningBrief] = []
+
+    async def produce(
+        self, brief: PlanningBrief, progress: ProgressSink
+    ) -> PlanningResult:
+        self.briefs.append(brief)
+        if brief.target_artifact is ArtifactKind.VALIDATED_CANDIDATE:
+            return _candidate_result()
+        if any(fact.kind is FactKind.ORDINARY_PLACEMENT for fact in brief.facts):
+            return _skeleton_result()
+        return PlanningResult(
+            blockers=[
+                UserBlockerDraft(
+                    requirement_id="skeleton.day_shape",
+                    why_needed="three unallocated hours have two workable shapes",
+                    options=_shape_options(),
+                )
+            ]
+        )
+
+
+def _option_presses(blocks: list[dict]) -> list[tuple[str, ArtifactActionMeta]]:
+    """Every option control on a card, as (button text, decoded press)."""
+
+    return [
+        (
+            str((element.get("text") or {}).get("text") or ""),
+            ArtifactActionMeta.model_validate_json(str(element.get("value") or "")),
+        )
+        for block in blocks
+        for element in block.get("elements") or ()
+        if isinstance(element, dict)
+        and element.get("action_id") == handlers.FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID
+    ]
+
+
+async def _ask_the_shape_question(
+    *,
+    runtime: Runtime,
+    client: Client,
+    repository: SqlAlchemyTimeboxingSessionRepository,
+) -> str:
+    """Lock the day by chat and let the planner put its closed question."""
+
+    await handlers.route_slack_event(
+        runtime=runtime,
+        focus=_focus(),
+        default_agent="timeboxing_agent",
+        event={"channel": "C1", "user": "U1", "text": "plan my day", "ts": "111"},
+        bot_user_id=None,
+        say=None,
+        client=client,
+    )
+    await handlers.route_slack_event(
+        runtime=runtime,
+        focus=_focus(),
+        default_agent="timeboxing_agent",
+        event={
+            "channel": "C1",
+            "user": "U1",
+            "text": "go ahead",
+            "ts": "222",
+            "thread_ts": "p1",
+        },
+        bot_user_id=None,
+        say=None,
+        client=client,
+    )
+    return "C1:p1"
+
+
+async def test_a_closed_question_arrives_as_buttons_carrying_what_they_answer(
+    repository: SqlAlchemyTimeboxingSessionRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A closed answer set rendered as a blank box is the worse question.
+
+    The press arrives already typed and needs no interpretation at all, which is
+    the whole reason Task 15 put options on the contract. Each button carries
+    which question it answers and which answer it is, because the kernel checks
+    both against the record it wrote when it asked.
+    """
+
+    monkeypatch.setattr(handlers, "TimeboxRequirements", _closed_choice_requirements())
+    planner = ShapePlanner()
+    runtime = Runtime(repository=repository, planner=planner)
+    runtime.timeboxing_intent_interpreter = TimeboxingIntentInterpreter(
+        ScriptedModel({"decision": "confirm_planning_day", "facts": []})
+    )
+    client = Client()
+
+    session_key = await _ask_the_shape_question(
+        runtime=runtime, client=client, repository=repository
+    )
+
+    asked = _blocks_with_actions(client.updates)[-1]
+    presses = _option_presses(asked["blocks"])
+    snapshot = await repository.load_or_create(session_key, owner_user_id="U1")
+
+    assert [label for label, _ in presses] == ["Deep work first", "Gym first"]
+    assert [meta.option_id for _, meta in presses] == ["option-1", "option-2"]
+    for _, meta in presses:
+        assert meta.decision == "choose_option"
+        assert meta.requirement_id == "skeleton.day_shape"
+        assert meta.session_key == session_key
+        assert meta.expected_revision == snapshot.revision
+
+    rendered = json.dumps(asked["blocks"])
+    # The effect is a sentence and the button is a word or two. Truncating one
+    # onto the other loses the half that says what the choice costs.
+    for option in _shape_options():
+        assert option.effect in rendered
+        assert not any(option.effect in label for label, _ in presses)
+    assert "Which shape should the afternoon take?" in str(asked.get("text") or "")
+
+
+async def test_an_option_question_keeps_its_buttons_when_a_press_is_refused(
+    repository: SqlAlchemyTimeboxingSessionRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused press says so in a sentence, and leaves the question askable.
+
+    `stale_blocker_choice` covers three causes on purpose -- no question open,
+    the wrong question, an option nobody offered -- so that a crafted value
+    learns nothing from which one it hit. That means one sentence has to be true
+    of all three, and "that question has already been answered" is it.
+    """
+
+    monkeypatch.setattr(handlers, "TimeboxRequirements", _closed_choice_requirements())
+    planner = ShapePlanner()
+    runtime = Runtime(repository=repository, planner=planner)
+    runtime.timeboxing_intent_interpreter = TimeboxingIntentInterpreter(
+        ScriptedModel({"decision": "confirm_planning_day", "facts": []})
+    )
+    client = Client()
+
+    await _ask_the_shape_question(
+        runtime=runtime, client=client, repository=repository
+    )
+    _, offered = _option_presses(
+        _blocks_with_actions(client.updates)[-1]["blocks"]
+    )[0]
+    forged = offered.model_copy(update={"option_id": "option-9"})
+
+    await handlers._handle_timebox_artifact_action(
+        runtime=runtime,
+        client=client,
+        logger=handlers.logger,
+        value=forged.model_dump_json(),
+        channel_id="C1",
+        thread_ts="p1",
+        actor_user_id="U1",
+        interaction_id="forged-press",
+    )
+
+    refused = _blocks_with_actions(client.updates)[-1]
+    assert handlers._TIMEBOX_STALE_CHOICE_TEXT in str(refused.get("text") or "")
+    assert handlers._TIMEBOX_TURN_FAILED_TEXT not in str(refused.get("text") or "")
+    snapshot = await repository.load_or_create("C1:p1", owner_user_id="U1")
+    # Nothing happened, so the question the user is looking at is still open.
+    assert snapshot.pending_blocker is not None
+    assert snapshot.pending_blocker.requirement_id == "skeleton.day_shape"
+
+
+def _comparable(intent: Any) -> dict:
+    """One typed intent, stripped of the identifiers a fresh session mints.
+
+    `fact_id` and `artifact_id` are uuid4s drawn per session, so two runs of the
+    same flow can never agree on them and comparing them would measure only
+    that. Everything that decides anything -- the day and its basis, the
+    question and the option, the revision and digest an approval is bound to --
+    is kept.
+    """
+
+    dumped = intent.model_dump(mode="json")
+    dumped.pop("artifact_id", None)
+    for fact in dumped.get("facts") or ():
+        fact.pop("fact_id", None)
+    return dumped
+
+
+class _RecordingTmbxRead:
+    """Read the baseline the candidate stage needs; commit nothing."""
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    async def read(self, calendar_id: str, day: str) -> dict:
+        return {"ok": True, "snapshot": {"calendar_id": calendar_id, "day": day}}
+
+
+class _EmptyConstraintStore:
+    async def query_constraints(self, *, filters: dict, limit: int) -> list[dict]:
+        return []
+
+
+def _shape_runtime(
+    repository: SqlAlchemyTimeboxingSessionRepository,
+    *,
+    responses: list[dict[str, Any]],
+) -> tuple[Runtime, ShapePlanner, ScriptedModel]:
+    planner = ShapePlanner()
+    runtime = Runtime(repository=repository, planner=planner)
+    model = ScriptedModel(*responses)
+    runtime.timeboxing_intent_interpreter = TimeboxingIntentInterpreter(model)
+    runtime.timeboxing_calendar_id = "cal"
+    runtime.timeboxing_constraint_store = _EmptyConstraintStore()
+    return runtime, planner, model
+
+
+async def _say(
+    *, runtime: Runtime, client: Client, channel: str, text: str, ts: str
+) -> None:
+    """One typed reply in the session thread."""
+
+    await handlers.route_slack_event(
+        runtime=runtime,
+        focus=_focus(),
+        default_agent="timeboxing_agent",
+        event={
+            "channel": channel,
+            "user": "U1",
+            "text": text,
+            "ts": ts,
+            **({"thread_ts": "p1"} if ts != "111" else {}),
+        },
+        bot_user_id=None,
+        say=None,
+        client=client,
+    )
+
+
+async def test_a_whole_session_can_be_driven_by_chat_and_by_button_alike(
+    repository: SqlAlchemyTimeboxingSessionRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every transition a button takes must also be reachable by typing.
+
+    This is the requirement, not a convenience: an automated agent drives this
+    session by text and has no hands. So the first half plays a complete
+    session -- day confirmed as a vacation, facts, advance, the closed question
+    answered, the skeleton approved, through to a validated candidate -- with
+    nothing but interpreted replies. The second half plays the same session and
+    presses every control that exists, and the two are compared as typed
+    intents rather than as messages, because a second surface that produced a
+    different intent would be a second feature wearing one name.
+
+    `advance` is typed in both runs on purpose: the capture stage has no
+    Proceed control yet, and pretending otherwise would hide that rather than
+    record it.
+    """
+
+    monkeypatch.setattr(handlers, "TimeboxRequirements", _closed_choice_requirements())
+    from fateforger.slack_bot import tmbx_client
+
+    monkeypatch.setattr(tmbx_client, "TmbxClient", _RecordingTmbxRead)
+
+    from fateforger.agents.timeboxing.adaptive_timeboxing import AdaptiveTimeboxing
+
+    intents: list[tuple[str, Any]] = []
+    original_turn = AdaptiveTimeboxing.turn
+
+    async def spy_turn(self: Any, request: Any, *, progress: Any) -> Any:
+        intents.append((request.session_key, request.intent))
+        return await original_turn(self, request, progress=progress)
+
+    monkeypatch.setattr(AdaptiveTimeboxing, "turn", spy_turn)
+
+    executor_sessions: list[str] = []
+    original_run = handlers._run_adaptive_timebox_turn
+
+    async def spy_run(**kwargs: Any) -> Any:
+        executor_sessions.append(kwargs["session_key"])
+        return await original_run(**kwargs)
+
+    monkeypatch.setattr(handlers, "_run_adaptive_timebox_turn", spy_run)
+
+    facts_reply = {
+        "decision": "provide_facts",
+        "facts": [{"kind": "requested_activity", "value": "gym"}],
+    }
+
+    # -- typed, end to end ------------------------------------------------
+    typed_runtime, typed_planner, typed_model = _shape_runtime(
+        repository,
+        responses=[
+            {"decision": "confirm_planning_day", "day_type": "vacation", "facts": []},
+            facts_reply,
+            {"decision": "advance", "facts": []},
+            {"decision": "choose_option", "option_id": "option-2"},
+            {"decision": "approve", "facts": []},
+        ],
+    )
+    typed_client = Client()
+
+    await _say(
+        runtime=typed_runtime,
+        client=typed_client,
+        channel="C1",
+        text="plan my day",
+        ts="111",
+    )
+    for step, (text, ts) in enumerate(
+        [
+            ("go ahead — I'm on vacation this week", "222"),
+            ("gym at some point", "333"),
+            ("you plan those things", "444"),
+            ("gym first, I'll think in the evening", "555"),
+            ("yes, that shape works", "666"),
+        ]
+    ):
+        await _say(
+            runtime=typed_runtime,
+            client=typed_client,
+            channel="C1",
+            text=text,
+            ts=ts,
+        )
+        assert len(typed_model.prompts) == step + 1
+
+    typed_snapshot = await repository.load_or_create("C1:p1", owner_user_id="U1")
+    assert typed_snapshot.planning_day is not None
+    assert typed_snapshot.planning_day.day_type is DayType.VACATION
+    assert typed_snapshot.planning_day.classification_basis == "user_override"
+    assert [
+        artifact.kind for artifact in typed_snapshot.artifacts
+    ].count(ArtifactKind.VALIDATED_CANDIDATE) == 1
+    assert handlers.take_pending_approval("C1:p1")
+
+    # -- pressed, wherever a control exists -------------------------------
+    pressed_runtime, pressed_planner, pressed_model = _shape_runtime(
+        repository,
+        responses=[facts_reply, {"decision": "advance", "facts": []}],
+    )
+    pressed_client = Client()
+
+    await _say(
+        runtime=pressed_runtime,
+        client=pressed_client,
+        channel="C2",
+        text="plan my day",
+        ts="111",
+    )
+    overrides = _day_type_overrides(
+        _blocks_with_actions(pressed_client.updates)[-1]["blocks"]
+    )
+    await handlers._handle_timebox_date_confirmation(
+        runtime=pressed_runtime,
+        client=pressed_client,
+        logger=handlers.logger,
+        value=overrides[DayType.VACATION],
+        prompt_channel_id="C2",
+        prompt_ts="p1",
+        actor_user_id="U1",
+        interaction_id="press-vacation",
+    )
+    await _say(
+        runtime=pressed_runtime,
+        client=pressed_client,
+        channel="C2",
+        text="gym at some point",
+        ts="333",
+    )
+    await _say(
+        runtime=pressed_runtime,
+        client=pressed_client,
+        channel="C2",
+        text="you plan those things",
+        ts="444",
+    )
+    chosen = next(
+        value
+        for label, value in [
+            (label, meta.model_dump_json())
+            for label, meta in _option_presses(
+                _blocks_with_actions(pressed_client.updates)[-1]["blocks"]
+            )
+        ]
+        if label == "Gym first"
+    )
+    await handlers._handle_timebox_artifact_action(
+        runtime=pressed_runtime,
+        client=pressed_client,
+        logger=handlers.logger,
+        value=chosen,
+        channel_id="C2",
+        thread_ts="p1",
+        actor_user_id="U1",
+        interaction_id="press-option",
+    )
+    await handlers._handle_timebox_artifact_action(
+        runtime=pressed_runtime,
+        client=pressed_client,
+        logger=handlers.logger,
+        value=_artifact_action_value(
+            _blocks_with_actions(pressed_client.updates)[-1]["blocks"],
+            handlers.FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
+        ),
+        channel_id="C2",
+        thread_ts="p1",
+        actor_user_id="U1",
+        interaction_id="press-approve",
+    )
+
+    pressed_snapshot = await repository.load_or_create("C2:p1", owner_user_id="U1")
+    assert pressed_snapshot.planning_day == typed_snapshot.planning_day
+    assert handlers.take_pending_approval("C2:p1")
+
+    # -- one executor, one sequence of typed intents ----------------------
+    typed_intents = [intent for key, intent in intents if key == "C1:p1"]
+    pressed_intents = [intent for key, intent in intents if key == "C2:p1"]
+
+    assert [intent.kind for intent in typed_intents] == [
+        "start_session",
+        "confirm_planning_day",
+        "provide_planning_facts",
+        "advance",
+        "choose_blocker_option",
+        "approve_artifact",
+    ]
+    assert [_comparable(intent) for intent in typed_intents] == [
+        _comparable(intent) for intent in pressed_intents
+    ]
+    assert {"C1:p1", "C2:p1"} <= set(executor_sessions)
+    # The typed choice was made from the offer rather than from a memory of it:
+    # the turn that answered had the ids, the labels and the effects in front of
+    # it, which is the whole difference between choosing and guessing.
+    choice_prompt = typed_model.prompts[3]
+    for option in _shape_options():
+        assert option.option_id in choice_prompt
+        assert option.label in choice_prompt
+        assert option.effect in choice_prompt
+    # Three of the pressed run's five transitions needed no model at all. That
+    # is the case for buttons where the answer set is closed, and the case for
+    # keeping both doors: the typed run needed five.
+    assert len(pressed_model.prompts) == 2
+    assert len(typed_model.prompts) == 5
+    for planner in (typed_planner, pressed_planner):
+        assert planner.briefs[-1].target_artifact is ArtifactKind.VALIDATED_CANDIDATE

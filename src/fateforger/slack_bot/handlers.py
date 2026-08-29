@@ -1493,6 +1493,15 @@ def _timebox_body_for_harness(body: dict) -> dict:
 FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID = "ff_timebox_artifact_approve"
 FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID = "ff_timebox_artifact_cancel"
 FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID = "ff_timebox_artifact_retry"
+#: One id for every offered option, the same way the day-type row uses one for
+#: all five: which option was pressed belongs in the encoded metadata, and an
+#: id that spelled out its own answer would be a second place the offer could
+#: drift from the record the kernel checks it against.
+FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID = "ff_timebox_blocker_option"
+
+#: Slack refuses a button label longer than this, and the label is written by a
+#: model rather than by this host, so it is capped where it is drawn.
+_SLACK_MAX_BUTTON_TEXT_CHARS = 75
 
 #: Kernel lifecycle phases worth showing. The kernel names its own phases, so
 #: this maps identifiers this system minted -- anything outside the map is
@@ -1513,6 +1522,22 @@ _TIMEBOX_TURN_FAILED_TEXT = (
     "reached your calendar. Ask me where the session stands and we can pick "
     "it up from there."
 )
+
+#: A press the kernel would not honour. `stale_blocker_choice` covers three
+#: causes on purpose -- no question is open, that is not the open question, that
+#: was not one of its options -- so a crafted value learns nothing from which
+#: one it hit. One sentence therefore has to be true of all three, and this is
+#: it: whatever the press was aimed at, the session is no longer asking it.
+_TIMEBOX_STALE_CHOICE_TEXT = (
+    "That question has already been answered, so I left everything as it is. "
+    "Tell me what you want changed and I will ask again."
+)
+
+#: Failure codes worth their own sentence. The code is minted by this system,
+#: so choosing between them reads nothing anybody wrote. Anything absent gets
+#: the one stable sentence above, which is the right default: a message that
+#: guessed at a code it did not recognise would be confidently wrong.
+_TIMEBOX_FAILURE_TEXTS = {"stale_blocker_choice": _TIMEBOX_STALE_CHOICE_TEXT}
 
 
 class _AdaptiveDependencyUnavailable(RuntimeError):
@@ -1737,11 +1762,20 @@ async def _derive_timebox_intent(
 ) -> TimeboxIntent:
     """Turn one Slack reply into a typed intent, never by reading the words.
 
-    Before the day is locked the session can do exactly one thing, so no model
-    is asked. After it, the schema-bound interpreter names the decision and the
-    host binds the artifact identity from state it already trusts.
+    Until a day has even been proposed there is nothing to decide about, so no
+    model is asked: the session starts and the host puts its own date on screen.
+    From the moment that card exists the reply is interpreted -- including the
+    reply that confirms it. Skipping the interpreter there was what left the
+    date card answerable only by a press, and a session an agent drives by
+    typing could not get past it.
+
+    The schema-bound interpreter names the decision; the host binds the date,
+    the artifact identity and the question being answered from state it already
+    trusts.
     """
-    if snapshot.planning_day is None:
+    if snapshot.planning_day is None and not any(
+        artifact.kind is ArtifactKind.PLANNING_DAY for artifact in snapshot.artifacts
+    ):
         return StartSession()
     if not user_text.strip():
         return Advance()
@@ -1753,20 +1787,18 @@ async def _derive_timebox_intent(
     return await interpreter.interpret(user_text, snapshot)
 
 
-def _timebox_failure_message() -> SlackBlockMessage:
+def _timebox_failure_message(code: str | None = None) -> SlackBlockMessage:
     """One stable sentence, with the detail left where it belongs: the log.
 
     A provider payload pasted into a thread is unreadable and a leak at once,
     and the correlation fields are already on the log line beside this call.
+    A refusal the user can act on gets its own sentence, chosen by the code the
+    kernel minted rather than by anything they wrote.
     """
+    text = _TIMEBOX_FAILURE_TEXTS.get(code or "", _TIMEBOX_TURN_FAILED_TEXT)
     return SlackBlockMessage(
-        text=_TIMEBOX_TURN_FAILED_TEXT,
-        blocks=[
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": _TIMEBOX_TURN_FAILED_TEXT},
-            }
-        ],
+        text=text,
+        blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
     )
 
 
@@ -1776,14 +1808,25 @@ def _artifact_action_value(
     expected_revision: int,
     decision: str,
     artifact: PlanningArtifact | None,
+    requirement_id: str | None = None,
+    option_id: str | None = None,
 ) -> str:
-    """Encode one typed review decision bound to an exact artifact."""
+    """Encode one typed review decision bound to an exact artifact or question.
+
+    One encoder for every control this route draws. A second one shaped like it
+    would be a second place the session key and the revision could go missing,
+    and those two are the whole reason a press arriving late is decidable.
+    """
 
     fields: dict[str, object] = {
         "session_key": session_key,
         "expected_revision": expected_revision,
         "decision": decision,
     }
+    if requirement_id is not None:
+        fields["requirement_id"] = requirement_id
+    if option_id is not None:
+        fields["option_id"] = option_id
     if artifact is not None:
         fields.update(
             {
@@ -1906,6 +1949,83 @@ def _render_timebox_skeleton(
     )
 
 
+def _render_timebox_question(
+    outcome: AwaitingUser,
+    *,
+    session_key: str,
+    expected_revision: int,
+) -> SlackBlockMessage:
+    """Put one open question, with its answers as buttons where it has any.
+
+    An empty option list is the ordinary case and renders as a text box, not as
+    a row of nothing: the catalog's one user-owned ask is what somebody wants
+    out of their day, and that has no closed answer set to draw.
+
+    Where the answers are known, the label is the button and the effect is the
+    line beside it. They are different lengths and they answer different
+    questions -- one names the choice, the other says what it costs -- so
+    truncating the second onto the first loses the half that decides it.
+    """
+
+    text = f"{outcome.question}\n_{outcome.why_needed}_"
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": text[:_SLACK_MAX_BLOCK_TEXT_CHARS],
+            },
+        }
+    ]
+    if not outcome.options:
+        return SlackBlockMessage(text=text[:_SLACK_MAX_TEXT_CHARS], blocks=blocks)
+    effects = "\n".join(
+        f"*{option.label}* — {option.effect}" for option in outcome.options
+    )
+    blocks.append(
+        {
+            "type": "context",
+            "block_id": "ff_timebox_blocker_effects",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": effects[:_SLACK_MAX_BLOCK_TEXT_CHARS],
+                }
+            ],
+        }
+    )
+    blocks.append(
+        {
+            "type": "actions",
+            "block_id": "ff_timebox_blocker_options",
+            "elements": [
+                {
+                    "type": "button",
+                    "action_id": FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID,
+                    "text": {
+                        "type": "plain_text",
+                        "text": option.label[:_SLACK_MAX_BUTTON_TEXT_CHARS],
+                    },
+                    # The pair the kernel checks against the question it is
+                    # holding. Neither is trusted for having been in a button.
+                    "value": _artifact_action_value(
+                        session_key=session_key,
+                        expected_revision=expected_revision,
+                        decision="choose_option",
+                        artifact=None,
+                        requirement_id=outcome.requirement_id,
+                        option_id=option.option_id,
+                    ),
+                }
+                for option in outcome.options
+            ],
+        }
+    )
+    return SlackBlockMessage(
+        text=f"{text}\n{effects}"[:_SLACK_MAX_TEXT_CHARS], blocks=blocks
+    )
+
+
 def _render_timebox_candidate(
     artifact: PlanningArtifact,
     *,
@@ -1960,6 +2080,7 @@ def _render_timebox_failure(
     snapshot: PlanningSessionSnapshot,
     session_key: str,
     actor_user_id: str,
+    code: str | None = None,
 ) -> SlackBlockMessage:
     """Say the one stable sentence, and offer the two moves that still exist.
 
@@ -1972,7 +2093,7 @@ def _render_timebox_failure(
     already cancelled or committed has nothing to advance, and a session owned
     by somebody else will refuse this actor for the same reason it just did.
     """
-    message = _timebox_failure_message()
+    message = _timebox_failure_message(code)
     if snapshot.status != "open" or snapshot.owner_user_id != actor_user_id:
         return message
     return SlackBlockMessage(
@@ -2035,6 +2156,7 @@ def _render_timebox_outcome(
             snapshot=snapshot,
             session_key=session_key,
             actor_user_id=actor_user_id,
+            code=outcome.code,
         )
 
     if isinstance(outcome, Cancelled):
@@ -2045,10 +2167,10 @@ def _render_timebox_outcome(
         )
 
     if isinstance(outcome, AwaitingUser):
-        text = f"{outcome.question}\n_{outcome.why_needed}_"
-        return SlackBlockMessage(
-            text=text,
-            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+        return _render_timebox_question(
+            outcome,
+            session_key=session_key,
+            expected_revision=snapshot.revision,
         )
 
     if isinstance(outcome, AwaitingApproval):
@@ -4640,6 +4762,11 @@ def register_handlers(
     app.action(FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID)(_on_timebox_artifact_action)
     app.action(FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID)(_on_timebox_artifact_action)
     app.action(FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID)(_on_timebox_artifact_action)
+    # An option press is the same envelope with a different decision in it, so
+    # it takes the same handler. A renderer that parsed it itself would be a
+    # second place a stale press could be judged, and the kernel is the only
+    # one that knows what question is open.
+    app.action(FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID)(_on_timebox_artifact_action)
 
     @app.action(FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID)
     async def on_timebox_commit_day_select_action(ack, body, client, logger):

@@ -1,18 +1,23 @@
 from datetime import date
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactApproval,
     ArtifactKind,
+    BlockerOption,
+    ChooseBlockerOption,
     DayType,
     FactKind,
+    PendingBlocker,
     PlanningArtifact,
     PlanningDay,
     PlanningFact,
     PlanningSessionSnapshot,
     ProvidePlanningFacts,
+    TimeboxIntent,
+    UserBlockerDraft,
 )
 
 
@@ -148,3 +153,112 @@ def test_provide_facts_rejects_duplicate_fact_ids_at_intent_boundary() -> None:
 
     with pytest.raises(ValidationError):
         ProvidePlanningFacts(facts=[activity, activity])
+
+
+def test_blocker_options_stop_at_four() -> None:
+    """A closed answer set the user has to read is not a menu.
+
+    Four is the point past which a button row stops being a shortcut and starts
+    being a form, and a planner that found five materially different answers has
+    found an open question, which is the case buttons must not be forced onto.
+    """
+
+    with pytest.raises(ValidationError):
+        UserBlockerDraft(
+            requirement_id="skeleton.day_shape",
+            why_needed="the afternoon has several equally workable shapes",
+            options=[
+                BlockerOption(
+                    option_id=f"option-{index}",
+                    label=f"Shape {index}",
+                    effect="rearranges the afternoon",
+                )
+                for index in range(1, 6)
+            ],
+        )
+
+
+def test_a_blocker_with_no_options_is_a_complete_blocker() -> None:
+    """Most questions have no closed answer set, and inventing one loses answers.
+
+    "What do you want to get out of the day?" has as many answers as Hugo has
+    days. Requiring options here would push a planner into offering four guesses
+    and hiding the fifth answer, which is the failure buttons exist to avoid.
+    """
+
+    draft = UserBlockerDraft(
+        requirement_id="skeleton.requested_activity",
+        why_needed="a skeleton needs at least one intended activity",
+    )
+
+    assert draft.options == []
+
+
+def test_two_options_cannot_share_one_identifier() -> None:
+    """Catches an ambiguous press: two buttons, one answer, no way to tell which."""
+
+    with pytest.raises(ValidationError):
+        UserBlockerDraft(
+            requirement_id="skeleton.day_shape",
+            why_needed="the afternoon has two equally workable shapes",
+            options=[
+                BlockerOption(
+                    option_id="option-1",
+                    label="Deep work first",
+                    effect="moves the gym after dinner",
+                ),
+                BlockerOption(
+                    option_id="option-1",
+                    label="Gym first",
+                    effect="moves deep work to the evening",
+                ),
+            ],
+        )
+
+
+def test_choosing_an_option_is_a_discriminated_planning_intent() -> None:
+    """A press must survive the same typed transport every other intent uses."""
+
+    adapter = TypeAdapter(TimeboxIntent)
+
+    intent = adapter.validate_python(
+        {
+            "kind": "choose_blocker_option",
+            "requirement_id": "skeleton.day_shape",
+            "option_id": "option-2",
+        }
+    )
+
+    assert isinstance(intent, ChooseBlockerOption)
+    assert intent.option_id == "option-2"
+
+
+def test_snapshot_round_trip_keeps_the_question_it_is_still_holding() -> None:
+    """The press lands a turn later, so what was offered has to be durable.
+
+    Recomputing the option set at press time would let a changed planner offer a
+    different set than the user is looking at, and the press would then answer a
+    question nobody asked.
+    """
+
+    snapshot = PlanningSessionSnapshot.new(
+        session_key="C1:1.0", owner_user_id="U1"
+    ).model_copy(
+        update={
+            "pending_blocker": PendingBlocker(
+                requirement_id="skeleton.day_shape",
+                fact_kind=FactKind.ORDINARY_PLACEMENT,
+                options=[
+                    BlockerOption(
+                        option_id="option-1",
+                        label="Deep work first",
+                        effect="moves the gym after dinner",
+                    )
+                ],
+            )
+        }
+    )
+
+    restored = PlanningSessionSnapshot.model_validate_json(snapshot.model_dump_json())
+
+    assert restored == snapshot

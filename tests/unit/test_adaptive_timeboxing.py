@@ -16,7 +16,13 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import (
     ProgressSink,
     TurnRequest,
 )
-from fateforger.agents.timeboxing.readiness import TimeboxRequirements
+from fateforger.agents.timeboxing.readiness import (
+    ArtifactRequirement,
+    ReadinessGap,
+    ReadinessReport,
+    RequirementOwner,
+    TimeboxRequirements,
+)
 from fateforger.agents.timeboxing.session_contracts import (
     Advance,
     ApproveArtifact,
@@ -24,6 +30,9 @@ from fateforger.agents.timeboxing.session_contracts import (
     ArtifactDraft,
     ArtifactKind,
     AwaitingApproval,
+    AwaitingUser,
+    BlockerOption,
+    ChooseBlockerOption,
     Committed,
     ConfirmPlanningDay,
     FactKind,
@@ -34,6 +43,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningFact,
     PlanningResult,
     PlanningSessionSnapshot,
+    ProvidePlanningFacts,
     TurnFailed,
     UserBlockerDraft,
 )
@@ -788,3 +798,402 @@ async def test_progress_failure_does_not_change_saved_domain_outcome(
         for record in caplog.records
     )
     assert "raw progress payload must stay private" not in caplog.text
+
+
+# -- typed options against an under-determined day -------------------------
+
+_DAY_SHAPE = ArtifactRequirement(
+    requirement_id="skeleton.day_shape",
+    target_artifact=ArtifactKind.SKELETON,
+    satisfied_by=(FactKind.ORDINARY_PLACEMENT,),
+    owner=RequirementOwner.USER,
+    hard=False,
+    why_needed="the free afternoon has several materially different shapes",
+    resolution="ask",
+    question="Which shape should the afternoon take?",
+)
+
+
+class _ClosedChoiceRequirements(TimeboxRequirements):
+    """A catalog holding one soft, user-owned requirement with a closed answer set.
+
+    The shipped catalog has exactly one user-owned ask -- "what do you want to
+    get out of the day" -- and that one must never grow buttons, because its
+    answer set is not closed. So the option machinery needs a requirement the
+    catalog does not have yet; this stands in for the unallocated-time question
+    it is being built for.
+
+    Soft, deliberately. A *hard* user gap short-circuits before the planner
+    runs, and the planner is the only party that can see that three hours have
+    two equally workable shapes. An option set is a judgement about this day, so
+    it can only come from the turn that looked at this day.
+    """
+
+    def evaluate(
+        self,
+        target_artifact: ArtifactKind,
+        snapshot: PlanningSessionSnapshot,
+    ) -> ReadinessReport:
+        if target_artifact is not ArtifactKind.SKELETON:
+            return super().evaluate(target_artifact, snapshot)
+        return ReadinessReport(
+            target_artifact=target_artifact,
+            gaps=(
+                ReadinessGap(
+                    requirement=_DAY_SHAPE,
+                    satisfied=any(
+                        fact.kind is FactKind.ORDINARY_PLACEMENT
+                        for fact in snapshot.facts
+                    ),
+                ),
+            ),
+        )
+
+
+class _ScriptedPlanner(PlannerPort):
+    def __init__(self, *results: PlanningResult) -> None:
+        self._results = list(results)
+        self.calls = 0
+
+    async def produce(
+        self, brief: PlanningBrief, progress: ProgressSink
+    ) -> PlanningResult:
+        self.calls += 1
+        return self._results.pop(0)
+
+
+def _shape_options() -> list[BlockerOption]:
+    return [
+        BlockerOption(
+            option_id="option-1",
+            label="Deep work first",
+            effect="puts the gym after dinner",
+        ),
+        BlockerOption(
+            option_id="option-2",
+            label="Gym first",
+            effect="puts deep work in the evening",
+        ),
+    ]
+
+
+def _shape_blocker_result() -> PlanningResult:
+    return PlanningResult(
+        blockers=[
+            UserBlockerDraft(
+                requirement_id="skeleton.day_shape",
+                why_needed="three unallocated hours have two workable shapes",
+                options=_shape_options(),
+            )
+        ]
+    )
+
+
+def _shape_skeleton_result() -> PlanningResult:
+    """A skeleton with no assumptions: this catalog has nothing to assume about."""
+
+    return PlanningResult(artifact_updates=_skeleton_result().artifact_updates)
+
+
+def _choice_request(
+    *,
+    option_id: str,
+    interaction_id: str,
+    expected_revision: int,
+    requirement_id: str = "skeleton.day_shape",
+) -> TurnRequest:
+    return TurnRequest(
+        session_key="C1:1.0",
+        interaction_id=interaction_id,
+        actor_user_id="U1",
+        expected_revision=expected_revision,
+        intent=ChooseBlockerOption(
+            requirement_id=requirement_id, option_id=option_id
+        ),
+    )
+
+
+def _choice_kernel(
+    repo: InMemoryPlanningSessionRepository, planner: PlannerPort
+) -> AdaptiveTimeboxing:
+    return AdaptiveTimeboxing(
+        repository=repo,
+        requirements=_ClosedChoiceRequirements(),
+        planner=planner,
+        context=RecordedContextPort(),
+        commit=ForbiddenCommitPort(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_offered_options_reach_the_user_with_the_question() -> None:
+    """Catches a closed answer set arriving as a question and a blank box.
+
+    Where the alternatives are known, a text answer has to be read back through
+    a model to be understood; a press does not. Dropping the options here is the
+    difference between those two.
+    """
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+
+    outcome = await _choice_kernel(
+        repo, _ScriptedPlanner(_shape_blocker_result())
+    ).turn(_advance_request(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, AwaitingUser)
+    assert outcome.requirement_id == "skeleton.day_shape"
+    assert [option.option_id for option in outcome.options] == [
+        "option-1",
+        "option-2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_open_question_still_reaches_the_user_and_is_answerable() -> None:
+    """The catalog's one user-owned ask has no closed answer set, and must not grow one.
+
+    "What do you want to get out of the day?" is answered in Hugo's words, so
+    this walks the whole open path: the question goes out with nothing to press,
+    the answer arrives as a typed fact, and the next advance produces the
+    skeleton it was waiting for.
+    """
+
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=3,
+        owner_user_id="U1",
+        planning_day=_locked_day(),
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    # No assumption: with no gym fact the gym placement requirement is already
+    # satisfied, and an assumption settling a settled requirement is its own
+    # refusal.
+    planner = RecordedPlanner(
+        PlanningResult(artifact_updates=_skeleton_result().artifact_updates)
+    )
+    kernel = _kernel(repo, planner)
+
+    asked = await kernel.turn(_advance_request(), progress=RecordingProgressSink())
+
+    assert isinstance(asked, AwaitingUser)
+    assert asked.requirement_id == "skeleton.requested_activity"
+    assert asked.options == []
+    assert planner.calls == 0
+
+    answered = await kernel.turn(
+        TurnRequest(
+            session_key="C1:1.0",
+            interaction_id="1772.3",
+            actor_user_id="U1",
+            expected_revision=4,
+            intent=ProvidePlanningFacts(
+                facts=[
+                    _fact("activity-1", FactKind.REQUESTED_ACTIVITY, "Plan Saturday")
+                ]
+            ),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(answered, AwaitingApproval)
+    assert answered.artifact.kind is ArtifactKind.SKELETON
+
+
+@pytest.mark.asyncio
+async def test_an_open_question_offers_nothing_a_press_could_answer() -> None:
+    """Catches a press smuggling an answer past a question that had no options.
+
+    Membership is checked against what the host recorded, so a question that
+    offered nothing rejects every press -- including one naming an option id
+    that was real on some other turn.
+    """
+
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=3,
+        owner_user_id="U1",
+        planning_day=_locked_day(),
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    kernel = _kernel(repo, RecordedPlanner(_skeleton_result()))
+
+    await kernel.turn(_advance_request(), progress=RecordingProgressSink())
+    outcome = await kernel.turn(
+        _choice_request(
+            option_id="option-1",
+            interaction_id="1772.3",
+            expected_revision=4,
+            requirement_id="skeleton.requested_activity",
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "stale_blocker_choice"
+
+
+@pytest.mark.asyncio
+async def test_choosing_an_offered_option_records_it_and_unblocks_the_turn() -> None:
+    """A press has to satisfy the requirement it answered, or it answered nothing."""
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    planner = _ScriptedPlanner(_shape_blocker_result(), _shape_skeleton_result())
+    kernel = _choice_kernel(repo, planner)
+
+    await kernel.turn(_advance_request(), progress=RecordingProgressSink())
+    outcome = await kernel.turn(
+        _choice_request(
+            option_id="option-2", interaction_id="1772.3", expected_revision=4
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    restored = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    recorded = [
+        fact for fact in restored.facts if fact.kind is FactKind.ORDINARY_PLACEMENT
+    ]
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert outcome.artifact.kind is ArtifactKind.SKELETON
+    assert len(recorded) == 1
+    assert recorded[0].source == "user"
+    assert recorded[0].value == {
+        "requirement_id": "skeleton.day_shape",
+        "label": "Gym first",
+        "effect": "puts deep work in the evening",
+    }
+    assert restored.pending_blocker is None
+
+
+@pytest.mark.asyncio
+async def test_an_option_that_was_never_offered_is_refused() -> None:
+    """The security-shaped half: a press is a claim about what was on screen.
+
+    Nothing stops a crafted button value naming an option the host never minted,
+    so the id is checked against the question the host is actually holding --
+    the same reason an approval is checked against an exact artifact digest.
+    """
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    planner = _ScriptedPlanner(_shape_blocker_result())
+    kernel = _choice_kernel(repo, planner)
+
+    await kernel.turn(_advance_request(), progress=RecordingProgressSink())
+    outcome = await kernel.turn(
+        _choice_request(
+            option_id="option-9", interaction_id="1772.3", expected_revision=4
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    restored = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "stale_blocker_choice"
+    assert not [
+        fact for fact in restored.facts if fact.kind is FactKind.ORDINARY_PLACEMENT
+    ]
+    assert planner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_refused_press_leaves_the_question_still_askable() -> None:
+    """Catches one bad press killing the buttons the user is still looking at.
+
+    A rejection means nothing happened. If it also cleared the pending question,
+    a mistyped or replayed value would turn a recoverable refusal into a dead
+    end with live-looking buttons and no way to answer.
+    """
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    planner = _ScriptedPlanner(_shape_blocker_result(), _shape_skeleton_result())
+    kernel = _choice_kernel(repo, planner)
+
+    await kernel.turn(_advance_request(), progress=RecordingProgressSink())
+    await kernel.turn(
+        _choice_request(
+            option_id="option-9", interaction_id="1772.3", expected_revision=4
+        ),
+        progress=RecordingProgressSink(),
+    )
+    outcome = await kernel.turn(
+        _choice_request(
+            option_id="option-1", interaction_id="1772.4", expected_revision=5
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert outcome.artifact.kind is ArtifactKind.SKELETON
+
+
+@pytest.mark.asyncio
+async def test_a_press_against_an_answered_question_is_refused() -> None:
+    """Catches an option outliving the question, and answering the one after it.
+
+    The pending record is cleared the moment the turn stops asking, so a second
+    press -- a double tap, a stale card someone scrolled back to -- cannot
+    re-file an answer against whatever the session moved on to.
+    """
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    planner = _ScriptedPlanner(_shape_blocker_result(), _shape_skeleton_result())
+    kernel = _choice_kernel(repo, planner)
+
+    await kernel.turn(_advance_request(), progress=RecordingProgressSink())
+    await kernel.turn(
+        _choice_request(
+            option_id="option-1", interaction_id="1772.3", expected_revision=4
+        ),
+        progress=RecordingProgressSink(),
+    )
+    outcome = await kernel.turn(
+        _choice_request(
+            option_id="option-2", interaction_id="1772.4", expected_revision=5
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "stale_blocker_choice"
+
+
+@pytest.mark.asyncio
+async def test_a_typed_answer_takes_the_buttons_down_with_the_question() -> None:
+    """Catches an option surviving a question that was answered another way.
+
+    Options are an offer, never an obligation: the user can type past them. When
+    they do, the turn moves on and the buttons on the old card are the only
+    thing left pointing at the question -- so a press after that must not file a
+    second answer against whatever the session has moved on to.
+    """
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    planner = _ScriptedPlanner(_shape_blocker_result(), _shape_skeleton_result())
+    kernel = _choice_kernel(repo, planner)
+
+    await kernel.turn(_advance_request(), progress=RecordingProgressSink())
+    typed = await kernel.turn(
+        TurnRequest(
+            session_key="C1:1.0",
+            interaction_id="1772.3",
+            actor_user_id="U1",
+            expected_revision=4,
+            intent=ProvidePlanningFacts(
+                facts=[
+                    _fact("shape-1", FactKind.ORDINARY_PLACEMENT, "neither, swim")
+                ]
+            ),
+        ),
+        progress=RecordingProgressSink(),
+    )
+    pressed = await kernel.turn(
+        _choice_request(
+            option_id="option-1", interaction_id="1772.4", expected_revision=5
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(typed, AwaitingApproval)
+    assert isinstance(pressed, TurnFailed)
+    assert pressed.code == "stale_blocker_choice"

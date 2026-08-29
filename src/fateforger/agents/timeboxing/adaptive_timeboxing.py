@@ -27,12 +27,16 @@ from .session_contracts import (
     ArtifactSnapshot,
     AwaitingApproval,
     AwaitingUser,
+    BlockerOption,
     Cancelled,
     CancelSession,
+    ChooseBlockerOption,
     Committed,
     ConfirmPlanningDay,
+    FactKind,
     GoBack,
     HandledInteraction,
+    PendingBlocker,
     PlannerAssumption,
     PlanningArtifact,
     PlanningBrief,
@@ -390,8 +394,12 @@ class AdaptiveTimeboxing:
         readiness = self._requirements.evaluate(target, snapshot)
         blocker = readiness.first_hard_user_blocker()
         if blocker is not None:
+            # No options. The catalog knows what it needs, not what today's
+            # alternatives are, and an option set is a judgement about one day.
+            # Only the planner has looked at that day, so only the planner can
+            # offer one -- see the blocker branch of _apply_planning_result.
             return await self._save(
-                snapshot,
+                self._hold_question(snapshot, blocker, []),
                 base_revision=base_revision,
                 request=request,
                 outcome=AwaitingUser(
@@ -516,6 +524,47 @@ class AdaptiveTimeboxing:
             return snapshot.model_copy(
                 update={"approvals": [*snapshot.approvals, approval]}
             ), None
+        if isinstance(intent, ChooseBlockerOption):
+            chosen = self._offered_option(snapshot, intent)
+            if chosen is None:
+                # One code covers "no question is open", "that is not the open
+                # question" and "that was not one of its options" deliberately.
+                # Separate codes would tell anyone crafting a press which half
+                # of the guess was right, and the press is the one place a
+                # value arrives already claiming to be trusted.
+                return snapshot, TurnFailed(
+                    code="stale_blocker_choice",
+                    message="That choice no longer matches an open question.",
+                )
+            pending = snapshot.pending_blocker
+            assert pending is not None
+            answered = self._merge_facts(
+                snapshot,
+                [
+                    PlanningFact(
+                        fact_id=str(uuid4()),
+                        kind=pending.fact_kind,
+                        # The option id is deliberately not recorded. It is a
+                        # handle on one turn's question and the next question
+                        # mints the same one again, so filing it as a durable
+                        # fact would present a recycled identifier as a stable
+                        # one. What the user chose is the label and its effect.
+                        value={
+                            "requirement_id": pending.requirement_id,
+                            "label": chosen.label,
+                            "effect": chosen.effect,
+                        },
+                        source="user",
+                        source_interaction_id=request.interaction_id,
+                    )
+                ],
+            )
+            answered = answered.model_copy(update={"pending_blocker": None})
+            # A pressed answer is a supplied fact, so it invalidates downstream
+            # work for the same reason ProvidePlanningFacts does: a skeleton
+            # built on the shape the user has just overruled is not a skeleton
+            # of this day any more.
+            return self._invalidate(answered, ArtifactKind.CAPTURED_INPUTS), None
         if isinstance(intent, (ReviseArtifact, GoBack)):
             return snapshot, TurnFailed(
                 code="unsupported_intent",
@@ -680,10 +729,11 @@ class AdaptiveTimeboxing:
 
         if user_blockers:
             gap, blocker = user_blockers[0]
-            return snapshot, AwaitingUser(
+            return self._hold_question(snapshot, gap, blocker.options), AwaitingUser(
                 requirement_id=gap.requirement_id,
                 question=gap.question,
                 why_needed=blocker.why_needed,
+                options=blocker.options,
             )
 
         matching = [
@@ -781,7 +831,7 @@ class AdaptiveTimeboxing:
     ) -> TurnOutcome:
         try:
             await self._repository.save(
-                snapshot,
+                self._release_question(snapshot, outcome),
                 expected_revision=base_revision,
                 interaction_id=request.interaction_id,
                 outcome=outcome,
@@ -797,6 +847,84 @@ class AdaptiveTimeboxing:
                 message="The planning session changed while this turn was running.",
             )
         return outcome
+
+    @staticmethod
+    def _hold_question(
+        snapshot: PlanningSessionSnapshot,
+        gap: ReadinessGap,
+        options: list[BlockerOption],
+    ) -> PlanningSessionSnapshot:
+        """Record the question being put, so a press a turn later can be checked.
+
+        The alternative was recomputing the option set when the press arrives,
+        which would let a changed plan offer a different set than the one the
+        user is looking at -- and the press would then answer a question nobody
+        asked. A requirement no fact can satisfy is held as nothing rather than
+        as an unanswerable record: the user still gets the question, and every
+        press against it is refused.
+        """
+
+        fact_kind = next(
+            (
+                kind
+                for kind in gap.requirement.satisfied_by
+                if isinstance(kind, FactKind)
+            ),
+            None,
+        )
+        return snapshot.model_copy(
+            update={
+                "pending_blocker": None
+                if fact_kind is None
+                else PendingBlocker(
+                    requirement_id=gap.requirement_id,
+                    fact_kind=fact_kind,
+                    options=options,
+                )
+            }
+        )
+
+    @staticmethod
+    def _offered_option(
+        snapshot: PlanningSessionSnapshot, intent: ChooseBlockerOption
+    ) -> BlockerOption | None:
+        """Return the offered option this press names, or nothing.
+
+        Membership over identifiers the host minted, which is the whole point of
+        minting them: nothing here reads what the user meant.
+        """
+
+        pending = snapshot.pending_blocker
+        if pending is None or pending.requirement_id != intent.requirement_id:
+            return None
+        return next(
+            (
+                option
+                for option in pending.options
+                if option.option_id == intent.option_id
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _release_question(
+        snapshot: PlanningSessionSnapshot, outcome: TurnOutcome
+    ) -> PlanningSessionSnapshot:
+        """Stop holding a question the turn is no longer asking.
+
+        An outcome that moved the session on -- an artifact to approve, a
+        commit, a cancellation -- means the question is answered or gone, and a
+        pending record outliving it would let a second press file an answer
+        against whatever replaced it. A ``TurnFailed`` is the exception: a
+        refused press means nothing happened, and clearing here would turn one
+        recoverable refusal into live-looking buttons with no way to answer.
+        """
+
+        if isinstance(outcome, (AwaitingUser, TurnFailed)):
+            return snapshot
+        if snapshot.pending_blocker is None:
+            return snapshot
+        return snapshot.model_copy(update={"pending_blocker": None})
 
     def _invalidate(
         self, snapshot: PlanningSessionSnapshot, changed_kind: ArtifactKind

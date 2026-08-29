@@ -106,6 +106,129 @@ def test_a_blocker_alone_is_a_complete_result(result_file):
     assert result.blockers[0].requirement_id == "skeleton.requested_activity"
 
 
+def test_offered_choices_get_host_minted_identifiers(result_file):
+    """The planner writes the choices; the host names them.
+
+    ``option_id`` is not an argument of this tool, so a planner cannot supply
+    one. It is the value the press is later checked against, and an identifier
+    the model chose is one it could point at a different choice than the user
+    read -- or reuse for two choices at once, which makes a press ambiguous.
+    """
+
+    submit_planning_result(
+        target_artifact="skeleton",
+        artifact=None,
+        assumptions=[],
+        blockers=[
+            {
+                "requirement_id": "skeleton.day_shape",
+                "why_needed": "three unallocated hours have two workable shapes",
+            }
+        ],
+        blocker_options=[
+            {"label": "Deep work first", "effect": "puts the gym after dinner"},
+            {"label": "Gym first", "effect": "puts deep work in the evening"},
+        ],
+    )
+
+    result = PlanningResult.model_validate_json(result_file.read_text(encoding="utf-8"))
+    offered = result.blockers[0].options
+
+    assert [option.label for option in offered] == ["Deep work first", "Gym first"]
+    assert len({option.option_id for option in offered}) == 2
+
+
+def test_an_option_identifier_the_planner_chose_is_refused(result_file):
+    """Catches a planner naming the thing the host has to be the authority on.
+
+    Silently overwriting it would be worse than refusing: the planner would go
+    on believing it had named the choice, and the id it thinks it offered would
+    be one no press can ever carry.
+    """
+
+    with pytest.raises(PlanningResultRefused):
+        submit_planning_result(
+            target_artifact="skeleton",
+            artifact=None,
+            assumptions=[],
+            blockers=[
+                {
+                    "requirement_id": "skeleton.day_shape",
+                    "why_needed": "the afternoon has two workable shapes",
+                }
+            ],
+            blocker_options=[
+                {
+                    "option_id": "option-1",
+                    "label": "Deep work first",
+                    "effect": "puts the gym after dinner",
+                }
+            ],
+        )
+
+    assert result_file.read_text(encoding="utf-8") == ""
+
+
+def test_choices_without_one_question_to_attach_them_to_are_refused(result_file):
+    """Two questions and one set of buttons is a set attached to nothing.
+
+    One turn puts one question, so this is a submission that has lost track of
+    which one it was answering -- and guessing would put the wrong buttons under
+    the wrong question.
+    """
+
+    with pytest.raises(PlanningResultRefused):
+        submit_planning_result(
+            target_artifact="skeleton",
+            artifact=None,
+            assumptions=[],
+            blockers=[
+                {
+                    "requirement_id": "skeleton.day_shape",
+                    "why_needed": "the afternoon has two workable shapes",
+                },
+                {
+                    "requirement_id": "skeleton.requested_activity",
+                    "why_needed": "nothing says what the day is for",
+                },
+            ],
+            blocker_options=[
+                {"label": "Deep work first", "effect": "puts the gym after dinner"}
+            ],
+        )
+
+    assert result_file.read_text(encoding="utf-8") == ""
+
+
+def test_a_retried_submission_with_choices_is_the_same_submission(result_file):
+    """Catches minting turning a transport retry into a change of mind.
+
+    Identifiers are derived from the submission, not drawn fresh, precisely so
+    that the second copy of one submission still compares equal to the first.
+    """
+
+    submission = {
+        "target_artifact": "skeleton",
+        "artifact": None,
+        "assumptions": [],
+        "blockers": [
+            {
+                "requirement_id": "skeleton.day_shape",
+                "why_needed": "three unallocated hours have two workable shapes",
+            }
+        ],
+        "blocker_options": [
+            {"label": "Deep work first", "effect": "puts the gym after dinner"},
+            {"label": "Gym first", "effect": "puts deep work in the evening"},
+        ],
+    }
+
+    first = submit_planning_result(**submission)
+    second = submit_planning_result(**submission)
+
+    assert first == second
+
+
 # -- the refusals ---------------------------------------------------------
 
 

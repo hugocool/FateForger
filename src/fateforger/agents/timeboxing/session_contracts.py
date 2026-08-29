@@ -219,6 +219,39 @@ class HandledInteraction(_StrictModel):
     session_revision: int = Field(ge=0)
 
 
+class BlockerOption(_StrictModel):
+    """One concrete alternative offered against an open user decision.
+
+    ``option_id`` is an identifier the host minted and the planner never sees as
+    an argument. An id the model chooses is one it could point at a different
+    choice than the user read, and the whole value of a button over a text box
+    is that the answer arrives already typed and needs no interpretation.
+    """
+
+    option_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    effect: str = Field(min_length=1)
+
+
+class PendingBlocker(_StrictModel):
+    """The open user question a session is holding, and what it offered.
+
+    Kept on the snapshot rather than recomputed, because the press arrives a
+    turn later and only the host knows what was actually on screen. Checking a
+    press against this record is the same shape as checking an approval against
+    an exact artifact digest: both are claims about a thing the user saw.
+
+    ``fact_kind`` is captured when the question is put, not looked up when it is
+    answered. The requirement catalog is the authority on what would satisfy a
+    requirement, and asking it again at press time would let a catalog edit
+    change the meaning of a button already rendered.
+    """
+
+    requirement_id: str = Field(min_length=1)
+    fact_kind: FactKind
+    options: list[BlockerOption] = Field(default_factory=list, max_length=4)
+
+
 class PlanningSessionSnapshot(_StrictModel):
     """Persistent state for a planning session; stage is intentionally absent."""
 
@@ -232,6 +265,11 @@ class PlanningSessionSnapshot(_StrictModel):
     artifacts: list[PlanningArtifact] = Field(default_factory=list)
     approvals: list[ArtifactApproval] = Field(default_factory=list)
     handled_interactions: list[HandledInteraction] = Field(default_factory=list)
+    #: The question this session last put to the user, while it is still open.
+    #: Absent means no press can be honoured, which is the correct default: a
+    #: button pointed at a question nobody is holding any more must not answer
+    #: the one that replaced it.
+    pending_blocker: PendingBlocker | None = None
     status: Literal["open", "committed", "cancelled"] = "open"
 
     @model_validator(mode="after")
@@ -288,6 +326,19 @@ class ApproveArtifact(_StrictModel):
     artifact_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class ChooseBlockerOption(_StrictModel):
+    """One press against one option that was offered for one open question.
+
+    Both fields are identifiers this system minted, so applying a press decides
+    nothing about what the user meant -- the meaning was fixed when the option
+    was written, and the press only names which one.
+    """
+
+    kind: Literal["choose_blocker_option"] = "choose_blocker_option"
+    requirement_id: str = Field(min_length=1)
+    option_id: str = Field(min_length=1)
+
+
 class GoBack(_StrictModel):
     kind: Literal["go_back"] = "go_back"
 
@@ -304,6 +355,7 @@ TimeboxIntent = Annotated[
         Advance,
         ReviseArtifact,
         ApproveArtifact,
+        ChooseBlockerOption,
         GoBack,
         CancelSession,
     ],
@@ -316,6 +368,9 @@ class AwaitingUser(_StrictModel):
     requirement_id: str = Field(min_length=1)
     question: str = Field(min_length=1)
     why_needed: str = Field(min_length=1)
+    #: Empty means the question is open and takes free text. Non-empty means the
+    #: answer set is closed and the renderer may offer it as buttons.
+    options: list[BlockerOption] = Field(default_factory=list, max_length=4)
 
 
 class ArtifactReady(_StrictModel):
@@ -406,6 +461,18 @@ class UserBlockerDraft(_StrictModel):
 
     requirement_id: str = Field(min_length=1)
     why_needed: str = Field(min_length=1)
+    #: Concrete alternatives, only where the answer set is genuinely closed.
+    #: Empty is the ordinary case and stays legal: a planner that offered four
+    #: guesses at an open question would hide the fifth answer the user had,
+    #: which is exactly the failure buttons are supposed to prevent.
+    options: list[BlockerOption] = Field(default_factory=list, max_length=4)
+
+    @model_validator(mode="after")
+    def option_ids_are_unique(self) -> UserBlockerDraft:
+        option_ids = [option.option_id for option in self.options]
+        if len(option_ids) != len(set(option_ids)):
+            raise ValueError("option_id values must be unique within one blocker")
+        return self
 
 
 class PlanningResult(_StrictModel):
@@ -426,14 +493,17 @@ __all__ = [
     "ArtifactSnapshot",
     "AwaitingApproval",
     "AwaitingUser",
+    "BlockerOption",
     "Cancelled",
     "CancelSession",
+    "ChooseBlockerOption",
     "Committed",
     "ConfirmPlanningDay",
     "DayType",
     "FactKind",
     "GoBack",
     "HandledInteraction",
+    "PendingBlocker",
     "PlannerAssumption",
     "PlannerAssumptionDraft",
     "PlanningArtifact",

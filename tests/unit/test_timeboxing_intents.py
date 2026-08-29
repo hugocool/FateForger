@@ -5,6 +5,7 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
     AdaptiveTimeboxing,
@@ -16,7 +17,12 @@ from fateforger.agents.timeboxing.session_contracts import (
     Advance,
     ApproveArtifact,
     ArtifactKind,
+    BlockerOption,
+    ChooseBlockerOption,
     ConfirmPlanningDay,
+    DayType,
+    FactKind,
+    PendingBlocker,
     PlanningArtifact,
     PlanningDay,
     PlanningSessionSnapshot,
@@ -374,3 +380,284 @@ def test_unknown_timezone_date_action_yields_no_intent() -> None:
     )
 
     assert intent_from_date_action(value) is None
+
+
+def test_an_option_press_becomes_a_typed_choice_bound_to_its_question() -> None:
+    """Catches a press arriving as text somebody then has to interpret.
+
+    Both fields are identifiers this system minted, so the whole press crosses
+    the boundary as data the host recognises rather than words it has to read.
+    """
+
+    envelope = intent_from_artifact_action(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_key": "C1:1.0",
+                "expected_revision": 3,
+                "decision": "choose_option",
+                "requirement_id": "skeleton.day_shape",
+                "option_id": "option-2",
+            }
+        )
+    )
+
+    assert envelope is not None
+    assert envelope.intent == ChooseBlockerOption(
+        requirement_id="skeleton.day_shape", option_id="option-2"
+    )
+    assert envelope.expected_revision == 3
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_key": "C1:1.0",
+                "expected_revision": 3,
+                "decision": "choose_option",
+                "requirement_id": "skeleton.day_shape",
+            }
+        ),
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_key": "C1:1.0",
+                "expected_revision": 3,
+                "decision": "choose_option",
+                "option_id": "option-2",
+            }
+        ),
+    ],
+)
+def test_a_half_named_option_press_yields_no_intent(payload: str) -> None:
+    """A press names which question and which answer, or it names neither.
+
+    The kernel checks the pair against the question it is holding. Half a pair
+    could only be completed by guessing, and a guessed requirement would file
+    the answer against a question the user never saw.
+    """
+
+    assert intent_from_artifact_action(payload) is None
+
+
+def _blocker_snapshot(
+    options: list[BlockerOption],
+) -> PlanningSessionSnapshot:
+    """A session holding one open question, with what it offered against it."""
+
+    return _capture_snapshot().model_copy(
+        update={
+            "pending_blocker": PendingBlocker(
+                requirement_id="skeleton.day_shape",
+                fact_kind=FactKind.ORDINARY_PLACEMENT,
+                options=options,
+            )
+        }
+    )
+
+
+def _shape_options() -> list[BlockerOption]:
+    return [
+        BlockerOption(
+            option_id="option-1",
+            label="Deep work first",
+            effect="puts the gym after dinner",
+        ),
+        BlockerOption(
+            option_id="option-2",
+            label="Gym first",
+            effect="puts deep work in the evening",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_offered_option_can_be_answered_in_words() -> None:
+    """Catches a chat-only session having no way to answer an options question.
+
+    Deciding which offered option somebody meant is a judgement about their
+    words, so it goes to a model -- which is what CLAUDE.md requires. The banned
+    version is the one nobody is writing: comparing the reply to the labels.
+    """
+
+    client = _SchemaOutputClient({"decision": "choose_option", "option_id": "option-2"})
+    interpreter = TimeboxingIntentInterpreter(client)
+
+    intent = await interpreter.interpret(
+        "gym first, then I'll think in the evening",
+        _blocker_snapshot(_shape_options()),
+    )
+
+    assert intent == ChooseBlockerOption(
+        requirement_id="skeleton.day_shape", option_id="option-2"
+    )
+    prompt = "\n".join(message.content for message in client.calls[0][0])
+    assert (
+        '"allowed_decisions":["provide_facts","advance","choose_option",'
+        '"back","cancel"]'
+    ) in prompt
+    # The offer is the context the judgement needs: an id with no label beside
+    # it asks the model to choose between two names it has never seen.
+    assert "Gym first" in prompt
+    assert "puts deep work in the evening" in prompt
+
+
+@pytest.mark.asyncio
+async def test_a_typed_choice_can_only_name_an_option_that_was_offered() -> None:
+    """The schema is narrowed to the ids on offer, so free text cannot be one.
+
+    An id the model invented would name a question nobody was asked. The kernel
+    refuses one anyway -- a schema is a request and a guard is a guarantee --
+    but the request is worth making, because a refusal costs the user a turn.
+    """
+
+    client = _SchemaOutputClient({"decision": "choose_option", "option_id": "option-1"})
+    interpreter = TimeboxingIntentInterpreter(client)
+
+    await interpreter.interpret("the first one", _blocker_snapshot(_shape_options()))
+
+    schema = client.calls[0][1]
+    assert schema is not InterpretedTimeboxTurn
+    assert issubclass(schema, InterpretedTimeboxTurn)
+    with pytest.raises(ValidationError):
+        schema.model_validate_json(
+            json.dumps({"decision": "choose_option", "option_id": "Gym first"})
+        )
+    # The ids are minted by position, so `option-3` is a perfectly well-formed
+    # one -- it was simply not offered against *this* question. A schema bound
+    # to the shape of an id rather than to the offer would let it through, and
+    # the answer would land against a choice nobody was shown.
+    with pytest.raises(ValidationError):
+        schema.model_validate_json(
+            json.dumps({"decision": "choose_option", "option_id": "option-3"})
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_open_question_still_has_nothing_to_choose_from() -> None:
+    """`skeleton.requested_activity` is answered in Hugo's words, not from a list.
+
+    A question that offered nothing has no ids to narrow the schema to, so
+    choosing is not among the decisions the turn allows -- and a model that
+    claimed it anyway is refused rather than left to invent an id.
+    """
+
+    client = _SchemaOutputClient({"decision": "choose_option", "option_id": "option-1"})
+    interpreter = TimeboxingIntentInterpreter(client)
+
+    with pytest.raises(ValueError):
+        await interpreter.interpret("the first one", _blocker_snapshot([]))
+
+    assert client.calls[0][1] is InterpretedTimeboxTurn
+    prompt = "\n".join(message.content for message in client.calls[0][0])
+    assert '"allowed_decisions":["provide_facts","advance","back","cancel"]' in prompt
+
+
+@pytest.mark.asyncio
+async def test_choosing_is_not_offered_when_no_question_is_open() -> None:
+    """Catches a press-shaped answer arriving where nothing was ever asked."""
+
+    client = _SchemaOutputClient({"decision": "choose_option", "option_id": "option-1"})
+    interpreter = TimeboxingIntentInterpreter(client)
+
+    with pytest.raises(ValueError):
+        await interpreter.interpret("the first one", _capture_snapshot())
+
+    assert client.calls[0][1] is InterpretedTimeboxTurn
+    prompt = "\n".join(message.content for message in client.calls[0][0])
+    assert '"allowed_decisions":["provide_facts","advance","back","cancel"]' in prompt
+
+
+def _proposed_day_artifact() -> PlanningArtifact:
+    """The day the host derived and put on the card, awaiting a confirmation."""
+
+    return PlanningArtifact.create(
+        artifact_id="planning-day-1",
+        kind=ArtifactKind.PLANNING_DAY,
+        revision=1,
+        payload=_planning_day().model_dump(mode="json"),
+        dependency_revisions={},
+    )
+
+
+def _date_stage_snapshot() -> PlanningSessionSnapshot:
+    return PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=1,
+        owner_user_id="U1",
+        artifacts=[_proposed_day_artifact()],
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_typed_vacation_locks_the_day_as_a_user_override() -> None:
+    """Catches a chat-only session having no way past the date card.
+
+    Three of the five day types follow from nothing a calendar can see, so
+    without this the only way to say "I am on vacation" is a button -- and an
+    agent driving the session by text cannot press one. The basis travels with
+    it because `PlanningDay` refuses a `calendar` basis that disagrees with the
+    weekday, which is what stops an override from quietly lying about itself.
+    """
+
+    client = _SchemaOutputClient(
+        {"decision": "confirm_planning_day", "day_type": "vacation", "facts": []}
+    )
+    interpreter = TimeboxingIntentInterpreter(client)
+
+    intent = await interpreter.interpret(
+        "plan Saturday, I'm on vacation", _date_stage_snapshot()
+    )
+
+    assert isinstance(intent, ConfirmPlanningDay)
+    assert intent.planning_day.date == date(2026, 8, 29)
+    assert intent.planning_day.iso_weekday == 6
+    assert intent.planning_day.day_type is DayType.VACATION
+    assert intent.planning_day.classification_basis == "user_override"
+    assert intent.planning_day.lock_revision == 2
+
+
+@pytest.mark.asyncio
+async def test_saying_nothing_about_the_day_keeps_the_weekday_the_host_derived() -> (
+    None
+):
+    """Silence is not a sixth day type, and must not overwrite the default.
+
+    The host derives weekend from the weekday and is right about it. A
+    confirmation that carried an override every time would record every day as
+    something the user said, which is how `user_override` stops meaning
+    anything.
+    """
+
+    client = _SchemaOutputClient({"decision": "confirm_planning_day", "facts": []})
+    interpreter = TimeboxingIntentInterpreter(client)
+
+    intent = await interpreter.interpret("yes, that day", _date_stage_snapshot())
+
+    assert isinstance(intent, ConfirmPlanningDay)
+    assert intent.planning_day.day_type is DayType.WEEKEND
+    assert intent.planning_day.classification_basis == "calendar"
+
+
+@pytest.mark.asyncio
+async def test_the_date_stage_offers_confirmation_and_never_the_date() -> None:
+    """The kind of day is the user's to say; the date is the host's to know.
+
+    The prompt names the decision so the model can take it, and carries no date
+    at all -- a model that could see one could return one, and a planning day
+    that drifted between the card and the lock is the incident this whole
+    session kernel exists to prevent.
+    """
+
+    client = _SchemaOutputClient({"decision": "confirm_planning_day", "facts": []})
+    interpreter = TimeboxingIntentInterpreter(client)
+
+    await interpreter.interpret("go on then", _date_stage_snapshot())
+
+    prompt = "\n".join(message.content for message in client.calls[0][0])
+    assert '"confirm_planning_day"' in prompt
+    assert "2026-08-29" not in prompt
+    assert "date" not in InterpretedTimeboxTurn.model_fields

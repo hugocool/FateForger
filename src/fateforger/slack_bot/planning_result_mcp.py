@@ -61,6 +61,7 @@ def submit_planning_result(
     artifact: dict[str, Any] | None,
     assumptions: list[dict[str, Any]],
     blockers: list[dict[str, Any]],
+    blocker_options: list[dict[str, Any]] | None = None,
 ) -> str:
     """Record this turn's result. Call it exactly once, at the end.
 
@@ -73,6 +74,17 @@ def submit_planning_result(
     replaces the artifact rather than accompanying it: an artifact asks to be
     approved and a blocker asks a question, and one turn shows the user one of
     those. Submitting neither ends the turn with nothing to review.
+
+    ``blocker_options`` offers the user concrete alternatives to that one
+    question, as ``{"label": ..., "effect": ...}`` -- what they read, and what
+    one line says choosing it does. Send it only where the answer set is
+    genuinely closed and you can name every alternative: two to four ways three
+    unallocated hours could be spent, not four guesses at what the day is for.
+    **Omit it otherwise.** A question with no options reaches the user as a text
+    box, which is the right answer for a question with no closed answer set --
+    four invented choices would hide the fifth answer they actually had.
+    Options attach to the single blocker in ``blockers``, and you do not name
+    them: the host mints each identifier.
     """
 
     destination = _destination()
@@ -81,6 +93,7 @@ def submit_planning_result(
         artifact=artifact,
         assumptions=assumptions,
         blockers=blockers,
+        blocker_options=blocker_options,
     ).model_dump_json()
 
     recorded = _recorded(destination)
@@ -116,7 +129,13 @@ def _validated(
     artifact: dict[str, Any] | None,
     assumptions: list[dict[str, Any]],
     blockers: list[dict[str, Any]],
+    blocker_options: list[dict[str, Any]] | None = None,
 ) -> PlanningResult:
+    if blocker_options and len(blockers) != 1:
+        raise PlanningResultRefused(
+            "options belong to one question, and this submission does not have "
+            "exactly one. Submit the blocker they answer, with its options."
+        )
     if artifact is not None and blockers:
         raise PlanningResultRefused(
             "an artifact and a blocker cannot both be this turn's result. "
@@ -131,6 +150,9 @@ def _validated(
     updates = (
         [] if artifact is None else [{"kind": target_artifact, "payload": artifact}]
     )
+    offered = _minted(blocker_options)
+    if offered:
+        blockers = [{**blockers[0], "options": offered}]
     try:
         # Through JSON deliberately. These arguments crossed MCP as JSON, the
         # contracts validate strictly, and strict Python-mode validation would
@@ -166,6 +188,40 @@ def _validated(
             "this submission does not match the required shape "
             f"({_shape_codes(exc)}). Resubmit one result whose fields match "
             "this tool's declared arguments."
+        ) from exc
+
+
+def _minted(blocker_options: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Name each offered choice, host-side, and refuse a planner that named it.
+
+    ``option_id`` is the value a later press is checked against, so it has to be
+    the host's to mint: an identifier the planner chose is one it could point at
+    a different choice than the user read, or reuse across two choices and make
+    the press ambiguous. Overwriting a supplied one silently would be worse than
+    refusing, because the planner would go on believing it had named the choice.
+
+    The position, not a fresh uuid. A retried submission is compared to the one
+    already recorded byte for byte, so identifiers drawn fresh would read one
+    submission sent twice as two different results and refuse the second --
+    which is the case the idempotent path exists to allow.
+    """
+
+    if not blocker_options:
+        return []
+    try:
+        if any("option_id" in option for option in blocker_options):
+            raise PlanningResultRefused(
+                "option identifiers belong to the host, not to this submission. "
+                "Resubmit each option with only its label and its effect."
+            )
+        return [
+            {**option, "option_id": f"option-{index}"}
+            for index, option in enumerate(blocker_options, start=1)
+        ]
+    except TypeError as exc:
+        raise PlanningResultRefused(
+            "each option must be an object carrying a label and an effect. "
+            "Resubmit the options in that shape."
         ) from exc
 
 
