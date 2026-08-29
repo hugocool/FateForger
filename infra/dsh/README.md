@@ -55,9 +55,11 @@ Deploy with:
 cp infra/dsh/profile/memory-policy.md ~/.dsh/profiles/tmbx/memory-policy.md
 ```
 
-It carries two things neither MCP server states: when to read constraints and
-why `day_type` is not optional, and the stage sequence plus the rule that every
-block is attributed to what Hugo said, what memory holds, or what was assumed.
+It carries three things neither MCP server states: when to read constraints
+and why `day_type` is not optional; the stage sequence, the Stage 3/Stage 4
+boundary, and the obligation to end a planning turn with exactly one
+`submit_planning_result` call; and the rule that every block is attributed to
+what Hugo said, what memory holds, or what was assumed.
 
 That attribution is instruction, not machinery, so it can quietly stop
 happening. Measured against `google/gemini-3.6-flash` at 6 draws on a planted
@@ -65,6 +67,61 @@ case: 6/6 marked assumptions, 6/6 attributed to memory, 6/6 quoted the user,
 and **5/6 stayed inside the stage they were asked for** — one draw reached for
 `plan_apply` during the skeleton. Instruction does not hold a stage boundary;
 a `PreToolUse` deny does.
+
+## The prose describes the session; it no longer holds it
+
+Until #206 `memory-policy.md` told the model that "the thread is the state" and
+that "there is no machinery enforcing this". Both were honest descriptions of a
+system where a fresh harness process rebuilt a planning session out of a few
+Slack messages, and both were an invitation to rebuild it wrongly. On
+2026-08-29 a turn read Saturday's calendar, found work on it, and planned
+Friday as a working day.
+
+The host now hands the process a complete typed `PlanningBrief` and reads one
+`PlanningResult` back, so the date, timezone, day type, accepted facts,
+existing artifacts, approvals and the artifact this turn owes are all settled
+before the model sees anything. The prose says so, and then says the three
+things the brief cannot enforce on its own:
+
+- Stage 3 presents a skeleton and does not call `plan_apply`; Stage 4 is the
+  first patch/validation stage.
+- Ordinary placement is the planner's to decide and to label as an assumption.
+  A gap the planner owns may not come back as a user question; a genuine
+  impossibility comes back as a typed blocker instead.
+- Every planning turn ends with exactly one `submit_planning_result` call,
+  because stdout is presentation and nothing reads a stage out of it.
+
+The dated anecdotes went with it. To a process that starts empty every turn, a
+recounted conversation in the persona is indistinguishable from context about
+the day being planned — the 2026-08-24 "no gym today, it's vacation" exchange
+was being read as *this* conversation. What the anecdotes were evidence *for*
+stayed: an absence is an answer, an already-answered thing is not reopened,
+and a work window is a boundary rather than an occupying block.
+
+`tests/unit/test_timeboxing_profile_contract.py` asserts those presences and
+those absences against the two versioned files. Prompt prose is the one part of
+this system that can go stale without anything failing, so that test is the
+only thing that will notice.
+
+## The two persona halves do not load from the same place
+
+The `system-prompt` stanza in the versioned `cordis.patch.yml` reads
+`memory-policy.md` from an absolute `~/.dsh/profiles/tmbx/` path, and
+`deployment.md` from `$FF_FATEFORGER_ROOT/infra/dsh/profile/`. Where the
+deployed stanza still says the same — `diff -r` settles that — an edit to
+`deployment.md` is live on the next turn while the identical edit to
+`memory-policy.md` reaches nothing until it is copied across:
+
+```sh
+diff -u infra/dsh/profile/memory-policy.md ~/.dsh/profiles/tmbx/memory-policy.md
+cp      infra/dsh/profile/memory-policy.md ~/.dsh/profiles/tmbx/memory-policy.md
+```
+
+Diff first, copy second, and only once you have confirmed that
+`~/.dsh/profiles/tmbx` is the profile the running harness actually loads. Half
+a persona updated is worse than neither half: the stage contract and the
+deployment rules would then disagree about who owns the day, and the model
+would be reading both.
 
 ## The profile is versioned here, but the harness loads `~/.dsh`
 
