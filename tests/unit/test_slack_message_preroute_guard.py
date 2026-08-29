@@ -97,9 +97,15 @@ async def test_message_event_routes_even_when_preregister_times_out(monkeypatch)
         planning_instances.append(inst)
         return inst
 
-    monkeypatch.setattr(settings, "slack_register_user_timeout_seconds", 0.01, raising=False)
-    monkeypatch.setattr("fateforger.slack_bot.handlers.PlanningCoordinator", _planning_factory)
-    monkeypatch.setattr("fateforger.slack_bot.handlers.route_slack_event", _fake_route_slack_event)
+    monkeypatch.setattr(
+        settings, "slack_register_user_timeout_seconds", 0.01, raising=False
+    )
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.PlanningCoordinator", _planning_factory
+    )
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.route_slack_event", _fake_route_slack_event
+    )
     monkeypatch.setattr(
         "fateforger.slack_bot.handlers.record_error",
         lambda *, component, error_type: error_calls.append((component, error_type)),
@@ -148,7 +154,7 @@ async def test_message_event_routes_even_when_preregister_times_out(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_message_event_posts_timeout_fallback_when_route_dispatch_times_out(
+async def test_message_event_keeps_route_alive_without_a_timeout_fallback(
     monkeypatch,
 ):
     app = _FakeApp()
@@ -171,8 +177,11 @@ async def test_message_event_posts_timeout_fallback_when_route_dispatch_times_ou
     stage_calls: list[str] = []
     planning_instances: list[_FakePlanningCoordinator] = []
 
+    route_finished = asyncio.Event()
+
     async def _slow_route_slack_event(**_kwargs):
         await asyncio.sleep(0.05)
+        route_finished.set()
 
     def _planning_factory(*, runtime, focus, client):
         inst = _FakePlanningCoordinator(runtime=runtime, focus=focus, client=client)
@@ -228,12 +237,11 @@ async def test_message_event_posts_timeout_fallback_when_route_dispatch_times_ou
         )
 
         assert planning_instances
-        assert ("slack_routing", "route_timeout") in error_calls
-        assert "slack_route_dispatch_timeout" in stage_calls
-        assert app.client.posted
-        fallback = app.client.posted[-1]
-        assert fallback["channel"] == "C_PLAN"
-        assert fallback.get("thread_ts") == event["ts"]
-        assert "Routing timed out" in (fallback.get("text") or "")
+        assert not route_finished.is_set()
+        assert ("slack_routing", "route_timeout") not in error_calls
+        assert "slack_route_dispatch_backgrounded" in stage_calls
+        assert app.client.posted == []
+
+        await asyncio.wait_for(route_finished.wait(), timeout=0.2)
     finally:
         WorkspaceRegistry.set_global(previous)

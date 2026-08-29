@@ -475,6 +475,73 @@ async def test_commit_mints_a_valid_base32hex_event_id_for_a_new_block(service):
     assert is_valid_base32hex_event_id(new_event.event_id)
 
 
+async def test_commit_replays_a_durable_idempotency_key_without_a_second_write(
+    service,
+):
+    """Catches treating a retried approval as a new calendar transaction."""
+
+    _, snapshot = await service.read("primary", DAY)
+    patch = Patch(ops=[UpdateBlock(h="PR1", n="Renamed once")])
+    key = "a" * 64
+
+    first = await service.commit(snapshot, patch, idempotency_key=key)
+    second = await service.commit(snapshot, patch, idempotency_key=key)
+
+    assert first.tx_id == key
+    assert second.tx_id == key
+    commits = [
+        row
+        for row in await service.store.by_day("primary", DAY)
+        if row.kind.value == "commit"
+    ]
+    assert len(commits) == 1
+    live = await service.calendar.list_day("primary", DAY, TZ)
+    assert next(event for event in live if event.handle == "PR1").summary == "Renamed once"
+
+
+async def test_retry_after_write_before_journal_refuses_instead_of_duplicating(
+    service,
+):
+    """Characterizes the crash window the Slack client reports as unknown."""
+
+    inner_store = service.store
+
+    class FailFirstCommitAppend:
+        def __init__(self) -> None:
+            self.failed = False
+
+        def __getattr__(self, name):
+            return getattr(inner_store, name)
+
+        async def append(self, entry):
+            if entry.kind.value == "commit" and not self.failed:
+                self.failed = True
+                raise OSError("journal unavailable after external write")
+            return await inner_store.append(entry)
+
+    service.store = FailFirstCommitAppend()
+    _, snapshot = await service.read("primary", DAY)
+    patch = Patch(
+        ops=[
+            AddBlock(
+                after="DW1",
+                h="BU1",
+                n="Buffer",
+                t=ET.BU,
+                p=AfterPrev(dur=timedelta(minutes=10)),
+            )
+        ]
+    )
+
+    with pytest.raises(OSError, match="journal unavailable"):
+        await service.commit(snapshot, patch, idempotency_key="b" * 64)
+    with pytest.raises(ConflictError):
+        await service.commit(snapshot, patch, idempotency_key="b" * 64)
+
+    live = await service.calendar.list_day("primary", DAY, TZ)
+    assert [event.handle for event in live].count("BU1") == 1
+
+
 # ---------------------------------------------------------------------------
 # Block type and timing mode must survive commit -> re-read. Before this
 # fix every block read back as ET.M / FixedWindow regardless of what it

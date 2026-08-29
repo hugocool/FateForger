@@ -40,12 +40,14 @@ with no override, since undo has no ``force`` by design.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
 import uuid
+from collections.abc import Callable
 from datetime import date as date_type
-from typing import Callable, Literal, get_args
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, ValidationError, computed_field
 
@@ -571,6 +573,8 @@ class PlanService:
         self.calendar = calendar
         self.store = store
         self._mint_uid = mint_uid or (lambda: uuid.uuid4().hex)
+        self._commit_idempotency_locks: dict[str, asyncio.Lock] = {}
+        self._commit_idempotency_refs: dict[str, int] = {}
 
     async def _plan_from_calendar(
         self, calendar_id: str, day: date_type, tz: str
@@ -686,8 +690,57 @@ class PlanService:
         patch: Patch,
         *,
         expect: Literal["clean", "force"] = "clean",
+        idempotency_key: str | None = None,
     ) -> CommitResult:
-        """Check preconditions, write to the calendar, journal the commit."""
+        """Check preconditions and make one durable write per idempotency key."""
+
+        if idempotency_key is None:
+            return await self._commit_once(snapshot, patch, expect=expect)
+
+        lock = self._commit_idempotency_locks.setdefault(
+            idempotency_key, asyncio.Lock()
+        )
+        self._commit_idempotency_refs[idempotency_key] = (
+            self._commit_idempotency_refs.get(idempotency_key, 0) + 1
+        )
+        try:
+            async with lock:
+                existing = await self.store.by_tx_id(idempotency_key)
+                if (
+                    existing is not None
+                    and existing.kind == EntryKind.COMMIT
+                    and existing.outcome == PatchOutcome.APPLIED
+                ):
+                    return CommitResult(
+                        tx_id=idempotency_key,
+                        committed=True,
+                        conflicts=[],
+                    )
+                return await self._commit_once(
+                    snapshot,
+                    patch,
+                    expect=expect,
+                    tx_id=idempotency_key,
+                )
+        finally:
+            remaining = self._commit_idempotency_refs[idempotency_key] - 1
+            if remaining:
+                self._commit_idempotency_refs[idempotency_key] = remaining
+            else:
+                self._commit_idempotency_refs.pop(idempotency_key, None)
+                if self._commit_idempotency_locks.get(idempotency_key) is lock:
+                    self._commit_idempotency_locks.pop(idempotency_key, None)
+
+    async def _commit_once(
+        self,
+        snapshot: Snapshot,
+        patch: Patch,
+        *,
+        expect: Literal["clean", "force"],
+        tx_id: str | None = None,
+    ) -> CommitResult:
+        """Perform the calendar write after idempotency ownership is resolved."""
+
         plan, live, foreign_uids = await self._plan_from_calendar(
             snapshot.calendar_id, snapshot.day, snapshot.tz
         )
@@ -738,7 +791,7 @@ class PlanService:
             snapshot.calendar_id, snapshot.day, snapshot.tz, post_events
         )
 
-        tx_id = uuid.uuid4().hex
+        tx_id = tx_id or uuid.uuid4().hex
         await self._journal(
             snapshot,
             patch,

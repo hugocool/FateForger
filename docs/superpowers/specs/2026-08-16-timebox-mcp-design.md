@@ -182,7 +182,7 @@ Six tools. Exactly one contains an LLM.
 |---|---|
 | `plan_read(calendar_id, date, tz?, window?)` | live GCal → `TBPlan` + `snapshot` token pinning observed etags + block list with handles |
 | `plan_apply(snapshot, patch)` | **pure preview.** ops → plan, resolved times, violations, diff. No writes. Journals an attempt row. |
-| `plan_commit(snapshot, patch, expect)` | re-reads live state, checks preconditions, executes, journals → `tx_id`. `expect` is `"clean"` (default — refuse on any drift) or `"force"` (write anyway, recording the overwritten state) |
+| `plan_commit(snapshot, patch, expect, idempotency_key?)` | re-reads live state, checks preconditions, executes, journals → `tx_id`. `expect` is `"clean"` (default — refuse on any drift) or `"force"` (write anyway, recording the overwritten state). When present, `idempotency_key` is the canonical snapshot+patch digest; a journaled success replays the same transaction without another calendar write. |
 | `plan_undo(tx_id)` | compensating transaction, itself journaled — undo is undoable, redo is free |
 | `plan_history(calendar_id, date, limit?)` | journal read for a day |
 | `patch_nl(snapshot, instruction, constraints?)` | Slack-host wrapper: NL → `TBPatch`. The only LLM-in-tool. The only DSPy target. |
@@ -204,6 +204,13 @@ Claude Code emits `TBPatch` directly against the published schema. `patch_nl` ex
 `plan_read` returns a `snapshot` token pinning the etags (or `updated` timestamps) of every observed event, cached in the journal DB. Tool arguments stay small — hosts pass a token, not a plan.
 
 `plan_commit` re-reads live state and compares against the snapshot before writing. On mismatch it returns structured `conflicts` and refuses, unless `expect="force"`.
+
+Slack approval supplies the canonical SHA-256 digest of the exact validated
+snapshot+patch as `idempotency_key`. tmbx verifies that identity at the tool
+boundary and uses the existing journal `tx_id` for replay, so duplicate or
+retried delivery does not produce another write and requires no journal schema
+change. If an external write lands but journaling cannot complete, the original
+snapshot is stale on retry and the service refuses rather than duplicating it.
 
 This closes a real hole. Today `execute_sync` writes against a snapshot with no precondition, so an edit made on a phone mid-session is silently overwritten — DeepDiff never sees it, because it diffs *desired* against *snapshot*, not against live.
 

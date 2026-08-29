@@ -35,6 +35,7 @@ caught three more gaps (see the fix notes in ``server.py`` itself and
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 from datetime import date as date_type
@@ -62,6 +63,17 @@ TZ = "Europe/Amsterdam"
 def _text(result) -> str:
     """Pull the JSON text payload out of a ``call_tool`` result."""
     return result[0].text
+
+
+def _candidate_digest(snapshot: dict, patch: dict) -> str:
+    encoded = json.dumps(
+        {"snapshot": snapshot, "patch": patch},
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _event(event_id, handle, start_h, end_h, *, uid=None, summary=None):
@@ -110,6 +122,12 @@ async def test_exposes_the_op_schema_resource(server):
 async def test_exposes_the_planning_policy_resource(server):
     uris = {str(resource.uri) for resource in await server.list_resources()}
     assert "tmbx://policy/planning" in uris
+
+
+async def test_plan_apply_description_makes_fixed_anchor_source_required(server):
+    tool = next(tool for tool in await server.list_tools() if tool.name == "plan_apply")
+
+    assert "Every fs/fw add requires anchor_source" in (tool.description or "")
 
 
 async def test_plan_read_returns_a_rendered_plan_and_snapshot(server):
@@ -174,6 +192,7 @@ async def test_plan_apply_previews_without_writing_to_the_calendar(built):
     body = json.loads(_text(result))
     assert body["ok"] is True
     assert "Renamed" in body["rendered"]
+    assert body["block_count"] == 1
     assert body["overspecified"] == []
 
     live = await service.calendar.list_day("primary", DAY_DATE, "Europe/Amsterdam")
@@ -259,6 +278,54 @@ async def test_plan_commit_writes_and_returns_a_tx_id(built):
     reread = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
     reread_payload = json.loads(_text(reread))
     assert "Renamed" in reread_payload["rendered"]
+
+
+async def test_plan_commit_replays_the_same_candidate_digest_once(built):
+    """Catches losing approval idempotency at the MCP/service boundary."""
+
+    server, service = built
+    read = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
+    payload = json.loads(_text(read))
+    patch = {"ops": [{"op": "update", "h": "PR1", "n": "Renamed once"}]}
+    key = _candidate_digest(payload["snapshot"], patch)
+    request = {
+        "snapshot": payload["snapshot"],
+        "patch": patch,
+        "idempotency_key": key,
+    }
+
+    first = json.loads(_text(await server.call_tool("plan_commit", request)))
+    second = json.loads(_text(await server.call_tool("plan_commit", request)))
+
+    assert first == {"committed": True, "tx_id": key, "conflicts": []}
+    assert second == first
+    commits = [
+        row
+        for row in await service.store.by_day("primary", DAY_DATE)
+        if row.kind.value == "commit"
+    ]
+    assert len(commits) == 1
+
+
+async def test_plan_commit_rejects_an_idempotency_key_for_different_payload(server):
+    """Catches allowing one fence key to name two different candidates."""
+
+    read = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
+    payload = json.loads(_text(read))
+    patch = {"ops": [{"op": "update", "h": "PR1", "n": "Renamed"}]}
+
+    result = await server.call_tool(
+        "plan_commit",
+        {
+            "snapshot": payload["snapshot"],
+            "patch": patch,
+            "idempotency_key": "0" * 64,
+        },
+    )
+
+    body = json.loads(_text(result))
+    assert body["committed"] is False
+    assert body["reason"] == "malformed_input"
 
 
 async def test_plan_commit_reports_an_empty_ops_list_as_a_refusal_not_a_crash(server):

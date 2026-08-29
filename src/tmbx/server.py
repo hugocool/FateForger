@@ -62,6 +62,8 @@ real, validated ``Snapshot``/``Patch`` objects.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 from datetime import date as date_type
 from typing import Any, Literal
@@ -159,6 +161,19 @@ def _foreign_block_message(handles: list[str]) -> str:
         "never edit, retime, or remove one, force or no force. Drop this "
         "op; anchoring a new block after it is fine, editing it is not."
     )
+
+
+def _candidate_digest(snapshot: dict[str, Any], patch: dict[str, Any]) -> str:
+    """Canonical identity for the exact snapshot+patch approval payload."""
+
+    encoded = json.dumps(
+        {"snapshot": snapshot, "patch": patch},
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _plan_violation_message(error: PlanViolationError) -> str:
@@ -261,6 +276,10 @@ def build_server(service: PlanService) -> FastMCP:
         {"a":"fw","st":...,"et":...}. Full schema, including the handle
         format: tmbx://schema/ops.
 
+        Every fs/fw add requires anchor_source: "user" when the user stated
+        the time, "constraint" when a standing rule pins it, or "calendar"
+        only for a time originating in the calendar.
+
         Re-derives the plan from the calendar on every call, so it never
         checks whether the calendar drifted since your snapshot — only
         plan_commit does that. Use this to check a patch, or to explore
@@ -320,6 +339,7 @@ def build_server(service: PlanService) -> FastMCP:
             {
                 "ok": True,
                 "committable": result.committable,
+                "block_count": len(result.plan.blocks),
                 "rendered": result.rendered,
                 "violations": [
                     violation.model_dump(mode="json") for violation in result.violations
@@ -333,6 +353,7 @@ def build_server(service: PlanService) -> FastMCP:
         snapshot: dict[str, Any],
         patch: dict[str, Any],
         expect: Literal["clean", "force"] = "clean",
+        idempotency_key: str | None = None,
     ) -> str:
         """Write a patch to the calendar. The only tool that writes.
 
@@ -374,10 +395,21 @@ def build_server(service: PlanService) -> FastMCP:
           a domain rule — "message" says how. Fix it and call again.
 
         On success, "tx_id" identifies this write for plan_undo.
+
+        `idempotency_key`, when supplied, must be the canonical SHA-256 digest
+        of the raw snapshot+patch object. A previously journaled successful
+        commit with that key is returned without another calendar write.
         """
         try:
             snapshot_obj = Snapshot.model_validate(snapshot)
             patch_obj = Patch.model_validate(patch)
+            if idempotency_key is not None and not hmac.compare_digest(
+                idempotency_key,
+                _candidate_digest(snapshot, patch),
+            ):
+                raise ValueError(
+                    "idempotency_key must be the canonical digest of snapshot+patch"
+                )
         except ValueError as exc:
             return json.dumps(
                 {
@@ -389,7 +421,12 @@ def build_server(service: PlanService) -> FastMCP:
             )
 
         try:
-            result = await service.commit(snapshot_obj, patch_obj, expect=expect)
+            result = await service.commit(
+                snapshot_obj,
+                patch_obj,
+                expect=expect,
+                idempotency_key=idempotency_key,
+            )
         except ConflictError as exc:
             return json.dumps(
                 {

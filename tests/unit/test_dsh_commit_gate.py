@@ -71,6 +71,48 @@ def test_an_approval_token_opens_it(tmp_path):
     assert gate_decision(_commit(), str(path)) is None
 
 
+def test_approval_does_not_open_for_a_different_candidate(tmp_path):
+    approval = tmp_path / "approval"
+    approval.write_text("approved-by-U_HUGO-at-1772000000")
+    validated = tmp_path / "validated-draft.json"
+    validated.write_text(json.dumps({"version": 1, "digest": "not-this-commit"}))
+    event = _commit(
+        tool_input={"snapshot": {"day": "2026-08-28"}, "patch": {"ops": []}}
+    )
+
+    decision = gate_decision(event, str(approval), str(validated))
+
+    assert _denied(decision)
+    assert approval.read_text(), "a rejected candidate must not spend approval"
+
+
+def test_main_denies_an_approved_commit_without_a_validated_candidate(
+    tmp_path, monkeypatch, capsys
+):
+    approval = tmp_path / "approval"
+    approval.write_text("approved")
+    monkeypatch.setenv(APPROVAL_FILE_ENV, str(approval))
+    monkeypatch.delenv("FF_DSH_DRAFT_STATE_FILE", raising=False)
+    monkeypatch.setattr(
+        "sys.stdin",
+        type(
+            "S",
+            (),
+            {"read": lambda self: json.dumps(_commit(tool_input=_input_for_gate()))},
+        )(),
+    )
+
+    assert main() == 0
+    assert json.loads(capsys.readouterr().out)["decision"] == "deny"
+
+
+def _input_for_gate() -> dict:
+    return {
+        "snapshot": {"calendar_id": "c", "day": "2026-08-27"},
+        "patch": {"ops": []},
+    }
+
+
 # --- the deny has to be usable by the model ------------------------------
 
 
@@ -197,7 +239,10 @@ def test_a_refusal_is_reported_where_slack_can_see_it(tmp_path, monkeypatch):
 
 def test_an_allowed_commit_reports_no_refusal(tmp_path, monkeypatch):
     """Offering the button beside a plan that already committed is noise."""
-    from fateforger.slack_bot.dsh_commit_gate_hook import PROGRESS_FILE_ENV, gate_decision
+    from fateforger.slack_bot.dsh_commit_gate_hook import (
+        PROGRESS_FILE_ENV,
+        gate_decision,
+    )
 
     progress = tmp_path / "steps"
     monkeypatch.setenv(PROGRESS_FILE_ENV, str(progress))
@@ -214,7 +259,10 @@ def test_reporting_never_blocks_the_gate(tmp_path, monkeypatch):
     The reporting path is cosmetic; the gate is not. If those two ever trade
     places the failure is a calendar nobody agreed to.
     """
-    from fateforger.slack_bot.dsh_commit_gate_hook import PROGRESS_FILE_ENV, gate_decision
+    from fateforger.slack_bot.dsh_commit_gate_hook import (
+        PROGRESS_FILE_ENV,
+        gate_decision,
+    )
 
     monkeypatch.setenv(PROGRESS_FILE_ENV, str(tmp_path / "no" / "such" / "dir" / "f"))
     assert gate_decision({"tool_name": "mcp__tmbx__plan_commit"}, None) is not None
@@ -225,15 +273,24 @@ def test_the_marker_is_not_counted_as_a_tool_call(tmp_path):
     import threading
 
     from fateforger.slack_bot.dsh_commit_gate_hook import NEEDS_APPROVAL
+    from fateforger.slack_bot.dsh_progress_hook import (
+        ProgressEvent,
+        ProgressPhase,
+        ProgressStatus,
+    )
     from fateforger.slack_bot.harness_bridge import _tail_progress
 
     progress = tmp_path / "steps"
-    progress.write_text(f"done\tReading the day\n{NEEDS_APPROVAL}\n")
+    completed = ProgressEvent(
+        phase=ProgressPhase.READING_PLAN,
+        status=ProgressStatus.SUCCEEDED,
+    ).to_line()
+    progress.write_text(f"{completed}\n{NEEDS_APPROVAL}\n")
     stop = threading.Event()
     stop.set()
-    seen: list[str] = []
+    seen: list[object] = []
     refused: list[bool] = []
     steps = _tail_progress(progress, seen.append, stop, refused)
     assert steps == 1, "the marker was counted as a tool call"
-    assert seen == ["done\tReading the day"]
+    assert len(seen) == 1
     assert refused == [True]

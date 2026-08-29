@@ -15,7 +15,7 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | Proposal object NL/UI parity contract | Partially implemented (planning baseline complete; remaining surfaces tracked) |
 | Haunt delivery (nudges) | Implemented |
 | Sync engine confirm/cancel/undo buttons | Implemented, Tested |
-| Dispatch timeout fallback reply | Implemented, Tested |
+| Managed long-running dispatch + semantic progress card | Implemented, Tested |
 | MCP startup dependency checks | Implemented (fail-fast on unreachable calendar/notion/ticktick MCP servers) |
 
 ## File Index
@@ -27,6 +27,10 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | `bot.py` | Application entry point: builds `AsyncApp` (Slack Bolt), initializes DB engine, AutoGen runtime, workspace store, and registers all handlers. |
 | `bootstrap.py` | Startup provisioning: ensures Slack workspace channels, personas, and agent bindings exist (idempotent). |
 | `handlers.py` | Central Slack event/action router (~2000 lines): registers all Bolt listeners (slash commands, message events, button actions, modal submissions) and dispatches to agents. |
+| `harness_bridge.py` | Owns the DeepSeek CLI child process, typed progress tail, cancellation, and process reaping. |
+| `dsh_progress_hook.py` | Projects harness tool lifecycle events into a versioned, allow-listed progress event; raw prompts, reasoning, calendar content, and secrets are excluded. |
+| `progress.py` | Renders the bounded, throttled Block Kit progress card by editing one existing Slack message. |
+| `timebox_candidate.py` | Owns the immutable, one-shot validated candidate shown in Slack; stale and duplicate approvals fail closed. |
 
 ### Agent Bridge
 
@@ -86,6 +90,50 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 - Subsequent messages in a thread route to the owning agent without re-triage.
 - Focus expires on TTL or explicit release.
 
+### Long-running harness turns
+
+Timeboxing turns may take longer than Slack's route-delivery guard. The guard
+therefore backgrounds an owned route instead of cancelling it and posting a
+false timeout. Each Slack thread may own only one harness child: a newer turn
+supersedes and terminates the older child, and cancellation terminates and
+reaps the process before returning.
+
+The original processing message becomes one Block Kit progress card. It is
+updated at most once every three seconds and reports only grounded lifecycle
+facts such as the number of blocks read, the current draft attempt, validation
+failures by safe category, and commit/undo completion. Agent-authored semantic
+updates use closed codes rendered by trusted Slack copy; malformed or free-form
+progress is discarded. It never exposes raw model reasoning or request/response
+payloads. The final reply replaces the progress state through the normal
+response renderer.
+
+Slack-owned patch turns must emit one bounded skeleton-understanding event
+before calling the `timebox_patch` subagent and may call `plan_apply` at most
+five times. Direct tmbx calls still produce host-owned read/apply/validation
+lifecycle updates even when the model emits no semantic report. Rereading the
+day does not reset that budget. The plan offered for approval is rendered from the
+exact last committable tmbx candidate, not from model prose. Its button carries
+an opaque candidate id plus structured calendar/day context; the Slack
+coordinator atomically consumes that candidate
+once and submits its stored snapshot+patch directly to tmbx. The candidate is
+bound to the Slack user who initiated the run, and direct plus
+receptionist-redirected entry paths use the same approval-card publisher. The
+approval task owns the thread lifecycle through a definitive result, surviving
+Bolt callback cancellation and fencing replacement planning turns. Its canonical
+snapshot+patch digest is also the durable tmbx idempotency key, so a retry
+replays the existing journal transaction instead of writing twice. It never asks
+a second model run to rebuild an approved plan, so unauthorized, stale, and
+duplicate actions cannot commit a different candidate.
+
+Each one-shot harness turn also receives a bounded conversation facade: the
+three latest user turns and the exact rendered proposal immediately preceding
+the latest known approval card. In-process turns prefer the current immutable
+candidate directly. After a bot restart, Slack is the durable fallback and the
+card's structured calendar/day context prevents an old session memory from
+redirecting the edit to a different date. The profile treats that proposal as
+the desired draft target, not as evidence those blocks are already committed;
+it reconciles the fresh calendar snapshot into a new candidate.
+
 ### Action Handler Registry
 
 Button/action callbacks registered in `handlers.py`:
@@ -101,6 +149,8 @@ Button/action callbacks registered in `handlers.py`:
 | `ff_timebox_confirm_submit` | `timeboxing_submit.py` | Submit Stage 5 plan to calendar |
 | `ff_timebox_cancel_submit` | `timeboxing_submit.py` | Cancel pending Stage 5 submit and return to refine |
 | `ff_timebox_undo_submit` | `timeboxing_submit.py` | Undo latest Stage 5 submission |
+| `ff_harness_approve` | `handlers.py` + `timebox_candidate.py` | Commit the exact user-owned harness candidate once |
+| `ff_harness_undo` | `handlers.py` + `tmbx_client.py` | Reverse the reported tmbx transaction directly |
 
 ## Proposal Object Interaction Contract
 
