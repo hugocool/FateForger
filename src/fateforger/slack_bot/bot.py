@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+from pathlib import Path
 from typing import Awaitable, Callable
 
 import aiohttp
@@ -110,12 +112,65 @@ async def build_app() -> AsyncApp:
 logger = logging.getLogger(__name__)
 
 
+#: How often the stop-flag watcher looks. Short enough that a dev restart feels
+#: immediate, long enough that an idle bot is not spinning on the filesystem.
+_STOP_POLL_SECONDS = 0.5
+
+
+async def _await_stop_flag(stop_file: Path) -> None:
+    """Return once ``stop_file`` exists, then remove it.
+
+    A cooperative shutdown switch for the development loop. Socket Mode holds
+    the connection until the process ends, so stopping the bot otherwise means
+    signalling the process — which an operator can do and an automated agent
+    working in a sandbox generally cannot. This gives both the same handle, and
+    gives the bot a chance to close its Slack connection, its HTTP session and
+    its runtime rather than dying mid-turn.
+
+    The file is removed here rather than at startup so that a flag set while the
+    bot is down still stops the next one that reads it; clearing it on boot
+    would silently swallow the request.
+    """
+
+    while True:
+        if stop_file.exists():
+            logger.info("Stop flag observed at %s; shutting down", stop_file)
+            stop_file.unlink(missing_ok=True)
+            return
+        await asyncio.sleep(_STOP_POLL_SECONDS)
+
+
+def _stop_file() -> Path | None:
+    """Where the stop flag lives, or ``None`` when the switch is disabled."""
+
+    configured = (os.environ.get("FF_BOT_STOP_FILE") or "").strip()
+    if not configured:
+        return None
+    return Path(configured).expanduser()
+
+
 async def start() -> None:
     app = await build_app()
     handler = AsyncSocketModeHandler(app, settings.slack_app_token, web_client=app.client)
+    stop_file = _stop_file()
     logger.info("Starting Socket Mode handler...")
+    if stop_file is not None:
+        logger.info("Stop flag armed: touch %s to shut down cleanly", stop_file)
     try:
-        await handler.start_async()
+        if stop_file is None:
+            await handler.start_async()
+        else:
+            serving = asyncio.ensure_future(handler.start_async())
+            stopping = asyncio.ensure_future(_await_stop_flag(stop_file))
+            done, pending = await asyncio.wait(
+                {serving, stopping}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            # Re-raise whatever ended the wait, so a Socket Mode crash is still
+            # a crash rather than an ordinary shutdown wearing its clothes.
+            for task in done:
+                task.result()
     finally:
         await handler.close_async()
         sess = getattr(app, "_aiohttp_session", None)

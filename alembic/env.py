@@ -14,7 +14,14 @@ os.environ.setdefault("SLACK_BOT_TOKEN", "alembic-dummy")
 os.environ.setdefault("SLACK_SIGNING_SECRET", "alembic-dummy")
 os.environ.setdefault("OPENAI_API_KEY", "alembic-dummy")
 os.environ.setdefault("CALENDAR_WEBHOOK_SECRET", "alembic-dummy")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///alembic.db")
+
+# DATABASE_URL is deliberately NOT defaulted here. It was, to "sqlite:///alembic.db",
+# and get_url() reads the environment before alembic.ini -- so with the real URL
+# living in .env and never exported, every `alembic upgrade head` migrated a
+# throwaway file and reported success. The database the application actually opens
+# went years without the migrations that were supposedly applied to it, and nothing
+# ever failed. A default that silently redirects a write is worse than a missing
+# one, which is why the remaining dummies above are credentials nothing writes to.
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
