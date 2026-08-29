@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import subprocess
 import tempfile
 import threading
@@ -46,7 +47,12 @@ from .progress_events import (
 from .progress_events import (
     ProgressStatus as TimeboxProgressStatus,
 )
-from .validated_timebox_draft import DRAFT_STATE_FILE_ENV
+from .timebox_candidate import ValidatedTimeboxCandidate
+from .validated_timebox_draft import (
+    CANDIDATE_OUTPUT_FILE_ENV,
+    DRAFT_STATE_FILE_ENV,
+    read_validated_candidate,
+)
 
 #: Where the PreToolUse commit gate looks for a Slack approval token. Named
 #: here because this module is what puts it in the child's environment; the
@@ -108,6 +114,9 @@ class HarnessReply:
     #: True when the commit gate refused this turn for want of an approval.
     #: The model says "press Approve"; this is what makes the button appear.
     needs_approval: bool = False
+    #: Exact snapshot+patch validated by tmbx in this run. Private host state;
+    #: only its opaque id crosses Slack transport.
+    validated_candidate: ValidatedTimeboxCandidate | None = None
 
 
 def _repo_env() -> dict[str, str]:
@@ -149,6 +158,9 @@ def compose_task(
     text: str,
     *,
     history: list[tuple[str, str]] | None = None,
+    proposed_timebox: str | None = None,
+    proposed_calendar_id: str | None = None,
+    proposed_day: str | None = None,
     session_id: str | None = None,
 ) -> str:
     """Build the task string for one turn.
@@ -169,13 +181,10 @@ def compose_task(
     id: a required identifier nothing supplied, invented plausibly, wrong
     silently.
 
-    ``history`` remains for callers that genuinely have a transcript, but the
-    Slack path deliberately does not use it. Replaying the thread grows the
-    prompt every turn and rebuilds it from the front, so the only stable prefix
-    is the system prompt and every turn pays full price. Carrying a session id
-    instead keeps the prefix identical turn to turn -- which is what a provider
-    cache can actually reuse -- and moves the state into the store built to
-    hold it, where it is structured rather than a transcript to re-read.
+    ``history`` is deliberately bounded by the Slack caller to the latest
+    three owner turns. That small intent window is paired with the exact
+    proposal message named by its approval card; durable constraints still
+    live behind ``session_id`` rather than growing an unbounded transcript.
     """
     parts = []
     if session_id:
@@ -188,6 +197,19 @@ def compose_task(
     if history:
         prior = "\n".join(f"{speaker}: {message}" for speaker, message in history)
         parts.append(f"Earlier in this thread:\n{prior}")
+    if proposed_timebox:
+        target = ""
+        if proposed_calendar_id and proposed_day:
+            target = (
+                f" It belongs to calendar `{proposed_calendar_id}` for day "
+                f"`{proposed_day}`; read exactly that target before patching."
+            )
+        parts.append(
+            "Current proposed timebox (the draft baseline Hugo is editing; "
+            "its presence here is not evidence that it is already on the calendar)."
+            f"{target}\n"
+            f"{proposed_timebox}"
+        )
     if not parts:
         return text
     parts.append(f"Hugo now says:\n{text}")
@@ -259,11 +281,11 @@ def _tail_progress(
                     try:
                         projected = ProgressEvent.from_line(step)
                     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                        # A rolling restart can leave an old hook writing the
-                        # pre-v1 label format while the new bridge is already
-                        # tailing it. Preserve that cosmetic update; all new hook
-                        # output is typed and safe-projected before it reaches here.
-                        forwarded: TimeboxProgressEvent | str = step
+                        logger.warning(
+                            "discarded malformed progress line bytes=%d",
+                            len(step.encode("utf-8", "replace")),
+                        )
+                        continue
                     else:
                         sequence += 1
                         forwarded = _transport_progress_event(
@@ -353,6 +375,9 @@ def ask(
     text: str,
     *,
     history: list[tuple[str, str]] | None = None,
+    proposed_timebox: str | None = None,
+    proposed_calendar_id: str | None = None,
+    proposed_day: str | None = None,
     session_id: str | None = None,
     model: str | None = None,
     profile: str = _PROFILE,
@@ -399,6 +424,7 @@ def ask(
     started = time.monotonic()
     steps = 0
     last_tx_id: str | None = None
+    candidate: ValidatedTimeboxCandidate | None = None
 
     with tempfile.TemporaryDirectory(prefix="dsh-progress-") as workspace:
         progress = Path(workspace) / "steps"
@@ -408,6 +434,8 @@ def ask(
         child_env[COMMIT_FILE_ENV] = str(commits)
         validated_draft = Path(workspace) / "validated-draft.json"
         child_env[DRAFT_STATE_FILE_ENV] = str(validated_draft)
+        candidate_output = Path(workspace) / "candidate.json"
+        child_env[CANDIDATE_OUTPUT_FILE_ENV] = str(candidate_output)
         stop = threading.Event()
         tail: threading.Thread | None = None
         collected: list[int] = []
@@ -433,7 +461,15 @@ def ask(
 
         try:
             args = _cli_args(
-                compose_task(text, history=history, session_id=session_id), profile
+                compose_task(
+                    text,
+                    history=history,
+                    proposed_timebox=proposed_timebox,
+                    proposed_calendar_id=proposed_calendar_id,
+                    proposed_day=proposed_day,
+                    session_id=session_id,
+                ),
+                profile,
             )
             if cancel_event is None:
                 done = subprocess.run(
@@ -474,6 +510,7 @@ def ask(
             except OSError:
                 recorded = []
             last_tx_id = recorded[-1] if recorded else None
+            candidate = read_validated_candidate(candidate_output)
 
     if done.returncode != 0:
         # Both streams, because a failing turn does not reliably use stderr.
@@ -489,7 +526,13 @@ def ask(
             detail = "no output on either stream"
         raise HarnessError(f"harness exited {done.returncode}: {detail}")
 
-    answer = (done.stdout or "").strip()
+    # A candidate offered for approval is displayed from tmbx's own validated
+    # render, never from model prose that could describe a different draft.
+    answer = (
+        candidate.rendered.strip()
+        if candidate is not None and candidate.rendered.strip()
+        else (done.stdout or "").strip()
+    )
     if not answer:
         raise HarnessError("harness produced no output")
     # Emptiness is judged on what the harness said, not on what survives
@@ -509,6 +552,7 @@ def ask(
         # it never was. Third wire this week that was built at both ends and
         # joined nowhere.
         committed_tx_id=last_tx_id,
+        validated_candidate=candidate,
     )
 
 
@@ -532,6 +576,7 @@ def _run_cancellable(
         text=True,
         cwd=cwd,
         env=env,
+        start_new_session=True,
     )
     deadline = time.monotonic() + timeout_s
     while True:
@@ -558,9 +603,15 @@ def _terminate_process(process: subprocess.Popen[str]) -> None:
     """Terminate, then force-kill, and always reap an owned child."""
 
     if process.poll() is None:
-        process.terminate()
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (AttributeError, OSError):
+            process.terminate()
     try:
         process.communicate(timeout=2.0)
     except subprocess.TimeoutExpired:
-        process.kill()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (AttributeError, OSError):
+            process.kill()
         process.communicate()

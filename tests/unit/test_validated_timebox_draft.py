@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 
 from fateforger.slack_bot.validated_timebox_draft import (
+    CANDIDATE_OUTPUT_FILE_ENV,
     claim_plan_apply_attempt,
     current_attempt,
+    read_validated_candidate,
     record_validation_result,
     validated_commit_matches,
 )
@@ -41,7 +43,12 @@ def _apply_event(*, committable: bool, day: str = "2026-08-27") -> dict:
         "hook_event_name": "PostToolUse",
         "tool_input": _input(day=day),
         "tool_response": json.dumps(
-            {"ok": True, "committable": committable, "violations": []}
+            {
+                "ok": True,
+                "committable": committable,
+                "violations": [],
+                "rendered": "09:00-11:00 Deep work",
+            }
         ),
     }
 
@@ -89,3 +96,36 @@ def test_reading_again_does_not_reset_the_per_turn_apply_budget(tmp_path):
     )
 
     assert current_attempt(str(state)) == 2
+
+
+def test_committable_preview_exports_the_exact_validated_candidate(tmp_path):
+    state = tmp_path / "validated-draft.json"
+    candidate = tmp_path / "candidate.json"
+
+    record_validation_result(
+        _apply_event(committable=True), str(state), str(candidate)
+    )
+
+    exported = read_validated_candidate(candidate)
+    assert exported is not None
+    assert exported.snapshot == _input()["snapshot"]
+    assert exported.patch == _input()["patch"]
+    assert len(exported.digest) == 64
+
+
+def test_failed_later_preview_invalidates_exported_candidate(tmp_path):
+    state = tmp_path / "validated-draft.json"
+    candidate = tmp_path / "candidate.json"
+    record_validation_result(
+        _apply_event(committable=True), str(state), str(candidate)
+    )
+
+    record_validation_result(
+        _apply_event(committable=False), str(state), str(candidate)
+    )
+
+    assert read_validated_candidate(candidate) is None
+
+
+def test_candidate_output_env_name_is_stable_for_the_profile():
+    assert CANDIDATE_OUTPUT_FILE_ENV == "FF_DSH_CANDIDATE_OUTPUT_FILE"

@@ -41,7 +41,12 @@ class AddBlock(_OpBase):
 
     op: Literal["add"] = "add"
     after: str | None = Field(
-        default=END, description="Handle to insert after; None prepends; 'END' appends"
+        default=END,
+        description=(
+            "Pre-patch handle to insert after; None prepends; 'END' appends. "
+            "Cannot reference a handle created in the same patch. Use None for "
+            "fixed-start additions unless ordering against an existing block matters."
+        ),
     )
     h: str = Field(description="Handle for the new block")
     n: str
@@ -49,7 +54,13 @@ class AddBlock(_OpBase):
     t: ET
     p: Timing
     slug: str | None = None
-    anchor_source: AnchorSource | None = None
+    anchor_source: AnchorSource | None = Field(
+        default=None,
+        description=(
+            "Required when p.a is fs or fw: user, constraint, or calendar "
+            "records why the time is pinned"
+        ),
+    )
 
 
 class RemoveBlock(_OpBase):

@@ -7,9 +7,12 @@ import json
 import pytest
 
 from fateforger.slack_bot.progress_events import (
+    ProgressFocus,
     ProgressPhase,
+    ProgressSelection,
     ProgressSource,
     ProgressStatus,
+    ProgressTradeoff,
     TimeboxProgressEvent,
 )
 
@@ -89,7 +92,7 @@ def test_semantic_progress_has_fixed_bounded_fields_not_a_free_form_message():
     event = _event(
         phase=ProgressPhase.UNDERSTANDING_SKELETON,
         status=ProgressStatus.SUCCEEDED,
-        focus="placing deep work around hockey",
+        focus=ProgressFocus.APPROVED_OUTLINE,
         preserved_count=2,
         remaining_count=3,
         decision_state=None,
@@ -100,14 +103,34 @@ def test_semantic_progress_has_fixed_bounded_fields_not_a_free_form_message():
 
     payload = json.loads(event.to_json())
 
-    assert payload["focus"] == "placing deep work around hockey"
+    assert payload["focus"] == "approved_outline"
     assert payload["preserved_count"] == 2
     assert payload["remaining_count"] == 3
     assert "message" not in payload
     assert "reasoning" not in payload
 
 
-@pytest.mark.parametrize("field", ["focus", "selection", "tradeoff"])
-def test_semantic_progress_text_is_strictly_bounded(field: str):
-    with pytest.raises(ValueError, match=field):
-        _event(**{field: "x" * 161})
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("focus", "calendar text <@U123> xoxb-secret"),
+        ("selection", "because my chain of thought says so"),
+        ("tradeoff", "raw private event title"),
+    ],
+)
+def test_semantic_progress_rejects_model_authored_free_text(field: str, value: str):
+    with pytest.raises((TypeError, ValueError)):
+        _event(**{field: value})
+
+
+def test_semantic_progress_accepts_only_closed_codes():
+    event = _event(
+        focus=ProgressFocus.DEEP_WORK,
+        selection=ProgressSelection.PLACE_EARLIER,
+        tradeoff=ProgressTradeoff.REDUCE_FRAGMENTATION,
+    )
+
+    payload = json.loads(event.to_json())
+    assert payload["focus"] == "deep_work"
+    assert payload["selection"] == "place_earlier"
+    assert payload["tradeoff"] == "reduce_fragmentation"

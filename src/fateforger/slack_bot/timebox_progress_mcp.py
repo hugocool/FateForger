@@ -16,9 +16,12 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 
 from .progress_events import (
+    ProgressFocus,
     ProgressPhase,
+    ProgressSelection,
     ProgressSource,
     ProgressStatus,
+    ProgressTradeoff,
     TimeboxProgressEvent,
 )
 
@@ -40,7 +43,17 @@ mcp = FastMCP(
 
 @mcp.tool(name="report_skeleton_understanding")
 def report_skeleton_understanding(
-    focus: str,
+    focus: Literal[
+        "approved_outline",
+        "fixed_events",
+        "deep_work",
+        "shallow_work",
+        "exercise",
+        "meals_breaks",
+        "buffers",
+        "workday_boundaries",
+        "day_balance",
+    ],
     preserved_count: int,
     remaining_count: int,
 ) -> str:
@@ -58,7 +71,7 @@ def report_skeleton_understanding(
             source=ProgressSource.AGENT,
             phase=ProgressPhase.UNDERSTANDING_SKELETON,
             status=ProgressStatus.SUCCEEDED,
-            focus=_bounded(focus, name="focus"),
+            focus=ProgressFocus(focus),
             preserved_count=preserved_count,
             remaining_count=remaining_count,
         )
@@ -71,10 +84,35 @@ def report_skeleton_understanding(
 @mcp.tool(name="report_scheduling_decision")
 def report_scheduling_decision(
     decision_state: Literal["opened", "selected", "revised", "closed"],
-    focus: str,
+    focus: Literal[
+        "approved_outline",
+        "fixed_events",
+        "deep_work",
+        "shallow_work",
+        "exercise",
+        "meals_breaks",
+        "buffers",
+        "workday_boundaries",
+        "day_balance",
+    ],
     option_count: int,
-    selection: str | None = None,
-    tradeoff: str | None = None,
+    selection: Literal[
+        "preserve_approved_position",
+        "place_earlier",
+        "place_later",
+        "keep_fixed_time",
+        "split_around_anchor",
+        "consolidate_blocks",
+    ] | None = None,
+    tradeoff: Literal[
+        "protect_deep_work",
+        "reduce_fragmentation",
+        "preserve_anchors",
+        "honor_constraints",
+        "protect_buffer",
+        "protect_duration",
+        "fit_workday",
+    ] | None = None,
 ) -> str:
     """Report only a material scheduling choice visible to the user.
 
@@ -92,11 +130,11 @@ def report_scheduling_decision(
             source=ProgressSource.AGENT,
             phase=ProgressPhase.WEIGHING_OPTIONS,
             status=ProgressStatus.SUCCEEDED,
-            focus=_bounded(focus, name="focus"),
+            focus=ProgressFocus(focus),
             decision_state=decision_state,
             option_count=option_count,
-            selection=_bounded(selection, name="selection") if selection else None,
-            tradeoff=_bounded(tradeoff, name="tradeoff") if tradeoff else None,
+            selection=ProgressSelection(selection) if selection else None,
+            tradeoff=ProgressTradeoff(tradeoff) if tradeoff else None,
         )
     except (TypeError, ValueError):
         return _IGNORED
@@ -106,13 +144,6 @@ def report_scheduling_decision(
 
 def _session_key() -> str:
     return os.environ.get(_SESSION_KEY_ENV) or "unscoped"
-
-
-def _bounded(value: str, *, name: str) -> str:
-    collapsed = " ".join(value.split())
-    if not collapsed or len(collapsed) > 160:
-        raise ValueError(f"{name} must be between 1 and 160 characters")
-    return collapsed
 
 
 def _append(event: TimeboxProgressEvent) -> None:

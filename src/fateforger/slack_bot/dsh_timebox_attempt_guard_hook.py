@@ -114,7 +114,7 @@ def _record_exhaustion(attempt: int) -> None:
 
 def _max_attempts() -> int:
     try:
-        return max(1, int(os.environ.get(_MAX_ATTEMPTS_ENV, "5")))
+        return min(5, max(1, int(os.environ.get(_MAX_ATTEMPTS_ENV, "5"))))
     except ValueError:
         return 5
 

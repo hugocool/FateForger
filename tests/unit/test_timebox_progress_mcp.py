@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from fateforger.slack_bot.progress_events import (
+    ProgressFocus,
     ProgressPhase,
+    ProgressSelection,
     ProgressSource,
     ProgressStatus,
+    ProgressTradeoff,
     TimeboxProgressEvent,
 )
 from fateforger.slack_bot.timebox_progress_mcp import (
@@ -22,7 +25,7 @@ def test_skeleton_report_writes_one_typed_event_for_the_slack_host(
     monkeypatch.setenv("FF_DSH_SESSION_KEY", "C1:1772.0")
 
     answer = report_skeleton_understanding(
-        focus="placing deep work around hockey",
+        focus="approved_outline",
         preserved_count=2,
         remaining_count=3,
     )
@@ -32,7 +35,7 @@ def test_skeleton_report_writes_one_typed_event_for_the_slack_host(
     assert event.source is ProgressSource.AGENT
     assert event.phase is ProgressPhase.UNDERSTANDING_SKELETON
     assert event.status is ProgressStatus.SUCCEEDED
-    assert event.focus == "placing deep work around hockey"
+    assert event.focus is ProgressFocus.APPROVED_OUTLINE
     assert event.preserved_count == 2
     assert event.remaining_count == 3
 
@@ -44,17 +47,17 @@ def test_decision_report_is_a_small_state_machine(tmp_path, monkeypatch):
 
     report_scheduling_decision(
         decision_state="opened",
-        focus="where to place the run",
+        focus="exercise",
         option_count=2,
         selection=None,
-        tradeoff="full hour before dinner or shorter run afterwards",
+        tradeoff="protect_duration",
     )
     report_scheduling_decision(
         decision_state="selected",
-        focus="where to place the run",
+        focus="exercise",
         option_count=2,
-        selection="the full hour before dinner",
-        tradeoff="preserves both run duration and dinner",
+        selection="place_earlier",
+        tradeoff="protect_duration",
     )
 
     events = [
@@ -63,6 +66,8 @@ def test_decision_report_is_a_small_state_machine(tmp_path, monkeypatch):
     ]
     assert [event.decision_state for event in events] == ["opened", "selected"]
     assert all(event.phase is ProgressPhase.WEIGHING_OPTIONS for event in events)
+    assert events[-1].selection is ProgressSelection.PLACE_EARLIER
+    assert events[-1].tradeoff is ProgressTradeoff.PROTECT_DURATION
 
 
 def test_reporting_without_a_slack_progress_file_is_a_noop(monkeypatch):
@@ -71,7 +76,7 @@ def test_reporting_without_a_slack_progress_file_is_a_noop(monkeypatch):
 
     assert (
         report_skeleton_understanding(
-            focus="building the approved outline",
+            focus="approved_outline",
             preserved_count=1,
             remaining_count=4,
         )
@@ -88,10 +93,10 @@ def test_malformed_optional_report_is_ignored_without_blocking_the_run(
 
     answer = report_scheduling_decision(
         decision_state="selected",
-        focus="where to place the run",
+        focus="exercise",
         option_count=2,
         selection=None,
-        tradeoff="x" * 500,
+        tradeoff="not_a_supported_code",
     )
 
     assert answer == "Progress ignored. Continue the timebox work."

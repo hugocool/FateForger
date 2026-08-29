@@ -50,6 +50,14 @@ class UndoUnavailable(RuntimeError):
     """
 
 
+class CommitUnavailable(RuntimeError):
+    """The validated candidate could not be submitted to tmbx."""
+
+
+class CommitOutcomeUnknown(RuntimeError):
+    """A commit was dispatched but no definitive result could be reconciled."""
+
+
 class TmbxClient:
     """The only thing here that knows tmbx exists."""
 
@@ -71,7 +79,7 @@ class TmbxClient:
 
         try:
             tools = await self._client.get_tools()
-        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+        except Exception as exc:
             raise UndoUnavailable(f"{type(exc).__name__}: {exc}") from exc
 
         tool = next((t for t in tools if t.name == "plan_undo"), None)
@@ -80,27 +88,93 @@ class TmbxClient:
 
         try:
             raw = await tool.run_json({"tx_id": tx_id}, CancellationToken())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise UndoUnavailable(f"{type(exc).__name__}: {exc}") from exc
 
-        return _as_payload(raw)
+        return _as_payload(raw, operation="plan_undo")
+
+    async def commit(
+        self,
+        snapshot: dict[str, Any],
+        patch: dict[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Commit exactly the candidate already validated and approved."""
+
+        from autogen_core import CancellationToken
+
+        try:
+            tools = await self._client.get_tools()
+        except Exception as exc:
+            logger.warning(
+                "plan_commit tool discovery failed error_type=%s",
+                type(exc).__name__,
+            )
+            raise CommitUnavailable("calendar service unavailable") from exc
+        tool = next((tool for tool in tools if tool.name == "plan_commit"), None)
+        if tool is None:
+            raise CommitUnavailable("the tmbx mount does not publish plan_commit")
+        request = {
+            "snapshot": snapshot,
+            "patch": patch,
+            "expect": "clean",
+            "idempotency_key": idempotency_key,
+        }
+        ambiguous_dispatch = False
+        for attempt in range(2):
+            try:
+                raw = await tool.run_json(request, CancellationToken())
+            except Exception as exc:
+                ambiguous_dispatch = True
+                if attempt == 0:
+                    continue
+                raise CommitOutcomeUnknown(
+                    "calendar commit was dispatched but its outcome could not be confirmed"
+                ) from exc
+            payload = _as_payload(raw, operation="plan_commit")
+            if payload.get("reason") in {
+                "unparseable_response",
+                "unexpected_response",
+            }:
+                ambiguous_dispatch = True
+                if attempt == 0:
+                    continue
+                raise CommitOutcomeUnknown(
+                    "calendar commit returned no trustworthy outcome"
+                )
+            if ambiguous_dispatch and payload.get("committed") is not True:
+                raise CommitOutcomeUnknown(
+                    "calendar state changed after a lost commit response"
+                )
+            return payload
+        raise AssertionError("commit reconciliation loop did not return")
 
 
-def _as_payload(raw: Any) -> dict[str, Any]:
+def _as_payload(raw: Any, *, operation: str = "plan_undo") -> dict[str, Any]:
     """tmbx answers with a JSON string; give callers the object.
 
-    A response that will not parse is returned as an unreversed outcome with
-    the text attached rather than raising, so a shape change downgrades the
-    message the user sees instead of losing the fact that undo ran at all.
+    A response that will not parse fails closed with a stable reason and
+    bounded metadata logging. Provider text is neither returned nor logged,
+    because it may contain bodies, URLs, identifiers, or other private data.
     """
     text = _text_of(raw)
     try:
         payload = json.loads(text)
     except (ValueError, TypeError):
-        logger.warning("plan_undo returned unparseable output: %s", text[:200])
-        return {"committed": False, "reason": "unparseable_response", "raw": text[:200]}
+        logger.warning(
+            "%s returned unparseable output (response_bytes=%d)",
+            operation,
+            len(text.encode("utf-8", errors="replace")),
+        )
+        return {"committed": False, "reason": "unparseable_response"}
     if not isinstance(payload, dict):
-        return {"committed": False, "reason": "unexpected_response", "raw": text[:200]}
+        logger.warning(
+            "%s returned unexpected response type %s",
+            operation,
+            type(payload).__name__,
+        )
+        return {"committed": False, "reason": "unexpected_response"}
     return payload
 
 
@@ -125,4 +199,9 @@ def _text_of(raw: Any) -> str:
     return "".join(parts) if parts else str(raw)
 
 
-__all__ = ["TmbxClient", "UndoUnavailable"]
+__all__ = [
+    "CommitOutcomeUnknown",
+    "CommitUnavailable",
+    "TmbxClient",
+    "UndoUnavailable",
+]

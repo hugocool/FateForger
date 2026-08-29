@@ -32,6 +32,10 @@ from fateforger.slack_bot.dsh_progress_hook import (
 )
 from fateforger.slack_bot.harness_bridge import compose_task
 from fateforger.slack_bot.progress_events import (
+    ProgressFocus,
+    TimeboxProgressEvent,
+)
+from fateforger.slack_bot.progress_events import (
     ProgressPhase as TimeboxProgressPhase,
 )
 from fateforger.slack_bot.progress_events import (
@@ -40,12 +44,11 @@ from fateforger.slack_bot.progress_events import (
 from fateforger.slack_bot.progress_events import (
     ProgressStatus as TimeboxProgressStatus,
 )
-from fateforger.slack_bot.progress_events import (
-    TimeboxProgressEvent,
-)
 from fateforger.slack_bot.validated_timebox_draft import (
+    CANDIDATE_OUTPUT_FILE_ENV,
     DRAFT_STATE_FILE_ENV,
     claim_plan_apply_attempt,
+    record_validation_result,
 )
 
 # -- the hook ------------------------------------------------------------
@@ -296,12 +299,15 @@ def _drain(path: Path, seen: list, *, session_key: str = "test:unscoped") -> int
     )
 
 
-def test_the_tail_reports_every_completed_step(tmp_path):
+def test_the_tail_discards_untyped_or_malformed_lines_fail_closed(tmp_path, caplog):
     path = tmp_path / "steps"
-    path.write_text("plan_read\nmemory_get_active_constraints\n")
-    seen: list[str] = []
-    assert _drain(path, seen) == 2
-    assert seen == ["plan_read", "memory_get_active_constraints"]
+    path.write_text("plan_read\n<@U123> secret token xoxb-leak\n")
+    seen: list[TimeboxProgressEvent] = []
+
+    assert _drain(path, seen) == 0
+    assert seen == []
+    assert "discarded malformed progress" in caplog.text
+    assert "xoxb-leak" not in caplog.text
 
 
 def test_the_tail_delivers_typed_progress_events(tmp_path):
@@ -352,7 +358,7 @@ def test_the_tail_resequences_direct_agent_progress_with_host_identity(tmp_path)
         source=TimeboxProgressSource.AGENT,
         phase=TimeboxProgressPhase.UNDERSTANDING_SKELETON,
         status=TimeboxProgressStatus.SUCCEEDED,
-        focus="placing deep work around hockey",
+        focus=ProgressFocus.DEEP_WORK,
         preserved_count=2,
         remaining_count=3,
     )
@@ -373,10 +379,14 @@ def test_a_half_written_line_is_held_back_until_its_newline(tmp_path):
     a checklist that invents progress that did not happen.
     """
     path = tmp_path / "steps"
-    path.write_text("plan_read\nmemory_get_act")
-    seen: list[str] = []
+    complete = ProgressEvent(
+        phase=ProgressPhase.READING_PLAN,
+        status=ProgressStatus.SUCCEEDED,
+    ).to_line()
+    path.write_text(complete + "\n" + '{"version":1,"phase":"reading')
+    seen: list[TimeboxProgressEvent] = []
     assert _drain(path, seen) == 1
-    assert seen == ["plan_read"]
+    assert len(seen) == 1
 
 
 def test_it_reports_a_step_before_the_run_has_finished(tmp_path, monkeypatch):
@@ -388,7 +398,7 @@ def test_it_reports_a_step_before_the_run_has_finished(tmp_path, monkeypatch):
     monkeypatch.setattr(harness_bridge, "_POLL_INTERVAL_S", 0.01)
     path = tmp_path / "steps"
     path.touch()
-    seen: list[str] = []
+    seen: list[TimeboxProgressEvent] = []
     stop = threading.Event()
     worker = threading.Thread(
         target=lambda: harness_bridge._tail_progress(path, seen.append, stop),
@@ -397,36 +407,52 @@ def test_it_reports_a_step_before_the_run_has_finished(tmp_path, monkeypatch):
     worker.start()
     try:
         with path.open("a") as handle:
-            handle.write("plan_read\n")
+            handle.write(
+                ProgressEvent(
+                    phase=ProgressPhase.READING_PLAN,
+                    status=ProgressStatus.STARTED,
+                ).to_line()
+                + "\n"
+            )
         deadline = time.monotonic() + 5
         while not seen and time.monotonic() < deadline:
             time.sleep(0.01)
         # Observed while the tail is still running and stop is still clear.
-        assert seen == ["plan_read"]
+        assert len(seen) == 1
         assert not stop.is_set()
 
         with path.open("a") as handle:
-            handle.write("plan_write\n")
+            handle.write(
+                ProgressEvent(
+                    phase=ProgressPhase.READING_PLAN,
+                    status=ProgressStatus.SUCCEEDED,
+                ).to_line()
+                + "\n"
+            )
     finally:
         stop.set()
         worker.join(timeout=5)
-    assert seen == ["plan_read", "plan_write"]
+    assert len(seen) == 2
 
 
 def test_a_failing_consumer_does_not_take_down_the_turn(tmp_path):
     """The progress channel describes the work; it must not be able to end it."""
     path = tmp_path / "steps"
-    path.write_text("plan_read\nplan_write\n")
-    calls: list[str] = []
+    event = ProgressEvent(
+        phase=ProgressPhase.READING_PLAN,
+        status=ProgressStatus.SUCCEEDED,
+    ).to_line()
+    path.write_text(event + "\n" + event + "\n")
+    calls: list[TimeboxProgressEvent] = []
 
-    def explode(step: str) -> None:
+    def explode(step: TimeboxProgressEvent) -> None:
         calls.append(step)
         raise RuntimeError("slack is down")
 
     stop = threading.Event()
     stop.set()
     assert harness_bridge._tail_progress(path, explode, stop) == 2
-    assert calls == ["plan_read", "plan_write"]
+    assert len(calls) == 2
 
 
 def test_a_missing_file_is_survivable(tmp_path):
@@ -434,6 +460,56 @@ def test_a_missing_file_is_survivable(tmp_path):
     seen: list[str] = []
     assert _drain(tmp_path / "never-created", seen) == 0
     assert seen == []
+
+
+def test_cancellable_harness_starts_an_isolated_process_group(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class _Process:
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return "answer", ""
+
+    def fake_popen(args, **kwargs):
+        captured.update(kwargs)
+        return _Process()
+
+    monkeypatch.setattr(harness_bridge.subprocess, "Popen", fake_popen)
+
+    done = harness_bridge._run_cancellable(
+        ["node", "cli"],
+        cwd="/tmp",
+        env={},
+        cancel_event=threading.Event(),
+        timeout_s=1,
+    )
+
+    assert done.returncode == 0
+    assert captured["start_new_session"] is True
+
+
+def test_termination_signals_the_whole_process_group_before_reaping(monkeypatch):
+    signals: list[tuple[int, int]] = []
+
+    class _Process:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr(
+        harness_bridge.os,
+        "killpg",
+        lambda pid, sig: signals.append((pid, sig)),
+    )
+
+    harness_bridge._terminate_process(_Process())
+
+    assert signals == [(4242, harness_bridge.signal.SIGTERM)]
 
 
 # -- the bridge ----------------------------------------------------------
@@ -455,11 +531,15 @@ def test_ask_points_the_hook_at_a_file_and_reports_what_lands(monkeypatch):
         captured["reasoning"] = env["FF_HARNESS_REASONING"]
         captured["fateforger_root"] = env["FF_FATEFORGER_ROOT"]
         # Stand in for the PostToolUse hook firing twice mid-run.
-        Path(env[PROGRESS_FILE_ENV]).write_text("plan_read\nplan_write\n")
+        event = ProgressEvent(
+            phase=ProgressPhase.READING_PLAN,
+            status=ProgressStatus.SUCCEEDED,
+        ).to_line()
+        Path(env[PROGRESS_FILE_ENV]).write_text(event + "\n" + event + "\n")
         return _Done()
 
     monkeypatch.setattr(harness_bridge.subprocess, "run", fake_run)
-    seen: list[str] = []
+    seen: list[TimeboxProgressEvent] = []
     reply = harness_bridge.ask(
         "plan tuesday",
         session_id="C1:1772.0",
@@ -467,7 +547,7 @@ def test_ask_points_the_hook_at_a_file_and_reports_what_lands(monkeypatch):
         on_event=seen.append,
     )
 
-    assert seen == ["plan_read", "plan_write"]
+    assert len(seen) == 2
     assert captured["session_key"] == "C1:1772.0"
     assert captured["reasoning"] == "low"
     assert captured["fateforger_root"] == str(
@@ -494,6 +574,48 @@ def test_without_a_listener_the_hook_is_told_nothing(monkeypatch):
     monkeypatch.setattr(harness_bridge.subprocess, "run", fake_run)
     harness_bridge.ask("plan tuesday")
     assert PROGRESS_FILE_ENV not in captured["env"]
+
+
+def test_ask_returns_the_exact_private_candidate_exported_by_the_hook(monkeypatch):
+    candidate_input = {
+        "snapshot": {"calendar_id": "primary", "day": "2026-08-29"},
+        "patch": {"ops": [{"op": "add", "h": "DW1"}]},
+    }
+
+    class _Done:
+        returncode = 0
+        stdout = "the displayed plan"
+        stderr = ""
+
+    def fake_run(args, **kwargs):
+        state = kwargs["env"][DRAFT_STATE_FILE_ENV]
+        output = kwargs["env"][CANDIDATE_OUTPUT_FILE_ENV]
+        record_validation_result(
+            {
+                "tool_name": "mcp__tmbx__plan_apply",
+                "hook_event_name": "PostToolUse",
+                "tool_input": candidate_input,
+                "tool_response": json.dumps(
+                    {
+                        "ok": True,
+                        "committable": True,
+                        "rendered": "09:00-11:00 Canonical deep work",
+                    }
+                ),
+            },
+            state,
+            output,
+        )
+        return _Done()
+
+    monkeypatch.setattr(harness_bridge.subprocess, "run", fake_run)
+
+    reply = harness_bridge.ask("plan the day")
+
+    assert reply.validated_candidate is not None
+    assert reply.validated_candidate.snapshot == candidate_input["snapshot"]
+    assert reply.validated_candidate.patch == candidate_input["patch"]
+    assert reply.text == "09:00-11:00 Canonical deep work"
 
 
 def test_a_failing_harness_still_raises_with_the_listener_attached(monkeypatch):
@@ -627,3 +749,20 @@ def test_history_and_session_id_compose_rather_than_replace():
         session_id="C1:1.0",
     )
     assert "C1:1.0" in task and "which day?" in task and "and the gym?" in task
+
+
+def test_proposed_timebox_is_explicit_draft_input_not_calendar_state():
+    """A follow-up edits the displayed proposal even when it was never committed."""
+
+    task = compose_task(
+        "move Focus Audit to 10:00",
+        proposed_timebox="FA1 Focus Audit 09:00-10:00",
+        proposed_calendar_id="primary",
+        proposed_day="2026-08-29",
+        session_id="C1:1.0",
+    )
+
+    assert "Current proposed timebox" in task
+    assert "not evidence that it is already on the calendar" in task
+    assert "FA1 Focus Audit 09:00-10:00" in task
+    assert "calendar `primary` for day `2026-08-29`" in task

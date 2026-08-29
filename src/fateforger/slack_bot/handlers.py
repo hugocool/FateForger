@@ -13,23 +13,24 @@ from time import perf_counter
 
 from autogen_agentchat.messages import TextMessage
 from autogen_core import AgentId
+from pydantic import BaseModel, ConfigDict
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
-from fateforger.agents.timeboxing.preferences import (
-    Constraint,
-    ConstraintStatus,
-    ConstraintStore,
-    ensure_constraint_schema,
-)
 from fateforger.agents.tasks.messages import (
     TaskDetailsModalRequest,
     TaskDetailsModalResponse,
     TaskDueActionRequest,
     TaskEditTitleRequest,
     TaskEditTitleResponse,
+)
+from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
+from fateforger.agents.timeboxing.preferences import (
+    Constraint,
+    ConstraintStatus,
+    ConstraintStore,
+    ensure_constraint_schema,
 )
 from fateforger.core.config import settings
 from fateforger.core.logging_config import observe_stage_duration, record_error
@@ -61,6 +62,16 @@ from fateforger.slack_bot.planning import (
     parse_draft_id_from_value,
 )
 from fateforger.slack_bot.progress import HarnessProgressCard
+from fateforger.slack_bot.progress_events import (
+    ProgressPhase as TimeboxProgressPhase,
+)
+from fateforger.slack_bot.progress_events import (
+    ProgressSource,
+    TimeboxProgressEvent,
+)
+from fateforger.slack_bot.progress_events import (
+    ProgressStatus as TimeboxProgressStatus,
+)
 from fateforger.slack_bot.reply_guard import agent_reply_text
 from fateforger.slack_bot.task_cards import (
     FF_TASK_DETAILS_ACTION_ID,
@@ -91,6 +102,7 @@ from fateforger.slack_bot.timeboxing_submit import (
 )
 
 from .focus import FocusManager
+from .timebox_candidate import PendingTimeboxCandidates
 from .ui import link_button, open_link_blocks
 from .workspace import (
     DEFAULT_PERSONAS,
@@ -703,6 +715,130 @@ def _agent_for_channel(channel_id: str) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class _HarnessThreadContext:
+    """The bounded Slack state a fresh one-shot harness process cannot retain."""
+
+    recent_user_turns: tuple[tuple[str, str], ...] = ()
+    proposed_timebox: str | None = None
+    calendar_id: str | None = None
+    day: str | None = None
+
+
+def _contains_harness_approval(message: dict) -> bool:
+    for block in message.get("blocks") or ():
+        for element in block.get("elements") or ():
+            if element.get("action_id") == FF_HARNESS_APPROVE_ACTION_ID:
+                return True
+    return False
+
+
+async def _harness_thread_context(
+    *,
+    client,
+    channel: str,
+    thread_root: str,
+    current_ts: str,
+    owner_user_id: str,
+) -> _HarnessThreadContext:
+    """Recover recent user intent and the last displayed proposal from Slack.
+
+    Harness turns are deliberately one-shot, and the in-memory candidate store
+    is empty after a bot restart. Slack is already the durable user-visible
+    record, so recover only the bot-authored message named by the approval
+    card. Adjacency is not identity: progress and user messages may interleave
+    while a turn is running. No free-form intent parsing is involved.
+    """
+
+    messages: list[dict] = []
+    cursor: str | None = None
+    try:
+        for _page in range(10):
+            request = {"channel": channel, "ts": thread_root, "limit": 100}
+            if cursor:
+                request["cursor"] = cursor
+            response = await client.conversations_replies(**request)
+            messages.extend(response.get("messages") or [])
+            metadata = response.get("response_metadata") or {}
+            cursor = str(metadata.get("next_cursor") or "").strip() or None
+            if cursor is None:
+                break
+        if cursor is not None:
+            return _HarnessThreadContext()
+    except Exception:
+        return _HarnessThreadContext()
+    prior = [message for message in messages if str(message.get("ts")) != current_ts]
+
+    user_messages = [
+        ("Hugo", str(message.get("text") or "").strip())
+        for message in prior
+        if message.get("user") == owner_user_id
+        and str(message.get("text") or "").strip()
+    ][-3:]
+
+    proposed_timebox = None
+    calendar_id = None
+    day = None
+    proposal_message_ts = None
+    approval_index = next(
+        (
+            index
+            for index in range(len(prior) - 1, -1, -1)
+            if _contains_harness_approval(prior[index])
+        ),
+        None,
+    )
+    if approval_index is not None:
+        for block in prior[approval_index].get("blocks") or ():
+            for element in block.get("elements") or ():
+                if element.get("action_id") != FF_HARNESS_APPROVE_ACTION_ID:
+                    continue
+                try:
+                    approval_value = json.loads(element.get("value") or "")
+                except (TypeError, ValueError):
+                    approval_value = {}
+                if isinstance(approval_value, dict):
+                    raw_calendar_id = approval_value.get("calendar_id")
+                    raw_day = approval_value.get("day")
+                    raw_proposal_message_ts = approval_value.get(
+                        "proposal_message_ts"
+                    )
+                    calendar_id = (
+                        raw_calendar_id if isinstance(raw_calendar_id, str) else None
+                    )
+                    day = raw_day if isinstance(raw_day, str) else None
+                    proposal_message_ts = (
+                        raw_proposal_message_ts
+                        if isinstance(raw_proposal_message_ts, str)
+                        and raw_proposal_message_ts
+                        else None
+                    )
+                break
+        if proposal_message_ts:
+            proposal_message = next(
+                (
+                    message
+                    for message in prior
+                    if str(message.get("ts")) == proposal_message_ts
+                ),
+                None,
+            )
+            if proposal_message is not None and proposal_message.get("bot_id"):
+                text = str(proposal_message.get("text") or "").strip()
+                proposed_timebox = text or None
+
+        if proposed_timebox is None:
+            calendar_id = None
+            day = None
+
+    return _HarnessThreadContext(
+        recent_user_turns=tuple(user_messages),
+        proposed_timebox=proposed_timebox,
+        calendar_id=calendar_id,
+        day=day,
+    )
+
+
 def _general_channel_id() -> str | None:
     cid = (getattr(settings, "slack_general_channel_id", "") or "").strip()
     if cid:
@@ -725,7 +861,16 @@ def _plan_sessions_channel_id() -> str | None:
 
 
 async def _harness_turn(
-    *, text: str, thread_key: str, on_phase, session_id: str | None = None
+    *,
+    text: str,
+    thread_key: str,
+    owner_user_id: str,
+    on_phase,
+    session_id: str | None = None,
+    history: list[tuple[str, str]] | None = None,
+    proposed_timebox: str | None = None,
+    proposed_calendar_id: str | None = None,
+    proposed_day: str | None = None,
 ) -> TextMessage:
     """One Slack turn through the harness, shaped like a runtime reply.
 
@@ -738,8 +883,23 @@ async def _harness_turn(
     stall every other Slack event in the workspace.
     """
     from .harness_bridge import PLANNING_MODEL, HarnessError
+    from .thread_approval import approval_path, revoke
 
-    from .thread_approval import approval_path
+    # Prefer the exact current process-owned rendering. Slack thread recovery
+    # supplies the same baseline after a restart, when this store is empty.
+    previous_candidate = _pending_candidates.peek(thread_key)
+    if previous_candidate is not None and previous_candidate.rendered.strip():
+        proposed_timebox = previous_candidate.rendered
+        raw_calendar_id = previous_candidate.snapshot.get("calendar_id")
+        raw_day = previous_candidate.snapshot.get("day")
+        proposed_calendar_id = (
+            raw_calendar_id if isinstance(raw_calendar_id, str) else None
+        )
+        proposed_day = raw_day if isinstance(raw_day, str) else None
+
+    # Any material new request invalidates the approval card it supersedes.
+    _pending_candidates.invalidate(thread_key)
+    revoke(thread_key)
 
     try:
         reply = await _owned_harness_ask(
@@ -751,6 +911,10 @@ async def _harness_turn(
             # thread has a past. `thread_key` was already threaded here for the
             # approval file; the conversation's own identity was not.
             session_id=session_id,
+            history=history,
+            proposed_timebox=proposed_timebox,
+            proposed_calendar_id=proposed_calendar_id,
+            proposed_day=proposed_day,
             # Every turn that reaches here is a planning turn: this function is
             # the timeboxing path. The receptionist and the fast conversational
             # replies do not come through it.
@@ -763,13 +927,13 @@ async def _harness_turn(
             content=(f":warning: The harness did not answer.\n```{exc}```"),
             source="timeboxing_agent",
         )
-    if reply.needs_approval:
-        # The gate refused a commit for want of an approval, so the model has
-        # just told Hugo to press Approve. Until this line existed there was no
-        # Approve to press: `harness_approve_block` was written and called from
-        # nowhere, so the instruction pointed at a control that did not exist
-        # and the plan could not be committed at all.
-        _pending_approval.add(thread_key)
+    if reply.validated_candidate is not None:
+        # A clean tmbx candidate is approvable whether or not the model tried
+        # plan_commit. In particular, obeying "do not commit" must still show
+        # the one control that can later submit this exact displayed payload.
+        _pending_candidates.replace(
+            thread_key, reply.validated_candidate, owner_user_id=owner_user_id
+        )
     return TextMessage(content=reply.text, source="timeboxing_agent")
 
 
@@ -777,9 +941,21 @@ async def _harness_turn(
 class _HarnessTurnControl:
     cancel_event: threading.Event
     on_phase: Callable[[object], None]
+    finished: asyncio.Event
 
 
 _harness_turn_controls: dict[str, _HarnessTurnControl] = {}
+_harness_turn_handoffs: dict[str, asyncio.Lock] = {}
+_thread_commit_locks: dict[str, asyncio.Lock] = {}
+_approval_tasks: set[asyncio.Task[None]] = set()
+
+
+def _thread_lock(registry: dict[str, asyncio.Lock], thread_key: str) -> asyncio.Lock:
+    lock = registry.get(thread_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        registry[thread_key] = lock
+    return lock
 
 
 async def _owned_harness_ask(
@@ -792,25 +968,39 @@ async def _owned_harness_ask(
     """Run one cancellable child, superseding any older turn in the thread."""
     from .harness_bridge import HarnessCancelled, ask
 
-    control = _HarnessTurnControl(cancel_event=threading.Event(), on_phase=on_event)
-    previous = _harness_turn_controls.get(thread_key)
-    if previous is not None:
-        try:
-            previous.on_phase("done\tSuperseded by a newer request")
-        except Exception:
-            pass
-        previous.cancel_event.set()
-    _harness_turn_controls[thread_key] = control
-
-    worker = asyncio.create_task(
-        asyncio.to_thread(
-            ask,
-            text,
-            on_event=on_event,
-            cancel_event=control.cancel_event,
-            **ask_kwargs,
-        )
-    )
+    async with _thread_lock(_harness_turn_handoffs, thread_key):
+        previous = _harness_turn_controls.get(thread_key)
+        if previous is not None:
+            try:
+                previous.on_phase(
+                    TimeboxProgressEvent(
+                        session_key=thread_key,
+                        sequence=0,
+                        source=ProgressSource.RUNTIME,
+                        phase=TimeboxProgressPhase.OTHER,
+                        status=TimeboxProgressStatus.SUPERSEDED,
+                    )
+                )
+            except Exception:
+                pass
+            previous.cancel_event.set()
+            await previous.finished.wait()
+        async with _thread_lock(_thread_commit_locks, thread_key):
+            control = _HarnessTurnControl(
+                cancel_event=threading.Event(),
+                on_phase=on_event,
+                finished=asyncio.Event(),
+            )
+            _harness_turn_controls[thread_key] = control
+            worker = asyncio.create_task(
+                asyncio.to_thread(
+                    ask,
+                    text,
+                    on_event=on_event,
+                    cancel_event=control.cancel_event,
+                    **ask_kwargs,
+                )
+            )
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
@@ -823,6 +1013,7 @@ async def _owned_harness_ask(
     except HarnessCancelled as exc:
         raise asyncio.CancelledError from exc
     finally:
+        control.finished.set()
         if _harness_turn_controls.get(thread_key) is control:
             _harness_turn_controls.pop(thread_key, None)
 
@@ -847,29 +1038,51 @@ FF_HARNESS_APPROVE_ACTION_ID = "ff_harness_approve"
 #: rather than returned through the renderer because the reply travels as a
 #: `TextMessage`, which carries text and a source and nothing else -- widening
 #: it would touch every renderer for one boolean that only this path reads.
-_pending_approval: set[str] = set()
+_pending_candidates = PendingTimeboxCandidates()
 
 
-def take_pending_approval(thread_key: str) -> bool:
-    """Whether this thread is waiting on an Approve, clearing the flag.
+def take_pending_approval(thread_key: str) -> str | None:
+    """Return the opaque id of the exact candidate awaiting approval.
 
-    Consumed on read: the button is offered once per refusal. A flag that
-    stayed set would re-offer approval beside a later message that asked for
-    none, which is how a person ends up approving something they were not
-    looking at.
+    Reading does not spend it; only an authorized approval click may consume
+    the candidate. A material new turn invalidates it before producing a
+    replacement.
     """
-    if thread_key not in _pending_approval:
-        return False
-    _pending_approval.discard(thread_key)
-    return True
+    candidate = _pending_candidates.peek(thread_key)
+    return candidate.candidate_id if candidate is not None else None
 
 
-def harness_approve_block(thread_key: str) -> dict:
+def _approval_thread_root(
+    origin_thread_root_ts: str | None, processing_message_ts: str
+) -> str:
+    """Put approval beside the plan and preserve its candidate thread key."""
+
+    return origin_thread_root_ts or processing_message_ts
+
+
+class HarnessApproveActionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    thread_key: str
+    candidate_id: str
+    calendar_id: str | None = None
+    day: str | None = None
+    proposal_message_ts: str | None = None
+
+
+def harness_approve_block(
+    thread_key: str,
+    candidate_id: str,
+    *,
+    calendar_id: str | None = None,
+    day: str | None = None,
+    proposal_message_ts: str | None = None,
+) -> dict:
     """The Approve control, offered beside a plan rather than after it.
 
-    Deliberately unlabelled with the day: the approval is spent on whatever
-    commit comes next in this thread, and naming a date here would claim a
-    precision the token does not carry.
+    The payload carries target and message identity so a later process can
+    recover the displayed draft exactly. Only the opaque candidate id grants
+    authority to commit; the descriptive continuity fields never do.
     """
     return {
         "type": "actions",
@@ -879,10 +1092,233 @@ def harness_approve_block(thread_key: str) -> dict:
                 "action_id": FF_HARNESS_APPROVE_ACTION_ID,
                 "style": "primary",
                 "text": {"type": "plain_text", "text": "Approve this plan"},
-                "value": thread_key,
+                "value": HarnessApproveActionPayload(
+                    thread_key=thread_key,
+                    candidate_id=candidate_id,
+                    calendar_id=calendar_id,
+                    day=day,
+                    proposal_message_ts=proposal_message_ts,
+                ).model_dump_json(),
             }
         ],
     }
+
+
+async def _post_pending_harness_approval(
+    *,
+    client,
+    logger,
+    channel: str,
+    thread_root: str,
+    thread_key: str,
+    proposal_message_ts: str,
+) -> bool:
+    """Offer the same exact-candidate control from every harness entry path."""
+
+    candidate_id = take_pending_approval(thread_key)
+    if not candidate_id:
+        return False
+    candidate = _pending_candidates.peek(thread_key)
+    snapshot = candidate.snapshot if candidate is not None else {}
+    calendar_id = snapshot.get("calendar_id")
+    day = snapshot.get("day")
+    try:
+        await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_root,
+            text="Ready to commit — this needs your approval.",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": ":lock: *This plan has not been committed.* "
+                        "Nothing reaches your calendar until you approve it.",
+                    },
+                },
+                harness_approve_block(
+                    thread_key,
+                    candidate_id,
+                    calendar_id=(calendar_id if isinstance(calendar_id, str) else None),
+                    day=(day if isinstance(day, str) else None),
+                    proposal_message_ts=proposal_message_ts,
+                ),
+            ],
+        )
+    except Exception:
+        # The plan itself already landed. A missing button is recoverable by
+        # asking again and must not erase the answer the user can inspect.
+        logger.exception("could not offer the approval control")
+        return False
+    return True
+
+
+async def _execute_harness_approval(
+    *,
+    client,
+    logger,
+    channel: str,
+    thread_root: str,
+    thread_key: str,
+    candidate_id: str,
+    actor_user_id: str,
+) -> None:
+    """Own one thread until its exact candidate has a definitive outcome."""
+
+    from .tmbx_client import CommitOutcomeUnknown, CommitUnavailable, TmbxClient
+
+    async with _thread_lock(_thread_commit_locks, thread_key):
+        # Spend only after lifecycle ownership. A replacement harness turn
+        # waits on this same lock, so no newer draft can race the calendar
+        # write between candidate consumption and its definitive result.
+        candidate = _pending_candidates.consume(
+            thread_key,
+            candidate_id,
+            actor_user_id=actor_user_id,
+        )
+        if candidate is None:
+            await client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_root,
+                text=(
+                    ":warning: That approval is stale, unavailable to this user, "
+                    "or was already used. Nothing else was committed. Ask me to "
+                    "show the current plan again."
+                ),
+            )
+            return
+
+        posted = await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_root,
+            text=":white_check_mark: Approved — committing now…",
+        )
+        progress_card = HarnessProgressCard(
+            client,
+            channel=posted["channel"],
+            message_ts=posted["ts"],
+        )
+        try:
+            await progress_card.handle(
+                TimeboxProgressEvent(
+                    session_key=thread_key,
+                    sequence=1,
+                    source=ProgressSource.RUNTIME,
+                    phase=TimeboxProgressPhase.COMMITTING,
+                    status=TimeboxProgressStatus.STARTED,
+                )
+            )
+            payload = await TmbxClient().commit(
+                candidate.snapshot,
+                candidate.patch,
+                idempotency_key=candidate.digest,
+            )
+            committed = payload.get("committed") is True
+            await progress_card.handle(
+                TimeboxProgressEvent(
+                    session_key=thread_key,
+                    sequence=2,
+                    source=ProgressSource.TMBX_MCP,
+                    phase=TimeboxProgressPhase.COMMITTING,
+                    status=(
+                        TimeboxProgressStatus.SUCCEEDED
+                        if committed
+                        else TimeboxProgressStatus.FAILED
+                    ),
+                    refusal_code=(
+                        str(payload.get("reason"))
+                        if not committed and payload.get("reason")
+                        else None
+                    ),
+                )
+            )
+        except CommitOutcomeUnknown:
+            logger.warning(
+                "approve: tmbx commit outcome unknown after idempotent reconciliation"
+            )
+            await progress_card.handle(
+                TimeboxProgressEvent(
+                    session_key=thread_key,
+                    sequence=2,
+                    source=ProgressSource.TMBX_MCP,
+                    phase=TimeboxProgressPhase.COMMITTING,
+                    status=TimeboxProgressStatus.FAILED,
+                    refusal_code="outcome_unknown",
+                )
+            )
+            payload = {
+                "committed": False,
+                "reason": "outcome_unknown",
+            }
+        except CommitUnavailable:
+            logger.warning("approve: direct tmbx commit unavailable")
+            await progress_card.handle(
+                TimeboxProgressEvent(
+                    session_key=thread_key,
+                    sequence=2,
+                    source=ProgressSource.TMBX_MCP,
+                    phase=TimeboxProgressPhase.COMMITTING,
+                    status=TimeboxProgressStatus.FAILED,
+                    refusal_code="calendar_service_unavailable",
+                )
+            )
+            payload = {
+                "committed": False,
+                "reason": "calendar_service_unavailable",
+            }
+        finally:
+            await progress_card.close()
+
+        tx_id = payload.get("tx_id") if payload.get("committed") is True else None
+        if isinstance(tx_id, str) and tx_id:
+            text = ":white_check_mark: Committed the plan you approved."
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": text},
+                },
+                harness_undo_block(tx_id),
+            ]
+        else:
+            reason = str(payload.get("reason") or "commit_refused")
+            if reason == "outcome_unknown":
+                text = (
+                    ":warning: The calendar outcome is unknown — I could not "
+                    "confirm whether this plan was committed. Check the calendar "
+                    "before trying again."
+                )
+            else:
+                detail = str(payload.get("message") or "")[:400]
+                text = f":warning: Nothing was committed — `{reason}`."
+                if detail:
+                    text += f"\n```{detail}```"
+            blocks = None
+        await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_root,
+            text=text,
+            **({"blocks": blocks} if blocks else {}),
+        )
+
+
+def _track_approval_task(task: asyncio.Task[None], logger) -> None:
+    """Keep a shielded commit alive and surface unexpected background errors."""
+
+    _approval_tasks.add(task)
+
+    def done(completed: asyncio.Task[None]) -> None:
+        _approval_tasks.discard(completed)
+        if completed.cancelled():
+            logger.error("approval commit task was cancelled before a final outcome")
+            return
+        error = completed.exception()
+        if error is not None:
+            logger.error(
+                "approval commit task failed",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    task.add_done_callback(done)
 
 
 async def instant_ack(client, event: dict) -> dict | None:
@@ -1383,7 +1819,11 @@ async def route_slack_event(
     cleaned_text = _strip_bot_mention(text, bot_user_id)
     # Post the "thinking" message with the active agent persona, so the eventual reply
     # (via chat.update) keeps the correct name/icon.
-    origin_thread_root_ts = thread_ts or None
+    # `instant_ack` replies under a top-level app mention. Its own `ts` is
+    # therefore a child message, while the event `ts` remains the canonical
+    # thread root used by Slack action callbacks. Keep that root all the way
+    # through harness session identity and approval payload generation.
+    origin_thread_root_ts = thread_ts or (ts if acked is not None and not is_dm else None)
     origin_processing_payload: dict = {
         "channel": channel,
         "text": f":hourglass_flowing_sand: *{agent_type}* is thinking...",
@@ -1590,7 +2030,7 @@ async def route_slack_event(
         "dm"
         if (is_dm and agent_type == "timeboxing_agent")
         else (
-            origin_processing_msg["ts"]
+            (origin_thread_root_ts or origin_processing_msg["ts"])
             if (agent_type == "timeboxing_agent" and not thread_ts)
             else None
         )
@@ -1673,13 +2113,39 @@ async def route_slack_event(
             )
             await progress_card.handle("start\tPreparing the timebox run")
             try:
+                thread_context = _HarnessThreadContext()
+                if thread_ts:
+                    thread_context = await _harness_thread_context(
+                        client=client,
+                        channel=channel,
+                        thread_root=thread_ts,
+                        current_ts=ts,
+                        owner_user_id=user,
+                    )
+                context_kwargs: dict[str, object] = {}
+                if thread_context.recent_user_turns:
+                    context_kwargs["history"] = list(
+                        thread_context.recent_user_turns
+                    )
+                if thread_context.proposed_timebox:
+                    context_kwargs["proposed_timebox"] = (
+                        thread_context.proposed_timebox
+                    )
+                if thread_context.calendar_id:
+                    context_kwargs["proposed_calendar_id"] = (
+                        thread_context.calendar_id
+                    )
+                if thread_context.day:
+                    context_kwargs["proposed_day"] = thread_context.day
                 result = await _harness_turn(
                     text=cleaned_text,
                     thread_key=recipient_key,
+                    owner_user_id=user,
                     session_id=recipient_key,
                     on_phase=lambda event: _note_harness_phase(
                         progress_card, event, slack_loop
                     ),
+                    **context_kwargs,
                 )
             finally:
                 await progress_card.close()
@@ -1869,6 +2335,7 @@ async def route_slack_event(
                             result = await _harness_turn(
                                 text=cleaned_text,
                                 thread_key=redirect.target_key,
+                                owner_user_id=user,
                                 session_id=redirect.target_key,
                                 on_phase=lambda event: _note_harness_phase(
                                     progress_card, event, slack_loop
@@ -2001,6 +2468,19 @@ async def route_slack_event(
                             "Failed to DM timeboxing commit prompt", exc_info=True
                         )
 
+                if (
+                    handoff_target == "timeboxing_agent"
+                    and _timebox_backend() != "legacy"
+                ):
+                    await _post_pending_harness_approval(
+                        client=client,
+                        logger=logger,
+                        channel=target_channel,
+                        thread_root=target_thread_ts,
+                        thread_key=redirect.target_key,
+                        proposal_message_ts=processing["ts"],
+                    )
+
                 await _maybe_update_timeboxing_thread_header(
                     client=client,
                     focus=focus,
@@ -2085,39 +2565,16 @@ async def route_slack_event(
         _compact_slack_payload(**_slack_payload_from_result(result)), agent_type
     )
     await _origin_update(text=payload.get("text", ""), blocks=payload.get("blocks"))
-    if take_pending_approval(recipient_key):
-        # The commit gate refused this turn, so the answer above ends by asking
-        # Hugo to press Approve. Until this existed there was no Approve to
-        # press: `harness_approve_block` was written and called from nowhere.
-        #
-        # Its own message rather than appended to the plan. A plain harness
-        # reply carries text and NO blocks -- `_slack_payload_from_result`
-        # returns `{"text": ...}` and Slack renders it -- so appending to
-        # `payload["blocks"]` attached the button to an empty list and dropped
-        # it silently. That was the first attempt at this fix and it failed
-        # exactly the way the bug it was fixing failed. A separate message also
-        # keeps the control small and editable when the plan above it is not.
-        try:
-            await client.chat_postMessage(
-                channel=channel,
-                thread_ts=thread_ts,
-                text="Ready to commit — this needs your approval.",
-                blocks=[
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": ":lock: *This plan has not been committed.* "
-                            "Nothing reaches your calendar until you approve it.",
-                        },
-                    },
-                    harness_approve_block(recipient_key),
-                ],
-            )
-        except Exception:
-            # The plan is already posted; failing to offer the button must not
-            # take the answer with it. It is recoverable by asking again.
-            logger.exception("could not offer the approval control")
+    await _post_pending_harness_approval(
+        client=client,
+        logger=logger,
+        channel=channel,
+        thread_root=_approval_thread_root(
+            origin_thread_root_ts, origin_processing_msg["ts"]
+        ),
+        thread_key=recipient_key,
+        proposal_message_ts=origin_processing_msg["ts"],
+    )
     await _maybe_update_timeboxing_thread_header(
         client=client,
         focus=focus,
@@ -2579,7 +3036,7 @@ def register_handlers(
 
     @app.action(FF_HARNESS_APPROVE_ACTION_ID)
     async def act_harness_approve(ack, body, client, logger):
-        """Spend one approval on the next commit in this thread.
+        """Atomically spend approval on the exact displayed candidate.
 
         The only thing that opens the commit gate. It is a button rather than
         a phrase because reading consent out of prose is a judgement about
@@ -2587,90 +3044,43 @@ def register_handlers(
         surface exactly where failure is least acceptable.
         """
         await ack()
-        from .thread_approval import grant
-
         channel = (body.get("channel") or {}).get("id") or ""
         message = body.get("message") or {}
         thread_root = message.get("thread_ts") or message.get("ts") or ""
-        user_id = (body.get("user") or {}).get("id") or "unknown"
         if not (channel and thread_root):
             logger.warning("approve pressed with no thread to approve for")
             return
 
         thread_key = f"{channel}:{thread_root}"
-        grant(thread_key, user_id)
-
-        # Pressing Approve has to COMMIT, not merely permit. It used to write
-        # the token and say "ask me to commit and I will" — so the one control
-        # offered beside a finished plan changed nothing a person could see,
-        # and the day reached the calendar only if they then typed another
-        # message. A button that does not do what its label says is the same
-        # defect as a button that was never posted, one step later.
-        posted = await client.chat_postMessage(
-            channel=channel,
-            thread_ts=thread_root,
-            text=":white_check_mark: Approved — committing now…",
-        )
-
-        # `ask` rather than `_harness_turn`: the latter returns a TextMessage,
-        # which carries content and a source and no transaction id, so the Undo
-        # control could never be offered from here.
-        from .harness_bridge import PLANNING_MODEL, HarnessError
-        from .thread_approval import approval_path
-
-        slack_loop = asyncio.get_running_loop()
-        progress_card = HarnessProgressCard(
-            client,
-            channel=posted["channel"],
-            message_ts=posted["ts"],
-        )
+        actor_user_id = (body.get("user") or {}).get("id") or ""
+        action = (body.get("actions") or [{}])[0]
         try:
-            try:
-                reply = await _owned_harness_ask(
-                    "I have approved the plan. Rebuild exactly the day you last "
-                    "showed me and call plan_commit now. Do not ask me anything.",
-                    thread_key=thread_key,
-                    session_id=thread_key,
-                    model=PLANNING_MODEL,
-                    approval_file=str(approval_path(thread_key)),
-                    on_event=lambda event: _note_harness_phase(
-                        progress_card, event, slack_loop
-                    ),
-                )
-            finally:
-                await progress_card.close()
-        except HarnessError as exc:
-            logger.warning("approve: harness failed: %s", exc)
-            await client.chat_postMessage(
-                channel=channel,
-                thread_ts=thread_root,
-                text=(
-                    ":warning: Approved, but the commit could not run.\n"
-                    f"```{exc}```\nYour approval is still unspent — ask me to "
-                    "commit and it will be used."
-                ),
+            approval = HarnessApproveActionPayload.model_validate_json(
+                action.get("value") or ""
             )
+        except ValueError:
+            logger.warning("approve pressed with malformed candidate identity")
+            return
+        if approval.thread_key != thread_key:
+            logger.warning("approve candidate thread did not match message thread")
             return
 
-        blocks = None
-        tx_id = reply.committed_tx_id
-        if tx_id:
-            # Offer the reversal beside the thing it reverses, and only when
-            # something actually landed: a refused commit carries no id, so
-            # there is nothing to take back.
-            blocks = [
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": reply.text[:2900]},
-                },
-                harness_undo_block(tx_id),
-            ]
-        await client.chat_postMessage(
-            channel=channel,
-            thread_ts=thread_root,
-            text=reply.text,
-            **({"blocks": blocks} if blocks else {}),
+        task = asyncio.create_task(
+            _execute_harness_approval(
+                client=client,
+                logger=logger,
+                channel=channel,
+                thread_root=thread_root,
+                thread_key=thread_key,
+                candidate_id=approval.candidate_id,
+                actor_user_id=actor_user_id,
+            )
         )
+        _track_approval_task(task, logger)
+        # Bolt may cancel the listener after its delivery window. The commit
+        # owns an independent task once acked, so this waiter cannot turn a
+        # real calendar write into an ambiguous cancelled callback.
+        await asyncio.shield(task)
 
     @app.command("/dsh")
     async def cmd_dsh(ack, body, client, logger):

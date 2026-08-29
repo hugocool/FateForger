@@ -273,15 +273,24 @@ def test_the_marker_is_not_counted_as_a_tool_call(tmp_path):
     import threading
 
     from fateforger.slack_bot.dsh_commit_gate_hook import NEEDS_APPROVAL
+    from fateforger.slack_bot.dsh_progress_hook import (
+        ProgressEvent,
+        ProgressPhase,
+        ProgressStatus,
+    )
     from fateforger.slack_bot.harness_bridge import _tail_progress
 
     progress = tmp_path / "steps"
-    progress.write_text(f"done\tReading the day\n{NEEDS_APPROVAL}\n")
+    completed = ProgressEvent(
+        phase=ProgressPhase.READING_PLAN,
+        status=ProgressStatus.SUCCEEDED,
+    ).to_line()
+    progress.write_text(f"{completed}\n{NEEDS_APPROVAL}\n")
     stop = threading.Event()
     stop.set()
-    seen: list[str] = []
+    seen: list[object] = []
     refused: list[bool] = []
     steps = _tail_progress(progress, seen.append, stop, refused)
     assert steps == 1, "the marker was counted as a tool call"
-    assert seen == ["done\tReading the day"]
+    assert len(seen) == 1
     assert refused == [True]

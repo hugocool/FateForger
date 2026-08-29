@@ -252,7 +252,47 @@ def test_profile_mounts_a_separate_progress_tool_and_instructs_bounded_use() -> 
     assert "report_scheduling_decision" in deployment
     assert "Before calling `timebox_patch`" in deployment
     assert "Do not report private reasoning" in deployment
+    assert "Progress fields are closed codes, not prose" in deployment
     assert "FF_FATEFORGER_ROOT" in profile
+
+
+def test_work_window_is_instructed_as_a_boundary_not_an_occupying_block() -> None:
+    deployment = (ROOT / "infra" / "dsh" / "profile" / "deployment.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "work window is a boundary constraint" in deployment
+    assert "remove that invented boundary block and retry" in deployment
+    assert "Before every `plan_apply`, check the patch mechanically" in deployment
+    assert "explicit `op` field" in deployment
+    assert "every `fs` or `fw` add has `anchor_source`" in deployment
+
+
+def test_proposed_timebox_is_instructed_as_the_editable_target_state() -> None:
+    deployment = (ROOT / "infra" / "dsh" / "profile" / "deployment.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "proposed timebox is the desired draft target" in deployment
+    assert "read exactly that calendar and day" in deployment
+    assert "add it to the new candidate" in deployment
+    assert "does not mean the proposal is wrong" in deployment
+
+
+def test_exact_schedule_does_not_pause_for_non_material_classification() -> None:
+    deployment = (ROOT / "infra" / "dsh" / "profile" / "deployment.md").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join(deployment.split())
+
+    assert "If either answer leaves the placement unchanged, do not ask" in normalized
+    assert "Suspended constraints are non-binding" in normalized
+    assert "go directly to `plan_apply`" in normalized
+    assert "Do not ask about day type, block category, or semantics" in normalized
+    assert "This also applies on weekends and holidays" in normalized
+    assert "apply only the blocks Hugo named" in normalized
+    assert "fixed-start additions use `after: null`" in normalized.lower()
+    assert "another handle created in the same patch" in normalized.lower()
 
 
 def test_retry_budget_guard_runs_before_plan_apply_and_not_after_it() -> None:

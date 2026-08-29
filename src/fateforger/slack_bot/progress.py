@@ -31,6 +31,35 @@ from .progress_events import TimeboxProgressEvent
 
 logger = logging.getLogger(__name__)
 
+_FOCUS_COPY = {
+    "approved_outline": "the approved outline",
+    "fixed_events": "fixed events",
+    "deep_work": "deep work",
+    "shallow_work": "shallow work",
+    "exercise": "exercise",
+    "meals_breaks": "meals and breaks",
+    "buffers": "buffers",
+    "workday_boundaries": "workday boundaries",
+    "day_balance": "the balance of the day",
+}
+_SELECTION_COPY = {
+    "preserve_approved_position": "kept in its approved position",
+    "place_earlier": "placed earlier",
+    "place_later": "placed later",
+    "keep_fixed_time": "kept at its fixed time",
+    "split_around_anchor": "split around the fixed anchor",
+    "consolidate_blocks": "combined into fewer blocks",
+}
+_TRADEOFF_COPY = {
+    "protect_deep_work": "protects deep-work time",
+    "reduce_fragmentation": "reduces fragmentation",
+    "preserve_anchors": "preserves approved anchors",
+    "honor_constraints": "honors the active constraints",
+    "protect_buffer": "protects transition buffer",
+    "protect_duration": "protects the requested duration",
+    "fit_workday": "fits within the workday",
+}
+
 # Slack's section block caps around 3000 characters. A step line runs 40-80, so
 # the practical ceiling is somewhere near 40 steps -- and "bounded by step
 # count" stops being a bound the moment a session has 80 of them. Keeping the
@@ -134,6 +163,22 @@ class ProgressChannel:
         nobody observed.
         """
         async with self._lock:
+            self._closed = True
+            if self._pending_flush_task is not None:
+                self._pending_flush_task.cancel()
+                self._pending_flush_task = None
+            await self._flush(force=True)
+
+    async def supersede(self) -> None:
+        """Resolve every running row and publish one terminal replacement state."""
+
+        async with self._lock:
+            if self._closed:
+                return
+            for step in self._steps:
+                if step.state == "running":
+                    step.state = "failed"
+                    step.detail = "superseded by a newer request"
             self._closed = True
             if self._pending_flush_task is not None:
                 self._pending_flush_task.cancel()
@@ -264,13 +309,17 @@ class HarnessProgressCard:
                 await self._channel.done(label or event)
             return
 
+        if event.status.value == "superseded":
+            await self.superseded()
+            return
+
         phase = event.phase.value
         status = event.status.value
         if phase == "understanding_skeleton":
             detail_parts = []
             focus = getattr(event, "focus", None)
             if focus:
-                detail_parts.append(focus)
+                detail_parts.append(_FOCUS_COPY.get(str(focus), "approved structure"))
             preserved = getattr(event, "preserved_count", None)
             if isinstance(preserved, int):
                 detail_parts.append(
@@ -284,7 +333,8 @@ class HarnessProgressCard:
             )
             return
         if phase == "weighing_options":
-            focus = getattr(event, "focus", None) or "a scheduling choice"
+            focus_code = getattr(event, "focus", None)
+            focus = _FOCUS_COPY.get(str(focus_code), "a scheduling choice")
             label = f"Weighing {focus}"
             decision_state = getattr(event, "decision_state", None)
             option_count = getattr(event, "option_count", None)
@@ -299,7 +349,12 @@ class HarnessProgressCard:
                 await self._channel.step(label + suffix)
             else:
                 detail = "; ".join(
-                    part for part in (selection, tradeoff) if isinstance(part, str)
+                    part
+                    for part in (
+                        _SELECTION_COPY.get(str(selection)) if selection else None,
+                        _TRADEOFF_COPY.get(str(tradeoff)) if tradeoff else None,
+                    )
+                    if isinstance(part, str)
                 )
                 await self._channel.done(label, detail)
             return
@@ -353,8 +408,7 @@ class HarnessProgressCard:
         await self._step_or_finish(event, "Working", "")
 
     async def superseded(self) -> None:
-        await self._channel.fail("Run", "superseded by a newer request")
-        await self._channel.close()
+        await self._channel.supersede()
 
     async def close(self) -> None:
         await self._channel.close()

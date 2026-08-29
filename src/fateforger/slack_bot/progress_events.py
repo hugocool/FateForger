@@ -11,7 +11,6 @@ from typing import Any
 _VERSION = 1
 _MAX_SESSION_KEY = 256
 _MAX_CODE = 64
-_MAX_SEMANTIC_TEXT = 160
 _MAX_VIOLATION_KINDS = 16
 _CODE = re.compile(r"^[a-z0-9][a-z0-9_:-]*$")
 
@@ -45,6 +44,37 @@ class ProgressStatus(StrEnum):
     SUPERSEDED = "superseded"
 
 
+class ProgressFocus(StrEnum):
+    APPROVED_OUTLINE = "approved_outline"
+    FIXED_EVENTS = "fixed_events"
+    DEEP_WORK = "deep_work"
+    SHALLOW_WORK = "shallow_work"
+    EXERCISE = "exercise"
+    MEALS_BREAKS = "meals_breaks"
+    BUFFERS = "buffers"
+    WORKDAY_BOUNDARIES = "workday_boundaries"
+    DAY_BALANCE = "day_balance"
+
+
+class ProgressSelection(StrEnum):
+    PRESERVE_APPROVED_POSITION = "preserve_approved_position"
+    PLACE_EARLIER = "place_earlier"
+    PLACE_LATER = "place_later"
+    KEEP_FIXED_TIME = "keep_fixed_time"
+    SPLIT_AROUND_ANCHOR = "split_around_anchor"
+    CONSOLIDATE_BLOCKS = "consolidate_blocks"
+
+
+class ProgressTradeoff(StrEnum):
+    PROTECT_DEEP_WORK = "protect_deep_work"
+    REDUCE_FRAGMENTATION = "reduce_fragmentation"
+    PRESERVE_ANCHORS = "preserve_anchors"
+    HONOR_CONSTRAINTS = "honor_constraints"
+    PROTECT_BUFFER = "protect_buffer"
+    PROTECT_DURATION = "protect_duration"
+    FIT_WORKDAY = "fit_workday"
+
+
 @dataclass(frozen=True)
 class TimeboxProgressEvent:
     """One fixed-field fact safe to serialize, persist, and present."""
@@ -60,13 +90,13 @@ class TimeboxProgressEvent:
     violation_kinds: tuple[str, ...] = ()
     overspecified_count: int | None = None
     refusal_code: str | None = None
-    focus: str | None = None
+    focus: ProgressFocus | None = None
     preserved_count: int | None = None
     remaining_count: int | None = None
     decision_state: str | None = None
     option_count: int | None = None
-    selection: str | None = None
-    tradeoff: str | None = None
+    selection: ProgressSelection | None = None
+    tradeoff: ProgressTradeoff | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.session_key, str) or not self.session_key.strip():
@@ -92,7 +122,7 @@ class TimeboxProgressEvent:
             _validate_code("violation_kinds", kind)
         if self.refusal_code is not None:
             _validate_code("refusal_code", self.refusal_code)
-        _validate_optional_text("focus", self.focus)
+        _validate_optional_enum("focus", self.focus, ProgressFocus)
         _validate_optional_count(
             "preserved_count", self.preserved_count, minimum=0
         )
@@ -107,8 +137,8 @@ class TimeboxProgressEvent:
         }:
             raise ValueError("decision_state must be a supported state")
         _validate_optional_count("option_count", self.option_count, minimum=0)
-        _validate_optional_text("selection", self.selection)
-        _validate_optional_text("tradeoff", self.tradeoff)
+        _validate_optional_enum("selection", self.selection, ProgressSelection)
+        _validate_optional_enum("tradeoff", self.tradeoff, ProgressTradeoff)
 
     def to_json(self) -> str:
         payload: dict[str, Any] = {
@@ -187,13 +217,13 @@ class TimeboxProgressEvent:
                 violation_kinds=tuple(kinds),
                 overspecified_count=payload.get("overspecified_count"),
                 refusal_code=payload.get("refusal_code"),
-                focus=payload.get("focus"),
+                focus=_optional_enum(payload.get("focus"), ProgressFocus),
                 preserved_count=payload.get("preserved_count"),
                 remaining_count=payload.get("remaining_count"),
                 decision_state=payload.get("decision_state"),
                 option_count=payload.get("option_count"),
-                selection=payload.get("selection"),
-                tradeoff=payload.get("tradeoff"),
+                selection=_optional_enum(payload.get("selection"), ProgressSelection),
+                tradeoff=_optional_enum(payload.get("tradeoff"), ProgressTradeoff),
             )
         except KeyError as exc:
             raise ValueError(f"missing progress field: {exc.args[0]}") from exc
@@ -222,15 +252,14 @@ def _validate_code(name: str, value: object) -> None:
         )
 
 
-def _validate_optional_text(name: str, value: object | None) -> None:
+def _validate_optional_enum(
+    name: str, value: object | None, enum_type: type[StrEnum]
+) -> None:
+    if value is not None and not isinstance(value, enum_type):
+        raise TypeError(f"{name} must be a {enum_type.__name__}")
+
+
+def _optional_enum(value: object, enum_type: type[StrEnum]):
     if value is None:
-        return
-    if (
-        not isinstance(value, str)
-        or not value.strip()
-        or len(value) > _MAX_SEMANTIC_TEXT
-        or any(ord(character) < 32 for character in value)
-    ):
-        raise ValueError(
-            f"{name} must be one line of at most {_MAX_SEMANTIC_TEXT} characters"
-        )
+        return None
+    return enum_type(value)

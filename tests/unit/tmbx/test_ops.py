@@ -26,6 +26,16 @@ from tmbx.core.ops import (
 )
 
 
+def test_add_after_schema_teaches_pre_patch_set_semantics():
+    description = AddBlock.model_json_schema()["properties"]["after"][
+        "description"
+    ].lower()
+
+    assert "pre-patch" in description
+    assert "same patch" in description
+    assert "fixed-start" in description
+
+
 def _mint(seq=itertools.count(1)):
     return f"u-new-{next(seq)}"
 

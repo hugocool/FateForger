@@ -7,9 +7,15 @@ pytest.importorskip("autogen_agentchat")
 from autogen_agentchat.messages import HandoffMessage, TextMessage
 
 from fateforger.core.config import settings
+from fateforger.slack_bot import handlers
 from fateforger.slack_bot.focus import FocusManager
-from fateforger.slack_bot.handlers import route_slack_event
+from fateforger.slack_bot.handlers import (
+    FF_HARNESS_APPROVE_ACTION_ID,
+    HarnessApproveActionPayload,
+    route_slack_event,
+)
 from fateforger.slack_bot.messages import SlackBlockMessage, SlackThreadStateMessage
+from fateforger.slack_bot.timebox_candidate import ValidatedTimeboxCandidate
 from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID,
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
@@ -261,3 +267,63 @@ async def test_timeboxing_done_updates_thread_header_emoji(monkeypatch):
         and ":white_check_mark:" in (u.get("text") or "")
         for u in client.updates
     )
+
+
+@pytest.mark.asyncio
+async def test_harness_redirect_posts_owned_approval_card_in_timeboxing_thread(
+    monkeypatch,
+):
+    """Catches returning from receptionist redirect before offering approval."""
+
+    monkeypatch.setattr(
+        settings, "slack_timeboxing_channel_id", "C_TIMEBOX", raising=False
+    )
+    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
+    candidate = ValidatedTimeboxCandidate(
+        digest="a" * 64,
+        snapshot={"calendar_id": "primary", "day": "2026-08-30"},
+        patch={"ops": [{"op": "update", "h": "PR1", "n": "Focused"}]},
+        rendered="canonical plan",
+    )
+
+    async def fake_harness_turn(
+        *, text, thread_key, owner_user_id, on_phase, session_id=None
+    ):
+        handlers._pending_candidates.replace(
+            thread_key, candidate, owner_user_id=owner_user_id
+        )
+        return TextMessage(content="canonical plan", source="timeboxing_agent")
+
+    monkeypatch.setattr(handlers, "_harness_turn", fake_harness_turn)
+    runtime = DummyRuntime()
+    client = DummyClient()
+    focus = FocusManager(
+        ttl_seconds=3600, allowed_agents=["receptionist_agent", "timeboxing_agent"]
+    )
+
+    await route_slack_event(
+        runtime=runtime,
+        focus=focus,
+        default_agent="receptionist_agent",
+        event={
+            "channel": "C_ORIG",
+            "user": "U1",
+            "text": "timebox tomorrow",
+            "ts": "1",
+        },
+        bot_user_id=None,
+        say=DummySay(),
+        client=client,
+    )
+
+    approval_posts = [
+        post
+        for post in client.posted
+        if FF_HARNESS_APPROVE_ACTION_ID in str(post.get("blocks"))
+    ]
+    assert len(approval_posts) == 1
+    assert approval_posts[0]["channel"] == "C_TIMEBOX"
+    assert approval_posts[0]["thread_ts"] == "tb_root"
+    action = approval_posts[0]["blocks"][1]["elements"][0]
+    payload = HarnessApproveActionPayload.model_validate_json(action["value"])
+    assert payload.thread_key == "C_TIMEBOX:tb_root"

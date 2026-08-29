@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from .validated_timebox_draft import (
+    CANDIDATE_OUTPUT_FILE_ENV,
     DRAFT_STATE_FILE_ENV,
     current_attempt,
     record_validation_result,
@@ -311,8 +312,9 @@ def committed_tx_id(event: dict) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     destination = os.environ.get(PROGRESS_FILE_ENV)
     draft_state = os.environ.get(DRAFT_STATE_FILE_ENV)
+    candidate_output = os.environ.get(CANDIDATE_OUTPUT_FILE_ENV)
     commit_destination = os.environ.get(COMMIT_FILE_ENV)
-    if not destination and not draft_state and not commit_destination:
+    if not destination and not draft_state and not commit_destination and not candidate_output:
         return 0
 
     raw = sys.stdin.read()
@@ -332,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
         print("dsh-progress-hook: event was not an object", file=sys.stderr)
         return 0
 
-    record_validation_result(event, draft_state)
+    record_validation_result(event, draft_state, candidate_output)
 
     tx_id = committed_tx_id(event)
     if tx_id:

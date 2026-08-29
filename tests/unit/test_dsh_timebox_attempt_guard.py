@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from fateforger.slack_bot.dsh_timebox_attempt_guard_hook import guard_decision
+from fateforger.slack_bot.dsh_timebox_attempt_guard_hook import (
+    _max_attempts,
+    guard_decision,
+)
 from fateforger.slack_bot.progress_events import (
+    ProgressFocus,
     ProgressPhase,
     ProgressSource,
     ProgressStatus,
@@ -35,6 +39,14 @@ def test_first_five_attempts_are_allowed_and_sixth_is_denied(tmp_path):
     assert decisions[:5] == [None] * 5
     assert decisions[5]["decision"] == "deny"
     assert "retry budget" in decisions[5]["reason"]
+
+
+def test_environment_cannot_raise_the_hard_limit_above_five(monkeypatch):
+    """Catches turning the five-attempt safety ceiling into a soft default."""
+
+    monkeypatch.setenv("FF_TIMEBOX_PATCH_MAX_ATTEMPTS", "99")
+
+    assert _max_attempts() == 5
 
 
 def test_exhaustion_emits_a_typed_terminal_progress_fact(tmp_path, monkeypatch):
@@ -79,7 +91,7 @@ def test_patch_is_allowed_after_the_typed_skeleton_report(tmp_path):
             source=ProgressSource.AGENT,
             phase=ProgressPhase.UNDERSTANDING_SKELETON,
             status=ProgressStatus.SUCCEEDED,
-            focus="Place the approved deep-work anchors",
+            focus=ProgressFocus.APPROVED_OUTLINE,
             preserved_count=0,
             remaining_count=2,
         ).to_json()

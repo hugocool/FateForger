@@ -19,6 +19,7 @@ from fateforger.slack_bot.dsh_progress_hook import (
     ProgressStatus,
 )
 from fateforger.slack_bot.progress import HarnessProgressCard
+from fateforger.slack_bot.timebox_candidate import ValidatedTimeboxCandidate
 
 
 class _Reply:
@@ -34,6 +35,7 @@ class _Reply:
         self.timings = None
         self.committed_tx_id = None
         self.needs_approval = needs_approval
+        self.validated_candidate = None
 
 
 @pytest.fixture
@@ -56,7 +58,10 @@ def _harness(monkeypatch):
 async def test_a_turn_reaches_the_harness_and_comes_back_renderable(_harness):
     """The reply must be shaped like a runtime reply, or every renderer breaks."""
     result = await handlers._harness_turn(
-        text="plan tomorrow", thread_key="C1:1772.0", on_phase=lambda _l: None
+        text="plan tomorrow",
+        thread_key="C1:1772.0",
+        owner_user_id="U1",
+        on_phase=lambda _l: None,
     )
     assert result.content == "Here is tomorrow."
     assert result.source == "timeboxing_agent"
@@ -66,7 +71,10 @@ async def test_a_turn_reaches_the_harness_and_comes_back_renderable(_harness):
 async def test_progress_is_offered_so_a_long_turn_is_not_a_blank_wait(_harness):
     seen: list[str] = []
     await handlers._harness_turn(
-        text="plan tomorrow", thread_key="C1:1772.0", on_phase=seen.append
+        text="plan tomorrow",
+        thread_key="C1:1772.0",
+        owner_user_id="U1",
+        on_phase=seen.append,
     )
     assert seen == ["mcp__memory__memory_get_active_constraints"]
 
@@ -82,10 +90,44 @@ async def test_a_harness_failure_is_surfaced_not_swallowed(monkeypatch):
     monkeypatch.setattr(hb, "ask", boom)
 
     result = await handlers._harness_turn(
-        text="plan tomorrow", thread_key="C1:1772.0", on_phase=lambda _l: None
+        text="plan tomorrow",
+        thread_key="C1:1772.0",
+        owner_user_id="U1",
+        on_phase=lambda _l: None,
     )
     assert "did not answer" in result.content
     assert "node not found" in result.content
+
+
+async def test_clean_candidate_is_offered_for_approval_without_model_commit_attempt(
+    monkeypatch,
+):
+    """Obeying 'do not commit' must not make a validated proposal unapprovable."""
+
+    import fateforger.slack_bot.harness_bridge as hb
+
+    candidate = ValidatedTimeboxCandidate(
+        digest="a" * 64,
+        snapshot={"day": "2026-08-30"},
+        patch={"ops": []},
+        rendered="canonical plan",
+    )
+
+    def fake_ask(text, **_kwargs):
+        reply = _Reply("canonical plan", needs_approval=False)
+        reply.validated_candidate = candidate
+        return reply
+
+    monkeypatch.setattr(hb, "ask", fake_ask)
+
+    await handlers._harness_turn(
+        text="show only",
+        thread_key="C1:no-commit",
+        owner_user_id="U1",
+        on_phase=lambda _event: None,
+    )
+
+    assert handlers.take_pending_approval("C1:no-commit")
 
 
 async def test_a_new_turn_supersedes_and_cancels_the_prior_owned_child(monkeypatch):
@@ -106,11 +148,12 @@ async def test_a_new_turn_supersedes_and_cancels_the_prior_owned_child(monkeypat
         return _Reply("second answer")
 
     monkeypatch.setattr(hb, "ask", fake_ask)
-    first_phases: list[str] = []
+    first_phases: list[object] = []
     first = asyncio.create_task(
         handlers._harness_turn(
             text="first",
             thread_key="C1:1772.0",
+            owner_user_id="U1",
             on_phase=first_phases.append,
         )
     )
@@ -119,6 +162,7 @@ async def test_a_new_turn_supersedes_and_cancels_the_prior_owned_child(monkeypat
     second = await handlers._harness_turn(
         text="second",
         thread_key="C1:1772.0",
+        owner_user_id="U1",
         on_phase=lambda _line: None,
     )
     with pytest.raises(asyncio.CancelledError):
@@ -126,7 +170,92 @@ async def test_a_new_turn_supersedes_and_cancels_the_prior_owned_child(monkeypat
 
     assert second.content == "second answer"
     assert first_cancelled.is_set()
-    assert first_phases == ["done\tSuperseded by a newer request"]
+    assert len(first_phases) == 1
+    assert first_phases[0].status.value == "superseded"
+
+
+async def test_replacement_cannot_enter_harness_until_superseded_turn_exits(
+    monkeypatch,
+):
+    """Cancellation is not reaping: replacement starts only after old exit."""
+
+    import fateforger.slack_bot.harness_bridge as hb
+
+    first_started = threading.Event()
+    release_first = threading.Event()
+    call_order: list[str] = []
+
+    def fake_ask(text, *, cancel_event=None, **_kwargs):
+        call_order.append(f"enter:{text}")
+        if text == "first":
+            first_started.set()
+            assert cancel_event is not None
+            assert cancel_event.wait(timeout=1.0)
+            assert release_first.wait(timeout=1.0)
+            call_order.append("exit:first")
+            raise hb.HarnessCancelled("superseded")
+        call_order.append("exit:second")
+        return _Reply("second answer")
+
+    monkeypatch.setattr(hb, "ask", fake_ask)
+    first = asyncio.create_task(
+        handlers._harness_turn(
+            text="first",
+            thread_key="C1:ordered",
+            owner_user_id="U1",
+            on_phase=lambda _event: None,
+        )
+    )
+    assert await asyncio.to_thread(first_started.wait, 1.0)
+    second = asyncio.create_task(
+        handlers._harness_turn(
+            text="second",
+            thread_key="C1:ordered",
+            owner_user_id="U1",
+            on_phase=lambda _event: None,
+        )
+    )
+    await asyncio.sleep(0.05)
+    assert call_order == ["enter:first"]
+
+    release_first.set()
+    result = await second
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    assert result.content == "second answer"
+    assert call_order == ["enter:first", "exit:first", "enter:second", "exit:second"]
+
+
+async def test_harness_launch_waits_for_an_inflight_exact_candidate_commit(monkeypatch):
+    """A new draft cannot race a calendar write whose outcome is still unknown."""
+
+    import fateforger.slack_bot.harness_bridge as hb
+
+    entered = threading.Event()
+
+    def fake_ask(text, **_kwargs):
+        entered.set()
+        return _Reply("answer")
+
+    monkeypatch.setattr(hb, "ask", fake_ask)
+    commit_lock = handlers._thread_lock(handlers._thread_commit_locks, "C1:fence")
+    await commit_lock.acquire()
+    try:
+        turn = asyncio.create_task(
+            handlers._owned_harness_ask(
+                "next plan",
+                thread_key="C1:fence",
+                on_event=lambda _event: None,
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not entered.is_set()
+    finally:
+        commit_lock.release()
+
+    await turn
+    assert entered.is_set()
 
 
 def test_the_legacy_flow_is_still_reachable(monkeypatch):
@@ -222,18 +351,8 @@ def test_the_handoff_interception_uses_the_redirected_thread():
     assert "redirect.target_key" in window, window[:300]
 
 
-def test_approve_commit_uses_the_owned_cancellable_harness_runner():
-    """Approving must not bypass the process owner used by ordinary turns.
-
-    This path can write calendar changes, so an outer Slack cancellation must
-    terminate its child rather than leave an unobserved commit running.
-    """
-    import inspect
-
-    source = inspect.getsource(handlers.register_handlers)
-    start = source.index("async def act_harness_approve")
-    end = source.index('@app.command("/dsh")', start)
-    approval_handler = source[start:end]
-
-    assert "_owned_harness_ask(" in approval_handler
-    assert "asyncio.to_thread(\n                    ask," not in approval_handler
+def test_approval_card_stays_in_the_plan_thread_for_top_level_requests():
+    assert handlers._approval_thread_root(None, "bot-plan-root") == "bot-plan-root"
+    assert handlers._approval_thread_root("existing-thread", "processing-reply") == (
+        "existing-thread"
+    )

@@ -15,13 +15,18 @@ from pathlib import Path
 from typing import Any
 
 DRAFT_STATE_FILE_ENV = "FF_DSH_DRAFT_STATE_FILE"
+CANDIDATE_OUTPUT_FILE_ENV = "FF_DSH_CANDIDATE_OUTPUT_FILE"
 
 _APPLY_TOOL = "plan_apply"
 _READ_TOOL = "plan_read"
 _VERSION = 1
 
 
-def record_validation_result(event: dict[str, Any], destination: str | None) -> None:
+def record_validation_result(
+    event: dict[str, Any],
+    destination: str | None,
+    candidate_destination: str | None = None,
+) -> None:
     """Remember a committable apply result; clear state for a newer attempt/read."""
 
     if not destination:
@@ -38,6 +43,7 @@ def record_validation_result(event: dict[str, Any], destination: str | None) -> 
             destination,
             {"version": _VERSION, "attempts": current_attempt(destination)},
         )
+        _clear(candidate_destination)
         return
     if short_name != _APPLY_TOOL or phase != "PostToolUse":
         return
@@ -48,10 +54,56 @@ def record_validation_result(event: dict[str, Any], destination: str | None) -> 
     attempts = current_attempt(destination)
     if response.get("ok") is not True or response.get("committable") is not True or not digest:
         _write(destination, {"version": _VERSION, "attempts": attempts})
+        _clear(candidate_destination)
         return
     _write(
         destination,
         {"version": _VERSION, "attempts": attempts, "digest": digest},
+    )
+    if isinstance(tool_input, dict):
+        _write(
+            candidate_destination,
+            {
+                "version": _VERSION,
+                "digest": digest,
+                "snapshot": tool_input["snapshot"],
+                "patch": tool_input["patch"],
+                "rendered": response.get("rendered", ""),
+            },
+        )
+
+
+def read_validated_candidate(source: str | Path | None):
+    """Load a private candidate export, validating its canonical digest."""
+
+    if source is None:
+        return None
+    try:
+        payload = json.loads(Path(source).read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != _VERSION:
+        return None
+    candidate_input = {
+        "snapshot": payload.get("snapshot"),
+        "patch": payload.get("patch"),
+    }
+    rendered = payload.get("rendered")
+    if not isinstance(rendered, str) or not rendered.strip():
+        return None
+    digest = _candidate_digest(candidate_input)
+    expected = payload.get("digest")
+    if not isinstance(expected, str) or not isinstance(digest, str):
+        return None
+    if not hmac.compare_digest(expected, digest):
+        return None
+    from .timebox_candidate import ValidatedTimeboxCandidate
+
+    return ValidatedTimeboxCandidate(
+        digest=digest,
+        snapshot=candidate_input["snapshot"],
+        patch=candidate_input["patch"],
+        rendered=rendered,
     )
 
 
@@ -140,7 +192,9 @@ def _object(value: object) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _write(destination: str, payload: dict[str, object]) -> None:
+def _write(destination: str | None, payload: dict[str, object]) -> None:
+    if not destination:
+        return
     try:
         Path(destination).write_text(
             json.dumps(payload, separators=(",", ":"), sort_keys=True),
@@ -150,7 +204,9 @@ def _write(destination: str, payload: dict[str, object]) -> None:
         return
 
 
-def _clear(destination: str) -> None:
+def _clear(destination: str | None) -> None:
+    if not destination:
+        return
     try:
         Path(destination).write_text("", encoding="utf-8")
     except OSError:

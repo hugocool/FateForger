@@ -15,11 +15,14 @@ from fateforger.slack_bot.progress import (
     ProgressChannel,
 )
 from fateforger.slack_bot.progress_events import (
-    ProgressPhase as TimeboxProgressPhase,
+    ProgressFocus,
+    ProgressSelection,
+    ProgressSource,
+    ProgressTradeoff,
+    TimeboxProgressEvent,
 )
 from fateforger.slack_bot.progress_events import (
-    ProgressSource,
-    TimeboxProgressEvent,
+    ProgressPhase as TimeboxProgressPhase,
 )
 from fateforger.slack_bot.progress_events import (
     ProgressStatus as TimeboxProgressStatus,
@@ -274,6 +277,40 @@ async def test_a_closed_progress_card_ignores_late_orphan_events():
     assert len(client.updates) == terminal_update_count
 
 
+async def test_typed_supersession_resolves_running_rows_in_one_terminal_update():
+    client = FakeClient()
+    card = HarnessProgressCard(
+        client,
+        channel="C1",
+        message_ts="processing-1",
+        min_update_interval_s=0,
+    )
+    await card.handle(
+        TimeboxProgressEvent(
+            session_key="C1:1",
+            sequence=1,
+            source=ProgressSource.HARNESS_HOOK,
+            phase=TimeboxProgressPhase.READING_PLAN,
+            status=TimeboxProgressStatus.STARTED,
+        )
+    )
+    before = len(client.updates)
+
+    await card.handle(
+        TimeboxProgressEvent(
+            session_key="C1:1",
+            sequence=2,
+            source=ProgressSource.RUNTIME,
+            phase=TimeboxProgressPhase.OTHER,
+            status=TimeboxProgressStatus.SUPERSEDED,
+        )
+    )
+
+    assert len(client.updates) == before + 1
+    assert "superseded by a newer request" in client.updates[-1]["text"]
+    assert "⏳" not in client.updates[-1]["text"]
+
+
 async def test_card_renders_model_authored_understanding_and_decisions_as_bounded_facts():
     client = FakeClient()
     card = HarnessProgressCard(
@@ -290,7 +327,7 @@ async def test_card_renders_model_authored_understanding_and_decisions_as_bounde
             source=ProgressSource.AGENT,
             phase=TimeboxProgressPhase.UNDERSTANDING_SKELETON,
             status=TimeboxProgressStatus.SUCCEEDED,
-            focus="placing deep work around hockey",
+            focus=ProgressFocus.DEEP_WORK,
             preserved_count=2,
             remaining_count=3,
         )
@@ -302,19 +339,19 @@ async def test_card_renders_model_authored_understanding_and_decisions_as_bounde
             source=ProgressSource.AGENT,
             phase=TimeboxProgressPhase.WEIGHING_OPTIONS,
             status=TimeboxProgressStatus.SUCCEEDED,
-            focus="where to place the run",
+            focus=ProgressFocus.EXERCISE,
             decision_state="selected",
             option_count=2,
-            selection="the full hour before dinner",
-            tradeoff="preserves both run duration and dinner",
+            selection=ProgressSelection.PLACE_EARLIER,
+            tradeoff=ProgressTradeoff.PROTECT_DURATION,
         )
     )
 
     text = client.updates[-1]["text"]
-    assert "placing deep work around hockey" in text
+    assert "deep work" in text
     assert "2 anchors preserved" in text
-    assert "the full hour before dinner" in text
-    assert "preserves both run duration and dinner" in text
+    assert "placed earlier" in text
+    assert "protects the requested duration" in text
 
 
 async def test_card_uses_runtime_attempt_instead_of_counting_delivery_events():
