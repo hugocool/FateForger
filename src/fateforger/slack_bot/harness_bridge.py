@@ -211,7 +211,21 @@ def compose_task(
     approvals as typed state, so the brief is the context and the transcript
     is not -- and with it comes the obligation to submit one typed result.
     """
+    if planning_brief is not None and (history or proposed_timebox):
+        # Documented as "replaces all of that" and, until now, merely appended
+        # after it. A caller passing both would have handed the model a
+        # transcript *above* the sentence saying the brief is authoritative --
+        # the precise contamination Task 7 closed at the planner seam, reopened
+        # one layer down. Refusing makes it impossible rather than unlikely.
+        raise ValueError(
+            "a planning brief is the whole context for its turn; "
+            "history and proposed_timebox cannot accompany one"
+        )
     parts = []
+    if planning_brief is not None:
+        # First. An obligation the model reads after a transcript is an
+        # obligation it has already begun answering from the transcript.
+        parts.append(_planning_obligation(planning_brief))
     if session_id:
         parts.append(
             f"Session id for this conversation: {session_id}\n"
@@ -235,8 +249,6 @@ def compose_task(
             f"{target}\n"
             f"{proposed_timebox}"
         )
-    if planning_brief is not None:
-        parts.append(_planning_obligation(planning_brief))
     if not parts:
         return text
     if text.strip():

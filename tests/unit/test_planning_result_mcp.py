@@ -630,3 +630,64 @@ async def test_a_refusal_reaches_the_model_as_a_tool_error(result_file):
                 "blockers": [],
             },
         )
+
+
+def test_a_retry_reordering_keys_is_the_same_submission(tmp_path, monkeypatch) -> None:
+    """Catches the idempotent path refusing the retry it exists to allow.
+
+    The comparison is over the serialized document, so key order used to decide
+    whether two identical results were the same result.
+    """
+
+    destination = tmp_path / "planning-result.json"
+    destination.write_text("", encoding="utf-8")
+    monkeypatch.setenv("FF_DSH_PLANNING_RESULT_FILE", str(destination))
+
+    first = submit_planning_result(
+        target_artifact="skeleton",
+        artifact={"markdown": "## Saturday", "title": "Saturday"},
+        assumptions=[],
+        blockers=[],
+    )
+    second = submit_planning_result(
+        target_artifact="skeleton",
+        artifact={"title": "Saturday", "markdown": "## Saturday"},
+        assumptions=[],
+        blockers=[],
+    )
+
+    assert first == second
+
+
+def test_a_brief_refuses_to_share_the_prompt_with_a_transcript() -> None:
+    """Catches the transcript the brief was supposed to replace riding along.
+
+    `compose_task` documented the brief as replacing history and the proposed
+    timebox, and appended it after both. A caller passing both would have put a
+    transcript *above* the sentence saying the brief is authoritative — the
+    contamination Task 7 closed at the planner seam, one layer down.
+    """
+
+    with pytest.raises(ValueError):
+        harness_bridge.compose_task(
+            "plan saturday",
+            history=[("Hugo", "yesterday I said no gym")],
+            planning_brief=_brief(),
+        )
+
+    with pytest.raises(ValueError):
+        harness_bridge.compose_task(
+            "plan saturday",
+            proposed_timebox="## an older draft",
+            planning_brief=_brief(),
+        )
+
+
+def test_the_obligation_is_read_before_anything_else() -> None:
+    """An obligation read after context is one already answered from context."""
+
+    task = harness_bridge.compose_task(
+        "plan saturday", session_id="s-1", planning_brief=_brief()
+    )
+
+    assert task.index("authoritative") < task.index("Session id for this conversation")

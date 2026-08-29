@@ -131,7 +131,8 @@ requirement and what it conflicts with, and let the host put the trade-off to
 him. A blocker on a placement you own is refused, because it is the same
 stalling turn wearing the schema.
 
-A briefed turn ends by calling submit_planning_result exactly once. The prose
+A briefed turn ends by calling mcp__planning_result__submit_planning_result
+exactly once. The prose
 in your reply is presentation and nothing reads a stage out of it; the tool
 call is the whole record of what this turn produced, so a briefed turn that
 ends without one produced nothing however much it said, and a second call in

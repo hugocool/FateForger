@@ -44,16 +44,10 @@ unresolvable that is fatal, which is why this file exists.
 
 ## The profile's policy file is versioned here
 
-`profile/memory-policy.md` is the copy of record. The harness reads
-`~/.dsh/profiles/tmbx/memory-policy.md`, which is outside any repo — the same
-shape as the CLAUDE.md that lived untracked on one machine and was invisible to
-every clone and every CI run.
-
-Deploy with:
-
-```sh
-cp infra/dsh/profile/memory-policy.md ~/.dsh/profiles/tmbx/memory-policy.md
-```
+`profile/memory-policy.md` is the copy of record, and since #206 it is also the
+file the harness reads: both persona halves now load from
+`$FF_FATEFORGER_ROOT/infra/dsh/profile/`. Nothing needs copying to keep the
+prose current — see "One file still deploys by hand" below for the one that does.
 
 It carries three things neither MCP server states: when to read constraints
 and why `day_type` is not optional; the stage sequence, the Stage 3/Stage 4
@@ -103,32 +97,39 @@ those absences against the two versioned files. Prompt prose is the one part of
 this system that can go stale without anything failing, so that test is the
 only thing that will notice.
 
-## The two persona halves do not load from the same place
+## One file still deploys by hand
 
-The `system-prompt` stanza in the versioned `cordis.patch.yml` reads
-`memory-policy.md` from an absolute `~/.dsh/profiles/tmbx/` path, and
-`deployment.md` from `$FF_FATEFORGER_ROOT/infra/dsh/profile/`. Where the
-deployed stanza still says the same — `diff -r` settles that — an edit to
-`deployment.md` is live on the next turn while the identical edit to
-`memory-policy.md` reaches nothing until it is copied across:
+`ask` runs `--profile tmbx` against `DSH_HOME`, so the file that governs a turn
+is `~/.dsh/profiles/tmbx/cordis.patch.yml` — not the one in this repository.
+Everything that stanza *points at* is now versioned, which leaves exactly one
+hand-deployed file, and it is the one that decides where the others come from:
 
 ```sh
-diff -u infra/dsh/profile/memory-policy.md ~/.dsh/profiles/tmbx/memory-policy.md
-cp      infra/dsh/profile/memory-policy.md ~/.dsh/profiles/tmbx/memory-policy.md
+diff -u infra/dsh/profile/cordis.patch.yml ~/.dsh/profiles/tmbx/cordis.patch.yml
+cp      infra/dsh/profile/cordis.patch.yml ~/.dsh/profiles/tmbx/cordis.patch.yml
 ```
 
 Diff first, copy second, and only once you have confirmed that
-`~/.dsh/profiles/tmbx` is the profile the running harness actually loads. Half
-a persona updated is worse than neither half: the stage contract and the
+`~/.dsh/profiles/tmbx` is the profile the running harness actually loads.
+
+`tests/unit/test_timeboxing_profile_contract.py::test_the_deployed_profile_matches_the_repository`
+fails while the two differ, and skips where no profile is installed. It exists
+because the failure it catches is silent: a mount added here is simply absent
+from the model's toolset, and a persona fix is green in the suite while the
+running system still has the bug. Until #206 the previous section described a
+worse version of the same problem — half a persona updated is worse than
+neither half, because the stage contract and the
 deployment rules would then disagree about who owns the day, and the model
 would be reading both.
 
 ## The profile is versioned here, but the harness loads `~/.dsh`
 
-`profile/` holds a copy of what `~/.dsh/profiles/tmbx/` contains. The harness
-reads the `~/.dsh` copy — **this directory is a record, not the source** — so a
-change here reaches nothing until it is copied across, and a change there is
-invisible to review until it is copied back. Check them before trusting either:
+`profile/` was once a *record* of what `~/.dsh/profiles/tmbx/` contained. Since
+#206 the two markdown halves are the source: `cordis.patch.yml` points at them
+through `$FF_FATEFORGER_ROOT`, so editing them here is enough. `cordis.patch.yml`
+itself is still a record, and `tmbx-persona.py` is neither — it is generated and
+lives only in `~/.dsh`, so nothing in this repository can review it. Check them
+before trusting either:
 
 ```sh
 diff -r infra/dsh/profile ~/.dsh/profiles/tmbx

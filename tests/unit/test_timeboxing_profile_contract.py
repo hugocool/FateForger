@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / "infra" / "dsh" / "profile"
 
@@ -149,7 +151,14 @@ def test_every_planning_turn_ends_with_exactly_one_result_call() -> None:
 
     prose = _flowed()
 
-    assert "A briefed turn ends by calling submit_planning_result exactly once" in prose
+    # The name the model is offered, not the name the tool has in Python. The
+    # mount is `serverName: planning_result`, so the bridge presents it as
+    # mcp__planning_result__submit_planning_result -- and unlike a missed
+    # progress call, naming this one wrongly costs the whole turn.
+    assert (
+        "A briefed turn ends by calling "
+        "mcp__planning_result__submit_planning_result exactly once" in prose
+    )
     # The tool is mounted only for a briefed turn. An unconditional obligation
     # would order every ordinary /dsh turn to call something that is not there.
     assert "Without a brief the tool is not mounted" in prose
@@ -236,3 +245,31 @@ def test_both_persona_halves_load_from_the_repository() -> None:
     for line in persona_reads:
         assert "/infra/dsh/profile/" in line
         assert ".dsh/profiles" not in line
+
+
+def test_the_deployed_profile_matches_the_repository() -> None:
+    """The tests above read the repo; the harness reads ~/.dsh. Catch the gap.
+
+    `ask` runs `--profile tmbx` against `DSH_HOME`, so the file that actually
+    governs a turn is `~/.dsh/profiles/tmbx/cordis.patch.yml` — not the one in
+    this repository. Every other assertion in this module reads the repo copy,
+    which is how a persona fix can be green here and absent from the running
+    system. That already happened once with `memory-policy.md`; pointing both
+    halves at `FF_FATEFORGER_ROOT` fixed the halves and left the file doing the
+    pointing still deployed by hand.
+
+    Skipped where no profile is installed, because CI has no `~/.dsh` and a
+    failure there would say nothing about the deployment this guards.
+    """
+
+    deployed = Path.home() / ".dsh" / "profiles" / "tmbx" / "cordis.patch.yml"
+    if not deployed.is_file():
+        pytest.skip("no tmbx profile installed on this machine")
+
+    repo = (PROFILE / "cordis.patch.yml").read_text(encoding="utf-8")
+    assert deployed.read_text(encoding="utf-8") == repo, (
+        "the installed tmbx profile differs from this repository's. The model "
+        "is reading the installed one, so any mount or persona change here is "
+        "inert until you run:\n"
+        f"  cp {PROFILE / 'cordis.patch.yml'} {deployed}"
+    )

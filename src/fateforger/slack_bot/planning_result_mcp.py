@@ -144,6 +144,14 @@ def _validated(
             ensure_ascii=False,
             allow_nan=False,
             separators=(",", ":"),
+            # Canonical, so the comparison below is about content rather than
+            # the order a dict happened to serialise in. Without it a retry
+            # that re-encodes the same result with different key order is read
+            # as a second, differing submission and refused -- which is exactly
+            # the case the idempotent path exists to allow. List order stays
+            # significant: a list is ordered, and collapsing two orderings
+            # would let a genuinely different submission through.
+            sort_keys=True,
         )
     except (TypeError, ValueError) as exc:
         raise PlanningResultRefused(
