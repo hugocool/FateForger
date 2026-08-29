@@ -646,10 +646,18 @@ async def test_saying_nothing_about_the_day_keeps_the_weekday_the_host_derived()
 async def test_the_date_stage_offers_confirmation_and_never_the_date() -> None:
     """The kind of day is the user's to say; the date is the host's to know.
 
-    The prompt names the decision so the model can take it, and carries no date
-    at all -- a model that could see one could return one, and a planning day
-    that drifted between the card and the lock is the incident this whole
-    session kernel exists to prevent.
+    This once asserted the prompt carried no date at all, on the reasoning that
+    a model which could see one could return one. Asking for a different day by
+    chat needs the proposed date in the prompt -- "make it Monday" is not
+    answerable without knowing what today is -- so the guarantee moved from
+    *cannot see* to *cannot say*, which is the stronger of the two and the one
+    that was actually load-bearing.
+
+    The schema has no date field. The only channel that can move the day is a
+    bounded integer offset, and the host does the arithmetic and re-derives the
+    weekday and day type from the result. A planning day that drifted between
+    the card and the lock is the incident this session kernel exists to prevent,
+    and it drifted because a model named a date -- not because it saw one.
     """
 
     client = _SchemaOutputClient({"decision": "confirm_planning_day", "facts": []})
@@ -659,5 +667,65 @@ async def test_the_date_stage_offers_confirmation_and_never_the_date() -> None:
 
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert '"confirm_planning_day"' in prompt
-    assert "2026-08-29" not in prompt
+    assert "2026-08-29" in prompt, "an offset needs something to be measured from"
     assert "date" not in InterpretedTimeboxTurn.model_fields
+    offset = InterpretedTimeboxTurn.model_fields["day_offset"]
+    assert offset.annotation is not str
+
+
+@pytest.mark.asyncio
+async def test_a_different_day_is_asked_for_by_offset_not_by_date() -> None:
+    """Catches the date picker having no chat equivalent.
+
+    The card offers a date dropdown. Chat had nothing, so "make it Monday"
+    read as agreement with the proposed day and the session locked the wrong
+    date -- silently, because a confirmation looks the same either way.
+
+    The model answers with a distance and the host does the arithmetic, so the
+    weekday and day type are re-derived rather than taken on trust. A model
+    naming a date directly is the 2026-08-29 incident, and no validation
+    catches it: the wrong date is perfectly well formed.
+    """
+
+    snapshot = _date_stage_snapshot()
+    client = _SchemaOutputClient({"decision": "confirm_planning_day", "day_offset": 2})
+
+    intent = await TimeboxingIntentInterpreter(client).interpret(
+        "actually let's do Monday", snapshot
+    )
+
+    assert isinstance(intent, ConfirmPlanningDay)
+    assert intent.planning_day.date == date(2026, 8, 31)
+    assert intent.planning_day.iso_weekday == 1
+    # Re-derived, not carried over from the Saturday that was proposed.
+    assert intent.planning_day.day_type is DayType.WORKING
+
+    asked = json.loads(client.calls[-1][0][1].content)
+    assert asked["proposed_day"] == {
+        "date": "2026-08-29",
+        "weekday": "Saturday",
+        "day_type": "weekend",
+    }
+
+
+@pytest.mark.asyncio
+async def test_accepting_the_proposal_shifts_nothing() -> None:
+    """Catches an offset applied to every confirmation, quietly."""
+
+    snapshot = _date_stage_snapshot()
+    client = _SchemaOutputClient({"decision": "confirm_planning_day"})
+
+    intent = await TimeboxingIntentInterpreter(client).interpret("yes", snapshot)
+
+    assert intent.planning_day.date == date(2026, 8, 29)
+    assert intent.planning_day.classification_basis == "calendar"
+
+
+@pytest.mark.parametrize("offset", [-8, 15, 400])
+def test_an_implausible_offset_is_refused_by_the_schema(offset: int) -> None:
+    """Catches a well-formed number landing a plan a year away."""
+
+    with pytest.raises(ValidationError):
+        InterpretedTimeboxTurn.model_validate(
+            {"decision": "confirm_planning_day", "day_offset": offset}
+        )

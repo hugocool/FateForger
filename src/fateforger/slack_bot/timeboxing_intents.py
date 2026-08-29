@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, timedelta
 from typing import Literal, cast, get_args
 from uuid import uuid4
 
@@ -69,6 +69,18 @@ class InterpretedTimeboxTurn(_StrictModel):
     #: not a sixth day type, and an override recorded on every confirmation is
     #: one that has stopped meaning anything.
     day_type: DayType | None = None
+    #: How many days from the one the host proposed, when the user asks for a
+    #: different day. The card offers a date picker and chat had no equivalent,
+    #: so "make it Monday" read as agreement with the proposal.
+    #:
+    #: An offset rather than a date, deliberately. The model is given the
+    #: proposed date and its weekday and answers with a distance; the host does
+    #: the arithmetic and re-derives the weekday and day type from the result.
+    #: A model naming a date directly is the 2026-08-29 incident - a Saturday
+    #: read back as a Friday - and no bound catches that, because the wrong
+    #: date is perfectly well formed. The bounds here catch the other failure:
+    #: a plausible-looking offset that lands a plan a year away.
+    day_offset: int | None = Field(default=None, ge=-7, le=14)
 
 
 def _turn_schema(
@@ -156,6 +168,9 @@ otherwise: the host derives working and weekend from the weekday and is right
 about them, and an override it did not ask for overwrites a fact with a guess.
 When offered_options is present and the user picked one of them, answer with
 that option's option_id exactly as given.
+Set day_offset only when the user asks for a different day from the one in
+proposed_day, and give it as a number of days from that day. Leave it out when
+they accept the proposal. Never answer with a date; the host owns the calendar.
 Never invent artifact identifiers, revisions, or digests; the host owns identity.
 """
 
@@ -271,6 +286,9 @@ class TimeboxingIntentInterpreter:
                     for option in options
                 ],
                 "pending_artifact_kind": pending.kind.value if pending else None,
+                # What day_offset is measured from. Without it the model would
+                # be asked how far away Monday is with no idea what today is.
+                "proposed_day": _proposed_day_context(pending),
                 "user_text": user_text,
             },
             ensure_ascii=False,
@@ -311,6 +329,19 @@ def _proposed_planning_day(artifact: PlanningArtifact) -> PlanningDay:
     )
 
 
+def _proposed_day_context(artifact: PlanningArtifact | None) -> dict[str, str] | None:
+    """The day an offset is measured from, named so the model can count."""
+
+    if artifact is None or artifact.kind is not ArtifactKind.PLANNING_DAY:
+        return None
+    proposal = _proposed_planning_day(artifact)
+    return {
+        "date": proposal.date.isoformat(),
+        "weekday": proposal.date.strftime("%A"),
+        "day_type": proposal.day_type.value,
+    }
+
+
 def _intent_from_interpreted(
     interpreted: InterpretedTimeboxTurn,
     *,
@@ -326,9 +357,13 @@ def _intent_from_interpreted(
         # basis travels with the day type because `PlanningDay` refuses a
         # `calendar` basis that disagrees with the weekday -- so an override
         # that forgot to say it was one would raise rather than lie.
+        # The host does the date arithmetic and re-derives the weekday and day
+        # type from the result, so a shifted day is as host-owned as the
+        # proposal was.
+        target_date = proposal.date + timedelta(days=interpreted.day_offset or 0)
         return ConfirmPlanningDay(
             planning_day=PlanningDay.lock_default(
-                value=proposal.date,
+                value=target_date,
                 timezone=proposal.timezone,
                 lock_revision=snapshot.revision + 1,
                 day_type=interpreted.day_type,
