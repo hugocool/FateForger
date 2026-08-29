@@ -4,4 +4,10 @@ Keep package initialization side-effect free to avoid circular imports during
 Slack/runtime bootstrap. Import concrete symbols from submodules directly.
 """
 
-__all__: list[str] = []
+from .session_contracts import (
+    PlanningArtifact,
+    PlanningDay,
+    PlanningSessionSnapshot,
+)
+
+__all__ = ["PlanningArtifact", "PlanningDay", "PlanningSessionSnapshot"]

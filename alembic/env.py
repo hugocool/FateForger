@@ -2,8 +2,7 @@ import os
 import sys
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
+from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
@@ -17,9 +16,6 @@ os.environ.setdefault("OPENAI_API_KEY", "alembic-dummy")
 os.environ.setdefault("CALENDAR_WEBHOOK_SECRET", "alembic-dummy")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///alembic.db")
 
-# Import our models
-from productivity_bot.models import Base
-
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
@@ -29,9 +25,8 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# add your model's MetaData object here
-# for 'autogenerate' support
-target_metadata = Base.metadata
+# Migrations are hand-written; partial ORM metadata would make autogenerate unsafe.
+target_metadata = None
 
 
 # Get the database URL from environment variable or use the one in alembic.ini

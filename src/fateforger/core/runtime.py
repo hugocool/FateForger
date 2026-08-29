@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import sqlite3
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ from autogen_core import (
     default_subscription,
     message_handler,
 )
+from autogen_core.models import ChatCompletionClient
 from autogen_core.tool_agent import ToolAgent
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -26,6 +28,10 @@ from fateforger.agents.revisor.agent import RevisorAgent
 from fateforger.agents.schedular.agent import PlannerAgent
 from fateforger.agents.tasks import TasksAgent
 from fateforger.agents.timeboxing.agent import TimeboxingFlowAgent
+from fateforger.agents.timeboxing.durable_constraint_store import (
+    build_durable_constraint_store,
+)
+from fateforger.agents.timeboxing.kg_constraint_client import KGConstraintMemoryClient
 from fateforger.core.config import settings
 from fateforger.haunt.agents import HauntingAgent, UserChannelAgent
 from fateforger.haunt.delivery import deliver_user_facing
@@ -56,6 +62,15 @@ from fateforger.haunt.settings_store import (
     ensure_admonishment_settings_schema,
 )
 from fateforger.haunt.tools import build_haunting_tools
+from fateforger.llm import build_autogen_chat_client
+from fateforger.slack_bot.deepseek_timebox_planner import (
+    ConstraintReader,
+    UnavailableConstraintReader,
+)
+from fateforger.slack_bot.timeboxing_intents import TimeboxingIntentInterpreter
+from fateforger.slack_bot.timeboxing_session_store import (
+    SqlAlchemyTimeboxingSessionRepository,
+)
 
 USER_CHANNEL_AGENT_TYPE = "user_channel"
 HAUNTING_AGENT_TYPE = "haunting_agent"
@@ -235,7 +250,7 @@ async def _probe_runtime_mcp_server(
             tool_count=0,
             error=f"timed out after {server.timeout_s:.1f}s during tool discovery",
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional dependency stays typed
         message = str(exc).strip() or repr(exc)
         if isinstance(exc, ExceptionGroup):
             sub_messages = [str(e) for e in exc.exceptions]
@@ -370,6 +385,77 @@ def _create_scheduler(database_url: str | None) -> AsyncIOScheduler:
     return scheduler
 
 
+def _build_timeboxing_intent_interpreter() -> tuple[
+    TimeboxingIntentInterpreter, ChatCompletionClient
+]:
+    """Build the runtime-owned schema interpreter and its shared client."""
+    model_client = build_autogen_chat_client(
+        "timeboxing_agent", temperature=0
+    )
+    return TimeboxingIntentInterpreter(model_client), model_client
+
+
+_CONSTRAINT_STORE_PROBE_TIMEOUT_SECONDS = 5.0
+
+
+def _probe_constraint_store_readable(configured: str) -> None:
+    """Open the configured store read-only and confirm it is a usable database.
+
+    Raises on a missing path, a directory, an unreadable file, or a file that is
+    not a SQLite database. The probe never writes: it connects with ``mode=ro``
+    and issues one pragma, so a corrupt file is left byte-identical.
+    """
+
+    path = Path(configured)
+    if not path.is_file():
+        raise OSError("configured constraint store is not a readable file")
+    connection = sqlite3.connect(
+        f"file:{path.as_posix()}?mode=ro",
+        uri=True,
+        timeout=_CONSTRAINT_STORE_PROBE_TIMEOUT_SECONDS,
+    )
+    try:
+        connection.execute("PRAGMA schema_version").fetchone()
+    finally:
+        connection.close()
+
+
+async def _build_timeboxing_constraint_store() -> ConstraintReader:
+    """Build the runtime-owned, read-only durable planning context adapter.
+
+    An existing but unusable path is classified here rather than surfacing as an
+    authoritative empty context at planning time.
+    """
+
+    configured = str(getattr(settings, "memory_db_path", "") or "").strip()
+    if not configured:
+        logger.warning("timeboxing constraint store unavailable reason=not_configured")
+        return UnavailableConstraintReader()
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(_probe_constraint_store_readable, configured),
+            timeout=_CONSTRAINT_STORE_PROBE_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning(
+            "timeboxing constraint store unavailable reason=unusable error_type=%s",
+            type(exc).__name__,
+        )
+        return UnavailableConstraintReader()
+    try:
+        client = KGConstraintMemoryClient(configured)
+        store = build_durable_constraint_store(client)
+    except Exception as exc:
+        logger.warning(
+            "timeboxing constraint store unavailable error_type=%s",
+            type(exc).__name__,
+        )
+        return UnavailableConstraintReader()
+    if store is None:
+        return UnavailableConstraintReader()
+    return store
+
+
 async def _create_runtime() -> SingleThreadedAgentRuntime:
     """Create and start the runtime instance."""
     git_identity = _resolve_runtime_git_identity()
@@ -396,6 +482,8 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     planning_session_store = SqlAlchemyPlanningSessionStore(sessionmaker)
     await ensure_event_draft_schema(settings_engine)
     event_draft_store = SqlAlchemyEventDraftStore(sessionmaker)
+    timeboxing_session_store = SqlAlchemyTimeboxingSessionRepository(sessionmaker)
+    timeboxing_constraint_store = await _build_timeboxing_constraint_store()
 
     haunting_service = HauntingService(scheduler, settings_store=settings_store)
     intervention = HauntingInterventionHandler(
@@ -532,6 +620,9 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
             haunt=haunt,
         ),
     )
+    timeboxing_intent_interpreter, timeboxing_intent_model_client = (
+        _build_timeboxing_intent_interpreter()
+    )
     runtime.start()
     setattr(runtime, "haunt_orchestrator", haunt)
     setattr(runtime, "haunting_service", haunting_service)
@@ -541,6 +632,18 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     setattr(runtime, "planning_anchor_store", planning_anchor_store)
     setattr(runtime, "planning_session_store", planning_session_store)
     setattr(runtime, "event_draft_store", event_draft_store)
+    setattr(runtime, "timeboxing_session_store", timeboxing_session_store)
+    setattr(runtime, "timeboxing_constraint_store", timeboxing_constraint_store)
+    setattr(
+        runtime,
+        "timeboxing_intent_interpreter",
+        timeboxing_intent_interpreter,
+    )
+    setattr(
+        runtime,
+        "timeboxing_intent_model_client",
+        timeboxing_intent_model_client,
+    )
     planning_guardian = PlanningGuardian(
         scheduler,
         anchor_store=planning_anchor_store,
@@ -590,6 +693,12 @@ async def shutdown_runtime() -> None:
 
     await runtime.stop()
     await runtime.close()
+
+    timeboxing_intent_model_client = getattr(
+        runtime, "timeboxing_intent_model_client", None
+    )
+    if timeboxing_intent_model_client is not None:
+        await timeboxing_intent_model_client.close()
 
     scheduler = getattr(getattr(runtime, "haunting_service", None), "_scheduler", None)
     scheduler.shutdown(wait=False)

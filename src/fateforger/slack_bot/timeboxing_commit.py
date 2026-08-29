@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
-from zoneinfo import ZoneInfo
+from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from autogen_core import AgentId
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from slack_sdk.web.async_client import AsyncWebClient
 
 from fateforger.agents.timeboxing.messages import TimeboxingCommitDate
@@ -144,33 +144,83 @@ def build_timebox_commit_prompt_message(
     )
 
 
-@dataclass(frozen=True)
-class TimeboxCommitMeta:
+class TimeboxCommitMeta(BaseModel):
     """Encoded metadata passed through Slack interactive payloads."""
 
-    user_id: str
-    channel_id: str
-    thread_ts: str
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[1] = 1
+    session_key: str = Field(min_length=1)
+    expected_revision: int = Field(ge=0)
+    user_id: str = Field(min_length=1)
+    channel_id: str = Field(min_length=1)
+    thread_ts: str = Field(min_length=1)
     date: str
-    tz: str
+    tz: str = Field(min_length=1)
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def decode_schema_version(cls, value: object) -> object:
+        return 1 if value == "1" else value
+
+    @field_validator("date")
+    @classmethod
+    def date_is_iso_calendar_date(cls, value: str) -> str:
+        date.fromisoformat(value)
+        return value
+
+    @field_validator("tz")
+    @classmethod
+    def timezone_is_known(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("timezone must be a known IANA timezone") from exc
+        return value
 
     @classmethod
     def from_value(cls, value: str) -> "TimeboxCommitMeta | None":
         """Parse metadata encoded into Slack action values."""
         meta = decode_metadata(value)
-        channel_id = meta.get("channel_id") or ""
-        thread_ts = meta.get("thread_ts") or ""
-        user_id = meta.get("user_id") or ""
-        date = meta.get("date") or ""
-        tz = meta.get("tz") or "UTC"
-        if not (channel_id and thread_ts and user_id and date):
+        if not meta:
             return None
-        return cls(
-            user_id=user_id,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-            date=date,
-            tz=tz,
+        # TODO(refactor): Remove compatibility defaults after all legacy
+        # Stage-0 cards have aged out of Slack.
+        if "schema_version" not in meta:
+            channel_id = meta.get("channel_id", "")
+            thread_ts = meta.get("thread_ts", "")
+            meta.update(
+                {
+                    "schema_version": "1",
+                    "session_key": f"{channel_id}:{thread_ts}",
+                    "expected_revision": "0",
+                    "tz": meta.get("tz") or "UTC",
+                }
+            )
+        try:
+            return cls.model_validate_strings(meta)
+        except (TypeError, ValueError, ValidationError):
+            return None
+
+    def to_value(self) -> str:
+        """Encode complete versioned action metadata for a Slack value."""
+        return encode_metadata(
+            {
+                "schema_version": str(self.schema_version),
+                "session_key": self.session_key,
+                "expected_revision": str(self.expected_revision),
+                "user_id": self.user_id,
+                "channel_id": self.channel_id,
+                "thread_ts": self.thread_ts,
+                "date": self.date,
+                "tz": self.tz,
+            }
+        )
+
+    def with_selected_date(self, selected_date: str) -> "TimeboxCommitMeta":
+        """Return date-card metadata with only its selected date replaced."""
+        return type(self).model_validate(
+            {**self.model_dump(), "date": selected_date}
         )
 
     def to_private_metadata(self, *, prompt_channel_id: str, prompt_ts: str) -> str:
@@ -182,6 +232,9 @@ class TimeboxCommitMeta:
                 "thread_ts": self.thread_ts,
                 "date": self.date,
                 "tz": self.tz,
+                "schema_version": str(self.schema_version),
+                "session_key": self.session_key,
+                "expected_revision": str(self.expected_revision),
                 "prompt_channel_id": prompt_channel_id,
                 "prompt_ts": prompt_ts,
             }
@@ -343,20 +396,11 @@ class TimeboxingCommitCoordinator:
         meta = TimeboxCommitMeta.from_value(existing_meta_value)
         if not meta:
             return
-        # TODO(refactor): Validate selected_date with a Pydantic schema.
         try:
-            date.fromisoformat(selected_date)
-        except Exception:
+            updated_meta = meta.with_selected_date(selected_date)
+        except (TypeError, ValueError, ValidationError):
             return
-        value = encode_metadata(
-            {
-                "channel_id": meta.channel_id,
-                "thread_ts": meta.thread_ts,
-                "user_id": meta.user_id,
-                "date": selected_date,
-                "tz": meta.tz,
-            }
-        )
+        value = updated_meta.to_value()
         prompt = build_timebox_commit_prompt_message(
             planned_date=selected_date, tz_name=meta.tz, meta_value=value
         )
