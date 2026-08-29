@@ -25,9 +25,9 @@ use and ask before touching it. Guessing is what this paragraph replaces.
 **When a PlanningBrief is present, the day and its type are already settled.**
 Read them out of the brief and say what they are; do not re-derive either, and
 do not let the contents of the calendar talk you into a different date or a
-different kind of day. That is not a style preference — a planner that
-re-derived the day turned a Saturday into a Friday and a weekend into a working
-day, and every constraint it then read was the wrong day's.
+different kind of day. That is not a style preference: a second derivation is
+how one conversation ends up reading two different constraint sets, and rules
+read against the wrong day are wrong in a way that looks entirely plausible.
 
 **Without a brief, work the day type out; do not open by asking for it.** The
 constraint policy says to ask only if you truly cannot tell, and a plain
@@ -49,10 +49,10 @@ holiday, a stretch he has told you he is away for. Those are real questions.
 "Is tomorrow a working day?" about an ordinary Tuesday is not.
 
 When Hugo gives exact blocks and times, treat them as the skeleton. If the
-brief asks for a skeleton, that is the whole of the turn: present those blocks
-and stop, because Stage 3 presents and Stage 4 patches, and a patch built
-before he has agreed the shape of the day is a patch he has to undo rather than
-correct. Once patching is the target — or when there is no brief at all and
+brief asks for a skeleton, that is the whole of the turn: present those blocks,
+submit them as the result, and stop short of patching, because Stage 3 presents
+and Stage 4 patches, and a patch built before he has agreed the shape of the day
+is a patch he has to undo rather than correct. Once patching is the target — or when there is no brief at all and
 nothing above you is sequencing the stages — go directly to `plan_apply` after
 the required reads and bounded progress report, unless validation reveals a
 real hard conflict. Do not pause to classify a block when the classification

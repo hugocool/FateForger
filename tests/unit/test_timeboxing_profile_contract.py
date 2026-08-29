@@ -37,6 +37,19 @@ def _profile_prose() -> str:
     )
 
 
+def _absent(needle: str) -> bool:
+    """Whether a retired sentence is gone, ignoring the case it was written in.
+
+    Case-folding our own prose to check our own absence is fixture handling, not
+    a judgement about anything a user said. It earns its place: the first
+    version of this module compared case-sensitively, and re-introducing "The
+    thread is the state" at the start of a sentence walked straight past the
+    assertion written to forbid it.
+    """
+
+    return needle.casefold() not in _flowed().casefold()
+
+
 def _flowed() -> str:
     """The same prose with its hard wrapping collapsed.
 
@@ -62,7 +75,28 @@ def test_the_brief_is_authoritative_for_the_day_and_the_stage() -> None:
     prose = _flowed()
 
     assert "is authoritative for the date, the timezone, the day type" in prose
-    assert "Do not infer a different day or stage from calendar content or prose" in prose
+    assert (
+        "Do not infer a different day or stage from calendar content or prose" in prose
+    )
+    # Scoped, not unconditional: today every live turn is a no-brief turn, and
+    # the half of the persona read first must still say what governs one.
+    assert "When the host hands you a PlanningBrief" in prose
+    assert "Without a brief nothing above you is sequencing the session" in prose
+
+
+def test_the_persona_does_not_narrate_its_own_revision_history() -> None:
+    """A dated incident in the prompt reads as this conversation's history.
+
+    The first pass at this section deleted one anecdote and explained the
+    deletion to the model in another, restating the retired instruction and
+    dating a fresh Saturday/Friday failure. Both doors lead to the same place:
+    a fresh process cannot tell a recounted day from the day it is planning.
+    """
+
+    prose = _flowed()
+
+    assert _absent("turned a Saturday into a Friday")
+    assert _absent("That paragraph replaced one saying")
 
 
 def test_the_stage_section_no_longer_claims_the_thread_is_the_state() -> None:
@@ -74,10 +108,9 @@ def test_the_stage_section_no_longer_claims_the_thread_is_the_state() -> None:
     the brief; the prompt must not offer a second, weaker answer.
     """
 
-    prose = _flowed()
-
-    assert "the thread is the state" not in prose
-    assert "There is no machinery enforcing this" not in prose
+    assert _absent("the thread is the state")
+    assert _absent("There is no machinery enforcing this")
+    assert _absent("nothing enforces the sequence")
 
 
 def test_only_the_requested_artifact_may_come_back() -> None:
@@ -116,10 +149,10 @@ def test_every_planning_turn_ends_with_exactly_one_result_call() -> None:
 
     prose = _flowed()
 
-    assert (
-        "End every planning turn by calling submit_planning_result exactly once"
-        in prose
-    )
+    assert "A briefed turn ends by calling submit_planning_result exactly once" in prose
+    # The tool is mounted only for a briefed turn. An unconditional obligation
+    # would order every ordinary /dsh turn to call something that is not there.
+    assert "Without a brief the tool is not mounted" in prose
 
 
 # -- who owns a gap --------------------------------------------------------
@@ -154,9 +187,8 @@ def test_the_2026_08_24_incident_prose_is_gone() -> None:
 
     prose = _flowed()
 
-    assert "no gym today, it's vacation" not in prose
-    assert "Yesterday you said no gym" not in prose
-    assert "Observed 2026-08-24" not in prose
+    assert _absent("no gym today, it's vacation")
+    assert _absent("Observed 2026-08-24")
 
 
 def test_the_general_rules_the_anecdote_carried_survive_it() -> None:
