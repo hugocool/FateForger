@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from slack_sdk.web.async_client import AsyncWebClient
 
 from fateforger.agents.timeboxing.messages import TimeboxingCommitDate
+from fateforger.agents.timeboxing.session_contracts import DayType
 from fateforger.slack_bot.constraint_review import decode_metadata, encode_metadata
 from fateforger.slack_bot.messages import SlackBlockMessage
 from fateforger.slack_bot.reply_guard import agent_reply_text
@@ -19,6 +20,10 @@ from fateforger.slack_bot.workspace import WorkspaceRegistry
 
 FF_TIMEBOX_COMMIT_START_ACTION_ID = "ff_timebox_start"
 FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID = "ff_timebox_day_select"
+#: The day-type override row. One action id for all five, because the
+#: decision belongs in the encoded metadata: an id that spells out its own
+#: answer is a second place the vocabulary can drift from `DayType`.
+FF_TIMEBOX_DAY_TYPE_ACTION_ID = "ff_timebox_day_type"
 
 
 def _persona_payload(agent_type: str) -> dict[str, Any]:
@@ -157,6 +162,18 @@ class TimeboxCommitMeta(BaseModel):
     thread_ts: str = Field(min_length=1)
     date: str
     tz: str = Field(min_length=1)
+    #: Absent means "let the host derive it from the weekday", which is the
+    #: right default and the only one a calendar can support. Present means the
+    #: user said so, and `PlanningDay.lock_default` records that as a
+    #: `user_override` basis -- vacation, holiday and sick have no other way in.
+    day_type: DayType | None = None
+
+    @field_validator("day_type", mode="before")
+    @classmethod
+    def blank_day_type_means_derived(cls, value: object) -> object:
+        # Slack values are querystrings, so an unset field arrives as "" rather
+        # than as an absence. Empty is not a sixth day type.
+        return None if value == "" else value
 
     @field_validator("schema_version", mode="before")
     @classmethod
@@ -214,6 +231,7 @@ class TimeboxCommitMeta(BaseModel):
                 "thread_ts": self.thread_ts,
                 "date": self.date,
                 "tz": self.tz,
+                "day_type": self.day_type.value if self.day_type else "",
             }
         )
 
@@ -221,6 +239,12 @@ class TimeboxCommitMeta(BaseModel):
         """Return date-card metadata with only its selected date replaced."""
         return type(self).model_validate(
             {**self.model_dump(), "date": selected_date}
+        )
+
+    def with_day_type(self, day_type: DayType | None) -> TimeboxCommitMeta:
+        """Return date-card metadata carrying one typed day-type override."""
+        return type(self).model_validate(
+            {**self.model_dump(), "day_type": day_type}
         )
 
     def to_private_metadata(self, *, prompt_channel_id: str, prompt_ts: str) -> str:
@@ -267,11 +291,76 @@ def build_timebox_date_card(
         date=planned_date,
         tz=tz_name,
     )
-    return build_timebox_commit_prompt_message(
+    card = build_timebox_commit_prompt_message(
         planned_date=planned_date,
         tz_name=tz_name,
         meta_value=meta.to_value(),
     )
+    return SlackBlockMessage(
+        text=card.text,
+        blocks=[*card.blocks, *build_day_type_override_blocks(meta)],
+    )
+
+
+_DAY_TYPE_LABELS: dict[DayType, str] = {
+    DayType.WORKING: "Working day",
+    DayType.WEEKEND: "Weekend",
+    DayType.VACATION: "Vacation",
+    DayType.HOLIDAY: "Holiday",
+    DayType.SICK: "Sick",
+}
+
+
+def derived_day_type(planned_date: str) -> DayType | None:
+    """The day type a calendar can actually support, or nothing.
+
+    Arithmetic on a date this system already holds, so no model is consulted.
+    It is only ever weekend or working: no calendar knows about a holiday.
+    """
+    try:
+        iso_weekday = date.fromisoformat(planned_date).isoweekday()
+    except ValueError:
+        return None
+    return DayType.WEEKEND if iso_weekday in (6, 7) else DayType.WORKING
+
+
+def build_day_type_override_blocks(meta: TimeboxCommitMeta) -> list[dict[str, Any]]:
+    """Offer the five day types as buttons rather than as a sentence to read.
+
+    Working and weekend follow from the weekday and are already the default the
+    Confirm button applies. The other three follow from nothing observable, so
+    without this row the only way to say "I am on holiday" is prose, and prose
+    has to be interpreted. Getting that wrong returns a vacation day carrying a
+    full working week -- wrong in every rule and plausible in all of them.
+    """
+    derived = derived_day_type(meta.date)
+    elements: list[dict[str, Any]] = [
+        {
+            "type": "button",
+            "action_id": FF_TIMEBOX_DAY_TYPE_ACTION_ID,
+            "text": {"type": "plain_text", "text": _DAY_TYPE_LABELS[day_type]},
+            "value": meta.with_day_type(day_type).to_value(),
+        }
+        for day_type in DayType
+    ]
+    context = (
+        f"Confirm treats this as a *{_DAY_TYPE_LABELS[derived].lower()}*, "
+        "which is all a calendar can tell. Pick another if today is not that."
+        if derived is not None
+        else "Pick the kind of day this is."
+    )
+    return [
+        {
+            "type": "context",
+            "block_id": "ff_timebox_day_type_hint",
+            "elements": [{"type": "mrkdwn", "text": context}],
+        },
+        {
+            "type": "actions",
+            "block_id": "ff_timebox_day_type_controls",
+            "elements": elements,
+        },
+    ]
 
 
 class TimeboxingCommitCoordinator:
@@ -499,8 +588,12 @@ def _append_thread_button(
 __all__ = [
     "FF_TIMEBOX_COMMIT_START_ACTION_ID",
     "FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID",
+    "FF_TIMEBOX_DAY_TYPE_ACTION_ID",
+    "TimeboxCommitMeta",
     "TimeboxingCommitCoordinator",
+    "build_day_type_override_blocks",
     "build_timebox_commit_prompt_message",
     "build_timebox_date_card",
+    "derived_day_type",
     "format_relative_day_label",
 ]

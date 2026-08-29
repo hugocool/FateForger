@@ -6,15 +6,38 @@ import logging
 
 import pytest
 
+from datetime import date
+
+from fateforger.agents.timeboxing.adaptive_timeboxing import (
+    InMemoryPlanningSessionRepository,
+)
+from fateforger.agents.timeboxing.session_contracts import (
+    Advance,
+    ArtifactApproval,
+    ArtifactDraft,
+    ArtifactKind,
+    FactKind,
+    PlanningArtifact,
+    PlanningBrief,
+    PlanningDay,
+    PlanningFact,
+    PlanningResult,
+    PlanningSessionSnapshot,
+)
 from fateforger.core.config import settings
 from fateforger.slack_bot import handlers
 from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.handlers import (
     FF_HARNESS_APPROVE_ACTION_ID,
+    HarnessApproveActionPayload,
     harness_approve_block,
     register_handlers,
 )
-from fateforger.slack_bot.timebox_candidate import ValidatedTimeboxCandidate
+from fateforger.slack_bot.timebox_candidate import (
+    PendingTimeboxCandidates,
+    ValidatedTimeboxCandidate,
+)
+from fateforger.slack_bot.timeboxing_commit import FF_TIMEBOX_DAY_TYPE_ACTION_ID
 
 
 class _Runtime:
@@ -402,19 +425,119 @@ async def test_unavailable_commit_fails_progress_without_leaking_exception(
     assert "SECRET-42" not in caplog.text
 
 
+class _SessionRuntime:
+    """A runtime carrying only what the adaptive kernel route may read."""
+
+    def __init__(self, *, repository, planner, interpreter) -> None:
+        self.timeboxing_session_store = repository
+        self.timeboxing_planner = planner
+        self.timeboxing_intent_interpreter = interpreter
+        self.timeboxing_calendar_id = "cal"
+        self.timeboxing_constraint_store = _ConstraintStore()
+
+    async def send_message(self, message, recipient):
+        raise AssertionError("the kernel route must not reach the AutoGen runtime")
+
+
+class _ConstraintStore:
+    async def query_constraints(self, *, filters, limit):
+        return []
+
+
+class _CandidatePlanner:
+    """Return one validated candidate, and record the brief it was given."""
+
+    def __init__(self) -> None:
+        self.briefs: list[PlanningBrief] = []
+
+    async def produce(self, brief: PlanningBrief, progress) -> PlanningResult:
+        self.briefs.append(brief)
+        return PlanningResult(
+            artifact_updates=[
+                ArtifactDraft(
+                    kind=ArtifactKind.VALIDATED_CANDIDATE,
+                    payload={
+                        "digest": "a" * 64,
+                        "rendered": "17:00 Gym",
+                        "snapshot": {"calendar_id": "cal", "day": "2026-08-29"},
+                        "patch": {"ops": [{"op": "add", "h": "A"}]},
+                    },
+                    dependency_revisions={"skeleton": 1},
+                )
+            ]
+        )
+
+
+class _AdvancingInterpreter:
+    async def interpret(self, user_text, snapshot):
+        return Advance()
+
+
+def _session_with_an_approved_skeleton(session_key: str) -> PlanningSessionSnapshot:
+    """A session already past the skeleton gate, so one turn reaches a candidate."""
+
+    day = PlanningDay.lock_default(
+        value=date(2026, 8, 29), timezone="Europe/Amsterdam", lock_revision=1
+    )
+    skeleton = PlanningArtifact.create(
+        kind=ArtifactKind.SKELETON,
+        revision=1,
+        payload={"markdown": "## Saturday"},
+        dependency_revisions={"planning_day": 1},
+    )
+    return PlanningSessionSnapshot(
+        session_key=session_key,
+        revision=3,
+        owner_user_id="U1",
+        planning_day=day,
+        facts=[
+            PlanningFact(
+                fact_id="a1",
+                kind=FactKind.REQUESTED_ACTIVITY,
+                value="gym",
+                source="user",
+            )
+        ],
+        artifacts=[skeleton],
+        approvals=[
+            ArtifactApproval(
+                artifact_id=skeleton.artifact_id,
+                artifact_revision=skeleton.revision,
+                artifact_digest=skeleton.digest,
+                actor_user_id="U1",
+                session_revision=2,
+            )
+        ],
+    )
+
+
 async def test_top_level_mention_routes_card_and_approval_through_actual_root(
     monkeypatch,
 ):
-    """The instant ack is a reply; it must never become the session identity."""
+    """The instant ack is a reply; it must never become the session identity.
+
+    `instant_ack` posts into the thread it is acknowledging, so its own `ts` is
+    a child message. Slack action callbacks still name the event `ts` as the
+    root, so a session filed under the ack would be a session no button could
+    ever address again. This drives the real kernel route: the session is
+    seeded under the true root, and if the route chose the ack instead it would
+    find an empty session and ask for a date rather than offer a plan.
+
+    The approval control it then offers is the existing opaque candidate
+    identity, in the true root's thread, and pressing it commits through the
+    session so the receipt is stored rather than lost.
+    """
 
     client = _Client()
     focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
-    captured_thread_keys: list[str] = []
-    commits: list[tuple[dict, dict]] = []
+    commits: list[tuple[dict, dict, str | None]] = []
 
     monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     monkeypatch.setattr(
         settings, "slack_timeboxing_channel_id", "C1", raising=False
+    )
+    monkeypatch.setattr(
+        handlers, "_pending_candidates", PendingTimeboxCandidates()
     )
 
     async def fake_remember(**_kwargs):
@@ -422,28 +545,31 @@ async def test_top_level_mention_routes_card_and_approval_through_actual_root(
 
     monkeypatch.setattr("fateforger.slack_bot.thread_memory.remember", fake_remember)
 
-    async def fake_harness_turn(
-        *, text, thread_key, owner_user_id, on_phase, session_id=None
-    ):
-        assert text == "timebox today"
-        assert session_id == thread_key
-        captured_thread_keys.append(thread_key)
-        handlers._pending_candidates.replace(
-            thread_key, _candidate("A"), owner_user_id=owner_user_id
-        )
-        return handlers.TextMessage(content="Here is the plan.", source="timeboxing_agent")
+    class _RecordingTmbx:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
 
-    async def fake_commit(_self, snapshot, patch, *, idempotency_key=None):
-        commits.append((snapshot, patch))
-        return {"committed": True, "tx_id": "tx-A"}
+        async def read(self, calendar_id, day):
+            return {"ok": True, "day": day}
 
-    monkeypatch.setattr(handlers, "_harness_turn", fake_harness_turn)
+        async def commit(self, snapshot, patch, *, idempotency_key=None):
+            commits.append((snapshot, patch, idempotency_key))
+            return {"committed": True, "tx_id": "tx-A"}
+
     monkeypatch.setattr(
-        "fateforger.slack_bot.tmbx_client.TmbxClient.commit", fake_commit
+        "fateforger.slack_bot.tmbx_client.TmbxClient", _RecordingTmbx
+    )
+
+    repository = InMemoryPlanningSessionRepository(
+        [_session_with_an_approved_skeleton("C1:user-root")]
+    )
+    planner = _CandidatePlanner()
+    runtime = _SessionRuntime(
+        repository=repository, planner=planner, interpreter=_AdvancingInterpreter()
     )
 
     await handlers.route_slack_event(
-        runtime=_Runtime(),
+        runtime=runtime,
         focus=focus,
         default_agent="timeboxing_agent",
         event={
@@ -459,15 +585,28 @@ async def test_top_level_mention_routes_card_and_approval_through_actual_root(
         acked={"channel": "C1", "ts": "ack-reply"},
     )
 
-    approval_post = next(post for post in client.posts if post.get("blocks"))
-    approval_button = approval_post["blocks"][1]["elements"][0]
-    assert captured_thread_keys == ["C1:user-root"]
-    assert approval_post["thread_ts"] == "user-root"
+    assert [brief.session_key for brief in planner.briefs] == ["C1:user-root"]
+    assert planner.briefs[0].target_artifact is ArtifactKind.VALIDATED_CANDIDATE
+
+    carded = [payload for payload in client.updates if payload.get("blocks")]
+    assert carded, client.updates
+    approval_button = next(
+        element
+        for block in carded[-1]["blocks"]
+        for element in block.get("elements") or ()
+        if element.get("action_id") == FF_HARNESS_APPROVE_ACTION_ID
+    )
+    approval = HarnessApproveActionPayload.model_validate_json(
+        approval_button["value"]
+    )
+    assert approval.thread_key == "C1:user-root"
+    assert carded[-1]["ts"] == "ack-reply"
+    assert client.posts == [], "the kernel route edits its own message"
 
     app = _App(client)
     register_handlers(
         app=app,
-        runtime=_Runtime(),
+        runtime=runtime,
         focus=focus,
         default_agent="timeboxing_agent",
     )
@@ -484,7 +623,42 @@ async def test_top_level_mention_routes_card_and_approval_through_actual_root(
         logger=logging.getLogger(),
     )
 
-    assert commits == [(_candidate("A").snapshot, _candidate("A").patch)]
+    assert commits == [
+        (
+            {"calendar_id": "cal", "day": "2026-08-29"},
+            {"ops": [{"op": "add", "h": "A"}]},
+            "a" * 64,
+        )
+    ]
+    committed = await repository.load_or_create("C1:user-root", owner_user_id="U1")
+    assert committed.status == "committed"
+    assert [
+        artifact.kind for artifact in committed.artifacts
+    ].count(ArtifactKind.COMMIT_RECEIPT) == 1
+
+
+async def test_the_kernel_review_controls_are_registered(monkeypatch):
+    """A rendered button with no listener is a control that does nothing.
+
+    Slack silently drops an action nobody registered, so the failure is a card
+    that looks live and answers nothing. These ids are minted here and offered
+    by the renderers above, which makes their registration checkable.
+    """
+
+    app = _App(_Client())
+    register_handlers(
+        app=app,
+        runtime=_Runtime(),
+        focus=FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"]),
+        default_agent="timeboxing_agent",
+    )
+    assert {
+        handlers.FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
+        handlers.FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
+        handlers.FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
+        FF_TIMEBOX_DAY_TYPE_ACTION_ID,
+        FF_HARNESS_APPROVE_ACTION_ID,
+    } <= set(app.actions)
 
 
 async def test_thread_context_recovers_latest_proposal_and_recent_user_turns():

@@ -58,7 +58,7 @@ class ArtifactActionMeta(_StrictModel):
     schema_version: Literal[1] = 1
     session_key: str = Field(min_length=1)
     expected_revision: int = Field(ge=0)
-    decision: Literal["approve", "revise", "back", "cancel"]
+    decision: Literal["advance", "approve", "revise", "back", "cancel"]
     artifact_id: str | None = Field(default=None, min_length=1)
     artifact_revision: int | None = Field(default=None, ge=1)
     artifact_digest: str | None = Field(
@@ -247,8 +247,10 @@ def intent_from_artifact_action(
     except (TypeError, ValueError, ValidationError):
         return None
 
-    if meta.decision == "approve":
-        intent: TimeboxIntent = ApproveArtifact(
+    if meta.decision == "advance":
+        intent: TimeboxIntent = Advance()
+    elif meta.decision == "approve":
+        intent = ApproveArtifact(
             artifact_id=cast(str, meta.artifact_id),
             artifact_revision=cast(int, meta.artifact_revision),
             artifact_digest=cast(str, meta.artifact_digest),
@@ -272,6 +274,13 @@ def intent_from_artifact_action(
 
 
 def intent_from_date_action(value: str) -> TimeboxActionEnvelope | None:
+    """Bind one date-card press to a typed planning day.
+
+    A day type present in the metadata came from a button the user pressed, so
+    `lock_default` records it as a `user_override`. Absent, the weekday decides.
+    Passing an override without the basis would trip `PlanningDay`'s own
+    validator, which is the point: a calendar cannot claim a vacation.
+    """
     meta = TimeboxCommitMeta.from_value(value)
     if meta is None:
         return None
@@ -283,6 +292,7 @@ def intent_from_date_action(value: str) -> TimeboxActionEnvelope | None:
                 value=date.fromisoformat(meta.date),
                 timezone=meta.tz,
                 lock_revision=meta.expected_revision + 1,
+                day_type=meta.day_type,
             )
         ),
     )

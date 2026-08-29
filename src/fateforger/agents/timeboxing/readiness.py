@@ -37,6 +37,11 @@ class ArtifactRequirement:
     hard: bool
     why_needed: str
     resolution: RequirementResolution
+    #: What to put to the user when this requirement is what stands in the way.
+    #: The catalog owns this because the alternative was rendering the
+    #: requirement_id, and "Please provide skeleton.requested_activity." is a
+    #: sentence written for a debugger, shown to the person being asked.
+    question: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +70,10 @@ class ReadinessGap:
     @property
     def resolution(self) -> RequirementResolution:
         return self.requirement.resolution
+
+    @property
+    def question(self) -> str:
+        return self.requirement.question
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +131,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         hard=True,
         why_needed="a skeleton must be planned for a locked day",
         resolution="validate",
+        question="Which day are we planning?",
     ),
     ArtifactRequirement(
         requirement_id="skeleton.requested_activity",
@@ -131,6 +141,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         hard=True,
         why_needed="a skeleton needs at least one intended activity or goal",
         resolution="ask",
+        question="What do you want to get out of the day?",
     ),
     ArtifactRequirement(
         requirement_id="skeleton.ordinary_placement",
@@ -140,6 +151,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         hard=True,
         why_needed="ordinary activities need a feasible placement in the day",
         resolution="assume",
+        question="Where should the flexible blocks go?",
     ),
     ArtifactRequirement(
         requirement_id="skeleton.gym_placement",
@@ -149,6 +161,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         hard=True,
         why_needed="gym needs a feasible placement when no fixed time is supplied",
         resolution="assume",
+        question="When would you like the gym?",
     ),
     ArtifactRequirement(
         requirement_id="candidate.approved_skeleton",
@@ -158,6 +171,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         hard=True,
         why_needed="a candidate may only refine the exact approved skeleton",
         resolution="validate",
+        question="Shall I work from the outline above?",
     ),
     ArtifactRequirement(
         requirement_id="candidate.calendar_snapshot",
@@ -167,6 +181,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         hard=True,
         why_needed="a candidate must account for the current calendar",
         resolution="fetch",
+        question="I could not read the calendar for that day. Try again?",
     ),
     ArtifactRequirement(
         requirement_id="candidate.active_constraints",
@@ -176,6 +191,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         hard=True,
         why_needed="a candidate must account for active planning constraints",
         resolution="fetch",
+        question="I could not read your saved rules. Try again?",
     ),
     ArtifactRequirement(
         requirement_id="candidate.concrete_placements",
@@ -185,6 +201,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         hard=True,
         why_needed="a candidate needs concrete feasible placements",
         resolution="assume",
+        question="Some blocks still need a time. Shall I choose?",
     ),
     ArtifactRequirement(
         requirement_id="commit.approved_candidate",
@@ -194,6 +211,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         hard=True,
         why_needed="a calendar commit requires the exact approved candidate",
         resolution="validate",
+        question="Shall I put this on the calendar?",
     ),
 )
 

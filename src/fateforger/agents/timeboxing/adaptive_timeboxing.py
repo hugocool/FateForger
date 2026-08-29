@@ -393,7 +393,7 @@ class AdaptiveTimeboxing:
                 request=request,
                 outcome=AwaitingUser(
                     requirement_id=blocker.requirement_id,
-                    question=f"Please provide {blocker.requirement_id}.",
+                    question=blocker.question,
                     why_needed=blocker.why_needed,
                 ),
             )
@@ -658,7 +658,7 @@ class AdaptiveTimeboxing:
             gap, blocker = user_blockers[0]
             return snapshot, AwaitingUser(
                 requirement_id=gap.requirement_id,
-                question=f"Please provide {gap.requirement_id}.",
+                question=gap.question,
                 why_needed=blocker.why_needed,
             )
 
