@@ -4,6 +4,7 @@ import os
 import sqlite3
 import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
 
@@ -65,9 +66,12 @@ from fateforger.haunt.tools import build_haunting_tools
 from fateforger.llm import build_autogen_chat_client
 from fateforger.slack_bot.deepseek_timebox_planner import (
     ConstraintReader,
+    DeepSeekTimeboxPlanner,
+    HarnessBridgeRunner,
     UnavailableConstraintReader,
 )
 from fateforger.slack_bot.timeboxing_intents import TimeboxingIntentInterpreter
+from fateforger.slack_bot.tmbx_client import TmbxClient
 from fateforger.slack_bot.timeboxing_session_store import (
     SqlAlchemyTimeboxingSessionRepository,
 )
@@ -496,6 +500,34 @@ async def _build_timeboxing_constraint_store() -> ConstraintReader:
     return store
 
 
+def _build_timeboxing_planner(
+    constraint_store: ConstraintReader,
+) -> tuple[DeepSeekTimeboxPlanner | None, str]:
+    """Assemble the planner, or admit the host has not selected a calendar.
+
+    Returning ``None`` keeps the adaptive route loud and inert. The alternative
+    is a planner holding an invented calendar id, which reads somebody else's
+    day and produces a plan that looks entirely reasonable for the wrong person.
+    """
+
+    calendar_id = str(getattr(settings, "timebox_calendar_id", "") or "").strip()
+    if not calendar_id:
+        logger.warning(
+            "timeboxing planner unwired reason=no_calendar_selected; "
+            "set FF_TIMEBOX_CALENDAR_ID to the calendar the planner should read"
+        )
+        return None, ""
+    planner = DeepSeekTimeboxPlanner(
+        tmbx_client=TmbxClient(),
+        constraint_reader=constraint_store,
+        calendar_id=calendar_id,
+        clock=lambda: datetime.now(UTC),
+        harness_runner=HarnessBridgeRunner(),
+    )
+    logger.info("timeboxing planner wired calendar_selected=true")
+    return planner, calendar_id
+
+
 async def _create_runtime() -> SingleThreadedAgentRuntime:
     """Create and start the runtime instance."""
     git_identity = _resolve_runtime_git_identity()
@@ -524,6 +556,9 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     event_draft_store = SqlAlchemyEventDraftStore(sessionmaker)
     timeboxing_session_store = SqlAlchemyTimeboxingSessionRepository(sessionmaker)
     timeboxing_constraint_store = await _build_timeboxing_constraint_store()
+    timeboxing_planner, timeboxing_calendar_id = _build_timeboxing_planner(
+        timeboxing_constraint_store
+    )
 
     haunting_service = HauntingService(scheduler, settings_store=settings_store)
     intervention = HauntingInterventionHandler(
@@ -674,6 +709,8 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     setattr(runtime, "event_draft_store", event_draft_store)
     setattr(runtime, "timeboxing_session_store", timeboxing_session_store)
     setattr(runtime, "timeboxing_constraint_store", timeboxing_constraint_store)
+    setattr(runtime, "timeboxing_planner", timeboxing_planner)
+    setattr(runtime, "timeboxing_calendar_id", timeboxing_calendar_id)
     setattr(
         runtime,
         "timeboxing_intent_interpreter",

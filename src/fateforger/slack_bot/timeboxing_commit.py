@@ -241,6 +241,39 @@ class TimeboxCommitMeta(BaseModel):
         )
 
 
+def build_timebox_date_card(
+    *,
+    session_key: str,
+    expected_revision: int,
+    user_id: str,
+    channel_id: str,
+    thread_ts: str,
+    planned_date: str,
+    tz_name: str,
+) -> SlackBlockMessage:
+    """Render Stage 0 with the planning session bound into its controls.
+
+    The card is the only place a planning day is chosen, so its buttons have to
+    say which session they belong to and which revision they were drawn from.
+    A Confirm that cannot name its session has to guess one, and a click that
+    guesses is how a decision lands on a session that already moved on.
+    """
+    meta = TimeboxCommitMeta(
+        session_key=session_key,
+        expected_revision=expected_revision,
+        user_id=user_id,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+        date=planned_date,
+        tz=tz_name,
+    )
+    return build_timebox_commit_prompt_message(
+        planned_date=planned_date,
+        tz_name=tz_name,
+        meta_value=meta.to_value(),
+    )
+
+
 class TimeboxingCommitCoordinator:
     def __init__(self, *, runtime, client: AsyncWebClient) -> None:
         """Create the coordinator that bridges Slack actions to the timeboxing agent."""
@@ -468,5 +501,6 @@ __all__ = [
     "FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID",
     "TimeboxingCommitCoordinator",
     "build_timebox_commit_prompt_message",
+    "build_timebox_date_card",
     "format_relative_day_label",
 ]

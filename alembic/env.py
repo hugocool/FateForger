@@ -21,9 +21,13 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///alembic.db")
 config = context.config
 
 # Interpret the config file for Python logging.
-# This line sets up loggers basically.
+# disable_existing_loggers defaults to True, which silences every logger already
+# configured in the host process. That is harmless for the `alembic` CLI, which
+# owns its process, and not harmless in-process: a test that runs a migration
+# leaves pytest's caplog handler detached, so an unrelated test later in the
+# same session sees no records and fails only when the two run together.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Migrations are hand-written; partial ORM metadata would make autogenerate unsafe.
 target_metadata = None

@@ -163,6 +163,12 @@ class Settings(BaseSettings):
     alembic_database_url: str = Field(default="sqlite:///data/admonish.db")
 
     # Calendar Configuration
+    # The calendar a timeboxing planner reads. Deliberately has no default: a
+    # planner that invents a calendar id reads somebody else's day, and an
+    # incident-specific default is how one account's address ends up baked into
+    # every session. Unset means the adaptive route reports itself unwired
+    # rather than guessing.
+    timebox_calendar_id: str = Field(default="")
     calendar_webhook_secret: str = Field(default="your_webhook_secret_here")
     calendar_watch_port: str = Field(default="8080")
     calendar_watch_host: str = Field(default="0.0.0.0")
