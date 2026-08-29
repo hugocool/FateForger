@@ -514,7 +514,7 @@ def _build_timeboxing_planner(
     if not calendar_id:
         logger.warning(
             "timeboxing planner unwired reason=no_calendar_selected; "
-            "set FF_TIMEBOX_CALENDAR_ID to the calendar the planner should read"
+            "set TIMEBOX_CALENDAR_ID to the calendar the planner should read"
         )
         return None, ""
     planner = DeepSeekTimeboxPlanner(

@@ -676,3 +676,21 @@ async def test_runtime_still_accepts_a_pre_versioning_memory_store(
     store = await runtime_module._build_timeboxing_constraint_store()
 
     assert isinstance(store, ClientBackedDurableConstraintStore)
+
+
+def test_the_calendar_setting_binds_to_the_documented_variable(monkeypatch) -> None:
+    """Catches a documented env var the settings model never reads.
+
+    `Settings` has no `env_prefix`, so its fields bind to bare upper-case names.
+    The FF_* variables in this repository are the separate ones read straight
+    from `os.environ`. Documenting this one as FF_TIMEBOX_CALENDAR_ID left the
+    planner silently unwired with the variable set exactly as written down —
+    the failure is a route that reports itself inert while the operator can see
+    their own configuration in the environment.
+    """
+
+    from fateforger.core.config import Settings
+
+    monkeypatch.setenv("TIMEBOX_CALENDAR_ID", "someone@example.com")
+
+    assert Settings().timebox_calendar_id == "someone@example.com"
