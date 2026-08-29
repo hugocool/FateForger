@@ -168,6 +168,28 @@ handle created in the same patch: patch operations are a set and every anchor
 resolves only against the pre-patch snapshot.
 This is a shape check, not a reason to add another planning pass.
 
+**Chain a fresh day with `after: "END"` and `ap`, not with clock times.** The
+restriction above says an anchor cannot name a handle from the same patch. It
+does not say a day must be built out of fixed starts, and reading it that way
+produces the worst available plan: every block pinned to a wall-clock time, a
+chain that cannot shift, and buffer and constraint rules that quietly stop
+applying because nothing downstream can move. `after: "END"` appends to whatever
+the plan currently ends with — including a block added earlier in the same
+patch — and `{"a":"ap","dur":...}` says *start when the previous one ends* and
+names no time at all. So:
+
+```json
+{"op":"add","h":"DW1","n":"Deep work","t":"DW","after":null,
+ "p":{"a":"fs","st":"09:00:00","dur":"PT2H30M"},"anchor_source":"user"}
+{"op":"add","h":"GY1","n":"Gym","t":"H","after":"END","p":{"a":"ap","dur":"PT1H"}}
+```
+
+One real anchor, and the rest resolved by tmbx. Pin a start only when something
+outside the plan fixes it — Hugo stated the time, a standing rule requires it,
+or it came from the calendar — and record which in `anchor_source`. A pin you
+add for your own convenience is what `overspecified` reports back to you, and
+it reports it as a mistake.
+
 
 **Keep Hugo informed through the progress tools while building the timebox.**
 

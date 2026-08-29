@@ -1,0 +1,424 @@
+{
+  "recording": {
+    "incident_date": "2026-08-29",
+    "issue": "https://github.com/hugocool/FateForger/issues/206",
+    "what_went_wrong": [
+      "Saturday 2026-08-29 was answered as a Friday and the weekend as a working day, because the planner re-derived the day from the work it found on the calendar.",
+      "The user delegated the ordinary placements and was asked for an exact gym time and a morning start anyway.",
+      "The advance produced another recap instead of a reviewable artifact."
+    ],
+    "sanitization": [
+      "No tokens, credentials, or provider identifiers.",
+      "No raw model reasoning, prompts, or tool arguments.",
+      "No calendar event identifiers: the recording never reaches a calendar, so it carries none.",
+      "The owner is a placeholder id; the session key is the Slack channel/thread pair the plan prescribes.",
+      "Every payload below is parsed by the production contracts, whose extra=\"forbid\" refuses anything that is not a declared field."
+    ]
+  },
+  "session_key": "C0AA6HC1RJL:1787995886.748859",
+  "owner_user_id": "U-owner-sanitized",
+  "planning_day": {
+    "date": "2026-08-29",
+    "timezone": "Europe/Amsterdam",
+    "iso_weekday": 6,
+    "day_type": "weekend",
+    "classification_basis": "calendar",
+    "lock_revision": 1
+  },
+  "relocked_planning_day": {
+    "date": "2026-08-31",
+    "timezone": "Europe/Amsterdam",
+    "iso_weekday": 1,
+    "day_type": "working",
+    "classification_basis": "calendar",
+    "lock_revision": 2
+  },
+  "captured_facts": {
+    "captured_day_inputs": [
+      {
+        "fact_id": "activity-supermarket",
+        "kind": "requested_activity",
+        "value": "supermarket run around the middle of the day",
+        "source": "user",
+        "source_interaction_id": "incident-capture"
+      },
+      {
+        "fact_id": "activity-deep-work",
+        "kind": "requested_activity",
+        "value": "one deep work block",
+        "source": "user",
+        "source_interaction_id": "incident-capture"
+      },
+      {
+        "fact_id": "activity-shallow-work",
+        "kind": "requested_activity",
+        "value": "one shallow work block",
+        "source": "user",
+        "source_interaction_id": "incident-capture"
+      },
+      {
+        "fact_id": "activity-planning-review",
+        "kind": "requested_activity",
+        "value": "the weekly planning review",
+        "source": "user",
+        "source_interaction_id": "incident-capture"
+      },
+      {
+        "fact_id": "activity-dinner",
+        "kind": "requested_activity",
+        "value": "dinner at 19:30",
+        "source": "user",
+        "source_interaction_id": "incident-capture"
+      },
+      {
+        "fact_id": "gym-wanted",
+        "kind": "gym",
+        "value": true,
+        "source": "user",
+        "source_interaction_id": "incident-capture"
+      }
+    ],
+    "one_named_activity": [
+      {
+        "fact_id": "activity-only",
+        "kind": "requested_activity",
+        "value": "get the week's planning review done",
+        "source": "user",
+        "source_interaction_id": "conflict-capture"
+      },
+      {
+        "fact_id": "gym-wanted",
+        "kind": "gym",
+        "value": true,
+        "source": "user",
+        "source_interaction_id": "conflict-capture"
+      }
+    ],
+    "one_more_activity": [
+      {
+        "fact_id": "activity-laundry",
+        "kind": "requested_activity",
+        "value": "laundry, some time in the afternoon",
+        "source": "user",
+        "source_interaction_id": "revision-capture"
+      }
+    ]
+  },
+  "planner_results": {
+    "skeleton_with_assumptions": {
+      "artifact_updates": [
+        {
+          "kind": "skeleton",
+          "payload": {
+            "markdown": "## Saturday 2026-08-29\n- 09:30 Slow start\n- 11:30 Supermarket\n- 13:00 Deep work\n- 15:00 Shallow work\n- 16:00 Planning review\n- 17:00 Gym\n- 19:30 Dinner"
+          },
+          "dependency_revisions": {
+            "planning_day": 1
+          }
+        }
+      ],
+      "assumptions": [
+        {
+          "requirement_id": "skeleton.gym_placement",
+          "value": "17:00",
+          "why_needed": "gym has to clear the 19:30 dinner anchor and leave the two hours after oats intact, and 17:00 is the only slot that does both",
+          "invalidated_by": [
+            "gym",
+            "dinner"
+          ]
+        },
+        {
+          "requirement_id": "skeleton.ordinary_placement",
+          "value": {
+            "morning_start": "09:30",
+            "supermarket": "11:30",
+            "deep_work": "13:00",
+            "shallow_work": "15:00"
+          },
+          "why_needed": "the flexible blocks need a feasible order on a weekend day, and the user delegated the choice",
+          "invalidated_by": [
+            "requested_activity"
+          ]
+        }
+      ],
+      "blockers": []
+    },
+    "skeleton_after_relock": {
+      "artifact_updates": [
+        {
+          "kind": "skeleton",
+          "payload": {
+            "markdown": "## Monday 2026-08-31\n- 08:30 Workday start\n- 12:30 Supermarket\n- 13:30 Deep work\n- 16:00 Shallow work\n- 17:30 Gym\n- 19:30 Dinner"
+          },
+          "dependency_revisions": {
+            "planning_day": 2
+          }
+        }
+      ],
+      "assumptions": [
+        {
+          "requirement_id": "skeleton.gym_placement",
+          "value": "17:30",
+          "why_needed": "a working Monday pushes gym past the workday boundary and still ahead of dinner",
+          "invalidated_by": [
+            "gym",
+            "dinner"
+          ]
+        },
+        {
+          "requirement_id": "skeleton.ordinary_placement",
+          "value": {
+            "morning_start": "08:30",
+            "supermarket": "12:30"
+          },
+          "why_needed": "the same flexible blocks need a different order once the day is a working one",
+          "invalidated_by": [
+            "requested_activity"
+          ]
+        }
+      ],
+      "blockers": []
+    },
+    "skeleton_revised": {
+      "artifact_updates": [
+        {
+          "kind": "skeleton",
+          "payload": {
+            "markdown": "## Saturday 2026-08-29\n- 09:30 Slow start\n- 11:30 Supermarket\n- 13:00 Deep work\n- 14:30 Laundry\n- 15:30 Shallow work\n- 17:00 Gym\n- 19:30 Dinner"
+          },
+          "dependency_revisions": {
+            "planning_day": 1
+          }
+        }
+      ],
+      "assumptions": [
+        {
+          "requirement_id": "skeleton.gym_placement",
+          "value": "17:00",
+          "why_needed": "the added block does not move the dinner anchor, so gym keeps its slot",
+          "invalidated_by": [
+            "gym",
+            "dinner"
+          ]
+        },
+        {
+          "requirement_id": "skeleton.ordinary_placement",
+          "value": {
+            "morning_start": "09:30",
+            "laundry": "14:30"
+          },
+          "why_needed": "laundry fits between the deep and shallow blocks without splitting either",
+          "invalidated_by": [
+            "requested_activity"
+          ]
+        }
+      ],
+      "blockers": []
+    },
+    "gym_time_handed_back": {
+      "artifact_updates": [],
+      "assumptions": [],
+      "blockers": [
+        {
+          "requirement_id": "skeleton.gym_placement",
+          "why_needed": "the planner wanted the user to name an exact gym time before it would place anything"
+        }
+      ]
+    }
+  },
+  "scenarios": {
+    "incident": {
+      "what_it_replays": "The reported conversation: confirm the day, give the day's inputs, delegate the rest.",
+      "turns": [
+        {
+          "interaction_id": "incident-confirm",
+          "user_action": "pressed Confirm on the date card for 2026-08-29",
+          "expected_revision": 0,
+          "confirms_recorded_day": "planning_day"
+        },
+        {
+          "interaction_id": "incident-capture",
+          "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
+          "expected_revision": 1,
+          "provides_recorded_facts": "captured_day_inputs",
+          "planner_result": "skeleton_with_assumptions",
+          "record_artifact_as": "skeleton_v1"
+        },
+        {
+          "interaction_id": "incident-advance",
+          "user_text": "you plan those things",
+          "expected_revision": 2,
+          "intent": {
+            "kind": "advance"
+          }
+        }
+      ]
+    },
+    "hard_conflict": {
+      "what_it_replays": "A day with nothing the user wants out of it. No placement resolves that, and one answer unblocks everything downstream.",
+      "turns": [
+        {
+          "interaction_id": "conflict-confirm",
+          "user_action": "pressed Confirm on the date card",
+          "expected_revision": 0,
+          "confirms_recorded_day": "planning_day"
+        },
+        {
+          "interaction_id": "conflict-answer",
+          "user_text": "the planning review, and the gym at some point",
+          "expected_revision": 1,
+          "provides_recorded_facts": "one_named_activity",
+          "planner_result": "skeleton_with_assumptions"
+        }
+      ]
+    },
+    "planner_delegation_refused": {
+      "what_it_replays": "The incident's mechanism at the seam it entered: the planner returns 'ask the user for a gym time' instead of choosing one.",
+      "turns": [
+        {
+          "interaction_id": "refused-confirm",
+          "user_action": "pressed Confirm on the date card",
+          "expected_revision": 0,
+          "confirms_recorded_day": "planning_day"
+        },
+        {
+          "interaction_id": "refused-capture",
+          "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
+          "expected_revision": 1,
+          "provides_recorded_facts": "captured_day_inputs",
+          "planner_result": "gym_time_handed_back"
+        }
+      ]
+    },
+    "date_relock": {
+      "what_it_replays": "The date is corrected after a skeleton already exists.",
+      "turns": [
+        {
+          "interaction_id": "relock-confirm",
+          "user_action": "pressed Confirm on the date card for 2026-08-29",
+          "expected_revision": 0,
+          "confirms_recorded_day": "planning_day"
+        },
+        {
+          "interaction_id": "relock-capture",
+          "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
+          "expected_revision": 1,
+          "provides_recorded_facts": "captured_day_inputs",
+          "planner_result": "skeleton_with_assumptions",
+          "record_artifact_as": "skeleton_v1"
+        },
+        {
+          "interaction_id": "relock-monday",
+          "user_action": "picked 2026-08-31 on the date card and confirmed it",
+          "expected_revision": 2,
+          "confirms_recorded_day": "relocked_planning_day",
+          "planner_result": "skeleton_after_relock"
+        }
+      ]
+    },
+    "duplicate_delivery": {
+      "what_it_replays": "Slack delivers one event twice, carrying the same identifier and the revision it was drawn at.",
+      "turns": [
+        {
+          "interaction_id": "duplicate-confirm",
+          "user_action": "pressed Confirm on the date card",
+          "expected_revision": 0,
+          "confirms_recorded_day": "planning_day"
+        },
+        {
+          "interaction_id": "duplicate-capture",
+          "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
+          "expected_revision": 1,
+          "provides_recorded_facts": "captured_day_inputs",
+          "planner_result": "skeleton_with_assumptions",
+          "record_revision_as": "after_first_delivery"
+        },
+        {
+          "interaction_id": "duplicate-capture",
+          "user_action": "the identical event, redelivered",
+          "expected_revision": 1,
+          "provides_recorded_facts": "captured_day_inputs",
+          "record_revision_as": "after_duplicate"
+        }
+      ]
+    },
+    "stale_skeleton_approval": {
+      "what_it_replays": "A Proceed button drawn on a skeleton that a later reply has already replaced.",
+      "turns": [
+        {
+          "interaction_id": "stale-confirm",
+          "user_action": "pressed Confirm on the date card",
+          "expected_revision": 0,
+          "confirms_recorded_day": "planning_day"
+        },
+        {
+          "interaction_id": "stale-capture",
+          "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
+          "expected_revision": 1,
+          "provides_recorded_facts": "captured_day_inputs",
+          "planner_result": "skeleton_with_assumptions",
+          "record_artifact_as": "skeleton_v1"
+        },
+        {
+          "interaction_id": "stale-second-capture",
+          "user_text": "laundry too, some time in the afternoon",
+          "expected_revision": 2,
+          "provides_recorded_facts": "one_more_activity",
+          "planner_result": "skeleton_revised"
+        },
+        {
+          "interaction_id": "stale-approve",
+          "user_action": "pressed Proceed on the superseded skeleton card",
+          "expected_revision": 3,
+          "approves_recorded_artifact": "skeleton_v1"
+        }
+      ]
+    },
+    "superseded_harness_result": {
+      "what_it_replays": "A one-shot harness answer lands after the user has already moved the session on.",
+      "turns": [
+        {
+          "interaction_id": "superseded-confirm",
+          "user_action": "pressed Confirm on the date card",
+          "expected_revision": 0,
+          "confirms_recorded_day": "planning_day",
+          "record_revision_as": "harness_started_at"
+        },
+        {
+          "interaction_id": "superseded-capture",
+          "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
+          "expected_revision": 1,
+          "provides_recorded_facts": "captured_day_inputs",
+          "planner_result": "skeleton_with_assumptions",
+          "record_revision_as": "after_user_turn"
+        },
+        {
+          "interaction_id": "superseded-late-advance",
+          "user_action": "the advance the harness started before the reply above arrived",
+          "expected_revision_recorded_as": "harness_started_at",
+          "intent": {
+            "kind": "advance"
+          }
+        }
+      ]
+    },
+    "planner_unavailable": {
+      "what_it_replays": "The one-shot harness run does not answer at all.",
+      "turns": [
+        {
+          "interaction_id": "unavailable-confirm",
+          "user_action": "pressed Confirm on the date card",
+          "expected_revision": 0,
+          "confirms_recorded_day": "planning_day"
+        },
+        {
+          "interaction_id": "unavailable-capture",
+          "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
+          "expected_revision": 1,
+          "provides_recorded_facts": "captured_day_inputs",
+          "planner_unavailable": true
+        }
+      ]
+    }
+  }
+}

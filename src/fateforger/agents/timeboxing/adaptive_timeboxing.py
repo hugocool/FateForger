@@ -373,6 +373,9 @@ class AdaptiveTimeboxing:
                 "planning context resolution failed",
                 extra={"error_type": type(exc).__name__},
             )
+            await progress_sink.emit(
+                {"phase": "resolving_context", "status": "failed"}
+            )
             return await self._save(
                 snapshot,
                 base_revision=base_revision,
@@ -409,6 +412,14 @@ class AdaptiveTimeboxing:
                 ),
             )
 
+        # A step that starts and never reports done spins for the life of the
+        # thread: ProgressChannel.close() deliberately refuses to tick one that
+        # never finished, so the row is left mid-flight rather than silently
+        # completed.
+        await progress_sink.emit(
+            {"phase": "resolving_context", "status": "succeeded"}
+        )
+
         brief = self._build_brief(snapshot, target, readiness, resolved)
         await progress_sink.emit({"phase": "planning", "status": "started"})
         try:
@@ -433,7 +444,20 @@ class AdaptiveTimeboxing:
             request=request,
             outcome=outcome,
         )
-        await progress_sink.emit({"phase": "planning", "status": "succeeded"})
+        # Bound to what was actually saved. An unconditional success tick
+        # reported a green planning step on a turn that failed, and a wrong
+        # tick is worse than an unfinished one: a spinner invites waiting, a
+        # tick invites belief.
+        await progress_sink.emit(
+            {
+                "phase": "planning",
+                "status": (
+                    "failed"
+                    if getattr(saved_outcome, "kind", None) == "turn_failed"
+                    else "succeeded"
+                ),
+            }
+        )
         return saved_outcome
 
     def _apply_intent(

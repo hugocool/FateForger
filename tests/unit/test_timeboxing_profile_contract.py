@@ -273,3 +273,21 @@ def test_the_deployed_profile_matches_the_repository() -> None:
         "inert until you run:\n"
         f"  cp {PROFILE / 'cordis.patch.yml'} {deployed}"
     )
+
+
+def test_a_fresh_day_is_chained_relationally_not_pinned() -> None:
+    """Least commitment is tmbx policy, and the planner was working against it.
+
+    Measured on 2026-08-29 in the tmbx journal: the planner tried to chain a
+    day with `after: <handle>`, was refused because an anchor resolves only
+    against the pre-patch snapshot, and retried four seconds later with every
+    block pinned to a wall-clock `fs` — a day that cannot shift, so buffers and
+    constraint rules stop applying downstream. `after: "END"` with `ap` chains
+    in one patch and names no time; verified against the live server.
+    """
+
+    prose = _flowed()
+
+    assert '`after: "END"`' in prose
+    assert '{"a":"ap","dur":...}' in prose
+    assert "overspecified" in prose
