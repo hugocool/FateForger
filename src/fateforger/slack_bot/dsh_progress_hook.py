@@ -26,7 +26,16 @@ from __future__ import annotations
 import json
 import os
 import sys
+from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
+from typing import Any
+
+from .validated_timebox_draft import (
+    DRAFT_STATE_FILE_ENV,
+    current_attempt,
+    record_validation_result,
+)
 
 #: Set per-run by ``harness_bridge``. Absent means nobody is listening — an
 #: ordinary headless run rather than a Slack turn — so there is nothing to do.
@@ -42,6 +51,9 @@ COMMIT_FILE_ENV = "FF_DSH_COMMIT_FILE"
 #: because the harness namespaces MCP tools as ``mcp__<server>__<name>`` --
 #: identifiers this system minted, not anything a person wrote.
 _COMMIT_TOOL = "plan_commit"
+_REPORT_TOOLS = frozenset(
+    {"report_skeleton_understanding", "report_scheduling_decision"}
+)
 
 #: What each tool is called when a person reads it.
 #:
@@ -70,6 +82,184 @@ _LABELS = {
 #: thread said nothing at all.
 START = "start"
 DONE = "done"
+
+
+class ProgressPhase(str, Enum):
+    READING_PLAN = "reading_plan"
+    LOADING_CONSTRAINTS = "loading_constraints"
+    DRAFTING_PATCH = "drafting_patch"
+    VALIDATING_PATCH = "validating_patch"
+    REVISING_PATCH = "revising_patch"
+    COMMITTING = "committing"
+    UNDOING = "undoing"
+    OTHER = "other"
+
+
+class ProgressStatus(str, Enum):
+    STARTED = "started"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """One bounded fact safe to persist and project into a Slack card."""
+
+    phase: ProgressPhase
+    status: ProgressStatus
+    safe_detail: dict[str, Any] = field(default_factory=dict)
+
+    def to_line(self) -> str:
+        return json.dumps(
+            {
+                "version": 1,
+                "phase": self.phase.value,
+                "status": self.status.value,
+                "safe_detail": self.safe_detail,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @classmethod
+    def from_line(cls, line: str) -> ProgressEvent:
+        payload = json.loads(line)
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise ValueError("unsupported progress event")
+        detail = payload.get("safe_detail")
+        if not isinstance(detail, dict):
+            raise TypeError("progress safe_detail must be an object")
+        return cls(
+            phase=ProgressPhase(payload["phase"]),
+            status=ProgressStatus(payload["status"]),
+            safe_detail=detail,
+        )
+
+
+_PHASES = {
+    "plan_read": ProgressPhase.READING_PLAN,
+    "plan_apply": ProgressPhase.DRAFTING_PATCH,
+    "plan_commit": ProgressPhase.COMMITTING,
+    "plan_undo": ProgressPhase.UNDOING,
+    "memory_get_active_constraints": ProgressPhase.LOADING_CONSTRAINTS,
+    "memory_get_suspended_constraints": ProgressPhase.LOADING_CONSTRAINTS,
+    "memory_get_session_constraints": ProgressPhase.LOADING_CONSTRAINTS,
+}
+
+
+def progress_event(event: dict, *, attempt: int | None = None) -> ProgressEvent | None:
+    """Project one hook envelope into allow-listed, user-safe progress."""
+
+    tool = event.get("tool_name")
+    if not isinstance(tool, str) or not tool.strip():
+        return None
+    short_name = tool.rsplit("__", 1)[-1]
+    if short_name in _REPORT_TOOLS:
+        # The reporter MCP writes its bounded semantic event directly. Projecting
+        # the tool lifecycle too would add a duplicate generic "Working" row.
+        return None
+    phase = _PHASES.get(short_name, ProgressPhase.OTHER)
+    if event.get("hook_event_name") == "PreToolUse":
+        return ProgressEvent(
+            phase=phase,
+            status=ProgressStatus.STARTED,
+            safe_detail={"attempt": attempt} if attempt else {},
+        )
+
+    raw_response = event.get("tool_response")
+    if not isinstance(raw_response, str):
+        return ProgressEvent(phase=phase, status=ProgressStatus.SUCCEEDED)
+    response = _response_object(raw_response)
+    if short_name == "plan_read":
+        succeeded = response.get("ok") is True
+        blocks = response.get("blocks")
+        detail = (
+            {"block_count": len(blocks)}
+            if succeeded and isinstance(blocks, list)
+            else {}
+        )
+        if not succeeded and isinstance(response.get("reason"), str):
+            detail = {"refusal_reason": response["reason"]}
+        return ProgressEvent(
+            phase=phase,
+            status=ProgressStatus.SUCCEEDED if succeeded else ProgressStatus.FAILED,
+            safe_detail=detail,
+        )
+
+    if short_name == "plan_apply":
+        if response.get("ok") is not True:
+            reason = response.get("reason")
+            detail = {"refusal_reason": reason} if isinstance(reason, str) else {}
+            if attempt:
+                detail["attempt"] = attempt
+            return ProgressEvent(
+                phase=ProgressPhase.REVISING_PATCH,
+                status=ProgressStatus.FAILED,
+                safe_detail=detail,
+            )
+        violations = response.get("violations")
+        violation_rows = violations if isinstance(violations, list) else []
+        if response.get("committable") is not True:
+            kinds = sorted(
+                {
+                    row.get("kind")
+                    for row in violation_rows
+                    if isinstance(row, dict) and isinstance(row.get("kind"), str)
+                }
+            )
+            detail = {
+                "violation_count": len(violation_rows),
+                "violation_kinds": kinds,
+            }
+            if attempt:
+                detail["attempt"] = attempt
+            return ProgressEvent(
+                phase=ProgressPhase.REVISING_PATCH,
+                status=ProgressStatus.FAILED,
+                safe_detail=detail,
+            )
+        overspecified = response.get("overspecified")
+        detail = {
+            "overspecified_count": len(overspecified)
+            if isinstance(overspecified, list)
+            else 0
+        }
+        block_count = response.get("block_count")
+        if isinstance(block_count, int) and not isinstance(block_count, bool):
+            detail["block_count"] = block_count
+        if attempt:
+            detail["attempt"] = attempt
+        return ProgressEvent(
+            phase=ProgressPhase.VALIDATING_PATCH,
+            status=ProgressStatus.SUCCEEDED,
+            safe_detail=detail,
+        )
+
+    if short_name == "plan_commit":
+        committed = response.get("committed") is True
+        detail: dict[str, Any] = {}
+        if not committed and isinstance(response.get("reason"), str):
+            detail["refusal_reason"] = response["reason"]
+        conflicts = response.get("conflicts")
+        if isinstance(conflicts, list):
+            detail["conflict_count"] = len(conflicts)
+        return ProgressEvent(
+            phase=phase,
+            status=ProgressStatus.SUCCEEDED if committed else ProgressStatus.FAILED,
+            safe_detail=detail,
+        )
+
+    return ProgressEvent(phase=phase, status=ProgressStatus.SUCCEEDED)
+
+
+def _response_object(value: object) -> dict[str, Any]:
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def label_for(tool: str) -> str:
@@ -120,7 +310,9 @@ def committed_tx_id(event: dict) -> str | None:
 
 def main(argv: list[str] | None = None) -> int:
     destination = os.environ.get(PROGRESS_FILE_ENV)
-    if not destination:
+    draft_state = os.environ.get(DRAFT_STATE_FILE_ENV)
+    commit_destination = os.environ.get(COMMIT_FILE_ENV)
+    if not destination and not draft_state and not commit_destination:
         return 0
 
     raw = sys.stdin.read()
@@ -130,22 +322,33 @@ def main(argv: list[str] | None = None) -> int:
         # Loud in the harness log, inert to the run. A malformed payload means
         # the bridge's shape changed and the hook needs updating -- worth
         # seeing, never worth failing a planning turn over.
-        print(f"dsh-progress-hook: could not parse event ({len(raw)} bytes)", file=sys.stderr)
+        print(
+            f"dsh-progress-hook: could not parse event ({len(raw)} bytes)",
+            file=sys.stderr,
+        )
         return 0
 
     if not isinstance(event, dict):
         print("dsh-progress-hook: event was not an object", file=sys.stderr)
         return 0
 
+    record_validation_result(event, draft_state)
+
     tx_id = committed_tx_id(event)
     if tx_id:
-        _append(os.environ.get(COMMIT_FILE_ENV), tx_id, what="commit id")
+        _append(commit_destination, tx_id, what="commit id")
 
-    line = step_line(event)
-    if line is None:
+    if not destination:
         return 0
 
-    _append(destination, line)
+    tool = event.get("tool_name")
+    short_name = tool.rsplit("__", 1)[-1] if isinstance(tool, str) else ""
+    attempt = current_attempt(draft_state) if short_name == "plan_apply" else None
+    projected = progress_event(event, attempt=attempt)
+    if projected is None:
+        return 0
+
+    _append(destination, projected.to_line())
     return 0
 
 

@@ -134,6 +134,13 @@
     # files that must be edited together and silently disagree when they are
     # not, which is the defect that cost a day on the memory launcher (#188).
     model: !!js process.env.FF_HARNESS_MODEL || 'openai/gpt-oss-120b:nitro'
+    # Slack timeboxing turns set FF_HARNESS_MODEL and are deliberately pinned
+    # to low reasoning. The incident ran for minutes at higher trace volume;
+    # bounded tool/result progress is the user surface, not extra deliberation.
+    reasoningEffort: !!js >-
+      process.env.FF_HARNESS_MODEL
+      ? (process.env.FF_HARNESS_REASONING || 'low')
+      : undefined
 
 # 2. The system prompt, in two pieces.
 #
@@ -162,13 +169,17 @@
       '/Users/hugoevers/VScode-projects/admonish-1/.venv/bin/python',
       ['/Users/hugoevers/.dsh/profiles/tmbx/tmbx-persona.py'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: '/Users/hugoevers/VScode-projects/admonish-1',
+      cwd: process.env.FF_FATEFORGER_ROOT ||
+      '/Users/hugoevers/VScode-projects/admonish-1',
       env: Object.assign({}, process.env, { PYTHONPATH:
-      '/Users/hugoevers/VScode-projects/admonish-1/src' }) })
+      (process.env.FF_FATEFORGER_ROOT ||
+      '/Users/hugoevers/VScode-projects/admonish-1') + '/src' }) })
       + process.getBuiltinModule('node:fs').readFileSync(
       '/Users/hugoevers/.dsh/profiles/tmbx/memory-policy.md', 'utf8')
       + process.getBuiltinModule('node:fs').readFileSync(
-      '/Users/hugoevers/VScode-projects/admonish-1/infra/dsh/profile/deployment.md', 'utf8')
+      (process.env.FF_FATEFORGER_ROOT ||
+      '/Users/hugoevers/VScode-projects/admonish-1') +
+      '/infra/dsh/profile/deployment.md', 'utf8')
 
 # 3. The servers. stdio; the generic client starts and stops each child with
 #    the plugin lifecycle. Tools arrive as mcp__tmbx__<name>, mcp__memory__<name>.
@@ -232,6 +243,27 @@
           enabled: true
           maxTokens: 2048
         toolCallTimeoutMs: 120000
+        failOnStartupError: true
+
+    # B/D semantic progress lives in its own tiny MCP server. It is intentionally
+    # not part of timebox_patch: the root agent reports one skeleton-understood
+    # checkpoint and only material scheduling decisions, while tmbx hook results
+    # remain authoritative for attempts, violations, and convergence.
+    - id: mcp-timebox-progress
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: progress
+        transport: stdio
+        command: /Users/hugoevers/VScode-projects/admonish-1/.venv/bin/python
+        args:
+          - -m
+          - fateforger.slack_bot.timebox_progress_mcp
+        cwd: !!js process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1'
+        env:
+          PYTHONPATH: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/src'
+          FF_DSH_PROGRESS_FILE: !!js process.env.FF_DSH_PROGRESS_FILE
+          FF_DSH_SESSION_KEY: !!js process.env.FF_DSH_SESSION_KEY
+        toolCallTimeoutMs: 5000
         failOnStartupError: true
 
     # 4b. The clock.
@@ -346,8 +378,8 @@
     - id: hooks-progress
       name: '@deepseek-ai/dsh-hooks-claude-code'
       config:
-        configPath: /Users/hugoevers/VScode-projects/admonish-1/infra/dsh/hooks.json
-        projectDir: /Users/hugoevers/VScode-projects/admonish-1
+        configPath: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/infra/dsh/hooks.json'
+        projectDir: !!js process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1'
 
 # 5. Skills: exactly the ones this repo versions, and nothing else.
 #
@@ -375,4 +407,4 @@
   config:
     includeDefaultRoots: false
     customSkillDirs:
-      - /Users/hugoevers/VScode-projects/admonish-1/.dsh/skills
+      - !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/.dsh/skills'

@@ -4,9 +4,26 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
-from fateforger.slack_bot.progress import _MAX_VISIBLE_STEPS, ProgressChannel
+from fateforger.slack_bot.dsh_progress_hook import (
+    ProgressEvent,
+    ProgressPhase,
+    ProgressStatus,
+)
+from fateforger.slack_bot.progress import (
+    _MAX_VISIBLE_STEPS,
+    HarnessProgressCard,
+    ProgressChannel,
+)
+from fateforger.slack_bot.progress_events import (
+    ProgressPhase as TimeboxProgressPhase,
+)
+from fateforger.slack_bot.progress_events import (
+    ProgressSource,
+    TimeboxProgressEvent,
+)
+from fateforger.slack_bot.progress_events import (
+    ProgressStatus as TimeboxProgressStatus,
+)
 
 # Slack refuses a section block over roughly this many characters. Stage 3 blew
 # past it by accumulating a plan, 26 constraints and five buttons into the same
@@ -166,3 +183,182 @@ async def test_concurrent_steps_do_not_apply_out_of_order():
     await asyncio.gather(*(ch.step(f"s{i}") for i in range(5)))
 
     assert order == ["enter", "exit"] * (len(order) // 2), "edits overlapped"
+
+
+async def test_harness_progress_reuses_one_block_kit_card_with_grounded_details():
+    client = FakeClient()
+    card = HarnessProgressCard(
+        client,
+        channel="C1",
+        message_ts="processing-1",
+        min_update_interval_s=0,
+    )
+
+    await card.handle(ProgressEvent(ProgressPhase.READING_PLAN, ProgressStatus.STARTED))
+    await card.handle(
+        ProgressEvent(
+            ProgressPhase.READING_PLAN,
+            ProgressStatus.SUCCEEDED,
+            {"block_count": 11},
+        )
+    )
+    await card.handle(
+        ProgressEvent(ProgressPhase.DRAFTING_PATCH, ProgressStatus.STARTED)
+    )
+    await card.handle(
+        ProgressEvent(
+            ProgressPhase.REVISING_PATCH,
+            ProgressStatus.FAILED,
+            {"violation_count": 2, "violation_kinds": ["overlap"]},
+        )
+    )
+    await card.handle(
+        ProgressEvent(ProgressPhase.DRAFTING_PATCH, ProgressStatus.STARTED)
+    )
+
+    assert client.posts == []
+    assert client.updates
+    latest = client.updates[-1]
+    assert latest["channel"] == "C1"
+    assert latest["ts"] == "processing-1"
+    assert latest["blocks"][0]["type"] == "section"
+    assert "11 blocks" in latest["text"]
+    assert "2 overlaps" in latest["text"]
+    assert "attempt 2" in latest["text"]
+
+
+async def test_harness_progress_coalesces_bursts_into_the_latest_card_state():
+    client = FakeClient()
+    card = HarnessProgressCard(
+        client,
+        channel="C1",
+        message_ts="processing-1",
+        min_update_interval_s=0.05,
+    )
+
+    await card.handle(ProgressEvent(ProgressPhase.READING_PLAN, ProgressStatus.STARTED))
+    await card.handle(
+        ProgressEvent(
+            ProgressPhase.READING_PLAN,
+            ProgressStatus.SUCCEEDED,
+            {"block_count": 11},
+        )
+    )
+    await card.handle(
+        ProgressEvent(ProgressPhase.DRAFTING_PATCH, ProgressStatus.STARTED)
+    )
+
+    assert len(client.updates) == 1
+    await asyncio.sleep(0.07)
+    assert len(client.updates) == 2
+    assert "11 blocks" in client.updates[-1]["text"]
+    assert "attempt 1" in client.updates[-1]["text"]
+
+
+async def test_a_closed_progress_card_ignores_late_orphan_events():
+    client = FakeClient()
+    card = HarnessProgressCard(
+        client,
+        channel="C1",
+        message_ts="processing-1",
+        min_update_interval_s=0,
+    )
+    await card.handle(ProgressEvent(ProgressPhase.READING_PLAN, ProgressStatus.STARTED))
+    await card.close()
+    terminal_update_count = len(client.updates)
+
+    await card.handle(
+        ProgressEvent(ProgressPhase.DRAFTING_PATCH, ProgressStatus.STARTED)
+    )
+
+    assert len(client.updates) == terminal_update_count
+
+
+async def test_card_renders_model_authored_understanding_and_decisions_as_bounded_facts():
+    client = FakeClient()
+    card = HarnessProgressCard(
+        client,
+        channel="C1",
+        message_ts="processing-1",
+        min_update_interval_s=0,
+    )
+
+    await card.handle(
+        TimeboxProgressEvent(
+            session_key="C1:1772.0",
+            sequence=1,
+            source=ProgressSource.AGENT,
+            phase=TimeboxProgressPhase.UNDERSTANDING_SKELETON,
+            status=TimeboxProgressStatus.SUCCEEDED,
+            focus="placing deep work around hockey",
+            preserved_count=2,
+            remaining_count=3,
+        )
+    )
+    await card.handle(
+        TimeboxProgressEvent(
+            session_key="C1:1772.0",
+            sequence=2,
+            source=ProgressSource.AGENT,
+            phase=TimeboxProgressPhase.WEIGHING_OPTIONS,
+            status=TimeboxProgressStatus.SUCCEEDED,
+            focus="where to place the run",
+            decision_state="selected",
+            option_count=2,
+            selection="the full hour before dinner",
+            tradeoff="preserves both run duration and dinner",
+        )
+    )
+
+    text = client.updates[-1]["text"]
+    assert "placing deep work around hockey" in text
+    assert "2 anchors preserved" in text
+    assert "the full hour before dinner" in text
+    assert "preserves both run duration and dinner" in text
+
+
+async def test_card_uses_runtime_attempt_instead_of_counting_delivery_events():
+    client = FakeClient()
+    card = HarnessProgressCard(
+        client,
+        channel="C1",
+        message_ts="processing-1",
+        min_update_interval_s=0,
+    )
+
+    await card.handle(
+        TimeboxProgressEvent(
+            session_key="C1:1772.0",
+            sequence=10,
+            source=ProgressSource.HARNESS_HOOK,
+            phase=TimeboxProgressPhase.DRAFTING_PATCH,
+            status=TimeboxProgressStatus.STARTED,
+            attempt=4,
+        )
+    )
+
+    assert "attempt 4" in client.updates[-1]["text"]
+
+
+async def test_clean_validation_card_reports_the_real_candidate_size():
+    client = FakeClient()
+    card = HarnessProgressCard(
+        client,
+        channel="C1",
+        message_ts="processing-1",
+        min_update_interval_s=0,
+    )
+    await card.handle(
+        TimeboxProgressEvent(
+            session_key="C1:1772.0",
+            sequence=3,
+            source=ProgressSource.HARNESS_HOOK,
+            phase=TimeboxProgressPhase.VALIDATING_PATCH,
+            status=TimeboxProgressStatus.SUCCEEDED,
+            attempt=2,
+            block_count=10,
+            overspecified_count=0,
+        )
+    )
+
+    assert "10 blocks valid and ready for review" in client.updates[-1]["text"]

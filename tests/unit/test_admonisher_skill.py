@@ -25,7 +25,7 @@ def parts():
 
 
 def test_the_skill_is_where_the_profile_points(parts):
-    """`.dsh/skills/` in this repo, reached by an ABSOLUTE customSkillDirs.
+    """`.dsh/skills/` in the runtime repo root, independent of process cwd.
 
     Not by rank-100 project discovery, which was the original assumption here
     and was wrong. Discovery resolves the project root from the *process cwd*,
@@ -33,10 +33,10 @@ def test_the_skill_is_where_the_profile_points(parts):
     `<projectRoot>/.dsh/skills` meant the harness repo and this file was
     invisible. It would have looked like it worked.
 
-    The profile now sets `includeDefaultRoots: false` and names this directory
-    absolutely, precisely so the root cannot depend on a cwd this module does
-    not own. Moving or renaming this path silently empties the catalog, so the
-    profile entry and this file are one change, not two.
+    The profile now sets `includeDefaultRoots: false` and resolves this
+    directory through the host-owned `FF_FATEFORGER_ROOT`. That preserves the
+    absolute-path invariant while allowing an issue worktree to run its own
+    checked-out skills instead of silently loading `main`.
     """
     assert SKILL.exists()
     profile = (
@@ -45,8 +45,9 @@ def test_the_skill_is_where_the_profile_points(parts):
     )
     if profile.exists():
         text = profile.read_text(encoding="utf-8")
-        assert str(SKILL.parent.parent) in text, (
-            "the profile no longer names this skill root, so nothing indexes it"
+        assert "process.env.FF_FATEFORGER_ROOT" in text
+        assert "+ '/.dsh/skills'" in text, (
+            "the runtime repo root no longer resolves to this skill catalog"
         )
         # Non-comment lines only. The file explains this setting in prose
         # directly above it, so a substring search matches the explanation and

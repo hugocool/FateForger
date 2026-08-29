@@ -258,6 +258,34 @@ def test_cross_midnight_chain_blocks_that_genuinely_overlap_are_rejected():
         plan.resolve()
 
 
+def test_non_overlapping_fixed_anchors_do_not_overlap_only_because_plan_order_differs():
+    """Regression from the Issue #40 live Slack replay.
+
+    Set-semantics additions sharing one insertion anchor are ordered by handle,
+    so Dinner can precede Deep Work in the plan list even though their fixed
+    clock times are hours apart. Overlap is a time relation, not list order.
+    """
+    plan = Plan(
+        date=date(2026, 8, 29),
+        blocks=[
+            _block(
+                "DIN1",
+                n="Dinner",
+                p=FixedStart(st=time(19, 0), dur=timedelta(hours=1)),
+            ),
+            _block(
+                "DW1",
+                n="Deep engineering 1",
+                p=FixedStart(st=time(9, 0), dur=timedelta(minutes=90)),
+            ),
+        ],
+    )
+
+    resolved = plan.resolve()
+
+    assert [row.h for row in resolved] == ["DIN1", "DW1"]
+
+
 # --- negative-duration invariant --------------------------------------------
 
 

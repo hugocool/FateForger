@@ -174,6 +174,7 @@ async def test_plan_apply_previews_without_writing_to_the_calendar(built):
     body = json.loads(_text(result))
     assert body["ok"] is True
     assert "Renamed" in body["rendered"]
+    assert body["block_count"] == 1
     assert body["overspecified"] == []
 
     live = await service.calendar.list_day("primary", DAY_DATE, "Europe/Amsterdam")

@@ -30,6 +30,12 @@ import os
 import sys
 from pathlib import Path
 
+from .validated_timebox_draft import (
+    DRAFT_STATE_FILE_ENV,
+    consume_validated_draft,
+    validated_commit_matches,
+)
+
 #: Set per-run by ``harness_bridge`` to the file a Slack approval writes into.
 #: Absent means no one is watching this run -- a headless invocation rather
 #: than a Slack turn -- and the gate holds shut rather than assuming consent.
@@ -76,7 +82,14 @@ _DENY_REASON = (
 )
 
 
-def gate_decision(event: dict, approval_path: str | None) -> dict | None:
+_BINDING_NOT_SUPPLIED = object()
+
+
+def gate_decision(
+    event: dict,
+    approval_path: str | None,
+    validated_draft_path: str | None | object = _BINDING_NOT_SUPPLIED,
+) -> dict | None:
     """Return a hook decision, or ``None`` to leave the call alone.
 
     ``tool_name`` is harness-minted, so matching it is identification rather
@@ -99,6 +112,15 @@ def gate_decision(event: dict, approval_path: str | None) -> dict | None:
     if not raw:
         return _deny("not approved yet")
 
+    # Direct unit callers from before draft binding was introduced omit the
+    # third argument to exercise approval semantics in isolation. Production
+    # ``main`` always supplies it (including None), so an absent, malformed, or
+    # mismatched binding fails closed.
+    if validated_draft_path is not _BINDING_NOT_SUPPLIED:
+        path = validated_draft_path if isinstance(validated_draft_path, str) else None
+        if not validated_commit_matches(event, path):
+            return _deny("commit differs from the last validated candidate")
+
     # Consumed on use. One press authorises one commit.
     #
     # The token has to outlive the turn that was denied -- the harness runs a
@@ -116,6 +138,10 @@ def gate_decision(event: dict, approval_path: str | None) -> dict | None:
         Path(approval_path).write_text("", encoding="utf-8")
     except OSError:
         return _deny("approval could not be consumed, so it is not being spent")
+    if validated_draft_path is not _BINDING_NOT_SUPPLIED and not consume_validated_draft(
+        validated_draft_path if isinstance(validated_draft_path, str) else None
+    ):
+        return _deny("validated candidate could not be consumed")
     return None
 
 
@@ -146,7 +172,11 @@ def main() -> int:
         print(json.dumps(_deny("unreadable hook event")))
         return 0
 
-    decision = gate_decision(event, os.environ.get(APPROVAL_FILE_ENV))
+    decision = gate_decision(
+        event,
+        os.environ.get(APPROVAL_FILE_ENV),
+        os.environ.get(DRAFT_STATE_FILE_ENV),
+    )
     if decision is not None:
         print(json.dumps(decision))
     return 0

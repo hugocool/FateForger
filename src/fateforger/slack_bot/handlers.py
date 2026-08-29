@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import json
 import logging
+import os
 import re
+import threading
 import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from time import perf_counter
-from typing import Awaitable, Callable
 
 from autogen_agentchat.messages import TextMessage
 from autogen_core import AgentId
@@ -58,6 +60,7 @@ from fateforger.slack_bot.planning import (
     PlanningCoordinator,
     parse_draft_id_from_value,
 )
+from fateforger.slack_bot.progress import HarnessProgressCard
 from fateforger.slack_bot.reply_guard import agent_reply_text
 from fateforger.slack_bot.task_cards import (
     FF_TASK_DETAILS_ACTION_ID,
@@ -144,9 +147,7 @@ def _truncate_slack_block_content(value):
     if isinstance(value, list):
         return [_truncate_slack_block_content(item) for item in value]
     if isinstance(value, dict):
-        return {
-            key: _truncate_slack_block_content(item) for key, item in value.items()
-        }
+        return {key: _truncate_slack_block_content(item) for key, item in value.items()}
     return value
 
 
@@ -159,7 +160,9 @@ def _delivery_fallback_text(text: str | None) -> str:
 
 
 def _compact_slack_payload(*, text: str | None, blocks=None) -> dict[str, object]:
-    safe_text = _truncate_slack_text(text or "(no response)", max_chars=_SLACK_MAX_TEXT_CHARS)
+    safe_text = _truncate_slack_text(
+        text or "(no response)", max_chars=_SLACK_MAX_TEXT_CHARS
+    )
     safe_blocks = None
     if isinstance(blocks, list) and blocks:
         clipped = blocks
@@ -734,14 +737,14 @@ async def _harness_turn(
     of seconds, so it goes to a worker thread; leaving it on the loop would
     stall every other Slack event in the workspace.
     """
-    from .harness_bridge import PLANNING_MODEL, HarnessError, ask
+    from .harness_bridge import PLANNING_MODEL, HarnessError
 
     from .thread_approval import approval_path
 
     try:
-        reply = await asyncio.to_thread(
-            ask,
+        reply = await _owned_harness_ask(
             text,
+            thread_key=thread_key,
             on_event=on_phase,
             approval_file=str(approval_path(thread_key)),
             # Without this the harness starts every turn with no idea the
@@ -757,9 +760,7 @@ async def _harness_turn(
         # Surfaced, not swallowed. A harness that could not be reached and a
         # planner that declined to act must not read the same in the thread.
         return TextMessage(
-            content=(
-                f":warning: The harness did not answer.\n```{exc}```"
-            ),
+            content=(f":warning: The harness did not answer.\n```{exc}```"),
             source="timeboxing_agent",
         )
     if reply.needs_approval:
@@ -772,29 +773,71 @@ async def _harness_turn(
     return TextMessage(content=reply.text, source="timeboxing_agent")
 
 
-def _note_harness_phase(client, processing_msg, agent_type: str, line: str) -> None:
-    """Show a tool call as it completes, rather than a silent wait.
+@dataclass
+class _HarnessTurnControl:
+    cancel_event: threading.Event
+    on_phase: Callable[[object], None]
 
-    Fire-and-forget: progress must never delay or fail the turn it reports on.
-    The heartbeat keeps running underneath, so a dropped phase line costs
-    nothing beyond that phase not being shown.
-    """
-    async def _update() -> None:
+
+_harness_turn_controls: dict[str, _HarnessTurnControl] = {}
+
+
+async def _owned_harness_ask(
+    text: str,
+    *,
+    thread_key: str,
+    on_event: Callable[[object], None],
+    **ask_kwargs,
+):
+    """Run one cancellable child, superseding any older turn in the thread."""
+    from .harness_bridge import HarnessCancelled, ask
+
+    control = _HarnessTurnControl(cancel_event=threading.Event(), on_phase=on_event)
+    previous = _harness_turn_controls.get(thread_key)
+    if previous is not None:
         try:
-            await client.chat_update(
-                channel=processing_msg["channel"],
-                ts=processing_msg["ts"],
-                text=f":hourglass_flowing_sand: *{agent_type}* — {line}",
-            )
+            previous.on_phase("done\tSuperseded by a newer request")
         except Exception:
-            return
+            pass
+        previous.cancel_event.set()
+    _harness_turn_controls[thread_key] = control
 
+    worker = asyncio.create_task(
+        asyncio.to_thread(
+            ask,
+            text,
+            on_event=on_event,
+            cancel_event=control.cancel_event,
+            **ask_kwargs,
+        )
+    )
     try:
-        asyncio.get_running_loop().create_task(_update())
-    except RuntimeError:
-        # Called from the harness's polling thread, which has no loop of its
-        # own. Nothing to do but skip this line.
-        return
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        control.cancel_event.set()
+        try:
+            await worker
+        except HarnessCancelled:
+            pass
+        raise
+    except HarnessCancelled as exc:
+        raise asyncio.CancelledError from exc
+    finally:
+        if _harness_turn_controls.get(thread_key) is control:
+            _harness_turn_controls.pop(thread_key, None)
+
+
+def _note_harness_phase(
+    card: HarnessProgressCard,
+    event,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """Schedule one typed progress fact from the poller onto Slack's loop."""
+    # The harness tails progress on a worker thread. Scheduling against that
+    # thread's nonexistent loop silently dropped every semantic update; the
+    # Slack loop is captured by the async caller and is the only loop that may
+    # own this coroutine.
+    asyncio.run_coroutine_threadsafe(card.handle(event), loop)
 
 
 #: The one control that opens the commit gate.
@@ -982,10 +1025,14 @@ async def _handle_dsh_command(*, body, client, logger) -> None:
     channel = body.get("channel_id")
     text = (body.get("text") or "").strip()
     if not text:
-        await client.chat_postMessage(channel=channel, text="Give me something to plan.")
+        await client.chat_postMessage(
+            channel=channel, text="Give me something to plan."
+        )
         return
 
-    posted = await client.chat_postMessage(channel=channel, text=f"*{text}*\n_asking the harness…_")
+    posted = await client.chat_postMessage(
+        channel=channel, text=f"*{text}*\n_asking the harness…_"
+    )
     thread_ts = posted["ts"]
 
     progress = ProgressChannel(client, channel=channel, thread_ts=thread_ts)
@@ -1287,7 +1334,9 @@ async def route_slack_event(
                 store=store,
             )
         except Exception as exc:
-            record_error(component="slack_routing", error_type="constraint_refresh_error")
+            record_error(
+                component="slack_routing", error_type="constraint_refresh_error"
+            )
             logger.warning(
                 "Non-fatal constraint refresh failure thread_key=%s user=%s error=%s",
                 thread_key,
@@ -1557,7 +1606,9 @@ async def route_slack_event(
         force_reply=(
             True
             if (is_dm and agent_type == "timeboxing_agent")
-            else False if (agent_type == "timeboxing_agent" and not thread_ts) else None
+            else False
+            if (agent_type == "timeboxing_agent" and not thread_ts)
+            else None
         ),
     )
     recipient_key = origin_key
@@ -1601,22 +1652,37 @@ async def route_slack_event(
                 # reply still goes out through _origin_update.
                 return
 
-    heartbeat_task = asyncio.create_task(_turn_heartbeat())
+    slack_loop = asyncio.get_running_loop()
+    primary_harness_turn = (
+        agent_type == "timeboxing_agent" and _timebox_backend() != "legacy"
+    )
+    heartbeat_task = (
+        None if primary_harness_turn else asyncio.create_task(_turn_heartbeat())
+    )
     try:
-        if agent_type == "timeboxing_agent" and _timebox_backend() != "legacy":
+        if primary_harness_turn:
             # The Schedular answers through the harness now. Same persona, same
             # thread, different brain: the harness owns the loop and reaches
             # tmbx and the memory server over the warm MCP mounts, instead of
             # the AutoGen flow reaching a constraint store that spent months
             # reading a Notion page returning 404.
-            result = await _harness_turn(
-                text=cleaned_text,
-                thread_key=recipient_key,
-                session_id=recipient_key,
-                on_phase=lambda line: _note_harness_phase(
-                    client, origin_processing_msg, agent_type, line
-                ),
+            progress_card = HarnessProgressCard(
+                client,
+                channel=origin_processing_msg["channel"],
+                message_ts=origin_processing_msg["ts"],
             )
+            await progress_card.handle("start\tPreparing the timebox run")
+            try:
+                result = await _harness_turn(
+                    text=cleaned_text,
+                    thread_key=recipient_key,
+                    session_id=recipient_key,
+                    on_phase=lambda event: _note_harness_phase(
+                        progress_card, event, slack_loop
+                    ),
+                )
+            finally:
+                await progress_card.close()
         else:
             result = await runtime.send_message(
                 msg, recipient=AgentId(agent_type, key=recipient_key)
@@ -1645,7 +1711,8 @@ async def route_slack_event(
         # Stop the heartbeat before anything writes the real reply, so it can
         # never overwrite the answer with a stale "still working" edit.
         heartbeat_stop.set()
-        heartbeat_task.cancel()
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
     chat_message = getattr(result, "chat_message", result)
     handoff_target = _extract_handoff_target(chat_message)
 
@@ -1792,14 +1859,23 @@ async def route_slack_event(
                         # receptionist_agent and this interception never saw
                         # it. So "The Schedular runs on the harness" was true
                         # only for the doors he does not use.
-                        result = await _harness_turn(
-                            text=cleaned_text,
-                            thread_key=redirect.target_key,
-                            session_id=redirect.target_key,
-                            on_phase=lambda line: _note_harness_phase(
-                                client, processing, handoff_target, line
-                            ),
+                        progress_card = HarnessProgressCard(
+                            client,
+                            channel=processing["channel"],
+                            message_ts=processing["ts"],
                         )
+                        await progress_card.handle("start\tPreparing the timebox run")
+                        try:
+                            result = await _harness_turn(
+                                text=cleaned_text,
+                                thread_key=redirect.target_key,
+                                session_id=redirect.target_key,
+                                on_phase=lambda event: _note_harness_phase(
+                                    progress_card, event, slack_loop
+                                ),
+                            )
+                        finally:
+                            await progress_card.close()
                     else:
                         result = await runtime.send_message(
                             handoff_msg,
@@ -2259,45 +2335,69 @@ def register_handlers(
             getattr(settings, "slack_route_dispatch_timeout_seconds", 75.0)
         )
         started = perf_counter()
+        route_task = asyncio.create_task(
+            route_slack_event(
+                acked=acked,
+                runtime=runtime,
+                focus=focus,
+                default_agent=default_agent,
+                event=event,
+                bot_user_id=bot_user_id,
+                say=say,
+                client=client,
+                get_constraint_store=_get_constraint_store,
+                planning=planning,
+            )
+        )
         try:
             await asyncio.wait_for(
-                route_slack_event(
-                    acked=acked,
-                    runtime=runtime,
-                    focus=focus,
-                    default_agent=default_agent,
-                    event=event,
-                    bot_user_id=bot_user_id,
-                    say=say,
-                    client=client,
-                    get_constraint_store=_get_constraint_store,
-                    planning=planning,
-                ),
+                asyncio.shield(route_task),
                 timeout=timeout_s,
             )
         except asyncio.TimeoutError:
             duration_s = perf_counter() - started
             observe_stage_duration(
-                stage="slack_route_dispatch_timeout", duration_s=duration_s
+                stage="slack_route_dispatch_backgrounded", duration_s=duration_s
             )
-            record_error(component="slack_routing", error_type="route_timeout")
-            logger.warning(
-                "Slack route dispatch timed out origin=%s channel=%s ts=%s timeout_s=%.2f",
+            logger.info(
+                "Slack route dispatch continues in background origin=%s channel=%s ts=%s timeout_s=%.2f",
                 origin,
                 event.get("channel"),
                 event.get("ts"),
                 timeout_s,
             )
-            try:
-                await _post_dispatch_fallback(
-                    ":hourglass_flowing_sand: Routing timed out before I could finish this reply. Please try again (or press `Redo` in the thread)."
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to post Slack route timeout fallback channel=%s ts=%s",
-                    event.get("channel"),
-                    event.get("ts"),
-                )
+
+            async def _observe_backgrounded_route() -> None:
+                try:
+                    await route_task
+                except asyncio.CancelledError:
+                    return
+                except Exception:
+                    record_error(
+                        component="slack_routing",
+                        error_type="background_route_exception",
+                    )
+                    logger.exception(
+                        "Background Slack route failed origin=%s channel=%s ts=%s",
+                        origin,
+                        event.get("channel"),
+                        event.get("ts"),
+                    )
+                    try:
+                        await _post_dispatch_fallback(
+                            ":warning: Routing failed before I could finish this reply. Please retry the message."
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to post background route fallback channel=%s ts=%s",
+                            event.get("channel"),
+                            event.get("ts"),
+                        )
+
+            asyncio.create_task(_observe_backgrounded_route())
+        except asyncio.CancelledError:
+            route_task.cancel()
+            raise
         except Exception:
             duration_s = perf_counter() - started
             observe_stage_duration(
@@ -2515,21 +2615,30 @@ def register_handlers(
         # `ask` rather than `_harness_turn`: the latter returns a TextMessage,
         # which carries content and a source and no transaction id, so the Undo
         # control could never be offered from here.
-        from .harness_bridge import PLANNING_MODEL, HarnessError, ask
+        from .harness_bridge import PLANNING_MODEL, HarnessError
         from .thread_approval import approval_path
 
+        slack_loop = asyncio.get_running_loop()
+        progress_card = HarnessProgressCard(
+            client,
+            channel=posted["channel"],
+            message_ts=posted["ts"],
+        )
         try:
-            reply = await asyncio.to_thread(
-                ask,
-                "I have approved the plan. Rebuild exactly the day you last "
-                "showed me and call plan_commit now. Do not ask me anything.",
-                session_id=thread_key,
-                model=PLANNING_MODEL,
-                approval_file=str(approval_path(thread_key)),
-                on_event=lambda line: _note_harness_phase(
-                    client, posted, "timeboxing_agent", line
-                ),
-            )
+            try:
+                reply = await _owned_harness_ask(
+                    "I have approved the plan. Rebuild exactly the day you last "
+                    "showed me and call plan_commit now. Do not ask me anything.",
+                    thread_key=thread_key,
+                    session_id=thread_key,
+                    model=PLANNING_MODEL,
+                    approval_file=str(approval_path(thread_key)),
+                    on_event=lambda event: _note_harness_phase(
+                        progress_card, event, slack_loop
+                    ),
+                )
+            finally:
+                await progress_card.close()
         except HarnessError as exc:
             logger.warning("approve: harness failed: %s", exc)
             await client.chat_postMessage(
@@ -2550,8 +2659,10 @@ def register_handlers(
             # something actually landed: a refused commit carries no id, so
             # there is nothing to take back.
             blocks = [
-                {"type": "section",
-                 "text": {"type": "mrkdwn", "text": reply.text[:2900]}},
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": reply.text[:2900]},
+                },
                 harness_undo_block(tx_id),
             ]
         await client.chat_postMessage(
@@ -2799,9 +2910,7 @@ def register_handlers(
             return
         values = ((body.get("view") or {}).get("state") or {}).get("values") or {}
         date_str = (
-            (values.get("date_input") or {})
-            .get("date_select", {})
-            .get("selected_date")
+            (values.get("date_input") or {}).get("date_select", {}).get("selected_date")
         )
         duration_str = (
             (values.get("duration_input") or {})
@@ -2931,14 +3040,21 @@ def register_handlers(
         project_id = metadata.get("project_id") or ""
         task_id = metadata.get("task_id") or ""
         label = metadata.get("label") or ""
-        values = ((view.get("state") or {}).get("values") or {})
+        values = (view.get("state") or {}).get("values") or {}
         title_value = (
             (values.get("task_title_input") or {})
             .get("task_title_value", {})
             .get("value")
         )
         new_title = str(title_value or "").strip()
-        if not (channel_id and thread_ts and user_id and project_id and task_id and new_title):
+        if not (
+            channel_id
+            and thread_ts
+            and user_id
+            and project_id
+            and task_id
+            and new_title
+        ):
             return
         try:
             result = await runtime.send_message(
@@ -3106,7 +3222,9 @@ def register_handlers(
             or ""
         )
         user_id = metadata.get("user_id") or (body.get("user") or {}).get("id") or ""
-        channel_id = body.get("channel", {}).get("id") or metadata.get("channel_id") or ""
+        channel_id = (
+            body.get("channel", {}).get("id") or metadata.get("channel_id") or ""
+        )
         trigger_id = body.get("trigger_id") or ""
         if not (thread_ts and user_id and channel_id and trigger_id):
             return
@@ -3452,7 +3570,9 @@ def _slack_payload_from_result(result) -> dict:
     if isinstance(chat_message, SlackBlockMessage):
         return {"text": chat_message.text, "blocks": chat_message.blocks}
 
-    return {"text": agent_reply_text(chat_message if chat_message is not None else result)}
+    return {
+        "text": agent_reply_text(chat_message if chat_message is not None else result)
+    }
 
 
 # TODO: this seems like something that shouldnt exist

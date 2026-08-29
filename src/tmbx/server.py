@@ -320,6 +320,7 @@ def build_server(service: PlanService) -> FastMCP:
             {
                 "ok": True,
                 "committable": result.committable,
+                "block_count": len(result.plan.blocks),
                 "rendered": result.rendered,
                 "violations": [
                     violation.model_dump(mode="json") for violation in result.violations

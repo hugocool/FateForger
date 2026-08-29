@@ -11,6 +11,11 @@ that variable, tails the file from a polling thread, and forwards each line to
 With `FF_DSH_PROGRESS_FILE` unset — every run except a Slack turn — the hook
 reads stdin and returns, so a headless run pays nothing for it.
 
+The profile also mounts `fateforger.slack_bot.timebox_progress_mcp` as the
+separate `progress` server. Its two bounded tools add skeleton-understanding
+and material-decision events to the same file. They never patch a schedule;
+attempt and validation progress remains derived from tmbx hook results.
+
 ## The profile needs two symlinks that are not in this repo
 
 The `tmbx` profile resolves plugins from `~/.dsh/profiles/node_modules/@deepseek-ai/`,

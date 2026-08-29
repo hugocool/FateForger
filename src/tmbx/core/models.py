@@ -23,6 +23,7 @@ from __future__ import annotations
 from datetime import date as date_type
 from datetime import datetime, time, timedelta
 from enum import Enum
+from itertools import pairwise
 from typing import Annotated, Literal, Union
 
 from isodate import parse_duration as _parse_duration
@@ -517,8 +518,18 @@ class Plan(BaseModel):
                 )
 
         if check_overlap:
-            chain = [r for r in resolved if r.t is not ET.BG]
-            for a, b in zip(chain, chain[1:]):
+            # Patch operations are set-semantic: additions sharing an anchor
+            # are ordered by handle, not by operation position or clock time.
+            # ``ap``/``bn`` resolution still uses plan order above, but once
+            # every block has concrete datetimes, physical overlap must be
+            # checked chronologically. Walking plan order made a 19:00 Dinner
+            # followed by a 09:00 Deep Work handle look like an 11-hour
+            # collision during the Issue #40 Slack replay.
+            chain = sorted(
+                (r for r in resolved if r.t is not ET.BG),
+                key=lambda row: (row.start_dt, row.end_dt, row.h),
+            )
+            for a, b in pairwise(chain):
                 # Compare the real datetimes, not a same-day recombination —
                 # a block that legitimately crosses midnight must still be
                 # comparable to its neighbours on the following day.

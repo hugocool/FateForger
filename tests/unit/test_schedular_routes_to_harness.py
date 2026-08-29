@@ -7,9 +7,18 @@ planned while knowing nothing it had ever been told.
 
 from __future__ import annotations
 
+import asyncio
+import threading
+
 import pytest
 
 from fateforger.slack_bot import handlers
+from fateforger.slack_bot.dsh_progress_hook import (
+    ProgressEvent,
+    ProgressPhase,
+    ProgressStatus,
+)
+from fateforger.slack_bot.progress import HarnessProgressCard
 
 
 class _Reply:
@@ -79,6 +88,47 @@ async def test_a_harness_failure_is_surfaced_not_swallowed(monkeypatch):
     assert "node not found" in result.content
 
 
+async def test_a_new_turn_supersedes_and_cancels_the_prior_owned_child(monkeypatch):
+    """A retry in one Slack thread must stop the old process before replacing it."""
+
+    import fateforger.slack_bot.harness_bridge as hb
+
+    first_started = threading.Event()
+    first_cancelled = threading.Event()
+
+    def fake_ask(text, *, cancel_event=None, **_kwargs):
+        if text == "first":
+            first_started.set()
+            if cancel_event is None or not cancel_event.wait(timeout=1.0):
+                raise AssertionError("the prior turn never received cancellation")
+            first_cancelled.set()
+            raise hb.HarnessCancelled("superseded")
+        return _Reply("second answer")
+
+    monkeypatch.setattr(hb, "ask", fake_ask)
+    first_phases: list[str] = []
+    first = asyncio.create_task(
+        handlers._harness_turn(
+            text="first",
+            thread_key="C1:1772.0",
+            on_phase=first_phases.append,
+        )
+    )
+    assert await asyncio.to_thread(first_started.wait, 1.0)
+
+    second = await handlers._harness_turn(
+        text="second",
+        thread_key="C1:1772.0",
+        on_phase=lambda _line: None,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    assert second.content == "second answer"
+    assert first_cancelled.is_set()
+    assert first_phases == ["done\tSuperseded by a newer request"]
+
+
 def test_the_legacy_flow_is_still_reachable(monkeypatch):
     """A migration nobody can reverse is a rewrite.
 
@@ -91,13 +141,43 @@ def test_the_legacy_flow_is_still_reachable(monkeypatch):
     assert handlers._timebox_backend() != "legacy"
 
 
-def test_a_phase_line_from_a_thread_without_a_loop_does_not_raise():
-    """The progress poller runs on the harness's own thread, which has no loop.
+async def test_a_phase_line_from_the_poller_thread_reaches_slack():
+    """The poller has no loop; delivery must target the captured Slack loop.
 
-    Raising there would kill progress reporting for the rest of the turn, and
-    the turn would look stalled rather than quiet.
+    The old implementation swallowed ``get_running_loop``'s RuntimeError in
+    that thread, so every semantic update disappeared while the timer kept
+    moving.  This asserts the user-visible effect rather than the swallowed
+    exception.
     """
-    handlers._note_harness_phase(object(), {"channel": "C1", "ts": "1.0"}, "a", "step")
+
+    delivered = asyncio.Event()
+    updates: list[dict] = []
+
+    class _Client:
+        async def chat_update(self, **payload):
+            updates.append(payload)
+            delivered.set()
+
+    loop = asyncio.get_running_loop()
+    card = HarnessProgressCard(
+        _Client(),
+        channel="C1",
+        message_ts="1.0",
+        min_update_interval_s=0,
+    )
+    await asyncio.to_thread(
+        handlers._note_harness_phase,
+        card,
+        ProgressEvent(ProgressPhase.READING_PLAN, ProgressStatus.STARTED),
+        loop,
+    )
+    await asyncio.wait_for(delivered.wait(), timeout=0.5)
+
+    assert len(updates) == 1
+    assert updates[0]["channel"] == "C1"
+    assert updates[0]["ts"] == "1.0"
+    assert "Reading the day" in updates[0]["text"]
+    assert updates[0]["blocks"][0]["type"] == "section"
 
 
 # --- the handoff path, which the up-front interception missed -------------
@@ -140,3 +220,20 @@ def test_the_handoff_interception_uses_the_redirected_thread():
     start = source.rindex("_harness_turn(")
     window = source[start : start + 400]
     assert "redirect.target_key" in window, window[:300]
+
+
+def test_approve_commit_uses_the_owned_cancellable_harness_runner():
+    """Approving must not bypass the process owner used by ordinary turns.
+
+    This path can write calendar changes, so an outer Slack cancellation must
+    terminate its child rather than leave an unobserved commit running.
+    """
+    import inspect
+
+    source = inspect.getsource(handlers.register_handlers)
+    start = source.index("async def act_harness_approve")
+    end = source.index('@app.command("/dsh")', start)
+    approval_handler = source[start:end]
+
+    assert "_owned_harness_ask(" in approval_handler
+    assert "asyncio.to_thread(\n                    ask," not in approval_handler

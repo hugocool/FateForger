@@ -23,6 +23,7 @@ as context.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -30,11 +31,22 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .dsh_progress_hook import COMMIT_FILE_ENV, PROGRESS_FILE_ENV
+from .dsh_progress_hook import COMMIT_FILE_ENV, PROGRESS_FILE_ENV, ProgressEvent
 from .mrkdwn import to_mrkdwn
+from .progress_events import (
+    ProgressPhase as TimeboxProgressPhase,
+)
+from .progress_events import (
+    ProgressSource,
+    TimeboxProgressEvent,
+)
+from .progress_events import (
+    ProgressStatus as TimeboxProgressStatus,
+)
+from .validated_timebox_draft import DRAFT_STATE_FILE_ENV
 
 #: Where the PreToolUse commit gate looks for a Slack approval token. Named
 #: here because this module is what puts it in the child's environment; the
@@ -44,8 +56,11 @@ APPROVAL_FILE_ENV = "FF_DSH_APPROVAL_FILE"
 logger = logging.getLogger(__name__)
 
 _DSH_HOME = Path(os.environ.get("DSH_HOME", Path.home() / ".dsh"))
-_REPO = Path(os.environ.get("DSH_REPO", Path.home() / "VScode-projects/deepseek-harness"))
+_REPO = Path(
+    os.environ.get("DSH_REPO", Path.home() / "VScode-projects/deepseek-harness")
+)
 _PROFILE = os.environ.get("DSH_PROFILE", "tmbx")
+_FATEFORGER_ROOT = Path(__file__).resolve().parents[3]
 
 #: A login shell resolves ``node`` to v14 via nvm, and the CLI dies on syntax
 #: before printing anything useful. Both mount reports paid ten minutes for
@@ -56,6 +71,8 @@ _NODE = os.environ.get("DSH_NODE", "/opt/homebrew/bin/node")
 #: commit a patch. Generous, but not unbounded — an abandoned run that already
 #: wrote to the calendar is worse than a slow one.
 _TIMEOUT_S = float(os.environ.get("DSH_TIMEOUT_SECONDS", "600"))
+_PROGRESS_SESSION_KEY_ENV = "FF_DSH_SESSION_KEY"
+_HARNESS_REASONING_ENV = "FF_HARNESS_REASONING"
 
 
 class HarnessError(RuntimeError):
@@ -65,6 +82,10 @@ class HarnessError(RuntimeError):
     from the planner declining to act, which is the silent-wrong-answer shape
     the project bans elsewhere.
     """
+
+
+class HarnessCancelled(HarnessError):
+    """The caller withdrew an owned harness turn and its child was reaped."""
 
 
 @dataclass(frozen=True)
@@ -187,9 +208,11 @@ from .dsh_commit_gate_hook import NEEDS_APPROVAL as _NEEDS_APPROVAL
 
 def _tail_progress(
     path: Path,
-    on_event: Callable[[str], None],
+    on_event: Callable[[TimeboxProgressEvent | str], None],
     stop: threading.Event,
     refused: list[bool] | None = None,
+    *,
+    session_key: str = "unscoped",
 ) -> int:
     """Report each line the hook appends, until stopped and drained.
 
@@ -199,10 +222,12 @@ def _tail_progress(
     between stdio and ``streamable-http``, which is what killed the two earlier
     approaches.
 
-    Returns the number of steps seen, which is the run's completed tool calls.
+    Returns the number of completed harness tool calls. PreToolUse starts and
+    agent-authored progress reports are delivered but do not inflate this count.
     """
     offset = 0
-    seen = 0
+    completed_calls = 0
+    sequence = 0
     while True:
         finished = stop.is_set()
         try:
@@ -228,17 +253,85 @@ def _tail_progress(
                     # that never happened.
                     refused.append(True)
                     continue
-                seen += 1
                 try:
-                    on_event(step)
+                    direct = TimeboxProgressEvent.from_json(step)
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    try:
+                        projected = ProgressEvent.from_line(step)
+                    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                        # A rolling restart can leave an old hook writing the
+                        # pre-v1 label format while the new bridge is already
+                        # tailing it. Preserve that cosmetic update; all new hook
+                        # output is typed and safe-projected before it reaches here.
+                        forwarded: TimeboxProgressEvent | str = step
+                    else:
+                        sequence += 1
+                        forwarded = _transport_progress_event(
+                            projected,
+                            session_key=session_key,
+                            sequence=sequence,
+                        )
+                else:
+                    sequence += 1
+                    forwarded = replace(
+                        direct,
+                        session_key=session_key,
+                        sequence=sequence,
+                    )
+                if _is_completed_tool_event(forwarded):
+                    completed_calls += 1
+                try:
+                    on_event(forwarded)
                 except Exception as exc:  # noqa: BLE001 - see below
                     # A failing progress consumer must not take down the turn
                     # it is describing. Same rule ProgressChannel follows, for
                     # the same reason.
-                    logger.warning("progress consumer raised: %s: %s", type(exc).__name__, exc)
+                    logger.warning(
+                        "progress consumer raised: %s: %s", type(exc).__name__, exc
+                    )
         if finished:
-            return seen
+            return completed_calls
         stop.wait(_POLL_INTERVAL_S)
+
+
+def _is_completed_tool_event(event: TimeboxProgressEvent | str) -> bool:
+    if isinstance(event, str):
+        return not event.startswith("start\t")
+    return (
+        event.source is ProgressSource.HARNESS_HOOK
+        and event.status is not TimeboxProgressStatus.STARTED
+    )
+
+
+def _transport_progress_event(
+    event: ProgressEvent,
+    *,
+    session_key: str,
+    sequence: int,
+) -> TimeboxProgressEvent:
+    """Add host-owned identity to a hook's privacy-bounded domain facts."""
+
+    detail = event.safe_detail
+    refusal = detail.get("refusal_reason")
+    return TimeboxProgressEvent(
+        session_key=session_key,
+        sequence=sequence,
+        source=ProgressSource.HARNESS_HOOK,
+        phase=TimeboxProgressPhase(event.phase.value),
+        status=TimeboxProgressStatus(event.status.value),
+        attempt=_optional_int(detail.get("attempt")),
+        block_count=_optional_int(detail.get("block_count")),
+        violation_count=_optional_int(detail.get("violation_count")),
+        violation_kinds=tuple(
+            kind for kind in detail.get("violation_kinds", ()) if isinstance(kind, str)
+        ),
+        overspecified_count=_optional_int(detail.get("overspecified_count")),
+        refusal_code=refusal if isinstance(refusal, str) else None,
+    )
+
+
+def _optional_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 #: The model a planning turn runs on, overriding the profile's fast default.
@@ -264,8 +357,9 @@ def ask(
     model: str | None = None,
     profile: str = _PROFILE,
     env: dict[str, str] | None = None,
-    on_event: Callable[[str], None] | None = None,
+    on_event: Callable[[TimeboxProgressEvent | str], None] | None = None,
     approval_file: str | Path | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> HarnessReply:
     """Run one Slack turn through the harness and return what it said.
 
@@ -285,10 +379,15 @@ def ask(
         **os.environ,
         **_repo_env(),
         "DSH_HOME": str(_DSH_HOME),
+        # The profile is durable under ~/.dsh but the code may be running from
+        # an issue worktree. Every profile path that executes or reads repo
+        # artifacts resolves through this host-owned root.
+        "FF_FATEFORGER_ROOT": str(_FATEFORGER_ROOT),
         # Read by the profile's `agent-default-model` entry. Absent leaves the
         # profile's own fast default in force, which is what a headless or
         # non-planning call should get.
         **({"FF_HARNESS_MODEL": model} if model else {}),
+        **({_HARNESS_REASONING_ENV: "low"} if model else {}),
         **(env or {}),
     }
     if approval_file is not None:
@@ -307,6 +406,8 @@ def ask(
         commits = Path(workspace) / "commits"
         commits.touch()
         child_env[COMMIT_FILE_ENV] = str(commits)
+        validated_draft = Path(workspace) / "validated-draft.json"
+        child_env[DRAFT_STATE_FILE_ENV] = str(validated_draft)
         stop = threading.Event()
         tail: threading.Thread | None = None
         collected: list[int] = []
@@ -315,21 +416,43 @@ def ask(
 
         if on_event is not None:
             child_env[PROGRESS_FILE_ENV] = str(progress)
+            child_env[_PROGRESS_SESSION_KEY_ENV] = session_id or "unscoped"
             tail = threading.Thread(
-                target=lambda: collected.append(_tail_progress(progress, on_event, stop, refused)),
+                target=lambda: collected.append(
+                    _tail_progress(
+                        progress,
+                        on_event,
+                        stop,
+                        refused,
+                        session_key=session_id or "unscoped",
+                    )
+                ),
                 daemon=True,
             )
             tail.start()
 
         try:
-            done = subprocess.run(
-                _cli_args(compose_task(text, history=history, session_id=session_id), profile),
-                capture_output=True,
-                text=True,
-                timeout=_TIMEOUT_S,
-                cwd=str(_REPO),
-                env=child_env,
+            args = _cli_args(
+                compose_task(text, history=history, session_id=session_id), profile
             )
+            if cancel_event is None:
+                done = subprocess.run(
+                    args,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=_TIMEOUT_S,
+                    cwd=str(_REPO),
+                    env=child_env,
+                )
+            else:
+                done = _run_cancellable(
+                    args,
+                    cwd=str(_REPO),
+                    env=child_env,
+                    cancel_event=cancel_event,
+                    timeout_s=_TIMEOUT_S,
+                )
         except subprocess.TimeoutExpired as exc:
             raise HarnessError(f"harness exceeded {_TIMEOUT_S:.0f}s") from exc
         finally:
@@ -375,7 +498,10 @@ def ask(
     return HarnessReply(
         text=to_mrkdwn(answer),
         profile=profile,
-        timings={"elapsed_s": round(time.monotonic() - started, 1), "tool_calls": steps},
+        timings={
+            "elapsed_s": round(time.monotonic() - started, 1),
+            "tool_calls": steps,
+        },
         needs_approval=bool(refused),
         # Computed a few lines up and, until now, dropped on the floor: the
         # hook recorded it, the bridge read it, and nothing carried it out, so
@@ -384,3 +510,57 @@ def ask(
         # joined nowhere.
         committed_tx_id=last_tx_id,
     )
+
+
+def _run_cancellable(
+    args: list[str],
+    *,
+    cwd: str,
+    env: dict[str, str],
+    cancel_event: threading.Event,
+    timeout_s: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run one owned child, terminating it when the caller withdraws the turn."""
+
+    if cancel_event.is_set():
+        raise HarnessCancelled("harness turn cancelled before launch")
+
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        env=env,
+    )
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if cancel_event.is_set():
+            _terminate_process(process)
+            raise HarnessCancelled("harness turn cancelled")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _terminate_process(process)
+            raise subprocess.TimeoutExpired(args, timeout_s)
+        try:
+            stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+        except subprocess.TimeoutExpired:
+            continue
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=process.returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+
+def _terminate_process(process: subprocess.Popen[str]) -> None:
+    """Terminate, then force-kill, and always reap an owned child."""
+
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.communicate(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()

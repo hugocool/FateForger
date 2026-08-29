@@ -15,7 +15,7 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | Proposal object NL/UI parity contract | Partially implemented (planning baseline complete; remaining surfaces tracked) |
 | Haunt delivery (nudges) | Implemented |
 | Sync engine confirm/cancel/undo buttons | Implemented, Tested |
-| Dispatch timeout fallback reply | Implemented, Tested |
+| Managed long-running dispatch + semantic progress card | Implemented, Tested |
 | MCP startup dependency checks | Implemented (fail-fast on unreachable calendar/notion/ticktick MCP servers) |
 
 ## File Index
@@ -27,6 +27,9 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | `bot.py` | Application entry point: builds `AsyncApp` (Slack Bolt), initializes DB engine, AutoGen runtime, workspace store, and registers all handlers. |
 | `bootstrap.py` | Startup provisioning: ensures Slack workspace channels, personas, and agent bindings exist (idempotent). |
 | `handlers.py` | Central Slack event/action router (~2000 lines): registers all Bolt listeners (slash commands, message events, button actions, modal submissions) and dispatches to agents. |
+| `harness_bridge.py` | Owns the DeepSeek CLI child process, typed progress tail, cancellation, and process reaping. |
+| `dsh_progress_hook.py` | Projects harness tool lifecycle events into a versioned, allow-listed progress event; raw prompts, reasoning, calendar content, and secrets are excluded. |
+| `progress.py` | Renders the bounded, throttled Block Kit progress card by editing one existing Slack message. |
 
 ### Agent Bridge
 
@@ -85,6 +88,27 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 - Each Slack thread is "owned" by one agent type at a time (via `focus.py`).
 - Subsequent messages in a thread route to the owning agent without re-triage.
 - Focus expires on TTL or explicit release.
+
+### Long-running harness turns
+
+Timeboxing turns may take longer than Slack's route-delivery guard. The guard
+therefore backgrounds an owned route instead of cancelling it and posting a
+false timeout. Each Slack thread may own only one harness child: a newer turn
+supersedes and terminates the older child, and cancellation terminates and
+reaps the process before returning.
+
+The original processing message becomes one Block Kit progress card. It is
+updated at most once every three seconds and reports only grounded lifecycle
+facts such as the number of blocks read, the current draft attempt, validation
+failures by safe category, and commit/undo completion. It never exposes raw
+model reasoning or request/response payloads. The final reply replaces the
+progress state through the normal response renderer.
+
+Slack-owned patch turns must emit one bounded skeleton-understanding event
+before patching and may call `plan_apply` at most five times. Rereading the day
+does not reset that budget. A calendar commit must match the exact last
+committable snapshot+patch digest, in addition to consuming the one-use Slack
+approval token.
 
 ### Action Handler Registry
 

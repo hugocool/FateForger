@@ -14,6 +14,7 @@ a tool the profile does not mount.
 from __future__ import annotations
 
 import ast
+import json
 import re
 from pathlib import Path
 
@@ -23,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / ".dsh" / "skills"
 TMBX_SERVER = ROOT / "src" / "tmbx" / "server.py"
 MEMORY_LAUNCHER = ROOT / "infra" / "dsh" / "profile" / "memory-allowlisted-server.py"
+HOOKS = ROOT / "infra" / "dsh" / "hooks.json"
 
 #: What each skill tells the model to call. Declared rather than extracted:
 #: the point is to pin the dependency, and a list scraped out of prose would
@@ -53,7 +55,7 @@ def _skill_dirs() -> list[Path]:
 
 def _body(path: Path) -> tuple[str, str]:
     text = (path / "SKILL.md").read_text(encoding="utf-8")
-    match = re.match(r"^---\n(.*?)\n---\n(.*)$", text, re.S)
+    match = re.match(r"^---\n(.*?)\n---\n(.*)$", text, re.DOTALL)
     assert match, f"{path.name}/SKILL.md has no frontmatter, so nothing indexes it"
     return match.group(1), match.group(2)
 
@@ -99,14 +101,16 @@ def _allow_listed_memory_tools() -> set[str]:
 def test_a_skill_is_named_after_its_directory(skill: str) -> None:
     """Discovery indexes by frontmatter; a mismatch makes the table's link dead."""
     front, _ = _body(SKILLS / skill)
-    assert re.search(rf"^name:\s*{re.escape(skill)}\s*$", front, re.M)
+    assert re.search(rf"^name:\s*{re.escape(skill)}\s*$", front, re.MULTILINE)
 
 
 @pytest.mark.parametrize("skill", [p.name for p in _skill_dirs()])
 def test_a_description_says_when_to_load_it(skill: str) -> None:
     """The catalog is how the model routes. A noun phrase gives it nothing."""
     front, _ = _body(SKILLS / skill)
-    description = re.search(r"^description:\s*(.+)$", front, re.M).group(1)
+    description = re.search(
+        r"^description:\s*(.+)$", front, re.MULTILINE
+    ).group(1)
     assert "Use when" in description
     assert len(description) > 120, "too thin to discriminate against its neighbours"
 
@@ -219,8 +223,10 @@ def test_the_catalog_holds_no_skill_for_a_backend_that_is_not_connected() -> Non
     profile = (ROOT / "infra" / "dsh" / "profile" / "cordis.patch.yml").read_text(
         encoding="utf-8"
     )
-    servers = re.findall(r"^\s*serverName:\s*(\S+)\s*$", profile, re.M)
-    assert set(servers) == {"tmbx", "memory"}, (
+    servers = re.findall(
+        r"^\s*serverName:\s*(\S+)\s*$", profile, re.MULTILINE
+    )
+    assert set(servers) == {"tmbx", "memory", "progress"}, (
         f"the mount changed to {sorted(set(servers))}; if a task backend is now "
         f"connected, a tasks skill can exist and the admonisher should route to it"
     )
@@ -230,3 +236,38 @@ def test_the_catalog_holds_no_skill_for_a_backend_that_is_not_connected() -> Non
         "the admonisher must say the task system is absent, or the model will "
         "answer from conversation and present it as his backlog"
     )
+
+
+def test_profile_mounts_a_separate_progress_tool_and_instructs_bounded_use() -> None:
+    profile = (ROOT / "infra" / "dsh" / "profile" / "cordis.patch.yml").read_text(
+        encoding="utf-8"
+    )
+    deployment = (ROOT / "infra" / "dsh" / "profile" / "deployment.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "serverName: progress" in profile
+    assert "fateforger.slack_bot.timebox_progress_mcp" in profile
+    assert "report_skeleton_understanding" in deployment
+    assert "report_scheduling_decision" in deployment
+    assert "Before calling `timebox_patch`" in deployment
+    assert "Do not report private reasoning" in deployment
+    assert "FF_FATEFORGER_ROOT" in profile
+
+
+def test_retry_budget_guard_runs_before_plan_apply_and_not_after_it() -> None:
+    hooks = json.loads(HOOKS.read_text(encoding="utf-8"))["hooks"]
+    pre_commands = [
+        hook["command"]
+        for group in hooks["PreToolUse"]
+        for hook in group["hooks"]
+    ]
+    post_commands = [
+        hook["command"]
+        for group in hooks["PostToolUse"]
+        for hook in group["hooks"]
+    ]
+
+    guard = "dsh_timebox_attempt_guard_hook"
+    assert any(guard in command for command in pre_commands)
+    assert not any(guard in command for command in post_commands)
