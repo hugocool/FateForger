@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -40,6 +41,7 @@ from fateforger.slack_bot.deepseek_timebox_planner import (
 )
 from fateforger.slack_bot.tmbx_client import ReadUnavailable, TmbxClient
 from memory.constraint_store import ConstraintStore
+from memory.migrations import SCHEMA_VERSION
 
 
 class _RecordedTool:
@@ -581,3 +583,96 @@ async def test_runtime_classifies_unusable_existing_store_before_planning(
     assert "private-provider-payload" not in str(caught.value)
     if original_bytes is not None:
         assert db_path.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_planner_rejects_a_blank_calendar_id(blank: str) -> None:
+    """Catches a blank identity satisfying the required-argument guard."""
+
+    with pytest.raises(ValueError):
+        DeepSeekTimeboxPlanner(
+            tmbx_client=_RecordedTmbx({"ok": True, "snapshot": {}}),
+            constraint_reader=_RecordedConstraintReader([]),
+            calendar_id=blank,
+            clock=lambda: datetime(2026, 8, 29, tzinfo=UTC),
+            harness_runner=_RecordedHarnessRunner(),
+        )
+
+
+def _foreign_sqlite_store(path) -> None:
+    """Write a valid SQLite database that is emphatically not the memory store."""
+
+    connection = sqlite3.connect(str(path))
+    try:
+        connection.execute("CREATE TABLE unrelated_host_rows (id TEXT PRIMARY KEY)")
+        connection.execute("INSERT INTO unrelated_host_rows VALUES ('keep-me')")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("shape", ["empty_file", "foreign_sqlite"])
+async def test_runtime_refuses_a_store_that_is_not_the_memory_corpus(
+    shape: str, tmp_path, monkeypatch
+) -> None:
+    """Catches a foreign database answering as authoritative and being migrated into.
+
+    A readable SQLite file is not the same thing as the memory corpus. Both of
+    these shapes are stamped ``user_version = 0``, which the migration ladder
+    treats as a fresh store and happily writes seven tables into.
+    """
+
+    db_path = tmp_path / "memory.db"
+    if shape == "empty_file":
+        db_path.write_bytes(b"")
+    else:
+        _foreign_sqlite_store(db_path)
+    before = db_path.read_bytes()
+    monkeypatch.setattr(settings, "memory_db_path", str(db_path))
+
+    store = await runtime_module._build_timeboxing_constraint_store()
+
+    with pytest.raises(DependencyUnavailable):
+        await store.query_constraints(filters={"planned_day": "2026-08-29"}, limit=200)
+    assert db_path.read_bytes() == before
+
+
+async def test_runtime_refuses_a_store_newer_than_this_build(
+    tmp_path, monkeypatch
+) -> None:
+    """Catches a future schema being read by a build that cannot understand it."""
+
+    db_path = tmp_path / "memory.db"
+    ConstraintStore(str(db_path))
+    connection = sqlite3.connect(str(db_path))
+    try:
+        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+        connection.commit()
+    finally:
+        connection.close()
+    monkeypatch.setattr(settings, "memory_db_path", str(db_path))
+
+    store = await runtime_module._build_timeboxing_constraint_store()
+
+    with pytest.raises(DependencyUnavailable):
+        await store.query_constraints(filters={"planned_day": "2026-08-29"}, limit=200)
+
+
+async def test_runtime_still_accepts_a_pre_versioning_memory_store(
+    tmp_path, monkeypatch
+) -> None:
+    """Catches the corpus check rejecting a legacy store the ladder can upgrade."""
+
+    db_path = tmp_path / "memory.db"
+    ConstraintStore(str(db_path))
+    connection = sqlite3.connect(str(db_path))
+    try:
+        connection.execute("PRAGMA user_version = 0")
+        connection.commit()
+    finally:
+        connection.close()
+    monkeypatch.setattr(settings, "memory_db_path", str(db_path))
+
+    store = await runtime_module._build_timeboxing_constraint_store()
+
+    assert isinstance(store, ClientBackedDurableConstraintStore)

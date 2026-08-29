@@ -398,13 +398,37 @@ def _build_timeboxing_intent_interpreter() -> tuple[
 _CONSTRAINT_STORE_PROBE_TIMEOUT_SECONDS = 5.0
 
 
-def _probe_constraint_store_readable(configured: str) -> None:
-    """Open the configured store read-only and confirm it is a usable database.
+# The two tables that make a file the memory corpus rather than merely a
+# readable database. These are identifiers the memory package minted, not user
+# content. If either is ever renamed there the probe fails closed, which is the
+# safe direction: a store we cannot recognise is reported unavailable.
+_CONSTRAINT_STORE_CORPUS_TABLES = frozenset({"observations", "constraints"})
 
-    Raises on a missing path, a directory, an unreadable file, or a file that is
-    not a SQLite database. The probe never writes: it connects with ``mode=ro``
-    and issues one pragma, so a corrupt file is left byte-identical.
+
+def _probe_constraint_store_readable(configured: str) -> None:
+    """Open the configured store read-only and confirm it is the memory corpus.
+
+    Raises on a missing path, a directory, an unreadable file, a file that is not
+    a SQLite database, a database that is not the memory corpus, and one stamped
+    newer than this build understands.
+
+    Recognising the corpus is the load-bearing part. The migration ladder reads
+    ``user_version = 0`` as "fresh store" and writes its whole schema in, so a
+    merely-readable database — an empty file, or another of this project's own
+    SQLite files sitting in the same directory — would be migrated into and then
+    answer every planning query with an authoritative empty list. Checking the
+    tables is what separates a legacy store the ladder may upgrade from a
+    foreign one it must not touch.
+
+    The probe issues no writes: it connects with ``mode=ro`` and only reads
+    pragmas and ``sqlite_master``, so a file it rejects is left byte-identical.
+    That claim is exact for the ``delete`` journal mode the memory store uses.
+    A WAL database is the exception — SQLite updates a ``-shm`` sidecar merely
+    to read one, and a cleanly-closed WAL database with no sidecars cannot be
+    opened read-only at all, so it would be classified unavailable.
     """
+
+    from memory.migrations import SCHEMA_VERSION
 
     path = Path(configured)
     if not path.is_file():
@@ -415,9 +439,21 @@ def _probe_constraint_store_readable(configured: str) -> None:
         timeout=_CONSTRAINT_STORE_PROBE_TIMEOUT_SECONDS,
     )
     try:
-        connection.execute("PRAGMA schema_version").fetchone()
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version > SCHEMA_VERSION:
+            raise ValueError(
+                "configured constraint store is stamped newer than this build"
+            )
+        present = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
     finally:
         connection.close()
+    if not _CONSTRAINT_STORE_CORPUS_TABLES <= present:
+        raise ValueError("configured constraint store is not the memory corpus")
 
 
 async def _build_timeboxing_constraint_store() -> ConstraintReader:
@@ -432,6 +468,10 @@ async def _build_timeboxing_constraint_store() -> ConstraintReader:
         logger.warning("timeboxing constraint store unavailable reason=not_configured")
         return UnavailableConstraintReader()
     try:
+        # wait_for bounds startup, not the thread: to_thread cannot be
+        # cancelled, so a probe stalled on a pathological filesystem keeps one
+        # worker thread until it returns. Startup proceeds without it, which is
+        # the property that matters here.
         await asyncio.wait_for(
             asyncio.to_thread(_probe_constraint_store_readable, configured),
             timeout=_CONSTRAINT_STORE_PROBE_TIMEOUT_SECONDS,
