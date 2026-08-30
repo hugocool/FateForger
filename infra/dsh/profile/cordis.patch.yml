@@ -134,13 +134,17 @@
     # files that must be edited together and silently disagree when they are
     # not, which is the defect that cost a day on the memory launcher (#188).
     model: !!js process.env.FF_HARNESS_MODEL || 'openai/gpt-oss-120b:nitro'
-    # Slack timeboxing turns set FF_HARNESS_MODEL and are deliberately pinned
-    # to low reasoning. The incident ran for minutes at higher trace volume;
-    # bounded tool/result progress is the user surface, not extra deliberation.
-    reasoningEffort: !!js >-
-      process.env.FF_HARNESS_MODEL
-      ? (process.env.FF_HARNESS_REASONING || 'low')
-      : undefined
+    # Always set, never conditional on the model variable. Gated, a plain /dsh
+    # turn -- which passes no model -- got the provider default while this
+    # comment claimed otherwise, so the knob read as configured and resolved to
+    # nothing on exactly the path nobody was watching.
+    #
+    # `minimal` rather than `low`: measured 2026-08-30 at low, one skeleton took
+    # 221.8s of a 231s stage against 0.05s of host I/O. A planning turn does
+    # choose placements, so not `off`. An effort the adapter does not advertise
+    # fails with UNSUPPORTED_REASONING_EFFORT before any provider call, which is
+    # the right way to find out.
+    reasoningEffort: !!js process.env.FF_HARNESS_REASONING || 'minimal'
 
 # 2. The system prompt, in two pieces.
 #

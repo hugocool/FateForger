@@ -467,8 +467,14 @@ def _optional_int(value: object) -> int | None:
 #: Sail Research via `:nitro`, which is also one of the hosts that enforces
 #: `structured_outputs` -- a per-host property, and a patch IS structured
 #: output, so an unenforcing host would accept a malformed one in silence.
+#: Flash, not Pro. A planning turn reads a calendar, applies a patch and writes
+#: an artifact somebody reviews before anything reaches a calendar -- the review
+#: is the check, so the model does not have to be the expensive one. Pro costs
+#: 10x the prompt and 11x the completion of flash, and a measured skeleton took
+#: 221.8s on Pro at low reasoning. Flash also advertises parallel_tool_calls,
+#: which Pro's stablemate gpt-oss-120b does not.
 PLANNING_MODEL = os.environ.get(
-    "FF_PLANNING_MODEL", "deepseek/deepseek-v4-pro-0813:nitro"
+    "FF_PLANNING_MODEL", "deepseek/deepseek-v4-flash-0731"
 )
 
 

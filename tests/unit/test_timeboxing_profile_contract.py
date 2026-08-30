@@ -313,3 +313,29 @@ def test_a_fresh_day_is_chained_relationally_not_pinned() -> None:
     assert _absent("every anchor resolves only against the pre-patch snapshot")
     assert _absent("Never set `after` to another handle created in the same patch")
     assert _absent("an anchor cannot name a handle from the same patch")
+
+
+def test_reasoning_effort_is_not_gated_on_the_model_variable() -> None:
+    """Catches a knob that reads as set and resolves to nothing.
+
+    `reasoningEffort` was `FF_HARNESS_MODEL ? (FF_HARNESS_REASONING || 'low') :
+    undefined`. FF_HARNESS_MODEL is unset in every launch, so the effort was
+    always `undefined` and FF_HARNESS_REASONING did nothing -- including in
+    every run recorded on #206, several of which set it. The profile's own
+    comment said the intent was low deliberation; the provider default is what
+    actually ran.
+    """
+
+    profile = (PROFILE / "cordis.patch.yml").read_text(encoding="utf-8")
+    line = next(
+        (
+            candidate
+            for candidate in profile.splitlines()
+            if candidate.strip().startswith("reasoningEffort:")
+        ),
+        None,
+    )
+    assert line is not None, "the profile sets no reasoning effort at all"
+    assert "?" not in line, f"reasoning effort is conditional again: {line.strip()}"
+    assert "undefined" not in line
+    assert "minimal" in line
