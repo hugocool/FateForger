@@ -11,11 +11,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
-from zoneinfo import ZoneInfo
 
 from autogen_agentchat.messages import TextMessage
 from autogen_core import AgentId
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import ValidationError
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -29,7 +28,6 @@ from fateforger.agents.tasks.messages import (
 )
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
     AdaptiveTimeboxing,
-    PlanningContext,
     TurnRequest,
 )
 from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
@@ -41,24 +39,11 @@ from fateforger.agents.timeboxing.preferences import (
 )
 from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
-    Advance,
     ApproveArtifact,
     ArtifactKind,
-    ArtifactReady,
-    AwaitingApproval,
-    AwaitingUser,
-    Cancelled,
-    Committed,
     DayType,
-    FactKind,
-    PlanningArtifact,
-    PlanningDay,
-    PlanningFact,
     PlanningSessionSnapshot,
-    StartSession,
     TimeboxIntent,
-    TurnFailed,
-    TurnOutcome,
 )
 from fateforger.core.config import settings
 from fateforger.core.logging_config import observe_stage_duration, record_error
@@ -114,18 +99,38 @@ from fateforger.slack_bot.task_cards import (
     FF_TASK_VIEW_ALL_ACTION_ID,
     decode_task_metadata,
 )
+from fateforger.slack_bot.timeboxing_cards import (
+    FF_HARNESS_APPROVE_ACTION_ID,
+    FF_HARNESS_UNDO_ACTION_ID,
+    FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
+    FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
+    FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
+    FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID,
+    TIMEBOX_STALE_CHOICE_TEXT,
+    TIMEBOX_TURN_FAILED_TEXT,
+    HarnessApproveActionPayload,
+    _undo_outcome_text,
+    harness_approve_block,
+    harness_undo_block,
+    render_outcome,
+    timebox_failure_message,
+)
 from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID,
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
-    FF_TIMEBOX_DAY_TYPE_ACTION_ID,
-    day_type_action_id,
     TimeboxCommitMeta,
     TimeboxingCommitCoordinator,
     build_timebox_date_card,
+    day_type_action_id,
     format_relative_day_label,
 )
+from fateforger.slack_bot.timeboxing_host import (
+    HostPlanningContext,
+    KernelProgressSink,
+    PendingCandidateCommitPort,
+    derive_timebox_intent,
+)
 from fateforger.slack_bot.timeboxing_intents import (
-    ArtifactActionMeta,
     TimeboxActionEnvelope,
     intent_from_artifact_action,
     intent_from_date_action,
@@ -147,7 +152,7 @@ from fateforger.slack_bot.timeboxing_submit import (
 )
 
 from .focus import FocusManager
-from .timebox_candidate import PendingTimeboxCandidates, ValidatedTimeboxCandidate
+from .timebox_candidate import PendingTimeboxCandidates
 from .ui import link_button, open_link_blocks
 from .workspace import (
     DEFAULT_PERSONAS,
@@ -1070,8 +1075,12 @@ def _note_harness_phase(
     asyncio.run_coroutine_threadsafe(card.handle(event), loop)
 
 
-#: The one control that opens the commit gate.
-FF_HARNESS_APPROVE_ACTION_ID = "ff_harness_approve"
+
+#: The one stable sentence each refusal gets, named here because this is the
+#: seam the route is driven and asserted through. Aliases rather than copies:
+#: a second definition could drift from the sentence actually drawn.
+_TIMEBOX_TURN_FAILED_TEXT = TIMEBOX_TURN_FAILED_TEXT
+_TIMEBOX_STALE_CHOICE_TEXT = TIMEBOX_STALE_CHOICE_TEXT
 
 #: Threads whose last turn had a commit refused for want of approval. Held here
 #: rather than returned through the renderer because the reply travels as a
@@ -1099,56 +1108,6 @@ def _approval_thread_root(
     return origin_thread_root_ts or processing_message_ts
 
 
-class HarnessApproveActionPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    thread_key: str
-    candidate_id: str
-    calendar_id: str | None = None
-    day: str | None = None
-    proposal_message_ts: str | None = None
-    #: Set only by the kernel route, and the discriminator between the two.
-    #: A press carrying a revision belongs to a planning session that must be
-    #: told about its own commit; a press without one is the legacy path, where
-    #: there is no session to tell. Absence is not a default -- it is the fact
-    #: that no session was ever created for that thread.
-    expected_revision: int | None = None
-
-
-def harness_approve_block(
-    thread_key: str,
-    candidate_id: str,
-    *,
-    calendar_id: str | None = None,
-    day: str | None = None,
-    proposal_message_ts: str | None = None,
-    expected_revision: int | None = None,
-) -> dict:
-    """The Approve control, offered beside a plan rather than after it.
-
-    The payload carries target and message identity so a later process can
-    recover the displayed draft exactly. Only the opaque candidate id grants
-    authority to commit; the descriptive continuity fields never do.
-    """
-    return {
-        "type": "actions",
-        "elements": [
-            {
-                "type": "button",
-                "action_id": FF_HARNESS_APPROVE_ACTION_ID,
-                "style": "primary",
-                "text": {"type": "plain_text", "text": "Approve this plan"},
-                "value": HarnessApproveActionPayload(
-                    thread_key=thread_key,
-                    candidate_id=candidate_id,
-                    calendar_id=calendar_id,
-                    day=day,
-                    proposal_message_ts=proposal_message_ts,
-                    expected_revision=expected_revision,
-                ).model_dump_json(),
-            }
-        ],
-    }
 
 
 async def _post_pending_harness_approval(
@@ -1404,49 +1363,6 @@ async def instant_ack(client, event: dict) -> dict | None:
         return None
 
 
-FF_HARNESS_UNDO_ACTION_ID = "ff_harness_undo"
-
-
-def harness_undo_block(tx_id: str) -> dict:
-    """The Undo control, offered beside a commit that actually landed.
-
-    Carries the transaction id in `value` rather than reversing "the last
-    commit": a thread may commit more than once, and undoing whichever was most
-    recent globally would reverse someone else's write from another thread.
-    The id names exactly the write this message reported.
-    """
-    return {
-        "type": "actions",
-        "elements": [
-            {
-                "type": "button",
-                "action_id": FF_HARNESS_UNDO_ACTION_ID,
-                "style": "danger",
-                "text": {"type": "plain_text", "text": "Undo this change"},
-                "value": tx_id,
-            }
-        ],
-    }
-
-
-def _undo_outcome_text(payload: dict) -> str:
-    """What to say in Slack about tmbx's answer.
-
-    Refusals are reported with their reason, never as a button that quietly did
-    nothing. `plan_undo` declines when the day has drifted since the commit --
-    its precondition is total, which is what makes the restore byte-exact -- and
-    "someone changed the day, so this cannot be cleanly reversed" is a different
-    problem from "that transaction does not exist", with a different remedy.
-    """
-    # tmbx answers an undo with `committed`, the same field a commit uses --
-    # an undo is itself a write. Reading a field it never sets would report
-    # every reversal, successful or refused, as a failure.
-    if payload.get("committed"):
-        return ":leftwards_arrow_with_hook: Reversed. The calendar is back to how it was before that commit."
-    reason = str(payload.get("reason") or "").strip() or "unknown"
-    detail = str(payload.get("message") or payload.get("raw") or "").strip()
-    text = f":warning: Could not undo that change — `{reason}`."
-    return f"{text}\n```{detail[:400]}```" if detail else text
 
 
 def _timebox_backend() -> str:
@@ -1490,245 +1406,16 @@ def _timebox_body_for_harness(body: dict) -> dict:
     return {**body, "text": text}
 
 
-#: The typed controls a planning artifact is reviewed with. The decision lives
-#: in the encoded metadata, never in the action id -- two ids exist only
-#: because Slack requires them to be unique within one message.
-FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID = "ff_timebox_artifact_approve"
-FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID = "ff_timebox_artifact_cancel"
-FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID = "ff_timebox_artifact_retry"
-#: One id for every offered option, the same way the day-type row uses one for
-#: all five: which option was pressed belongs in the encoded metadata, and an
-#: id that spelled out its own answer would be a second place the offer could
-#: drift from the record the kernel checks it against.
-FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID = "ff_timebox_blocker_option"
-
-#: Slack refuses a button label longer than this, and the label is written by a
-#: model rather than by this host, so it is capped where it is drawn.
-_SLACK_MAX_BUTTON_TEXT_CHARS = 75
-
-#: Kernel lifecycle phases worth showing. The kernel names its own phases, so
-#: this maps identifiers this system minted -- anything outside the map is
-#: dropped rather than guessed at, because the card is a claim about what
-#: happened and not a log tail.
-_KERNEL_PROGRESS_PHASES = {
-    "resolving_context": TimeboxProgressPhase.LOADING_CONSTRAINTS,
-    "planning": TimeboxProgressPhase.WEIGHING_OPTIONS,
-}
-_KERNEL_PROGRESS_STATUSES = {
-    "started": TimeboxProgressStatus.STARTED,
-    "succeeded": TimeboxProgressStatus.SUCCEEDED,
-    "failed": TimeboxProgressStatus.FAILED,
-}
-
-_TIMEBOX_TURN_FAILED_TEXT = (
-    ":warning: I could not carry that planning step through, and nothing "
-    "reached your calendar. Ask me where the session stands and we can pick "
-    "it up from there."
-)
-
-#: A press the kernel would not honour. `stale_blocker_choice` covers three
-#: causes on purpose -- no question is open, that is not the open question, that
-#: was not one of its options -- so a crafted value learns nothing from which
-#: one it hit. One sentence therefore has to be true of all three, and this is
-#: it: whatever the press was aimed at, the session is no longer asking it.
-_TIMEBOX_STALE_CHOICE_TEXT = (
-    "That question has already been answered, so I left everything as it is. "
-    "Tell me what you want changed and I will ask again."
-)
-
-#: Failure codes worth their own sentence. The code is minted by this system,
-#: so choosing between them reads nothing anybody wrote. Anything absent gets
-#: the one stable sentence above, which is the right default: a message that
-#: guessed at a code it did not recognise would be confidently wrong.
-_TIMEBOX_FAILURE_TEXTS = {"stale_blocker_choice": _TIMEBOX_STALE_CHOICE_TEXT}
 
 
-class _AdaptiveDependencyUnavailable(RuntimeError):
-    """A host-owned read model this turn needs could not be reached."""
+
+
 
 
 def _timeboxing_host_now() -> datetime:
     """The host clock, named so the derived planning day can be pinned."""
 
     return datetime.now(UTC)
-
-
-def _timeboxing_planning_timezone() -> str:
-    """The timezone a planning day is locked in."""
-
-    return (
-        getattr(settings, "planning_timezone", "") or ""
-    ).strip() or "Europe/Amsterdam"
-
-
-class _KernelProgressSink:
-    """Project kernel lifecycle facts onto the existing timeboxing card.
-
-    The kernel reports phase/status pairs of its own; this turns them into the
-    same versioned `TimeboxProgressEvent` every other producer emits, so the
-    card keeps one contract instead of growing a second, looser one beside it.
-    """
-
-    def __init__(self, card: HarnessProgressCard, *, session_key: str) -> None:
-        self._card = card
-        self._session_key = session_key
-        self._sequence = 0
-
-    async def emit(self, event: object) -> None:
-        if isinstance(event, (TimeboxProgressEvent, str)):
-            await self._card.handle(event)
-            return
-        if not isinstance(event, dict):
-            return
-        phase = _KERNEL_PROGRESS_PHASES.get(str(event.get("phase")))
-        status = _KERNEL_PROGRESS_STATUSES.get(str(event.get("status")))
-        if phase is None or status is None:
-            return
-        self._sequence += 1
-        await self._card.handle(
-            TimeboxProgressEvent(
-                session_key=self._session_key,
-                sequence=self._sequence,
-                source=ProgressSource.RUNTIME,
-                phase=phase,
-                status=status,
-            )
-        )
-
-
-class _HostPlanningContext:
-    """The planning day and the external read models, both host-owned.
-
-    The weekday is arithmetic on the host clock. Asking a model which day it is
-    is what turned Saturday 2026-08-29 into a Friday working day, and no amount
-    of prompt wording repairs a question that should never have been asked.
-    """
-
-    def __init__(self, runtime) -> None:
-        self._runtime = runtime
-
-    async def propose_planning_day(self, request: TurnRequest) -> PlanningDay:
-        tz_name = _timeboxing_planning_timezone()
-        today = _timeboxing_host_now().astimezone(ZoneInfo(tz_name)).date()
-        return PlanningDay.lock_default(
-            value=today, timezone=tz_name, lock_revision=1
-        )
-
-    async def resolve(
-        self,
-        snapshot: PlanningSessionSnapshot,
-        *,
-        target: ArtifactKind,
-        progress,
-    ) -> PlanningContext:
-        if target is not ArtifactKind.VALIDATED_CANDIDATE:
-            # Stage 3 presents the skeleton. Reading the remote baseline here
-            # would make the presentation stage touch the calendar, which is
-            # exactly the boundary this route exists to hold.
-            return PlanningContext()
-
-        planning_day = snapshot.planning_day
-        if planning_day is None:
-            raise _AdaptiveDependencyUnavailable("the planning day is not locked")
-        day = planning_day.date.isoformat()
-
-        calendar_id = (
-            getattr(self._runtime, "timeboxing_calendar_id", "") or ""
-        ).strip()
-        if not calendar_id:
-            # An invented calendar id is how a plan lands on a calendar nobody
-            # reads. Absence stays absence.
-            raise _AdaptiveDependencyUnavailable("no calendar is configured")
-        store = getattr(self._runtime, "timeboxing_constraint_store", None)
-        if store is None:
-            raise _AdaptiveDependencyUnavailable("constraint memory is unavailable")
-
-        from .tmbx_client import TmbxClient
-
-        calendar_snapshot = await TmbxClient().read(calendar_id, day)
-        constraints = await store.query_constraints(
-            filters={
-                "planned_day": day,
-                "day_type": planning_day.day_type.value,
-                "require_active": True,
-            },
-            limit=200,
-        )
-        return PlanningContext(
-            facts=[
-                PlanningFact(
-                    fact_id=f"calendar:{day}",
-                    kind=FactKind.CALENDAR_SNAPSHOT,
-                    value=calendar_snapshot,
-                    source="calendar",
-                ),
-                PlanningFact(
-                    fact_id=f"constraints:{day}",
-                    kind=FactKind.ACTIVE_CONSTRAINTS,
-                    value=constraints,
-                    source="constraint_memory",
-                ),
-            ],
-            applicable_constraints=constraints,
-            calendar_snapshot=calendar_snapshot,
-        )
-
-
-class _PendingCandidateCommitPort:
-    """Commit the exact candidate Slack displayed, through the existing gate.
-
-    The kernel decides *when* a commit may happen; tmbx keeps the write and its
-    idempotency digest. Nothing new reaches the calendar through this class.
-    """
-
-    def __init__(
-        self,
-        *,
-        session_key: str,
-        actor_user_id: str,
-        candidate_id: str | None = None,
-    ) -> None:
-        self._session_key = session_key
-        self._actor_user_id = actor_user_id
-        self._candidate_id = candidate_id
-
-    async def commit(
-        self, candidate: PlanningArtifact, *, digest: str
-    ) -> PlanningArtifact:
-        from .tmbx_client import TmbxClient
-
-        payload = candidate.payload if isinstance(candidate.payload, dict) else {}
-        pending = _pending_candidates.peek(self._session_key)
-        if pending is None or pending.digest != str(payload.get("digest") or ""):
-            raise _AdaptiveDependencyUnavailable(
-                "the approved candidate is no longer the current one"
-            )
-        # The opaque id the button carried, when a button carried one. It is the
-        # ownership token the existing gate already checks, so a press drawn on
-        # a candidate that has since been replaced is spent against nothing.
-        spent = _pending_candidates.consume(
-            self._session_key,
-            self._candidate_id or pending.candidate_id,
-            actor_user_id=self._actor_user_id,
-        )
-        if spent is None:
-            raise _AdaptiveDependencyUnavailable(
-                "this candidate is not this user's to commit"
-            )
-        result = await TmbxClient().commit(
-            spent.snapshot, spent.patch, idempotency_key=spent.digest
-        )
-        return PlanningArtifact.create(
-            kind=ArtifactKind.COMMIT_RECEIPT,
-            revision=1,
-            payload={
-                "committed": result.get("committed") is True,
-                "tx_id": result.get("tx_id"),
-                "reason": result.get("reason"),
-                "candidate_digest": digest,
-            },
-            dependency_revisions={"validated_candidate": candidate.revision},
-        )
 
 
 def _timeboxing_kernel(
@@ -1748,8 +1435,9 @@ def _timeboxing_kernel(
         repository=repository,
         requirements=TimeboxRequirements(),
         planner=planner,
-        context=_HostPlanningContext(runtime),
-        commit=_PendingCandidateCommitPort(
+        context=HostPlanningContext(runtime, now=_timeboxing_host_now),
+        commit=PendingCandidateCommitPort(
+            pending=_pending_candidates,
             session_key=session_key,
             actor_user_id=actor_user_id,
             candidate_id=candidate_id,
@@ -1757,484 +1445,8 @@ def _timeboxing_kernel(
     )
 
 
-async def _derive_timebox_intent(
-    runtime,
-    snapshot: PlanningSessionSnapshot,
-    *,
-    user_text: str,
-) -> TimeboxIntent:
-    """Turn one Slack reply into a typed intent, never by reading the words.
-
-    Until a day has even been proposed there is nothing to decide about, so no
-    model is asked: the session starts and the host puts its own date on screen.
-    From the moment that card exists the reply is interpreted -- including the
-    reply that confirms it. Skipping the interpreter there was what left the
-    date card answerable only by a press, and a session an agent drives by
-    typing could not get past it.
-
-    The schema-bound interpreter names the decision; the host binds the date,
-    the artifact identity and the question being answered from state it already
-    trusts.
-    """
-    if snapshot.planning_day is None and not any(
-        artifact.kind is ArtifactKind.PLANNING_DAY for artifact in snapshot.artifacts
-    ):
-        return StartSession()
-    if not user_text.strip():
-        return Advance()
-    interpreter = getattr(runtime, "timeboxing_intent_interpreter", None)
-    if interpreter is None:
-        # Falling back to a guess would give this route two behaviours, and the
-        # wrong one would be the silent one.
-        raise _AdaptiveDependencyUnavailable("no intent interpreter is configured")
-    return await interpreter.interpret(user_text, snapshot)
 
 
-def _timebox_failure_message(code: str | None = None) -> SlackBlockMessage:
-    """One stable sentence, with the detail left where it belongs: the log.
-
-    A provider payload pasted into a thread is unreadable and a leak at once,
-    and the correlation fields are already on the log line beside this call.
-    A refusal the user can act on gets its own sentence, chosen by the code the
-    kernel minted rather than by anything they wrote.
-    """
-    text = _TIMEBOX_FAILURE_TEXTS.get(code or "", _TIMEBOX_TURN_FAILED_TEXT)
-    return SlackBlockMessage(
-        text=text,
-        blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
-    )
-
-
-def _artifact_action_value(
-    *,
-    session_key: str,
-    expected_revision: int,
-    decision: str,
-    artifact: PlanningArtifact | None,
-    requirement_id: str | None = None,
-    option_id: str | None = None,
-) -> str:
-    """Encode one typed review decision bound to an exact artifact or question.
-
-    One encoder for every control this route draws. A second one shaped like it
-    would be a second place the session key and the revision could go missing,
-    and those two are the whole reason a press arriving late is decidable.
-    """
-
-    fields: dict[str, object] = {
-        "session_key": session_key,
-        "expected_revision": expected_revision,
-        "decision": decision,
-    }
-    if requirement_id is not None:
-        fields["requirement_id"] = requirement_id
-    if option_id is not None:
-        fields["option_id"] = option_id
-    if artifact is not None:
-        fields.update(
-            {
-                "artifact_id": artifact.artifact_id,
-                "artifact_revision": artifact.revision,
-                "artifact_digest": artifact.digest,
-            }
-        )
-    return ArtifactActionMeta.model_validate(fields).model_dump_json()
-
-
-def _render_timebox_date_card(
-    artifact: PlanningArtifact,
-    *,
-    session_key: str,
-    expected_revision: int,
-    user_id: str,
-    channel_id: str,
-    thread_ts: str,
-) -> SlackBlockMessage:
-    payload = artifact.payload if isinstance(artifact.payload, dict) else {}
-    return build_timebox_date_card(
-        session_key=session_key,
-        expected_revision=expected_revision,
-        user_id=user_id,
-        channel_id=channel_id,
-        thread_ts=thread_ts,
-        planned_date=str(payload.get("date") or ""),
-        tz_name=str(payload.get("timezone") or _timeboxing_planning_timezone()),
-    )
-
-
-def _render_timebox_skeleton(
-    artifact: PlanningArtifact,
-    *,
-    snapshot: PlanningSessionSnapshot,
-    session_key: str,
-) -> SlackBlockMessage:
-    """Present the skeleton and what the planner decided on its own.
-
-    Assumptions are listed apart from anything being asked, because a choice
-    the planner already made and a question it needs answered read the same
-    when they share a paragraph -- and that is how a delegated decision came
-    back as a question.
-    """
-    payload = artifact.payload if isinstance(artifact.payload, dict) else {}
-    markdown = str(payload.get("markdown") or "").strip()
-    blocks: list[dict] = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*The shape of the day*\n{markdown}"[
-                    :SLACK_MAX_BLOCK_TEXT_CHARS
-                ],
-            },
-        }
-    ]
-    if snapshot.assumptions:
-        chosen = "\n".join(
-            f"• {assumption.value} — {assumption.why_needed}"
-            for assumption in snapshot.assumptions[:10]
-        )
-        blocks.append(
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*I chose these myself*\n{chosen}"[
-                        :SLACK_MAX_BLOCK_TEXT_CHARS
-                    ],
-                },
-            }
-        )
-    blocks.append(
-        {
-            "type": "actions",
-            "block_id": "ff_timebox_artifact_controls",
-            "elements": [
-                {
-                    "type": "button",
-                    "action_id": FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
-                    "style": "primary",
-                    "text": {"type": "plain_text", "text": "Proceed"},
-                    "value": _artifact_action_value(
-                        session_key=session_key,
-                        expected_revision=snapshot.revision,
-                        decision="approve",
-                        artifact=artifact,
-                    ),
-                },
-                {
-                    "type": "button",
-                    "action_id": FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
-                    "text": {"type": "plain_text", "text": "Cancel"},
-                    "value": _artifact_action_value(
-                        session_key=session_key,
-                        expected_revision=snapshot.revision,
-                        decision="cancel",
-                        artifact=None,
-                    ),
-                },
-            ],
-        }
-    )
-    blocks.append(
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": "Reply in this thread with anything you want changed.",
-                }
-            ],
-        }
-    )
-    return SlackBlockMessage(
-        text=f"The shape of the day\n{markdown}"[:SLACK_MAX_TEXT_CHARS],
-        blocks=blocks,
-    )
-
-
-def _render_timebox_question(
-    outcome: AwaitingUser,
-    *,
-    session_key: str,
-    expected_revision: int,
-) -> SlackBlockMessage:
-    """Put one open question, with its answers as buttons where it has any.
-
-    An empty option list is the ordinary case and renders as a text box, not as
-    a row of nothing: the catalog's one user-owned ask is what somebody wants
-    out of their day, and that has no closed answer set to draw.
-
-    Where the answers are known, the label is the button and the effect is the
-    line beside it. They are different lengths and they answer different
-    questions -- one names the choice, the other says what it costs -- so
-    truncating the second onto the first loses the half that decides it.
-    """
-
-    text = f"{outcome.question}\n_{outcome.why_needed}_"
-    blocks: list[dict] = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": text[:SLACK_MAX_BLOCK_TEXT_CHARS],
-            },
-        }
-    ]
-    if not outcome.options:
-        return SlackBlockMessage(text=text[:SLACK_MAX_TEXT_CHARS], blocks=blocks)
-    effects = "\n".join(
-        f"*{option.label}* — {option.effect}" for option in outcome.options
-    )
-    blocks.append(
-        {
-            "type": "context",
-            "block_id": "ff_timebox_blocker_effects",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": effects[:SLACK_MAX_BLOCK_TEXT_CHARS],
-                }
-            ],
-        }
-    )
-    blocks.append(
-        {
-            "type": "actions",
-            "block_id": "ff_timebox_blocker_options",
-            "elements": [
-                {
-                    "type": "button",
-                    "action_id": FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID,
-                    "text": {
-                        "type": "plain_text",
-                        "text": option.label[:_SLACK_MAX_BUTTON_TEXT_CHARS],
-                    },
-                    # The pair the kernel checks against the question it is
-                    # holding. Neither is trusted for having been in a button.
-                    "value": _artifact_action_value(
-                        session_key=session_key,
-                        expected_revision=expected_revision,
-                        decision="choose_option",
-                        artifact=None,
-                        requirement_id=outcome.requirement_id,
-                        option_id=option.option_id,
-                    ),
-                }
-                for option in outcome.options
-            ],
-        }
-    )
-    return SlackBlockMessage(
-        text=f"{text}\n{effects}"[:SLACK_MAX_TEXT_CHARS], blocks=blocks
-    )
-
-
-def _render_timebox_candidate(
-    artifact: PlanningArtifact,
-    *,
-    session_key: str,
-    actor_user_id: str,
-    expected_revision: int,
-) -> SlackBlockMessage:
-    """Show the validated candidate behind the one control that can commit it.
-
-    The approve payload is the existing opaque candidate identity, so the
-    commit gate stays the one already proven rather than a second one shaped
-    like it.
-    """
-    payload = artifact.payload if isinstance(artifact.payload, dict) else {}
-    snapshot_payload = payload.get("snapshot")
-    patch_payload = payload.get("patch")
-    candidate = ValidatedTimeboxCandidate(
-        digest=str(payload.get("digest") or ""),
-        snapshot=snapshot_payload if isinstance(snapshot_payload, dict) else {},
-        patch=patch_payload if isinstance(patch_payload, dict) else {},
-        rendered=str(payload.get("rendered") or ""),
-    )
-    owned = _pending_candidates.replace(
-        session_key, candidate, owner_user_id=actor_user_id
-    )
-    calendar_id = owned.snapshot.get("calendar_id")
-    day = owned.snapshot.get("day")
-    text = owned.rendered or "A validated plan is ready for your approval."
-    return SlackBlockMessage(
-        text=text[:SLACK_MAX_TEXT_CHARS],
-        blocks=[
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": text[:SLACK_MAX_BLOCK_TEXT_CHARS],
-                },
-            },
-            harness_approve_block(
-                session_key,
-                owned.candidate_id,
-                calendar_id=calendar_id if isinstance(calendar_id, str) else None,
-                day=day if isinstance(day, str) else None,
-                expected_revision=expected_revision,
-            ),
-        ],
-    )
-
-
-def _render_timebox_failure(
-    *,
-    snapshot: PlanningSessionSnapshot,
-    session_key: str,
-    actor_user_id: str,
-    code: str | None = None,
-) -> SlackBlockMessage:
-    """Say the one stable sentence, and offer the two moves that still exist.
-
-    A failure code is minted by this system, so deciding what to offer here
-    reads nothing anybody wrote. Retry repeats the turn verbatim, which is the
-    whole value: without it the user has to retype what they already said to
-    get back to the same place.
-
-    Controls are withheld when they could only fail again -- a session that is
-    already cancelled or committed has nothing to advance, and a session owned
-    by somebody else will refuse this actor for the same reason it just did.
-    """
-    message = _timebox_failure_message(code)
-    if snapshot.status != "open" or snapshot.owner_user_id != actor_user_id:
-        return message
-    return SlackBlockMessage(
-        text=message.text,
-        blocks=[
-            *message.blocks,
-            {
-                "type": "actions",
-                "block_id": "ff_timebox_failure_controls",
-                "elements": [
-                    {
-                        "type": "button",
-                        "action_id": FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
-                        "style": "primary",
-                        "text": {"type": "plain_text", "text": "Try that again"},
-                        "value": _artifact_action_value(
-                            session_key=session_key,
-                            expected_revision=snapshot.revision,
-                            decision="advance",
-                            artifact=None,
-                        ),
-                    },
-                    {
-                        "type": "button",
-                        "action_id": FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
-                        "text": {"type": "plain_text", "text": "Cancel"},
-                        "value": _artifact_action_value(
-                            session_key=session_key,
-                            expected_revision=snapshot.revision,
-                            decision="cancel",
-                            artifact=None,
-                        ),
-                    },
-                ],
-            },
-        ],
-    )
-
-
-def _render_timebox_outcome(
-    outcome: TurnOutcome,
-    *,
-    snapshot: PlanningSessionSnapshot,
-    session_key: str,
-    actor_user_id: str,
-    channel_id: str,
-    thread_ts: str,
-    logger,
-) -> SlackBlockMessage:
-    """Turn exactly one domain outcome into exactly one Slack message."""
-
-    if isinstance(outcome, TurnFailed):
-        logger.warning(
-            "adaptive timeboxing turn refused code=%s session_key=%s revision=%s",
-            outcome.code,
-            session_key,
-            snapshot.revision,
-        )
-        return _render_timebox_failure(
-            snapshot=snapshot,
-            session_key=session_key,
-            actor_user_id=actor_user_id,
-            code=outcome.code,
-        )
-
-    if isinstance(outcome, Cancelled):
-        text = "Planning session cancelled. Nothing was written anywhere."
-        return SlackBlockMessage(
-            text=text,
-            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
-        )
-
-    if isinstance(outcome, AwaitingUser):
-        return _render_timebox_question(
-            outcome,
-            session_key=session_key,
-            expected_revision=snapshot.revision,
-        )
-
-    if isinstance(outcome, AwaitingApproval):
-        artifact = outcome.artifact
-        if artifact.kind is ArtifactKind.PLANNING_DAY:
-            return _render_timebox_date_card(
-                artifact,
-                session_key=session_key,
-                expected_revision=snapshot.revision,
-                user_id=actor_user_id,
-                channel_id=channel_id,
-                thread_ts=thread_ts,
-            )
-        if artifact.kind is ArtifactKind.SKELETON:
-            return _render_timebox_skeleton(
-                artifact, snapshot=snapshot, session_key=session_key
-            )
-        if artifact.kind is ArtifactKind.VALIDATED_CANDIDATE:
-            return _render_timebox_candidate(
-                artifact,
-                session_key=session_key,
-                actor_user_id=actor_user_id,
-                expected_revision=snapshot.revision,
-            )
-
-    if isinstance(outcome, Committed):
-        payload = (
-            outcome.receipt.payload
-            if isinstance(outcome.receipt.payload, dict)
-            else {}
-        )
-        tx_id = payload.get("tx_id")
-        if payload.get("committed") is True and isinstance(tx_id, str) and tx_id:
-            text = ":white_check_mark: Committed the plan you approved."
-            return SlackBlockMessage(
-                text=text,
-                blocks=[
-                    {"type": "section", "text": {"type": "mrkdwn", "text": text}},
-                    harness_undo_block(tx_id),
-                ],
-            )
-        reason = str(payload.get("reason") or "commit_refused")
-        text = f":warning: Nothing was committed — `{reason}`."
-        return SlackBlockMessage(
-            text=text,
-            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
-        )
-
-    if isinstance(outcome, ArtifactReady):
-        text = f"Prepared the {outcome.artifact.kind.value.replace('_', ' ')}."
-        return SlackBlockMessage(
-            text=text,
-            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
-        )
-
-    logger.error(
-        "adaptive timeboxing produced an unrenderable outcome kind=%s session_key=%s",
-        getattr(outcome, "kind", "unknown"),
-        session_key,
-    )
-    return _timebox_failure_message()
 
 
 async def _run_adaptive_timebox_turn(
@@ -2274,7 +1486,7 @@ async def _run_adaptive_timebox_turn(
             session_key,
             interaction_id,
         )
-        return _timebox_failure_message()
+        return timebox_failure_message()
 
     progress_card = HarnessProgressCard(
         client, channel=progress_channel, message_ts=progress_ts
@@ -2287,7 +1499,7 @@ async def _run_adaptive_timebox_turn(
             intent: TimeboxIntent = action.intent
             expected_revision = action.expected_revision
         else:
-            intent = await _derive_timebox_intent(
+            intent = await derive_timebox_intent(
                 runtime, snapshot, user_text=user_text
             )
             expected_revision = snapshot.revision
@@ -2299,7 +1511,7 @@ async def _run_adaptive_timebox_turn(
                 expected_revision=expected_revision,
                 intent=intent,
             ),
-            progress=_KernelProgressSink(progress_card, session_key=session_key),
+            progress=KernelProgressSink(progress_card, session_key=session_key),
         )
         current = await repository.load_or_create(
             session_key, owner_user_id=actor_user_id
@@ -2311,12 +1523,13 @@ async def _run_adaptive_timebox_turn(
             interaction_id,
             type(exc).__name__,
         )
-        return _timebox_failure_message()
+        return timebox_failure_message()
     finally:
         await progress_card.close()
 
-    return _render_timebox_outcome(
+    return render_outcome(
         outcome,
+        pending=_pending_candidates,
         snapshot=current,
         session_key=session_key,
         actor_user_id=actor_user_id,
