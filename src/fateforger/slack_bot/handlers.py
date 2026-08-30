@@ -1442,6 +1442,15 @@ def _timebox_body_for_harness(body: dict) -> dict:
     they can correct, in one reply rather than a wasted turn. It also means
     this is a default rather than a decision, which is what a bare command
     should be (#195).
+
+    **Nothing in `src/` calls this any more.** `/timebox` goes through
+    `route_slack_event`, which reaches the session kernel, and the kernel's
+    host derives the planning day arithmetically in `HostPlanningContext` --
+    pinned to today in the configured timezone, with no evening rollover and
+    no model asked. So the paragraph above describes a behaviour that is not in
+    force: read it as the argument for how a bare command should behave, not as
+    a description of what one does. Two unit test files still assert this text,
+    which is why it is still here rather than deleted.
     """
     text = (body.get("text") or "").strip()
     if not text:
@@ -1985,6 +1994,53 @@ async def _handle_dsh_command(*, body, client, logger) -> None:
     await client.chat_update(channel=channel, ts=thread_ts, text=f"*{text}*\n{summary}")
 
 
+async def _route_command_as_message(
+    *,
+    runtime,
+    focus: FocusManager,
+    agent_type: str,
+    body: dict,
+    text: str,
+    client: AsyncWebClient,
+    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]],
+) -> None:
+    """Drive a slash command through the route a typed message already takes.
+
+    A command arrives with no thread and no message, so it is turned into the
+    event the router knows how to handle rather than given a path of its own.
+    Every command that grew its own path gave the same conversation a second
+    session identity -- `/timebox` once created a thread the way typing never
+    did -- so the synthetic event is built in one place, and a command differs
+    from a message only in which agent it names.
+
+    `say` is a no-op: the router posts through `client`, and a command has no
+    channel message to reply beneath.
+    """
+
+    channel_id = body.get("channel_id") or ""
+
+    async def _noop_say(**_kwargs):
+        return {"channel": channel_id, "ts": "unused"}
+
+    await route_slack_event(
+        runtime=runtime,
+        focus=focus,
+        default_agent=agent_type,
+        event={
+            "type": "message",
+            "text": text,
+            "user": body.get("user_id") or "",
+            "channel": channel_id,
+            "ts": f"{time.time():.6f}",
+            "channel_type": "im" if channel_id.startswith(("D", "G")) else "channel",
+        },
+        bot_user_id=None,
+        say=_noop_say,
+        client=client,
+        get_constraint_store=get_constraint_store,
+    )
+
+
 async def _handle_timebox_command(
     *,
     runtime,
@@ -2013,27 +2069,13 @@ async def _handle_timebox_command(
             response_type="ephemeral",
         )
 
-    channel_type = "im" if channel_id.startswith(("D", "G")) else "channel"
-    event = {
-        "type": "message",
-        "text": text,
-        "user": user_id,
-        "channel": channel_id,
-        "ts": f"{time.time():.6f}",
-        "channel_type": channel_type,
-    }
-
-    async def _noop_say(**_kwargs):
-        return {"channel": channel_id, "ts": "unused"}
-
     try:
-        await route_slack_event(
+        await _route_command_as_message(
             runtime=runtime,
             focus=focus,
-            default_agent="timeboxing_agent",
-            event=event,
-            bot_user_id=None,
-            say=_noop_say,
+            agent_type="timeboxing_agent",
+            body=body,
+            text=text,
             client=client,
             get_constraint_store=get_constraint_store,
         )
@@ -2073,27 +2115,13 @@ async def _handle_task_refine_command(
             response_type="ephemeral",
         )
 
-    channel_type = "im" if channel_id.startswith(("D", "G")) else "channel"
-    event = {
-        "type": "message",
-        "text": text or "start guided task refinement session",
-        "user": user_id,
-        "channel": channel_id,
-        "ts": f"{time.time():.6f}",
-        "channel_type": channel_type,
-    }
-
-    async def _noop_say(**_kwargs):
-        return {"channel": channel_id, "ts": "unused"}
-
     try:
-        await route_slack_event(
+        await _route_command_as_message(
             runtime=runtime,
             focus=focus,
-            default_agent="tasks_agent",
-            event=event,
-            bot_user_id=None,
-            say=_noop_say,
+            agent_type="tasks_agent",
+            body=body,
+            text=text or "start guided task refinement session",
             client=client,
             get_constraint_store=get_constraint_store,
         )
