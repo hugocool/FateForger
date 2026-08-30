@@ -16,10 +16,20 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
+from collections.abc import Iterable, Mapping
+
 from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel
+from pydantic import Field as PydanticField
 from pydantic import ValidationError
 
-from fateforger.agents.timeboxing.session_contracts import PlanningResult
+from fateforger.agents.timeboxing.session_contracts import (
+    ArtifactDraft,
+    BlockerOption,
+    PlannerAssumptionDraft,
+    PlanningResult,
+    UserBlockerDraft,
+)
 
 #: Where the host tells this server to write. Restated rather than imported
 #: from ``harness_bridge``: that module is the Slack host, and pulling it into
@@ -50,6 +60,59 @@ mcp = FastMCP(
 )
 
 
+class AssumptionInput(BaseModel):
+    """One placement the planner decided for itself.
+
+    Deliberately a model rather than a bare dict. These arguments were typed
+    `list[dict[str, Any]]`, so the tool schema showed arrays of unconstrained
+    objects while the server validated strict contracts requiring these exact
+    names -- and the refusal stripped them. Measured over 31 draws: 4-11 failed
+    submissions per turn, after which the planner read the host's own source to
+    recover the field names, at 110-119s per candidate turn. A tool argument
+    whose shape the caller cannot see is one it will get wrong.
+
+    Loose on purpose: the strict contract still validates in `_validated`. This
+    exists to be *described*, not to be the gate.
+    """
+
+    requirement_id: str = PydanticField(
+        description="The exact requirement id from the brief's readiness gaps."
+    )
+    value: Any = PydanticField(description="What was decided, e.g. a time or range.")
+    why_needed: str = PydanticField(description="One line: why this had to be decided.")
+    invalidated_by: list[str] = PydanticField(
+        default_factory=list,
+        description="Requirement ids whose change would retire this assumption.",
+    )
+
+
+class BlockerInput(BaseModel):
+    """One decision that is genuinely the user's to make."""
+
+    requirement_id: str = PydanticField(
+        description="The exact requirement id from the brief's readiness gaps."
+    )
+    why_needed: str = PydanticField(description="One line: why the user must decide.")
+
+
+class BlockerOptionInput(BaseModel):
+    """One concrete alternative offered against a blocker."""
+
+    label: str = PydanticField(description="What the user reads on the button.")
+    effect: str = PydanticField(description="One line: what choosing it does.")
+
+
+def _as_dicts(items: Iterable[Any]) -> list[dict[str, Any]]:
+    """Normalise tool arguments to plain mappings, whichever shape arrived."""
+
+    return [
+        dict(item)
+        if isinstance(item, Mapping)
+        else item.model_dump(mode="json")
+        for item in items
+    ]
+
+
 @mcp.tool(name="submit_planning_result")
 def submit_planning_result(
     target_artifact: Literal[
@@ -59,9 +122,9 @@ def submit_planning_result(
         "validated_candidate",
     ],
     artifact: dict[str, Any] | None,
-    assumptions: list[dict[str, Any]],
-    blockers: list[dict[str, Any]],
-    blocker_options: list[dict[str, Any]] | None = None,
+    assumptions: list[AssumptionInput],
+    blockers: list[BlockerInput],
+    blocker_options: list[BlockerOptionInput] | None = None,
 ) -> str:
     """Record this turn's result. Call it exactly once, at the end.
 
@@ -88,6 +151,14 @@ def submit_planning_result(
     """
 
     destination = _destination()
+    # FastMCP hands these over as models; an in-process caller passes mappings.
+    # Both are accepted because the strict contract below is the gate, and a
+    # boundary that refused one shape would only move the failure earlier
+    # without making anything safer.
+    assumptions = _as_dicts(assumptions)  # type: ignore[assignment]
+    blockers = _as_dicts(blockers)  # type: ignore[assignment]
+    if blocker_options is not None:
+        blocker_options = _as_dicts(blocker_options)  # type: ignore[assignment]
     document = _validated(
         target_artifact=target_artifact,
         artifact=artifact,
@@ -225,20 +296,53 @@ def _minted(blocker_options: list[dict[str, Any]] | None) -> list[dict[str, Any]
         ) from exc
 
 
-def _shape_codes(exc: ValidationError) -> str:
-    """Name the failing top-level field and the error code, and nothing else.
+def _known_field_names() -> frozenset[str]:
+    """Every field name in the contracts this tool validates against.
 
-    Pydantic's own message quotes the offending input, and for an undeclared
-    field it quotes the key the model invented. Both are model-authored text on
-    a path that ends in the host's logs, so only the two identifiers this
-    system minted survive.
+    A loc segment matching one of these is a name this system minted, so it can
+    be repeated back. Anything else is a key the model invented.
     """
 
-    codes = {
-        f"{error['loc'][0] if error['loc'] else 'result'}:{error['type']}"
-        for error in exc.errors()
-    }
-    return ", ".join(sorted(str(code) for code in codes))
+    models = (
+        PlanningResult,
+        ArtifactDraft,
+        PlannerAssumptionDraft,
+        UserBlockerDraft,
+        BlockerOption,
+    )
+    return frozenset(
+        name for model in models for name in model.model_fields
+    )
+
+
+_KNOWN_FIELDS = _known_field_names()
+
+
+def _shape_codes(exc: ValidationError) -> str:
+    """Name the failing field path and the error code, and nothing else.
+
+    This used to report only `loc[0]`, so a missing `requirement_id` inside an
+    assumption came back as `assumptions:missing` -- true, and useless. Measured
+    over 31 planner draws: 4-11 failed submissions per turn, after which the
+    planner read the host's own source to recover the names it was never told.
+
+    The path is safe to repeat because every segment is either an index or a
+    field name this system declared. A segment that is neither is a key the
+    model invented, and it is replaced rather than echoed -- Pydantic's own
+    message quotes the offending input, which is model-authored text on a path
+    that ends in the host's logs.
+    """
+
+    codes = set()
+    for error in exc.errors():
+        parts = [
+            str(segment)
+            if isinstance(segment, int) or segment in _KNOWN_FIELDS
+            else "<unknown-field>"
+            for segment in error["loc"]
+        ] or ["result"]
+        codes.add(f"{'.'.join(parts)}:{error['type']}")
+    return ", ".join(sorted(codes))
 
 
 def _recorded(destination: Path) -> str | None:

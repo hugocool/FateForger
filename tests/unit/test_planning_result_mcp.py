@@ -10,6 +10,7 @@ an empty turn as a finished one. Every refusal below is therefore loud.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -897,3 +898,54 @@ def test_no_model_means_no_effort_override() -> None:
 
     assert harness_bridge.PLANNING_REASONING
     assert harness_bridge.PLANNING_REASONING != "off"
+
+
+async def test_the_tool_schema_names_the_fields_it_requires() -> None:
+    """Catches a schema the planner has to guess, then grep our source for.
+
+    `assumptions` and `blockers` were typed `list[dict[str, Any]]`, so the model
+    was shown arrays of unconstrained objects while the server validated strict
+    models requiring `requirement_id`, `value` and `why_needed` -- and the
+    refusal stripped the field names. Measured over 31 planner draws: 4-11
+    failed submissions per turn, then the model read the host's own source to
+    recover the names, at 110-119s per candidate turn. That is where the time
+    and the money went, and it is why typed assumptions were a coin flip.
+
+    A tool argument the caller cannot see the shape of is a tool argument it
+    will get wrong.
+    """
+
+    tools = {tool.name: tool for tool in await planning_result_mcp.mcp.list_tools()}
+    schema = tools["submit_planning_result"].inputSchema
+    rendered = json.dumps(schema)
+
+    for field in ("requirement_id", "why_needed", "value"):
+        assert field in rendered, f"the schema never mentions {field!r}"
+
+
+def test_a_refusal_names_the_field_that_was_wrong(tmp_path, monkeypatch) -> None:
+    """Catches a refusal that says which argument but never which field.
+
+    `_shape_codes` reported only the top-level location, so an assumption
+    missing `requirement_id` came back as `assumptions:missing` -- true, and
+    useless. The planner's recorded recovery was to grep the host's source.
+
+    The path is safe to repeat: every segment is an index or a name this system
+    declared. A key the model invented is replaced, not echoed.
+    """
+
+    destination = tmp_path / "planning-result.json"
+    destination.write_text("", encoding="utf-8")
+    monkeypatch.setenv("FF_DSH_PLANNING_RESULT_FILE", str(destination))
+
+    with pytest.raises(Exception) as caught:
+        submit_planning_result(
+            target_artifact="skeleton",
+            artifact=_skeleton(),
+            assumptions=[{"value": "14:30", "why_needed": "gym needs a time"}],
+            blockers=[],
+        )
+
+    message = str(caught.value)
+    assert "requirement_id" in message, message
+    assert "assumptions" in message

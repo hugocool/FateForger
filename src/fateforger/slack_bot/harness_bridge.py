@@ -469,10 +469,16 @@ def _optional_int(value: object) -> int | None:
 #: output, so an unenforcing host would accept a malformed one in silence.
 #: Paired with PLANNING_MODEL below, deliberately: effort is a property of the
 #: model, not of the deployment, and one global is how a value tuned for one
-#: gets silently applied to the other. Pro answers a trivial probe identically
-#: at `minimal` and `low` -- 7 reasoning tokens either way -- so it takes the
-#: lowest that still thinks. Never `off`: a planning turn chooses placements.
-PLANNING_REASONING = os.environ.get("FF_PLANNING_REASONING", "minimal")
+#: gets silently applied to the other.
+#:
+#: `low`, not `minimal`, and the measurement overturned the guess. A trivial
+#: probe showed Pro spending 7 reasoning tokens at either setting, which read as
+#: "minimal is free". Over 31 real planner draws, pooled across models and
+#: stages, `low` was usable 12/12 and `minimal` 8/13 -- and because a failed
+#: turn is retried, `minimal` cost $40.77/month against `low`'s $16.87 at one
+#: session a day. The cheaper-looking setting was the more expensive one.
+#: Never `off`: a planning turn chooses placements.
+PLANNING_REASONING = os.environ.get("FF_PLANNING_REASONING", "low")
 
 #: Pro. Flash is 10x cheaper on prompt and 11x on completion and advertises
 #: parallel_tool_calls, which is why it was tried -- but one attempt failed to
