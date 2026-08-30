@@ -864,3 +864,36 @@ async def test_the_runner_attaches_the_patch_the_host_watched_tmbx_take(monkeypa
     assert payload["digest"] == captured.digest
     # The readable half survives: it is what Hugo approves.
     assert payload["blocks"] == [{"name": "Deep work"}]
+
+
+def test_the_reasoning_effort_travels_with_the_model(monkeypatch) -> None:
+    """Catches an effort tuned for one model silently applied to another.
+
+    The profile reads one global `FF_HARNESS_REASONING`, so whichever value a
+    deployment set applied to every model it ever ran. Effort is a property of
+    the model: Pro answers a trivial probe identically at `minimal` and `low`,
+    while flash measurably differs. The bridge sets both together or neither.
+    """
+
+    seen: dict[str, str] = {}
+
+    def capture(*args, **kwargs):
+        seen.update(kwargs.get("env") or {})
+        raise RuntimeError("stop after the environment is built")
+
+    monkeypatch.setattr(harness_bridge.subprocess, "run", capture)
+
+    try:
+        harness_bridge.ask("hello", model="m-1", reasoning="minimal")
+    except Exception:
+        pass
+
+    assert seen.get("FF_HARNESS_MODEL") == "m-1"
+    assert seen.get("FF_HARNESS_REASONING") == "minimal"
+
+
+def test_no_model_means_no_effort_override() -> None:
+    """A turn that chose no model has no business pinning the profile's."""
+
+    assert harness_bridge.PLANNING_REASONING
+    assert harness_bridge.PLANNING_REASONING != "off"

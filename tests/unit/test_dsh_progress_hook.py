@@ -544,12 +544,17 @@ def test_ask_points_the_hook_at_a_file_and_reports_what_lands(monkeypatch):
         "plan tuesday",
         session_id="C1:1772.0",
         model=harness_bridge.PLANNING_MODEL,
+        reasoning=harness_bridge.PLANNING_REASONING,
         on_event=seen.append,
     )
 
     assert len(seen) == 2
     assert captured["session_key"] == "C1:1772.0"
-    assert captured["reasoning"] == "low"
+    # The caller's effort, not a constant. This asserted "low", which the
+    # bridge hardcoded for every turn that named a model -- so the value the
+    # planner chose could never reach the child and FF_HARNESS_REASONING was
+    # inert on the one path that always sets a model.
+    assert captured["reasoning"] == harness_bridge.PLANNING_REASONING
     assert captured["fateforger_root"] == str(
         Path(harness_bridge.__file__).resolve().parents[3]
     )

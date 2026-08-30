@@ -473,6 +473,13 @@ def _optional_int(value: object) -> int | None:
 #: 10x the prompt and 11x the completion of flash, and a measured skeleton took
 #: 221.8s on Pro at low reasoning. Flash also advertises parallel_tool_calls,
 #: which Pro's stablemate gpt-oss-120b does not.
+#: Paired with PLANNING_MODEL below, deliberately. Pro answers a trivial probe
+#: identically at `minimal` and `low`, so it takes the lowest that still thinks;
+#: flash measurably differs between them (10 reasoning tokens against 16 on the
+#: same prompt), so its value is an empirical question and this is the starting
+#: point, not a finding. Never `off`: a planning turn chooses placements.
+PLANNING_REASONING = os.environ.get("FF_PLANNING_REASONING", "minimal")
+
 PLANNING_MODEL = os.environ.get(
     "FF_PLANNING_MODEL", "deepseek/deepseek-v4-flash-0731"
 )
@@ -488,6 +495,7 @@ def ask(
     session_id: str | None = None,
     planning_brief: PlanningBrief | None = None,
     model: str | None = None,
+    reasoning: str | None = None,
     profile: str = _PROFILE,
     env: dict[str, str] | None = None,
     on_event: Callable[[TimeboxProgressEvent | str], None] | None = None,
@@ -528,7 +536,11 @@ def ask(
         # profile's own fast default in force, which is what a headless or
         # non-planning call should get.
         **({"FF_HARNESS_MODEL": model} if model else {}),
-        **({_HARNESS_REASONING_ENV: "low"} if model else {}),
+        # The effort travels with the model that was chosen, because it is a
+        # property of that model and not of the deployment: the lowest useful
+        # setting on one is wasteful on another, and a single global is how a
+        # value tuned for one ends up silently applied to the other.
+        **({_HARNESS_REASONING_ENV: reasoning} if reasoning else {}),
         **(env or {}),
     }
     if approval_file is not None:

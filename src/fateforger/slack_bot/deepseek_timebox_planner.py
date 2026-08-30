@@ -158,9 +158,11 @@ class HarnessBridgeRunner:
         self,
         *,
         model: str = harness_bridge.PLANNING_MODEL,
+        reasoning: str = harness_bridge.PLANNING_REASONING,
         ask: Callable[..., harness_bridge.HarnessReply] = harness_bridge.ask,
     ) -> None:
         self._model = model
+        self._reasoning = reasoning
         self._ask = ask
 
     async def run(self, brief: PlanningBrief, progress: ProgressSink) -> PlanningResult:
@@ -180,6 +182,7 @@ class HarnessBridgeRunner:
             session_id=brief.session_key,
             planning_brief=brief,
             model=self._model,
+            reasoning=self._reasoning,
             on_event=forward,
         )
         if reply.planning_result is None:
