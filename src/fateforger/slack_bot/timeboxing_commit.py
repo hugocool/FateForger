@@ -261,24 +261,6 @@ class TimeboxCommitMeta(BaseModel):
             {**self.model_dump(), "day_type": day_type}
         )
 
-    def to_private_metadata(self, *, prompt_channel_id: str, prompt_ts: str) -> str:
-        """Encode metadata for Slack modal `private_metadata` round-trips."""
-        return encode_metadata(
-            {
-                "user_id": self.user_id,
-                "channel_id": self.channel_id,
-                "thread_ts": self.thread_ts,
-                "date": self.date,
-                "tz": self.tz,
-                "schema_version": str(self.schema_version),
-                "session_key": self.session_key,
-                "expected_revision": str(self.expected_revision),
-                "prompt_channel_id": prompt_channel_id,
-                "prompt_ts": prompt_ts,
-            }
-        )
-
-
 def build_timebox_date_card(
     *,
     session_key: str,
@@ -570,33 +552,6 @@ def _slack_payload_from_result(result: Any) -> dict[str, Any]:
         return {"text": text or ""}
     # `chat_message` already collapsed to `result` above, so this is the whole non-Slack case.
     return {"text": agent_reply_text(chat_message)}
-
-
-def _append_thread_button(
-    blocks: list[dict[str, Any]], url: str
-) -> list[dict[str, Any]]:
-    if not url:
-        return blocks
-    for block in blocks:
-        if block.get("type") == "actions":
-            elems = block.get("elements") or []
-            if isinstance(elems, list) and len(elems) < 5:
-                elems.append(
-                    link_button(
-                        text="Go to session", url=url, action_id="ff_open_thread"
-                    )
-                )
-                block["elements"] = elems
-                return blocks
-    blocks.append(
-        {
-            "type": "actions",
-            "elements": [
-                link_button(text="Go to session", url=url, action_id="ff_open_thread")
-            ],
-        }
-    )
-    return blocks
 
 
 __all__ = [

@@ -263,14 +263,6 @@ def _slack_error_code(exc: Exception) -> str:
     return ""
 
 
-def _is_payload_size_error(exc: Exception) -> bool:
-    return _slack_error_code(exc) in {
-        "msg_too_long",
-        "too_many_attachments",
-        "invalid_blocks",
-    }
-
-
 def _timeboxing_excerpt_from_text(text: str) -> str:
     cleaned = re.sub(r"\\s+", " ", (text or "")).strip()
     if len(cleaned) > 200:

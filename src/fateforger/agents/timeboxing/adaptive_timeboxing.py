@@ -770,9 +770,8 @@ class AdaptiveTimeboxing:
                     gap.satisfied if gap else None,
                     gap.owner.value if gap else None,
                     sorted(
-                        g.requirement_id
-                        for g in readiness.gaps
-                        if not g.satisfied and g.owner is RequirementOwner.PLANNER
+                        gap.requirement_id
+                        for gap in readiness.planner_owned_gaps()
                     ),
                 )
                 return snapshot, TurnFailed(

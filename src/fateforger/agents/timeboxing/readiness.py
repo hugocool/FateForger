@@ -312,21 +312,10 @@ class TimeboxRequirements:
         return max(matching, key=lambda artifact: artifact.revision, default=None)
 
 
-def invalidate_from(changed_artifact: ArtifactKind) -> frozenset[ArtifactKind]:
-    """Return artifacts invalidated by a changed artifact.
-
-    Callers must discard approvals bound to each returned artifact at the same
-    time, because every approval is tied to one exact artifact identity.
-    """
-
-    return TimeboxRequirements().invalidate_from(changed_artifact)
-
-
 __all__ = [
     "ArtifactRequirement",
     "ReadinessGap",
     "ReadinessReport",
     "RequirementOwner",
     "TimeboxRequirements",
-    "invalidate_from",
 ]
