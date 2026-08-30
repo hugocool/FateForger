@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import date
 
 import pytest
@@ -1319,3 +1320,48 @@ async def test_a_receipt_that_says_nothing_is_not_a_commit() -> None:
         snapshot.session_key, owner_user_id="U1"
     )
     assert stored.status == "open"
+
+
+async def test_a_refused_planner_result_says_which_of_four_rules_it_broke(caplog) -> None:
+    """Catches a live failure nobody can diagnose.
+
+    Four different rules answer with `invalid_planner_result`, and the code the
+    user sees is deliberately one word. Nothing logged which rule fired, so a
+    turn refused in production named a requirement nowhere and left the reader
+    guessing between a blocker on a closed requirement, a blocker the user does
+    not own, an assumption the planner does not own, and contradictory artifact
+    updates.
+
+    The reason is a system-minted code and the ids are the catalog's own, so
+    nothing here reaches for user content.
+    """
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    # An assumption naming a requirement the planner does not own -- the shape a
+    # planner reaching for the wrong vocabulary produces.
+    planner = RecordedPlanner(
+        PlanningResult(
+            assumptions=[
+                PlannerAssumptionDraft(
+                    requirement_id="skeleton.locked_day",
+                    value="2026-08-29",
+                    why_needed="the day has to be fixed",
+                )
+            ]
+        )
+    )
+
+    with caplog.at_level(logging.ERROR):
+        outcome = await _kernel(repo, planner).turn(
+            _advance_request(), progress=RecordingProgressSink()
+        )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "invalid_planner_result"
+    refusals = [r for r in caplog.records if r.message == "planner result refused"]
+    assert [getattr(r, "reason", None) for r in refusals] == [
+        "assumption_not_planner_owned"
+    ]
+    # The operator needs to know which requirement, and what was actually open.
+    assert refusals[0].requirement_id == "skeleton.locked_day"
+    assert "skeleton.ordinary_placement" in refusals[0].open_planner_gaps
