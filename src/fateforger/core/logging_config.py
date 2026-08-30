@@ -429,7 +429,17 @@ def _configure_llm_audit_pipeline() -> None:
     if not _is_truthy(os.getenv("OBS_LLM_AUDIT_ENABLED", "1")):
         _LLM_AUDIT_SINK = "off"
         return
-    sink = _coerce_llm_audit_sink(os.getenv("OBS_LLM_AUDIT_SINK", "loki"))
+    # `file`, not `loki`. The default was loki, pointing at
+    # http://localhost:3100 -- which on this machine is figjam-bridge, and it
+    # answered every push with 426. The pipeline logged "enabled (sink=loki)"
+    # on every start and discarded every record, so `timebox_log_query.py llm`
+    # read an empty index and the per-call token detail nobody could find was
+    # being thrown away at the last hop.
+    #
+    # A file always exists. Loki is worth having and is one env var away, but
+    # it should be opted into rather than assumed, because the failure of a
+    # sink nobody checks is indistinguishable from having nothing to say.
+    sink = _coerce_llm_audit_sink(os.getenv("OBS_LLM_AUDIT_SINK", "file"))
     if sink == "off":
         _LLM_AUDIT_SINK = "off"
         return
@@ -703,7 +713,11 @@ def _coerce_autogen_events_full_payload_mode(value: str | None) -> str:
 
 
 def _coerce_llm_audit_sink(value: str | None) -> str:
-    sink = (value or "loki").strip().lower()
+    # Two defaults for one setting is one too many: this said "loki" while the
+    # caller said "loki" separately, so fixing the caller alone left the
+    # fallback still pointing at a sink that refuses. They agree now, and a
+    # test asserts it.
+    sink = (value or "file").strip().lower()
     if sink not in {"off", "loki", "file", "both"}:
         raise ValueError("OBS_LLM_AUDIT_SINK must be one of: off, loki, file, both")
     return sink

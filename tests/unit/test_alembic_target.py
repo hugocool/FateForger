@@ -60,3 +60,26 @@ def test_env_does_not_default_the_database_url() -> None:
     source = (ROOT / "alembic" / "env.py").read_text(encoding="utf-8")
 
     assert 'setdefault("DATABASE_URL"' not in source
+
+
+def test_the_llm_audit_sink_defaults_to_one_that_exists() -> None:
+    """Catches per-call token records being posted into a void.
+
+    The default was `loki`, at http://localhost:3100 — which on this machine is
+    figjam-bridge, answering every push with 426. The pipeline logged
+    "enabled (sink=loki)" at every start and discarded every record, so the
+    per-call token detail this project spent a day looking for was being thrown
+    away at the last hop and `timebox_log_query.py llm` read an empty index.
+
+    A file always exists. Loki is one env var away and worth having; it should
+    be opted into, because a sink that silently refuses is indistinguishable
+    from a system with nothing to say.
+    """
+
+    from fateforger.core import logging_config
+
+    source = (ROOT / "src" / "fateforger" / "core" / "logging_config.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'os.getenv("OBS_LLM_AUDIT_SINK", "file")' in source
+    assert logging_config._coerce_llm_audit_sink(None) == "file"
