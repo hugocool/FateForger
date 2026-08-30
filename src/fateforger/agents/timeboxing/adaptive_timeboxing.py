@@ -726,12 +726,10 @@ class AdaptiveTimeboxing:
             gap = gaps.get(blocker.requirement_id)
             if gap is None or gap.satisfied:
                 logger.error(
-                    "planner result refused",
-                    extra={
-                        "reason": "blocker_requirement_not_open",
-                        "requirement_id": blocker.requirement_id,
-                        "known": gap is not None,
-                    },
+                    "planner result refused reason=%s requirement_id=%s known=%s",
+                    "blocker_requirement_not_open",
+                    blocker.requirement_id,
+                    gap is not None,
                 )
                 return snapshot, TurnFailed(
                     code="invalid_planner_result",
@@ -744,12 +742,10 @@ class AdaptiveTimeboxing:
                 )
             if gap is None or gap.owner is not RequirementOwner.USER:
                 logger.error(
-                    "planner result refused",
-                    extra={
-                        "reason": "blocker_not_user_owned",
-                        "requirement_id": blocker.requirement_id,
-                        "owner": gap.owner.value if gap else None,
-                    },
+                    "planner result refused reason=%s requirement_id=%s owner=%s",
+                    "blocker_not_user_owned",
+                    blocker.requirement_id,
+                    gap.owner.value if gap else None,
                 )
                 return snapshot, TurnFailed(
                     code="invalid_planner_result",
@@ -766,20 +762,18 @@ class AdaptiveTimeboxing:
                 or gap.owner is not RequirementOwner.PLANNER
             ):
                 logger.error(
-                    "planner result refused",
-                    extra={
-                        "reason": "assumption_not_planner_owned",
-                        "requirement_id": draft.requirement_id,
-                        "known": gap is not None,
-                        "satisfied": gap.satisfied if gap else None,
-                        "owner": gap.owner.value if gap else None,
-                        "open_planner_gaps": sorted(
-                            g.requirement_id
-                            for g in readiness.gaps
-                            if not g.satisfied
-                            and g.owner is RequirementOwner.PLANNER
-                        ),
-                    },
+                    "planner result refused reason=%s requirement_id=%s known=%s "
+                    "satisfied=%s owner=%s open_planner_gaps=%s",
+                    "assumption_not_planner_owned",
+                    draft.requirement_id,
+                    gap is not None,
+                    gap.satisfied if gap else None,
+                    gap.owner.value if gap else None,
+                    sorted(
+                        g.requirement_id
+                        for g in readiness.gaps
+                        if not g.satisfied and g.owner is RequirementOwner.PLANNER
+                    ),
                 )
                 return snapshot, TurnFailed(
                     code="invalid_planner_result",
@@ -814,12 +808,10 @@ class AdaptiveTimeboxing:
             )
         if len(matching) != 1 or len(result.artifact_updates) != 1:
             logger.error(
-                "planner result refused",
-                extra={
-                    "reason": "contradictory_artifact_updates",
-                    "target": target.value,
-                    "kinds": [update.kind.value for update in result.artifact_updates],
-                },
+                "planner result refused reason=%s target=%s kinds=%s",
+                "contradictory_artifact_updates",
+                target.value,
+                [update.kind.value for update in result.artifact_updates],
             )
             return snapshot, TurnFailed(
                 code="invalid_planner_result",

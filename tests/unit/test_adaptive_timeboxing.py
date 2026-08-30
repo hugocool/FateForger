@@ -1358,10 +1358,12 @@ async def test_a_refused_planner_result_says_which_of_four_rules_it_broke(caplog
 
     assert isinstance(outcome, TurnFailed)
     assert outcome.code == "invalid_planner_result"
-    refusals = [r for r in caplog.records if r.message == "planner result refused"]
-    assert [getattr(r, "reason", None) for r in refusals] == [
-        "assumption_not_planner_owned"
-    ]
-    # The operator needs to know which requirement, and what was actually open.
-    assert refusals[0].requirement_id == "skeleton.locked_day"
-    assert "skeleton.ordinary_placement" in refusals[0].open_planner_gaps
+    # Rendered into the message, not passed as `extra`. The first version used
+    # `extra=` and this project's formatter drops it, so a live refusal logged
+    # the words "planner result refused" and nothing else -- a diagnostic that
+    # cannot be read is the failure it was written to prevent.
+    refusals = [r.getMessage() for r in caplog.records if "refused" in r.getMessage()]
+    assert len(refusals) == 1
+    assert "reason=assumption_not_planner_owned" in refusals[0]
+    assert "requirement_id=skeleton.locked_day" in refusals[0]
+    assert "skeleton.ordinary_placement" in refusals[0]
