@@ -28,7 +28,7 @@ from tmbx.core.ops import (
 )
 
 
-def test_add_after_schema_teaches_that_omitting_it_follows_the_previous_add():
+def test_add_after_schema_teaches_the_chain_rule_and_its_one_exception():
     """This description is the only documentation a model ever reads about
     `after`. It used to say the anchor "cannot reference a handle created
     in the same patch"; the model believed it, could not express a chain,
@@ -36,11 +36,13 @@ def test_add_after_schema_teaches_that_omitting_it_follows_the_previous_add():
     The absence assertions are the load-bearing half — a stale sentence
     left beside a true one is still read.
 
-    Two sentences are now stale, not one. "Use None for fixed-start
+    Three sentences have gone stale here now, each the same way: it
+    described a default the code no longer has. "Use None for fixed-start
     additions unless ordering against another block matters" was advice
-    about a default that no longer exists: a fixed-start add omitting
-    `after` follows the previous add like any other, and pinning its start
-    says nothing about where it sits in the list.
+    about a default that no longer exists. So was "the first add in a
+    patch, with `after` omitted, prepends" — the first add is now refused,
+    and a description still promising a prepend would teach a model to
+    write the one patch shape tmbx will not accept.
     """
     description = AddBlock.model_json_schema()["properties"]["after"][
         "description"
@@ -52,8 +54,14 @@ def test_add_after_schema_teaches_that_omitting_it_follows_the_previous_add():
     assert "same patch" in description
     assert "dependency order" in description
     assert "cycle" in description
+    # The exception, in the words a model has to act on: which op, and
+    # that the patch is refused rather than laid out some other way.
+    assert "first" in description
+    assert "must give `after`" in description
+    assert "refused" in description
     assert "cannot reference a handle created in the same patch" not in description
     assert "use none for fixed-start additions" not in description
+    assert "with `after` omitted, prepends" not in description
 
 
 def test_after_defaults_to_the_prev_sentinel_so_omission_survives_serialisation():
@@ -65,13 +73,15 @@ def test_after_defaults_to_the_prev_sentinel_so_omission_survives_serialisation(
     metadata does not.
     """
     parsed = Patch.model_validate(
-        {"ops": [{"op": "add", "h": "AA1", "n": "A", "t": "BU",
+        {"ops": [{"op": "add", "h": "ZZ1", "n": "Z", "t": "BU",
+                  "p": {"a": "ap", "dur": "PT5M"}, "after": "PR1"},
+                 {"op": "add", "h": "AA1", "n": "A", "t": "BU",
                   "p": {"a": "ap", "dur": "PT5M"}}]}
     )
-    assert parsed.ops[0].after == "PREV"
+    assert parsed.ops[1].after == "PREV"
 
     round_tripped = Patch.model_validate_json(parsed.model_dump_json())
-    assert round_tripped.ops[0].after == parsed.ops[0].after
+    assert round_tripped.ops[1].after == parsed.ops[1].after
 
     plan = _plan()
     assert [b.h for b in apply_ops(plan, parsed, mint_uid=lambda: "u").blocks] == [
@@ -1135,12 +1145,16 @@ def test_three_adds_all_saying_END_now_append_in_the_order_listed():
     assert [b.h for b in result.blocks] == ["ZL1", "MG1", "BW1"]
 
 
-def test_the_same_three_adds_need_no_anchors_at_all():
+def test_the_same_three_adds_need_one_anchor_and_no_more():
     """The point of the change: the sequence is in the ops list, so the
     planner does not restate it. Same day as the explicit-END patch above,
-    with three fields fewer.
+    with two fields fewer rather than three — the first add still says
+    where the chain starts, because on a plan that is not empty nothing
+    else could say it.
     """
-    result = apply_ops(_empty_plan(), Patch(ops=_hugo_case()), mint_uid=_mint)
+    ops = _hugo_case()
+    ops[0] = ops[0].model_copy(update={"after": "END"})
+    result = apply_ops(_empty_plan(), Patch(ops=ops), mint_uid=_mint)
     assert [b.h for b in result.blocks] == ["ZL1", "MG1", "BW1"]
 
 
@@ -1157,26 +1171,11 @@ def test_an_omitted_after_chains_onto_the_previous_add():
     assert [b.h for b in result.blocks] == ["PR1", "ZZ1", "YY1", "DW1", "DW2"]
 
 
-def test_the_first_add_with_no_after_prepends():
-    """There is no previous add to follow, so it means what `after: null`
-    means. Stated as its own test because it is the one place the rule has
-    to answer a question the list cannot: an empty history.
-    """
-    ops = [AddBlock(h="AA1", n="A", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5)))]
-    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
-    assert [b.h for b in result.blocks] == ["AA1", "PR1", "DW1", "DW2"]
-
-
-def test_a_whole_anchorless_chain_lands_at_the_front_of_an_existing_plan():
-    """The consequence of the rule above, and the sharpest edge the spike
-    exposed: the first add prepends, so a chain written with no anchors at
-    all goes BEFORE everything already on the plan, not after it. Pinned
-    deliberately. It is right for building an empty day and surprising for
-    adding to a full one, and the fix — if it is one — is a different
-    default for the first add, not a different rule for the rest.
-    """
-    result = apply_ops(_plan(), Patch(ops=_hugo_case()), mint_uid=_mint)
-    assert [b.h for b in result.blocks] == ["ZL1", "MG1", "BW1", "PR1", "DW1", "DW2"]
+# Two tests stood here — `test_the_first_add_with_no_after_prepends` and
+# `test_a_whole_anchorless_chain_lands_at_the_front_of_an_existing_plan`.
+# They pinned the spike's first-add default and the whole-day-wrong result
+# it produced on a plan that already had blocks. The default is gone; what
+# replaced it is at the foot of this file.
 
 
 def test_absent_and_null_are_different_patches():
@@ -1242,7 +1241,8 @@ def test_an_anchorless_chain_can_never_be_cyclic():
     the thing a planner has to reason about.
     """
     ops = [
-        AddBlock(h=h, n=h, t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5)))
+        AddBlock(h=h, n=h, t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5)),
+                 **({"after": None} if h == "AA1" else {}))
         for h in ("AA1", "BB1", "CC1", "DD1", "EE1")
     ]
     assert validate_patch(_plan(), Patch(ops=ops)) == []
@@ -1331,3 +1331,116 @@ def test_the_journal_133_day_needs_no_anchors_except_the_one_that_is_real():
     ]
     pinned = [x.h for x in b.blocks if x.p.a in ("fs", "fw")]
     assert pinned == ["MR1", "EVT1"]
+
+
+# --- the first add has to say where the chain starts ----------------------
+#
+# The spike shipped "first add, `after` omitted -> prepend", pinned the
+# consequence, and recommended against it. These are that recommendation.
+
+
+def test_a_first_add_with_no_after_is_refused_rather_than_guessed():
+    """The whole reason the default cannot stand. Three blocks written in
+    the order they happen, applied to an afternoon that already exists,
+    used to land in front of the morning — a whole-day-wrong result that
+    nothing announced. There is no answer to "where does this chain
+    start" that the patch has stated, so tmbx does not pick one.
+    """
+    errors = validate_patch(_plan(), Patch(ops=_hugo_case()))
+    assert any("ZL1" in e for e in errors)
+
+
+def test_the_refusal_says_which_op_and_which_three_answers():
+    """A refusal a planner cannot act on is a refusal it will resample
+    against. This one has to name the op — one `after` fixes the patch,
+    not fourteen — and name all three legal answers, because which is
+    right depends on what the planner meant and tmbx does not know.
+    """
+    errors = validate_patch(_plan(), Patch(ops=_hugo_case()))
+    refusal = next(e for e in errors if "ZL1" in e)
+    assert "op 0:" in refusal
+    assert "after" in refusal
+    assert "END" in refusal
+    assert "null" in refusal
+    assert "handle" in refusal
+
+
+def test_the_refusal_does_not_also_report_prev_as_a_missing_anchor():
+    """PREV reaches `_validate_add` unresolved, which is exactly how the
+    first add is recognised — so the generic "anchor not found" check
+    must not fire on it as well. Two errors for one mistake, one of them
+    naming an internal sentinel as a handle the planner forgot to create,
+    is how a planner gets sent to fix the wrong thing.
+    """
+    errors = validate_patch(_plan(), Patch(ops=_hugo_case()))
+    assert not any("not found" in e for e in errors)
+
+
+def test_a_remove_before_the_first_add_is_still_no_previous_add():
+    """"The add listed before it" means an ADD. A remove, update or move
+    ahead of the first add positions nothing, so the add after them is
+    still the first one and still has to say where it goes. Worth its own
+    test because it is the shape a real edit patch takes — clear the
+    afternoon, then rebuild it — and the one where "there is something
+    before it in the list" is most tempting and most wrong.
+    """
+    ops = [
+        RemoveBlock(h="DW2"),
+        UpdateBlock(h="DW1", n="Renamed"),
+        MoveBlock(h="PR1", after="END"),
+        AddBlock(h="AA1", n="A", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5))),
+    ]
+    errors = validate_patch(_plan(), Patch(ops=ops))
+    refusal = next(e for e in errors if "AA1" in e)
+    assert "op 3:" in refusal
+
+
+def test_a_single_add_with_no_after_is_refused():
+    """The degenerate case, and the one a planner adding one block to an
+    existing day writes. It has no chain to belong to, which is precisely
+    why the answer cannot be inferred: "one more block" means END far
+    more often than it means the front of the day, and guessing either
+    way is a day nobody chose.
+    """
+    ops = [AddBlock(h="AA1", n="A", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5)))]
+    with pytest.raises(ValueError, match="invalid patch"):
+        apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+
+
+def test_an_explicit_null_on_the_first_add_still_starts_the_day():
+    """The legitimate case the refusal must not swallow. `after: null` is
+    a statement, not an omission — the planner said "in front of
+    everything" and gets it. This is the distinction the PREV sentinel
+    exists to keep, and the refusal above is only correct while this
+    passes.
+    """
+    ops = _hugo_case()
+    ops[0] = AddBlock(after=None, h="ZL1", n="Lunch", t=ET.H, anchor_source="user",
+                      p=FixedStart(st=time(12, 0), dur=timedelta(minutes=60)))
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == ["ZL1", "MG1", "BW1", "PR1", "DW1", "DW2"]
+
+
+def test_one_after_on_the_first_add_is_all_a_chain_costs():
+    """What the refusal charges: one field, on the op that carries
+    information the list genuinely cannot. "END" on the first add is the
+    common `plan_apply` — add these blocks to the day I already have —
+    and it now lands where the planner said, in the order it listed.
+    """
+    ops = _hugo_case()
+    ops[0] = AddBlock(after="END", h="ZL1", n="Lunch", t=ET.H, anchor_source="user",
+                      p=FixedStart(st=time(12, 0), dur=timedelta(minutes=60)))
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == ["PR1", "DW1", "DW2", "ZL1", "MG1", "BW1"]
+
+
+def test_a_handle_on_the_first_add_builds_around_a_block_already_there():
+    """The third answer, and the one journal 133 needed: the chain hangs
+    off something already on the plan. Everything after it still says
+    nothing.
+    """
+    ops = _hugo_case()
+    ops[0] = AddBlock(after="DW1", h="ZL1", n="Lunch", t=ET.H, anchor_source="user",
+                      p=FixedStart(st=time(12, 0), dur=timedelta(minutes=60)))
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == ["PR1", "DW1", "ZL1", "MG1", "BW1", "DW2"]

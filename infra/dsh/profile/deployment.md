@@ -162,9 +162,10 @@ Before every `plan_apply`, check the patch mechanically: every new handle has
 2–5 uppercase letters followed by 1–2 digits, every operation still has its
 explicit `op` field, every `fs` or `fw` add has `anchor_source` (`user` for a
 time Hugo explicitly stated), and no boundary/window was encoded as an occupying block.
-`after` is optional on an add and mostly should be absent — see below. Where you
-do write one, it may name another handle created in the same patch: tmbx applies
-adds in dependency order, so the anchor is placed before the block naming it.
+`after` is required on the first add and should be absent on every other one —
+see below. Where you do write one, it may name another handle created in the
+same patch: tmbx applies adds in dependency order, so the anchor is placed
+before the block naming it.
 Two adds naming each other are refused as a cycle, and so is an anchor naming
 nothing.
 This is a shape check, not a reason to add another planning pass.
@@ -182,12 +183,16 @@ after the add listed before it, so the sequence of the day is the sequence of
 the ops — you do not restate it. Write the blocks down in the order they happen
 and leave `after` out.
 
-`after` is for a block that must sit somewhere *other* than after the previous
-one. That is the only reason to write it. Two cases come up: the chain's first
-block, which has nothing before it to follow (give it `after: null` on a fresh
-day, or `after: "END"` to continue a plan that already has blocks on it), and a
-block that has to hang off something already on the plan — a meeting you are
-building around. Everything in between says nothing.
+**The first add must give `after`, and it is the only one that must.** It has
+nothing before it to follow, so it is the one op that has to say where the chain
+starts: `after: null` on a fresh day, `after: "END"` to continue a plan that
+already has blocks on it, or a handle to build around a meeting already there.
+Leave it out and tmbx refuses the whole patch rather than guessing — the guess
+would be a whole day in the wrong place, and it would not announce itself.
+
+After that, `after` is only for a block that must sit somewhere *other* than
+after the previous one — one that has to hang off something already on the plan.
+Everything in between says nothing.
 
 The chain's first block cannot be `ap` — it has nothing to start after — and a
 `"t":"BG"` block does not count as something to follow, because background

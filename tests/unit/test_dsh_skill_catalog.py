@@ -303,6 +303,13 @@ def test_exact_schedule_does_not_pause_for_non_material_classification() -> None
     )
     assert "must sit somewhere *other* than after the previous one" in normalized.lower()
     assert "fixed-start additions use `after: null`" not in normalized.lower()
+    # The exception, and the sentence it replaced. A profile still calling
+    # `after` optional would have the planner omit it on the first add, which
+    # tmbx now refuses -- so the stale half costs a whole planning round, not
+    # just a stale sentence.
+    assert "the first add must give `after`" in normalized.lower()
+    assert "refuses the whole patch rather than guessing" in normalized.lower()
+    assert "`after` is optional on an add" not in normalized.lower()
     # Polarity, not just presence. This once asserted the bare substring
     # "another handle created in the same patch", which the prohibition and its
     # replacement both contain -- so it passed while the sentence said the

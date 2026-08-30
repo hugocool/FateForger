@@ -25,6 +25,15 @@ deliberately unanchored. Omitting it is not "no opinion"; it is the
 opinion that this block follows the previous one, which is what writing
 it there already said.
 
+With one exception, and it is the exception that keeps the rule honest:
+**the first add in a patch must give ``after``.** It has nothing before
+it to follow, so omitting it states nothing, and every default available
+is wrong somewhere it will not be noticed — prepend puts a chain meant
+for this afternoon in front of the morning; ``END`` appends a day that
+starts at 07:00 after a plan that ends at 17:00. So the patch is refused
+and told what to say. That is one field per patch, on the one op
+carrying information the list genuinely cannot: where the chain begins.
+
 Omission has to be readable in the data, not only in the parse, so the
 default is the sentinel ``PREV`` rather than a missing key: ``after``
 absent and ``after: "PREV"`` are the same patch. That matters because
@@ -84,10 +93,15 @@ from .models import (
 END = "END"
 
 #: What an add means when it does not say where it goes: follow the add
-#: listed before it, or — for the first add in the patch — nothing, which
-#: is what ``after: null`` means. A value rather than an absent key, so
-#: the journal records the patch the model actually wrote (see the module
-#: docstring). Reserved in the anchor namespace exactly as ``END`` is.
+#: listed before it. A value rather than an absent key, so the journal
+#: records the patch the model actually wrote (see the module docstring).
+#: Reserved in the anchor namespace exactly as ``END`` is.
+#:
+#: It survives ``_add_anchors`` unresolved on the FIRST add of a patch,
+#: because there is no add before that one and no answer the patch has
+#: stated. That is not a resolved anchor, it is the absence of one, and
+#: ``_validate_add`` refuses it there rather than picking between two
+#: plausible days.
 PREV = "PREV"
 
 
@@ -107,13 +121,16 @@ class AddBlock(_OpBase):
         description=(
             "Where this block goes. OMIT IT to put the block after the add "
             "listed before it in this same patch — adds are applied in the "
-            "order you list them, so a chain needs no anchors at all. The "
-            "first add in a patch, with `after` omitted, prepends. Give "
-            "`after` only to override that: a handle (one already on the "
-            "plan, or one this same patch adds), 'END' to append to the "
-            "plan's current end, or null to prepend. Adds are applied in "
-            "dependency order, so an anchor may name an add listed later; "
-            "two adds anchored on each other are refused as a cycle."
+            "order you list them, so a chain restates nothing. The FIRST "
+            "add in a patch is the exception and must give `after`: it has "
+            "nothing before it to follow, and a patch that does not say "
+            "where its chain starts is refused rather than guessed. Give "
+            "`after` on any other add only to override the sequence. The "
+            "values: a handle (one already on the plan, or one this same "
+            "patch adds), 'END' to append to the plan's current end, or "
+            "null to prepend. Adds are applied in dependency order, so an "
+            "anchor may name an add listed later; two adds anchored on "
+            "each other are refused as a cycle."
         ),
     )
     h: str = Field(description="Handle for the new block")
@@ -182,13 +199,28 @@ def _add_anchors(patch: Patch) -> dict[int, str | None]:
     ``previous`` advances on every add, including one that overrode its
     own anchor. "The add before this one" is a fact about the list, and
     an op that said where it belongs has not stopped being in the list.
+    It advances on adds ONLY: a remove, update or move ahead of the first
+    add positions nothing, so the add after them is still the first one.
+
+    The first add's ``PREV`` comes back OUT as ``PREV`` — unresolved. It
+    is the one place the rule meets a question the list cannot answer,
+    and every answer available is a guess: prepend puts a chain written
+    for this afternoon in front of the morning, and ``END`` is wrong for
+    any day that starts before the plan's last block. Returning the
+    sentinel is how the absence reaches ``_validate_add``, which refuses
+    it. Callers must therefore treat ``PREV`` in this map as "no anchor
+    was stated", never as a handle; nothing downstream of
+    ``validate_patch`` can see one, because ``apply_ops`` raises first.
     """
     anchors: dict[int, str | None] = {}
     previous: str | None = None
     for index, op in enumerate(patch.ops):
         if not isinstance(op, AddBlock):
             continue
-        anchors[index] = previous if op.after == PREV else op.after
+        if op.after != PREV:
+            anchors[index] = op.after
+        else:
+            anchors[index] = previous if previous is not None else PREV
         previous = op.h
     return anchors
 
@@ -276,9 +308,11 @@ def _validate_add(
     added: set[str],
 ) -> list[str]:
     """``anchor`` is the op's EFFECTIVE anchor from ``_add_anchors`` —
-    ``PREV`` already resolved to the previous add's handle, or to ``None``
-    for the first add in the patch. Nothing below reads ``op.after``: the
-    checks have to be about the position the op will actually land in.
+    ``PREV`` already resolved to the previous add's handle, or still
+    ``PREV`` for the first add in the patch, which has no previous add
+    and therefore no resolved position. Nothing below reads ``op.after``:
+    the checks have to be about the position the op will actually land
+    in, and for the first add there is no such position to check.
 
     ``anchorable`` (every pre-patch handle, plus every handle this patch
     adds) governs whether an anchor reference is meaningful. Both halves
@@ -309,7 +343,26 @@ def _validate_add(
         )
     if op.h in existing_effective or op.h in added:
         errors.append(f"op {index}: handle {op.h} already exists")
-    if anchor not in (None, END) and anchor not in anchorable:
+    if anchor == PREV:
+        # Refused, not defaulted. Both defaults are whole-day-wrong for
+        # the case they are not written for: prepend lands "add three
+        # blocks to this afternoon" in front of the morning, and END
+        # lands "here is my day" after whatever the plan already held.
+        # Neither announces itself — the patch applies, the day is wrong,
+        # and the planner is told nothing. One `after` on one op buys the
+        # answer, so the cost of asking is a field and the cost of
+        # guessing is a day.
+        errors.append(
+            f"op {index}: {op.h} is the first add and omits `after`, so nothing "
+            f"says where the chain starts. Give this one op an `after`: 'END' to "
+            f"continue the plan, a handle to build around a block already on it, "
+            f"or null to start the day. Every add after it can still omit "
+            f"`after` — they follow this one."
+        )
+    elif anchor not in (None, END) and anchor not in anchorable:
+        # elif, so one missing answer is one error. Reporting PREV as an
+        # anchor "not found" as well would send a planner off to create a
+        # handle that is this module's own sentinel.
         errors.append(f"op {index}: anchor {anchor} not found")
     errors.extend(
         f"op {index}: {op.h} {msg}"
