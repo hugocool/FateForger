@@ -19,6 +19,22 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+class CandidateNotApplied(RuntimeError):
+    """A validated candidate was drafted without a tmbx patch behind it.
+
+    The host attaches the commit basis by watching the ``plan_apply`` the
+    planner made, never by asking the model for one -- so a candidate drafted
+    without applying anything has nothing to commit. Raised at the turn that
+    produced it, because the alternative is what used to happen: the candidate
+    is stored, rendered, approved, and refused three turns later as
+    ``malformed_input`` on ``plan_commit({}, {})``.
+
+    Lives here rather than beside the planner because both the kernel that
+    answers it and the adapter that raises it import this module, and neither
+    imports the other.
+    """
+
+
 class ArtifactKind(StrEnum):
     """Stable artifact vocabulary for a planning session."""
 

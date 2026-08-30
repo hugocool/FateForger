@@ -26,6 +26,7 @@ from .session_contracts import (
     ArtifactKind,
     ArtifactSnapshot,
     AwaitingApproval,
+    CandidateNotApplied,
     AwaitingUser,
     BlockerOption,
     Cancelled,
@@ -432,10 +433,23 @@ class AdaptiveTimeboxing:
         await progress_sink.emit({"phase": "planning", "status": "started"})
         try:
             result = await self._planner.produce(brief, progress_sink)
+        except CandidateNotApplied as exc:
+            # Not a dependency failure: the provider answered, and what it
+            # answered cannot be committed. Mapping it to
+            # ``dependency_unavailable`` would say "temporarily" about
+            # something that will repeat identically, and would hide the one
+            # sentence naming the step that was skipped.
+            logger.error("planner offered an unapplied candidate: %s", exc)
+            outcome = TurnFailed(
+                code="candidate_not_applied",
+                message=(
+                    "The plan could not be prepared for commit. Ask again and "
+                    "it will be rebuilt."
+                ),
+            )
         except Exception as exc:  # noqa: BLE001 - provider details stay behind port
             logger.error(
-                "planner invocation failed",
-                extra={"error_type": type(exc).__name__},
+                "planner invocation failed error_type=%s", type(exc).__name__
             )
             outcome = TurnFailed(
                 code="dependency_unavailable",

@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from fateforger.agents.timeboxing.adaptive_timeboxing import ProgressSink
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactKind,
+    CandidateNotApplied,
     PlanningBrief,
     PlanningResult,
 )
@@ -216,6 +217,20 @@ def _with_commit_basis(
     """
 
     if candidate is None:
+        drafted = [
+            draft
+            for draft in result.artifact_updates
+            if draft.kind is ArtifactKind.VALIDATED_CANDIDATE
+        ]
+        if drafted:
+            # Nothing was captured, so there is no patch to attach and none may
+            # be invented. Refusing here costs one turn; storing it costs the
+            # user an approved plan that cannot be committed.
+            raise CandidateNotApplied(
+                "the planner offered a candidate without applying it -- "
+                "call plan_apply on tmbx before submitting a validated "
+                "candidate, so the host can capture the patch to commit"
+            )
         return result
     updates = []
     for draft in result.artifact_updates:
