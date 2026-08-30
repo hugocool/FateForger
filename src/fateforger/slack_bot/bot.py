@@ -127,15 +127,20 @@ async def _await_stop_flag(stop_file: Path) -> None:
     gives the bot a chance to close its Slack connection, its HTTP session and
     its runtime rather than dying mid-turn.
 
-    The file is removed here rather than at startup so that a flag set while the
-    bot is down still stops the next one that reads it; clearing it on boot
-    would silently swallow the request.
+    The flag is NOT removed here. It was, so that a flag set while the bot was
+    down would still stop the next one to read it -- and the cost of that was
+    measured: two bots were running, the first to notice deleted the flag and
+    exited, and the second never saw it. One flag stopped one bot, which is the
+    opposite of what an operator means by "stop the bot". A stale process then
+    shared the Slack socket with the new one and events went to whichever,
+    which looks exactly like intermittent bugs in the code under test.
+
+    Clearing it is the launcher's job, once, before it starts anything.
     """
 
     while True:
         if stop_file.exists():
             logger.info("Stop flag observed at %s; shutting down", stop_file)
-            stop_file.unlink(missing_ok=True)
             return
         await asyncio.sleep(_STOP_POLL_SECONDS)
 

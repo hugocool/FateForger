@@ -44,17 +44,28 @@ async def test_the_watcher_returns_once_the_flag_appears(tmp_path) -> None:
     flag.write_text("")
     await asyncio.wait_for(watching, timeout=5)
 
-    # Removed on observation, not at startup: a flag set while the bot is down
-    # must still stop the next one that reads it.
-    assert not flag.exists()
+    # Left in place. Two bots once shared a Slack socket because the first to
+    # see the flag deleted it and the second never did -- so one flag stopped
+    # one bot, and a stale process kept answering messages. Clearing it belongs
+    # to the launcher, once, before it starts anything.
+    assert flag.exists()
 
 
-async def test_a_flag_already_present_stops_the_next_start(tmp_path) -> None:
-    """Catches a boot that clears the request it was supposed to obey."""
+async def test_one_flag_stops_every_watcher(tmp_path) -> None:
+    """Catches a stop that reaches only whichever process looked first.
+
+    Measured 2026-08-30: two bots were running, one saw the flag and removed
+    it on its way out, and the other kept its Slack socket. Events then went to
+    whichever, which is indistinguishable from intermittent bugs in whatever is
+    under test.
+    """
 
     flag = tmp_path / "bot.stop"
+    watchers = [
+        asyncio.ensure_future(bot._await_stop_flag(flag)) for _ in range(3)
+    ]
+
     flag.write_text("")
+    await asyncio.wait_for(asyncio.gather(*watchers), timeout=5)
 
-    await asyncio.wait_for(bot._await_stop_flag(flag), timeout=5)
-
-    assert not flag.exists()
+    assert flag.exists()
