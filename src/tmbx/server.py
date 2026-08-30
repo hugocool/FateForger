@@ -108,12 +108,28 @@ deliberately, not dropped in passing.
 
 Address blocks by handle, taken from the "H" column of the rendered plan —
 never by position. A handle is 2-5 uppercase letters then 1-2 digits (e.g.
-DW1, MTNG12). A patch is a set: op order does not matter. An add's `after`
-may name a block on the rendered plan or one this same patch adds — adds
-are applied in dependency order — so a whole day can be chained in one
-patch, each block starting when the one before it ends. Two adds anchored
-on each other are refused as a cycle. A move's `after` is different: it
-names a position on the plan as rendered.
+DW1, MTNG12).
+
+Adds are applied in the order you list them. An add with no `after` goes
+after the add listed before it, so a whole day chains in one patch on a
+single anchor — write the blocks down in the order they happen.
+
+That anchor goes on the first add, and it is required. The first add has
+nothing before it to follow, so it must say where the chain starts: "END"
+to continue the plan as it stands, a handle to build around a block already
+on it, or null to go in front of everything. A first add that omits `after`
+is refused, reason "invalid_patch" — tmbx will not choose between putting
+your chain before the day and after it.
+
+Give any other add an `after` only to override the sequence: a handle on
+the rendered plan (a meeting you must build around), a handle this same
+patch adds, "END", or null. An anchor may name an add listed later — adds
+are applied in dependency order — and two adds anchored on each other are
+refused as a cycle.
+
+Remove, update and move are still a set: their order among themselves
+changes nothing. A move's `after` is different from an add's — it names a
+position on the plan as rendered, and it is always required.
 
 Some rendered blocks are FOREIGN: real calendar events tmbx did not create
 (someone else's meeting, an invite). They occupy real time and the chain
@@ -129,13 +145,26 @@ refused outright, reason "foreign_block".
 
 _OPS_SCHEMA_PREAMBLE = """\
 Four ops: add, remove, update, move. Every op addresses a block by its
-handle (h) — never by position; a patch is a set, so op order never
-matters. add/move accept `after`: a handle to insert after, null to
-prepend, or the literal "END" to append (default "END"). An add's `after`
-may name a handle another op in the same patch creates — adds are applied
-in dependency order, so one patch can chain a whole day off a single
-anchor — while a move's `after` names a position on the plan as rendered.
-Two adds anchored on each other are refused as a cycle.
+handle (h) — never by position.
+
+ADDS ARE APPLIED IN THE ORDER YOU LIST THEM. Omit `after` and the block
+goes after the add listed before it. So the ordinary way to write a day is
+to list the blocks in the order they happen and give exactly one anchor.
+
+THE FIRST ADD MUST GIVE `after`; it has nothing before it to follow. Say
+"END" to continue the plan, a handle to start after a block already on it,
+or null to go in front of everything. Omitting it there is refused.
+
+On any other add, `after` is the override, for a block that must sit
+somewhere other than after the previous one: a handle to insert after,
+null to prepend, or the literal "END" to append. An add's `after` may name
+a handle another op in the same patch creates, including one listed later
+— adds are applied in dependency order — and two adds anchored on each
+other are refused as a cycle.
+
+Remove, update and move remain a set: their order among themselves changes
+nothing. A move's `after` names a position on the plan as rendered and has
+no "previous"; the default is "END".
 
 A new handle (add's `h`) must be 2-5 uppercase letters then 1-2 digits
 (e.g. DW1, MTNG12) — anything else is refused as reason "invalid_patch"

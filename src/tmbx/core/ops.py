@@ -1,16 +1,58 @@
 # src/tmbx/core/ops.py
 """Level 1 op vocabulary.
 
-A patch is a SET: op order is irrelevant, and a patch is verifiable before
-it is applied. Sequencing is real only across patches, at the transaction
-boundary.
+**SPIKE (spike/patch-order-significant).** A patch's adds are a SEQUENCE.
+Remove, update and move remain a set — their results depend on handles and
+anchors alone — but an add with no ``after`` follows the add listed before
+it, and two adds resolving to one position keep the order the patch listed
+them in. What that buys is stated below; what it costs is in
+``.superpowers/sdd/2026-08-29-adaptive-timeboxing-session-kernel/spike-patch-order-report.md``.
 
-Set semantics is a claim about ORDER, not about scope. An add's ``after``
-may name a handle the same patch adds, and the patch stays a set: adds are
-applied in dependency order, computed from the anchors themselves, so the
-same patch listed in any order lands the same plan. What set semantics
-forbids is a result that depends on where an op sat in the list — not a
-patch that describes a chain.
+The rule this replaces was: op order is irrelevant, and adds sharing a
+resolved position order by handle. It was a real guarantee and it was
+paid for in a real currency — the planner had to name an anchor on every
+block to state a sequence it had already stated by writing the ops down
+in order. ``after: "END"`` read as "append, in order" and was not:
+``Lunch`` then ``Gym`` then ``Walk``, all ``after: "END"``, landed as
+``Walk``, ``Gym``, ``Lunch``, because ``BW1`` sorts before ``MG1`` sorts
+before ``ZL1``. The day silently disagreed with the patch that built it,
+and nothing in the patch was wrong.
+
+Anchors did not stop mattering. ``after`` is now an OVERRIDE — the way a
+block says it belongs somewhere other than after the one before it — and
+it says so exactly as it always did: a handle, ``"END"``, or ``null`` for
+deliberately unanchored. Omitting it is not "no opinion"; it is the
+opinion that this block follows the previous one, which is what writing
+it there already said.
+
+With one exception, and it is the exception that keeps the rule honest:
+**the first add in a patch must give ``after``.** It has nothing before
+it to follow, so omitting it states nothing, and every default available
+is wrong somewhere it will not be noticed — prepend puts a chain meant
+for this afternoon in front of the morning; ``END`` appends a day that
+starts at 07:00 after a plan that ends at 17:00. So the patch is refused
+and told what to say. That is one field per patch, on the one op
+carrying information the list genuinely cannot: where the chain begins.
+
+Omission has to be readable in the data, not only in the parse, so the
+default is the sentinel ``PREV`` rather than a missing key: ``after``
+absent and ``after: "PREV"`` are the same patch. That matters because
+``patch.model_dump_json()`` is what the journal stores, and a mechanism
+that lived in ``model_fields_set`` would write ``after: null`` — which
+means *prepend* — into the record of a patch that meant *follow the one
+before*. A sentinel round-trips; parse metadata does not. ``PREV`` cannot
+collide with a handle for the same reason ``END`` cannot: handles are
+letters then digits, and neither word has digits.
+
+A chain built out of ``PREV`` can never cycle: the anchor it resolves to
+is always an add listed earlier, so the edge points backwards through the
+list by construction. An explicit ``after`` may still name an add further
+down, so the dependency layering below is still what places adds — order
+narrows the graph, it does not replace it.
+
+Set semantics remains a claim about ORDER, not about scope. An add's
+``after`` may name a handle the same patch adds, and the adds are applied
+in dependency order.
 
 That distinction was learned the expensive way. Anchors used to resolve
 against the pre-patch plan alone, which made a chain unexpressible in one
@@ -20,11 +62,16 @@ and tmbx refused all thirteen relative ops (tmbx journal entry 133,
 2026-08-30). Four seconds later the model gave up and pinned all fourteen
 blocks to wall-clock times, which is the plan ``commitment.overspecified``
 exists to call a mistake. The rule meant to keep patches verifiable was
-pushing the model toward the worst available day.
+pushing the model toward the worst available day. This spike is the same
+observation one step further on: the anchor was accepted, and the model
+still had to write fourteen of them to say a thing the list already said.
 
 Addressing is by handle. Never by index — an index-addressed op is
 meaningless against any other plan and therefore useless as a training
-example.
+example. **Op position is not addressing.** ``PREV`` resolves against the
+patch's own list, never against the plan, so no op here names a block by
+where it sits on the day; a patch remains portable to any plan its
+handles are meaningful on.
 """
 
 from __future__ import annotations
@@ -45,6 +92,18 @@ from .models import (
 
 END = "END"
 
+#: What an add means when it does not say where it goes: follow the add
+#: listed before it. A value rather than an absent key, so the journal
+#: records the patch the model actually wrote (see the module docstring).
+#: Reserved in the anchor namespace exactly as ``END`` is.
+#:
+#: It survives ``_add_anchors`` unresolved on the FIRST add of a patch,
+#: because there is no add before that one and no answer the patch has
+#: stated. That is not a resolved anchor, it is the absence of one, and
+#: ``_validate_add`` refuses it there rather than picking between two
+#: plausible days.
+PREV = "PREV"
+
 
 class _OpBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -54,17 +113,24 @@ class _OpBase(BaseModel):
 
 
 class AddBlock(_OpBase):
-    """Insert a new block after another one."""
+    """Insert a new block. By default, after the add listed before it."""
 
     op: Literal["add"] = "add"
     after: str | None = Field(
-        default=END,
+        default=PREV,
         description=(
-            "Handle to insert after — one already on the plan, or one this same "
-            "patch adds; None prepends; 'END' appends. Adds are applied in "
-            "dependency order, so a whole chain can be built in one patch; two "
-            "adds anchored on each other are refused as a cycle. Use None for "
-            "fixed-start additions unless ordering against another block matters."
+            "Where this block goes. OMIT IT to put the block after the add "
+            "listed before it in this same patch — adds are applied in the "
+            "order you list them, so a chain restates nothing. The FIRST "
+            "add in a patch is the exception and must give `after`: it has "
+            "nothing before it to follow, and a patch that does not say "
+            "where its chain starts is refused rather than guessed. Give "
+            "`after` on any other add only to override the sequence. The "
+            "values: a handle (one already on the plan, or one this same "
+            "patch adds), 'END' to append to the plan's current end, or "
+            "null to prepend. Adds are applied in dependency order, so an "
+            "anchor may name an add listed later; two adds anchored on "
+            "each other are refused as a cycle."
         ),
     )
     h: str = Field(description="Handle for the new block")
@@ -115,6 +181,48 @@ Op = Annotated[
 class Patch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ops: list[Op] = Field(min_length=1)
+
+
+def _add_anchors(patch: Patch) -> dict[int, str | None]:
+    """Every add's effective anchor, keyed by its index in ``patch.ops``.
+
+    The one place ``PREV`` is resolved. Validation and application both
+    read this map rather than ``op.after``, so there is no path on which
+    a patch is checked against one anchor and applied against another —
+    the failure mode that would produce a patch tmbx accepted and then
+    laid out differently.
+
+    Keyed by op index, not by handle, because at validation time handles
+    are not yet known to be unique: a patch claiming one handle twice is
+    refused, but the refusal has to survive being computed first.
+
+    ``previous`` advances on every add, including one that overrode its
+    own anchor. "The add before this one" is a fact about the list, and
+    an op that said where it belongs has not stopped being in the list.
+    It advances on adds ONLY: a remove, update or move ahead of the first
+    add positions nothing, so the add after them is still the first one.
+
+    The first add's ``PREV`` comes back OUT as ``PREV`` — unresolved. It
+    is the one place the rule meets a question the list cannot answer,
+    and every answer available is a guess: prepend puts a chain written
+    for this afternoon in front of the morning, and ``END`` is wrong for
+    any day that starts before the plan's last block. Returning the
+    sentinel is how the absence reaches ``_validate_add``, which refuses
+    it. Callers must therefore treat ``PREV`` in this map as "no anchor
+    was stated", never as a handle; nothing downstream of
+    ``validate_patch`` can see one, because ``apply_ops`` raises first.
+    """
+    anchors: dict[int, str | None] = {}
+    previous: str | None = None
+    for index, op in enumerate(patch.ops):
+        if not isinstance(op, AddBlock):
+            continue
+        if op.after != PREV:
+            anchors[index] = op.after
+        else:
+            anchors[index] = previous if previous is not None else PREV
+        previous = op.h
+    return anchors
 
 
 def _block_invariant_errors(t: ET, p: Timing, anchor_source: AnchorSource | None) -> list[str]:
@@ -194,11 +302,19 @@ def _boundary_relaxation_errors(index: int, op: UpdateBlock, target: Block) -> l
 def _validate_add(
     index: int,
     op: AddBlock,
+    anchor: str | None,
     anchorable: set[str],
     existing_effective: set[str],
     added: set[str],
 ) -> list[str]:
-    """``anchorable`` (every pre-patch handle, plus every handle this patch
+    """``anchor`` is the op's EFFECTIVE anchor from ``_add_anchors`` —
+    ``PREV`` already resolved to the previous add's handle, or still
+    ``PREV`` for the first add in the patch, which has no previous add
+    and therefore no resolved position. Nothing below reads ``op.after``:
+    the checks have to be about the position the op will actually land
+    in, and for the first add there is no such position to check.
+
+    ``anchorable`` (every pre-patch handle, plus every handle this patch
     adds) governs whether an anchor reference is meaningful. Both halves
     earn their place: a removed handle still names a real pre-patch
     position (see ``_resolve_anchor``), and an added handle names a block
@@ -206,11 +322,11 @@ def _validate_add(
     so the anchor is placed first). An anchor naming neither names nothing,
     and is refused.
 
-    Deliberately the WHOLE add set, not the adds listed so far. A patch is
-    a set, so an anchor naming an add three ops further down the list is
-    the same patch as one naming an add three ops back; accepting only the
-    second would make validity depend on list order — the one thing set
-    semantics exists to rule out.
+    Deliberately the WHOLE add set, not the adds listed so far. An
+    explicit anchor naming an add three ops further down is legal — the
+    layering places it first — so "not yet listed" is not "not there".
+    A ``PREV`` anchor can only ever name an add already listed, so this
+    breadth costs it nothing.
 
     ``existing_effective`` (pre-patch minus this same patch's removals)
     governs whether the new block's OWN handle collides — a handle freed by
@@ -227,8 +343,27 @@ def _validate_add(
         )
     if op.h in existing_effective or op.h in added:
         errors.append(f"op {index}: handle {op.h} already exists")
-    if op.after not in (None, END) and op.after not in anchorable:
-        errors.append(f"op {index}: anchor {op.after} not found")
+    if anchor == PREV:
+        # Refused, not defaulted. Both defaults are whole-day-wrong for
+        # the case they are not written for: prepend lands "add three
+        # blocks to this afternoon" in front of the morning, and END
+        # lands "here is my day" after whatever the plan already held.
+        # Neither announces itself — the patch applies, the day is wrong,
+        # and the planner is told nothing. One `after` on one op buys the
+        # answer, so the cost of asking is a field and the cost of
+        # guessing is a day.
+        errors.append(
+            f"op {index}: {op.h} is the first add and omits `after`, so nothing "
+            f"says where the chain starts. Give this one op an `after`: 'END' to "
+            f"continue the plan, a handle to build around a block already on it, "
+            f"or null to start the day. Every add after it can still omit "
+            f"`after` — they follow this one."
+        )
+    elif anchor not in (None, END) and anchor not in anchorable:
+        # elif, so one missing answer is one error. Reporting PREV as an
+        # anchor "not found" as well would send a planner off to create a
+        # handle that is this module's own sentinel.
+        errors.append(f"op {index}: anchor {anchor} not found")
     errors.extend(
         f"op {index}: {op.h} {msg}"
         for msg in _block_invariant_errors(op.t, op.p, op.anchor_source)
@@ -248,7 +383,17 @@ def _validate_touch(
         return [f"op {index}: handle {op.h} not found"]
     if op.h in touched:
         errors.append(f"op {index}: {op.h} is touched by more than one op")
-    if isinstance(op, MoveBlock) and op.after not in (None, END) and op.after not in existing:
+    if isinstance(op, MoveBlock) and op.after == PREV:
+        # Named rather than left to fall through as "anchor PREV not
+        # found". A move has no previous: it names a position on the plan
+        # as rendered, and the spike deliberately did not change that. A
+        # model that carried the add rule across deserves to be told which
+        # rule it crossed, not to be told PREV is a missing handle.
+        errors.append(
+            f"op {index}: {op.h} — 'PREV' is an add-only anchor. A move names a "
+            f"position on the plan as rendered: give a handle, 'END', or null."
+        )
+    elif isinstance(op, MoveBlock) and op.after not in (None, END) and op.after not in existing:
         errors.append(f"op {index}: anchor {op.after} not found")
     if isinstance(op, UpdateBlock):
         # Check the invariants against what the MERGE would actually
@@ -440,12 +585,17 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
     existing_effective = existing_pre - removed
     add_ops = [op for op in patch.ops if isinstance(op, AddBlock)]
     anchorable = existing_pre | {op.h for op in add_ops}
+    anchors = _add_anchors(patch)
     touched: set[str] = set()
     added: set[str] = set()
 
     for index, op in enumerate(patch.ops):
         if isinstance(op, AddBlock):
-            errors.extend(_validate_add(index, op, anchorable, existing_effective, added))
+            errors.extend(
+                _validate_add(
+                    index, op, anchors[index], anchorable, existing_effective, added
+                )
+            )
             added.add(op.h)
             continue
 
@@ -457,7 +607,16 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
     if cyclic:
         errors.append(f"cyclic move anchors: {', '.join(sorted(cyclic))}")
 
-    cyclic_adds = _cyclic_anchors({op.h: op.after for op in add_ops}, pre_order, removed)
+    # Effective anchors, so a PREV chain is checked as the graph it
+    # actually is. It cannot cycle — every PREV edge points at an add
+    # listed earlier — but building the graph from op.after would feed
+    # this the literal string "PREV", which is nobody's handle, and the
+    # cycle check would go quiet on the explicit anchors around it.
+    cyclic_adds = _cyclic_anchors(
+        {op.h: anchors[index] for index, op in enumerate(patch.ops) if isinstance(op, AddBlock)},
+        pre_order,
+        removed,
+    )
     if cyclic_adds:
         errors.append(f"cyclic add anchors: {', '.join(sorted(cyclic_adds))}")
 
@@ -491,18 +650,37 @@ def _resolve_anchor(after: str, pre_order: list[str], known: set[str]) -> str | 
 
 
 def _insert_batch(
-    blocks: list[Block], items: list[tuple[Block, str | None]], pre_order: list[str]
+    blocks: list[Block],
+    items: list[tuple[Block, str | None]],
+    pre_order: list[str],
+    *,
+    rank: Callable[[str], object],
 ) -> list[Block]:
     """Insert many new blocks against ``blocks`` in one pass.
 
     Multiple ops can share the same anchor (or ``None``/``END``). Inserting
-    them one at a time, in whatever order the patch happened to list them,
-    would make each insert leapfrog the last — the result would depend on
-    op order, which is exactly what set semantics forbids. Instead, every
-    item's position is resolved (via ``_resolve_anchor``) against the
-    anchor it names, and items sharing a position are ordered by their own
-    handle: a group's relative order comes from op *content*, never from
-    where the op sat in the list.
+    them one at a time, as each is encountered, would make each insert
+    leapfrog the last — three blocks all appended to the same end would
+    come out reversed. So every item's position is resolved (via
+    ``_resolve_anchor``) against the anchor it names, and items sharing a
+    position are then ordered by ``rank``.
+
+    ``rank`` is a parameter and not a constant because the two phases
+    calling this genuinely differ in what a tie means:
+
+    * **Adds** rank by position in ``patch.ops``. Three adds all saying
+      ``after: "END"`` land in the order the patch listed them, because
+      the patch listing them in that order is the only statement of intent
+      available and it was previously discarded.
+    * **Moves** rank by handle, unchanged by this spike. A move's ``after``
+      is always explicit — there is no ``PREV`` for a move — so two moves
+      sharing an anchor have said nothing about their relative order, and
+      handle order is a stable answer to a question nobody asked.
+
+    That asymmetry is a wart and this docstring is where it is admitted:
+    an add and a move sharing one anchor tie-break by different keys. It
+    is invisible in practice only because the phases never share a call —
+    ``_apply_moves`` runs to completion before the first add resolves.
     """
     known = {b.h for b in blocks}
     prepend: list[Block] = []
@@ -524,14 +702,14 @@ def _insert_batch(
         else:
             after_map.setdefault(resolved, []).append(block)
 
-    def _by_handle(group: list[Block]) -> list[Block]:
-        return sorted(group, key=lambda b: b.h)
+    def _ranked(group: list[Block]) -> list[Block]:
+        return sorted(group, key=lambda b: rank(b.h))  # type: ignore[arg-type, return-value]
 
-    result = _by_handle(prepend)
+    result = _ranked(prepend)
     for existing in blocks:
         result.append(existing)
-        result.extend(_by_handle(after_map.get(existing.h, [])))
-    result.extend(_by_handle(trailing))
+        result.extend(_ranked(after_map.get(existing.h, [])))
+    result.extend(_ranked(trailing))
     return result
 
 
@@ -619,7 +797,7 @@ def _apply_moves(blocks: list[Block], patch: Patch, pre_order: list[str]) -> lis
                 "passing the upfront cycle check"
             )
         items = [(by_handle[h], op.after) for h, op in ready.items()]
-        working = _insert_batch(working, items, pre_order)
+        working = _insert_batch(working, items, pre_order, rank=lambda h: h)
         for h in ready:
             del pending[h]
 
@@ -636,23 +814,29 @@ def _apply_adds(
     relative. That anchor has to be placed first, so adds go in dependency
     layers exactly as moves do: each round, every add
     ``_walk_back_dependency`` says has no remaining dependency is placed
-    together by ``_insert_batch`` (which tie-breaks anything sharing a
-    resolved anchor by handle), and placing a layer makes its handles
-    available for the next. Layer membership is a function of the anchors
-    alone — data, never ``patch.ops`` position — so the same patch listed
-    in any order lands the same plan.
+    together by ``_insert_batch``, and placing a layer makes its handles
+    available for the next.
 
-    Two adds sharing one anchor always share a layer, since an add's layer
-    is determined by what it names; ``_insert_batch``'s single-pass
-    grouping is therefore still what decides their relative order, exactly
-    as before this phase learned to layer.
+    **What the spike changed, and what it did not.** Layer membership is
+    still a function of the anchors alone — an add whose anchor is not yet
+    placed waits, wherever in the list it sat. What changed is the two
+    things layering never decided: which anchor an add has when it names
+    none (``_add_anchors``: the previous add's handle), and which of two
+    adds sharing one resolved position goes first (``_insert_batch``: the
+    one listed first). So the layering machinery still earns its place and
+    is not subsumed. It answers "can this be placed yet"; op order answers
+    "where does it want to go" and "which of these equals wins". A chain
+    written with no anchors at all collapses the first question — every
+    ``PREV`` edge points backwards through the list, so the layers come
+    out one add deep, in list order — but an explicit anchor may still
+    name an add listed later, and that case is exactly what the layers are
+    for.
 
     Blocks are minted before any layering, one ``mint_uid`` call per op in
     ``patch.ops`` order. Uid identity is opaque and fresh per add — no op
     can address it and nothing compares it across patches — so which
-    minted uid lands on which block is not part of what "the same patch
-    lands the same plan" claims, and the layering deliberately does not
-    reach into it.
+    minted uid lands on which block is not something any caller can
+    observe, and the layering deliberately does not reach into it.
 
     ``validate_patch`` rejects a cyclic add graph before ``apply_ops`` ever
     calls this; the upfront check repeats it as a defensive backstop, the
@@ -663,7 +847,16 @@ def _apply_adds(
         return blocks
 
     removed = {op.h for op in patch.ops if isinstance(op, RemoveBlock)}
-    cyclic = _cyclic_anchors({op.h: op.after for op in add_ops}, pre_order, removed)
+    anchors = _add_anchors(patch)
+    # Handles are unique by the time this runs: apply_ops raises on any
+    # validate_patch error, and a duplicate handle is one of them. That is
+    # what lets these two maps be keyed by handle rather than op index.
+    anchor_of = {op.h: anchors[index] for index, op in enumerate(patch.ops)
+                 if isinstance(op, AddBlock)}
+    listed_at = {op.h: index for index, op in enumerate(patch.ops)
+                 if isinstance(op, AddBlock)}
+
+    cyclic = _cyclic_anchors(anchor_of, pre_order, removed)
     if cyclic:
         raise ValueError(f"cyclic add anchors: {', '.join(sorted(cyclic))}")
 
@@ -686,10 +879,10 @@ def _apply_adds(
     while pending:
         unplaced = set(pending)
         ready = {
-            h: op
-            for h, op in pending.items()
-            if op.after in (None, END)
-            or _walk_back_dependency(op.after, pre_order, unplaced, removed, h) is None
+            h: anchor_of[h]
+            for h in pending
+            if anchor_of[h] in (None, END)
+            or _walk_back_dependency(anchor_of[h], pre_order, unplaced, removed, h) is None
         }
         if not ready:
             # Defensive only: the upfront _cyclic_anchors check above
@@ -699,7 +892,10 @@ def _apply_adds(
                 "passing the upfront cycle check"
             )
         working = _insert_batch(
-            working, [(minted[h], op.after) for h, op in ready.items()], pre_order
+            working,
+            [(minted[h], after) for h, after in ready.items()],
+            pre_order,
+            rank=lambda h: listed_at[h],
         )
         for h in ready:
             del pending[h]
@@ -745,13 +941,16 @@ def apply_ops(plan: Plan, patch: Patch, *, mint_uid: Callable[[], str]) -> Plan:
       chain gets built in one patch — so adds are applied in dependency
       layers of their own, computed from the anchors by the same
       ``_walk_back_dependency``. A cycle among them has no valid layer and
-      is rejected by ``validate_patch`` before this runs.
+      is rejected by ``validate_patch`` before this runs. **Adds are the
+      one phase this spike made order-significant:** an add naming no
+      anchor takes the previous add's handle (``_add_anchors``), and two
+      adds landing on one position keep their listed order.
 
     Within any phase, several ops resolving to the same anchor are placed
-    by ``_insert_batch`` in one pass, tie-broken by the new block's own
-    handle — content, never list position. That chain of "resolves against
-    data, not list position" at every step is what makes the whole patch a
-    set rather than a sequence.
+    by ``_insert_batch`` in one pass. Moves tie-break by handle; adds
+    tie-break by position in ``patch.ops``. So remove, update and move
+    remain a set — reorder them freely and the plan is identical — while
+    the add phase reads the list as written.
 
     Args:
         plan: Pre-patch plan. Not mutated.
@@ -778,6 +977,7 @@ def apply_ops(plan: Plan, patch: Patch, *, mint_uid: Callable[[], str]) -> Plan:
 __all__ = [
     "AddBlock",
     "END",
+    "PREV",
     "MoveBlock",
     "Op",
     "Patch",
