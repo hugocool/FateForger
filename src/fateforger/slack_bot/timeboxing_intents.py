@@ -38,6 +38,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     ReviseArtifact,
     TimeboxIntent,
 )
+from fateforger.core.llm_attribution import llm_attribution
 from fateforger.slack_bot.timeboxing_commit import TimeboxCommitMeta
 
 
@@ -295,13 +296,21 @@ class TimeboxingIntentInterpreter:
             separators=(",", ":"),
             sort_keys=True,
         )
-        result = await self.model_client.create(
-            [
-                SystemMessage(content=_SYSTEM_PROMPT),
-                UserMessage(content=prompt, source="user"),
-            ],
-            json_output=schema,
-        )
+        # Nothing dispatches this call through the AutoGen runtime -- it is
+        # awaited straight from the Slack listener -- so without a name here
+        # its tokens land under agent="unknown" with every other unnamed call.
+        with llm_attribution(
+            agent="timebox_intent_interpreter",
+            call_label="timebox_intent",
+            key=snapshot.session_key,
+        ):
+            result = await self.model_client.create(
+                [
+                    SystemMessage(content=_SYSTEM_PROMPT),
+                    UserMessage(content=prompt, source="user"),
+                ],
+                json_output=schema,
+            )
         content = getattr(result, "content", None)
         if not isinstance(content, str):
             raise ValueError("intent model returned no schema-bound JSON content")

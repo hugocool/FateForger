@@ -119,9 +119,7 @@ async def test_proceed_during_capture_becomes_advance() -> None:
     client = _SchemaOutputClient({"decision": "advance", "facts": []})
     interpreter = TimeboxingIntentInterpreter(client)
 
-    intent = await interpreter.interpret(
-        "you plan those things", _capture_snapshot()
-    )
+    intent = await interpreter.interpret("you plan those things", _capture_snapshot())
 
     assert intent == Advance()
     assert client.calls[0][1] is InterpretedTimeboxTurn
@@ -135,9 +133,7 @@ async def test_proceed_beside_skeleton_binds_only_trusted_artifact_identity() ->
     client = _SchemaOutputClient({"decision": "approve", "facts": []})
     interpreter = TimeboxingIntentInterpreter(client)
 
-    intent = await interpreter.interpret(
-        "proceed", _snapshot_with_skeleton()
-    )
+    intent = await interpreter.interpret("proceed", _snapshot_with_skeleton())
 
     assert intent == ApproveArtifact(
         artifact_id="skeleton-1",
@@ -270,8 +266,7 @@ def test_legacy_date_metadata_remains_decodable() -> None:
     """Catches versioning making the existing Stage-0 backend inert."""
 
     legacy = (
-        "channel_id=C1&thread_ts=1.0&user_id=U1&date=2026-08-29"
-        "&tz=Europe%2FAmsterdam"
+        "channel_id=C1&thread_ts=1.0&user_id=U1&date=2026-08-29&tz=Europe%2FAmsterdam"
     )
 
     parsed = TimeboxCommitMeta.from_value(legacy)
@@ -764,3 +759,45 @@ def test_every_control_on_the_date_card_has_its_own_action_id() -> None:
     assert action_ids, "the date card rendered no controls at all"
     duplicated = sorted({a for a in action_ids if action_ids.count(a) > 1})
     assert not duplicated, f"Slack will reject the whole card: {duplicated}"
+
+
+class _AttributionRecordingClient:
+    """A model client that records the names its call was made under.
+
+    The interpreter is awaited straight from a Slack listener, so AutoGen has
+    no agent to stamp on the LLMCall event and every one of its tokens landed
+    under agent="unknown". The names have to be in place around ``create``
+    itself -- setting them anywhere else records nothing.
+    """
+
+    def __init__(self, response: dict[str, object]) -> None:
+        self._response = response
+        self.agent_id: str | None = None
+        self.call_label: str | None = None
+
+    async def create(self, messages, *, json_output):
+        from autogen_core._message_handler_context import MessageHandlerContext
+
+        from fateforger.core.llm_attribution import current_call_label
+
+        try:
+            self.agent_id = str(MessageHandlerContext.agent_id())
+        except RuntimeError:
+            self.agent_id = None
+        self.call_label = current_call_label()
+        return SimpleNamespace(content=json.dumps(self._response))
+
+
+@pytest.mark.asyncio
+async def test_intent_call_is_named_for_the_token_counter() -> None:
+    """Catches the interpreter's tokens going back to agent="unknown"."""
+
+    client = _AttributionRecordingClient({"decision": "advance", "facts": []})
+    snapshot = _capture_snapshot()
+
+    await TimeboxingIntentInterpreter(client).interpret("go on", snapshot)
+
+    assert client.call_label == "timebox_intent"
+    # The session key rides in the instance key, which is what lets the
+    # observability path recover channel and thread for free.
+    assert client.agent_id == f"timebox_intent_interpreter/{snapshot.session_key}"

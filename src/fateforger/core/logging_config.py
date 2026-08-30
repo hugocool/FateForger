@@ -993,9 +993,15 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
     agent = _bounded_label(
         _sanitize_agent_label(event.agent_id) or event.agent_id, fallback="unknown"
     )
+    from fateforger.core.llm_attribution import current_call_label  # noqa: PLC0415
+
     call_label = _bounded_label(
         _derive_call_label(
-            call_label=event.call_label,
+            # AutoGen's LLMCallEvent has no call_label of its own, so for an
+            # in-pipeline call this is always the context var -- which is the
+            # only thing that can tell one of an agent's assistants from
+            # another.
+            call_label=event.call_label or current_call_label(),
             stage=event.stage,
             agent_id=event.agent_id,
             event_type=event.type,
