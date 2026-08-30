@@ -47,7 +47,7 @@ from fateforger.slack_bot.progress_events import (
 
 def _gym_assumption() -> dict[str, Any]:
     return {
-        "requirement_id": "skeleton.gym_placement",
+        "requirement_id": "skeleton.ordinary_placement",
         "value": {"start": "17:00", "duration_minutes": 90},
         "why_needed": "the day names gym without a fixed time",
         "invalidated_by": ["fact:gym_time"],
@@ -83,7 +83,7 @@ def test_a_submission_becomes_one_validated_envelope_on_disk(result_file):
     assert answer == "Planning result recorded. End this turn."
     assert [draft.kind for draft in result.artifact_updates] == [ArtifactKind.SKELETON]
     assert result.artifact_updates[0].payload == _skeleton()
-    assert result.assumptions[0].requirement_id == "skeleton.gym_placement"
+    assert result.assumptions[0].requirement_id == "skeleton.ordinary_placement"
     assert result.blockers == []
 
 
@@ -509,7 +509,7 @@ def test_a_brief_turn_carries_the_typed_result_the_planner_submitted(monkeypatch
         ArtifactKind.SKELETON
     ]
     assert reply.planning_result.assumptions[0].requirement_id == (
-        "skeleton.gym_placement"
+        "skeleton.ordinary_placement"
     )
 
 

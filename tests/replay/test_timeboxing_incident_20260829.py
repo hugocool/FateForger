@@ -440,35 +440,43 @@ async def test_the_replayed_day_is_still_saturday_the_twenty_ninth() -> None:
     assert run.snapshot.planning_day == recorded_day
 
 
-async def test_the_gym_placement_is_a_labelled_planner_owned_assumption() -> None:
-    """Catches a gym time that the session never decided and never recorded.
+async def test_a_delegated_placement_is_decided_and_labelled() -> None:
+    """Catches a time the session never decided and never recorded.
 
     "You plan those things" is a delegation. Honouring it means choosing a time
     *and* saying so: an unlabelled choice is indistinguishable from a guess the
     user never got to see, and the label is what makes it correctable.
+
+    This once asserted on `skeleton.gym_placement`, a requirement the catalog
+    carried for one named activity because the 2026-08-29 incident happened to
+    involve a gym. A specific instance frozen where a concept belongs: a day
+    with no gym still carried the requirement, the planner still saw it in its
+    readiness gaps, and a redundant assumption about it refused the whole plan.
+    An activity needing a time is a kind of requirement, not a kind of activity.
     """
 
     run = await replay_scenario("incident")
 
-    assert "skeleton.gym_placement" in assumption_requirement_ids(run.snapshot)
-    gym = [
+    placements = [
         assumption
         for assumption in run.snapshot.assumptions
-        if assumption.requirement_id == "skeleton.gym_placement"
+        if assumption.requirement_id == "skeleton.ordinary_placement"
     ]
-    assert len(gym) == 1
-    assert gym[0].value is not None
-    assert gym[0].why_needed
-    assert requirement_owners(run.snapshot)["skeleton.gym_placement"] is (
+    assert placements, "the delegated placements were never recorded"
+    for placement in placements:
+        assert placement.value is not None
+        assert placement.why_needed
+    assert requirement_owners(run.snapshot)["skeleton.ordinary_placement"] is (
         RequirementOwner.PLANNER
     )
+
 
 
 async def test_no_turn_asks_the_user_for_a_planner_owned_placement() -> None:
     """Catches the incident's central conversion: a planner gap became a question.
 
     The user was asked for an exact gym time and for a morning start after
-    delegating both. Those are `skeleton.gym_placement` and
+    delegating both. Those are `skeleton.ordinary_placement` and
     `skeleton.ordinary_placement`, and both are planner-owned.
 
     Deliberately structural. Searching the question text for "gym" would be a
@@ -481,7 +489,7 @@ async def test_no_turn_asks_the_user_for_a_planner_owned_placement() -> None:
     run = await replay_scenario("incident")
     owners = requirement_owners(run.snapshot)
 
-    assert owners["skeleton.gym_placement"] is RequirementOwner.PLANNER
+    assert owners["skeleton.ordinary_placement"] is RequirementOwner.PLANNER
     assert owners["skeleton.ordinary_placement"] is RequirementOwner.PLANNER
 
     asked = asked_requirement_ids(run.outcomes)
@@ -633,7 +641,7 @@ async def test_the_planner_may_not_hand_a_planner_owned_gap_back_as_a_question()
     # The refusal is total: nothing was asked, and no half-built skeleton was
     # kept from a result the kernel rejected.
     assert asked_requirement_ids(run.outcomes) == {"skeleton.requested_activity"}
-    assert "skeleton.gym_placement" not in asked_requirement_ids(run.outcomes)
+    assert "skeleton.ordinary_placement" not in asked_requirement_ids(run.outcomes)
     assert not [
         artifact
         for artifact in run.snapshot.artifacts

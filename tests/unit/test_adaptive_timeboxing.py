@@ -76,7 +76,7 @@ def _incident_snapshot() -> PlanningSessionSnapshot:
         planning_day=_locked_day(),
         facts=[
             _fact("activity-1", FactKind.REQUESTED_ACTIVITY, "Plan Saturday"),
-            _fact("gym-1", FactKind.GYM, True),
+            _fact("gym-1", FactKind.REQUESTED_ACTIVITY, True),
         ],
     )
 
@@ -124,7 +124,7 @@ def _skeleton_result() -> PlanningResult:
         ],
         assumptions=[
             PlannerAssumptionDraft(
-                requirement_id="skeleton.gym_placement",
+                requirement_id="skeleton.ordinary_placement",
                 value="17:00",
                 why_needed="place gym around the dinner anchor",
                 invalidated_by=["gym", "dinner"],
@@ -320,7 +320,7 @@ async def test_planner_owned_blocker_is_rejected_as_illegal_user_blocker() -> No
     result = PlanningResult(
         blockers=[
             UserBlockerDraft(
-                requirement_id="skeleton.gym_placement",
+                requirement_id="skeleton.ordinary_placement",
                 why_needed="ask the user for an exact gym time",
             )
         ]
@@ -600,7 +600,7 @@ async def test_assumption_for_satisfied_requirement_is_invalid_planner_result() 
         update={
             "facts": [
                 *_incident_snapshot().facts,
-                _fact("gym-placement-1", FactKind.GYM_PLACEMENT, "16:00"),
+                _fact("gym-placement-1", FactKind.ORDINARY_PLACEMENT, "16:00"),
             ]
         }
     )

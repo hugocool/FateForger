@@ -72,7 +72,7 @@
       },
       {
         "fact_id": "gym-wanted",
-        "kind": "gym",
+        "kind": "requested_activity",
         "value": true,
         "source": "user",
         "source_interaction_id": "incident-capture"
@@ -88,7 +88,7 @@
       },
       {
         "fact_id": "gym-wanted",
-        "kind": "gym",
+        "kind": "requested_activity",
         "value": true,
         "source": "user",
         "source_interaction_id": "conflict-capture"
@@ -119,7 +119,7 @@
       ],
       "assumptions": [
         {
-          "requirement_id": "skeleton.gym_placement",
+          "requirement_id": "skeleton.ordinary_placement",
           "value": "17:00",
           "why_needed": "gym has to clear the 19:30 dinner anchor and leave the two hours after oats intact, and 17:00 is the only slot that does both",
           "invalidated_by": [
@@ -157,7 +157,7 @@
       ],
       "assumptions": [
         {
-          "requirement_id": "skeleton.gym_placement",
+          "requirement_id": "skeleton.ordinary_placement",
           "value": "17:30",
           "why_needed": "a working Monday pushes gym past the workday boundary and still ahead of dinner",
           "invalidated_by": [
@@ -193,7 +193,7 @@
       ],
       "assumptions": [
         {
-          "requirement_id": "skeleton.gym_placement",
+          "requirement_id": "skeleton.ordinary_placement",
           "value": "17:00",
           "why_needed": "the added block does not move the dinner anchor, so gym keeps its slot",
           "invalidated_by": [
@@ -220,7 +220,7 @@
       "assumptions": [],
       "blockers": [
         {
-          "requirement_id": "skeleton.gym_placement",
+          "requirement_id": "skeleton.ordinary_placement",
           "why_needed": "the planner wanted the user to name an exact gym time before it would place anything"
         }
       ]

@@ -260,7 +260,7 @@ def _input_brief(*, facts: list[PlanningFact] | None = None) -> PlanningBrief:
             ),
             PlanningFact(
                 fact_id="fact-gym",
-                kind=FactKind.GYM,
+                kind=FactKind.REQUESTED_ACTIVITY,
                 value={"requested": True},
                 source="user",
                 source_interaction_id="1777651202.0",

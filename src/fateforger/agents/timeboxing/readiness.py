@@ -154,16 +154,6 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         question="Where should the flexible blocks go?",
     ),
     ArtifactRequirement(
-        requirement_id="skeleton.gym_placement",
-        target_artifact=ArtifactKind.SKELETON,
-        satisfied_by=(FactKind.GYM_PLACEMENT,),
-        owner=RequirementOwner.PLANNER,
-        hard=True,
-        why_needed="gym needs a feasible placement when no fixed time is supplied",
-        resolution="assume",
-        question="When would you like the gym?",
-    ),
-    ArtifactRequirement(
         requirement_id="candidate.approved_skeleton",
         target_artifact=ArtifactKind.VALIDATED_CANDIDATE,
         satisfied_by=(ArtifactKind.SKELETON,),
@@ -270,10 +260,6 @@ class TimeboxRequirements:
     ) -> bool:
         if requirement.requirement_id == "skeleton.locked_day":
             return snapshot.planning_day is not None
-        if requirement.requirement_id == "skeleton.gym_placement":
-            return not self._has_fact(snapshot.facts, FactKind.GYM) or self._has_fact(
-                snapshot.facts, FactKind.GYM_PLACEMENT
-            )
         if requirement.requirement_id == "candidate.approved_skeleton":
             return self._has_exact_approval(snapshot, ArtifactKind.SKELETON)
         if requirement.requirement_id == "commit.approved_candidate":

@@ -46,8 +46,6 @@ class FactKind(StrEnum):
 
     REQUESTED_ACTIVITY = "requested_activity"
     ORDINARY_PLACEMENT = "ordinary_placement"
-    GYM = "gym"
-    GYM_PLACEMENT = "gym_placement"
     CALENDAR_SNAPSHOT = "calendar_snapshot"
     ACTIVE_CONSTRAINTS = "active_constraints"
     CONCRETE_PLACEMENTS = "concrete_placements"

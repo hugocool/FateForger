@@ -50,13 +50,13 @@ def test_gym_placement_is_planner_owned_and_does_not_block_skeleton() -> None:
             kind=FactKind.REQUESTED_ACTIVITY,
             value="Prepare the presentation",
         ),
-        _fact(fact_id="gym-1", kind=FactKind.GYM),
+        _fact(fact_id="gym-1", kind=FactKind.REQUESTED_ACTIVITY),
     )
 
     report = TimeboxRequirements().evaluate(ArtifactKind.SKELETON, snapshot)
 
     ordinary = report.by_id("skeleton.ordinary_placement")
-    gym = report.by_id("skeleton.gym_placement")
+    gym = report.by_id("skeleton.ordinary_placement")
     assert ordinary.owner is RequirementOwner.PLANNER
     assert ordinary.resolution == "assume"
     assert gym.owner is RequirementOwner.PLANNER
