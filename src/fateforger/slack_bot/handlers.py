@@ -1393,6 +1393,36 @@ async def instant_ack(client, event: dict) -> dict | None:
 
 
 
+def _timebox_start_button_value(blocks) -> str:
+    """The metadata the date card's Confirm button carries, read off the card.
+
+    Two callers need it and neither is handed it: a day-select press arrives
+    with only the dropdown's own value, and the handoff route has only the
+    message it just posted. The card is the record of what was offered, so it
+    is read rather than reconstructed -- a second encoding of the same day
+    would be a second thing to keep in step with the button the user presses.
+
+    At most one such button exists per message: Slack refuses a message whose
+    interactive elements share an action_id, which is why the five day types
+    each carry their own. So "the first one found" is "the only one there".
+    """
+
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        elements = block.get("elements")
+        if not isinstance(elements, list):
+            continue
+        for element in elements:
+            if (
+                isinstance(element, dict)
+                and element.get("type") == "button"
+                and element.get("action_id") == FF_TIMEBOX_COMMIT_START_ACTION_ID
+            ):
+                return str(element.get("value") or "")
+    return ""
+
+
 def _timebox_backend() -> str:
     """Which system answers /timebox. "harness" unless told otherwise."""
     return (os.environ.get("FF_TIMEBOX_BACKEND") or "harness").strip().lower()
@@ -2753,44 +2783,32 @@ async def route_slack_event(
                 if handoff_target == "timeboxing_agent" and payload.get("blocks"):
                     # Update the thread root header to include the suggested day (no quoted user text).
                     try:
-                        planned_date = ""
-                        for block in payload.get("blocks") or []:
-                            if block.get("type") != "actions":
-                                continue
-                            for element in block.get("elements") or []:
-                                if (
-                                    isinstance(element, dict)
-                                    and element.get("type") == "button"
-                                    and element.get("action_id")
-                                    == FF_TIMEBOX_COMMIT_START_ACTION_ID
-                                ):
-                                    meta = decode_metadata(element.get("value") or "")
-                                    planned_date = meta.get("date") or ""
-                                    tz_name = meta.get("tz") or ""
-                                    if planned_date and tz_name:
-                                        label = format_relative_day_label(
-                                            planned_date=planned_date, tz_name=tz_name
-                                        )
-                                        title = f"Timeboxing session for {label}"
-                                        focus.set_thread_label(
-                                            f"{target_channel}:{target_thread_ts}",
-                                            title=title,
-                                            request_excerpt=None,
-                                            state="pending",
-                                            by_user=user,
-                                        )
-                                        await client.chat_update(
-                                            channel=target_channel,
-                                            ts=target_thread_ts,
-                                            text=_timeboxing_thread_root_text(
-                                                title=title,
-                                                request_excerpt=None,
-                                                state="pending",
-                                            ),
-                                        )
-                                    break
-                            if planned_date:
-                                break
+                        meta = decode_metadata(
+                            _timebox_start_button_value(payload.get("blocks"))
+                        )
+                        planned_date = meta.get("date") or ""
+                        tz_name = meta.get("tz") or ""
+                        if planned_date and tz_name:
+                            label = format_relative_day_label(
+                                planned_date=planned_date, tz_name=tz_name
+                            )
+                            title = f"Timeboxing session for {label}"
+                            focus.set_thread_label(
+                                f"{target_channel}:{target_thread_ts}",
+                                title=title,
+                                request_excerpt=None,
+                                state="pending",
+                                by_user=user,
+                            )
+                            await client.chat_update(
+                                channel=target_channel,
+                                ts=target_thread_ts,
+                                text=_timeboxing_thread_root_text(
+                                    title=title,
+                                    request_excerpt=None,
+                                    state="pending",
+                                ),
+                            )
                     except Exception:
                         pass
                     try:
@@ -3977,21 +3995,9 @@ def register_handlers(
             (action.get("selected_option") or {}) if isinstance(action, dict) else {}
         ) or {}
         selected_date = selected.get("value") or ""
-        meta_value = ""
-        for block in (body.get("message") or {}).get("blocks") or []:
-            elements = block.get("elements") or []
-            if not isinstance(elements, list):
-                continue
-            for element in elements:
-                if (
-                    isinstance(element, dict)
-                    and element.get("type") == "button"
-                    and element.get("action_id") == FF_TIMEBOX_COMMIT_START_ACTION_ID
-                ):
-                    meta_value = element.get("value") or ""
-                    break
-            if meta_value:
-                break
+        meta_value = _timebox_start_button_value(
+            (body.get("message") or {}).get("blocks")
+        )
 
         if not (channel_id and message_ts and selected_date and meta_value):
             return
