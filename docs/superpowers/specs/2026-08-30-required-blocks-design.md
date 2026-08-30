@@ -618,3 +618,19 @@ change.
 5. **What happens to a block Hugo booked by hand.** Ask and adopt (writing the slug),
    or nag and let him move it. Ask-and-adopt is one question per event; nag is one
    question per day forever.
+
+---
+
+## 11. Tickets
+
+| # | What | Blocked by |
+|---|---|---|
+| #209 | Decide the join key, and assert vs derive | #210, if the answer leans derive |
+| #210 | Spike: do private extended properties survive a Google UI edit? | — |
+| #211 | tmbx: wake up `Block.slug` — render, document, instruct | #209 |
+| #212 | memory: a structural "this block must be on the day" | #209 |
+| #213 | haunt: find the session by a minted mark, not by scoring its title | #209, #210, #211 |
+| #214 | kernel: one planner-owned requirement covering every required block (#206) | #209, #212 |
+| #215 | tmbx: "at the end of the workday" should be `bn`, not a pin | — |
+
+#210 and #215 can start now. Everything else waits on #209, which waits on Hugo.
