@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import signal
 import subprocess
 import tempfile
@@ -136,6 +137,25 @@ class HarnessReply:
     #: one. Never derived from ``text``: prose is what the turn looked like,
     #: and this is what it did.
     planning_result: PlanningResult | None = None
+
+
+#: The interpreter the hooks run under. `hooks.json` falls back to
+#: `${CLAUDE_PROJECT_DIR}/.venv/bin/python`, which is the project root -- and a
+#: git worktree has no `.venv`, so from one every hook failed to start and said
+#: nothing. A hook that cannot start looks exactly like a hook with nothing to
+#: report, which is how a missing candidate capture surfaced three layers away
+#: as a plan that could be approved and never committed.
+HOOK_PYTHON_ENV = "FF_HOOK_PYTHON"
+
+
+def _hook_interpreter() -> str:
+    """The interpreter running this process, which by construction can import it.
+
+    The hooks import `fateforger`; so does this module. Anything that can run
+    the host can run the host's hooks, and nothing else is guaranteed to.
+    """
+
+    return sys.executable
 
 
 def _repo_env() -> dict[str, str]:
@@ -523,6 +543,9 @@ def ask(
         commits = Path(workspace) / "commits"
         commits.touch()
         child_env[COMMIT_FILE_ENV] = str(commits)
+        # The hooks inherit this and `hooks.json` prefers it over the project
+        # root's `.venv`, which does not exist in a worktree.
+        child_env[HOOK_PYTHON_ENV] = _hook_interpreter()
         validated_draft = Path(workspace) / "validated-draft.json"
         child_env[DRAFT_STATE_FILE_ENV] = str(validated_draft)
         candidate_output = Path(workspace) / "candidate.json"

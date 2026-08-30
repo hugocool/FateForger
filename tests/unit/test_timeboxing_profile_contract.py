@@ -304,6 +304,11 @@ def test_a_fresh_day_is_chained_relationally_not_pinned() -> None:
     # it did not say what BG is *for* where the type is chosen.
     assert "never a thing he does" in prose
     assert "overspecified" in prose
+    # Measured live 2026-08-30: the plan came back `overspecified: ['GY1']` and
+    # the planner presented it unchanged. The prose forbade a gratuitous pin and
+    # never said what to do when the tool reports one, so the measurement had no
+    # consequence.
+    assert "A non-empty `overspecified` is a correction, not a remark" in prose
 
     assert _absent("every anchor resolves only against the pre-patch snapshot")
     assert _absent("Never set `after` to another handle created in the same patch")

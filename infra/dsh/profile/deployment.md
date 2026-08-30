@@ -202,6 +202,14 @@ or it came from the calendar — and record which in `anchor_source`. A pin you
 add for your own convenience is what `overspecified` reports back to you, and
 it reports it as a mistake.
 
+**A non-empty `overspecified` is a correction, not a remark.** It names handles
+whose pin changes no resolved time — relax each one to `ap` and apply again
+before you present anything. It costs one of the turn's attempts and buys a day
+that can still move: every pin ossifies the chain behind it, so the buffers and
+constraint rules that depend on blocks shifting quietly stop applying to
+everything downstream. Handles pinned by a standing rule are never listed, so
+anything that appears there is yours to give up.
+
 
 **Keep Hugo informed through the progress tools while building the timebox.**
 
