@@ -715,6 +715,34 @@ def _persona_for_agent(agent_type: str) -> SlackPersona | None:
     return DEFAULT_PERSONAS.get(agent_type)
 
 
+def _persona_payload(persona: SlackPersona | None) -> dict:
+    """Slack persona overrides, absent rather than wrong when unconfigured.
+
+    Every message this bot posts under an agent's name goes through here. The
+    same three `if` statements had been written out at nine call sites against
+    whichever local happened to be in scope, so "which fields a persona sets"
+    was a fact stored nine times -- and a tenth post is written by copying
+    whichever copy was nearest, not by reading the rule.
+    """
+
+    if persona is None:
+        return {}
+    payload: dict = {}
+    if persona.username:
+        payload["username"] = persona.username
+    if persona.icon_emoji:
+        payload["icon_emoji"] = persona.icon_emoji
+    if persona.icon_url:
+        payload["icon_url"] = persona.icon_url
+    return payload
+
+
+def _persona_payload_for(agent_type: str) -> dict:
+    """The same overrides, for a caller that holds only the agent's name."""
+
+    return _persona_payload(_persona_for_agent(agent_type))
+
+
 def _channel_for_agent(agent_type: str) -> str | None:
     if agent_type == "timeboxing_agent":
         cid = (settings.slack_timeboxing_channel_id or "").strip()
@@ -1592,22 +1620,6 @@ async def _deliver_timebox_turn(
     await client.chat_update(**update)
 
 
-def _persona_payload_for(agent_type: str) -> dict:
-    """Slack persona overrides, absent rather than wrong when unconfigured."""
-
-    persona = _persona_for_agent(agent_type)
-    if persona is None:
-        return {}
-    payload: dict = {}
-    if persona.username:
-        payload["username"] = persona.username
-    if persona.icon_emoji:
-        payload["icon_emoji"] = persona.icon_emoji
-    if persona.icon_url:
-        payload["icon_url"] = persona.icon_url
-    return payload
-
-
 async def _handle_timebox_date_confirmation(
     *,
     runtime,
@@ -2138,12 +2150,7 @@ async def _dm_thread_link(
     ]
     payload = {"channel": dm_channel, "text": permalink, "blocks": blocks}
     persona = _persona_for_agent("receptionist_agent")
-    if persona and persona.username:
-        payload["username"] = persona.username
-    if persona and persona.icon_emoji:
-        payload["icon_emoji"] = persona.icon_emoji
-    if persona and persona.icon_url:
-        payload["icon_url"] = persona.icon_url
+    payload.update(_persona_payload(persona))
     await client.chat_postMessage(**payload)
 
 
@@ -2243,12 +2250,7 @@ async def route_slack_event(
     if origin_thread_root_ts:
         origin_processing_payload["thread_ts"] = origin_thread_root_ts
     persona = _persona_for_agent(agent_type)
-    if persona and persona.username:
-        origin_processing_payload["username"] = persona.username
-    if persona and persona.icon_emoji:
-        origin_processing_payload["icon_emoji"] = persona.icon_emoji
-    if persona and persona.icon_url:
-        origin_processing_payload["icon_url"] = persona.icon_url
+    origin_processing_payload.update(_persona_payload(persona))
     if acked is not None:
         # Reuse the instant acknowledgement rather than posting beside it. The
         # ack exists to make the first frame fast; a second message would make
@@ -2362,12 +2364,7 @@ async def route_slack_event(
             "thread_ts": redirect.target_thread_ts,
             "text": f":hourglass_flowing_sand: *{redirect.agent_type}* is thinking...",
         }
-        if persona and persona.username:
-            processing_payload["username"] = persona.username
-        if persona and persona.icon_emoji:
-            processing_payload["icon_emoji"] = persona.icon_emoji
-        if persona and persona.icon_url:
-            processing_payload["icon_url"] = persona.icon_url
+        processing_payload.update(_persona_payload(persona))
         processing = await client.chat_postMessage(**processing_payload)
 
         msg = _build_agent_message(
@@ -2611,12 +2608,7 @@ async def route_slack_event(
                         )
                     ),
                 }
-                if persona and persona.username:
-                    root_payload["username"] = persona.username
-                if persona and persona.icon_emoji:
-                    root_payload["icon_emoji"] = persona.icon_emoji
-                if persona and persona.icon_url:
-                    root_payload["icon_url"] = persona.icon_url
+                root_payload.update(_persona_payload(persona))
                 root = await client.chat_postMessage(**root_payload)
                 target_thread_ts = root["ts"]
                 if handoff_target == "timeboxing_agent":
@@ -2674,12 +2666,7 @@ async def route_slack_event(
                     "thread_ts": target_thread_ts,
                     "text": f":hourglass_flowing_sand: *{handoff_target}* is thinking...",
                 }
-                if persona and persona.username:
-                    processing_payload["username"] = persona.username
-                if persona and persona.icon_emoji:
-                    processing_payload["icon_emoji"] = persona.icon_emoji
-                if persona and persona.icon_url:
-                    processing_payload["icon_url"] = persona.icon_url
+                processing_payload.update(_persona_payload(persona))
                 processing = await client.chat_postMessage(**processing_payload)
 
                 handoff_msg = _build_agent_message(
@@ -2841,12 +2828,7 @@ async def route_slack_event(
                                     "text": update["text"],
                                     "blocks": dm_blocks,
                                 }
-                                if persona and persona.username:
-                                    dm_payload["username"] = persona.username
-                                if persona and persona.icon_emoji:
-                                    dm_payload["icon_emoji"] = persona.icon_emoji
-                                if persona and persona.icon_url:
-                                    dm_payload["icon_url"] = persona.icon_url
+                                dm_payload.update(_persona_payload(persona))
                                 await client.chat_postMessage(**dm_payload)
                     except Exception:
                         logger.debug(
@@ -2927,12 +2909,7 @@ async def route_slack_event(
         if origin_thread_root_ts:
             reply_payload["thread_ts"] = origin_thread_root_ts
         reply_persona = _persona_for_agent(handoff_target)
-        if reply_persona and reply_persona.username:
-            reply_payload["username"] = reply_persona.username
-        if reply_persona and reply_persona.icon_emoji:
-            reply_payload["icon_emoji"] = reply_persona.icon_emoji
-        if reply_persona and reply_persona.icon_url:
-            reply_payload["icon_url"] = reply_persona.icon_url
+        reply_payload.update(_persona_payload(reply_persona))
         await client.chat_postMessage(**reply_payload)
         return
 
@@ -4266,12 +4243,7 @@ def register_handlers(
             "channel": channel_id,
             "text": f"Initiating Weekly Review for <@{user_id}>...",
         }
-        if persona and persona.username:
-            root_payload["username"] = persona.username
-        if persona and persona.icon_emoji:
-            root_payload["icon_emoji"] = persona.icon_emoji
-        if persona and persona.icon_url:
-            root_payload["icon_url"] = persona.icon_url
+        root_payload.update(_persona_payload(persona))
         root = await client.chat_postMessage(**root_payload)
         thread_root_ts = root["ts"]
 
@@ -4299,12 +4271,7 @@ def register_handlers(
             "thread_ts": thread_root_ts,
             "text": ":hourglass_flowing_sand: *revisor_agent* is thinking...",
         }
-        if persona and persona.username:
-            processing_payload["username"] = persona.username
-        if persona and persona.icon_emoji:
-            processing_payload["icon_emoji"] = persona.icon_emoji
-        if persona and persona.icon_url:
-            processing_payload["icon_url"] = persona.icon_url
+        processing_payload.update(_persona_payload(persona))
         processing = await client.chat_postMessage(**processing_payload)
 
         try:
