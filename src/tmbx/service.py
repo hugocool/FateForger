@@ -302,6 +302,11 @@ class CommitResult(BaseModel):
     tx_id: str | None
     committed: bool
     conflicts: list[str] = []
+    #: Which calendar the write actually reached. "committed": true against
+    #: FakeCalendar is a true statement about an in-memory dict, and read
+    #: alone it is indistinguishable from a real day being scheduled.
+    calendar_backend: str = ""
+    durable: bool = False
 
 
 _FALLBACK_TYPE = ET.M
@@ -726,6 +731,8 @@ class PlanService:
                         tx_id=idempotency_key,
                         committed=True,
                         conflicts=[],
+                        calendar_backend=getattr(self.calendar, "backend", ""),
+                        durable=bool(getattr(self.calendar, "durable", False)),
                     )
                 return await self._commit_once(
                     snapshot,
@@ -812,7 +819,13 @@ class PlanService:
             before=before,
             post_etags=post_snapshot.etags,
         )
-        return CommitResult(tx_id=tx_id, committed=True, conflicts=conflicts)
+        return CommitResult(
+            tx_id=tx_id,
+            committed=True,
+            conflicts=conflicts,
+            calendar_backend=getattr(self.calendar, "backend", ""),
+            durable=bool(getattr(self.calendar, "durable", False)),
+        )
 
     async def undo(self, tx_id: str) -> CommitResult:
         """Restore the pre-commit state, refusing to clobber newer edits.
@@ -878,7 +891,12 @@ class PlanService:
             undoes_tx=tx_id,
         )
         await self.store.append(entry)
-        return CommitResult(tx_id=undo_tx, committed=True)
+        return CommitResult(
+            tx_id=undo_tx,
+            committed=True,
+            calendar_backend=getattr(self.calendar, "backend", ""),
+            durable=bool(getattr(self.calendar, "durable", False)),
+        )
 
     async def _write(
         self,

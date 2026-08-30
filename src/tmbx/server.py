@@ -524,7 +524,16 @@ def build_server(service: PlanService) -> FastMCP:
                 }
             )
         return json.dumps(
-            {"committed": True, "tx_id": result.tx_id, "conflicts": result.conflicts}
+            {
+                "committed": True,
+                "tx_id": result.tx_id,
+                "conflicts": result.conflicts,
+                # Which calendar this reached. A caller rendering "committed"
+                # to a human must say so when durable is false, or it reports
+                # an in-memory dict as the user's scheduled day.
+                "calendar_backend": result.calendar_backend,
+                "durable": result.durable,
+            }
         )
 
     @mcp.tool(name="plan_undo", structured_output=False)

@@ -256,6 +256,12 @@ class PendingCandidateCommitPort:
                 "tx_id": result.get("tx_id"),
                 "reason": result.get("reason"),
                 "candidate_digest": digest,
+                # Which calendar the write reached, carried from tmbx rather
+                # than guessed here: the env var that picks the backend
+                # belongs to the tmbx process, not to this one. Absent on an
+                # older server, and absent must not read as durable.
+                "calendar_backend": result.get("calendar_backend") or "unknown",
+                "durable": result.get("durable") is True,
             },
             dependency_revisions={"validated_candidate": candidate.revision},
         )

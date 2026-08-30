@@ -132,7 +132,8 @@ async def test_approve_submits_the_exact_stored_candidate(monkeypatch):
     async def fake_commit(_self, snapshot, patch, *, idempotency_key=None):
         calls.append((snapshot, patch))
         assert idempotency_key == candidate.digest
-        return {"committed": True, "tx_id": "tx-A"}
+        return {"committed": True, "tx_id": "tx-A",
+                "calendar_backend": "google", "durable": True}
 
     monkeypatch.setattr(
         "fateforger.slack_bot.tmbx_client.TmbxClient.commit", fake_commit
@@ -160,7 +161,8 @@ async def test_duplicate_slack_delivery_causes_one_commit(monkeypatch):
         calls += 1
         assert idempotency_key == candidate.digest
         await asyncio.sleep(0)
-        return {"committed": True, "tx_id": "tx-A"}
+        return {"committed": True, "tx_id": "tx-A",
+                "calendar_backend": "google", "durable": True}
 
     monkeypatch.setattr(
         "fateforger.slack_bot.tmbx_client.TmbxClient.commit", fake_commit
@@ -195,7 +197,8 @@ async def test_stale_button_after_revised_plan_causes_no_commit(monkeypatch):
     async def fake_commit(_self, snapshot, patch, *, idempotency_key=None):
         nonlocal calls
         calls += 1
-        return {"committed": True, "tx_id": "tx"}
+        return {"committed": True, "tx_id": "tx",
+                "calendar_backend": "google", "durable": True}
 
     monkeypatch.setattr(
         "fateforger.slack_bot.tmbx_client.TmbxClient.commit", fake_commit
@@ -225,7 +228,8 @@ async def test_approve_rejects_another_user_without_spending_candidate(monkeypat
     async def fake_commit(_self, snapshot, patch, *, idempotency_key=None):
         nonlocal calls
         calls += 1
-        return {"committed": True, "tx_id": "tx-A"}
+        return {"committed": True, "tx_id": "tx-A",
+                "calendar_backend": "google", "durable": True}
 
     monkeypatch.setattr(
         "fateforger.slack_bot.tmbx_client.TmbxClient.commit", fake_commit
@@ -282,7 +286,8 @@ async def test_approval_owns_thread_before_any_slack_or_calendar_await(monkeypat
     harness_entered = asyncio.Event()
 
     async def fake_commit(_self, snapshot, patch, *, idempotency_key=None):
-        return {"committed": True, "tx_id": "tx-A"}
+        return {"committed": True, "tx_id": "tx-A",
+                "calendar_backend": "google", "durable": True}
 
     async def fake_owned_ask():
         async with handlers._thread_lock(handlers._thread_commit_locks, "C1:1.0"):
@@ -325,7 +330,8 @@ async def test_cancelling_slack_callback_does_not_abandon_inflight_commit(monkey
         commit_entered.set()
         await release_commit.wait()
         commit_completed.set()
-        return {"committed": True, "tx_id": "tx-A"}
+        return {"committed": True, "tx_id": "tx-A",
+                "calendar_backend": "google", "durable": True}
 
     monkeypatch.setattr(
         "fateforger.slack_bot.tmbx_client.TmbxClient.commit", fake_commit
@@ -555,7 +561,8 @@ async def test_top_level_mention_routes_card_and_approval_through_actual_root(
 
         async def commit(self, snapshot, patch, *, idempotency_key=None):
             commits.append((snapshot, patch, idempotency_key))
-            return {"committed": True, "tx_id": "tx-A"}
+            return {"committed": True, "tx_id": "tx-A",
+                "calendar_backend": "google", "durable": True}
 
     monkeypatch.setattr(
         "fateforger.slack_bot.tmbx_client.TmbxClient", _RecordingTmbx

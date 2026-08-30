@@ -1298,6 +1298,12 @@ async def _execute_harness_approval(
         tx_id = payload.get("tx_id") if payload.get("committed") is True else None
         if isinstance(tx_id, str) and tx_id:
             text = ":white_check_mark: Committed the plan you approved."
+            if payload.get("durable") is not True:
+                where = str(payload.get("calendar_backend") or "unknown")
+                text = (
+                    ":warning: Committed to the *"
+                    f"{where}* calendar — nothing reached your real one."
+                )
             blocks = [
                 {
                     "type": "section",

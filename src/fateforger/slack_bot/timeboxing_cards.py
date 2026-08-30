@@ -584,6 +584,15 @@ def render_outcome(
         tx_id = payload.get("tx_id")
         if payload.get("committed") is True and isinstance(tx_id, str) and tx_id:
             text = ":white_check_mark: Committed the plan you approved."
+            if payload.get("durable") is not True:
+                # A commit against the in-memory calendar is a true commit and
+                # an empty day. Saying only "committed" here is what made an
+                # unwired backend indistinguishable from a scheduled day.
+                where = str(payload.get("calendar_backend") or "unknown")
+                text = (
+                    ":warning: Committed to the *"
+                    f"{where}* calendar — nothing reached your real one."
+                )
             return SlackBlockMessage(
                 text=text,
                 blocks=[

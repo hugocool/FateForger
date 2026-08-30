@@ -124,6 +124,9 @@ SessionFactory = Callable[[], AbstractAsyncContextManager[McpToolCaller]]
 class GoogleCalendarAdapter:
     """``CalendarPort`` implementation backed by the Google Calendar MCP server."""
 
+    backend = "google"
+    durable = True
+
     def __init__(
         self,
         *,

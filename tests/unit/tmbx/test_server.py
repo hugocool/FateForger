@@ -297,7 +297,16 @@ async def test_plan_commit_replays_the_same_candidate_digest_once(built):
     first = json.loads(_text(await server.call_tool("plan_commit", request)))
     second = json.loads(_text(await server.call_tool("plan_commit", request)))
 
-    assert first == {"committed": True, "tx_id": key, "conflicts": []}
+    # The replay must be byte-identical to the first answer, provenance
+    # included -- an idempotent commit that forgot which calendar it reached
+    # would let the second call read as durable when the first did not.
+    assert first == {
+        "committed": True,
+        "tx_id": key,
+        "conflicts": [],
+        "calendar_backend": "fake",
+        "durable": False,
+    }
     assert second == first
     commits = [
         row
