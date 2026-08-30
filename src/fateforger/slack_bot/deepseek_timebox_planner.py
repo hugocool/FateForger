@@ -15,8 +15,13 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from fateforger.agents.timeboxing.adaptive_timeboxing import ProgressSink
-from fateforger.agents.timeboxing.session_contracts import PlanningBrief, PlanningResult
+from fateforger.agents.timeboxing.session_contracts import (
+    ArtifactKind,
+    PlanningBrief,
+    PlanningResult,
+)
 from fateforger.slack_bot import harness_bridge
+from fateforger.slack_bot.timebox_candidate import ValidatedTimeboxCandidate
 from fateforger.slack_bot.tmbx_client import TmbxClient
 
 logger = logging.getLogger(__name__)
@@ -182,7 +187,53 @@ class HarnessBridgeRunner:
             # substituted ``ask`` cannot return an empty turn as a successful
             # one, which is the failure the whole seam exists to make loud.
             raise DependencyUnavailable("planner produced no typed result")
-        return reply.planning_result
+        return _with_commit_basis(reply.planning_result, reply.validated_candidate)
+
+
+def _with_commit_basis(
+    result: PlanningResult, candidate: ValidatedTimeboxCandidate | None
+) -> PlanningResult:
+    """Attach the tmbx patch the host watched go through, to the candidate.
+
+    A candidate is approved as prose and committed as a patch, and only the
+    model produced the prose. The patch came back from the ``plan_apply`` the
+    planner just made, and the host captured it by watching tmbx rather than by
+    asking -- so the model writes what a human reads, the host attaches what a
+    machine replays, and neither half can forge the other.
+
+    Without this the commit port read ``snapshot`` and ``patch`` out of a
+    payload that only ever held rendered blocks, got ``{}`` for both, and
+    ``plan_commit({}, {})`` was refused as ``malformed_input``: a plan that
+    could be shown and approved and never committed.
+
+    A candidate draft with nothing captured is left exactly as it came. The
+    commit port already refuses a candidate it cannot match, and inventing an
+    empty basis here would turn a missing patch into a forged one.
+    """
+
+    if candidate is None:
+        return result
+    updates = []
+    for draft in result.artifact_updates:
+        if draft.kind is not ArtifactKind.VALIDATED_CANDIDATE or not isinstance(
+            draft.payload, dict
+        ):
+            updates.append(draft)
+            continue
+        updates.append(
+            draft.model_copy(
+                update={
+                    "payload": {
+                        **draft.payload,
+                        "snapshot": candidate.snapshot,
+                        "patch": candidate.patch,
+                        "digest": candidate.digest,
+                        "rendered": candidate.rendered,
+                    }
+                }
+            )
+        )
+    return result.model_copy(update={"artifact_updates": updates})
 
 
 __all__ = [

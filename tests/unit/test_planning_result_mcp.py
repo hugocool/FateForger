@@ -24,6 +24,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningResult,
 )
 from fateforger.slack_bot import harness_bridge, planning_result_mcp
+from fateforger.slack_bot.timebox_candidate import ValidatedTimeboxCandidate
 from fateforger.slack_bot.deepseek_timebox_planner import (
     DependencyUnavailable,
     HarnessBridgeRunner,
@@ -814,3 +815,52 @@ def test_the_obligation_is_read_before_anything_else() -> None:
     )
 
     assert task.index("authoritative") < task.index("Session id for this conversation")
+
+
+async def test_the_runner_attaches_the_patch_the_host_watched_tmbx_take(monkeypatch):
+    """Catches a candidate that can be shown but never committed.
+
+    Measured live on 2026-08-30: the planner submitted a readable
+    `{"blocks": [...]}` and nothing else, so the commit port read `snapshot` and
+    `patch` out of it, got `{}` for both, and `plan_commit({}, {})` was refused
+    as `malformed_input`. The tmbx patch that had just been applied was lost
+    between `plan_apply` and the commit, and a commit can only replay a patch it
+    still has.
+
+    The host does not have to ask the model for it. `HarnessReply.validated_candidate`
+    is captured by watching tmbx directly, so the model writes what a human
+    reads and the host attaches what a machine replays -- and neither half can
+    forge the other.
+    """
+
+    captured = ValidatedTimeboxCandidate(
+        digest="d" * 64,
+        snapshot={"calendar_id": "hugo.evers@gmail.com", "day": "2026-08-31"},
+        patch={"ops": [{"op": "add", "h": "DW1"}]},
+        rendered="blocks[1]...",
+    )
+    monkeypatch.setattr(
+        harness_bridge.subprocess,
+        "run",
+        _submitting_run(
+            monkeypatch,
+            target_artifact="validated_candidate",
+            artifact={"blocks": [{"name": "Deep work"}]},
+            assumptions=[],
+            blockers=[],
+        ),
+    )
+    monkeypatch.setattr(
+        harness_bridge, "read_validated_candidate", lambda _path: captured
+    )
+
+    result = await HarnessBridgeRunner().run(_brief(), _CollectingSink())
+
+    (draft,) = result.artifact_updates
+    assert draft.kind is ArtifactKind.VALIDATED_CANDIDATE
+    payload = draft.payload
+    assert payload["snapshot"] == captured.snapshot
+    assert payload["patch"] == captured.patch
+    assert payload["digest"] == captured.digest
+    # The readable half survives: it is what Hugo approves.
+    assert payload["blocks"] == [{"name": "Deep work"}]

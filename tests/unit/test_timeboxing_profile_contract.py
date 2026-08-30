@@ -297,6 +297,12 @@ def test_a_fresh_day_is_chained_relationally_not_pinned() -> None:
     assert "applies adds in dependency order" in prose
     assert '{"a":"ap","dur":...}' in prose
     assert '`after: "END"`' in prose
+    # Measured live 2026-08-30: the planner typed "Morning ritual" as BG and
+    # anchored the whole day on it. BG sits outside the chain, so the plan had
+    # no fs/fw anchor and tmbx refused the entire patch -- not the one block
+    # that was mistyped. The prose said a boundary is not an occupying block;
+    # it did not say what BG is *for* where the type is chosen.
+    assert "never a thing he does" in prose
     assert "overspecified" in prose
 
     assert _absent("every anchor resolves only against the pre-patch snapshot")

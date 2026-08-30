@@ -180,7 +180,14 @@ plan, such as a meeting you have to build around. `after: "END"` appends to
 whatever the plan currently ends with, which says the same thing more briefly
 when you are laying blocks down in order. The chain's first block cannot be
 `ap` — it has nothing to start after — and a `"t":"BG"` block does not count as
-something to follow, because background blocks sit outside the chain. So:
+something to follow, because background blocks sit outside the chain.
+
+**`BG` is a range Hugo is available in, never a thing he does.** A work window, a
+travel window, an on-call stretch. A morning ritual, breakfast and a commute are
+things he does, so they are ordinary blocks however routine they look. Typing one
+`BG` and then chaining the day on it leaves the plan with no anchor at all — the
+chain cannot start after something that is not in it — and tmbx rejects the whole
+patch rather than the one block that was mistyped. So:
 
 ```json
 {"op":"add","h":"DW1","n":"Deep work","t":"DW","after":null,
