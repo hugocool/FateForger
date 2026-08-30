@@ -96,6 +96,12 @@ _TIMEOUT_S = float(os.environ.get("DSH_TIMEOUT_SECONDS", "600"))
 _PROGRESS_SESSION_KEY_ENV = "FF_DSH_SESSION_KEY"
 _HARNESS_REASONING_ENV = "FF_HARNESS_REASONING"
 
+#: Marks the child as a planning turn, so the profile can withhold the
+#: tools a planning turn must not use. Removing a capability is a stronger
+#: guarantee than instructing against it, and it is cheaper twice over: the
+#: schemas go, and so does the sentence forbidding them.
+PLANNING_TURN_ENV = "FF_PLANNING_TURN"
+
 
 class HarnessError(RuntimeError):
     """The harness failed to answer. Raised loudly, never swallowed.
@@ -546,6 +552,16 @@ def ask(
         # setting on one is wasteful on another, and a single global is how a
         # value tuned for one ends up silently applied to the other.
         **({_HARNESS_REASONING_ENV: reasoning} if reasoning else {}),
+        # Set only for a planning turn. The profile reads it to disable the
+        # tool plugins the planning persona already forbids -- bash, the
+        # filesystem, workflow, goals, the web. Measured at 9,480 tokens of
+        # schema per call for tools the prompt spends further tokens telling
+        # the model not to use.
+        #
+        # Conditional rather than removed outright because this profile also
+        # serves ordinary /dsh turns, which pass no brief and may legitimately
+        # want a shell. The planning turn is the one that has no use for one.
+        **({PLANNING_TURN_ENV: "1"} if planning_brief is not None else {}),
         **(env or {}),
     }
     if approval_file is not None:

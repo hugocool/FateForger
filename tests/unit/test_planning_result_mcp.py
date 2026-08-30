@@ -949,3 +949,34 @@ def test_a_refusal_names_the_field_that_was_wrong(tmp_path, monkeypatch) -> None
     message = str(caught.value)
     assert "requirement_id" in message, message
     assert "assumptions" in message
+
+
+def test_only_a_planning_turn_is_stripped_of_its_tools(monkeypatch) -> None:
+    """Catches a planning turn paying for tools its own prompt forbids.
+
+    Measured over 692 calls: 9,480 tokens of every call described `bash`,
+    `write`, `edit`, `workflow`, `ralph`, `web_search`, `todo_write`, `job_*`
+    and `create_goal` — 35% of the fixed preamble — so the persona could spend
+    further tokens saying not to call them. Withholding is cheaper twice: the
+    schemas go and the instruction stops being load-bearing.
+
+    Conditional because this profile also answers ordinary `/dsh`, which passes
+    no brief and may legitimately want a shell. Verified live: the same task
+    returns the shell output without a brief and `NO_SHELL_TOOL` with one.
+    """
+
+    seen: dict[str, str] = {}
+
+    def capture(*args, **kwargs):
+        seen.clear()
+        seen.update(kwargs.get("env") or {})
+        raise RuntimeError("stop once the environment is built")
+
+    monkeypatch.setattr(harness_bridge.subprocess, "run", capture)
+
+    for brief, expected in ((None, False), (_brief(), True)):
+        try:
+            harness_bridge.ask("hello", planning_brief=brief)
+        except Exception:
+            pass
+        assert (harness_bridge.PLANNING_TURN_ENV in seen) is expected

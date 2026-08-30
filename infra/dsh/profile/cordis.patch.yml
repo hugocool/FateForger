@@ -467,3 +467,54 @@
     includeDefaultRoots: false
     customSkillDirs:
       - !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/.dsh/skills'
+
+# 6. Tools a planning turn must not have.
+#
+#    The persona says "do not shell out, do not read or write files" and then
+#    the harness spends 9,480 tokens per call describing bash, write, edit,
+#    workflow, ralph, web_search, todo_write, job_* and create_goal so the
+#    model can be told not to call them. Measured over 692 calls: that is 35%
+#    of the fixed 27,398-token preamble, on every call, both stages.
+#
+#    Withholding beats forbidding, and it is cheaper twice: the schemas go, and
+#    so does the instruction. This profile already makes the argument above the
+#    patch subagent -- "filtered tools disappear from the child's prompt AND
+#    reject execution, so calling the wrong one is not instructed against, it
+#    is impossible" -- and notes that per-stage tool sets were a property of
+#    the original stage machine, "lost in the migration rather than discarded".
+#
+#    `toolFilter` is a subagent capability and cannot reach the main loop, so
+#    this disables the providing plugins instead. Same effect, same file's
+#    precedent: `skill-filesystem` is already restricted here, and dsh-headless
+#    already disables `hmr` this way.
+#
+#    Conditional, because this profile also serves ordinary /dsh turns, which
+#    supply no planning brief and may legitimately want a shell. Only a turn
+#    carrying a brief is stripped. `harness_bridge` sets FF_PLANNING_TURN.
+#
+#    `tool-subagent` is deliberately NOT disabled: `timebox_patch` is an
+#    instance of it, and it is how a candidate turn patches at all.
+- id: tool-bash
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-pwsh
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-fs
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-fs-search
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-str-replace-editor
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-workflow
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-ralph
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-todo
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-goal
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-jobs
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-web
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: web-search-deepseek
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
