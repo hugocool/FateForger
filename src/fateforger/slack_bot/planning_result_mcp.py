@@ -133,6 +133,13 @@ def submit_planning_result(
     placement you decided yourself belongs in ``assumptions``, each naming the
     requirement it settles and what would invalidate it.
 
+    **For ``validated_candidate``: call ``plan_apply`` before this.** The patch
+    that call produces is the only thing that can be committed afterwards, and
+    the host takes it from the call itself -- it cannot accept one written into
+    ``artifact``. A candidate submitted without applying is shown to the user,
+    approved by them, and then found to be uncommittable, so this call is
+    refused rather than allowed to reach them.
+
     ``blockers`` is only for a decision that is genuinely the user's, and it
     replaces the artifact rather than accompanying it: an artifact asks to be
     approved and a blocker asks a question, and one turn shows the user one of
