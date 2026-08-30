@@ -14,6 +14,8 @@ from tmbx.core.models import (
     FixedStart,
     FixedWindow,
     Plan,
+    PlanViolation,
+    ViolationKind,
 )
 from tmbx.core.ops import (
     AddBlock,
@@ -26,14 +28,23 @@ from tmbx.core.ops import (
 )
 
 
-def test_add_after_schema_teaches_pre_patch_set_semantics():
+def test_add_after_schema_teaches_that_a_patch_can_chain_its_own_adds():
+    """This description is the only documentation a model ever reads about
+    `after`. It used to say the anchor "cannot reference a handle created
+    in the same patch"; the model believed it, could not express a chain,
+    and pinned a whole day to wall-clock times instead (journal entry 134).
+    The absence assertion is the load-bearing half — a stale sentence left
+    beside a true one is still read.
+    """
     description = AddBlock.model_json_schema()["properties"]["after"][
         "description"
     ].lower()
 
-    assert "pre-patch" in description
     assert "same patch" in description
+    assert "dependency order" in description
+    assert "cycle" in description
     assert "fixed-start" in description
+    assert "cannot reference a handle created in the same patch" not in description
 
 
 def _mint(seq=itertools.count(1)):
@@ -740,3 +751,300 @@ def test_removing_a_constraint_anchored_block_is_not_refused():
     refusal message honest."""
     plan = _plan_with_bedtime()
     assert validate_patch(plan, Patch(ops=[RemoveBlock(h="BED1")])) == []
+
+
+# ---------------------------------------------------------------------------
+# An add's anchor may name a handle the same patch adds.
+#
+# Measured live on 2026-08-30 (tmbx journal entry 133, plan_date 2026-08-31):
+# the planner built a day the way least commitment asks for it -- one real
+# anchor, everything else `ap` and chained off the block before it -- and tmbx
+# refused all thirteen relative ops with "anchor MR1 not found; op 3: anchor
+# DW1 not found; ...". Four seconds later (entry 134) the model gave up and
+# pinned all fourteen blocks to wall-clock times: a day that cannot shift, so
+# every downstream buffer and constraint rule quietly stops applying. That is
+# the plan `commitment.overspecified()` exists to call a mistake, and the
+# anchor rule was what produced it.
+#
+# A patch is still a set. What changed is which handles an anchor may name:
+# the pre-patch plan OR this patch's own adds, with adds applied in dependency
+# order so the anchor exists before the block naming it. Order still comes from
+# the dependency graph, never from where an op sat in the list.
+# ---------------------------------------------------------------------------
+
+
+def _add(after, h, n="X", t=ET.BU, minutes=30):
+    return AddBlock(after=after, h=h, n=n, t=t, p=AfterPrev(dur=timedelta(minutes=minutes)))
+
+
+def test_add_anchored_on_another_add_in_the_same_patch():
+    """Two ops, one chain. Handles chosen so the alphabetical tie-break
+    inside ``_insert_batch`` would put them the WRONG way round if both
+    were (incorrectly) treated as anchored on PR1: ZZ1 must precede AA1
+    only because AA1 names it.
+    """
+    ops = [_add("PR1", "ZZ1"), _add("ZZ1", "AA1")]
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == ["PR1", "ZZ1", "AA1", "DW1", "DW2"]
+
+
+def test_a_chain_of_adds_resolves_in_dependency_order_not_list_order():
+    """Five adds naming each other, listed in an order alphabetical
+    tie-breaking cannot reproduce."""
+    ops = [
+        _add("PR1", "MM1"),
+        _add("MM1", "BB1"),
+        _add("BB1", "TT1"),
+        _add("TT1", "AA1"),
+        _add("AA1", "NN1"),
+    ]
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == [
+        "PR1", "MM1", "BB1", "TT1", "AA1", "NN1", "DW1", "DW2",
+    ]
+
+
+def test_a_chain_given_in_reverse_order_resolves_identically():
+    """The anchor op listed AFTER the op naming it. If ordering came from
+    the op list rather than the dependency graph, this is where it would
+    show."""
+    forward = [
+        _add("PR1", "MM1"),
+        _add("MM1", "BB1"),
+        _add("BB1", "TT1"),
+        _add("TT1", "AA1"),
+    ]
+    reverse = list(reversed(forward))
+
+    a = apply_ops(_plan(), Patch(ops=forward), mint_uid=lambda: "u-fixed")
+    b = apply_ops(_plan(), Patch(ops=reverse), mint_uid=lambda: "u-fixed")
+
+    assert [x.h for x in a.blocks] == ["PR1", "MM1", "BB1", "TT1", "AA1", "DW1", "DW2"]
+    assert [x.h for x in b.blocks] == [x.h for x in a.blocks]
+
+
+def test_a_same_patch_chain_can_be_rooted_on_a_pre_patch_block():
+    """The root of the chain is an existing handle, not a sentinel — the
+    shape the live planner used to hang a day off a real calendar event."""
+    ops = [_add("DW1", "ZZ1"), _add("ZZ1", "AA1")]
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == ["PR1", "DW1", "ZZ1", "AA1", "DW2"]
+
+
+def test_a_same_patch_chain_rooted_on_a_handle_removed_by_the_same_patch():
+    """Replace-in-place, chained: the removed handle still names a real
+    pre-patch position, and the chain hanging off it follows it there."""
+    ops = [
+        RemoveBlock(h="DW1"),
+        _add("DW1", "ZZ1"),
+        _add("ZZ1", "AA1"),
+    ]
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == ["PR1", "ZZ1", "AA1", "DW2"]
+
+
+def test_an_anchor_naming_a_reused_handle_means_the_block_the_patch_leaves():
+    """DW1 is removed and re-added in one patch, and a third op anchors on
+    DW1. A handle names one block once the patch has landed, so it names
+    the new one — not the ghost of the position the old one held.
+    """
+    ops = [
+        RemoveBlock(h="DW1"),
+        AddBlock(after="END", h="DW1", n="New Sprint", t=ET.DW,
+                 p=AfterPrev(dur=timedelta(minutes=20))),
+        _add("DW1", "AA1"),
+    ]
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == ["PR1", "DW2", "DW1", "AA1"]
+
+
+def test_an_anchor_that_names_nothing_is_still_refused():
+    errors = validate_patch(_plan(), Patch(ops=[_add("NOPE1", "AA1")]))
+    assert any("NOPE1" in e and "not found" in e for e in errors)
+
+
+def test_a_same_patch_chain_is_deterministic_across_applications():
+    """Two applications of one patch must produce one plan. Nothing in the
+    layering may read a set's iteration order."""
+    ops = [
+        _add("PR1", "MM1"),
+        _add("MM1", "BB1"),
+        _add("PR1", "TT1"),
+        _add("BB1", "AA1"),
+        _add("TT1", "NN1"),
+    ]
+    first = apply_ops(_plan(), Patch(ops=ops), mint_uid=lambda: "u-fixed")
+    second = apply_ops(_plan(), Patch(ops=ops), mint_uid=lambda: "u-fixed")
+    assert [b.h for b in first.blocks] == [b.h for b in second.blocks]
+    assert [b.h for b in first.blocks] == [
+        "PR1", "MM1", "BB1", "AA1", "TT1", "NN1", "DW1", "DW2",
+    ]
+
+
+# --- a chain that closes on itself has no order at all --------------------
+
+
+def test_validate_rejects_cyclic_add_anchors():
+    """Two adds naming each other. Neither can be placed first, so the
+    patch describes no plan — refused in the same shape as a cyclic move,
+    because it is the same defect one phase over."""
+    ops = [_add("AA1", "ZZ1"), _add("ZZ1", "AA1")]
+    errors = validate_patch(_plan(), Patch(ops=ops))
+    assert any("cyclic add anchors" in e and "AA1" in e and "ZZ1" in e for e in errors)
+
+
+def test_apply_raises_a_clean_error_for_cyclic_add_anchors():
+    ops = [_add("AA1", "ZZ1"), _add("ZZ1", "AA1")]
+    with pytest.raises(ValueError) as excinfo:
+        apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert str(excinfo.value).startswith("invalid patch:")
+    assert "cyclic add anchors" in str(excinfo.value)
+
+
+def test_validate_rejects_an_add_anchored_on_itself():
+    errors = validate_patch(_plan(), Patch(ops=[_add("AA1", "AA1")]))
+    assert any("cyclic add anchors" in e and "AA1" in e for e in errors)
+
+
+def test_validate_rejects_a_longer_add_cycle_hanging_off_a_valid_chain():
+    """MM1 chains legitimately off PR1; the other three close a ring. The
+    valid part of the patch does not launder the ring."""
+    ops = [
+        _add("PR1", "MM1"),
+        _add("BB1", "AA1"),
+        _add("TT1", "BB1"),
+        _add("AA1", "TT1"),
+    ]
+    errors = validate_patch(_plan(), Patch(ops=ops))
+    assert any(
+        "cyclic add anchors" in e and all(h in e for h in ("AA1", "BB1", "TT1"))
+        for e in errors
+    )
+    assert not any("MM1" in e for e in errors)
+
+
+# --- the patch this rule was refusing, replayed ---------------------------
+
+
+def _plan_with_a_real_event():
+    """The pre-patch plan behind tmbx journal entry 133: one block the
+    planner did not create, a real calendar event it had to build around.
+    EVT1 is the only handle in that patch the old rule accepted."""
+    return Plan(
+        date=date(2026, 8, 31),
+        blocks=[
+            Block(uid="u-evt1", h="EVT1", n="Standup", t=ET.M,
+                  p=FixedStart(st=time(10, 0), dur=timedelta(minutes=30)),
+                  anchor_source="calendar"),
+        ],
+    )
+
+
+def _journal_133_ops(root_type=ET.BG):
+    """Entry 133's ops verbatim, minus the `why`/`d` nulls: one fs anchor
+    (the morning ritual), one add hung off the real event, and twelve
+    `ap` blocks each naming the block before it. Thirteen of the fourteen
+    were refused with "anchor <handle> not found".
+
+    ``root_type`` is the one liberty taken with the record, and only the
+    two resolution tests below use it. Entry 133 typed the morning ritual
+    `BG`, and `Plan.resolve` keeps BG blocks out of the chain entirely —
+    a second defect in the same patch, which the two tests separate rather
+    than average.
+    """
+    def ap(after, h, n, t, minutes):
+        return AddBlock(after=after, h=h, n=n, t=t,
+                        p=AfterPrev(dur=timedelta(minutes=minutes)))
+
+    return [
+        AddBlock(after=None, h="MR1", n="Morning ritual", t=root_type,
+                 p=FixedStart(st=time(7, 0), dur=timedelta(hours=1)),
+                 anchor_source="constraint"),
+        ap("MR1", "BR1", "Breakfast", ET.H, 30),
+        ap("EVT1", "DW1", "Finish the C2F deck", ET.DW, 150),
+        ap("DW1", "LN1", "Lunch", ET.H, 30),
+        ap("LN1", "OT1", "Oats", ET.H, 15),
+        ap("OT1", "GB1", "Gym buffer (pre)", ET.BU, 15),
+        ap("GB1", "GY1", "Gym", ET.H, 60),
+        ap("GY1", "GB2", "Gym buffer (post)", ET.BU, 15),
+        ap("GB2", "FR1", "Free / relax", ET.R, 120),
+        ap("FR1", "DN1", "Dinner with Marieke", ET.H, 60),
+        ap("DN1", "CU1", "Clean up after dinner", ET.R, 30),
+        ap("CU1", "CH1", "Evening chill / music", ET.R, 60),
+        ap("CH1", "SD1", "Shutdown ritual", ET.SW, 30),
+        ap("SD1", "RD1", "Sci-fi reading", ET.R, 30),
+    ]
+
+
+def test_the_refused_journal_133_patch_now_applies_as_one_chain():
+    patch = Patch(ops=_journal_133_ops())
+    assert validate_patch(_plan_with_a_real_event(), patch) == []
+
+    result = apply_ops(_plan_with_a_real_event(), patch, mint_uid=_mint)
+    assert [b.h for b in result.blocks] == [
+        "MR1", "BR1", "EVT1", "DW1", "LN1", "OT1", "GB1", "GY1", "GB2",
+        "FR1", "DN1", "CU1", "CH1", "SD1", "RD1",
+    ]
+    # The point of the chain: one pinned block in fourteen. Everything
+    # else still says "when the one before me ends".
+    pinned = [b.h for b in result.blocks if b.p.a in ("fs", "fw")]
+    assert pinned == ["MR1", "EVT1"]
+
+
+def test_the_journal_133_patch_lands_the_same_plan_however_its_ops_are_listed():
+    """Fourteen ops is too many to permute exhaustively; reversing them
+    puts every anchor after the op naming it, which is the ordering a
+    list-order implementation cannot survive."""
+    forward = _journal_133_ops()
+    reverse = list(reversed(forward))
+    a = apply_ops(_plan_with_a_real_event(), Patch(ops=forward), mint_uid=lambda: "u-f")
+    b = apply_ops(_plan_with_a_real_event(), Patch(ops=reverse), mint_uid=lambda: "u-f")
+    assert [x.h for x in a.blocks] == [x.h for x in b.blocks]
+
+
+def test_the_journal_133_chain_resolves_into_a_day_once_its_root_joins_the_chain():
+    """Applying the patch was never the whole story, and this is what the
+    planner was actually reaching for: one pinned start at 07:00, one
+    calendar event it cannot move, and twelve blocks that each begin when
+    the one before them ends — a day that still shifts when any of it
+    does.
+    """
+    patch = Patch(ops=_journal_133_ops(root_type=ET.PR))
+    result = apply_ops(_plan_with_a_real_event(), patch, mint_uid=_mint)
+
+    rows = result.resolve(check_overlap=True)
+    assert [(r.h, r.start) for r in rows][:5] == [
+        ("MR1", time(7, 0)),
+        ("BR1", time(8, 0)),
+        ("EVT1", time(10, 0)),
+        ("DW1", time(10, 30)),
+        ("LN1", time(13, 0)),
+    ]
+    assert rows[-1].h == "RD1" and rows[-1].end == time(20, 45)
+    # Every block starts no earlier than the previous one ended: a chain,
+    # not fourteen independent pins that happen not to collide.
+    assert all(a.end_dt <= b.start_dt for a, b in itertools.pairwise(rows))
+
+
+def test_the_journal_133_patch_as_recorded_applies_but_will_not_resolve():
+    """The anchor rule was the first of two things standing between that
+    patch and a day. The second is the model's: it typed the 07:00 morning
+    ritual `BG`, and a BG block never enters the chain, so the `ap`
+    breakfast naming it has nothing to start after.
+
+    Pinned because of what changed, not because the plan is good. Before,
+    the model got "anchor MR1 not found" thirteen times over — a refusal
+    naming nothing it had done wrong, which it answered by pinning the
+    whole day. Now the patch lands and the refusal is a typed violation
+    naming exactly one block and exactly one reason, which is a thing a
+    next turn can fix.
+    """
+    result = apply_ops(
+        _plan_with_a_real_event(), Patch(ops=_journal_133_ops()), mint_uid=_mint
+    )
+
+    with pytest.raises(PlanViolation) as excinfo:
+        result.resolve(check_overlap=False)
+    violation = excinfo.value.violation
+    assert violation.kind is ViolationKind.UNANCHORED_AFTER_PREV
+    assert [b.h for b in violation.blocks] == ["BR1"]

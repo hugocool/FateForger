@@ -108,9 +108,12 @@ deliberately, not dropped in passing.
 
 Address blocks by handle, taken from the "H" column of the rendered plan —
 never by position. A handle is 2-5 uppercase letters then 1-2 digits (e.g.
-DW1, MTNG12). A patch is a set: every op resolves against the plan as
-rendered, so op order does not matter, and no op may reference a block
-created by another op in the same patch.
+DW1, MTNG12). A patch is a set: op order does not matter. An add's `after`
+may name a block on the rendered plan or one this same patch adds — adds
+are applied in dependency order — so a whole day can be chained in one
+patch, each block starting when the one before it ends. Two adds anchored
+on each other are refused as a cycle. A move's `after` is different: it
+names a position on the plan as rendered.
 
 Some rendered blocks are FOREIGN: real calendar events tmbx did not create
 (someone else's meeting, an invite). They occupy real time and the chain
@@ -125,11 +128,14 @@ refused outright, reason "foreign_block".
 """
 
 _OPS_SCHEMA_PREAMBLE = """\
-Four ops: add, remove, update, move. Every op addresses an existing block
-by its handle (h) — never by position; a patch is a set, so op order never
-matters and no op may reference a handle another op in the same patch just
-created. add/move accept `after`: a handle to insert after, null to
-prepend, or the literal "END" to append (default "END").
+Four ops: add, remove, update, move. Every op addresses a block by its
+handle (h) — never by position; a patch is a set, so op order never
+matters. add/move accept `after`: a handle to insert after, null to
+prepend, or the literal "END" to append (default "END"). An add's `after`
+may name a handle another op in the same patch creates — adds are applied
+in dependency order, so one patch can chain a whole day off a single
+anchor — while a move's `after` names a position on the plan as rendered.
+Two adds anchored on each other are refused as a cycle.
 
 A new handle (add's `h`) must be 2-5 uppercase letters then 1-2 digits
 (e.g. DW1, MTNG12) — anything else is refused as reason "invalid_patch"

@@ -292,7 +292,16 @@ def test_exact_schedule_does_not_pause_for_non_material_classification() -> None
     assert "This also applies on weekends and holidays" in normalized
     assert "apply only the blocks Hugo named" in normalized
     assert "fixed-start additions use `after: null`" in normalized.lower()
-    assert "another handle created in the same patch" in normalized.lower()
+    # Polarity, not just presence. This once asserted the bare substring
+    # "another handle created in the same patch", which the prohibition and its
+    # replacement both contain -- so it passed while the sentence said the
+    # opposite thing, and would pass again if the prohibition came back. tmbx
+    # now orders same-patch anchors, and a prompt still forbidding them is what
+    # pushed the planner into pinning every block to the clock.
+    assert "may name another handle created in the same patch" in normalized.lower()
+    assert "never set `after` to another handle created in the same patch" not in (
+        normalized.lower()
+    )
 
 
 def test_retry_budget_guard_runs_before_plan_apply_and_not_after_it() -> None:

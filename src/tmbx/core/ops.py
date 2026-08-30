@@ -1,9 +1,26 @@
 # src/tmbx/core/ops.py
 """Level 1 op vocabulary.
 
-A patch is a SET: every op resolves against the pre-patch plan, so op order
-is irrelevant and a patch is verifiable before it is applied. Sequencing is
-real only across patches, at the transaction boundary.
+A patch is a SET: op order is irrelevant, and a patch is verifiable before
+it is applied. Sequencing is real only across patches, at the transaction
+boundary.
+
+Set semantics is a claim about ORDER, not about scope. An add's ``after``
+may name a handle the same patch adds, and the patch stays a set: adds are
+applied in dependency order, computed from the anchors themselves, so the
+same patch listed in any order lands the same plan. What set semantics
+forbids is a result that depends on where an op sat in the list — not a
+patch that describes a chain.
+
+That distinction was learned the expensive way. Anchors used to resolve
+against the pre-patch plan alone, which made a chain unexpressible in one
+patch: the planner built a day the way least commitment asks for it — one
+real anchor, every other block ``ap`` and hung off the block before it —
+and tmbx refused all thirteen relative ops (tmbx journal entry 133,
+2026-08-30). Four seconds later the model gave up and pinned all fourteen
+blocks to wall-clock times, which is the plan ``commitment.overspecified``
+exists to call a mistake. The rule meant to keep patches verifiable was
+pushing the model toward the worst available day.
 
 Addressing is by handle. Never by index — an index-addressed op is
 meaningless against any other plan and therefore useless as a training
@@ -37,15 +54,17 @@ class _OpBase(BaseModel):
 
 
 class AddBlock(_OpBase):
-    """Insert a new block after an existing one."""
+    """Insert a new block after another one."""
 
     op: Literal["add"] = "add"
     after: str | None = Field(
         default=END,
         description=(
-            "Pre-patch handle to insert after; None prepends; 'END' appends. "
-            "Cannot reference a handle created in the same patch. Use None for "
-            "fixed-start additions unless ordering against an existing block matters."
+            "Handle to insert after — one already on the plan, or one this same "
+            "patch adds; None prepends; 'END' appends. Adds are applied in "
+            "dependency order, so a whole chain can be built in one patch; two "
+            "adds anchored on each other are refused as a cycle. Use None for "
+            "fixed-start additions unless ordering against another block matters."
         ),
     )
     h: str = Field(description="Handle for the new block")
@@ -175,17 +194,31 @@ def _boundary_relaxation_errors(index: int, op: UpdateBlock, target: Block) -> l
 def _validate_add(
     index: int,
     op: AddBlock,
-    existing_pre: set[str],
+    anchorable: set[str],
     existing_effective: set[str],
     added: set[str],
 ) -> list[str]:
-    """``existing_pre`` (the full pre-patch handle set) governs whether an
-    anchor reference is meaningful — even a removed handle names a real
-    pre-patch position (see ``_resolve_anchor``). ``existing_effective``
-    (pre-patch minus this same patch's removals) governs whether the new
-    block's OWN handle collides — a handle freed by a same-patch removal is
-    fair game to reuse, only a handle that still stands, or is claimed
-    twice, is a real clash.
+    """``anchorable`` (every pre-patch handle, plus every handle this patch
+    adds) governs whether an anchor reference is meaningful. Both halves
+    earn their place: a removed handle still names a real pre-patch
+    position (see ``_resolve_anchor``), and an added handle names a block
+    the patch itself will put there (see ``_apply_adds``, which orders adds
+    so the anchor is placed first). An anchor naming neither names nothing,
+    and is refused.
+
+    Deliberately the WHOLE add set, not the adds listed so far. A patch is
+    a set, so an anchor naming an add three ops further down the list is
+    the same patch as one naming an add three ops back; accepting only the
+    second would make validity depend on list order — the one thing set
+    semantics exists to rule out.
+
+    ``existing_effective`` (pre-patch minus this same patch's removals)
+    governs whether the new block's OWN handle collides — a handle freed by
+    a same-patch removal is fair game to reuse, only a handle that still
+    stands, or is claimed twice, is a real clash. That check DOES read the
+    incrementally-built ``added``, and correctly: it fires on the second of
+    two ops claiming one handle, and which of the two that is has no
+    bearing on whether the patch is refused.
     """
     errors: list[str] = []
     if not is_valid_handle(op.h):
@@ -194,7 +227,7 @@ def _validate_add(
         )
     if op.h in existing_effective or op.h in added:
         errors.append(f"op {index}: handle {op.h} already exists")
-    if op.after not in (None, END) and op.after not in existing_pre:
+    if op.after not in (None, END) and op.after not in anchorable:
         errors.append(f"op {index}: anchor {op.after} not found")
     errors.extend(
         f"op {index}: {op.h} {msg}"
@@ -241,46 +274,54 @@ def _validate_touch(
 def _walk_back_dependency(
     after: str,
     pre_order: list[str],
-    moved: set[str],
+    pending: set[str],
     removed: set[str],
     self_handle: str,
 ) -> str | None:
-    """The single move-handle ``self_handle``'s move (anchored on
+    """The single handle ``self_handle``'s placement (anchored on
     ``after``) genuinely depends on, or ``None`` if it resolves without
-    depending on anything still in ``moved``.
+    depending on anything still in ``pending``.
+
+    ``pending`` is the set of handles whose position this phase has yet to
+    settle — the moves still unplaced in ``_apply_moves``, the adds still
+    unplaced in ``_apply_adds``. The two phases run one after the other
+    and neither can depend on the other's leftovers (moves are complete
+    before the first add resolves), so one set per phase is the whole
+    graph.
 
     Mirrors the *exact* path ``_resolve_anchor`` walks — not just the
-    anchor's literal value. An anchor naming a handle in ``moved`` (other
-    than ``self_handle``) depends on it directly. An anchor naming a
-    ``removed`` handle depends on the nearest ``pre_order`` predecessor
-    that is itself in ``moved`` — and the walk to find that predecessor
+    anchor's literal value. An anchor naming a handle in ``pending``
+    (other than ``self_handle``) depends on it directly. An anchor naming
+    a ``removed`` handle depends on the nearest ``pre_order`` predecessor
+    that is itself in ``pending`` — and the walk to find that predecessor
     can pass straight through it without that handle ever being the
-    anchor's own literal value. "Removed" and "moved" are not separate
+    anchor's own literal value. "Removed" and "pending" are not separate
     cases here on purpose — a walk through a removed handle can land on a
-    moved one, composing both, and treating them as disjoint is exactly
+    pending one, composing both, and treating them as disjoint is exactly
     the defect this function closes. Anything else (present, and neither
-    moved nor removed) terminates the walk with no dependency: it already
-    exists, unconditionally, so resolution can happen now.
+    pending nor removed) terminates the walk with no dependency: it
+    already exists, unconditionally, so resolution can happen now.
 
-    ``self_handle`` matters because a move can be its own nearest walk-back
-    candidate: if ``self_handle`` immediately preceded the removed anchor
-    in ``pre_order``, it is vacating that exact spot, so finding itself
-    there is not a dependency on anything — the walk terminates with no
-    dependency, same as finding a genuinely stable handle would, rather
-    than continuing past itself to whatever comes next. A literal
-    self-reference (``after == self_handle``) is different: that IS a real
-    dependency on itself, and is still reported as a cycle by the caller,
-    since it's caught by the direct-membership check above, before this
-    walk-back loop ever runs.
+    ``self_handle`` matters because a placement can be its own nearest
+    walk-back candidate: if ``self_handle`` immediately preceded the
+    removed anchor in ``pre_order``, it is vacating that exact spot (or,
+    for an add reusing a handle the same patch removed, replacing it), so
+    finding itself there is not a dependency on anything — the walk
+    terminates with no dependency, same as finding a genuinely stable
+    handle would, rather than continuing past itself to whatever comes
+    next. A literal self-reference (``after == self_handle``) is
+    different: that IS a real dependency on itself, and is still reported
+    as a cycle by the caller, since it's caught by the direct-membership
+    check above, before this walk-back loop ever runs.
 
-    Used identically by ``validate_patch`` (``_cyclic_move_anchors``, over
-    the complete static move set, to build the whole dependency graph for
-    cycle detection) and by ``_apply_moves`` (round by round, as ``moved``
-    shrinks to whatever is still unplaced) — the two agree by construction
-    because they call the same function, not by keeping two derivations
-    in sync.
+    Used identically by ``validate_patch`` (``_cyclic_anchors``, over a
+    phase's complete static set, to build the whole dependency graph for
+    cycle detection) and by ``_apply_moves``/``_apply_adds`` (round by
+    round, as ``pending`` shrinks to whatever is still unplaced) — they
+    agree by construction because they call the same function, not by
+    keeping separate derivations in sync.
     """
-    if after in moved:
+    if after in pending:
         return after
     if after not in removed:
         return None
@@ -289,34 +330,48 @@ def _walk_back_dependency(
     for candidate in reversed(pre_order[: pre_order.index(after)]):
         if candidate == self_handle:
             return None
-        if candidate in moved:
+        if candidate in pending:
             return candidate
         if candidate not in removed:
             return None
     return None
 
 
-def _cyclic_move_anchors(
-    move_ops: list[MoveBlock], pre_order: list[str], removed: set[str]
+def _cyclic_anchors(
+    anchored: dict[str, str | None], pre_order: list[str], removed: set[str]
 ) -> set[str]:
-    """Return the handles caught in a cyclic move dependency.
+    """Return the handles caught in a cyclic placement dependency.
 
-    Dependencies come from ``_walk_back_dependency`` — the same function
-    ``_apply_moves`` uses for its round-by-round readiness check — so this
-    sees the exact graph the resolution mechanism has, including edges no
-    literal ``after`` reference ever names (a walk-back through a removed
-    handle can pass through a co-moved one). Repeatedly drop any move
-    whose dependency isn't itself still pending; what's left when nothing
-    more can be dropped has no valid placement order.
+    ``anchored`` maps every handle one phase places to the anchor it
+    names: ``{move.h: move.after}`` for the move phase, ``{add.h:
+    add.after}`` for the add phase. One function for both, rather than a
+    sibling per phase, because the graph is the same graph — a set of
+    handles waiting to be positioned, each naming at most one other — and
+    the hard part is not the phase, it is that an edge can be implied by
+    a walk-back through a removed handle rather than written down. That
+    part lives in ``_walk_back_dependency``, and a second copy of this
+    loop would only be a second place for the two derivations to drift.
+
+    Dependencies therefore come from ``_walk_back_dependency`` — the same
+    function the apply phases use for their round-by-round readiness check
+    — so this sees the exact graph the resolution mechanism has, including
+    edges no literal ``after`` reference ever names. Repeatedly drop any
+    handle whose dependency isn't itself still pending; what's left when
+    nothing more can be dropped has no valid placement order.
+
+    Callers name the phase in the message they raise ("cyclic move
+    anchors", "cyclic add anchors"), because that is the word the reader
+    needs and this function cannot know it.
     """
-    moved = {op.h for op in move_ops}
+    placing = set(anchored)
     dep_of: dict[str, str] = {}
-    for op in move_ops:
-        if op.after in (None, END):
+    for handle, after in anchored.items():
+        if after in (None, END):
             continue
-        dep = _walk_back_dependency(op.after, pre_order, moved, removed, op.h)
+        assert after is not None  # narrowed by the sentinel check above
+        dep = _walk_back_dependency(after, pre_order, placing, removed, handle)
         if dep is not None:
-            dep_of[op.h] = dep
+            dep_of[handle] = dep
 
     pending = dict(dep_of)
     changed = True
@@ -383,12 +438,14 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
     pre_order = [b.h for b in plan.blocks]
     removed = {op.h for op in patch.ops if isinstance(op, RemoveBlock)}
     existing_effective = existing_pre - removed
+    add_ops = [op for op in patch.ops if isinstance(op, AddBlock)]
+    anchorable = existing_pre | {op.h for op in add_ops}
     touched: set[str] = set()
     added: set[str] = set()
 
     for index, op in enumerate(patch.ops):
         if isinstance(op, AddBlock):
-            errors.extend(_validate_add(index, op, existing_pre, existing_effective, added))
+            errors.extend(_validate_add(index, op, anchorable, existing_effective, added))
             added.add(op.h)
             continue
 
@@ -396,9 +453,13 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
         touched.add(op.h)
 
     move_ops = [op for op in patch.ops if isinstance(op, MoveBlock)]
-    cyclic = _cyclic_move_anchors(move_ops, pre_order, removed)
+    cyclic = _cyclic_anchors({op.h: op.after for op in move_ops}, pre_order, removed)
     if cyclic:
         errors.append(f"cyclic move anchors: {', '.join(sorted(cyclic))}")
+
+    cyclic_adds = _cyclic_anchors({op.h: op.after for op in add_ops}, pre_order, removed)
+    if cyclic_adds:
+        errors.append(f"cyclic add anchors: {', '.join(sorted(cyclic_adds))}")
 
     errors.extend(_plan_invariant_errors(plan, patch))
 
@@ -523,18 +584,18 @@ def _apply_moves(blocks: list[Block], patch: Patch, pre_order: list[str]) -> lis
     function of the dependency graph — data, never ``patch.ops`` position
     — so this stays order-independent.
 
-    ``validate_patch`` (``_cyclic_move_anchors``, over the same graph)
-    rejects a patch whose moves have no valid layering before ``apply_ops``
-    ever calls this. The upfront check below calls that exact function
-    again as a defensive backstop rather than re-deriving cycle detection
-    inside the loop — one algorithm, not two copies to keep in sync.
+    ``validate_patch`` (``_cyclic_anchors``, over the same graph) rejects a
+    patch whose moves have no valid layering before ``apply_ops`` ever
+    calls this. The upfront check below calls that exact function again as
+    a defensive backstop rather than re-deriving cycle detection inside the
+    loop — one algorithm, not two copies to keep in sync.
     """
     move_ops = [op for op in patch.ops if isinstance(op, MoveBlock)]
     if not move_ops:
         return blocks
 
     removed = {op.h for op in patch.ops if isinstance(op, RemoveBlock)}
-    cyclic = _cyclic_move_anchors(move_ops, pre_order, removed)
+    cyclic = _cyclic_anchors({op.h: op.after for op in move_ops}, pre_order, removed)
     if cyclic:
         raise ValueError(f"cyclic move anchors: {', '.join(sorted(cyclic))}")
 
@@ -568,26 +629,82 @@ def _apply_moves(blocks: list[Block], patch: Patch, pre_order: list[str]) -> lis
 def _apply_adds(
     blocks: list[Block], patch: Patch, mint_uid: Callable[[], str], pre_order: list[str]
 ) -> list[Block]:
+    """Apply every ``AddBlock`` op in one phase, in dependency order.
+
+    An add's anchor may name another add in the same patch, which is how a
+    day gets built as a chain — one real anchor and everything after it
+    relative. That anchor has to be placed first, so adds go in dependency
+    layers exactly as moves do: each round, every add
+    ``_walk_back_dependency`` says has no remaining dependency is placed
+    together by ``_insert_batch`` (which tie-breaks anything sharing a
+    resolved anchor by handle), and placing a layer makes its handles
+    available for the next. Layer membership is a function of the anchors
+    alone — data, never ``patch.ops`` position — so the same patch listed
+    in any order lands the same plan.
+
+    Two adds sharing one anchor always share a layer, since an add's layer
+    is determined by what it names; ``_insert_batch``'s single-pass
+    grouping is therefore still what decides their relative order, exactly
+    as before this phase learned to layer.
+
+    Blocks are minted before any layering, one ``mint_uid`` call per op in
+    ``patch.ops`` order. Uid identity is opaque and fresh per add — no op
+    can address it and nothing compares it across patches — so which
+    minted uid lands on which block is not part of what "the same patch
+    lands the same plan" claims, and the layering deliberately does not
+    reach into it.
+
+    ``validate_patch`` rejects a cyclic add graph before ``apply_ops`` ever
+    calls this; the upfront check repeats it as a defensive backstop, the
+    same way ``_apply_moves`` does.
+    """
     add_ops = [op for op in patch.ops if isinstance(op, AddBlock)]
     if not add_ops:
         return blocks
-    items = [
-        (
-            Block(
-                uid=mint_uid(),
-                h=op.h,
-                slug=op.slug,
-                n=op.n,
-                d=op.d,
-                t=op.t,
-                p=op.p,
-                anchor_source=op.anchor_source,
-            ),
-            op.after,
+
+    removed = {op.h for op in patch.ops if isinstance(op, RemoveBlock)}
+    cyclic = _cyclic_anchors({op.h: op.after for op in add_ops}, pre_order, removed)
+    if cyclic:
+        raise ValueError(f"cyclic add anchors: {', '.join(sorted(cyclic))}")
+
+    minted = {
+        op.h: Block(
+            uid=mint_uid(),
+            h=op.h,
+            slug=op.slug,
+            n=op.n,
+            d=op.d,
+            t=op.t,
+            p=op.p,
+            anchor_source=op.anchor_source,
         )
         for op in add_ops
-    ]
-    return _insert_batch(blocks, items, pre_order)
+    }
+
+    working = blocks
+    pending = {op.h: op for op in add_ops}
+    while pending:
+        unplaced = set(pending)
+        ready = {
+            h: op
+            for h, op in pending.items()
+            if op.after in (None, END)
+            or _walk_back_dependency(op.after, pre_order, unplaced, removed, h) is None
+        }
+        if not ready:
+            # Defensive only: the upfront _cyclic_anchors check above
+            # already rules this out.
+            raise ValueError(
+                f"internal error: no ready add among {sorted(pending)} despite "
+                "passing the upfront cycle check"
+            )
+        working = _insert_batch(
+            working, [(minted[h], op.after) for h, op in ready.items()], pre_order
+        )
+        for h in ready:
+            del pending[h]
+
+    return working
 
 
 def apply_ops(plan: Plan, patch: Patch, *, mint_uid: Callable[[], str]) -> Plan:
@@ -624,9 +741,11 @@ def apply_ops(plan: Plan, patch: Patch, *, mint_uid: Callable[[], str]) -> Plan:
       and is rejected by ``validate_patch`` before this ever runs.
     * **Add** resolves exactly like a move's anchor case, running after
       moves so an add anchored on a moved block sees its final position.
-      ``validate_patch`` already rejects an add anchored on another add's
-      handle (which doesn't exist pre-patch), so adds never depend on each
-      other.
+      An add may also name another add in this same patch — that is how a
+      chain gets built in one patch — so adds are applied in dependency
+      layers of their own, computed from the anchors by the same
+      ``_walk_back_dependency``. A cycle among them has no valid layer and
+      is rejected by ``validate_patch`` before this runs.
 
     Within any phase, several ops resolving to the same anchor are placed
     by ``_insert_batch`` in one pass, tie-broken by the new block's own

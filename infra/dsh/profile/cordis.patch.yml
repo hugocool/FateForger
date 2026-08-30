@@ -204,7 +204,12 @@
         # Started once, outside the harness, so a turn connects instead of
         # spawning Python and paying its import cost again. Calendar backend
         # and timezone are set on THAT process, not here.
-        url: http://127.0.0.1:8011/mcp
+        # One place decides which tmbx a turn talks to. TmbxClient already reads
+        # TMBX_MCP_URL with this same default, and the two disagreeing is how a
+        # host and its planner end up patching different servers -- a fixed
+        # server also means a change to tmbx cannot be exercised without
+        # stopping the one process everything shares.
+        url: !!js process.env.TMBX_MCP_URL || 'http://127.0.0.1:8011/mcp'
         toolCallTimeoutMs: 120000
         failOnStartupError: true
 

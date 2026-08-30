@@ -278,16 +278,27 @@ def test_the_deployed_profile_matches_the_repository() -> None:
 def test_a_fresh_day_is_chained_relationally_not_pinned() -> None:
     """Least commitment is tmbx policy, and the planner was working against it.
 
-    Measured on 2026-08-29 in the tmbx journal: the planner tried to chain a
-    day with `after: <handle>`, was refused because an anchor resolves only
-    against the pre-patch snapshot, and retried four seconds later with every
+    Measured on 2026-08-29 in the tmbx journal (entry 133): the planner tried to
+    chain a day with `after: <handle>`, was refused because an anchor could only
+    name a block already on the plan, and retried four seconds later with every
     block pinned to a wall-clock `fs` — a day that cannot shift, so buffers and
-    constraint rules stop applying downstream. `after: "END"` with `ap` chains
-    in one patch and names no time; verified against the live server.
+    constraint rules stop applying downstream.
+
+    The refusal is gone: an add's `after` may now name a handle the same patch
+    adds, and tmbx applies adds in dependency order (`tmbx.core.ops`). So the
+    prose no longer has a restriction to work around, and the absences below
+    are the load-bearing half — the retired sentences justified the pinned day,
+    and a prompt that still carries them will keep producing it.
     """
 
     prose = _flowed()
 
-    assert '`after: "END"`' in prose
+    assert "may name another handle created in the same patch" in prose
+    assert "applies adds in dependency order" in prose
     assert '{"a":"ap","dur":...}' in prose
+    assert '`after: "END"`' in prose
     assert "overspecified" in prose
+
+    assert _absent("every anchor resolves only against the pre-patch snapshot")
+    assert _absent("Never set `after` to another handle created in the same patch")
+    assert _absent("an anchor cannot name a handle from the same patch")

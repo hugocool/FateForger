@@ -163,25 +163,30 @@ Before every `plan_apply`, check the patch mechanically: every new handle has
 explicit `op` field, every `fs` or `fw` add has `anchor_source` (`user` for a
 time Hugo explicitly stated), and no boundary/window was encoded as an occupying block.
 Fixed-start additions use `after: null` unless they must be positioned relative
-to a block already present in the input snapshot. Never set `after` to another
-handle created in the same patch: patch operations are a set and every anchor
-resolves only against the pre-patch snapshot.
+to another block. An add's `after` may name another handle created in the same
+patch: tmbx applies adds in dependency order, so the anchor is placed before the
+block naming it. Two adds naming each other are refused as a cycle, and so is an
+anchor naming nothing.
 This is a shape check, not a reason to add another planning pass.
 
-**Chain a fresh day with `after: "END"` and `ap`, not with clock times.** The
-restriction above says an anchor cannot name a handle from the same patch. It
-does not say a day must be built out of fixed starts, and reading it that way
-produces the worst available plan: every block pinned to a wall-clock time, a
-chain that cannot shift, and buffer and constraint rules that quietly stop
-applying because nothing downstream can move. `after: "END"` appends to whatever
-the plan currently ends with — including a block added earlier in the same
-patch — and `{"a":"ap","dur":...}` says *start when the previous one ends* and
-names no time at all. So:
+**Chain a fresh day: say which block each one follows, and use `ap`.** A day
+built out of fixed starts is the worst available plan — every block pinned to a
+wall-clock time, a chain that cannot shift, and buffer and constraint rules that
+quietly stop applying because nothing downstream can move. It was once the only
+shape a single patch could express; it is not any more. `{"a":"ap","dur":...}`
+says *start when the previous one ends* and names no time at all, and `after`
+names the block it follows — one this patch is adding, or one already on the
+plan, such as a meeting you have to build around. `after: "END"` appends to
+whatever the plan currently ends with, which says the same thing more briefly
+when you are laying blocks down in order. The chain's first block cannot be
+`ap` — it has nothing to start after — and a `"t":"BG"` block does not count as
+something to follow, because background blocks sit outside the chain. So:
 
 ```json
 {"op":"add","h":"DW1","n":"Deep work","t":"DW","after":null,
  "p":{"a":"fs","st":"09:00:00","dur":"PT2H30M"},"anchor_source":"user"}
-{"op":"add","h":"GY1","n":"Gym","t":"H","after":"END","p":{"a":"ap","dur":"PT1H"}}
+{"op":"add","h":"LN1","n":"Lunch","t":"H","after":"DW1","p":{"a":"ap","dur":"PT30M"}}
+{"op":"add","h":"GY1","n":"Gym","t":"H","after":"LN1","p":{"a":"ap","dur":"PT1H"}}
 ```
 
 One real anchor, and the rest resolved by tmbx. Pin a start only when something
