@@ -39,6 +39,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from fateforger.agents.timeboxing.session_contracts import (
+    ArtifactKind,
     PlanningBrief,
     PlanningResult,
 )
@@ -291,6 +292,22 @@ def _planning_obligation(brief: PlanningBrief) -> str:
     """State the host's authority over this turn, then the call that ends it."""
 
     target = brief.target_artifact.value
+    # A candidate is committed as a tmbx patch, and the host takes that patch
+    # by watching the plan_apply this turn makes -- never from the model, since
+    # a model-written basis is a forged one. So applying is mandatory, and used
+    # not to be stated: every stage got the same sentence, and a planner that
+    # submitted a good day without applying had followed every instruction it
+    # was given and produced something that could be approved and never
+    # committed (#217).
+    apply_first = (
+        "\nBefore you submit it, put the day into tmbx with `plan_apply`. The "
+        "patch that call produces is the only thing that can be committed "
+        "later -- this host takes it from the call itself and cannot accept "
+        "one written into the result, so a candidate submitted without "
+        "applying is one nobody can act on."
+        if brief.target_artifact is ArtifactKind.VALIDATED_CANDIDATE
+        else ""
+    )
     return (
         "This planning turn is host-driven. The brief below is authoritative "
         "for the day, the facts, the prior artifacts and the approvals; do not "
@@ -299,7 +316,7 @@ def _planning_obligation(brief: PlanningBrief) -> str:
         f"Produce exactly one `{target}` and end this turn by calling "
         f"`submit_planning_result` once, with target_artifact `{target}`. Your "
         "final message is presentation only: it records nothing, and a turn "
-        "that ends without that call has produced nothing."
+        f"that ends without that call has produced nothing.{apply_first}"
     )
 
 
