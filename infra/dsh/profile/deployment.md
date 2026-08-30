@@ -162,25 +162,36 @@ Before every `plan_apply`, check the patch mechanically: every new handle has
 2–5 uppercase letters followed by 1–2 digits, every operation still has its
 explicit `op` field, every `fs` or `fw` add has `anchor_source` (`user` for a
 time Hugo explicitly stated), and no boundary/window was encoded as an occupying block.
-Fixed-start additions use `after: null` unless they must be positioned relative
-to another block. An add's `after` may name another handle created in the same
-patch: tmbx applies adds in dependency order, so the anchor is placed before the
-block naming it. Two adds naming each other are refused as a cycle, and so is an
-anchor naming nothing.
+`after` is optional on an add and mostly should be absent — see below. Where you
+do write one, it may name another handle created in the same patch: tmbx applies
+adds in dependency order, so the anchor is placed before the block naming it.
+Two adds naming each other are refused as a cycle, and so is an anchor naming
+nothing.
 This is a shape check, not a reason to add another planning pass.
 
-**Chain a fresh day: say which block each one follows, and use `ap`.** A day
-built out of fixed starts is the worst available plan — every block pinned to a
-wall-clock time, a chain that cannot shift, and buffer and constraint rules that
-quietly stop applying because nothing downstream can move. It was once the only
-shape a single patch could express; it is not any more. `{"a":"ap","dur":...}`
-says *start when the previous one ends* and names no time at all, and `after`
-names the block it follows — one this patch is adding, or one already on the
-plan, such as a meeting you have to build around. `after: "END"` appends to
-whatever the plan currently ends with, which says the same thing more briefly
-when you are laying blocks down in order. The chain's first block cannot be
-`ap` — it has nothing to start after — and a `"t":"BG"` block does not count as
-something to follow, because background blocks sit outside the chain.
+**Chain a fresh day: list the blocks in the order they happen, and use `ap`.**
+A day built out of fixed starts is the worst available plan — every block pinned
+to a wall-clock time, a chain that cannot shift, and buffer and constraint rules
+that quietly stop applying because nothing downstream can move. It was once the
+only shape a single patch could express; it is not any more.
+`{"a":"ap","dur":...}` says *start when the previous one ends* and names no time
+at all.
+
+**Ops are applied in the order you list them.** An add with no `after` goes
+after the add listed before it, so the sequence of the day is the sequence of
+the ops — you do not restate it. Write the blocks down in the order they happen
+and leave `after` out.
+
+`after` is for a block that must sit somewhere *other* than after the previous
+one. That is the only reason to write it. Two cases come up: the chain's first
+block, which has nothing before it to follow (give it `after: null` on a fresh
+day, or `after: "END"` to continue a plan that already has blocks on it), and a
+block that has to hang off something already on the plan — a meeting you are
+building around. Everything in between says nothing.
+
+The chain's first block cannot be `ap` — it has nothing to start after — and a
+`"t":"BG"` block does not count as something to follow, because background
+blocks sit outside the chain.
 
 **`BG` is a range Hugo is available in, never a thing he does.** A work window, a
 travel window, an on-call stretch. A morning ritual, breakfast and a commute are
@@ -192,9 +203,13 @@ patch rather than the one block that was mistyped. So:
 ```json
 {"op":"add","h":"DW1","n":"Deep work","t":"DW","after":null,
  "p":{"a":"fs","st":"09:00:00","dur":"PT2H30M"},"anchor_source":"user"}
-{"op":"add","h":"LN1","n":"Lunch","t":"H","after":"DW1","p":{"a":"ap","dur":"PT30M"}}
-{"op":"add","h":"GY1","n":"Gym","t":"H","after":"LN1","p":{"a":"ap","dur":"PT1H"}}
+{"op":"add","h":"LN1","n":"Lunch","t":"H","p":{"a":"ap","dur":"PT30M"}}
+{"op":"add","h":"GY1","n":"Gym","t":"H","p":{"a":"ap","dur":"PT1H"}}
 ```
+
+Lunch follows deep work and the gym follows lunch because that is the order they
+are written in. The one `after` in the patch is on the first block, saying where
+the chain starts.
 
 One real anchor, and the rest resolved by tmbx. Pin a start only when something
 outside the plan fixes it — Hugo stated the time, a standing rule requires it,

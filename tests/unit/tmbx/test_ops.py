@@ -28,23 +28,55 @@ from tmbx.core.ops import (
 )
 
 
-def test_add_after_schema_teaches_that_a_patch_can_chain_its_own_adds():
+def test_add_after_schema_teaches_that_omitting_it_follows_the_previous_add():
     """This description is the only documentation a model ever reads about
     `after`. It used to say the anchor "cannot reference a handle created
     in the same patch"; the model believed it, could not express a chain,
     and pinned a whole day to wall-clock times instead (journal entry 134).
-    The absence assertion is the load-bearing half — a stale sentence left
-    beside a true one is still read.
+    The absence assertions are the load-bearing half — a stale sentence
+    left beside a true one is still read.
+
+    Two sentences are now stale, not one. "Use None for fixed-start
+    additions unless ordering against another block matters" was advice
+    about a default that no longer exists: a fixed-start add omitting
+    `after` follows the previous add like any other, and pinning its start
+    says nothing about where it sits in the list.
     """
     description = AddBlock.model_json_schema()["properties"]["after"][
         "description"
     ].lower()
 
+    assert "omit" in description
+    assert "listed before it" in description
+    assert "override" in description
     assert "same patch" in description
     assert "dependency order" in description
     assert "cycle" in description
-    assert "fixed-start" in description
     assert "cannot reference a handle created in the same patch" not in description
+    assert "use none for fixed-start additions" not in description
+
+
+def test_after_defaults_to_the_prev_sentinel_so_omission_survives_serialisation():
+    """The journal stores ``patch.model_dump_json()``. If "omitted" lived
+    only in ``model_fields_set``, that dump would write ``after: null`` —
+    which means *prepend* — into the record of a patch that meant *follow
+    the one before*, and the record of what the planner did would disagree
+    with what the planner did. A sentinel value round-trips; parse
+    metadata does not.
+    """
+    parsed = Patch.model_validate(
+        {"ops": [{"op": "add", "h": "AA1", "n": "A", "t": "BU",
+                  "p": {"a": "ap", "dur": "PT5M"}}]}
+    )
+    assert parsed.ops[0].after == "PREV"
+
+    round_tripped = Patch.model_validate_json(parsed.model_dump_json())
+    assert round_tripped.ops[0].after == parsed.ops[0].after
+
+    plan = _plan()
+    assert [b.h for b in apply_ops(plan, parsed, mint_uid=lambda: "u").blocks] == [
+        b.h for b in apply_ops(plan, round_tripped, mint_uid=lambda: "u").blocks
+    ]
 
 
 def _mint(seq=itertools.count(1)):
@@ -121,22 +153,27 @@ def test_ops_are_commutative():
     assert len(results) == 1
 
 
-def test_two_adds_sharing_an_anchor_are_order_independent():
-    """Two Adds anchored on the same handle must not leapfrog each other
-    depending on which one the patch lists first — that would make the
-    result depend on op order, contradicting set semantics.
+def test_two_adds_sharing_an_anchor_keep_the_order_the_patch_listed():
+    """Two adds anchored on the same handle land in the order they were
+    written. Under set semantics they landed alphabetically instead, and
+    handles chosen to make that visible are the whole point here: BB1
+    listed first must come out first, which handle order alone would never
+    produce.
+
+    Still one insert pass, not two — the two adds do not leapfrog each
+    other, they are placed together and ranked. What changed is the rank.
     """
-    ops = [
-        AddBlock(after="PR1", h="AA1", n="A", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5))),
+    listed_bb_first = [
         AddBlock(after="PR1", h="BB1", n="B", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5))),
+        AddBlock(after="PR1", h="AA1", n="A", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5))),
     ]
-    results = set()
-    for permutation in itertools.permutations(ops):
-        plan = apply_ops(_plan(), Patch(ops=list(permutation)), mint_uid=lambda: "u-fixed")
-        results.add(tuple(b.h for b in plan.blocks))
-    assert len(results) == 1
-    (order,) = results
-    assert order == ("PR1", "AA1", "BB1", "DW1", "DW2")
+    forward = apply_ops(_plan(), Patch(ops=listed_bb_first), mint_uid=lambda: "u-fixed")
+    reverse = apply_ops(
+        _plan(), Patch(ops=list(reversed(listed_bb_first))), mint_uid=lambda: "u-fixed"
+    )
+
+    assert [b.h for b in forward.blocks] == ["PR1", "BB1", "AA1", "DW1", "DW2"]
+    assert [b.h for b in reverse.blocks] == ["PR1", "AA1", "BB1", "DW1", "DW2"]
 
 
 def test_two_moves_sharing_an_anchor_are_order_independent():
@@ -153,18 +190,22 @@ def test_two_moves_sharing_an_anchor_are_order_independent():
     assert order == ("PR1", "DW1", "DW2")
 
 
-def test_two_prepends_are_order_independent():
+def test_two_explicit_prepends_keep_the_order_the_patch_listed():
+    """Two adds that both say `after: null` mean it — neither is chaining
+    off the other, both go to the front — and the front is still a
+    position two blocks can share, so the listed order decides which is
+    first.
+    """
     ops = [
-        AddBlock(after=None, h="AA1", n="A", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5))),
         AddBlock(after=None, h="BB1", n="B", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5))),
+        AddBlock(after=None, h="AA1", n="A", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5))),
     ]
-    results = set()
-    for permutation in itertools.permutations(ops):
-        plan = apply_ops(_plan(), Patch(ops=list(permutation)), mint_uid=lambda: "u-fixed")
-        results.add(tuple(b.h for b in plan.blocks))
-    assert len(results) == 1
-    (order,) = results
-    assert order[:2] == ("AA1", "BB1")
+    forward = apply_ops(_plan(), Patch(ops=ops), mint_uid=lambda: "u-fixed")
+    reverse = apply_ops(
+        _plan(), Patch(ops=list(reversed(ops))), mint_uid=lambda: "u-fixed"
+    )
+    assert [b.h for b in forward.blocks][:2] == ["BB1", "AA1"]
+    assert [b.h for b in reverse.blocks][:2] == ["AA1", "BB1"]
 
 
 def test_validate_rejects_unknown_handle():
@@ -1048,3 +1089,245 @@ def test_the_journal_133_patch_as_recorded_applies_but_will_not_resolve():
     violation = excinfo.value.violation
     assert violation.kind is ViolationKind.UNANCHORED_AFTER_PREV
     assert [b.h for b in violation.blocks] == ["BR1"]
+
+
+# ---------------------------------------------------------------------------
+# SPIKE: op order is significant for adds.
+#
+# `after` absent means "follow the add listed before me"; `after` present is an
+# override and behaves exactly as it always did. Remove, update and move are
+# untouched and remain a set.
+# ---------------------------------------------------------------------------
+
+
+def _empty_plan():
+    return Plan(date=date(2026, 8, 17), blocks=[])
+
+
+def _hugo_case(**kw):
+    """The measured defect, verbatim: Lunch, Gym, Walk, in that order.
+
+    Handles chosen the way the live planner chose them — from the block
+    names — which is exactly why alphabetical tie-breaking reversed the
+    day: BW1 < MG1 < ZL1 is the opposite of the order they were written.
+
+    Lunch is pinned only because a chain needs one fs block somewhere or
+    the patch is refused before any of this is reached. It is the anchor,
+    not the subject.
+    """
+    def hour(h, n, minutes):
+        return AddBlock(h=h, n=n, t=ET.H, p=AfterPrev(dur=timedelta(minutes=minutes)), **kw)
+
+    lunch = AddBlock(h="ZL1", n="Lunch", t=ET.H, anchor_source="user",
+                     p=FixedStart(st=time(12, 0), dur=timedelta(minutes=60)), **kw)
+    return [lunch, hour("MG1", "Gym", 60), hour("BW1", "Walk", 20)]
+
+
+def test_three_adds_all_saying_END_now_append_in_the_order_listed():
+    """The measurement that opened this spike. `after: "END"` read as
+    "append in order" and was not: all three resolved to the same trailing
+    position and were then sorted by handle, so the day came out
+    Walk, Gym, Lunch. Nothing in the patch was wrong.
+    """
+    result = apply_ops(
+        _empty_plan(), Patch(ops=_hugo_case(after="END")), mint_uid=_mint
+    )
+    assert [b.h for b in result.blocks] == ["ZL1", "MG1", "BW1"]
+
+
+def test_the_same_three_adds_need_no_anchors_at_all():
+    """The point of the change: the sequence is in the ops list, so the
+    planner does not restate it. Same day as the explicit-END patch above,
+    with three fields fewer.
+    """
+    result = apply_ops(_empty_plan(), Patch(ops=_hugo_case()), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == ["ZL1", "MG1", "BW1"]
+
+
+def test_an_omitted_after_chains_onto_the_previous_add():
+    """Not merely "lands after it in the list" — the anchor really is the
+    previous add's handle, so an add listed between two others is inserted
+    between them rather than appended past them.
+    """
+    ops = [
+        _add("PR1", "ZZ1"),
+        AddBlock(h="YY1", n="Y", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5))),
+    ]
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == ["PR1", "ZZ1", "YY1", "DW1", "DW2"]
+
+
+def test_the_first_add_with_no_after_prepends():
+    """There is no previous add to follow, so it means what `after: null`
+    means. Stated as its own test because it is the one place the rule has
+    to answer a question the list cannot: an empty history.
+    """
+    ops = [AddBlock(h="AA1", n="A", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5)))]
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == ["AA1", "PR1", "DW1", "DW2"]
+
+
+def test_a_whole_anchorless_chain_lands_at_the_front_of_an_existing_plan():
+    """The consequence of the rule above, and the sharpest edge the spike
+    exposed: the first add prepends, so a chain written with no anchors at
+    all goes BEFORE everything already on the plan, not after it. Pinned
+    deliberately. It is right for building an empty day and surprising for
+    adding to a full one, and the fix — if it is one — is a different
+    default for the first add, not a different rule for the rest.
+    """
+    result = apply_ops(_plan(), Patch(ops=_hugo_case()), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == ["ZL1", "MG1", "BW1", "PR1", "DW1", "DW2"]
+
+
+def test_absent_and_null_are_different_patches():
+    """The distinction the whole mechanism rests on. Both ops parse; one
+    says "follow the block before me" and the other says "go to the
+    front", and a schema that could not tell them apart would have to pick
+    one and silently lose the other.
+    """
+    body = {"op": "add", "h": "BB1", "n": "B", "t": "BU", "p": {"a": "ap", "dur": "PT5M"}}
+    first = {"op": "add", "h": "AA1", "n": "A", "t": "BU", "p": {"a": "ap", "dur": "PT5M"},
+             "after": "PR1"}
+
+    absent = Patch.model_validate({"ops": [first, body]})
+    explicit_null = Patch.model_validate({"ops": [first, {**body, "after": None}]})
+
+    assert [b.h for b in apply_ops(_plan(), absent, mint_uid=_mint).blocks] == [
+        "PR1", "AA1", "BB1", "DW1", "DW2",
+    ]
+    assert [b.h for b in apply_ops(_plan(), explicit_null, mint_uid=_mint).blocks] == [
+        "BB1", "PR1", "AA1", "DW1", "DW2",
+    ]
+
+
+def test_an_explicit_after_overrides_the_previous_add_without_breaking_the_chain():
+    """The override is local. CC1 jumps to PR1; DD1, which says nothing,
+    follows CC1 — because "the previous add" is a fact about the list, and
+    an op that named its own anchor is still in the list.
+    """
+    ops = [
+        _add("DW1", "AA1"),
+        AddBlock(h="BB1", n="B", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5))),
+        _add("PR1", "CC1"),
+        AddBlock(h="DD1", n="D", t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5))),
+    ]
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == [
+        "PR1", "CC1", "DD1", "DW1", "AA1", "BB1", "DW2",
+    ]
+
+
+def test_removes_updates_and_moves_are_still_a_set():
+    """The spike changed one phase. Every op that is not an add still
+    resolves against handles and anchors alone, so permuting them is
+    still a no-op on the result.
+    """
+    ops = [
+        RemoveBlock(h="DW2"),
+        UpdateBlock(h="DW1", n="Renamed"),
+        MoveBlock(h="PR1", after="END"),
+    ]
+    results = set()
+    for permutation in itertools.permutations(ops):
+        plan = apply_ops(_plan(), Patch(ops=list(permutation)), mint_uid=lambda: "u-fixed")
+        results.add(tuple((b.h, b.n) for b in plan.blocks))
+    assert len(results) == 1
+
+
+def test_an_anchorless_chain_can_never_be_cyclic():
+    """Every PREV edge points at an add listed earlier, so the graph is
+    acyclic by construction — there is no way to write a ring out of
+    omitted anchors. Worth a test rather than a comment: it is the
+    property that lets the layering stay a backstop instead of becoming
+    the thing a planner has to reason about.
+    """
+    ops = [
+        AddBlock(h=h, n=h, t=ET.BU, p=AfterPrev(dur=timedelta(minutes=5)))
+        for h in ("AA1", "BB1", "CC1", "DD1", "EE1")
+    ]
+    assert validate_patch(_plan(), Patch(ops=ops)) == []
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks][:5] == ["AA1", "BB1", "CC1", "DD1", "EE1"]
+
+
+def test_an_explicit_forward_reference_still_needs_the_layering():
+    """Order narrows the dependency graph; it does not replace it. An
+    explicit anchor may still name an add listed further down, and that
+    add has to be placed first — which is what `_apply_adds`' layers are
+    for, and why the spike did not delete them.
+    """
+    ops = [_add("ZZ1", "AA1"), _add("PR1", "ZZ1")]
+    result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
+    assert [b.h for b in result.blocks] == ["PR1", "ZZ1", "AA1", "DW1", "DW2"]
+
+
+def test_prev_on_a_move_is_refused_by_name():
+    """A move has no previous — it names a position on the plan as
+    rendered, and the spike deliberately left that alone. A model that
+    carried the add rule across gets told which rule it crossed, not that
+    PREV is a handle it forgot to create.
+    """
+    errors = validate_patch(_plan(), Patch(ops=[MoveBlock(h="DW2", after="PREV")]))
+    assert any("add-only anchor" in e and "DW2" in e for e in errors)
+    assert not any("not found" in e for e in errors)
+
+
+def test_two_moves_sharing_an_anchor_still_tie_break_by_handle():
+    """The asymmetry `_insert_batch` documents, pinned so it cannot drift
+    into being fixed by accident: adds rank by list position, moves rank
+    by handle. A move's `after` is always explicit, so two moves sharing
+    one anchor have stated nothing about their order, and the spike had no
+    signal to promote.
+    """
+    ops = [MoveBlock(h="DW2", after="PR1"), MoveBlock(h="DW1", after="PR1")]
+    forward = apply_ops(_plan(), Patch(ops=ops), mint_uid=lambda: "u")
+    reverse = apply_ops(_plan(), Patch(ops=list(reversed(ops))), mint_uid=lambda: "u")
+    assert [b.h for b in forward.blocks] == ["PR1", "DW1", "DW2"]
+    assert [b.h for b in reverse.blocks] == [b.h for b in forward.blocks]
+
+
+def test_the_journal_133_day_needs_no_anchors_except_the_one_that_is_real():
+    """Entry 133 rewritten under the new rule. Fourteen blocks, and the
+    only `after` left is the one that says something the list could not:
+    the deep-work block belongs after a calendar event tmbx does not own.
+    Thirteen `after` fields become zero, and the day is identical.
+    """
+    def ap(h, n, t, minutes, **kw):
+        return AddBlock(h=h, n=n, t=t, p=AfterPrev(dur=timedelta(minutes=minutes)), **kw)
+
+    ops = [
+        AddBlock(after=None, h="MR1", n="Morning ritual", t=ET.PR,
+                 p=FixedStart(st=time(7, 0), dur=timedelta(hours=1)),
+                 anchor_source="constraint"),
+        ap("BR1", "Breakfast", ET.H, 30),
+        ap("DW1", "Finish the C2F deck", ET.DW, 150, after="EVT1"),
+        ap("LN1", "Lunch", ET.H, 30),
+        ap("OT1", "Oats", ET.H, 15),
+        ap("GB1", "Gym buffer (pre)", ET.BU, 15),
+        ap("GY1", "Gym", ET.H, 60),
+        ap("GB2", "Gym buffer (post)", ET.BU, 15),
+        ap("FR1", "Free / relax", ET.R, 120),
+        ap("DN1", "Dinner with Marieke", ET.H, 60),
+        ap("CU1", "Clean up after dinner", ET.R, 30),
+        ap("CH1", "Evening chill / music", ET.R, 60),
+        ap("SD1", "Shutdown ritual", ET.SW, 30),
+        ap("RD1", "Sci-fi reading", ET.R, 30),
+    ]
+    explicit = Patch(ops=_journal_133_ops(root_type=ET.PR))
+    implicit = Patch(ops=ops)
+
+    assert validate_patch(_plan_with_a_real_event(), implicit) == []
+    a = apply_ops(_plan_with_a_real_event(), explicit, mint_uid=lambda: "u")
+    b = apply_ops(_plan_with_a_real_event(), implicit, mint_uid=lambda: "u")
+    assert [x.h for x in b.blocks] == [x.h for x in a.blocks]
+
+    rows = b.resolve(check_overlap=True)
+    assert [(r.h, r.start) for r in rows][:5] == [
+        ("MR1", time(7, 0)),
+        ("BR1", time(8, 0)),
+        ("EVT1", time(10, 0)),
+        ("DW1", time(10, 30)),
+        ("LN1", time(13, 0)),
+    ]
+    pinned = [x.h for x in b.blocks if x.p.a in ("fs", "fw")]
+    assert pinned == ["MR1", "EVT1"]
