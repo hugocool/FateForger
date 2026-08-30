@@ -74,7 +74,14 @@ from fateforger.slack_bot.constraint_review import (
     decode_metadata,
     parse_constraint_review_submission,
 )
-from fateforger.slack_bot.messages import SlackBlockMessage, SlackThreadStateMessage
+from fateforger.slack_bot.messages import (
+    SLACK_MAX_BLOCK_TEXT_CHARS,
+    SLACK_MAX_BLOCKS,
+    SLACK_MAX_PAYLOAD_CHARS,
+    SLACK_MAX_TEXT_CHARS,
+    SlackBlockMessage,
+    SlackThreadStateMessage,
+)
 from fateforger.slack_bot.planning import (
     FF_EVENT_ADD_ACTION_ID,
     FF_EVENT_ADD_DISABLED_ACTION_ID,
@@ -167,12 +174,6 @@ _TIMEBOXING_STATE_EMOJI = {
 
 logger = logging.getLogger(__name__)
 
-_SLACK_MAX_TEXT_CHARS = 3900
-_SLACK_MAX_BLOCK_TEXT_CHARS = 1600
-_SLACK_MAX_BLOCKS = 40
-_SLACK_MAX_PAYLOAD_CHARS = 28000
-
-
 def _timeboxing_title_from_text(text: str) -> str:
     cleaned = re.sub(r"\\s+", " ", (text or "")).strip()
     if not cleaned:
@@ -193,7 +194,7 @@ def _truncate_slack_text(text: str | None, *, max_chars: int) -> str:
 
 def _truncate_slack_block_content(value):
     if isinstance(value, str):
-        return _truncate_slack_text(value, max_chars=_SLACK_MAX_BLOCK_TEXT_CHARS)
+        return _truncate_slack_text(value, max_chars=SLACK_MAX_BLOCK_TEXT_CHARS)
     if isinstance(value, list):
         return [_truncate_slack_block_content(item) for item in value]
     if isinstance(value, dict):
@@ -211,13 +212,13 @@ def _delivery_fallback_text(text: str | None) -> str:
 
 def _compact_slack_payload(*, text: str | None, blocks=None) -> dict[str, object]:
     safe_text = _truncate_slack_text(
-        text or "(no response)", max_chars=_SLACK_MAX_TEXT_CHARS
+        text or "(no response)", max_chars=SLACK_MAX_TEXT_CHARS
     )
     safe_blocks = None
     if isinstance(blocks, list) and blocks:
         clipped = blocks
-        if len(clipped) > _SLACK_MAX_BLOCKS:
-            clipped = list(clipped[: _SLACK_MAX_BLOCKS - 1]) + [
+        if len(clipped) > SLACK_MAX_BLOCKS:
+            clipped = list(clipped[: SLACK_MAX_BLOCKS - 1]) + [
                 {
                     "type": "context",
                     "elements": [
@@ -234,7 +235,7 @@ def _compact_slack_payload(*, text: str | None, blocks=None) -> dict[str, object
     if safe_blocks:
         payload["blocks"] = safe_blocks
 
-    if len(json.dumps(payload, ensure_ascii=False)) > _SLACK_MAX_PAYLOAD_CHARS:
+    if len(json.dumps(payload, ensure_ascii=False)) > SLACK_MAX_PAYLOAD_CHARS:
         return {"text": _delivery_fallback_text(safe_text)}
     return payload
 
@@ -1882,7 +1883,7 @@ def _render_timebox_skeleton(
             "text": {
                 "type": "mrkdwn",
                 "text": f"*The shape of the day*\n{markdown}"[
-                    :_SLACK_MAX_BLOCK_TEXT_CHARS
+                    :SLACK_MAX_BLOCK_TEXT_CHARS
                 ],
             },
         }
@@ -1898,7 +1899,7 @@ def _render_timebox_skeleton(
                 "text": {
                     "type": "mrkdwn",
                     "text": f"*I chose these myself*\n{chosen}"[
-                        :_SLACK_MAX_BLOCK_TEXT_CHARS
+                        :SLACK_MAX_BLOCK_TEXT_CHARS
                     ],
                 },
             }
@@ -1946,7 +1947,7 @@ def _render_timebox_skeleton(
         }
     )
     return SlackBlockMessage(
-        text=f"The shape of the day\n{markdown}"[:_SLACK_MAX_TEXT_CHARS],
+        text=f"The shape of the day\n{markdown}"[:SLACK_MAX_TEXT_CHARS],
         blocks=blocks,
     )
 
@@ -1975,12 +1976,12 @@ def _render_timebox_question(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": text[:_SLACK_MAX_BLOCK_TEXT_CHARS],
+                "text": text[:SLACK_MAX_BLOCK_TEXT_CHARS],
             },
         }
     ]
     if not outcome.options:
-        return SlackBlockMessage(text=text[:_SLACK_MAX_TEXT_CHARS], blocks=blocks)
+        return SlackBlockMessage(text=text[:SLACK_MAX_TEXT_CHARS], blocks=blocks)
     effects = "\n".join(
         f"*{option.label}* — {option.effect}" for option in outcome.options
     )
@@ -1991,7 +1992,7 @@ def _render_timebox_question(
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": effects[:_SLACK_MAX_BLOCK_TEXT_CHARS],
+                    "text": effects[:SLACK_MAX_BLOCK_TEXT_CHARS],
                 }
             ],
         }
@@ -2024,7 +2025,7 @@ def _render_timebox_question(
         }
     )
     return SlackBlockMessage(
-        text=f"{text}\n{effects}"[:_SLACK_MAX_TEXT_CHARS], blocks=blocks
+        text=f"{text}\n{effects}"[:SLACK_MAX_TEXT_CHARS], blocks=blocks
     )
 
 
@@ -2057,13 +2058,13 @@ def _render_timebox_candidate(
     day = owned.snapshot.get("day")
     text = owned.rendered or "A validated plan is ready for your approval."
     return SlackBlockMessage(
-        text=text[:_SLACK_MAX_TEXT_CHARS],
+        text=text[:SLACK_MAX_TEXT_CHARS],
         blocks=[
             {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": text[:_SLACK_MAX_BLOCK_TEXT_CHARS],
+                    "text": text[:SLACK_MAX_BLOCK_TEXT_CHARS],
                 },
             },
             harness_approve_block(
