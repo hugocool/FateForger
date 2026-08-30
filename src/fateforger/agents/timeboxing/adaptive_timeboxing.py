@@ -668,6 +668,42 @@ class AdaptiveTimeboxing:
                 ),
                 snapshot,
             )
+        # What the receipt SAYS, not merely that there is one. A receipt is the
+        # adapter's report of an external effect, and the kernel used to accept
+        # its existence as proof the effect happened: a tmbx refusal came back
+        # as `{"committed": false, "reason": "malformed_input"}` and closed the
+        # session as committed, against an empty calendar and with no way to
+        # try again.
+        payload = receipt.payload if isinstance(receipt.payload, dict) else {}
+        committed = payload.get("committed")
+        if committed is not True:
+            if committed is False:
+                # An unambiguous refusal: nothing was written, so the day stays
+                # committable. Ambiguity never reaches here -- an effect that
+                # may have landed raises out of the adapter and is answered
+                # above with `ambiguous_external_effect`, which does not invite
+                # a retry.
+                logger.error(
+                    "candidate commit refused",
+                    extra={"reason_code": str(payload.get("reason") or "unstated")},
+                )
+                return (
+                    TurnFailed(
+                        code="commit_refused",
+                        message="The calendar refused this plan. Nothing was changed.",
+                    ),
+                    snapshot,
+                )
+            # A receipt that cannot say whether it committed is not evidence
+            # that it did. Fail closed: the alternative is a session that
+            # believes a calendar it never checked.
+            return (
+                TurnFailed(
+                    code="invalid_commit_receipt",
+                    message="The commit adapter returned an invalid receipt.",
+                ),
+                snapshot,
+            )
         updated = snapshot.model_copy(
             update={
                 "artifacts": [*snapshot.artifacts, receipt],

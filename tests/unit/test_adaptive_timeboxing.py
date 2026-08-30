@@ -208,7 +208,7 @@ class RecordedCommitPort(CommitPort):
             artifact_id="receipt-1",
             kind=ArtifactKind.COMMIT_RECEIPT,
             revision=1,
-            payload={"candidate_digest": digest, "status": "committed"},
+            payload={"candidate_digest": digest, "committed": True, "tx_id": "tx-1"},
             dependency_revisions={"validated_candidate": candidate.revision},
         )
 
@@ -231,7 +231,7 @@ class BlockingCommitPort(CommitPort):
             artifact_id="receipt-1",
             kind=ArtifactKind.COMMIT_RECEIPT,
             revision=1,
-            payload={"candidate_digest": digest, "status": "committed"},
+            payload={"candidate_digest": digest, "committed": True, "tx_id": "tx-1"},
             dependency_revisions={"validated_candidate": candidate.revision},
         )
 
@@ -1197,3 +1197,125 @@ async def test_a_typed_answer_takes_the_buttons_down_with_the_question() -> None
     assert isinstance(typed, AwaitingApproval)
     assert isinstance(pressed, TurnFailed)
     assert pressed.code == "stale_blocker_choice"
+
+
+class RefusedCommitPort(CommitPort):
+    """A commit the calendar refused, reported the way tmbx actually reports it."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def commit(
+        self, candidate: PlanningArtifact, *, digest: str
+    ) -> PlanningArtifact:
+        self.calls += 1
+        return PlanningArtifact.create(
+            artifact_id="receipt-1",
+            kind=ArtifactKind.COMMIT_RECEIPT,
+            revision=1,
+            payload={
+                "committed": False,
+                "tx_id": None,
+                "reason": "malformed_input",
+                "candidate_digest": digest,
+            },
+            dependency_revisions={"validated_candidate": candidate.revision},
+        )
+
+
+class SilentCommitPort(CommitPort):
+    """A receipt that does not say whether anything was committed."""
+
+    async def commit(
+        self, candidate: PlanningArtifact, *, digest: str
+    ) -> PlanningArtifact:
+        return PlanningArtifact.create(
+            artifact_id="receipt-1",
+            kind=ArtifactKind.COMMIT_RECEIPT,
+            revision=1,
+            payload={"candidate_digest": digest},
+            dependency_revisions={"validated_candidate": candidate.revision},
+        )
+
+
+async def _session_awaiting_commit(commit: CommitPort):
+    """A session whose approved candidate is one approval away from the calendar."""
+
+    skeleton = _skeleton()
+    candidate = _candidate()
+    snapshot = _incident_snapshot().model_copy(
+        update={
+            "artifacts": [skeleton, candidate],
+            "approvals": [_approval(skeleton)],
+        }
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    kernel = _kernel(repo, RecordedPlanner(PlanningResult()), commit=commit)
+    return kernel, snapshot, candidate
+
+
+@pytest.mark.asyncio
+async def test_a_refused_commit_does_not_close_the_session() -> None:
+    """Catches a session claiming a calendar it never wrote to.
+
+    Measured live on 2026-08-30: tmbx refused the commit with
+    `malformed_input`, the adapter returned a receipt saying
+    `"committed": false`, and the kernel marked the session `committed`
+    anyway -- because it only checked that the artifact was a COMMIT_RECEIPT,
+    never what the receipt said. The session was then terminal, so the day
+    could not be committed again, and the calendar was empty.
+    """
+
+    commit = RefusedCommitPort()
+    kernel, snapshot, candidate = await _session_awaiting_commit(commit)
+
+    outcome = await kernel.turn(
+        TurnRequest(
+            session_key=snapshot.session_key,
+            interaction_id="commit-refused",
+            actor_user_id="U1",
+            expected_revision=3,
+            intent=ApproveArtifact(
+                artifact_id=candidate.artifact_id,
+                artifact_revision=candidate.revision,
+                artifact_digest=candidate.digest,
+            ),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "commit_refused"
+    stored = await kernel._repository.load_or_create(
+        snapshot.session_key, owner_user_id="U1"
+    )
+    assert stored.status == "open", "a refused commit must leave the day committable"
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_that_says_nothing_is_not_a_commit() -> None:
+    """Fails closed: a receipt that cannot say is not evidence that it did."""
+
+    kernel, snapshot, candidate = await _session_awaiting_commit(SilentCommitPort())
+
+    outcome = await kernel.turn(
+        TurnRequest(
+            session_key=snapshot.session_key,
+            interaction_id="commit-silent",
+            actor_user_id="U1",
+            expected_revision=3,
+            intent=ApproveArtifact(
+                artifact_id=candidate.artifact_id,
+                artifact_revision=candidate.revision,
+                artifact_digest=candidate.digest,
+            ),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "invalid_commit_receipt"
+    stored = await kernel._repository.load_or_create(
+        snapshot.session_key, owner_user_id="U1"
+    )
+    assert stored.status == "open"
