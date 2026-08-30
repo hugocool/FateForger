@@ -67,11 +67,21 @@ class AdaptiveDependencyUnavailable(RuntimeError):
 
 
 def planning_timezone() -> str:
-    """The timezone a planning day is locked in."""
+    """The timezone a planning day is locked in.
 
-    return (
-        getattr(settings, "planning_timezone", "") or ""
-    ).strip() or "Europe/Amsterdam"
+    Reads the setting rather than a literal. This used to be a getattr with a
+    hardcoded fallback, against a Settings that never defined the field -- so
+    the fallback was the only branch that ever ran and PLANNING_TIMEZONE was
+    silently inert. An empty setting raises instead of quietly picking a
+    country for the user.
+    """
+
+    name = (settings.planning_timezone or "").strip()
+    if not name:
+        raise RuntimeError(
+            "planning_timezone is empty; set PLANNING_TIMEZONE to an IANA name"
+        )
+    return name
 
 
 class KernelProgressSink:

@@ -176,6 +176,11 @@ class Settings(BaseSettings):
     # Scheduler Configuration
     scheduler_timezone: str = Field(default="UTC")
 
+    # The timezone a planning day is locked in. Distinct from
+    # scheduler_timezone, which governs when jobs fire, not what a user's
+    # "09:00" means.
+    planning_timezone: str = Field(default="Europe/Amsterdam")
+
     # Development Configuration
     debug: str = Field(default="true")
     log_level: str = Field(default="INFO")

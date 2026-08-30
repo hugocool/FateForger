@@ -614,7 +614,7 @@ class TimeboxingFlowAgent(RoutedAgent):
 
     def _default_tz_name(self) -> str:
         """Return the default timezone name for planning."""
-        return getattr(settings, "planning_timezone", "") or "Europe/Amsterdam"
+        return settings.planning_timezone
 
     def _resolve_tz_name(self, tz_name: str | None) -> str:
         """Normalize an IANA timezone name to a valid value."""
@@ -5644,7 +5644,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                         "start_time": row.start,
                         "end_time": row.end,
                         "calendarId": "primary",
-                        "timeZone": getattr(settings, "planning_timezone", "") or "UTC",
+                        "timeZone": settings.planning_timezone,
                     }
                     for row in immovable_rows
                 ],
