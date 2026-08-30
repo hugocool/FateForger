@@ -467,21 +467,20 @@ def _optional_int(value: object) -> int | None:
 #: Sail Research via `:nitro`, which is also one of the hosts that enforces
 #: `structured_outputs` -- a per-host property, and a patch IS structured
 #: output, so an unenforcing host would accept a malformed one in silence.
-#: Flash, not Pro. A planning turn reads a calendar, applies a patch and writes
-#: an artifact somebody reviews before anything reaches a calendar -- the review
-#: is the check, so the model does not have to be the expensive one. Pro costs
-#: 10x the prompt and 11x the completion of flash, and a measured skeleton took
-#: 221.8s on Pro at low reasoning. Flash also advertises parallel_tool_calls,
-#: which Pro's stablemate gpt-oss-120b does not.
-#: Paired with PLANNING_MODEL below, deliberately. Pro answers a trivial probe
-#: identically at `minimal` and `low`, so it takes the lowest that still thinks;
-#: flash measurably differs between them (10 reasoning tokens against 16 on the
-#: same prompt), so its value is an empirical question and this is the starting
-#: point, not a finding. Never `off`: a planning turn chooses placements.
+#: Paired with PLANNING_MODEL below, deliberately: effort is a property of the
+#: model, not of the deployment, and one global is how a value tuned for one
+#: gets silently applied to the other. Pro answers a trivial probe identically
+#: at `minimal` and `low` -- 7 reasoning tokens either way -- so it takes the
+#: lowest that still thinks. Never `off`: a planning turn chooses placements.
 PLANNING_REASONING = os.environ.get("FF_PLANNING_REASONING", "minimal")
 
+#: Pro. Flash is 10x cheaper on prompt and 11x on completion and advertises
+#: parallel_tool_calls, which is why it was tried -- but one attempt failed to
+#: produce a skeleton inside 600s where Pro took 221.8s, and a planning turn
+#: that never finishes is not cheap at any price. Flash stays reachable through
+#: FF_PLANNING_MODEL and is parked until something measures it properly.
 PLANNING_MODEL = os.environ.get(
-    "FF_PLANNING_MODEL", "deepseek/deepseek-v4-flash-0731"
+    "FF_PLANNING_MODEL", "deepseek/deepseek-v4-pro-0813:nitro"
 )
 
 
