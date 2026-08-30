@@ -569,8 +569,11 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
     ``apply_ops``: every ``Block`` invariant is covered by
     ``_block_invariant_errors``, every ``Plan`` invariant by
     ``_plan_invariant_errors`` plus the effective-handle-set uniqueness
-    check below, and every move-anchor dependency either resolves (see
-    ``_apply_moves``) or is caught here as a cycle.
+    check below, and every anchor dependency — a move's, and since adds
+    may name each other, an add's — either resolves (see ``_apply_moves``
+    and ``_apply_adds``) or is caught here as a cycle. The add graph is
+    checked on *effective* anchors, so a ``PREV`` chain is judged as the
+    graph it actually is rather than as the literal string.
 
     One check here is a policy rather than a construction invariant:
     ``_boundary_relaxation_errors`` refuses an update that unpins a block
@@ -790,7 +793,7 @@ def _apply_moves(blocks: list[Block], patch: Patch, pre_order: list[str]) -> lis
             or _walk_back_dependency(op.after, pre_order, moved_now, removed, h) is None
         }
         if not ready:
-            # Defensive only: the upfront _cyclic_move_anchors check above
+            # Defensive only: the upfront _cyclic_anchors check above
             # already rules this out.
             raise ValueError(
                 f"internal error: no ready move among {sorted(pending)} despite "
@@ -906,9 +909,11 @@ def _apply_adds(
 def apply_ops(plan: Plan, patch: Patch, *, mint_uid: Callable[[], str]) -> Plan:
     """Apply a patch and return a new plan.
 
-    Ops are applied in four phases — remove, update, move, add — and each
-    phase resolves its addressing against something that cannot depend on
-    ``patch.ops`` list order:
+    Ops are applied in four phases — remove, update, move, add. The first
+    three resolve their addressing against something that cannot depend on
+    ``patch.ops`` list order. The add phase deliberately does not, and the
+    fourth bullet below says why; read the lead of this list as a claim
+    about remove, update and move only:
 
     * **Remove** resolves against handle membership only. The surviving set
       is ``blocks - {removed handles}``, a set difference — commutative by
