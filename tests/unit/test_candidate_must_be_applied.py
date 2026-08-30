@@ -55,3 +55,40 @@ def test_a_skeleton_needs_no_patch() -> None:
 
     result = _result(ArtifactKind.SKELETON)
     assert _with_commit_basis(result, None) is result
+
+
+async def test_the_refusal_survives_the_planner_wrapper() -> None:
+    """The layer that erased it in production.
+
+    Asserting on `_with_commit_basis` alone missed this: `produce` wraps the
+    runner in a broad `except Exception` that turned CandidateNotApplied into
+    DependencyUnavailable, so the kernel's typed branch never ran and the user
+    got "temporarily unavailable" for something deterministic. Caught only by
+    driving a real session -- hence this test, which goes through `produce`.
+    """
+
+    from fateforger.slack_bot.deepseek_timebox_planner import DeepSeekTimeboxPlanner
+
+    from .test_deepseek_timebox_planner import _input_brief
+
+    class Tmbx:
+        async def read(self, *a, **k):
+            return {"ok": True}
+
+    class Reader:
+        async def query_constraints(self, **k):
+            return []
+
+    class Runner:
+        async def run(self, brief, progress):
+            raise CandidateNotApplied("call plan_apply first")
+
+    planner = DeepSeekTimeboxPlanner.__new__(DeepSeekTimeboxPlanner)
+    planner._tmbx_client = Tmbx()
+    planner._calendar_id = "primary"
+    planner._constraint_reader = Reader()
+    planner._harness_runner = Runner()
+    planner._clock = lambda: None
+
+    with pytest.raises(CandidateNotApplied):
+        await planner.produce(_input_brief(), None)

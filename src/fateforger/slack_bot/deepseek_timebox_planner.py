@@ -132,7 +132,11 @@ class DeepSeekTimeboxPlanner:
         )
         try:
             return await self._harness_runner.run(complete_brief, progress)
-        except DependencyUnavailable:
+        except (DependencyUnavailable, CandidateNotApplied):
+            # Both are already the right answer. Wrapping CandidateNotApplied
+            # as a dependency failure is what hid it: the kernel has a typed
+            # branch for it, and "planner dependency unavailable" would send
+            # the user a "temporarily" about something deterministic.
             raise
         except Exception as exc:
             logger.warning(
