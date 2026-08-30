@@ -46,7 +46,7 @@ from .progress_events import (
 from .progress_events import (
     ProgressStatus as TimeboxProgressStatus,
 )
-from .timebox_candidate import PendingTimeboxCandidates
+from .timebox_candidate import PendingTimeboxCandidates, ValidatedTimeboxCandidate
 
 #: Kernel lifecycle phases worth showing. The kernel names its own phases, so
 #: this maps identifiers this system minted -- anything outside the map is
@@ -217,9 +217,9 @@ class PendingCandidateCommitPort:
     ) -> PlanningArtifact:
         from .tmbx_client import TmbxClient
 
-        payload = candidate.payload if isinstance(candidate.payload, dict) else {}
+        basis = ValidatedTimeboxCandidate.from_artifact_payload(candidate.payload)
         pending = self._pending.peek(self._session_key)
-        if pending is None or pending.digest != str(payload.get("digest") or ""):
+        if pending is None or pending.digest != basis.digest:
             raise AdaptiveDependencyUnavailable(
                 "the approved candidate is no longer the current one"
             )

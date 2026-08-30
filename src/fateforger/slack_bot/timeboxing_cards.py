@@ -426,15 +426,7 @@ def render_candidate(
     commit gate stays the one already proven rather than a second one shaped
     like it.
     """
-    payload = artifact.payload if isinstance(artifact.payload, dict) else {}
-    snapshot_payload = payload.get("snapshot")
-    patch_payload = payload.get("patch")
-    candidate = ValidatedTimeboxCandidate(
-        digest=str(payload.get("digest") or ""),
-        snapshot=snapshot_payload if isinstance(snapshot_payload, dict) else {},
-        patch=patch_payload if isinstance(patch_payload, dict) else {},
-        rendered=str(payload.get("rendered") or ""),
-    )
+    candidate = ValidatedTimeboxCandidate.from_artifact_payload(artifact.payload)
     owned = pending.replace(session_key, candidate, owner_user_id=actor_user_id)
     calendar_id = owned.snapshot.get("calendar_id")
     day = owned.snapshot.get("day")

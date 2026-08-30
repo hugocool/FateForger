@@ -204,10 +204,11 @@ def _with_commit_basis(
     asking -- so the model writes what a human reads, the host attaches what a
     machine replays, and neither half can forge the other.
 
-    Without this the commit port read ``snapshot`` and ``patch`` out of a
-    payload that only ever held rendered blocks, got ``{}`` for both, and
-    ``plan_commit({}, {})`` was refused as ``malformed_input``: a plan that
-    could be shown and approved and never committed.
+    Without this the four commit-basis keys are simply absent, the card that
+    offers the plan arms an empty candidate, and ``plan_commit({}, {})`` is
+    refused as ``malformed_input``: a plan that could be shown and approved and
+    never committed. The keys are named once, by ``as_commit_basis``, so this
+    writer and the two readers cannot disagree about them.
 
     A candidate draft with nothing captured is left exactly as it came. The
     commit port already refuses a candidate it cannot match, and inventing an
@@ -226,13 +227,7 @@ def _with_commit_basis(
         updates.append(
             draft.model_copy(
                 update={
-                    "payload": {
-                        **draft.payload,
-                        "snapshot": candidate.snapshot,
-                        "patch": candidate.patch,
-                        "digest": candidate.digest,
-                        "rendered": candidate.rendered,
-                    }
+                    "payload": {**draft.payload, **candidate.as_commit_basis()}
                 }
             )
         )
