@@ -320,6 +320,24 @@ def _planning_obligation(brief: PlanningBrief) -> str:
     )
 
 
+#: Constraint fields that reach the planner and cannot inform anything it does.
+#:
+#: `metadata` is a hardcoded literal -- `_row_from_view` writes
+#: ``{"backend": "memory_kg"}`` on every row -- so it names which store a rule
+#: came from, forty times, at 390 tokens a call and ~3.5k a session.
+#:
+#: Nothing else joined it, and the near misses are worth recording. `status`,
+#: `scope` and `source` are each a single value across all forty today, but
+#: only `status` is constant *by construction* (projection hardcodes
+#: ``PROPOSED`` until #140 lands); the other two are uniform in this corpus and
+#: would carry real information the day a session-scoped rule appears. And
+#: `uid` looked dead at 6 references in 1,000 -- it is not: the planner cites
+#: uids in `submit_planning_result` to trace an assumption back to the rule
+#: that drove it, and only a few constraints are cited per session. Which is
+#: why membership here is decided by reading the transcripts, not by counting.
+_CONSTRAINT_FIELDS_THE_PLANNER_CANNOT_USE = frozenset({"metadata"})
+
+
 def _canonical_brief(brief: PlanningBrief) -> str:
     """Serialize the brief the same way every time.
 
@@ -343,7 +361,11 @@ def _canonical_brief(brief: PlanningBrief) -> str:
     payload = brief.model_dump(mode="json")
     payload["allowed_outputs"] = sorted(payload["allowed_outputs"])
     payload["applicable_constraints"] = [
-        {k: v for k, v in constraint.items() if v not in ([], {}, None, "")}
+        {
+            k: v
+            for k, v in constraint.items()
+            if v not in ([], {}, None, "") and k not in _CONSTRAINT_FIELDS_THE_PLANNER_CANNOT_USE
+        }
         for constraint in payload.get("applicable_constraints") or []
     ]
     return json.dumps(

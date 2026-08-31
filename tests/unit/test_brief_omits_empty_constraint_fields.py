@@ -31,6 +31,7 @@ from fateforger.slack_bot.harness_bridge import _canonical_brief
 
 FULL = {
     "uid": "abc",
+    "metadata": {"backend": "memory_kg"},
     "name": "Work start time",
     "description": "The user starts working at 9:30.",
     "necessity": "must",
@@ -69,15 +70,49 @@ def test_the_empty_fields_are_gone() -> None:
 
 
 def test_nothing_that_carries_meaning_is_lost() -> None:
-    """Stripping must be provably lossless, not merely smaller."""
+    """Stripping must be provably lossless, not merely smaller.
+
+    Two rules remove fields and they are different in kind: empty values are
+    dropped because an absent key says the same thing, and the explicit list is
+    dropped because the value says nothing the planner can act on. This asserts
+    the first is lossless and reads the second from the source rather than
+    restating it, so a field added there cannot quietly fail this test.
+    """
+
+    from fateforger.slack_bot.harness_bridge import (
+        _CONSTRAINT_FIELDS_THE_PLANNER_CANNOT_USE as DROPPED,
+    )
 
     payload = json.loads(_canonical_brief(_brief()))
     kept = payload["applicable_constraints"][0]
     for key, value in FULL.items():
-        if value not in ([], {}, None, ""):
+        if value not in ([], {}, None, "") and key not in DROPPED:
             assert kept[key] == value
 
 
 def test_it_is_actually_smaller() -> None:
     rendered = _canonical_brief(_brief())
     assert len(rendered) < len(json.dumps(FULL)) + 400
+
+
+def test_the_storage_backend_is_not_the_planners_business() -> None:
+    """`metadata` is a hardcoded literal, identical on every row.
+
+    `_row_from_view` writes {"backend": "memory_kg"} on all of them. It names
+    which store a rule came from, which the planner cannot act on and never
+    references -- 390 tokens a call, ~3.5k a session, to say the same thing
+    forty times.
+    """
+
+    assert "memory_kg" not in _canonical_brief(_brief())
+    assert "metadata" not in _canonical_brief(_brief())
+
+
+def test_the_uid_survives() -> None:
+    """Measured: the planner cites uids in submit_planning_result to trace an
+    assumption back to the rule that drove it. 6 of 1000 looks like noise and
+    is not -- only a few constraints are cited per session. Dropping it would
+    break that traceability, which is why "constant or unused" is decided by
+    looking, not by the size of the number."""
+
+    assert "abc" in _canonical_brief(_brief())
