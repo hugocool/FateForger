@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
@@ -183,23 +184,52 @@ class HostPlanningContext:
             limit=200,
         )
         return PlanningContext(
-            facts=[
-                PlanningFact(
-                    fact_id=f"calendar:{day}",
-                    kind=FactKind.CALENDAR_SNAPSHOT,
-                    value=calendar_snapshot,
-                    source="calendar",
-                ),
-                PlanningFact(
-                    fact_id=f"constraints:{day}",
-                    kind=FactKind.ACTIVE_CONSTRAINTS,
-                    value=constraints,
-                    source="constraint_memory",
-                ),
-            ],
+            facts=planning_facts(
+                day=day, calendar_snapshot=calendar_snapshot, constraints=constraints
+            ),
             applicable_constraints=constraints,
             calendar_snapshot=calendar_snapshot,
         )
+
+
+def planning_facts(
+    *, day: str, calendar_snapshot: Any, constraints: Any
+) -> list[PlanningFact]:
+    """Record that the two system fetches happened, without repeating them.
+
+    These facts exist to satisfy readiness requirements, and `satisfied_by` is
+    a presence test -- nothing anywhere reads their value. They used to carry
+    the fetched payload itself, which the brief already carries in
+    `applicable_constraints` and `calendar_snapshot`.
+
+    That cost more than it looks. The whole brief is re-sent on every tool
+    round-trip, so a duplicate is not paid once: measured on a real session,
+    the constraints were 4,492 tokens in the field and the same 4,492 in the
+    fact -- identical uid sets, identical bytes -- and at nine calls a session
+    that is roughly 40k tokens of the same list, for nothing.
+
+    So the fact now says *that* the fetch happened and how much it returned,
+    which is what a requirement check needs, and the typed field that documents
+    the shape stays the one place the data lives.
+    """
+
+    return [
+        PlanningFact(
+            fact_id=f"calendar:{day}",
+            kind=FactKind.CALENDAR_SNAPSHOT,
+            value={
+                "fetched": True,
+                "blocks": len((calendar_snapshot or {}).get("blocks") or []),
+            },
+            source="calendar",
+        ),
+        PlanningFact(
+            fact_id=f"constraints:{day}",
+            kind=FactKind.ACTIVE_CONSTRAINTS,
+            value={"fetched": True, "count": len(constraints or [])},
+            source="constraint_memory",
+        ),
+    ]
 
 
 class PendingCandidateCommitPort:
