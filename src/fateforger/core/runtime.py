@@ -528,9 +528,48 @@ def _build_timeboxing_planner(
     return planner, calendar_id
 
 
+#: The checkout the profile falls back to when FF_FATEFORGER_ROOT is unset.
+#: Restated from `infra/dsh/profile/cordis.patch.yml`, which cannot be imported
+#: from Python -- and a drift between the two is exactly what this detects.
+_DEFAULT_HARNESS_ROOT = "/Users/hugoevers/VScode-projects/admonish-1"
+
+
+def harness_root_mismatch() -> str | None:
+    """Say so when the stdio MCP servers will run different code than this bot.
+
+    They are spawned by the harness with `cwd` and `PYTHONPATH` derived from
+    FF_FATEFORGER_ROOT, defaulting to the main checkout. A bot started from a
+    worktree without that variable therefore serves worktree code from its own
+    process and main-checkout code from every stdio MCP server it spawns.
+
+    That happened: two fixes to `planning_result_mcp.py` were committed, the
+    bot was restarted four times, and neither ever ran. The unit tests passed
+    against the worktree while the live server imported main's copy, so every
+    signal available said the change was in.
+
+    Returns the complaint, or None when the two agree.
+    """
+
+    package_root = Path(__file__).resolve().parents[3]
+    configured = (os.environ.get("FF_FATEFORGER_ROOT") or "").strip()
+    harness_root = Path(configured or _DEFAULT_HARNESS_ROOT).resolve()
+    if harness_root == package_root:
+        return None
+    how = "FF_FATEFORGER_ROOT" if configured else "its unset default"
+    return (
+        f"stdio MCP servers will import {harness_root} ({how}) while this "
+        f"process runs {package_root}; changes under src/fateforger that those "
+        f"servers own will not take effect. Set FF_FATEFORGER_ROOT to "
+        f"{package_root}."
+    )
+
+
 async def _create_runtime() -> SingleThreadedAgentRuntime:
     """Create and start the runtime instance."""
     git_identity = _resolve_runtime_git_identity()
+    mismatch = harness_root_mismatch()
+    if mismatch:
+        logger.error("harness root mismatch: %s", mismatch)
     logger.info(
         "Runtime git identity branch=%s commit=%s tag=%s dirty=%s",
         git_identity.branch,
