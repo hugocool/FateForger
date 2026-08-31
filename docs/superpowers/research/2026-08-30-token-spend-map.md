@@ -490,11 +490,36 @@ One miss costs more than three hits (fresh is 10× cached). Misses cluster at tu
 the session-specific brief makes a prefix no previous session sent — which is also the argument
 for shrinking the brief rather than only shortening the loop.
 
+## Splitting the 19,400: it is mostly not tools
+
+Measured directly off the servers, not inferred — the live memory and tmbx endpoints answered a
+`tools/list`, and the stdio ones were spawned to ask:
+
+| server | tools | tokens |
+|---|---|---|
+| tmbx | 5 | 2,791 |
+| planning_result | 1 | 1,227 |
+| memory (allowlisted) | 4 | 1,459 |
+| progress | 2 | 557 |
+| **total MCP tool schemas** | **12** | **6,034** |
+
+Single most expensive tool: `plan_apply` at 1,117 tokens, then `submit_planning_result` at 1,227.
+
+That leaves **~13,400 tokens** of the 19,400 as DSH's own system preamble plus whatever core
+tools survive the twelve `FF_PLANNING_TURN` disables. So on a planning turn:
+
+- harness preamble (+ residual core tools): **~13,400 — 36% of the call**
+- MCP tool schemas: ~6,034 — 16%
+- our brief, after `061eca2` and `8787cc7`: 4,768 — 13%
+
+**The harness's own preamble is now the largest single item, and nearly three times our whole
+brief.** Before those two fixes the brief was 10,914 and the comparison flattered us.
+
 ## What is still unmeasured
 
-- **The ~19,400 harness system prompt + tool schemas.** Inferred by difference; the DSH log does
-  not record the system block. It is 53% of the prompt and the largest single item, and nothing
-  here bounds how much of it is tool schemas versus preamble.
+- **The split inside that ~13,400.** It is preamble plus residual core tools together; nothing
+  here separates them, and the DSH log does not record the system block. Sizing it needs the
+  harness, not FateForger.
 - **Post-fix session totals.** Both fixes landed after the OpenRouter key hit its monthly limit
   (403, "Key limit exceeded"), so the predicted first-call drop to ~30.7k and session drop to
   ~275k are arithmetic, not observations.
