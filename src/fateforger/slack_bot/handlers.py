@@ -26,6 +26,7 @@ from fateforger.agents.tasks.messages import (
     TaskEditTitleRequest,
     TaskEditTitleResponse,
 )
+from fateforger.haunt.timeboxing_activity import timeboxing_activity
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
     AdaptiveTimeboxing,
     TurnRequest,
@@ -1553,6 +1554,19 @@ async def _run_adaptive_timebox_turn(
         )
         return timebox_failure_message()
 
+    # Tell the nudge suppressor a session is under way. `dispatch_planning_reminder`
+    # already refuses to nudge while `timeboxing_activity.is_active`, but every
+    # `mark_active` in the tree was in the legacy TimeboxingFlowAgent, which
+    # Slack reaches only under FF_TIMEBOX_BACKEND=legacy. Nothing sets that, so
+    # the guard was permanently false and the Admonisher asked the user to book
+    # a planning session twelve times while they were mid-session doing exactly
+    # that -- several of the cards four seconds apart.
+    timeboxing_activity.mark_active(
+        user_id=actor_user_id,
+        channel_id=card_channel,
+        thread_ts=card_thread_ts,
+    )
+
     progress_card = HarnessProgressCard(
         client, channel=progress_channel, message_ts=progress_ts
     )
@@ -1581,6 +1595,12 @@ async def _run_adaptive_timebox_turn(
         current = await repository.load_or_create(
             session_key, owner_user_id=actor_user_id
         )
+        if current.status != "open":
+            # Committed or cancelled: the session is over, so stop suppressing.
+            # Left set, a finished session would keep the Admonisher quiet for
+            # the tracker's full idle timeout -- the opposite failure, and just
+            # as silent.
+            timeboxing_activity.mark_inactive(user_id=actor_user_id)
     except Exception as exc:  # noqa: BLE001 - one failure shape reaches Slack
         logger.error(
             "adaptive timeboxing turn failed session_key=%s interaction=%s error_type=%s",
