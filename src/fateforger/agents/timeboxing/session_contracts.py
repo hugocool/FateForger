@@ -452,6 +452,39 @@ class Cancelled(_StrictModel):
     kind: Literal["cancelled"] = "cancelled"
 
 
+class PlannerContinuation(_StrictModel):
+    """The planner saying it needs another turn, and why.
+
+    Added because a planner that exhausted its patch-retry budget had no typed
+    way to say so. It used a blocker -- the only channel available -- on a
+    requirement it owned, and the kernel refused that as `illegal_user_blocker`
+    and discarded the turn along with the artifacts and the diagnosis.
+
+    The refusal was right. The gap was that a planner with something true to say
+    had no way to say it, which is the same shape as the mis-scoped assumption
+    in #236: both reach for the nearest wrong channel.
+
+    `reason` is prose, and stays prose. It is written for the next turn's brief
+    so the planner can resume from its own diagnosis instead of rediscovering
+    it, and nothing branches on its contents.
+    """
+
+    reason: str = Field(min_length=1)
+
+
+class NeedsAnotherTurn(_StrictModel):
+    """Outcome: work was done, it is kept, and the planner wants to continue.
+
+    Deliberately not a `TurnFailed`. Nothing went wrong, the session stays open,
+    and whatever artifacts the turn produced are retained -- discarding them is
+    what made the old behaviour expensive, since the planner had already worked
+    out what remained.
+    """
+
+    kind: Literal["needs_another_turn"] = "needs_another_turn"
+    reason: str = Field(min_length=1)
+
+
 class TurnFailed(_StrictModel):
     kind: Literal["turn_failed"] = "turn_failed"
     code: str = Field(min_length=1)
@@ -460,6 +493,7 @@ class TurnFailed(_StrictModel):
 
 TurnOutcome = Annotated[
     Union[
+        NeedsAnotherTurn,
         AwaitingUser,
         ArtifactReady,
         AwaitingApproval,
@@ -554,6 +588,9 @@ class PlanningResult(_StrictModel):
     artifact_updates: list[ArtifactDraft] = Field(default_factory=list)
     assumptions: list[PlannerAssumptionDraft] = Field(default_factory=list)
     blockers: list[UserBlockerDraft] = Field(default_factory=list)
+    #: Set when the planner cannot finish this turn but has not failed. The
+    #: artifacts and assumptions beside it are still applied.
+    continuation: PlannerContinuation | None = None
 
 
 __all__ = [

@@ -19,6 +19,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     Cancelled,
     PlanningArtifact,
     PlanningSessionSnapshot,
+    NeedsAnotherTurn,
     TurnFailed,
     TurnOutcome,
     has_commit_receipt,
@@ -573,6 +574,22 @@ def present_outcome(
 
     if isinstance(outcome, ArtifactReady):
         text = f"Prepared the {outcome.artifact.kind.value.replace('_', ' ')}."
+        return (
+            SlackBlockMessage(
+                text=text,
+                blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+            ),
+            None,
+        )
+
+    if isinstance(outcome, NeedsAnotherTurn):
+        # Not a failure. The work is kept and the planner said it is mid-fix,
+        # so the fallback below -- "I could not carry that through, and
+        # nothing reached your calendar" -- would be exactly wrong.
+        text = (
+            ":hourglass_flowing_sand: Still working on that one — "
+            "say `go on` and I will pick up where I left off."
+        )
         return (
             SlackBlockMessage(
                 text=text,

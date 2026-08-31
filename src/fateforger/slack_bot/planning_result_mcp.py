@@ -134,6 +134,7 @@ def submit_planning_result(
     assumptions: list[AssumptionInput],
     blockers: list[BlockerInput],
     blocker_options: list[BlockerOptionInput] | None = None,
+    continuation: dict[str, Any] | None = None,
 ) -> str:
     """Record this turn's result. Call it exactly once, at the end.
 
@@ -153,6 +154,12 @@ def submit_planning_result(
     replaces the artifact rather than accompanying it: an artifact asks to be
     approved and a blocker asks a question, and one turn shows the user one of
     those. Submitting neither ends the turn with nothing to review.
+
+    ``continuation`` is for when you cannot finish this turn but have not
+    failed: ``{"reason": "..."}``, saying what is left and what you already
+    know. Whatever you produced is kept and you resume next turn from that
+    reason, so write it for yourself. Use it when a retry budget runs out
+    mid-fix -- not as a way to avoid deciding something that is yours to decide.
 
     ``blocker_options`` offers the user concrete alternatives to that one
     question, as ``{"label": ..., "effect": ...}`` -- what they read, and what
@@ -181,6 +188,7 @@ def submit_planning_result(
         assumptions=assumptions,
         blockers=blockers,
         blocker_options=blocker_options,
+        continuation=continuation,
     ).model_dump_json()
 
     _refuse_unknown_requirement(assumptions=assumptions)
@@ -308,6 +316,7 @@ def _validated(
     assumptions: list[dict[str, Any]],
     blockers: list[dict[str, Any]],
     blocker_options: list[dict[str, Any]] | None = None,
+    continuation: dict[str, Any] | None = None,
 ) -> PlanningResult:
     if blocker_options and len(blockers) != 1:
         raise PlanningResultRefused(
@@ -319,10 +328,11 @@ def _validated(
             "an artifact and a blocker cannot both be this turn's result. "
             "Submit the artifact, or the blocker that stopped you making it."
         )
-    if artifact is None and not blockers:
+    if artifact is None and not blockers and continuation is None:
         raise PlanningResultRefused(
-            "this submission carries neither an artifact nor a blocker, so the "
-            "turn would end with nothing for the user to review."
+            "this submission carries neither an artifact, a blocker, nor a "
+            "continuation, so the turn would end with nothing for the user to "
+            "review and nothing to resume from."
         )
     if artifact is not None and target_artifact == ArtifactKind.SKELETON.value:
         # The one payload whose shape the card depends on. A skeleton that
@@ -353,6 +363,7 @@ def _validated(
                 "artifact_updates": updates,
                 "assumptions": assumptions,
                 "blockers": blockers,
+                "continuation": continuation,
             },
             ensure_ascii=False,
             allow_nan=False,
