@@ -40,6 +40,9 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningSessionSnapshot,
 )
 from fateforger.slack_bot.harness_bridge import _canonical_brief
+from fateforger.slack_bot.validated_timebox_draft import (
+    CANDIDATE_OUTPUT_FILE_ENV,
+)
 from fateforger.slack_bot.planning_result_mcp import (
     PLANNING_RESULT_FILE_ENV,
     submit_planning_result,
@@ -321,6 +324,9 @@ def test_submit_planning_result_records_the_ops_as_listed(tmp_path, monkeypatch)
     destination = tmp_path / "planning-result.json"
     destination.touch()
     monkeypatch.setenv(PLANNING_RESULT_FILE_ENV, str(destination))
+    captured = tmp_path / "candidate.json"
+    captured.write_text('{"version": 1}', encoding="utf-8")
+    monkeypatch.setenv(CANDIDATE_OUTPUT_FILE_ENV, str(captured))
 
     submit_planning_result(
         target_artifact="validated_candidate",
@@ -347,6 +353,9 @@ def test_a_resubmission_in_a_different_order_is_a_different_submission(
     destination = tmp_path / "planning-result.json"
     destination.touch()
     monkeypatch.setenv(PLANNING_RESULT_FILE_ENV, str(destination))
+    captured = tmp_path / "candidate.json"
+    captured.write_text('{"version": 1}', encoding="utf-8")
+    monkeypatch.setenv(CANDIDATE_OUTPUT_FILE_ENV, str(captured))
 
     submit_planning_result(
         target_artifact="validated_candidate",

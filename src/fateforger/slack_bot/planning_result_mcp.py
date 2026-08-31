@@ -25,11 +25,14 @@ from pydantic import ValidationError
 
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactDraft,
+    ArtifactKind,
     BlockerOption,
     PlannerAssumptionDraft,
     PlanningResult,
     UserBlockerDraft,
 )
+
+from .validated_timebox_draft import CANDIDATE_OUTPUT_FILE_ENV
 
 #: Where the host tells this server to write. Restated rather than imported
 #: from ``harness_bridge``: that module is the Slack host, and pulling it into
@@ -174,6 +177,8 @@ def submit_planning_result(
         blocker_options=blocker_options,
     ).model_dump_json()
 
+    _refuse_unapplied_candidate(target_artifact=target_artifact, artifact=artifact)
+
     recorded = _recorded(destination)
     if recorded is not None:
         if recorded == document:
@@ -186,6 +191,47 @@ def submit_planning_result(
 
     _write(destination, document)
     return _RECORDED
+
+
+def _refuse_unapplied_candidate(*, target_artifact: str, artifact: Any) -> None:
+    """A candidate nobody can commit is refused here, not three turns later.
+
+    The host takes the committable patch by watching the ``plan_apply`` this
+    turn made -- never from the model, because a model-written basis is a
+    forged one -- and a PostToolUse hook records it. So the presence of that
+    record is exactly the question "was this candidate applied?", asked of the
+    filesystem rather than of the model.
+
+    Two instructions were tried first and did not move the rate: the turn
+    preamble (1a4cedb) and this tool's own description (051f4eb). Measured over
+    11 real candidate turns, 7 applied and 4 short-circuited straight to this
+    call, two of them without even reading the day. `submit_planning_result` is
+    callable at any moment, so ending early always satisfies the letter of "end
+    the turn by calling it once".
+
+    Refusing here is the profile's `toolFilter` argument in a different place:
+    calling the wrong one stops being instructed against and becomes
+    impossible. And it lands *during* the turn, while the planner still has
+    steps left to apply and resubmit, rather than failing the whole turn after
+    it has ended.
+
+    A blocker carries no artifact and a skeleton is never committed, so neither
+    needs a patch.
+    """
+
+    if target_artifact != ArtifactKind.VALIDATED_CANDIDATE.value:
+        return
+    if artifact is None:
+        return
+    configured = os.environ.get(CANDIDATE_OUTPUT_FILE_ENV, "").strip()
+    if configured and Path(configured).exists():
+        return
+    raise PlanningResultRefused(
+        "this candidate has no patch behind it, so nothing could be committed "
+        "from it. Call `plan_apply` on tmbx to put the day in, then submit "
+        "again -- the host takes the patch from that call and cannot accept "
+        "one written into `artifact`."
+    )
 
 
 def _destination() -> Path:

@@ -35,6 +35,9 @@ from fateforger.slack_bot.dsh_progress_hook import (
     ProgressPhase,
     ProgressStatus,
 )
+from fateforger.slack_bot.validated_timebox_draft import (
+    CANDIDATE_OUTPUT_FILE_ENV,
+)
 from fateforger.slack_bot.planning_result_mcp import (
     PLANNING_RESULT_FILE_ENV,
     PlanningResultRefused,
@@ -59,12 +62,18 @@ def _skeleton() -> dict[str, Any]:
 
 
 @pytest.fixture()
-def result_file(tmp_path, monkeypatch):
+def result_file(tmp_path, tmp_path_factory, monkeypatch):
     """Provision the turn file exactly as the bridge does: present and empty."""
 
     destination = tmp_path / "planning-result.json"
     destination.touch()
     monkeypatch.setenv(PLANNING_RESULT_FILE_ENV, str(destination))
+    # Beside the turn file in production, but somewhere else entirely here:
+    # one test lists this directory to prove the write arrives through a single
+    # rename, and anything else in it fails that test for the wrong reason.
+    captured = tmp_path_factory.mktemp("captured") / "candidate.json"
+    captured.write_text('{"version": 1}', encoding="utf-8")
+    monkeypatch.setenv(CANDIDATE_OUTPUT_FILE_ENV, str(captured))
     return destination
 
 
@@ -854,8 +863,19 @@ async def test_the_runner_attaches_the_patch_the_host_watched_tmbx_take(monkeypa
     monkeypatch.setattr(
         harness_bridge, "read_validated_candidate", lambda _path: captured
     )
+    # submit_planning_result refuses a candidate with no patch recorded, the
+    # same as production, so this turn has to look like one that applied.
+    import tempfile
 
-    result = await HarnessBridgeRunner().run(_brief(), _CollectingSink())
+    from fateforger.slack_bot.validated_timebox_draft import (
+        CANDIDATE_OUTPUT_FILE_ENV as _CAND,
+    )
+
+    with tempfile.TemporaryDirectory() as _tmp:
+        recorded = Path(_tmp) / "candidate.json"
+        recorded.write_text('{"version": 1}', encoding="utf-8")
+        monkeypatch.setenv(_CAND, str(recorded))
+        result = await HarnessBridgeRunner().run(_brief(), _CollectingSink())
 
     (draft,) = result.artifact_updates
     assert draft.kind is ArtifactKind.VALIDATED_CANDIDATE
