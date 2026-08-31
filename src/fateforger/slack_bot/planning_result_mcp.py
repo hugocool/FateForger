@@ -34,6 +34,11 @@ from fateforger.agents.timeboxing.session_contracts import (
 
 from .validated_timebox_draft import CANDIDATE_OUTPUT_FILE_ENV
 
+#: Where the host publishes the requirement ids a planner may settle this turn.
+#: Written by the bridge from the same readiness report the brief carries, so
+#: this server and the kernel cannot disagree about what was open.
+OPEN_REQUIREMENTS_FILE_ENV = "FF_DSH_OPEN_REQUIREMENTS_FILE"
+
 #: Where the host tells this server to write. Restated rather than imported
 #: from ``harness_bridge``: that module is the Slack host, and pulling it into
 #: this child would drag the whole bot import graph into a one-tool server.
@@ -177,6 +182,7 @@ def submit_planning_result(
         blocker_options=blocker_options,
     ).model_dump_json()
 
+    _refuse_unknown_requirement(assumptions=assumptions)
     _refuse_unapplied_candidate(target_artifact=target_artifact, artifact=artifact)
 
     recorded = _recorded(destination)
@@ -191,6 +197,53 @@ def submit_planning_result(
 
     _write(destination, document)
     return _RECORDED
+
+
+def _refuse_unknown_requirement(*, assumptions: Any) -> None:
+    """Refuse an assumption naming a requirement not open this turn.
+
+    An assumption is the planner's receipt for settling something it was
+    entitled to settle. Naming a requirement that is not open -- another
+    stage's vocabulary -- makes the receipt unmatchable, and the kernel
+    discovers that only after the harness has exited, when nothing can be done
+    but drop it (9018f41).
+
+    Checking here puts it inside the turn, where every other check in this
+    system already lives: `plan_apply` returns violations and the planner
+    re-patches, and the captured-patch guard above refuses and the planner
+    applies. The refusal names the ids that would have been accepted, because a
+    refusal the model cannot act on only burns a step.
+
+    Fails **open** when the host publishes nothing, unlike the captured-patch
+    guard. A host with no candidate file cannot commit at all, so refusing there
+    is right; here the kernel still validates after the turn, so the only loss
+    is the early correction -- and refusing would break every submission on a
+    host that simply does not publish its requirements.
+    """
+
+    configured = os.environ.get(OPEN_REQUIREMENTS_FILE_ENV, "").strip()
+    if not configured:
+        return
+    try:
+        published = json.loads(Path(configured).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(published, list):
+        return
+    allowed = {str(item) for item in published}
+    if not allowed:
+        return
+
+    for assumption in assumptions or []:
+        named = str((assumption or {}).get("requirement_id") or "")
+        if named in allowed:
+            continue
+        raise PlanningResultRefused(
+            f"`{named}` is not a requirement this turn can settle, so an "
+            "assumption naming it records nothing. The ones open to you now "
+            f"are: {', '.join(sorted(allowed))}. Name one of those, or drop "
+            "the assumption and submit the artifact on its own."
+        )
 
 
 def _refuse_unapplied_candidate(*, target_artifact: str, artifact: Any) -> None:
