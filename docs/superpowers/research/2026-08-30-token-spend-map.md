@@ -426,3 +426,75 @@ spread** inside one cell at concurrency 1, fixed model, fixed brief. Everything 
 therefore either a **population total over all 692 calls** or a **median over ≥16 turns**, never an
 n=3 point estimate. The preamble figure is the strongest number here: it is a direct observation
 from three sessions with the variable removed, cross-checked by a regression over all 50.
+
+---
+
+# Addendum, 2026-08-31: where a call's prompt actually goes
+
+The report above measures *turns*. This measures one **call**, decomposed, from a real session's
+harness log — because the earlier framing ("the cost is prompt resend, not reasoning") is right
+but stops one level short of naming what is being resent.
+
+## One call
+
+First call of a candidate turn: **36,841 prompt tokens**. Outputs across the turn's calls: 115,
+298, 1,201, 675. Reasoning was never the cost, and neither was the result JSON.
+
+| part | tokens | share |
+|---|---|---|
+| harness system prompt + tool schemas (by difference; not logged) | ~19,400 | 53% |
+| `facts` | 5,262 | 14% |
+| `applicable_constraints` (40 items) | 4,492 | 12% |
+| persona / agent instructions | 4,144 | 11% |
+| `current_artifacts` | 728 | 2% |
+| `calendar_snapshot` | 583 | 2% |
+| skill catalogue | 483 | 1% |
+| plugin messages (×5) | 412 | 1% |
+| obligation prose | 256 | <1% |
+| readiness / assumptions / approvals / locked_day | ~510 | 1% |
+
+**The whole thing is re-sent on every tool round-trip**, growing ~1.5–2.5k per call as tool
+results accumulate: 29,485 → 31,035 → 32,724 → 34,011 over four calls, and to 46,117 over six.
+"Cached tokens" are that resend, billed at a tenth where the prefix matches.
+
+## Two defects this exposed, both now fixed
+
+**The brief carried the same data twice** (`061eca2`). A fact of kind `active_constraints` held
+the same 40 constraints as `applicable_constraints` — identical uid sets, identical bytes, 4,492
+tokens each. The calendar snapshot was duplicated the same way. The facts exist only to satisfy
+readiness requirements, and `satisfied_by` is a *presence* test: nothing anywhere read their
+value. They were carrying a full payload to answer a yes/no question.
+
+**A third of the constraint block was empty** (`8787cc7`). 1,460 of 4,492 tokens were `[]`, `{}`
+and `null` — empty by design, since `_row_from_view` fills them to match the row shape
+reconciliation expects and deliberately leaves applicability empty. The internal shape is right;
+paying for it on every model call was not. Dropped at serialization only, and a test asserts
+every non-empty value survives so "smaller" cannot become "missing".
+
+Together: **brief 10,914 → 4,768 tokens, 56%.** ~6,145 per call, ~55k over a session's nine calls,
+roughly 17% of session prompt volume.
+
+## The cache miss is the expensive line
+
+Per-call detail shows misses, not hits, dominating:
+
+```
+call  fresh in  cache read    prompt    out
+   1     6,445      23,040    29,485    115
+   2    31,035           0    31,035    298     <- miss: 31k at full rate
+   3     1,748      30,976    32,724  1,201
+   4     1,243      32,768    34,011    675
+```
+
+One miss costs more than three hits (fresh is 10× cached). Misses cluster at turn start, where
+the session-specific brief makes a prefix no previous session sent — which is also the argument
+for shrinking the brief rather than only shortening the loop.
+
+## What is still unmeasured
+
+- **The ~19,400 harness system prompt + tool schemas.** Inferred by difference; the DSH log does
+  not record the system block. It is 53% of the prompt and the largest single item, and nothing
+  here bounds how much of it is tool schemas versus preamble.
+- **Post-fix session totals.** Both fixes landed after the OpenRouter key hit its monthly limit
+  (403, "Key limit exceeded"), so the predicted first-call drop to ~30.7k and session drop to
+  ~275k are arithmetic, not observations.
