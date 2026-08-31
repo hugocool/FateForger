@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -181,7 +180,7 @@ _TIMEBOXING_STATE_EMOJI = {
 logger = logging.getLogger(__name__)
 
 def _timeboxing_title_from_text(text: str) -> str:
-    cleaned = re.sub(r"\\s+", " ", (text or "")).strip()
+    cleaned = " ".join((text or "").split())
     if not cleaned:
         return "session"
     if len(cleaned) > 80:
@@ -265,7 +264,7 @@ def _slack_error_code(exc: Exception) -> str:
 
 
 def _timeboxing_excerpt_from_text(text: str) -> str:
-    cleaned = re.sub(r"\\s+", " ", (text or "")).strip()
+    cleaned = " ".join((text or "").split())
     if len(cleaned) > 200:
         return cleaned[:197].rstrip() + "…"
     return cleaned
