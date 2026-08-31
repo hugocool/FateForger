@@ -34,7 +34,16 @@ class FakeScheduler:
         return list(self._jobs.values())
 
     def add_job(self, func, trigger, run_date, id, kwargs, replace_existing, **_):
-        self._jobs[id] = type("Job", (), {"id": id, "run_date": run_date, "kwargs": kwargs})
+        # Shaped like a real APScheduler Job: the scheduled time lives on the
+        # trigger (`DateTrigger.run_date`), which is what production reads. A
+        # double that exposed only a flat `run_date` would let a change pass
+        # here and fail live -- which is how the len()-over-a-count bug shipped.
+        job_trigger = type("DateTrigger", (), {"run_date": run_date})()
+        self._jobs[id] = type(
+            "Job",
+            (),
+            {"id": id, "run_date": run_date, "trigger": job_trigger, "kwargs": kwargs},
+        )
 
     def remove_job(self, job_id):
         self._jobs.pop(job_id, None)
