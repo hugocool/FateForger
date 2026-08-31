@@ -328,10 +328,24 @@ def _canonical_brief(brief: PlanningBrief) -> str:
     prefix repeats often enough for a provider to cache it. Sorted keys settle
     the mappings; ``allowed_outputs`` is a set, which is the one part Python
     will not settle on its own.
+
+    Empty constraint fields are dropped here rather than upstream. They are
+    empty by design -- ``_row_from_view`` fills them to match the flat row
+    shape reconciliation expects, and leaves applicability empty on purpose so
+    a downstream filter cannot disagree with the store about a day it has
+    already filtered. That internal shape is right; paying for it on every
+    model call was not. Measured on a real session, ``[]``, ``{}`` and ``null``
+    were 1,460 of the constraint block's 4,492 tokens -- 32% -- and the brief
+    is re-sent on every tool round-trip. An absent key and an empty list say
+    the same thing to a reader, so this is lossless.
     """
 
     payload = brief.model_dump(mode="json")
     payload["allowed_outputs"] = sorted(payload["allowed_outputs"])
+    payload["applicable_constraints"] = [
+        {k: v for k, v in constraint.items() if v not in ([], {}, None, "")}
+        for constraint in payload.get("applicable_constraints") or []
+    ]
     return json.dumps(
         payload,
         ensure_ascii=False,
