@@ -750,6 +750,17 @@ class AdaptiveTimeboxing:
                     message="The planner addressed a requirement that is not open.",
                 )
             if gap is not None and gap.owner is RequirementOwner.PLANNER:
+                # Its three sibling rules name the requirement they tripped on
+                # and this one did not, so a live refusal logged one line with
+                # no id in it and the answer had to be decompressed out of the
+                # harness session log.
+                logger.error(
+                    "planner result refused reason=%s requirement_id=%s "
+                    "resolution=%s",
+                    "planner_owned_blocker",
+                    blocker.requirement_id,
+                    gap.resolution,
+                )
                 return snapshot, TurnFailed(
                     code="illegal_user_blocker",
                     message="The planner delegated a planner-owned decision.",

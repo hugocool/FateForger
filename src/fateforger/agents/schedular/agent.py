@@ -84,6 +84,32 @@ class MyMessage:
     content: str
 
 
+def _ceil_to_minute(value: dt.datetime) -> dt.datetime:
+    """Round a proposed slot start up to the next whole minute.
+
+    A calendar has no sub-minute semantics and nobody can perceive one, but the
+    slot search derives its window from `now + 5 minutes`, and `now` carries
+    seconds. Those seconds reached a real event -- the Admonisher wrote its own
+    "Daily planning session" at 13:40:18 on 2026-08-31 -- and tmbx then anchored
+    a planned block `after` it, so the whole chain inherited eighteen seconds
+    until it met a block on a clean wall-clock time:
+
+        Overlap: SW2 ends 18:00:18 but GY1 starts 18:00:00
+
+    `plan_apply` refused, correctly, and kept refusing: no day could be
+    committed at all while such an event existed.
+
+    Up, never down. Rounding a start down moves it into the busy interval it was
+    placed after, manufacturing the overlap this exists to prevent. An already
+    aligned time is returned untouched, so repeated passes cannot walk a slot
+    forward a minute at a time.
+    """
+
+    if value.second == 0 and value.microsecond == 0:
+        return value
+    return (value + dt.timedelta(minutes=1)).replace(second=0, microsecond=0)
+
+
 class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
     def __init__(self, name: str, *, haunt: HauntOrchestrator):
         RoutedAgent.__init__(self, name)
@@ -472,6 +498,10 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             events = self._normalize_events(payload)
             start = _first_gap(window_start, window_end, _busy_intervals(events))
             if start:
+                # Both sources of `start` can carry seconds: the `now + 5min`
+                # floor for today, and the end of a busy event that itself was
+                # written with them. Aligning here covers both, once.
+                start = _ceil_to_minute(start)
                 end = start + duration
                 return SuggestedSlot(
                     ok=True,

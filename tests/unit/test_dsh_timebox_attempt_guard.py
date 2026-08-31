@@ -41,12 +41,23 @@ def test_first_five_attempts_are_allowed_and_sixth_is_denied(tmp_path):
     assert "retry budget" in decisions[5]["reason"]
 
 
-def test_environment_cannot_raise_the_hard_limit_above_five(monkeypatch):
-    """Catches turning the five-attempt safety ceiling into a soft default."""
+def test_environment_cannot_raise_the_hard_limit(monkeypatch):
+    """Catches turning the safety ceiling into a soft default.
+
+    The ceiling moved from five to eight on 2026-08-31, on evidence: the first
+    session against a real calendar spent all five attempts and reported it was
+    one five-minute change from converging. Five had been tuned against an
+    in-memory calendar with an empty day, where nothing is fitted around
+    anything.
+
+    It is still a ceiling and the intent of this test is unchanged. Attempts are
+    expensive -- the turn that exhausted five took 604 seconds -- so an
+    unbounded budget only trades a failed turn for one nobody will wait out.
+    """
 
     monkeypatch.setenv("FF_TIMEBOX_PATCH_MAX_ATTEMPTS", "99")
 
-    assert _max_attempts() == 5
+    assert _max_attempts() == 8
 
 
 def test_exhaustion_emits_a_typed_terminal_progress_fact(tmp_path, monkeypatch):
