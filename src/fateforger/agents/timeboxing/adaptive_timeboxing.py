@@ -770,10 +770,21 @@ class AdaptiveTimeboxing:
         assumptions: list[PlannerAssumption] = []
         for draft in result.assumptions:
             gap = gaps.get(draft.requirement_id)
-            if (
-                gap is None
-                or gap.satisfied
-                or gap.owner is not RequirementOwner.PLANNER
+            # Three mistakes wore one code, and only one is harmless.
+            #
+            # An id this turn has never heard of -- another stage's vocabulary --
+            # is a filing error on metadata: the judgement it records was really
+            # made and the artifact beside it is valid. That cost a whole turn in
+            # production, one draw in six, after the patch repair loop had
+            # already converged on something tmbx accepted.
+            #
+            # The other two are not filing errors. Assuming a requirement that is
+            # already satisfied asserts a guess where a fact exists, and assuming
+            # one the planner does not own decides something belonging to the
+            # user or the system. Accepting the artifact would act on either, so
+            # both still fail the turn.
+            if gap is not None and (
+                gap.satisfied or gap.owner is not RequirementOwner.PLANNER
             ):
                 logger.error(
                     "planner result refused reason=%s requirement_id=%s known=%s "
@@ -792,6 +803,23 @@ class AdaptiveTimeboxing:
                     code="invalid_planner_result",
                     message="The planner returned an assumption it does not own.",
                 )
+            if gap is None:
+                # Dropped, never silently: a planner reaching for the wrong
+                # stage's vocabulary is a real defect worth seeing, it just is
+                # not worth the user's turn.
+                logger.warning(
+                    "planner assumption dropped reason=%s requirement_id=%s "
+                    "known=%s satisfied=%s open_planner_gaps=%s",
+                    "assumption_not_open_this_turn",
+                    draft.requirement_id,
+                    gap is not None,
+                    gap.satisfied if gap else None,
+                    sorted(
+                        gap.requirement_id
+                        for gap in readiness.planner_owned_gaps()
+                    ),
+                )
+                continue
             assumptions.append(
                 PlannerAssumption(
                     assumption_id=str(uuid4()),

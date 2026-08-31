@@ -1367,3 +1367,79 @@ async def test_a_refused_planner_result_says_which_of_four_rules_it_broke(caplog
     assert "reason=assumption_not_planner_owned" in refusals[0]
     assert "requirement_id=skeleton.locked_day" in refusals[0]
     assert "skeleton.ordinary_placement" in refusals[0]
+
+
+async def test_a_misfiled_assumption_does_not_cost_the_whole_turn(caplog) -> None:
+    """A filing error on metadata must not discard a valid artifact.
+
+    Measured live on 2026-08-31. The planner produced a good candidate --
+    `plan_read -> plan_apply -> plan_apply -> plan_read -> plan_apply`, three
+    attempts converging on something tmbx accepted -- and attached an assumption
+    naming `skeleton.ordinary_placement`, a real requirement id from the
+    previous stage. The turn was thrown away: one in six draws lost, roughly a
+    minute of the user's wait each time, to punish metadata on a working plan.
+
+    An assumption records a judgement and names the requirement it settles.
+    Naming the wrong stage's id is a misfiling, not a false claim -- so the
+    assumption is dropped and the artifact stands.
+    """
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    planner = RecordedPlanner(
+        PlanningResult(
+            artifact_updates=[
+                ArtifactDraft(
+                    kind=ArtifactKind.SKELETON,
+                    payload={"markdown": "## Saturday\n- 17:00 Gym"},
+                    dependency_revisions={"planning_day": 1},
+                )
+            ],
+            assumptions=[
+                PlannerAssumptionDraft(
+                    requirement_id="candidate.concrete_placements",
+                    value="17:00",
+                    why_needed="a gap from another stage entirely",
+                )
+            ],
+        )
+    )
+
+    with caplog.at_level(logging.WARNING):
+        outcome = await _kernel(repo, planner).turn(
+            _advance_request(), progress=RecordingProgressSink()
+        )
+
+    assert not isinstance(outcome, TurnFailed), "the artifact was valid"
+    dropped = [r.getMessage() for r in caplog.records if "assumption" in r.getMessage()]
+    assert dropped, "dropping it silently would hide a real planner mistake"
+    assert "candidate.concrete_placements" in dropped[0]
+
+
+async def test_an_assumption_over_someone_elses_decision_still_fails(caplog) -> None:
+    """The case that must keep failing.
+
+    `skeleton.locked_day` is SYSTEM-owned. A planner asserting it has settled a
+    requirement belonging to the user or the system has not misfiled anything --
+    it has decided something that was not its to decide, and accepting the
+    artifact would act on that guess.
+    """
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    planner = RecordedPlanner(
+        PlanningResult(
+            assumptions=[
+                PlannerAssumptionDraft(
+                    requirement_id="skeleton.locked_day",
+                    value="2026-08-29",
+                    why_needed="the day has to be fixed",
+                )
+            ]
+        )
+    )
+
+    outcome = await _kernel(repo, planner).turn(
+        _advance_request(), progress=RecordingProgressSink()
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "invalid_planner_result"
