@@ -192,6 +192,26 @@ class HostPlanningContext:
         )
 
 
+def _block_count(calendar_snapshot: Any) -> int | None:
+    """However many blocks the read reported, without assuming its shape.
+
+    tmbx states a count; a sequence would also be a reasonable thing for a
+    calendar port to return. Anything else is reported as unknown rather than
+    guessed at -- this fact exists to say a fetch happened, and no readiness
+    check reads the number, so being wrong about it is worse than being silent.
+    """
+
+    blocks = (calendar_snapshot or {}).get("blocks") if calendar_snapshot else None
+    if isinstance(blocks, bool):
+        return None
+    if isinstance(blocks, int):
+        return blocks
+    try:
+        return len(blocks)
+    except TypeError:
+        return None
+
+
 def planning_facts(
     *, day: str, calendar_snapshot: Any, constraints: Any
 ) -> list[PlanningFact]:
@@ -217,10 +237,13 @@ def planning_facts(
         PlanningFact(
             fact_id=f"calendar:{day}",
             kind=FactKind.CALENDAR_SNAPSHOT,
-            value={
-                "fetched": True,
-                "blocks": len((calendar_snapshot or {}).get("blocks") or []),
-            },
+            # `blocks` is already a count in what tmbx returns, not a list.
+            # The first version of this called len() on it, which raised
+            # TypeError on the first real candidate turn -- the unit test had
+            # stubbed a list of block dicts, a shape nothing produces. Pass
+            # the payload's own summary through rather than recomputing it
+            # from a shape this function does not own.
+            value={"fetched": True, "blocks": _block_count(calendar_snapshot)},
             source="calendar",
         ),
         PlanningFact(

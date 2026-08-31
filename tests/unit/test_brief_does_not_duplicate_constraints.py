@@ -17,7 +17,11 @@ from fateforger.agents.timeboxing.session_contracts import FactKind
 
 
 CONSTRAINTS = [{"uid": f"c{i}", "description": "x" * 200} for i in range(40)]
-SNAPSHOT = {"ok": True, "blocks": [{"h": "EVT1"}, {"h": "EVT2"}], "snapshot": "tok"}
+# The shape tmbx actually returns: `blocks` is a COUNT, not a list. The first
+# version of this test invented a list of block dicts, passed, and shipped a
+# `len()` over an int that raised TypeError on the first real candidate turn --
+# a stub asserting a shape nobody produces.
+SNAPSHOT = {"ok": True, "blocks": 14, "rendered": "...", "snapshot": "tok"}
 
 
 def _facts():
@@ -50,7 +54,7 @@ def test_the_fact_still_says_the_fetch_happened() -> None:
 def test_the_calendar_snapshot_is_not_sent_twice() -> None:
     fact = _facts()[FactKind.CALENDAR_SNAPSHOT]
     assert fact.value != SNAPSHOT
-    assert fact.value["blocks"] == 2
+    assert fact.value["blocks"] == 14
 
 
 def test_the_fact_is_small() -> None:
@@ -61,3 +65,23 @@ def test_the_fact_is_small() -> None:
     big = len(json.dumps(CONSTRAINTS))
     small = len(json.dumps(_facts()[FactKind.ACTIVE_CONSTRAINTS].value))
     assert small < big / 100
+
+
+def test_a_sequence_of_blocks_also_counts() -> None:
+    """A calendar port returning a list is reasonable; neither shape may raise."""
+
+    from fateforger.slack_bot.timeboxing_host import planning_facts
+
+    facts = {f.kind: f for f in planning_facts(
+        day="d", calendar_snapshot={"blocks": [1, 2, 3]}, constraints=[])}
+    assert facts[FactKind.CALENDAR_SNAPSHOT].value["blocks"] == 3
+
+
+def test_an_unknown_shape_is_reported_as_unknown_not_guessed() -> None:
+    """No readiness check reads this number, so silence beats a wrong one."""
+
+    from fateforger.slack_bot.timeboxing_host import planning_facts
+
+    facts = {f.kind: f for f in planning_facts(
+        day="d", calendar_snapshot={"blocks": object()}, constraints=[])}
+    assert facts[FactKind.CALENDAR_SNAPSHOT].value["blocks"] is None
