@@ -71,3 +71,17 @@ def test_a_blocker_needs_no_patch(turn) -> None:
         "requirement_id": "candidate.concrete_placements",
         "why_needed": "no free window is left for the gym",
     }])
+
+
+def test_a_host_that_records_no_patch_is_a_failure_of_the_host(turn, monkeypatch) -> None:
+    """Unset means refuse, not allow -- the same stance `_destination` takes.
+
+    A host that provisions no candidate file cannot capture the patch a commit
+    replays, so every candidate it produces would be uncommittable. Failing
+    open would make that host indistinguishable from a working one right up
+    until the user approved a plan that could never land.
+    """
+
+    monkeypatch.delenv(CANDIDATE_OUTPUT_FILE_ENV, raising=False)
+    with pytest.raises(PlanningResultRefused):
+        _submit()
