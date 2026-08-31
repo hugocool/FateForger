@@ -636,19 +636,35 @@ class PlanningReconciler:
             first_nudge_offset=first_nudge_offset,
         )
         prefix = f"rule:{self._rule.rule_id}:{scope}:"
-        current_ids = {
-            job.id for job in self._scheduler.get_jobs() if job.id.startswith(prefix)
+        scheduled = {
+            job.id: getattr(getattr(job, "trigger", None), "run_date", None)
+            for job in self._scheduler.get_jobs()
+            if job.id.startswith(prefix)
         }
+        current_ids = set(scheduled)
         desired_ids = {job.key.as_id() for job in desired}
 
         for job_id in current_ids - desired_ids:
             self._scheduler.remove_job(job_id)
 
+        # A caller supplying `first_nudge_offset` is deliberately re-timing the
+        # ladder (planning_guardian does this), so let it move. Otherwise keep
+        # the time a job already has: `evaluate` anchors every offset to `now`,
+        # so recomputing on each pass re-arms nudge1 forever and the exponential
+        # backoff never advances. Identity was already stable -- JobKey carries
+        # the day -- so this makes reconciliation idempotent in time as well.
+        retime = first_nudge_offset is not None
+
         for job in desired:
+            run_at = job.run_at
+            if not retime:
+                already = scheduled.get(job.key.as_id())
+                if already is not None:
+                    run_at = already
             self._scheduler.add_job(
                 self._emit_reminder,
                 trigger="date",
-                run_date=job.run_at,
+                run_date=run_at,
                 id=job.key.as_id(),
                 kwargs={"reminder": job.payload},
                 replace_existing=job.replace_existing,

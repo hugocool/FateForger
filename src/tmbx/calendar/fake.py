@@ -17,6 +17,9 @@ from .port import CalendarEvent
 class FakeCalendar:
     """Implements ``CalendarPort`` over an in-memory dict."""
 
+    backend = "fake"
+    durable = False
+
     def __init__(self, events: dict[str, list[CalendarEvent]] | None = None) -> None:
         self._events: dict[str, list[CalendarEvent]] = {
             key: [event.model_copy(deep=True) for event in value]

@@ -108,9 +108,28 @@ deliberately, not dropped in passing.
 
 Address blocks by handle, taken from the "H" column of the rendered plan —
 never by position. A handle is 2-5 uppercase letters then 1-2 digits (e.g.
-DW1, MTNG12). A patch is a set: every op resolves against the plan as
-rendered, so op order does not matter, and no op may reference a block
-created by another op in the same patch.
+DW1, MTNG12).
+
+Adds are applied in the order you list them. An add with no `after` goes
+after the add listed before it, so a whole day chains in one patch on a
+single anchor — write the blocks down in the order they happen.
+
+That anchor goes on the first add, and it is required. The first add has
+nothing before it to follow, so it must say where the chain starts: "END"
+to continue the plan as it stands, a handle to build around a block already
+on it, or null to go in front of everything. A first add that omits `after`
+is refused, reason "invalid_patch" — tmbx will not choose between putting
+your chain before the day and after it.
+
+Give any other add an `after` only to override the sequence: a handle on
+the rendered plan (a meeting you must build around), a handle this same
+patch adds, "END", or null. An anchor may name an add listed later — adds
+are applied in dependency order — and two adds anchored on each other are
+refused as a cycle.
+
+Remove, update and move are still a set: their order among themselves
+changes nothing. A move's `after` is different from an add's — it names a
+position on the plan as rendered, and it is always required.
 
 Some rendered blocks are FOREIGN: real calendar events tmbx did not create
 (someone else's meeting, an invite). They occupy real time and the chain
@@ -125,11 +144,27 @@ refused outright, reason "foreign_block".
 """
 
 _OPS_SCHEMA_PREAMBLE = """\
-Four ops: add, remove, update, move. Every op addresses an existing block
-by its handle (h) — never by position; a patch is a set, so op order never
-matters and no op may reference a handle another op in the same patch just
-created. add/move accept `after`: a handle to insert after, null to
-prepend, or the literal "END" to append (default "END").
+Four ops: add, remove, update, move. Every op addresses a block by its
+handle (h) — never by position.
+
+ADDS ARE APPLIED IN THE ORDER YOU LIST THEM. Omit `after` and the block
+goes after the add listed before it. So the ordinary way to write a day is
+to list the blocks in the order they happen and give exactly one anchor.
+
+THE FIRST ADD MUST GIVE `after`; it has nothing before it to follow. Say
+"END" to continue the plan, a handle to start after a block already on it,
+or null to go in front of everything. Omitting it there is refused.
+
+On any other add, `after` is the override, for a block that must sit
+somewhere other than after the previous one: a handle to insert after,
+null to prepend, or the literal "END" to append. An add's `after` may name
+a handle another op in the same patch creates, including one listed later
+— adds are applied in dependency order — and two adds anchored on each
+other are refused as a cycle.
+
+Remove, update and move remain a set: their order among themselves changes
+nothing. A move's `after` names a position on the plan as rendered and has
+no "previous"; the default is "END".
 
 A new handle (add's `h`) must be 2-5 uppercase letters then 1-2 digits
 (e.g. DW1, MTNG12) — anything else is refused as reason "invalid_patch"
@@ -315,6 +350,20 @@ def build_server(service: PlanService) -> FastMCP:
         those as mistakes, per tmbx://policy/planning. Blocks whose
         anchor_source is "constraint" are never listed: their pin is the
         boundary being enforced, and relaxing one is refused outright.
+
+        On success, "unallocated" is the other direction — the stretches of
+        the day no block occupies. Each carries "start", "end", "duration",
+        and the handles it sits between ("after"/"before", null where there
+        is no block on that side). Gaps between two placed blocks are always
+        listed; leading and trailing time is listed only where a BG block
+        declares the day available, because without one the day has stated
+        neither a start nor an end.
+
+        It is arithmetic, not advice. Nothing here says a gap is too long or
+        ought to be filled — whether three unclaimed hours are a problem, an
+        opportunity, or an ordinary afternoon depends on what the user meant
+        by their day. Where that is genuinely open, put the choice to them
+        instead of closing it with one confident guess.
         """
         try:
             snapshot_obj = Snapshot.model_validate(snapshot)
@@ -345,6 +394,7 @@ def build_server(service: PlanService) -> FastMCP:
                     violation.model_dump(mode="json") for violation in result.violations
                 ],
                 "overspecified": result.overspecified,
+                "unallocated": [gap.model_dump(mode="json") for gap in result.unallocated],
             }
         )
 
@@ -474,7 +524,16 @@ def build_server(service: PlanService) -> FastMCP:
                 }
             )
         return json.dumps(
-            {"committed": True, "tx_id": result.tx_id, "conflicts": result.conflicts}
+            {
+                "committed": True,
+                "tx_id": result.tx_id,
+                "conflicts": result.conflicts,
+                # Which calendar this reached. A caller rendering "committed"
+                # to a human must say so when durable is false, or it reports
+                # an in-memory dict as the user's scheduled day.
+                "calendar_backend": result.calendar_backend,
+                "durable": result.durable,
+            }
         )
 
     @mcp.tool(name="plan_undo", structured_output=False)

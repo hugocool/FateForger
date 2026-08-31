@@ -44,20 +44,16 @@ unresolvable that is fatal, which is why this file exists.
 
 ## The profile's policy file is versioned here
 
-`profile/memory-policy.md` is the copy of record. The harness reads
-`~/.dsh/profiles/tmbx/memory-policy.md`, which is outside any repo — the same
-shape as the CLAUDE.md that lived untracked on one machine and was invisible to
-every clone and every CI run.
+`profile/memory-policy.md` is the copy of record, and since #206 it is also the
+file the harness reads: both persona halves now load from
+`$FF_FATEFORGER_ROOT/infra/dsh/profile/`. Nothing needs copying to keep the
+prose current — see "One file still deploys by hand" below for the one that does.
 
-Deploy with:
-
-```sh
-cp infra/dsh/profile/memory-policy.md ~/.dsh/profiles/tmbx/memory-policy.md
-```
-
-It carries two things neither MCP server states: when to read constraints and
-why `day_type` is not optional, and the stage sequence plus the rule that every
-block is attributed to what Hugo said, what memory holds, or what was assumed.
+It carries three things neither MCP server states: when to read constraints
+and why `day_type` is not optional; the stage sequence, the Stage 3/Stage 4
+boundary, and the obligation to end a planning turn with exactly one
+`submit_planning_result` call; and the rule that every block is attributed to
+what Hugo said, what memory holds, or what was assumed.
 
 That attribution is instruction, not machinery, so it can quietly stop
 happening. Measured against `google/gemini-3.6-flash` at 6 draws on a planted
@@ -66,12 +62,74 @@ and **5/6 stayed inside the stage they were asked for** — one draw reached for
 `plan_apply` during the skeleton. Instruction does not hold a stage boundary;
 a `PreToolUse` deny does.
 
+## The prose describes the session; it no longer holds it
+
+Until #206 `memory-policy.md` told the model that "the thread is the state" and
+that "there is no machinery enforcing this". Both were honest descriptions of a
+system where a fresh harness process rebuilt a planning session out of a few
+Slack messages, and both were an invitation to rebuild it wrongly. On
+2026-08-29 a turn read Saturday's calendar, found work on it, and planned
+Friday as a working day.
+
+The host now hands the process a complete typed `PlanningBrief` and reads one
+`PlanningResult` back, so the date, timezone, day type, accepted facts,
+existing artifacts, approvals and the artifact this turn owes are all settled
+before the model sees anything. The prose says so, and then says the three
+things the brief cannot enforce on its own:
+
+- Stage 3 presents a skeleton and does not call `plan_apply`; Stage 4 is the
+  first patch/validation stage.
+- Ordinary placement is the planner's to decide and to label as an assumption.
+  A gap the planner owns may not come back as a user question; a genuine
+  impossibility comes back as a typed blocker instead.
+- Every planning turn ends with exactly one `submit_planning_result` call,
+  because stdout is presentation and nothing reads a stage out of it.
+
+The dated anecdotes went with it. To a process that starts empty every turn, a
+recounted conversation in the persona is indistinguishable from context about
+the day being planned — the 2026-08-24 "no gym today, it's vacation" exchange
+was being read as *this* conversation. What the anecdotes were evidence *for*
+stayed: an absence is an answer, an already-answered thing is not reopened,
+and a work window is a boundary rather than an occupying block.
+
+`tests/unit/test_timeboxing_profile_contract.py` asserts those presences and
+those absences against the two versioned files. Prompt prose is the one part of
+this system that can go stale without anything failing, so that test is the
+only thing that will notice.
+
+## One file still deploys by hand
+
+`ask` runs `--profile tmbx` against `DSH_HOME`, so the file that governs a turn
+is `~/.dsh/profiles/tmbx/cordis.patch.yml` — not the one in this repository.
+Everything that stanza *points at* is now versioned, which leaves exactly one
+hand-deployed file, and it is the one that decides where the others come from:
+
+```sh
+diff -u infra/dsh/profile/cordis.patch.yml ~/.dsh/profiles/tmbx/cordis.patch.yml
+cp      infra/dsh/profile/cordis.patch.yml ~/.dsh/profiles/tmbx/cordis.patch.yml
+```
+
+Diff first, copy second, and only once you have confirmed that
+`~/.dsh/profiles/tmbx` is the profile the running harness actually loads.
+
+`tests/unit/test_timeboxing_profile_contract.py::test_the_deployed_profile_matches_the_repository`
+fails while the two differ, and skips where no profile is installed. It exists
+because the failure it catches is silent: a mount added here is simply absent
+from the model's toolset, and a persona fix is green in the suite while the
+running system still has the bug. Until #206 the previous section described a
+worse version of the same problem — half a persona updated is worse than
+neither half, because the stage contract and the
+deployment rules would then disagree about who owns the day, and the model
+would be reading both.
+
 ## The profile is versioned here, but the harness loads `~/.dsh`
 
-`profile/` holds a copy of what `~/.dsh/profiles/tmbx/` contains. The harness
-reads the `~/.dsh` copy — **this directory is a record, not the source** — so a
-change here reaches nothing until it is copied across, and a change there is
-invisible to review until it is copied back. Check them before trusting either:
+`profile/` was once a *record* of what `~/.dsh/profiles/tmbx/` contained. Since
+#206 the two markdown halves are the source: `cordis.patch.yml` points at them
+through `$FF_FATEFORGER_ROOT`, so editing them here is enough. `cordis.patch.yml`
+itself is still a record, and `tmbx-persona.py` is neither — it is generated and
+lives only in `~/.dsh`, so nothing in this repository can review it. Check them
+before trusting either:
 
 ```sh
 diff -r infra/dsh/profile ~/.dsh/profiles/tmbx

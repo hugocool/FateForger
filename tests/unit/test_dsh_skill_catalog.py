@@ -226,7 +226,7 @@ def test_the_catalog_holds_no_skill_for_a_backend_that_is_not_connected() -> Non
     servers = re.findall(
         r"^\s*serverName:\s*(\S+)\s*$", profile, re.MULTILINE
     )
-    assert set(servers) == {"tmbx", "memory", "progress"}, (
+    assert set(servers) == {"tmbx", "memory", "progress", "planning_result"}, (
         f"the mount changed to {sorted(set(servers))}; if a task backend is now "
         f"connected, a tasks skill can exist and the admonisher should route to it"
     )
@@ -291,8 +291,35 @@ def test_exact_schedule_does_not_pause_for_non_material_classification() -> None
     assert "Do not ask about day type, block category, or semantics" in normalized
     assert "This also applies on weekends and holidays" in normalized
     assert "apply only the blocks Hugo named" in normalized
-    assert "fixed-start additions use `after: null`" in normalized.lower()
-    assert "another handle created in the same patch" in normalized.lower()
+    # Ops are applied in the order listed, and `after` is the exception. Both
+    # halves asserted, and the advice they replaced asserted absent: "fixed-start
+    # additions use `after: null`" was guidance about a default that no longer
+    # exists, and a prompt carrying it would tell the planner to anchor exactly
+    # the blocks that now need no anchor.
+    assert "ops are applied in the order you list them" in normalized.lower()
+    assert (
+        "an add with no `after` goes after the add listed before it"
+        in normalized.lower()
+    )
+    assert "must sit somewhere *other* than after the previous one" in normalized.lower()
+    assert "fixed-start additions use `after: null`" not in normalized.lower()
+    # The exception, and the sentence it replaced. A profile still calling
+    # `after` optional would have the planner omit it on the first add, which
+    # tmbx now refuses -- so the stale half costs a whole planning round, not
+    # just a stale sentence.
+    assert "the first add must give `after`" in normalized.lower()
+    assert "refuses the whole patch rather than guessing" in normalized.lower()
+    assert "`after` is optional on an add" not in normalized.lower()
+    # Polarity, not just presence. This once asserted the bare substring
+    # "another handle created in the same patch", which the prohibition and its
+    # replacement both contain -- so it passed while the sentence said the
+    # opposite thing, and would pass again if the prohibition came back. tmbx
+    # now orders same-patch anchors, and a prompt still forbidding them is what
+    # pushed the planner into pinning every block to the clock.
+    assert "may name another handle created in the same patch" in normalized.lower()
+    assert "never set `after` to another handle created in the same patch" not in (
+        normalized.lower()
+    )
 
 
 def test_retry_budget_guard_runs_before_plan_apply_and_not_after_it() -> None:

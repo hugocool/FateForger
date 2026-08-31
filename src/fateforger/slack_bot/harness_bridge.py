@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import signal
 import subprocess
 import tempfile
@@ -34,6 +35,14 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+from pydantic import ValidationError
+
+from fateforger.agents.timeboxing.session_contracts import (
+    ArtifactKind,
+    PlanningBrief,
+    PlanningResult,
+)
 
 from .dsh_progress_hook import COMMIT_FILE_ENV, PROGRESS_FILE_ENV, ProgressEvent
 from .mrkdwn import to_mrkdwn
@@ -59,6 +68,14 @@ from .validated_timebox_draft import (
 #: gate hook and the Slack button handler both read the same name.
 APPROVAL_FILE_ENV = "FF_DSH_APPROVAL_FILE"
 
+#: Where the planning-result server writes the one typed result a planning turn
+#: owes. Provisioned here per turn, because the file *is* the turn: an empty one
+#: means nothing has been submitted yet, and a fresh one per run is what makes
+#: the server's idempotency check turn-scoped without any state of its own.
+#: ``planning_result_mcp`` restates this literal rather than importing it, and
+#: ``test_planning_result_mcp`` asserts the two agree.
+PLANNING_RESULT_FILE_ENV = "FF_DSH_PLANNING_RESULT_FILE"
+
 logger = logging.getLogger(__name__)
 
 _DSH_HOME = Path(os.environ.get("DSH_HOME", Path.home() / ".dsh"))
@@ -79,6 +96,12 @@ _NODE = os.environ.get("DSH_NODE", "/opt/homebrew/bin/node")
 _TIMEOUT_S = float(os.environ.get("DSH_TIMEOUT_SECONDS", "600"))
 _PROGRESS_SESSION_KEY_ENV = "FF_DSH_SESSION_KEY"
 _HARNESS_REASONING_ENV = "FF_HARNESS_REASONING"
+
+#: Marks the child as a planning turn, so the profile can withhold the
+#: tools a planning turn must not use. Removing a capability is a stronger
+#: guarantee than instructing against it, and it is cheaper twice over: the
+#: schemas go, and so does the sentence forbidding them.
+PLANNING_TURN_ENV = "FF_PLANNING_TURN"
 
 
 class HarnessError(RuntimeError):
@@ -117,6 +140,29 @@ class HarnessReply:
     #: Exact snapshot+patch validated by tmbx in this run. Private host state;
     #: only its opaque id crosses Slack transport.
     validated_candidate: ValidatedTimeboxCandidate | None = None
+    #: The typed artifact this turn produced, when a planning brief demanded
+    #: one. Never derived from ``text``: prose is what the turn looked like,
+    #: and this is what it did.
+    planning_result: PlanningResult | None = None
+
+
+#: The interpreter the hooks run under. `hooks.json` falls back to
+#: `${CLAUDE_PROJECT_DIR}/.venv/bin/python`, which is the project root -- and a
+#: git worktree has no `.venv`, so from one every hook failed to start and said
+#: nothing. A hook that cannot start looks exactly like a hook with nothing to
+#: report, which is how a missing candidate capture surfaced three layers away
+#: as a plan that could be approved and never committed.
+HOOK_PYTHON_ENV = "FF_HOOK_PYTHON"
+
+
+def _hook_interpreter() -> str:
+    """The interpreter running this process, which by construction can import it.
+
+    The hooks import `fateforger`; so does this module. Anything that can run
+    the host can run the host's hooks, and nothing else is guaranteed to.
+    """
+
+    return sys.executable
 
 
 def _repo_env() -> dict[str, str]:
@@ -162,6 +208,7 @@ def compose_task(
     proposed_calendar_id: str | None = None,
     proposed_day: str | None = None,
     session_id: str | None = None,
+    planning_brief: PlanningBrief | None = None,
 ) -> str:
     """Build the task string for one turn.
 
@@ -185,8 +232,27 @@ def compose_task(
     three owner turns. That small intent window is paired with the exact
     proposal message named by its approval card; durable constraints still
     live behind ``session_id`` rather than growing an unbounded transcript.
+
+    ``planning_brief`` replaces all of that for an adaptive timeboxing turn.
+    The kernel already holds the day, the facts, the artifacts and the
+    approvals as typed state, so the brief is the context and the transcript
+    is not -- and with it comes the obligation to submit one typed result.
     """
+    if planning_brief is not None and (history or proposed_timebox):
+        # Documented as "replaces all of that" and, until now, merely appended
+        # after it. A caller passing both would have handed the model a
+        # transcript *above* the sentence saying the brief is authoritative --
+        # the precise contamination Task 7 closed at the planner seam, reopened
+        # one layer down. Refusing makes it impossible rather than unlikely.
+        raise ValueError(
+            "a planning brief is the whole context for its turn; "
+            "history and proposed_timebox cannot accompany one"
+        )
     parts = []
+    if planning_brief is not None:
+        # First. An obligation the model reads after a transcript is an
+        # obligation it has already begun answering from the transcript.
+        parts.append(_planning_obligation(planning_brief))
     if session_id:
         parts.append(
             f"Session id for this conversation: {session_id}\n"
@@ -212,8 +278,102 @@ def compose_task(
         )
     if not parts:
         return text
-    parts.append(f"Hugo now says:\n{text}")
+    if text.strip():
+        # A planning turn has no utterance to quote: what Hugo said reached the
+        # kernel as typed facts, and the runner's own request is not his. An
+        # empty "Hugo now says:" would attribute the host's words to him, which
+        # is the invented-provenance defect that cost this system a session id
+        # and a calendar id already.
+        parts.append(f"Hugo now says:\n{text}")
     return "\n\n".join(parts)
+
+
+def _planning_obligation(brief: PlanningBrief) -> str:
+    """State the host's authority over this turn, then the call that ends it."""
+
+    target = brief.target_artifact.value
+    # A candidate is committed as a tmbx patch, and the host takes that patch
+    # by watching the plan_apply this turn makes -- never from the model, since
+    # a model-written basis is a forged one. So applying is mandatory, and used
+    # not to be stated: every stage got the same sentence, and a planner that
+    # submitted a good day without applying had followed every instruction it
+    # was given and produced something that could be approved and never
+    # committed (#217).
+    apply_first = (
+        "\nBefore you submit it, put the day into tmbx with `plan_apply`. The "
+        "patch that call produces is the only thing that can be committed "
+        "later -- this host takes it from the call itself and cannot accept "
+        "one written into the result, so a candidate submitted without "
+        "applying is one nobody can act on."
+        if brief.target_artifact is ArtifactKind.VALIDATED_CANDIDATE
+        else ""
+    )
+    return (
+        "This planning turn is host-driven. The brief below is authoritative "
+        "for the day, the facts, the prior artifacts and the approvals; do not "
+        "re-derive any of them from calendar content or from prose.\n"
+        f"{_canonical_brief(brief)}\n"
+        f"Produce exactly one `{target}` and end this turn by calling "
+        f"`submit_planning_result` once, with target_artifact `{target}`. Your "
+        "final message is presentation only: it records nothing, and a turn "
+        f"that ends without that call has produced nothing.{apply_first}"
+    )
+
+
+#: Constraint fields that reach the planner and cannot inform anything it does.
+#:
+#: `metadata` is a hardcoded literal -- `_row_from_view` writes
+#: ``{"backend": "memory_kg"}`` on every row -- so it names which store a rule
+#: came from, forty times, at 390 tokens a call and ~3.5k a session.
+#:
+#: Nothing else joined it, and the near misses are worth recording. `status`,
+#: `scope` and `source` are each a single value across all forty today, but
+#: only `status` is constant *by construction* (projection hardcodes
+#: ``PROPOSED`` until #140 lands); the other two are uniform in this corpus and
+#: would carry real information the day a session-scoped rule appears. And
+#: `uid` looked dead at 6 references in 1,000 -- it is not: the planner cites
+#: uids in `submit_planning_result` to trace an assumption back to the rule
+#: that drove it, and only a few constraints are cited per session. Which is
+#: why membership here is decided by reading the transcripts, not by counting.
+_CONSTRAINT_FIELDS_THE_PLANNER_CANNOT_USE = frozenset({"metadata"})
+
+
+def _canonical_brief(brief: PlanningBrief) -> str:
+    """Serialize the brief the same way every time.
+
+    The brief *is* the prompt. Two identical turns whose context reorders are
+    two different prompts: a surprising answer stops being reproducible, and no
+    prefix repeats often enough for a provider to cache it. Sorted keys settle
+    the mappings; ``allowed_outputs`` is a set, which is the one part Python
+    will not settle on its own.
+
+    Empty constraint fields are dropped here rather than upstream. They are
+    empty by design -- ``_row_from_view`` fills them to match the flat row
+    shape reconciliation expects, and leaves applicability empty on purpose so
+    a downstream filter cannot disagree with the store about a day it has
+    already filtered. That internal shape is right; paying for it on every
+    model call was not. Measured on a real session, ``[]``, ``{}`` and ``null``
+    were 1,460 of the constraint block's 4,492 tokens -- 32% -- and the brief
+    is re-sent on every tool round-trip. An absent key and an empty list say
+    the same thing to a reader, so this is lossless.
+    """
+
+    payload = brief.model_dump(mode="json")
+    payload["allowed_outputs"] = sorted(payload["allowed_outputs"])
+    payload["applicable_constraints"] = [
+        {
+            k: v
+            for k, v in constraint.items()
+            if v not in ([], {}, None, "") and k not in _CONSTRAINT_FIELDS_THE_PLANNER_CANNOT_USE
+        }
+        for constraint in payload.get("applicable_constraints") or []
+    ]
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 #: How often the progress file is checked while a turn runs. Half a second is
@@ -366,6 +526,24 @@ def _optional_int(value: object) -> int | None:
 #: Sail Research via `:nitro`, which is also one of the hosts that enforces
 #: `structured_outputs` -- a per-host property, and a patch IS structured
 #: output, so an unenforcing host would accept a malformed one in silence.
+#: Paired with PLANNING_MODEL below, deliberately: effort is a property of the
+#: model, not of the deployment, and one global is how a value tuned for one
+#: gets silently applied to the other.
+#:
+#: `low`, not `minimal`, and the measurement overturned the guess. A trivial
+#: probe showed Pro spending 7 reasoning tokens at either setting, which read as
+#: "minimal is free". Over 31 real planner draws, pooled across models and
+#: stages, `low` was usable 12/12 and `minimal` 8/13 -- and because a failed
+#: turn is retried, `minimal` cost $40.77/month against `low`'s $16.87 at one
+#: session a day. The cheaper-looking setting was the more expensive one.
+#: Never `off`: a planning turn chooses placements.
+PLANNING_REASONING = os.environ.get("FF_PLANNING_REASONING", "low")
+
+#: Pro. Flash is 10x cheaper on prompt and 11x on completion and advertises
+#: parallel_tool_calls, which is why it was tried -- but one attempt failed to
+#: produce a skeleton inside 600s where Pro took 221.8s, and a planning turn
+#: that never finishes is not cheap at any price. Flash stays reachable through
+#: FF_PLANNING_MODEL and is parked until something measures it properly.
 PLANNING_MODEL = os.environ.get(
     "FF_PLANNING_MODEL", "deepseek/deepseek-v4-pro-0813:nitro"
 )
@@ -379,7 +557,9 @@ def ask(
     proposed_calendar_id: str | None = None,
     proposed_day: str | None = None,
     session_id: str | None = None,
+    planning_brief: PlanningBrief | None = None,
     model: str | None = None,
+    reasoning: str | None = None,
     profile: str = _PROFILE,
     env: dict[str, str] | None = None,
     on_event: Callable[[TimeboxProgressEvent | str], None] | None = None,
@@ -392,6 +572,14 @@ def ask(
     profile's ``PostToolUse`` hook appends the tool's name to a per-run file and
     a polling thread forwards it. Without it, nothing is set and the hook is a
     no-op, so a headless run costs nothing for a feature it is not using.
+
+    ``planning_brief`` turns this into an adaptive timeboxing turn. The brief
+    goes into the task, a result file is provisioned for the planning-result
+    server, and the reply carries whatever typed artifact the planner
+    submitted. A brief with no result is a failed turn and raises: prose cannot
+    satisfy the contract, because the kernel has to hand the user something
+    reviewable and prose is not it. Without a brief nothing changes, which is
+    what every non-timeboxing ``/dsh`` call depends on.
 
     ``approval_file`` is where the commit gate looks for a Slack approval
     token. **The caller owns the path, not this module.** A path minted here
@@ -412,7 +600,21 @@ def ask(
         # profile's own fast default in force, which is what a headless or
         # non-planning call should get.
         **({"FF_HARNESS_MODEL": model} if model else {}),
-        **({_HARNESS_REASONING_ENV: "low"} if model else {}),
+        # The effort travels with the model that was chosen, because it is a
+        # property of that model and not of the deployment: the lowest useful
+        # setting on one is wasteful on another, and a single global is how a
+        # value tuned for one ends up silently applied to the other.
+        **({_HARNESS_REASONING_ENV: reasoning} if reasoning else {}),
+        # Set only for a planning turn. The profile reads it to disable the
+        # tool plugins the planning persona already forbids -- bash, the
+        # filesystem, workflow, goals, the web. Measured at 9,480 tokens of
+        # schema per call for tools the prompt spends further tokens telling
+        # the model not to use.
+        #
+        # Conditional rather than removed outright because this profile also
+        # serves ordinary /dsh turns, which pass no brief and may legitimately
+        # want a shell. The planning turn is the one that has no use for one.
+        **({PLANNING_TURN_ENV: "1"} if planning_brief is not None else {}),
         **(env or {}),
     }
     if approval_file is not None:
@@ -425,6 +627,7 @@ def ask(
     steps = 0
     last_tx_id: str | None = None
     candidate: ValidatedTimeboxCandidate | None = None
+    planning_result: PlanningResult | None = None
 
     with tempfile.TemporaryDirectory(prefix="dsh-progress-") as workspace:
         progress = Path(workspace) / "steps"
@@ -432,10 +635,21 @@ def ask(
         commits = Path(workspace) / "commits"
         commits.touch()
         child_env[COMMIT_FILE_ENV] = str(commits)
+        # The hooks inherit this and `hooks.json` prefers it over the project
+        # root's `.venv`, which does not exist in a worktree.
+        child_env[HOOK_PYTHON_ENV] = _hook_interpreter()
         validated_draft = Path(workspace) / "validated-draft.json"
         child_env[DRAFT_STATE_FILE_ENV] = str(validated_draft)
         candidate_output = Path(workspace) / "candidate.json"
         child_env[CANDIDATE_OUTPUT_FILE_ENV] = str(candidate_output)
+        planning_result_file: Path | None = None
+        if planning_brief is not None:
+            # Created empty rather than left absent: the server reads the file
+            # to learn whether this turn has already submitted, and "missing"
+            # and "nothing yet" would otherwise be the same thing.
+            planning_result_file = Path(workspace) / "planning-result.json"
+            planning_result_file.touch()
+            child_env[PLANNING_RESULT_FILE_ENV] = str(planning_result_file)
         stop = threading.Event()
         tail: threading.Thread | None = None
         collected: list[int] = []
@@ -468,6 +682,7 @@ def ask(
                     proposed_calendar_id=proposed_calendar_id,
                     proposed_day=proposed_day,
                     session_id=session_id,
+                    planning_brief=planning_brief,
                 ),
                 profile,
             )
@@ -511,6 +726,7 @@ def ask(
                 recorded = []
             last_tx_id = recorded[-1] if recorded else None
             candidate = read_validated_candidate(candidate_output)
+            planning_result = _read_planning_result(planning_result_file)
 
     if done.returncode != 0:
         # Both streams, because a failing turn does not reliably use stderr.
@@ -526,6 +742,12 @@ def ask(
             detail = "no output on either stream"
         raise HarnessError(f"harness exited {done.returncode}: {detail}")
 
+    if planning_brief is not None and planning_result is None:
+        # The regression this seam closes. A planner can exit zero having
+        # described a plan it never submitted, and every earlier version of
+        # this call would have returned that prose as the turn's work.
+        raise HarnessError("planner exited without the required typed planning result")
+
     # A candidate offered for approval is displayed from tmbx's own validated
     # render, never from model prose that could describe a different draft.
     answer = (
@@ -533,7 +755,10 @@ def ask(
         if candidate is not None and candidate.rendered.strip()
         else (done.stdout or "").strip()
     )
-    if not answer:
+    if not answer and planning_result is None:
+        # Silence is only a failure when nothing else stands in for the answer.
+        # A planning turn renders from its typed artifact, so an empty stdout
+        # there is a quiet planner, not an empty turn.
         raise HarnessError("harness produced no output")
     # Emptiness is judged on what the harness said, not on what survives
     # conversion: a reply that renders to nothing is still a reply, and
@@ -553,7 +778,36 @@ def ask(
         # joined nowhere.
         committed_tx_id=last_tx_id,
         validated_candidate=candidate,
+        planning_result=planning_result,
     )
+
+
+def _read_planning_result(source: Path | None) -> PlanningResult | None:
+    """Load the turn's typed result, or nothing at all.
+
+    Only ``planning_result_mcp`` writes this file, and only after validating it
+    and renaming it into place, so anything unreadable here means the
+    submission never happened. There is no partial credit: an unparseable
+    document and an empty one are the same failed turn to the caller, and
+    reporting them differently would suggest a result it could act on.
+    """
+
+    if source is None:
+        return None
+    try:
+        document = source.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not document:
+        return None
+    try:
+        return PlanningResult.model_validate_json(document)
+    except ValidationError as exc:
+        logger.warning(
+            "planning result did not validate error_type=%s",
+            type(exc).__name__,
+        )
+        return None
 
 
 def _run_cancellable(

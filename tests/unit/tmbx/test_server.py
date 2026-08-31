@@ -297,7 +297,16 @@ async def test_plan_commit_replays_the_same_candidate_digest_once(built):
     first = json.loads(_text(await server.call_tool("plan_commit", request)))
     second = json.loads(_text(await server.call_tool("plan_commit", request)))
 
-    assert first == {"committed": True, "tx_id": key, "conflicts": []}
+    # The replay must be byte-identical to the first answer, provenance
+    # included -- an idempotent commit that forgot which calendar it reached
+    # would let the second call read as durable when the first did not.
+    assert first == {
+        "committed": True,
+        "tx_id": key,
+        "conflicts": [],
+        "calendar_backend": "fake",
+        "durable": False,
+    }
     assert second == first
     commits = [
         row
@@ -834,3 +843,48 @@ async def test_plan_apply_does_not_advertise_a_constraint_pin_as_overspecified(
     body = json.loads(_text(result))
     assert body["ok"] is True
     assert body["overspecified"] == []
+
+
+async def test_plan_apply_reports_the_hours_nothing_claims(tmp_path):
+    """``unallocated`` is the dual of ``overspecified`` on the wire: the
+    day is 09:00-11:00 and 14:00-15:00, so three hours in the middle belong
+    to no block. The handles on either side are what make it actionable —
+    an agent can put a real choice to the user about the gap between DW1
+    and GY1, where a bare duration would only be a complaint.
+    """
+    calendar = FakeCalendar(
+        {"primary": [_event("e1", "DW1", 9, 11), _event("e2", "GY1", 14, 15)]}
+    )
+    store = JournalStore(await init_journal(tmp_path / "j.db"))
+    counter = itertools.count(1)
+    service = PlanService(calendar, store, mint_uid=lambda: f"u-new-{next(counter)}")
+    server = build_server(service)
+
+    read = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
+    payload = json.loads(_text(read))
+
+    result = await server.call_tool(
+        "plan_apply",
+        {
+            "snapshot": payload["snapshot"],
+            "patch": {"ops": [{"op": "update", "h": "DW1", "n": "Focus"}]},
+        },
+    )
+    body = json.loads(_text(result))
+
+    assert body["ok"] is True
+    assert body["unallocated"] == [
+        {"start": "11:00:00", "end": "14:00:00", "duration": "PT3H",
+         "after": "DW1", "before": "GY1"},
+    ]
+
+
+async def test_plan_apply_description_says_unallocated_is_not_advice(server):
+    """The tool has to say what the measurement refuses to claim. Left
+    undescribed, an agent reads a three-hour gap as a defect to fill — the
+    same mistake the model makes with ``overspecified`` when it is handed a
+    number without a warrant.
+    """
+    tool = next(tool for tool in await server.list_tools() if tool.name == "plan_apply")
+
+    assert "unallocated" in (tool.description or "")

@@ -161,6 +161,17 @@ def drift(snapshot: Snapshot, live: list[CalendarEvent]) -> list[str]:
 class CalendarPort(Protocol):
     """Everything the server needs from a calendar provider."""
 
+    #: Which provider this is -- "fake" or "google". A commit that succeeded
+    #: is not a commit that reached the user's calendar, and downstream has no
+    #: other way to tell: the env var that chose the backend belongs to the
+    #: server process, not to whoever reads the receipt.
+    backend: str
+
+    #: Whether a write here survives the process. The question a caller
+    #: actually has, kept separate from the brand name so a second in-memory
+    #: provider cannot answer it wrongly by default.
+    durable: bool
+
     async def list_day(
         self, calendar_id: str, day: date_type, tz: str
     ) -> list[CalendarEvent]:

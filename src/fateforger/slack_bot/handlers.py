@@ -4,16 +4,16 @@ import asyncio
 import json
 import logging
 import os
-import re
 import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from time import perf_counter
 
 from autogen_agentchat.messages import TextMessage
 from autogen_core import AgentId
-from pydantic import BaseModel, ConfigDict
+from pydantic import ValidationError
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -25,12 +25,25 @@ from fateforger.agents.tasks.messages import (
     TaskEditTitleRequest,
     TaskEditTitleResponse,
 )
+from fateforger.haunt.timeboxing_activity import timeboxing_activity
+from fateforger.agents.timeboxing.adaptive_timeboxing import (
+    AdaptiveTimeboxing,
+    TurnRequest,
+)
 from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
 from fateforger.agents.timeboxing.preferences import (
     Constraint,
     ConstraintStatus,
     ConstraintStore,
     ensure_constraint_schema,
+)
+from fateforger.agents.timeboxing.readiness import TimeboxRequirements
+from fateforger.agents.timeboxing.session_contracts import (
+    ApproveArtifact,
+    ArtifactKind,
+    DayType,
+    PlanningSessionSnapshot,
+    TimeboxIntent,
 )
 from fateforger.core.config import settings
 from fateforger.core.logging_config import observe_stage_duration, record_error
@@ -46,7 +59,14 @@ from fateforger.slack_bot.constraint_review import (
     decode_metadata,
     parse_constraint_review_submission,
 )
-from fateforger.slack_bot.messages import SlackBlockMessage, SlackThreadStateMessage
+from fateforger.slack_bot.messages import (
+    SLACK_MAX_BLOCK_TEXT_CHARS,
+    SLACK_MAX_BLOCKS,
+    SLACK_MAX_PAYLOAD_CHARS,
+    SLACK_MAX_TEXT_CHARS,
+    SlackBlockMessage,
+    SlackThreadStateMessage,
+)
 from fateforger.slack_bot.planning import (
     FF_EVENT_ADD_ACTION_ID,
     FF_EVENT_ADD_DISABLED_ACTION_ID,
@@ -79,11 +99,41 @@ from fateforger.slack_bot.task_cards import (
     FF_TASK_VIEW_ALL_ACTION_ID,
     decode_task_metadata,
 )
+from fateforger.slack_bot.timeboxing_cards import (
+    FF_HARNESS_APPROVE_ACTION_ID,
+    FF_HARNESS_UNDO_ACTION_ID,
+    FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
+    FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
+    FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
+    FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID,
+    TIMEBOX_STALE_CHOICE_TEXT,
+    TIMEBOX_TURN_FAILED_TEXT,
+    HarnessApproveActionPayload,
+    _undo_outcome_text,
+    harness_approve_block,
+    harness_undo_block,
+    render_outcome,
+    timebox_failure_message,
+)
 from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID,
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
+    TimeboxCommitMeta,
     TimeboxingCommitCoordinator,
+    build_timebox_date_card,
+    day_type_action_id,
     format_relative_day_label,
+)
+from fateforger.slack_bot.timeboxing_host import (
+    HostPlanningContext,
+    KernelProgressSink,
+    PendingCandidateCommitPort,
+    derive_timebox_intent,
+)
+from fateforger.slack_bot.timeboxing_intents import (
+    TimeboxActionEnvelope,
+    intent_from_artifact_action,
+    intent_from_date_action,
 )
 from fateforger.slack_bot.timeboxing_stage_actions import (
     FF_TIMEBOX_STAGE_BACK_ACTION_ID,
@@ -129,14 +179,8 @@ _TIMEBOXING_STATE_EMOJI = {
 
 logger = logging.getLogger(__name__)
 
-_SLACK_MAX_TEXT_CHARS = 3900
-_SLACK_MAX_BLOCK_TEXT_CHARS = 1600
-_SLACK_MAX_BLOCKS = 40
-_SLACK_MAX_PAYLOAD_CHARS = 28000
-
-
 def _timeboxing_title_from_text(text: str) -> str:
-    cleaned = re.sub(r"\\s+", " ", (text or "")).strip()
+    cleaned = " ".join((text or "").split())
     if not cleaned:
         return "session"
     if len(cleaned) > 80:
@@ -155,7 +199,7 @@ def _truncate_slack_text(text: str | None, *, max_chars: int) -> str:
 
 def _truncate_slack_block_content(value):
     if isinstance(value, str):
-        return _truncate_slack_text(value, max_chars=_SLACK_MAX_BLOCK_TEXT_CHARS)
+        return _truncate_slack_text(value, max_chars=SLACK_MAX_BLOCK_TEXT_CHARS)
     if isinstance(value, list):
         return [_truncate_slack_block_content(item) for item in value]
     if isinstance(value, dict):
@@ -173,13 +217,13 @@ def _delivery_fallback_text(text: str | None) -> str:
 
 def _compact_slack_payload(*, text: str | None, blocks=None) -> dict[str, object]:
     safe_text = _truncate_slack_text(
-        text or "(no response)", max_chars=_SLACK_MAX_TEXT_CHARS
+        text or "(no response)", max_chars=SLACK_MAX_TEXT_CHARS
     )
     safe_blocks = None
     if isinstance(blocks, list) and blocks:
         clipped = blocks
-        if len(clipped) > _SLACK_MAX_BLOCKS:
-            clipped = list(clipped[: _SLACK_MAX_BLOCKS - 1]) + [
+        if len(clipped) > SLACK_MAX_BLOCKS:
+            clipped = list(clipped[: SLACK_MAX_BLOCKS - 1]) + [
                 {
                     "type": "context",
                     "elements": [
@@ -196,7 +240,7 @@ def _compact_slack_payload(*, text: str | None, blocks=None) -> dict[str, object
     if safe_blocks:
         payload["blocks"] = safe_blocks
 
-    if len(json.dumps(payload, ensure_ascii=False)) > _SLACK_MAX_PAYLOAD_CHARS:
+    if len(json.dumps(payload, ensure_ascii=False)) > SLACK_MAX_PAYLOAD_CHARS:
         return {"text": _delivery_fallback_text(safe_text)}
     return payload
 
@@ -219,16 +263,8 @@ def _slack_error_code(exc: Exception) -> str:
     return ""
 
 
-def _is_payload_size_error(exc: Exception) -> bool:
-    return _slack_error_code(exc) in {
-        "msg_too_long",
-        "too_many_attachments",
-        "invalid_blocks",
-    }
-
-
 def _timeboxing_excerpt_from_text(text: str) -> str:
-    cleaned = re.sub(r"\\s+", " ", (text or "")).strip()
+    cleaned = " ".join((text or "").split())
     if len(cleaned) > 200:
         return cleaned[:197].rstrip() + "…"
     return cleaned
@@ -671,6 +707,34 @@ def _persona_for_agent(agent_type: str) -> SlackPersona | None:
     return DEFAULT_PERSONAS.get(agent_type)
 
 
+def _persona_payload(persona: SlackPersona | None) -> dict:
+    """Slack persona overrides, absent rather than wrong when unconfigured.
+
+    Every message this bot posts under an agent's name goes through here. The
+    same three `if` statements had been written out at nine call sites against
+    whichever local happened to be in scope, so "which fields a persona sets"
+    was a fact stored nine times -- and a tenth post is written by copying
+    whichever copy was nearest, not by reading the rule.
+    """
+
+    if persona is None:
+        return {}
+    payload: dict = {}
+    if persona.username:
+        payload["username"] = persona.username
+    if persona.icon_emoji:
+        payload["icon_emoji"] = persona.icon_emoji
+    if persona.icon_url:
+        payload["icon_url"] = persona.icon_url
+    return payload
+
+
+def _persona_payload_for(agent_type: str) -> dict:
+    """The same overrides, for a caller that holds only the agent's name."""
+
+    return _persona_payload(_persona_for_agent(agent_type))
+
+
 def _channel_for_agent(agent_type: str) -> str | None:
     if agent_type == "timeboxing_agent":
         cid = (settings.slack_timeboxing_channel_id or "").strip()
@@ -1031,8 +1095,12 @@ def _note_harness_phase(
     asyncio.run_coroutine_threadsafe(card.handle(event), loop)
 
 
-#: The one control that opens the commit gate.
-FF_HARNESS_APPROVE_ACTION_ID = "ff_harness_approve"
+
+#: The one stable sentence each refusal gets, named here because this is the
+#: seam the route is driven and asserted through. Aliases rather than copies:
+#: a second definition could drift from the sentence actually drawn.
+_TIMEBOX_TURN_FAILED_TEXT = TIMEBOX_TURN_FAILED_TEXT
+_TIMEBOX_STALE_CHOICE_TEXT = TIMEBOX_STALE_CHOICE_TEXT
 
 #: Threads whose last turn had a commit refused for want of approval. Held here
 #: rather than returned through the renderer because the reply travels as a
@@ -1060,48 +1128,6 @@ def _approval_thread_root(
     return origin_thread_root_ts or processing_message_ts
 
 
-class HarnessApproveActionPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    thread_key: str
-    candidate_id: str
-    calendar_id: str | None = None
-    day: str | None = None
-    proposal_message_ts: str | None = None
-
-
-def harness_approve_block(
-    thread_key: str,
-    candidate_id: str,
-    *,
-    calendar_id: str | None = None,
-    day: str | None = None,
-    proposal_message_ts: str | None = None,
-) -> dict:
-    """The Approve control, offered beside a plan rather than after it.
-
-    The payload carries target and message identity so a later process can
-    recover the displayed draft exactly. Only the opaque candidate id grants
-    authority to commit; the descriptive continuity fields never do.
-    """
-    return {
-        "type": "actions",
-        "elements": [
-            {
-                "type": "button",
-                "action_id": FF_HARNESS_APPROVE_ACTION_ID,
-                "style": "primary",
-                "text": {"type": "plain_text", "text": "Approve this plan"},
-                "value": HarnessApproveActionPayload(
-                    thread_key=thread_key,
-                    candidate_id=candidate_id,
-                    calendar_id=calendar_id,
-                    day=day,
-                    proposal_message_ts=proposal_message_ts,
-                ).model_dump_json(),
-            }
-        ],
-    }
 
 
 async def _post_pending_harness_approval(
@@ -1272,6 +1298,12 @@ async def _execute_harness_approval(
         tx_id = payload.get("tx_id") if payload.get("committed") is True else None
         if isinstance(tx_id, str) and tx_id:
             text = ":white_check_mark: Committed the plan you approved."
+            if payload.get("durable") is not True:
+                where = str(payload.get("calendar_backend") or "unknown")
+                text = (
+                    ":warning: Committed to the *"
+                    f"{where}* calendar — nothing reached your real one."
+                )
             blocks = [
                 {
                     "type": "section",
@@ -1357,49 +1389,36 @@ async def instant_ack(client, event: dict) -> dict | None:
         return None
 
 
-FF_HARNESS_UNDO_ACTION_ID = "ff_harness_undo"
 
 
-def harness_undo_block(tx_id: str) -> dict:
-    """The Undo control, offered beside a commit that actually landed.
+def _timebox_start_button_value(blocks) -> str:
+    """The metadata the date card's Confirm button carries, read off the card.
 
-    Carries the transaction id in `value` rather than reversing "the last
-    commit": a thread may commit more than once, and undoing whichever was most
-    recent globally would reverse someone else's write from another thread.
-    The id names exactly the write this message reported.
+    Two callers need it and neither is handed it: a day-select press arrives
+    with only the dropdown's own value, and the handoff route has only the
+    message it just posted. The card is the record of what was offered, so it
+    is read rather than reconstructed -- a second encoding of the same day
+    would be a second thing to keep in step with the button the user presses.
+
+    At most one such button exists per message: Slack refuses a message whose
+    interactive elements share an action_id, which is why the five day types
+    each carry their own. So "the first one found" is "the only one there".
     """
-    return {
-        "type": "actions",
-        "elements": [
-            {
-                "type": "button",
-                "action_id": FF_HARNESS_UNDO_ACTION_ID,
-                "style": "danger",
-                "text": {"type": "plain_text", "text": "Undo this change"},
-                "value": tx_id,
-            }
-        ],
-    }
 
-
-def _undo_outcome_text(payload: dict) -> str:
-    """What to say in Slack about tmbx's answer.
-
-    Refusals are reported with their reason, never as a button that quietly did
-    nothing. `plan_undo` declines when the day has drifted since the commit --
-    its precondition is total, which is what makes the restore byte-exact -- and
-    "someone changed the day, so this cannot be cleanly reversed" is a different
-    problem from "that transaction does not exist", with a different remedy.
-    """
-    # tmbx answers an undo with `committed`, the same field a commit uses --
-    # an undo is itself a write. Reading a field it never sets would report
-    # every reversal, successful or refused, as a failure.
-    if payload.get("committed"):
-        return ":leftwards_arrow_with_hook: Reversed. The calendar is back to how it was before that commit."
-    reason = str(payload.get("reason") or "").strip() or "unknown"
-    detail = str(payload.get("message") or payload.get("raw") or "").strip()
-    text = f":warning: Could not undo that change — `{reason}`."
-    return f"{text}\n```{detail[:400]}```" if detail else text
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        elements = block.get("elements")
+        if not isinstance(elements, list):
+            continue
+        for element in elements:
+            if (
+                isinstance(element, dict)
+                and element.get("type") == "button"
+                and element.get("action_id") == FF_TIMEBOX_COMMIT_START_ACTION_ID
+            ):
+                return str(element.get("value") or "")
+    return ""
 
 
 def _timebox_backend() -> str:
@@ -1429,6 +1448,15 @@ def _timebox_body_for_harness(body: dict) -> dict:
     they can correct, in one reply rather than a wasted turn. It also means
     this is a default rather than a decision, which is what a bare command
     should be (#195).
+
+    **Nothing in `src/` calls this any more.** `/timebox` goes through
+    `route_slack_event`, which reaches the session kernel, and the kernel's
+    host derives the planning day arithmetically in `HostPlanningContext` --
+    pinned to today in the configured timezone, with no evening rollover and
+    no model asked. So the paragraph above describes a behaviour that is not in
+    force: read it as the argument for how a bare command should behave, not as
+    a description of what one does. Two unit test files still assert this text,
+    which is why it is still here rather than deleted.
     """
     text = (body.get("text") or "").strip()
     if not text:
@@ -1441,6 +1469,458 @@ def _timebox_body_for_harness(body: dict) -> dict:
             "anything. Do not commit without being asked."
         )
     return {**body, "text": text}
+
+
+
+
+
+
+
+
+def _timeboxing_host_now() -> datetime:
+    """The host clock, named so the derived planning day can be pinned."""
+
+    return datetime.now(UTC)
+
+
+def _timeboxing_kernel(
+    runtime,
+    *,
+    session_key: str,
+    actor_user_id: str,
+    candidate_id: str | None = None,
+) -> AdaptiveTimeboxing | None:
+    """Assemble the kernel from the runtime's adapters, or admit it cannot."""
+
+    repository = getattr(runtime, "timeboxing_session_store", None)
+    planner = getattr(runtime, "timeboxing_planner", None)
+    if repository is None or planner is None:
+        return None
+    return AdaptiveTimeboxing(
+        repository=repository,
+        requirements=TimeboxRequirements(),
+        planner=planner,
+        context=HostPlanningContext(runtime, now=_timeboxing_host_now),
+        commit=PendingCandidateCommitPort(
+            pending=_pending_candidates,
+            session_key=session_key,
+            actor_user_id=actor_user_id,
+            candidate_id=candidate_id,
+        ),
+    )
+
+
+
+
+
+
+async def _run_adaptive_timebox_turn(
+    *,
+    runtime,
+    client,
+    logger,
+    session_key: str,
+    actor_user_id: str,
+    interaction_id: str,
+    progress_channel: str,
+    progress_ts: str,
+    card_channel: str,
+    card_thread_ts: str,
+    user_text: str = "",
+    action: TimeboxActionEnvelope | None = None,
+    candidate_id: str | None = None,
+) -> SlackBlockMessage:
+    """Carry one Slack turn through the planning-session kernel.
+
+    load session -> derive typed intent -> one progress card -> one kernel turn
+    -> one rendered outcome. The thread is never read back: everything this
+    turn needs was written down at the moment it was decided, and rebuilding a
+    session out of `conversations_replies` is what let the planning day drift
+    and made an already-approved skeleton get asked for twice.
+    """
+    kernel = _timeboxing_kernel(
+        runtime,
+        session_key=session_key,
+        actor_user_id=actor_user_id,
+        candidate_id=candidate_id,
+    )
+    repository = getattr(runtime, "timeboxing_session_store", None)
+    if kernel is None or repository is None:
+        logger.error(
+            "adaptive timeboxing is not wired session_key=%s interaction=%s",
+            session_key,
+            interaction_id,
+        )
+        return timebox_failure_message()
+
+    # Tell the nudge suppressor a session is under way. `dispatch_planning_reminder`
+    # already refuses to nudge while `timeboxing_activity.is_active`, but every
+    # `mark_active` in the tree was in the legacy TimeboxingFlowAgent, which
+    # Slack reaches only under FF_TIMEBOX_BACKEND=legacy. Nothing sets that, so
+    # the guard was permanently false and the Admonisher asked the user to book
+    # a planning session twelve times while they were mid-session doing exactly
+    # that -- several of the cards four seconds apart.
+    timeboxing_activity.mark_active(
+        user_id=actor_user_id,
+        channel_id=card_channel,
+        thread_ts=card_thread_ts,
+    )
+
+    progress_card = HarnessProgressCard(
+        client, channel=progress_channel, message_ts=progress_ts
+    )
+    try:
+        snapshot = await repository.load_or_create(
+            session_key, owner_user_id=actor_user_id
+        )
+        if action is not None:
+            intent: TimeboxIntent = action.intent
+            expected_revision = action.expected_revision
+        else:
+            intent = await derive_timebox_intent(
+                runtime, snapshot, user_text=user_text
+            )
+            expected_revision = snapshot.revision
+        outcome = await kernel.turn(
+            TurnRequest(
+                session_key=session_key,
+                interaction_id=interaction_id,
+                actor_user_id=actor_user_id,
+                expected_revision=expected_revision,
+                intent=intent,
+            ),
+            progress=KernelProgressSink(progress_card, session_key=session_key),
+        )
+        current = await repository.load_or_create(
+            session_key, owner_user_id=actor_user_id
+        )
+        if current.status != "open":
+            # Committed or cancelled: the session is over, so stop suppressing.
+            # Left set, a finished session would keep the Admonisher quiet for
+            # the tracker's full idle timeout -- the opposite failure, and just
+            # as silent.
+            timeboxing_activity.mark_inactive(user_id=actor_user_id)
+    except Exception as exc:  # noqa: BLE001 - one failure shape reaches Slack
+        logger.error(
+            "adaptive timeboxing turn failed session_key=%s interaction=%s error_type=%s",
+            session_key,
+            interaction_id,
+            type(exc).__name__,
+        )
+        return timebox_failure_message()
+    finally:
+        await progress_card.close()
+
+    return render_outcome(
+        outcome,
+        pending=_pending_candidates,
+        snapshot=current,
+        session_key=session_key,
+        actor_user_id=actor_user_id,
+        channel_id=card_channel,
+        thread_ts=card_thread_ts,
+        logger=logger,
+    )
+
+
+async def _deliver_timebox_turn(
+    *,
+    runtime,
+    client,
+    logger,
+    session_key: str,
+    actor_user_id: str,
+    interaction_id: str,
+    channel_id: str,
+    thread_ts: str,
+    action: TimeboxActionEnvelope,
+    candidate_id: str | None = None,
+) -> None:
+    """Run one card-driven turn in the session thread and show its result.
+
+    A card click has no "thinking" message of its own, so this posts one and
+    then edits it. The same message carries the progress card and the outcome,
+    which keeps the promise that one turn produces one user-facing result.
+    """
+    processing_payload: dict = {
+        "channel": channel_id,
+        "text": ":hourglass_flowing_sand: *timeboxing_agent* is thinking...",
+        **_persona_payload_for("timeboxing_agent"),
+    }
+    if thread_ts and thread_ts != "dm":
+        processing_payload["thread_ts"] = thread_ts
+    processing = await client.chat_postMessage(**processing_payload)
+
+    message = await _run_adaptive_timebox_turn(
+        runtime=runtime,
+        client=client,
+        logger=logger,
+        session_key=session_key,
+        actor_user_id=actor_user_id,
+        interaction_id=interaction_id,
+        progress_channel=processing["channel"],
+        progress_ts=processing["ts"],
+        card_channel=channel_id,
+        card_thread_ts=thread_ts,
+        action=action,
+        candidate_id=candidate_id,
+    )
+    payload = _compact_slack_payload(text=message.text, blocks=message.blocks)
+    update: dict = {
+        "channel": processing["channel"],
+        "ts": processing["ts"],
+        "text": payload.get("text", "") or "",
+    }
+    if payload.get("blocks"):
+        update["blocks"] = payload["blocks"]
+    await client.chat_update(**update)
+
+
+async def _handle_timebox_date_confirmation(
+    *,
+    runtime,
+    client,
+    logger,
+    value: str,
+    prompt_channel_id: str,
+    prompt_ts: str,
+    actor_user_id: str | None,
+    interaction_id: str,
+) -> None:
+    """Lock the planning day the user picked, through the session kernel.
+
+    The weekday and day type come from the confirmed date by arithmetic. The
+    model is never asked to classify a day it can only guess at from context.
+    """
+    meta = TimeboxCommitMeta.from_value(value)
+    envelope = intent_from_date_action(value)
+    if meta is None or envelope is None:
+        logger.warning("timebox date confirmation carried unreadable metadata")
+        return
+
+    display_day = format_relative_day_label(planned_date=meta.date, tz_name=meta.tz)
+    try:
+        await client.chat_update(
+            channel=prompt_channel_id,
+            ts=prompt_ts,
+            text=f"Starting timeboxing for {display_day}...",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"⏳ Starting timeboxing for *{display_day}*...",
+                    },
+                }
+            ],
+        )
+    except Exception:
+        # The card is a convenience; losing its edit must not lose the turn.
+        logger.debug("could not show the date card's loading state", exc_info=True)
+
+    await _deliver_timebox_turn(
+        runtime=runtime,
+        client=client,
+        logger=logger,
+        session_key=meta.session_key,
+        actor_user_id=meta.user_id or (actor_user_id or ""),
+        interaction_id=interaction_id,
+        channel_id=meta.channel_id,
+        thread_ts=meta.thread_ts,
+        action=envelope,
+    )
+
+    if meta.thread_ts and meta.thread_ts != "dm":
+        try:
+            await client.chat_update(
+                channel=meta.channel_id,
+                ts=meta.thread_ts,
+                text=f":large_blue_circle: Timeboxing session for {display_day}",
+            )
+        except Exception:
+            logger.debug("could not relabel the session thread root", exc_info=True)
+
+
+def _card_interaction_id(action: dict, action_id: str, fallback_ts: str) -> str:
+    """Name one card press so it cannot replay a different turn's outcome.
+
+    Idempotency is keyed on this string, and returning the stored outcome for a
+    key that was already used is the whole point of it. Slack sends `action_ts`
+    on a block action, but the fallback used to be the message timestamp --
+    which is also the interaction id of the *message* turn that drew the card,
+    so a press could silently return that turn's answer and commit nothing.
+    Both halves here are identifiers this system or Slack minted.
+    """
+    action_ts = str(action.get("action_ts") or "")
+    return action_ts or f"{action_id}:{fallback_ts}"
+
+
+def _pending_candidate_approval(
+    snapshot: PlanningSessionSnapshot,
+) -> ApproveArtifact | None:
+    """Bind an approval to the candidate the session currently holds.
+
+    The button carries the opaque ownership token and the revision it was drawn
+    at; the artifact's identity comes from stored state instead, because that
+    is the copy the kernel will check the digest against. A press that arrives
+    after a newer candidate exists fails on the revision it stamped, so binding
+    late here cannot silently retarget it.
+    """
+    candidates = [
+        artifact
+        for artifact in snapshot.artifacts
+        if artifact.kind is ArtifactKind.VALIDATED_CANDIDATE
+    ]
+    if not candidates:
+        return None
+    latest = max(candidates, key=lambda artifact: artifact.revision)
+    return ApproveArtifact(
+        artifact_id=latest.artifact_id,
+        artifact_revision=latest.revision,
+        artifact_digest=latest.digest,
+    )
+
+
+async def _handle_timebox_candidate_approval(
+    *,
+    runtime,
+    client,
+    logger,
+    approval: HarnessApproveActionPayload,
+    channel_id: str,
+    thread_ts: str,
+    actor_user_id: str,
+    interaction_id: str,
+) -> bool:
+    """Commit the approved candidate *through* the session, not around it.
+
+    The calendar write is unchanged -- the same validated candidate, spent
+    through the same owner check, with the same tmbx digest as its idempotency
+    key. What changes is that the kernel decides when it may happen and stores
+    the receipt, so a committed session stops offering the plan it already
+    wrote. Committing behind the kernel's back left the session parked at
+    `AwaitingApproval` with a calendar that disagreed with it.
+
+    Returns False when this thread has no planning session to tell, which is
+    the legacy route's answer and its cue to commit the way it always has.
+    """
+    repository = getattr(runtime, "timeboxing_session_store", None)
+    if approval.expected_revision is None or repository is None:
+        return False
+    snapshot = await repository.load_or_create(
+        approval.thread_key, owner_user_id=actor_user_id
+    )
+    intent = _pending_candidate_approval(snapshot)
+    if intent is None:
+        return False
+    await _deliver_timebox_turn(
+        runtime=runtime,
+        client=client,
+        logger=logger,
+        session_key=approval.thread_key,
+        actor_user_id=actor_user_id,
+        interaction_id=interaction_id,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+        action=TimeboxActionEnvelope(
+            session_key=approval.thread_key,
+            expected_revision=approval.expected_revision,
+            intent=intent,
+        ),
+        candidate_id=approval.candidate_id,
+    )
+    return True
+
+
+async def _handle_timebox_date_reselect(
+    *,
+    client,
+    logger,
+    value: str,
+    selected_date: str,
+    prompt_channel_id: str,
+    prompt_ts: str,
+) -> None:
+    """Redraw the date card for another day, keeping every control it had.
+
+    The dropdown rebuilds the whole message rather than editing one field, so
+    a rebuild that forgets a control loses it silently. The day-type row is the
+    one that matters here: without it the user who has just navigated to Monday
+    has no typed way left to say that Monday is a holiday.
+    """
+    meta = TimeboxCommitMeta.from_value(value)
+    if meta is None:
+        logger.warning("timebox day selection carried unreadable metadata")
+        return
+    try:
+        # The override is a claim about a specific day, so it does not travel.
+        reselected = meta.with_selected_date(selected_date).with_day_type(None)
+    except (TypeError, ValueError, ValidationError):
+        logger.warning("timebox day selection carried an unusable date")
+        return
+
+    card = build_timebox_date_card(
+        session_key=reselected.session_key,
+        expected_revision=reselected.expected_revision,
+        user_id=reselected.user_id,
+        channel_id=reselected.channel_id,
+        thread_ts=reselected.thread_ts,
+        planned_date=reselected.date,
+        tz_name=reselected.tz,
+    )
+    await client.chat_update(
+        channel=prompt_channel_id,
+        ts=prompt_ts,
+        text=card.text,
+        blocks=card.blocks,
+    )
+
+    label = format_relative_day_label(
+        planned_date=reselected.date, tz_name=reselected.tz
+    )
+    if reselected.thread_ts and reselected.thread_ts != "dm":
+        try:
+            await client.chat_update(
+                channel=reselected.channel_id,
+                ts=reselected.thread_ts,
+                text=f":large_yellow_circle: Timeboxing session for {label}",
+            )
+        except Exception:
+            logger.debug("could not relabel the session thread root", exc_info=True)
+
+
+async def _handle_timebox_artifact_action(
+    *,
+    runtime,
+    client,
+    logger,
+    value: str,
+    channel_id: str,
+    thread_ts: str,
+    actor_user_id: str,
+    interaction_id: str,
+) -> None:
+    """Apply one typed artifact decision taken from a card.
+
+    The button carries the artifact's exact identity, so an approval drawn on
+    an older skeleton is rejected by the kernel rather than silently applied to
+    whatever is current.
+    """
+    envelope = intent_from_artifact_action(value)
+    if envelope is None:
+        logger.warning("timebox artifact action carried unreadable metadata")
+        return
+    await _deliver_timebox_turn(
+        runtime=runtime,
+        client=client,
+        logger=logger,
+        session_key=envelope.session_key,
+        actor_user_id=actor_user_id,
+        interaction_id=interaction_id,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+        action=envelope,
+    )
 
 
 async def _handle_dsh_command(*, body, client, logger) -> None:
@@ -1539,6 +2019,53 @@ async def _handle_dsh_command(*, body, client, logger) -> None:
     await client.chat_update(channel=channel, ts=thread_ts, text=f"*{text}*\n{summary}")
 
 
+async def _route_command_as_message(
+    *,
+    runtime,
+    focus: FocusManager,
+    agent_type: str,
+    body: dict,
+    text: str,
+    client: AsyncWebClient,
+    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]],
+) -> None:
+    """Drive a slash command through the route a typed message already takes.
+
+    A command arrives with no thread and no message, so it is turned into the
+    event the router knows how to handle rather than given a path of its own.
+    Every command that grew its own path gave the same conversation a second
+    session identity -- `/timebox` once created a thread the way typing never
+    did -- so the synthetic event is built in one place, and a command differs
+    from a message only in which agent it names.
+
+    `say` is a no-op: the router posts through `client`, and a command has no
+    channel message to reply beneath.
+    """
+
+    channel_id = body.get("channel_id") or ""
+
+    async def _noop_say(**_kwargs):
+        return {"channel": channel_id, "ts": "unused"}
+
+    await route_slack_event(
+        runtime=runtime,
+        focus=focus,
+        default_agent=agent_type,
+        event={
+            "type": "message",
+            "text": text,
+            "user": body.get("user_id") or "",
+            "channel": channel_id,
+            "ts": f"{time.time():.6f}",
+            "channel_type": "im" if channel_id.startswith(("D", "G")) else "channel",
+        },
+        bot_user_id=None,
+        say=_noop_say,
+        client=client,
+        get_constraint_store=get_constraint_store,
+    )
+
+
 async def _handle_timebox_command(
     *,
     runtime,
@@ -1567,27 +2094,13 @@ async def _handle_timebox_command(
             response_type="ephemeral",
         )
 
-    channel_type = "im" if channel_id.startswith(("D", "G")) else "channel"
-    event = {
-        "type": "message",
-        "text": text,
-        "user": user_id,
-        "channel": channel_id,
-        "ts": f"{time.time():.6f}",
-        "channel_type": channel_type,
-    }
-
-    async def _noop_say(**_kwargs):
-        return {"channel": channel_id, "ts": "unused"}
-
     try:
-        await route_slack_event(
+        await _route_command_as_message(
             runtime=runtime,
             focus=focus,
-            default_agent="timeboxing_agent",
-            event=event,
-            bot_user_id=None,
-            say=_noop_say,
+            agent_type="timeboxing_agent",
+            body=body,
+            text=text,
             client=client,
             get_constraint_store=get_constraint_store,
         )
@@ -1627,27 +2140,13 @@ async def _handle_task_refine_command(
             response_type="ephemeral",
         )
 
-    channel_type = "im" if channel_id.startswith(("D", "G")) else "channel"
-    event = {
-        "type": "message",
-        "text": text or "start guided task refinement session",
-        "user": user_id,
-        "channel": channel_id,
-        "ts": f"{time.time():.6f}",
-        "channel_type": channel_type,
-    }
-
-    async def _noop_say(**_kwargs):
-        return {"channel": channel_id, "ts": "unused"}
-
     try:
-        await route_slack_event(
+        await _route_command_as_message(
             runtime=runtime,
             focus=focus,
-            default_agent="tasks_agent",
-            event=event,
-            bot_user_id=None,
-            say=_noop_say,
+            agent_type="tasks_agent",
+            body=body,
+            text=text or "start guided task refinement session",
             client=client,
             get_constraint_store=get_constraint_store,
         )
@@ -1726,12 +2225,7 @@ async def _dm_thread_link(
     ]
     payload = {"channel": dm_channel, "text": permalink, "blocks": blocks}
     persona = _persona_for_agent("receptionist_agent")
-    if persona and persona.username:
-        payload["username"] = persona.username
-    if persona and persona.icon_emoji:
-        payload["icon_emoji"] = persona.icon_emoji
-    if persona and persona.icon_url:
-        payload["icon_url"] = persona.icon_url
+    payload.update(_persona_payload(persona))
     await client.chat_postMessage(**payload)
 
 
@@ -1831,12 +2325,7 @@ async def route_slack_event(
     if origin_thread_root_ts:
         origin_processing_payload["thread_ts"] = origin_thread_root_ts
     persona = _persona_for_agent(agent_type)
-    if persona and persona.username:
-        origin_processing_payload["username"] = persona.username
-    if persona and persona.icon_emoji:
-        origin_processing_payload["icon_emoji"] = persona.icon_emoji
-    if persona and persona.icon_url:
-        origin_processing_payload["icon_url"] = persona.icon_url
+    origin_processing_payload.update(_persona_payload(persona))
     if acked is not None:
         # Reuse the instant acknowledgement rather than posting beside it. The
         # ack exists to make the first frame fast; a second message would make
@@ -1950,12 +2439,7 @@ async def route_slack_event(
             "thread_ts": redirect.target_thread_ts,
             "text": f":hourglass_flowing_sand: *{redirect.agent_type}* is thinking...",
         }
-        if persona and persona.username:
-            processing_payload["username"] = persona.username
-        if persona and persona.icon_emoji:
-            processing_payload["icon_emoji"] = persona.icon_emoji
-        if persona and persona.icon_url:
-            processing_payload["icon_url"] = persona.icon_url
+        processing_payload.update(_persona_payload(persona))
         processing = await client.chat_postMessage(**processing_payload)
 
         msg = _build_agent_message(
@@ -2092,7 +2576,6 @@ async def route_slack_event(
                 # reply still goes out through _origin_update.
                 return
 
-    slack_loop = asyncio.get_running_loop()
     primary_harness_turn = (
         agent_type == "timeboxing_agent" and _timebox_backend() != "legacy"
     )
@@ -2101,54 +2584,28 @@ async def route_slack_event(
     )
     try:
         if primary_harness_turn:
-            # The Schedular answers through the harness now. Same persona, same
-            # thread, different brain: the harness owns the loop and reaches
-            # tmbx and the memory server over the warm MCP mounts, instead of
-            # the AutoGen flow reaching a constraint store that spent months
-            # reading a Notion page returning 404.
-            progress_card = HarnessProgressCard(
-                client,
-                channel=origin_processing_msg["channel"],
-                message_ts=origin_processing_msg["ts"],
+            # The Schedular answers through the adaptive session kernel now.
+            # Same persona, same thread, different authority: the session's
+            # state is the repository, and the thread is only where it is
+            # shown. Reconstructing it from `conversations_replies` is what
+            # let a locked Saturday become Friday between two turns.
+            result = await _run_adaptive_timebox_turn(
+                runtime=runtime,
+                client=client,
+                logger=logger,
+                session_key=recipient_key,
+                actor_user_id=user,
+                interaction_id=ts,
+                progress_channel=origin_processing_msg["channel"],
+                progress_ts=origin_processing_msg["ts"],
+                card_channel=channel,
+                card_thread_ts=(
+                    forced_thread_root
+                    or origin_thread_root_ts
+                    or origin_processing_msg["ts"]
+                ),
+                user_text=cleaned_text,
             )
-            await progress_card.handle("start\tPreparing the timebox run")
-            try:
-                thread_context = _HarnessThreadContext()
-                if thread_ts:
-                    thread_context = await _harness_thread_context(
-                        client=client,
-                        channel=channel,
-                        thread_root=thread_ts,
-                        current_ts=ts,
-                        owner_user_id=user,
-                    )
-                context_kwargs: dict[str, object] = {}
-                if thread_context.recent_user_turns:
-                    context_kwargs["history"] = list(
-                        thread_context.recent_user_turns
-                    )
-                if thread_context.proposed_timebox:
-                    context_kwargs["proposed_timebox"] = (
-                        thread_context.proposed_timebox
-                    )
-                if thread_context.calendar_id:
-                    context_kwargs["proposed_calendar_id"] = (
-                        thread_context.calendar_id
-                    )
-                if thread_context.day:
-                    context_kwargs["proposed_day"] = thread_context.day
-                result = await _harness_turn(
-                    text=cleaned_text,
-                    thread_key=recipient_key,
-                    owner_user_id=user,
-                    session_id=recipient_key,
-                    on_phase=lambda event: _note_harness_phase(
-                        progress_card, event, slack_loop
-                    ),
-                    **context_kwargs,
-                )
-            finally:
-                await progress_card.close()
         else:
             result = await runtime.send_message(
                 msg, recipient=AgentId(agent_type, key=recipient_key)
@@ -2226,12 +2683,7 @@ async def route_slack_event(
                         )
                     ),
                 }
-                if persona and persona.username:
-                    root_payload["username"] = persona.username
-                if persona and persona.icon_emoji:
-                    root_payload["icon_emoji"] = persona.icon_emoji
-                if persona and persona.icon_url:
-                    root_payload["icon_url"] = persona.icon_url
+                root_payload.update(_persona_payload(persona))
                 root = await client.chat_postMessage(**root_payload)
                 target_thread_ts = root["ts"]
                 if handoff_target == "timeboxing_agent":
@@ -2289,12 +2741,7 @@ async def route_slack_event(
                     "thread_ts": target_thread_ts,
                     "text": f":hourglass_flowing_sand: *{handoff_target}* is thinking...",
                 }
-                if persona and persona.username:
-                    processing_payload["username"] = persona.username
-                if persona and persona.icon_emoji:
-                    processing_payload["icon_emoji"] = persona.icon_emoji
-                if persona and persona.icon_url:
-                    processing_payload["icon_url"] = persona.icon_url
+                processing_payload.update(_persona_payload(persona))
                 processing = await client.chat_postMessage(**processing_payload)
 
                 handoff_msg = _build_agent_message(
@@ -2325,24 +2772,24 @@ async def route_slack_event(
                         # receptionist_agent and this interception never saw
                         # it. So "The Schedular runs on the harness" was true
                         # only for the doors he does not use.
-                        progress_card = HarnessProgressCard(
-                            client,
-                            channel=processing["channel"],
-                            message_ts=processing["ts"],
+                        #
+                        # The session key is the redirected thread, not the
+                        # origin: the durable workspace lives in the timeboxing
+                        # channel, and keying off the origin would file the
+                        # planning session under a thread nobody continues in.
+                        result = await _run_adaptive_timebox_turn(
+                            runtime=runtime,
+                            client=client,
+                            logger=logger,
+                            session_key=redirect.target_key,
+                            actor_user_id=user,
+                            interaction_id=ts,
+                            progress_channel=processing["channel"],
+                            progress_ts=processing["ts"],
+                            card_channel=target_channel,
+                            card_thread_ts=target_thread_ts,
+                            user_text=cleaned_text,
                         )
-                        await progress_card.handle("start\tPreparing the timebox run")
-                        try:
-                            result = await _harness_turn(
-                                text=cleaned_text,
-                                thread_key=redirect.target_key,
-                                owner_user_id=user,
-                                session_id=redirect.target_key,
-                                on_phase=lambda event: _note_harness_phase(
-                                    progress_card, event, slack_loop
-                                ),
-                            )
-                        finally:
-                            await progress_card.close()
                     else:
                         result = await runtime.send_message(
                             handoff_msg,
@@ -2381,44 +2828,32 @@ async def route_slack_event(
                 if handoff_target == "timeboxing_agent" and payload.get("blocks"):
                     # Update the thread root header to include the suggested day (no quoted user text).
                     try:
-                        planned_date = ""
-                        for block in payload.get("blocks") or []:
-                            if block.get("type") != "actions":
-                                continue
-                            for element in block.get("elements") or []:
-                                if (
-                                    isinstance(element, dict)
-                                    and element.get("type") == "button"
-                                    and element.get("action_id")
-                                    == FF_TIMEBOX_COMMIT_START_ACTION_ID
-                                ):
-                                    meta = decode_metadata(element.get("value") or "")
-                                    planned_date = meta.get("date") or ""
-                                    tz_name = meta.get("tz") or ""
-                                    if planned_date and tz_name:
-                                        label = format_relative_day_label(
-                                            planned_date=planned_date, tz_name=tz_name
-                                        )
-                                        title = f"Timeboxing session for {label}"
-                                        focus.set_thread_label(
-                                            f"{target_channel}:{target_thread_ts}",
-                                            title=title,
-                                            request_excerpt=None,
-                                            state="pending",
-                                            by_user=user,
-                                        )
-                                        await client.chat_update(
-                                            channel=target_channel,
-                                            ts=target_thread_ts,
-                                            text=_timeboxing_thread_root_text(
-                                                title=title,
-                                                request_excerpt=None,
-                                                state="pending",
-                                            ),
-                                        )
-                                    break
-                            if planned_date:
-                                break
+                        meta = decode_metadata(
+                            _timebox_start_button_value(payload.get("blocks"))
+                        )
+                        planned_date = meta.get("date") or ""
+                        tz_name = meta.get("tz") or ""
+                        if planned_date and tz_name:
+                            label = format_relative_day_label(
+                                planned_date=planned_date, tz_name=tz_name
+                            )
+                            title = f"Timeboxing session for {label}"
+                            focus.set_thread_label(
+                                f"{target_channel}:{target_thread_ts}",
+                                title=title,
+                                request_excerpt=None,
+                                state="pending",
+                                by_user=user,
+                            )
+                            await client.chat_update(
+                                channel=target_channel,
+                                ts=target_thread_ts,
+                                text=_timeboxing_thread_root_text(
+                                    title=title,
+                                    request_excerpt=None,
+                                    state="pending",
+                                ),
+                            )
                     except Exception:
                         pass
                     try:
@@ -2456,30 +2891,16 @@ async def route_slack_event(
                                     "text": update["text"],
                                     "blocks": dm_blocks,
                                 }
-                                if persona and persona.username:
-                                    dm_payload["username"] = persona.username
-                                if persona and persona.icon_emoji:
-                                    dm_payload["icon_emoji"] = persona.icon_emoji
-                                if persona and persona.icon_url:
-                                    dm_payload["icon_url"] = persona.icon_url
+                                dm_payload.update(_persona_payload(persona))
                                 await client.chat_postMessage(**dm_payload)
                     except Exception:
                         logger.debug(
                             "Failed to DM timeboxing commit prompt", exc_info=True
                         )
 
-                if (
-                    handoff_target == "timeboxing_agent"
-                    and _timebox_backend() != "legacy"
-                ):
-                    await _post_pending_harness_approval(
-                        client=client,
-                        logger=logger,
-                        channel=target_channel,
-                        thread_root=target_thread_ts,
-                        thread_key=redirect.target_key,
-                        proposal_message_ts=processing["ts"],
-                    )
+                # No separate approval post on the kernel route: the outcome
+                # renderer already carries the one control that can commit, and
+                # a second card would offer the same candidate twice.
 
                 await _maybe_update_timeboxing_thread_header(
                     client=client,
@@ -2551,12 +2972,7 @@ async def route_slack_event(
         if origin_thread_root_ts:
             reply_payload["thread_ts"] = origin_thread_root_ts
         reply_persona = _persona_for_agent(handoff_target)
-        if reply_persona and reply_persona.username:
-            reply_payload["username"] = reply_persona.username
-        if reply_persona and reply_persona.icon_emoji:
-            reply_payload["icon_emoji"] = reply_persona.icon_emoji
-        if reply_persona and reply_persona.icon_url:
-            reply_payload["icon_url"] = reply_persona.icon_url
+        reply_payload.update(_persona_payload(reply_persona))
         await client.chat_postMessage(**reply_payload)
         return
 
@@ -2565,16 +2981,19 @@ async def route_slack_event(
         _compact_slack_payload(**_slack_payload_from_result(result)), agent_type
     )
     await _origin_update(text=payload.get("text", ""), blocks=payload.get("blocks"))
-    await _post_pending_harness_approval(
-        client=client,
-        logger=logger,
-        channel=channel,
-        thread_root=_approval_thread_root(
-            origin_thread_root_ts, origin_processing_msg["ts"]
-        ),
-        thread_key=recipient_key,
-        proposal_message_ts=origin_processing_msg["ts"],
-    )
+    if not primary_harness_turn:
+        # The kernel route renders its own approval control beside the plan, so
+        # posting a second one here would offer the same candidate twice.
+        await _post_pending_harness_approval(
+            client=client,
+            logger=logger,
+            channel=channel,
+            thread_root=_approval_thread_root(
+                origin_thread_root_ts, origin_processing_msg["ts"]
+            ),
+            thread_key=recipient_key,
+            proposal_message_ts=origin_processing_msg["ts"],
+        )
     await _maybe_update_timeboxing_thread_header(
         client=client,
         focus=focus,
@@ -3065,6 +3484,26 @@ def register_handlers(
             logger.warning("approve candidate thread did not match message thread")
             return
 
+        if _timebox_backend() != "legacy":
+            # A planning session exists for this thread, so the commit belongs
+            # inside it: the kernel is what decides a commit is allowed and
+            # what stores the receipt afterwards. The write itself is the same
+            # one either way -- same candidate, same idempotency digest.
+            handled = await _handle_timebox_candidate_approval(
+                runtime=runtime,
+                client=client,
+                logger=logger,
+                approval=approval,
+                channel_id=channel,
+                thread_ts=thread_root,
+                actor_user_id=actor_user_id,
+                interaction_id=_card_interaction_id(
+                    action, FF_HARNESS_APPROVE_ACTION_ID, thread_root
+                ),
+            )
+            if handled:
+                return
+
         task = asyncio.create_task(
             _execute_harness_approval(
                 client=client,
@@ -3098,36 +3537,29 @@ def register_handlers(
 
     @app.command("/timebox")
     async def cmd_timebox(ack, body, respond, client, logger):
-        """Plan a day, through the harness by default.
+        """Plan a day. Both backends start the same way: by asking which day.
 
-        Migrating one agent at a time, timeboxing first: it is the one with a
-        working harness equivalent already answering against the real
-        constraint store, so this step is mostly deciding to trust it.
+        Neither backend launches a planner here any more. `/timebox` creates or
+        reuses the plan-session thread and renders the date card; the harness
+        backend then continues through the adaptive session kernel and the
+        legacy backend through the five-stage machine. Forking a second thread
+        creation for the harness is what once gave the two backends different
+        session identities for the same conversation.
 
         FF_TIMEBOX_BACKEND=legacy routes back to the AutoGen flow, which stays
-        wired and reachable. A migration nobody can reverse is a rewrite, and
-        the legacy path is still the only one with the five-stage machine.
+        wired and reachable. A migration nobody can reverse is a rewrite.
         """
         await ack()
-        if _timebox_backend() == "legacy":
-            # Fire off in background to avoid blocking Slack's 3-second timeout
-            asyncio.create_task(
-                _handle_timebox_command(
-                    runtime=runtime,
-                    focus=focus,
-                    default_agent=default_agent,
-                    body=body,
-                    client=client,
-                    respond=respond,
-                    get_constraint_store=_get_constraint_store,
-                )
-            )
-            return
+        # Fire off in background to avoid blocking Slack's 3-second timeout
         asyncio.create_task(
-            _handle_dsh_command(
-                body=_timebox_body_for_harness(body),
+            _handle_timebox_command(
+                runtime=runtime,
+                focus=focus,
+                default_agent=default_agent,
+                body=body,
                 client=client,
-                logger=logger,
+                respond=respond,
+                get_constraint_store=_get_constraint_store,
             )
         )
 
@@ -3498,19 +3930,105 @@ def register_handlers(
 
     @app.action(FF_TIMEBOX_COMMIT_START_ACTION_ID)
     async def on_timebox_commit_start_action(ack, body, client, logger):
+        """Confirm the planning day, on whichever backend owns the session.
+
+        The two backends share this one control because they share the card.
+        Which one answers is the same decision `/timebox` already made, read
+        again here rather than remembered in the button.
+        """
         await ack()
         channel_id = (body.get("channel") or {}).get("id") or ""
         message_ts = (body.get("message") or {}).get("ts") or ""
         actor_user_id = (body.get("user") or {}).get("id")
         action = (body.get("actions") or [{}])[0]
         value = action.get("value") or ""
-        if channel_id and message_ts and value:
+        if not (channel_id and message_ts and value):
+            return
+        if _timebox_backend() == "legacy":
             await timeboxing_commit.handle_start_action(
                 value=value,
                 prompt_channel_id=channel_id,
                 prompt_ts=message_ts,
                 actor_user_id=actor_user_id,
             )
+            return
+        await _handle_timebox_date_confirmation(
+            runtime=runtime,
+            client=client,
+            logger=logger,
+            value=value,
+            prompt_channel_id=channel_id,
+            prompt_ts=message_ts,
+            actor_user_id=actor_user_id,
+            interaction_id=str(action.get("action_ts") or message_ts),
+        )
+
+    # One registration per button: Slack refuses a message whose interactive
+    # elements share an action_id, so the five day types each carry their own.
+    @app.action(day_type_action_id(DayType.WORKING))
+    @app.action(day_type_action_id(DayType.WEEKEND))
+    @app.action(day_type_action_id(DayType.VACATION))
+    @app.action(day_type_action_id(DayType.HOLIDAY))
+    @app.action(day_type_action_id(DayType.SICK))
+    async def on_timebox_day_type_action(ack, body, client, logger):
+        """Lock the day with the type the user pressed rather than derived.
+
+        This is the same confirmation as the Confirm button; the only thing
+        that differs is a typed `day_type` in the metadata, which is why it
+        reaches the same handler instead of a parallel one. The row exists only
+        on the kernel card, so there is no legacy branch to choose between.
+        """
+        await ack()
+        channel_id = (body.get("channel") or {}).get("id") or ""
+        message_ts = (body.get("message") or {}).get("ts") or ""
+        actor_user_id = (body.get("user") or {}).get("id")
+        action = (body.get("actions") or [{}])[0]
+        value = action.get("value") or ""
+        if not (channel_id and message_ts and value):
+            return
+        await _handle_timebox_date_confirmation(
+            runtime=runtime,
+            client=client,
+            logger=logger,
+            value=value,
+            prompt_channel_id=channel_id,
+            prompt_ts=message_ts,
+            actor_user_id=actor_user_id,
+            interaction_id=str(action.get("action_ts") or message_ts),
+        )
+
+    async def _on_timebox_artifact_action(ack, body, client, logger):
+        """Apply one typed artifact decision from a review card."""
+        await ack()
+        channel_id = (body.get("channel") or {}).get("id") or ""
+        message = body.get("message") or {}
+        thread_ts = message.get("thread_ts") or message.get("ts") or ""
+        actor_user_id = (body.get("user") or {}).get("id") or ""
+        action = (body.get("actions") or [{}])[0]
+        value = action.get("value") or ""
+        if not (channel_id and thread_ts and actor_user_id and value):
+            return
+        await _handle_timebox_artifact_action(
+            runtime=runtime,
+            client=client,
+            logger=logger,
+            value=value,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            actor_user_id=actor_user_id,
+            interaction_id=_card_interaction_id(
+                action, str(action.get("action_id") or ""), thread_ts
+            ),
+        )
+
+    app.action(FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID)(_on_timebox_artifact_action)
+    app.action(FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID)(_on_timebox_artifact_action)
+    app.action(FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID)(_on_timebox_artifact_action)
+    # An option press is the same envelope with a different decision in it, so
+    # it takes the same handler. A renderer that parsed it itself would be a
+    # second place a stale press could be judged, and the kernel is the only
+    # one that knows what question is open.
+    app.action(FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID)(_on_timebox_artifact_action)
 
     @app.action(FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID)
     async def on_timebox_commit_day_select_action(ack, body, client, logger):
@@ -3522,29 +4040,28 @@ def register_handlers(
             (action.get("selected_option") or {}) if isinstance(action, dict) else {}
         ) or {}
         selected_date = selected.get("value") or ""
-        meta_value = ""
-        for block in (body.get("message") or {}).get("blocks") or []:
-            elements = block.get("elements") or []
-            if not isinstance(elements, list):
-                continue
-            for element in elements:
-                if (
-                    isinstance(element, dict)
-                    and element.get("type") == "button"
-                    and element.get("action_id") == FF_TIMEBOX_COMMIT_START_ACTION_ID
-                ):
-                    meta_value = element.get("value") or ""
-                    break
-            if meta_value:
-                break
+        meta_value = _timebox_start_button_value(
+            (body.get("message") or {}).get("blocks")
+        )
 
-        if channel_id and message_ts and selected_date and meta_value:
+        if not (channel_id and message_ts and selected_date and meta_value):
+            return
+        if _timebox_backend() == "legacy":
             await timeboxing_commit.handle_day_select_action(
                 prompt_channel_id=channel_id,
                 prompt_ts=message_ts,
                 selected_date=selected_date,
                 existing_meta_value=meta_value,
             )
+            return
+        await _handle_timebox_date_reselect(
+            client=client,
+            logger=logger,
+            value=meta_value,
+            selected_date=selected_date,
+            prompt_channel_id=channel_id,
+            prompt_ts=message_ts,
+        )
 
     @app.action(FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID)
     async def on_timebox_confirm_submit_action(ack, body, client, logger):
@@ -3777,12 +4294,7 @@ def register_handlers(
             "channel": channel_id,
             "text": f"Initiating Weekly Review for <@{user_id}>...",
         }
-        if persona and persona.username:
-            root_payload["username"] = persona.username
-        if persona and persona.icon_emoji:
-            root_payload["icon_emoji"] = persona.icon_emoji
-        if persona and persona.icon_url:
-            root_payload["icon_url"] = persona.icon_url
+        root_payload.update(_persona_payload(persona))
         root = await client.chat_postMessage(**root_payload)
         thread_root_ts = root["ts"]
 
@@ -3810,12 +4322,7 @@ def register_handlers(
             "thread_ts": thread_root_ts,
             "text": ":hourglass_flowing_sand: *revisor_agent* is thinking...",
         }
-        if persona and persona.username:
-            processing_payload["username"] = persona.username
-        if persona and persona.icon_emoji:
-            processing_payload["icon_emoji"] = persona.icon_emoji
-        if persona and persona.icon_url:
-            processing_payload["icon_url"] = persona.icon_url
+        processing_payload.update(_persona_payload(persona))
         processing = await client.chat_postMessage(**processing_payload)
 
         try:

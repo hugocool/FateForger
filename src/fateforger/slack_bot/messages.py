@@ -5,6 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List
 
+#: What Slack will accept in one message, and what this bot therefore clips to.
+#: They live beside the payload they bound rather than in whichever module first
+#: needed them: two renderers that each carried their own copy would drift, and
+#: the failure is a message Slack rejects wholesale rather than one that reads
+#: badly.
+SLACK_MAX_TEXT_CHARS = 3900
+SLACK_MAX_BLOCK_TEXT_CHARS = 1600
+SLACK_MAX_BLOCKS = 40
+SLACK_MAX_PAYLOAD_CHARS = 28000
+
 
 @dataclass(frozen=True)
 class SlackBlockMessage:
@@ -18,4 +28,11 @@ class SlackThreadStateMessage:
     thread_state: str | None = None
 
 
-__all__ = ["SlackBlockMessage", "SlackThreadStateMessage"]
+__all__ = [
+    "SLACK_MAX_BLOCKS",
+    "SLACK_MAX_BLOCK_TEXT_CHARS",
+    "SLACK_MAX_PAYLOAD_CHARS",
+    "SLACK_MAX_TEXT_CHARS",
+    "SlackBlockMessage",
+    "SlackThreadStateMessage",
+]

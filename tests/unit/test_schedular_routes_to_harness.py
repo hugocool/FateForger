@@ -340,15 +340,16 @@ def test_the_handoff_interception_uses_the_redirected_thread():
     """The session must be keyed to the timeboxing thread, not the origin.
 
     The redirect anchors the durable workspace in the timeboxing channel, and
-    memory is scoped by that key — keying off the origin channel would file the
-    conversation under a thread nobody continues in.
+    the planning session is now stored under that key — keying off the origin
+    channel would file the session under a thread nobody continues in, and a
+    misfiled session rehydrates as an empty one.
     """
     import inspect
 
     source = inspect.getsource(handlers.route_slack_event)
-    start = source.rindex("_harness_turn(")
+    start = source.rindex("_run_adaptive_timebox_turn(")
     window = source[start : start + 400]
-    assert "redirect.target_key" in window, window[:300]
+    assert "session_key=redirect.target_key" in window, window[:300]
 
 
 def test_approval_card_stays_in_the_plan_thread_for_top_level_requests():

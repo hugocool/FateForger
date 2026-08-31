@@ -1,8 +1,10 @@
 import asyncio
 import logging
 import os
+import sqlite3
 import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
 
@@ -16,6 +18,7 @@ from autogen_core import (
     default_subscription,
     message_handler,
 )
+from autogen_core.models import ChatCompletionClient
 from autogen_core.tool_agent import ToolAgent
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -26,6 +29,10 @@ from fateforger.agents.revisor.agent import RevisorAgent
 from fateforger.agents.schedular.agent import PlannerAgent
 from fateforger.agents.tasks import TasksAgent
 from fateforger.agents.timeboxing.agent import TimeboxingFlowAgent
+from fateforger.agents.timeboxing.durable_constraint_store import (
+    build_durable_constraint_store,
+)
+from fateforger.agents.timeboxing.kg_constraint_client import KGConstraintMemoryClient
 from fateforger.core.config import settings
 from fateforger.haunt.agents import HauntingAgent, UserChannelAgent
 from fateforger.haunt.delivery import deliver_user_facing
@@ -56,6 +63,18 @@ from fateforger.haunt.settings_store import (
     ensure_admonishment_settings_schema,
 )
 from fateforger.haunt.tools import build_haunting_tools
+from fateforger.llm import build_autogen_chat_client
+from fateforger.slack_bot.deepseek_timebox_planner import (
+    ConstraintReader,
+    DeepSeekTimeboxPlanner,
+    HarnessBridgeRunner,
+    UnavailableConstraintReader,
+)
+from fateforger.slack_bot.timeboxing_intents import TimeboxingIntentInterpreter
+from fateforger.slack_bot.tmbx_client import TmbxClient
+from fateforger.slack_bot.timeboxing_session_store import (
+    SqlAlchemyTimeboxingSessionRepository,
+)
 
 USER_CHANNEL_AGENT_TYPE = "user_channel"
 HAUNTING_AGENT_TYPE = "haunting_agent"
@@ -235,7 +254,7 @@ async def _probe_runtime_mcp_server(
             tool_count=0,
             error=f"timed out after {server.timeout_s:.1f}s during tool discovery",
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional dependency stays typed
         message = str(exc).strip() or repr(exc)
         if isinstance(exc, ExceptionGroup):
             sub_messages = [str(e) for e in exc.exceptions]
@@ -370,9 +389,187 @@ def _create_scheduler(database_url: str | None) -> AsyncIOScheduler:
     return scheduler
 
 
+def _build_timeboxing_intent_interpreter() -> tuple[
+    TimeboxingIntentInterpreter, ChatCompletionClient
+]:
+    """Build the runtime-owned schema interpreter and its shared client."""
+    model_client = build_autogen_chat_client(
+        "timeboxing_agent", temperature=0
+    )
+    return TimeboxingIntentInterpreter(model_client), model_client
+
+
+_CONSTRAINT_STORE_PROBE_TIMEOUT_SECONDS = 5.0
+
+
+# The two tables that make a file the memory corpus rather than merely a
+# readable database. These are identifiers the memory package minted, not user
+# content. If either is ever renamed there the probe fails closed, which is the
+# safe direction: a store we cannot recognise is reported unavailable.
+_CONSTRAINT_STORE_CORPUS_TABLES = frozenset({"observations", "constraints"})
+
+
+def _probe_constraint_store_readable(configured: str) -> None:
+    """Open the configured store read-only and confirm it is the memory corpus.
+
+    Raises on a missing path, a directory, an unreadable file, a file that is not
+    a SQLite database, a database that is not the memory corpus, and one stamped
+    newer than this build understands.
+
+    Recognising the corpus is the load-bearing part. The migration ladder reads
+    ``user_version = 0`` as "fresh store" and writes its whole schema in, so a
+    merely-readable database — an empty file, or another of this project's own
+    SQLite files sitting in the same directory — would be migrated into and then
+    answer every planning query with an authoritative empty list. Checking the
+    tables is what separates a legacy store the ladder may upgrade from a
+    foreign one it must not touch.
+
+    The probe issues no writes: it connects with ``mode=ro`` and only reads
+    pragmas and ``sqlite_master``, so a file it rejects is left byte-identical.
+    That claim is exact for the ``delete`` journal mode the memory store uses.
+    A WAL database is the exception — SQLite updates a ``-shm`` sidecar merely
+    to read one, and a cleanly-closed WAL database with no sidecars cannot be
+    opened read-only at all, so it would be classified unavailable.
+    """
+
+    from memory.migrations import SCHEMA_VERSION
+
+    path = Path(configured)
+    if not path.is_file():
+        raise OSError("configured constraint store is not a readable file")
+    connection = sqlite3.connect(
+        f"file:{path.as_posix()}?mode=ro",
+        uri=True,
+        timeout=_CONSTRAINT_STORE_PROBE_TIMEOUT_SECONDS,
+    )
+    try:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version > SCHEMA_VERSION:
+            raise ValueError(
+                "configured constraint store is stamped newer than this build"
+            )
+        present = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    finally:
+        connection.close()
+    if not _CONSTRAINT_STORE_CORPUS_TABLES <= present:
+        raise ValueError("configured constraint store is not the memory corpus")
+
+
+async def _build_timeboxing_constraint_store() -> ConstraintReader:
+    """Build the runtime-owned, read-only durable planning context adapter.
+
+    An existing but unusable path is classified here rather than surfacing as an
+    authoritative empty context at planning time.
+    """
+
+    configured = str(getattr(settings, "memory_db_path", "") or "").strip()
+    if not configured:
+        logger.warning("timeboxing constraint store unavailable reason=not_configured")
+        return UnavailableConstraintReader()
+    try:
+        # wait_for bounds startup, not the thread: to_thread cannot be
+        # cancelled, so a probe stalled on a pathological filesystem keeps one
+        # worker thread until it returns. Startup proceeds without it, which is
+        # the property that matters here.
+        await asyncio.wait_for(
+            asyncio.to_thread(_probe_constraint_store_readable, configured),
+            timeout=_CONSTRAINT_STORE_PROBE_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning(
+            "timeboxing constraint store unavailable reason=unusable error_type=%s",
+            type(exc).__name__,
+        )
+        return UnavailableConstraintReader()
+    try:
+        client = KGConstraintMemoryClient(configured)
+        store = build_durable_constraint_store(client)
+    except Exception as exc:
+        logger.warning(
+            "timeboxing constraint store unavailable error_type=%s",
+            type(exc).__name__,
+        )
+        return UnavailableConstraintReader()
+    if store is None:
+        return UnavailableConstraintReader()
+    return store
+
+
+def _build_timeboxing_planner(
+    constraint_store: ConstraintReader,
+) -> tuple[DeepSeekTimeboxPlanner | None, str]:
+    """Assemble the planner, or admit the host has not selected a calendar.
+
+    Returning ``None`` keeps the adaptive route loud and inert. The alternative
+    is a planner holding an invented calendar id, which reads somebody else's
+    day and produces a plan that looks entirely reasonable for the wrong person.
+    """
+
+    calendar_id = str(getattr(settings, "timebox_calendar_id", "") or "").strip()
+    if not calendar_id:
+        logger.warning(
+            "timeboxing planner unwired reason=no_calendar_selected; "
+            "set TIMEBOX_CALENDAR_ID to the calendar the planner should read"
+        )
+        return None, ""
+    planner = DeepSeekTimeboxPlanner(
+        tmbx_client=TmbxClient(),
+        constraint_reader=constraint_store,
+        calendar_id=calendar_id,
+        clock=lambda: datetime.now(UTC),
+        harness_runner=HarnessBridgeRunner(),
+    )
+    logger.info("timeboxing planner wired calendar_selected=true")
+    return planner, calendar_id
+
+
+#: The checkout the profile falls back to when FF_FATEFORGER_ROOT is unset.
+#: Restated from `infra/dsh/profile/cordis.patch.yml`, which cannot be imported
+#: from Python -- and a drift between the two is exactly what this detects.
+_DEFAULT_HARNESS_ROOT = "/Users/hugoevers/VScode-projects/admonish-1"
+
+
+def harness_root_mismatch() -> str | None:
+    """Say so when the stdio MCP servers will run different code than this bot.
+
+    They are spawned by the harness with `cwd` and `PYTHONPATH` derived from
+    FF_FATEFORGER_ROOT, defaulting to the main checkout. A bot started from a
+    worktree without that variable therefore serves worktree code from its own
+    process and main-checkout code from every stdio MCP server it spawns.
+
+    That happened: two fixes to `planning_result_mcp.py` were committed, the
+    bot was restarted four times, and neither ever ran. The unit tests passed
+    against the worktree while the live server imported main's copy, so every
+    signal available said the change was in.
+
+    Returns the complaint, or None when the two agree.
+    """
+
+    package_root = Path(__file__).resolve().parents[3]
+    configured = (os.environ.get("FF_FATEFORGER_ROOT") or "").strip()
+    harness_root = Path(configured or _DEFAULT_HARNESS_ROOT).resolve()
+    if harness_root == package_root:
+        return None
+    how = "FF_FATEFORGER_ROOT" if configured else "its unset default"
+    return (
+        f"stdio MCP servers will import {harness_root} ({how}) while this "
+        f"process runs {package_root}; changes under src/fateforger that those "
+        f"servers own will not take effect. Set FF_FATEFORGER_ROOT to "
+        f"{package_root}."
+    )
+
+
 async def _create_runtime() -> SingleThreadedAgentRuntime:
     """Create and start the runtime instance."""
     git_identity = _resolve_runtime_git_identity()
+    mismatch = harness_root_mismatch()
+    if mismatch:
+        logger.error("harness root mismatch: %s", mismatch)
     logger.info(
         "Runtime git identity branch=%s commit=%s tag=%s dirty=%s",
         git_identity.branch,
@@ -396,6 +593,11 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     planning_session_store = SqlAlchemyPlanningSessionStore(sessionmaker)
     await ensure_event_draft_schema(settings_engine)
     event_draft_store = SqlAlchemyEventDraftStore(sessionmaker)
+    timeboxing_session_store = SqlAlchemyTimeboxingSessionRepository(sessionmaker)
+    timeboxing_constraint_store = await _build_timeboxing_constraint_store()
+    timeboxing_planner, timeboxing_calendar_id = _build_timeboxing_planner(
+        timeboxing_constraint_store
+    )
 
     haunting_service = HauntingService(scheduler, settings_store=settings_store)
     intervention = HauntingInterventionHandler(
@@ -532,6 +734,9 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
             haunt=haunt,
         ),
     )
+    timeboxing_intent_interpreter, timeboxing_intent_model_client = (
+        _build_timeboxing_intent_interpreter()
+    )
     runtime.start()
     setattr(runtime, "haunt_orchestrator", haunt)
     setattr(runtime, "haunting_service", haunting_service)
@@ -541,6 +746,20 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     setattr(runtime, "planning_anchor_store", planning_anchor_store)
     setattr(runtime, "planning_session_store", planning_session_store)
     setattr(runtime, "event_draft_store", event_draft_store)
+    setattr(runtime, "timeboxing_session_store", timeboxing_session_store)
+    setattr(runtime, "timeboxing_constraint_store", timeboxing_constraint_store)
+    setattr(runtime, "timeboxing_planner", timeboxing_planner)
+    setattr(runtime, "timeboxing_calendar_id", timeboxing_calendar_id)
+    setattr(
+        runtime,
+        "timeboxing_intent_interpreter",
+        timeboxing_intent_interpreter,
+    )
+    setattr(
+        runtime,
+        "timeboxing_intent_model_client",
+        timeboxing_intent_model_client,
+    )
     planning_guardian = PlanningGuardian(
         scheduler,
         anchor_store=planning_anchor_store,
@@ -590,6 +809,12 @@ async def shutdown_runtime() -> None:
 
     await runtime.stop()
     await runtime.close()
+
+    timeboxing_intent_model_client = getattr(
+        runtime, "timeboxing_intent_model_client", None
+    )
+    if timeboxing_intent_model_client is not None:
+        await timeboxing_intent_model_client.close()
 
     scheduler = getattr(getattr(runtime, "haunting_service", None), "_scheduler", None)
     scheduler.shutdown(wait=False)

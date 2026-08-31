@@ -134,13 +134,17 @@
     # files that must be edited together and silently disagree when they are
     # not, which is the defect that cost a day on the memory launcher (#188).
     model: !!js process.env.FF_HARNESS_MODEL || 'openai/gpt-oss-120b:nitro'
-    # Slack timeboxing turns set FF_HARNESS_MODEL and are deliberately pinned
-    # to low reasoning. The incident ran for minutes at higher trace volume;
-    # bounded tool/result progress is the user surface, not extra deliberation.
-    reasoningEffort: !!js >-
-      process.env.FF_HARNESS_MODEL
-      ? (process.env.FF_HARNESS_REASONING || 'low')
-      : undefined
+    # Always set, never conditional on the model variable. Gated, a plain /dsh
+    # turn -- which passes no model -- got the provider default while this
+    # comment claimed otherwise, so the knob read as configured and resolved to
+    # nothing on exactly the path nobody was watching.
+    #
+    # `minimal` rather than `low`: measured 2026-08-30 at low, one skeleton took
+    # 221.8s of a 231s stage against 0.05s of host I/O. A planning turn does
+    # choose placements, so not `off`. An effort the adapter does not advertise
+    # fails with UNSUPPORTED_REASONING_EFFORT before any provider call, which is
+    # the right way to find out.
+    reasoningEffort: !!js process.env.FF_HARNESS_REASONING || 'minimal'
 
 # 2. The system prompt, in two pieces.
 #
@@ -162,6 +166,16 @@
 #    detail it would otherwise have to restate (argument shapes, day_type
 #    vocabulary) arrives on its own: tool *descriptions* are bridged even
 #    though resources are not.
+#
+#    Both halves load from FF_FATEFORGER_ROOT. memory-policy.md used to be read
+#    from ~/.dsh/profiles/tmbx/ while deployment.md was read from the repo, so
+#    half the persona was versioned and half was a deployed copy. "There is
+#    nothing for it to drift from" was true of the file's contents and false of
+#    its deployment: #206 rewrote the stage section, the repo copy changed, the
+#    deployed copy did not, and the model would have been handed a new
+#    deployment.md against an old memory-policy.md that still told it to derive
+#    the day type itself. The contract test reads the repo copies, so it was
+#    green in exactly that state. One root, and the drift has nowhere to live.
 - id: system-prompt
   config:
     persona: !!js >-
@@ -175,7 +189,9 @@
       (process.env.FF_FATEFORGER_ROOT ||
       '/Users/hugoevers/VScode-projects/admonish-1') + '/src' }) })
       + process.getBuiltinModule('node:fs').readFileSync(
-      '/Users/hugoevers/.dsh/profiles/tmbx/memory-policy.md', 'utf8')
+      (process.env.FF_FATEFORGER_ROOT ||
+      '/Users/hugoevers/VScode-projects/admonish-1') +
+      '/infra/dsh/profile/memory-policy.md', 'utf8')
       + process.getBuiltinModule('node:fs').readFileSync(
       (process.env.FF_FATEFORGER_ROOT ||
       '/Users/hugoevers/VScode-projects/admonish-1') +
@@ -192,7 +208,12 @@
         # Started once, outside the harness, so a turn connects instead of
         # spawning Python and paying its import cost again. Calendar backend
         # and timezone are set on THAT process, not here.
-        url: http://127.0.0.1:8011/mcp
+        # One place decides which tmbx a turn talks to. TmbxClient already reads
+        # TMBX_MCP_URL with this same default, and the two disagreeing is how a
+        # host and its planner end up patching different servers -- a fixed
+        # server also means a change to tmbx cannot be exercised without
+        # stopping the one process everything shares.
+        url: !!js process.env.TMBX_MCP_URL || 'http://127.0.0.1:8011/mcp'
         toolCallTimeoutMs: 120000
         failOnStartupError: true
 
@@ -263,6 +284,44 @@
           PYTHONPATH: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/src'
           FF_DSH_PROGRESS_FILE: !!js process.env.FF_DSH_PROGRESS_FILE
           FF_DSH_SESSION_KEY: !!js process.env.FF_DSH_SESSION_KEY
+        toolCallTimeoutMs: 5000
+        failOnStartupError: true
+
+    # 3c. The typed planning result — the one thing a timeboxing turn owes.
+    #
+    #     Its own server and not a second tool on the progress one, because the
+    #     two have opposite failure rules and a shared mount would settle that
+    #     argument by accident. A dropped progress line costs a status update,
+    #     so that server swallows its failures. A dropped planning result costs
+    #     the turn: the host reads this file after the child exits, and a
+    #     planner that described a plan in prose and submitted nothing has
+    #     produced nothing reviewable. `harness_bridge` raises rather than
+    #     returning the prose.
+    #
+    #     Two variables and no more. PYTHONPATH because this repo is not
+    #     installed as a package, and FF_DSH_PLANNING_RESULT_FILE because it is
+    #     the whole interface: the bridge mints one empty file per turn, and
+    #     the server treats it as that turn's memory of whether it has already
+    #     submitted. Nothing else about the session belongs in this child.
+    #
+    #     5s, matching the progress mount: one validation and one rename to a
+    #     local file. A slower answer than that is a stuck child, not a busy
+    #     one. failOnStartupError, because a turn that cannot record its result
+    #     should fail at boot rather than at the end, when the work is done and
+    #     there is nowhere to put it.
+    - id: mcp-planning-result
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: planning_result
+        transport: stdio
+        command: /Users/hugoevers/VScode-projects/admonish-1/.venv/bin/python
+        args:
+          - -m
+          - fateforger.slack_bot.planning_result_mcp
+        cwd: !!js process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1'
+        env:
+          PYTHONPATH: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/src'
+          FF_DSH_PLANNING_RESULT_FILE: !!js process.env.FF_DSH_PLANNING_RESULT_FILE
         toolCallTimeoutMs: 5000
         failOnStartupError: true
 
@@ -408,3 +467,54 @@
     includeDefaultRoots: false
     customSkillDirs:
       - !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/.dsh/skills'
+
+# 6. Tools a planning turn must not have.
+#
+#    The persona says "do not shell out, do not read or write files" and then
+#    the harness spends 9,480 tokens per call describing bash, write, edit,
+#    workflow, ralph, web_search, todo_write, job_* and create_goal so the
+#    model can be told not to call them. Measured over 692 calls: that is 35%
+#    of the fixed 27,398-token preamble, on every call, both stages.
+#
+#    Withholding beats forbidding, and it is cheaper twice: the schemas go, and
+#    so does the instruction. This profile already makes the argument above the
+#    patch subagent -- "filtered tools disappear from the child's prompt AND
+#    reject execution, so calling the wrong one is not instructed against, it
+#    is impossible" -- and notes that per-stage tool sets were a property of
+#    the original stage machine, "lost in the migration rather than discarded".
+#
+#    `toolFilter` is a subagent capability and cannot reach the main loop, so
+#    this disables the providing plugins instead. Same effect, same file's
+#    precedent: `skill-filesystem` is already restricted here, and dsh-headless
+#    already disables `hmr` this way.
+#
+#    Conditional, because this profile also serves ordinary /dsh turns, which
+#    supply no planning brief and may legitimately want a shell. Only a turn
+#    carrying a brief is stripped. `harness_bridge` sets FF_PLANNING_TURN.
+#
+#    `tool-subagent` is deliberately NOT disabled: `timebox_patch` is an
+#    instance of it, and it is how a candidate turn patches at all.
+- id: tool-bash
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-pwsh
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-fs
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-fs-search
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-str-replace-editor
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-workflow
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-ralph
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-todo
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-goal
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-jobs
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: tool-web
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
+- id: web-search-deepseek
+  disabled: !!js Boolean(process.env.FF_PLANNING_TURN)
