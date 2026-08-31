@@ -44,6 +44,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningResult,
 )
 
+from .planning_result_mcp import OPEN_REQUIREMENTS_FILE_ENV
 from .dsh_progress_hook import COMMIT_FILE_ENV, PROGRESS_FILE_ENV, ProgressEvent
 from .mrkdwn import to_mrkdwn
 from .progress_events import (
@@ -286,6 +287,38 @@ def compose_task(
         # and a calendar id already.
         parts.append(f"Hugo now says:\n{text}")
     return "\n\n".join(parts)
+
+
+def _planner_owned_open(brief: PlanningBrief) -> list[str]:
+    """The requirement ids this turn's planner may settle by assumption.
+
+    Read off `brief.readiness`, which the kernel builds from the same readiness
+    report it will later validate against. Deriving it here a second way is how
+    the two would drift into disagreeing, and a planner refused for naming an id
+    the host had just told it was open is worse than no check at all.
+
+    An empty list is returned when the shape is not what is expected, and the
+    server treats empty as "nothing published" and skips the check -- the
+    kernel still validates after the turn, so the failure mode is a missed
+    early correction rather than a wrongly refused one.
+    """
+
+    readiness = brief.readiness
+    if not isinstance(readiness, dict):
+        return []
+    gaps = readiness.get("gaps")
+    if not isinstance(gaps, list):
+        return []
+    return sorted(
+        {
+            str(gap.get("requirement_id"))
+            for gap in gaps
+            if isinstance(gap, dict)
+            and gap.get("owner") == "planner"
+            and not gap.get("satisfied")
+            and gap.get("requirement_id")
+        }
+    )
 
 
 def _planning_obligation(brief: PlanningBrief) -> str:
@@ -650,6 +683,16 @@ def ask(
             planning_result_file = Path(workspace) / "planning-result.json"
             planning_result_file.touch()
             child_env[PLANNING_RESULT_FILE_ENV] = str(planning_result_file)
+            # Publish the requirements this turn may settle, so the submit tool
+            # can refuse an assumption naming another stage's id while the
+            # planner still has steps left to correct it. Taken from the brief's
+            # own readiness report rather than recomputed, so the server and the
+            # kernel cannot disagree about what was open.
+            open_requirements = Path(workspace) / "open-requirements.json"
+            open_requirements.write_text(
+                json.dumps(_planner_owned_open(planning_brief)), encoding="utf-8"
+            )
+            child_env[OPEN_REQUIREMENTS_FILE_ENV] = str(open_requirements)
         stop = threading.Event()
         tail: threading.Thread | None = None
         collected: list[int] = []
