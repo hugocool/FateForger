@@ -2900,13 +2900,13 @@ async def route_slack_event(
             (not is_dm) or handoff_target == "timeboxing_agent"
         )
         if should_redirect:
-            if handoff_target == "timeboxing_agent":
-                await _begin_timeboxing_session_surface(
-                    target_channel=target_channel,
-                    origin_key=origin_key,
-                )
-                return
             try:
+                if handoff_target == "timeboxing_agent":
+                    await _begin_timeboxing_session_surface(
+                        target_channel=target_channel,
+                        origin_key=origin_key,
+                    )
+                    return
                 persona = _persona_for_agent(handoff_target)
                 root_payload = {
                     "channel": target_channel,
