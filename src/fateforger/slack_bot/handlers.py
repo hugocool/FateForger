@@ -1884,6 +1884,12 @@ async def _handle_timebox_date_reselect(
     # relabel would land on the card it just redrew and strip its controls
     # (2026-08-31 22:57 incident). New sessions always have a separate root.
     # Delete this guard only when no pre-convergence card can still be clicked.
+    # The bare-text root relabels in the Confirm/date-confirmation path just
+    # above (~line 1738) and in timeboxing_commit.py (~457, ~533) skip this
+    # guard on purpose, not by omission: on those paths the card has already
+    # been replaced by a loading placeholder before the relabel runs, so the
+    # root and the card are never the same message and there is nothing left
+    # for a bare-text write to strip.
     root_is_this_card = reselected.thread_ts == prompt_ts
     if reselected.thread_ts and reselected.thread_ts != "dm" and not root_is_this_card:
         try:
@@ -2468,40 +2474,42 @@ async def route_slack_event(
             root = await client.chat_postMessage(**root_payload)
             root_ts = root["ts"]
 
-        focus.set_thread_label(
-            f"{target_channel}:{root_ts}",
-            title="Timeboxing session",
-            request_excerpt=None,
-            state="pending",
-            by_user=user,
-        )
-        redirect = focus.set_redirect(
-            origin_key,
-            target_channel=target_channel,
-            target_thread_ts=root_ts,
-            agent_type="timeboxing_agent",
-            by_user=user,
-            note="session-surface",
-        )
-        focus.set_focus(
-            redirect.target_key,
-            "timeboxing_agent",
-            by_user=user,
-            note="session-surface",
-        )
-        focus.set_focus(
-            origin_key, "timeboxing_agent", by_user=user, note="session-surface"
-        )
-        focus.set_user_focus(user, "timeboxing_agent")
-
-        if not is_dm and channel != target_channel:
-            await _origin_link_to_thread(
-                channel_id=target_channel,
-                thread_ts=root_ts,
-                agent_label=(persona.username if persona else "timeboxing_agent"),
-            )
-
         try:
+            focus.set_thread_label(
+                f"{target_channel}:{root_ts}",
+                title="Timeboxing session",
+                request_excerpt=None,
+                state="pending",
+                by_user=user,
+            )
+            redirect = focus.set_redirect(
+                origin_key,
+                target_channel=target_channel,
+                target_thread_ts=root_ts,
+                agent_type="timeboxing_agent",
+                by_user=user,
+                note="session-surface",
+            )
+            focus.set_focus(
+                redirect.target_key,
+                "timeboxing_agent",
+                by_user=user,
+                note="session-surface",
+            )
+            focus.set_focus(
+                origin_key, "timeboxing_agent", by_user=user, note="session-surface"
+            )
+            focus.set_user_focus(user, "timeboxing_agent")
+
+            if not is_dm and channel != target_channel:
+                await _origin_link_to_thread(
+                    channel_id=target_channel,
+                    thread_ts=root_ts,
+                    agent_label=(
+                        persona.username if persona else "timeboxing_agent"
+                    ),
+                )
+
             processing_payload = {
                 "channel": target_channel,
                 "thread_ts": root_ts,
@@ -2603,14 +2611,16 @@ async def route_slack_event(
                 except Exception:
                     pass
 
-            if not is_dm and channel != target_channel and payload.get("blocks"):
+            if channel != target_channel and payload.get("blocks"):
                 try:
                     permalink = await _permalink(target_channel, root_ts)
                 except Exception:
                     permalink = None
                 try:
-                    dm = await client.conversations_open(users=[user])
-                    dm_channel = (dm.get("channel") or {}).get("id") or ""
+                    dm_channel = channel if is_dm else ""
+                    if not dm_channel:
+                        dm = await client.conversations_open(users=[user])
+                        dm_channel = (dm.get("channel") or {}).get("id") or ""
                     if dm_channel:
                         dm_blocks = list(payload["blocks"])
                         if permalink:
@@ -2622,13 +2632,21 @@ async def route_slack_event(
                                     action_id="ff_open_thread",
                                 )
                             )
-                        dm_payload = {
-                            "channel": dm_channel,
-                            "text": update["text"],
-                            "blocks": dm_blocks,
-                        }
-                        dm_payload.update(_persona_payload(persona))
-                        await client.chat_postMessage(**dm_payload)
+                        if is_dm:
+                            # DM origin: the DM's own "thinking..." message
+                            # becomes the card, so the DM stays the control
+                            # surface instead of sitting on a spinner forever.
+                            await _origin_update(
+                                text=update["text"], blocks=dm_blocks
+                            )
+                        else:
+                            dm_payload = {
+                                "channel": dm_channel,
+                                "text": update["text"],
+                                "blocks": dm_blocks,
+                            }
+                            dm_payload.update(_persona_payload(persona))
+                            await client.chat_postMessage(**dm_payload)
                 except Exception:
                     logger.debug(
                         "Failed to DM timeboxing commit prompt", exc_info=True

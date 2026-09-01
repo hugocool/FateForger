@@ -86,6 +86,16 @@ sessions (the `"dm"` sentinel path), the legacy backend
   DM only when `origin_channel != session_channel` — its purpose is reaching a
   user who started elsewhere. A `/timebox` typed inside the session channel
   sends no DM.
+- **Cross-channel `/timebox` relocates too.** The direct route now computes
+  `session_channel = _channel_for_agent("timeboxing_agent") or channel`, so a
+  `/timebox` typed outside the configured timeboxing channel anchors the
+  session there — matching the handoff door — instead of building the root
+  and card in the origin channel as it did before this convergence. When
+  `session_channel == channel` (a `/timebox` already typed in the timeboxing
+  channel) the slash command's own origin "thinking…" ack becomes the root
+  itself, same as before. When it differs, a fresh root is posted in
+  `session_channel` and the user gets a DM copy of the card with a deep link
+  back to it, the same divergence a handoff produces.
 
 ### 4. Error handling
 

@@ -321,18 +321,83 @@ def test_both_entry_points_reach_the_harness():
     receptionist_agent and the interception never saw it. Caught by driving a
     real Slack turn, not by the suite: the reply came back from AutoGen while
     every unit test said the reroute worked.
+
+    This used to count source lines mentioning ``_timebox_backend()`` and
+    ``!=``, on the theory that two matching guards meant two covered routes.
+    After the session-surface refactor the handoff branch carries zero such
+    guards -- it now reaches the harness unconditionally through
+    ``_begin_timeboxing_session_surface`` -- so the count was satisfied by
+    unrelated call sites and stayed green while the handoff branch itself
+    could regress to nothing at all. Mutating
+    ``if handoff_target == "timeboxing_agent":`` to ``if False:`` (a total
+    regression of the handoff to AutoGen) left the old assertion passing.
+    This checks the actual invariant with the AST instead: the handoff
+    branch's guard still reaches ``_begin_timeboxing_session_surface``, and
+    the direct in-thread route still reaches ``_run_adaptive_timebox_turn``.
     """
+    import ast
     import inspect
 
     source = inspect.getsource(handlers.route_slack_event)
-    guards = [
-        line.strip()
-        for line in source.splitlines()
-        if "_timebox_backend()" in line and "!=" in line
+    tree = ast.parse(source)
+    route_def = tree.body[0]
+    assert isinstance(route_def, ast.AsyncFunctionDef)
+    assert route_def.name == "route_slack_event"
+
+    def _is_timeboxing_handoff_guard(test: ast.expr) -> bool:
+        return (
+            isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id == "handoff_target"
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.Eq)
+            and len(test.comparators) == 1
+            and isinstance(test.comparators[0], ast.Constant)
+            and test.comparators[0].value == "timeboxing_agent"
+        )
+
+    def _calls_named(node: ast.AST, name: str) -> list[ast.Call]:
+        return [
+            call
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == name
+        ]
+
+    handoff_guards = [
+        node
+        for node in ast.walk(route_def)
+        if isinstance(node, ast.If) and _is_timeboxing_handoff_guard(node.test)
     ]
-    assert len(guards) >= 2, (
-        "only one path routes to the harness; the receptionist handoff still "
-        f"reaches AutoGen. found: {guards}"
+    assert handoff_guards, (
+        'no `if handoff_target == "timeboxing_agent":` branch found -- the '
+        "handoff route to the harness is gone"
+    )
+    assert any(
+        _calls_named(guard, "_begin_timeboxing_session_surface")
+        for guard in handoff_guards
+    ), (
+        "the handoff branch no longer calls _begin_timeboxing_session_surface; "
+        "the receptionist handoff would fall through to AutoGen again"
+    )
+
+    surface_def = next(
+        node
+        for node in ast.walk(route_def)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_begin_timeboxing_session_surface"
+    )
+    surface_span = range(
+        surface_def.lineno, (surface_def.end_lineno or surface_def.lineno) + 1
+    )
+    direct_calls = [
+        call
+        for call in _calls_named(route_def, "_run_adaptive_timebox_turn")
+        if call.lineno not in surface_span
+    ]
+    assert direct_calls, (
+        "the direct in-thread route no longer calls _run_adaptive_timebox_turn"
     )
 
 

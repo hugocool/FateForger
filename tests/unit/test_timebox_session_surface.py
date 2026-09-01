@@ -267,6 +267,51 @@ async def test_a_cross_channel_handoff_builds_the_same_surface_and_still_dms(
     assert stub_turn and stub_turn[0]["session_key"] == f"C-timebox:{root['ts']}"
 
 
+async def test_a_dm_origin_handoff_still_delivers_the_card_to_the_dm(
+    focus, stub_turn, monkeypatch
+):
+    """A handoff that starts in a DM must not leave the DM on a spinner.
+
+    `should_redirect` deliberately admits `is_dm and handoff_target ==
+    "timeboxing_agent"` because the DM is meant to stay the control surface
+    (buttons/modals) while the channel thread becomes the durable workspace.
+    The DM's own "thinking..." message is the delivery target -- there is no
+    second DM to post into, so the card must land as an edit of that message.
+    """
+    monkeypatch.setattr(handlers, "_channel_for_agent", lambda _agent: "C-timebox")
+    client = _CrossChannelClient()
+
+    await route_slack_event(
+        runtime=_HandoffRuntime(),
+        focus=focus,
+        default_agent="receptionist_agent",
+        event={
+            "channel": "D1",
+            "channel_type": "im",
+            "user": "U1",
+            "text": "timebox tomorrow",
+            "ts": "444",
+        },
+        bot_user_id=None,
+        say=_noop_say,
+        client=client,
+    )
+
+    dm_origin_ts = client.posted[0]["ts"]
+    dm_writes = _writes_to(client, dm_origin_ts)
+    assert dm_writes, "the DM's own thinking message must have been written to"
+    assert any(
+        FF_TIMEBOX_COMMIT_START_ACTION_ID in _action_ids(w.get("blocks"))
+        for w in dm_writes
+    ), "the card never reached the DM origin message"
+
+    in_session_channel = [p for p in client.posted if p["channel"] == "C-timebox"]
+    assert len(in_session_channel) == 2, "root and threaded card in the session channel"
+
+    # No separate DM post: the DM's own ack is the delivery, not a new message.
+    assert not [p for p in client.posted if p["channel"] == "D1"][1:]
+
+
 class _CardPostFailsClient(_FakeClient):
     """The root exists; the threaded working message never arrives."""
 
