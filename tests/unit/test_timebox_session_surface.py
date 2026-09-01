@@ -187,3 +187,81 @@ async def test_a_fresh_slash_start_builds_root_plus_threaded_card(
     assert stub_turn, "the kernel turn ran"
     assert stub_turn[0]["session_key"] == f"C1:{root['ts']}"
     assert stub_turn[0]["card_thread_ts"] == root["ts"]
+
+
+class _FakeHandoffTarget:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeHandoffMessage:
+    def __init__(self, target_name: str) -> None:
+        self.target = _FakeHandoffTarget(target_name)
+
+
+class _HandoffRuntime:
+    """First turn: receptionist answers with a handoff. No second turn --
+    the adaptive stub owns the session turn."""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    async def send_message(self, message, recipient):
+        self.calls.append((message, recipient))
+
+        class _R:
+            chat_message = _FakeHandoffMessage("timeboxing_agent")
+
+        return _R()
+
+
+class _CrossChannelClient(_FakeClient):
+    async def conversations_open(self, **payload):
+        return {"channel": {"id": "D1"}}
+
+    async def chat_getPermalink(self, **payload):
+        return {"permalink": "https://slack.example/p/1"}
+
+
+async def test_a_cross_channel_handoff_builds_the_same_surface_and_still_dms(
+    focus, stub_turn, monkeypatch
+):
+    """User speaks in C-general, receptionist hands off, the session anchors
+    in the dedicated channel: root + threaded card there, and a DM copy."""
+    monkeypatch.setattr(handlers, "_channel_for_agent", lambda _agent: "C-timebox")
+    client = _CrossChannelClient()
+
+    await route_slack_event(
+        runtime=_HandoffRuntime(),
+        focus=focus,
+        default_agent="receptionist_agent",
+        event={
+            "channel": "C-general",
+            "user": "U1",
+            "text": "timebox tomorrow",
+            "ts": "333",
+            "channel_type": "channel",
+        },
+        bot_user_id=None,
+        say=_noop_say,
+        client=client,
+    )
+
+    in_session_channel = [
+        p for p in client.posted if p["channel"] == "C-timebox"
+    ]
+    assert len(in_session_channel) == 2, "root and threaded card in the session channel"
+    root, card = in_session_channel
+    assert card.get("thread_ts") == root["ts"]
+    final_card = _writes_to(client, card["ts"])[-1]
+    assert FF_TIMEBOX_COMMIT_START_ACTION_ID in _action_ids(final_card.get("blocks"))
+    for state in _writes_to(client, root["ts"]):
+        assert FF_TIMEBOX_COMMIT_START_ACTION_ID not in _action_ids(
+            state.get("blocks")
+        )
+
+    dm_posts = [p for p in client.posted if p["channel"] == "D1"]
+    assert len(dm_posts) == 1, "a cross-channel start still DMs the card"
+    assert FF_TIMEBOX_COMMIT_START_ACTION_ID in _action_ids(dm_posts[0].get("blocks"))
+
+    assert stub_turn and stub_turn[0]["session_key"] == f"C-timebox:{root['ts']}"
