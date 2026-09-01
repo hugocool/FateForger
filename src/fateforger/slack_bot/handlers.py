@@ -1878,7 +1878,14 @@ async def _handle_timebox_date_reselect(
     label = format_relative_day_label(
         planned_date=reselected.date, tz_name=reselected.tz
     )
-    if reselected.thread_ts and reselected.thread_ts != "dm":
+    # In the slash-command route the date card is posted as its own session
+    # thread root, so this relabel would land on the message redrawn just
+    # above -- a text-only update that strips the card of every control and
+    # strands the session at Stage 0 (live incident, 2026-08-31 22:57). The
+    # card already shows the selected day; only a *separate* root needs the
+    # label kept in step.
+    root_is_this_card = reselected.thread_ts == prompt_ts
+    if reselected.thread_ts and reselected.thread_ts != "dm" and not root_is_this_card:
         try:
             await client.chat_update(
                 channel=reselected.channel_id,
