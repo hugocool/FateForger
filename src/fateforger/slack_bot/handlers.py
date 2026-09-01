@@ -2501,139 +2501,169 @@ async def route_slack_event(
                 agent_label=(persona.username if persona else "timeboxing_agent"),
             )
 
-        processing_payload = {
-            "channel": target_channel,
-            "thread_ts": root_ts,
-            "text": ":hourglass_flowing_sand: *timeboxing_agent* is thinking...",
-        }
-        processing_payload.update(_persona_payload(persona))
-        processing = await client.chat_postMessage(**processing_payload)
-
         try:
-            if _timebox_backend() != "legacy":
-                result = await _run_adaptive_timebox_turn(
-                    runtime=runtime,
-                    client=client,
-                    logger=logger,
-                    session_key=redirect.target_key,
-                    actor_user_id=user,
-                    interaction_id=ts,
-                    progress_channel=processing["channel"],
-                    progress_ts=processing["ts"],
-                    card_channel=target_channel,
-                    card_thread_ts=root_ts,
-                    user_text=cleaned_text,
-                )
-            else:
-                handoff_msg = _build_agent_message(
-                    agent_type="timeboxing_agent",
-                    cleaned_text=cleaned_text,
-                    user=user,
-                    channel=target_channel,
-                    thread_ts=root_ts,
-                    ts=root_ts,
-                    force_channel=target_channel,
-                    force_thread_root=root_ts,
-                    force_reply=False,
-                )
-                result = await runtime.send_message(
-                    handoff_msg,
-                    recipient=AgentId("timeboxing_agent", key=redirect.target_key),
-                )
-        except asyncio.TimeoutError:
-            await client.chat_update(
-                channel=target_channel,
-                ts=processing["ts"],
-                text=":hourglass_flowing_sand: Timed out waiting for tools/LLM. Please try again.",
-            )
-            return
-        except Exception:
-            logger.exception(
-                "timeboxing session surface turn failed (key=%s)",
-                redirect.target_key,
-            )
-            await client.chat_update(
-                channel=target_channel,
-                ts=processing["ts"],
-                text=":warning: Something went wrong while handling that request. Check bot logs.",
-            )
-            return
+            processing_payload = {
+                "channel": target_channel,
+                "thread_ts": root_ts,
+                "text": ":hourglass_flowing_sand: *timeboxing_agent* is thinking...",
+            }
+            processing_payload.update(_persona_payload(persona))
+            processing = await client.chat_postMessage(**processing_payload)
 
-        payload = _compact_slack_payload(**_slack_payload_from_result(result))
-        update = {
-            "channel": target_channel,
-            "ts": processing["ts"],
-            "text": payload.get("text", "") or "",
-        }
-        if payload.get("blocks"):
-            update["blocks"] = payload["blocks"]
-        await client.chat_update(**update)
-
-        if payload.get("blocks"):
             try:
-                meta = decode_metadata(_timebox_start_button_value(payload["blocks"]))
-                planned_date = meta.get("date") or ""
-                tz_name = meta.get("tz") or ""
-                if planned_date and tz_name:
-                    label = format_relative_day_label(
-                        planned_date=planned_date, tz_name=tz_name
+                if _timebox_backend() != "legacy":
+                    result = await _run_adaptive_timebox_turn(
+                        runtime=runtime,
+                        client=client,
+                        logger=logger,
+                        session_key=redirect.target_key,
+                        actor_user_id=user,
+                        interaction_id=ts,
+                        progress_channel=processing["channel"],
+                        progress_ts=processing["ts"],
+                        card_channel=target_channel,
+                        card_thread_ts=root_ts,
+                        user_text=cleaned_text,
                     )
-                    title = f"Timeboxing session for {label}"
-                    focus.set_thread_label(
-                        redirect.target_key,
-                        title=title,
-                        request_excerpt=None,
-                        state="pending",
-                        by_user=user,
-                    )
-                    await client.chat_update(
+                else:
+                    handoff_msg = _build_agent_message(
+                        agent_type="timeboxing_agent",
+                        cleaned_text=cleaned_text,
+                        user=user,
                         channel=target_channel,
+                        thread_ts=root_ts,
                         ts=root_ts,
-                        text=_timeboxing_thread_root_text(
+                        force_channel=target_channel,
+                        force_thread_root=root_ts,
+                        force_reply=False,
+                    )
+                    result = await runtime.send_message(
+                        handoff_msg,
+                        recipient=AgentId(
+                            "timeboxing_agent", key=redirect.target_key
+                        ),
+                    )
+            except asyncio.TimeoutError:
+                await client.chat_update(
+                    channel=target_channel,
+                    ts=processing["ts"],
+                    text=":hourglass_flowing_sand: Timed out waiting for tools/LLM. Please try again.",
+                )
+                return
+            except Exception:
+                logger.exception(
+                    "timeboxing session surface turn failed (key=%s)",
+                    redirect.target_key,
+                )
+                await client.chat_update(
+                    channel=target_channel,
+                    ts=processing["ts"],
+                    text=":warning: Something went wrong while handling that request. Check bot logs.",
+                )
+                return
+
+            payload = _compact_slack_payload(**_slack_payload_from_result(result))
+            update = {
+                "channel": target_channel,
+                "ts": processing["ts"],
+                "text": payload.get("text", "") or "",
+            }
+            if payload.get("blocks"):
+                update["blocks"] = payload["blocks"]
+            await client.chat_update(**update)
+
+            if payload.get("blocks"):
+                try:
+                    meta = decode_metadata(
+                        _timebox_start_button_value(payload["blocks"])
+                    )
+                    planned_date = meta.get("date") or ""
+                    tz_name = meta.get("tz") or ""
+                    if planned_date and tz_name:
+                        label = format_relative_day_label(
+                            planned_date=planned_date, tz_name=tz_name
+                        )
+                        title = f"Timeboxing session for {label}"
+                        focus.set_thread_label(
+                            redirect.target_key,
                             title=title,
                             request_excerpt=None,
                             state="pending",
-                        ),
-                    )
-            except Exception:
-                pass
-
-        if not is_dm and channel != target_channel and payload.get("blocks"):
-            try:
-                permalink = await _permalink(target_channel, root_ts)
-            except Exception:
-                permalink = None
-            try:
-                dm = await client.conversations_open(users=[user])
-                dm_channel = (dm.get("channel") or {}).get("id") or ""
-                if dm_channel:
-                    dm_blocks = list(payload["blocks"])
-                    if permalink:
-                        dm_blocks.extend(
-                            open_link_blocks(
-                                text="Progress is tracked in the session thread:",
-                                url=permalink,
-                                button_text="Go to Session Thread",
-                                action_id="ff_open_thread",
-                            )
+                            by_user=user,
                         )
-                    dm_payload = {
-                        "channel": dm_channel,
-                        "text": update["text"],
-                        "blocks": dm_blocks,
-                    }
-                    dm_payload.update(_persona_payload(persona))
-                    await client.chat_postMessage(**dm_payload)
-            except Exception:
-                logger.debug("Failed to DM timeboxing commit prompt", exc_info=True)
+                        await client.chat_update(
+                            channel=target_channel,
+                            ts=root_ts,
+                            text=_timeboxing_thread_root_text(
+                                title=title,
+                                request_excerpt=None,
+                                state="pending",
+                            ),
+                        )
+                except Exception:
+                    pass
 
-        await _maybe_update_timeboxing_thread_header(
-            client=client,
-            focus=focus,
-            thread_key=redirect.target_key,
-            state=_extract_thread_state(result) or "",
-        )
-        await _update_constraints(redirect.target_key)
+            if not is_dm and channel != target_channel and payload.get("blocks"):
+                try:
+                    permalink = await _permalink(target_channel, root_ts)
+                except Exception:
+                    permalink = None
+                try:
+                    dm = await client.conversations_open(users=[user])
+                    dm_channel = (dm.get("channel") or {}).get("id") or ""
+                    if dm_channel:
+                        dm_blocks = list(payload["blocks"])
+                        if permalink:
+                            dm_blocks.extend(
+                                open_link_blocks(
+                                    text="Progress is tracked in the session thread:",
+                                    url=permalink,
+                                    button_text="Go to Session Thread",
+                                    action_id="ff_open_thread",
+                                )
+                            )
+                        dm_payload = {
+                            "channel": dm_channel,
+                            "text": update["text"],
+                            "blocks": dm_blocks,
+                        }
+                        dm_payload.update(_persona_payload(persona))
+                        await client.chat_postMessage(**dm_payload)
+                except Exception:
+                    logger.debug(
+                        "Failed to DM timeboxing commit prompt", exc_info=True
+                    )
+
+            await _maybe_update_timeboxing_thread_header(
+                client=client,
+                focus=focus,
+                thread_key=redirect.target_key,
+                state=_extract_thread_state(result) or "",
+            )
+            await _update_constraints(redirect.target_key)
+        except Exception:
+            logger.exception(
+                "timeboxing session surface failed after the root was posted "
+                "(root=%s:%s)",
+                target_channel,
+                root_ts,
+            )
+            record_error(
+                component="slack_routing", error_type="session_surface_failure"
+            )
+            try:
+                await client.chat_update(
+                    channel=target_channel,
+                    ts=root_ts,
+                    text=_timeboxing_thread_root_text(
+                        title="Timeboxing session",
+                        request_excerpt=None,
+                        state="canceled",
+                    ),
+                )
+            except Exception:
+                logger.debug("could not relabel the dead root", exc_info=True)
+            return
 
     if planning and thread_ts and cleaned_text.strip():
         try:

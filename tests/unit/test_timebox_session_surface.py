@@ -265,3 +265,37 @@ async def test_a_cross_channel_handoff_builds_the_same_surface_and_still_dms(
     assert FF_TIMEBOX_COMMIT_START_ACTION_ID in _action_ids(dm_posts[0].get("blocks"))
 
     assert stub_turn and stub_turn[0]["session_key"] == f"C-timebox:{root['ts']}"
+
+
+class _CardPostFailsClient(_FakeClient):
+    """The root exists; the threaded working message never arrives."""
+
+    async def chat_postMessage(self, **payload):
+        if payload.get("thread_ts"):
+            raise RuntimeError("slack said no")
+        return await super().chat_postMessage(**payload)
+
+
+async def test_a_surface_that_half_builds_relabels_its_root_canceled(
+    focus, stub_turn, same_channel_session
+):
+    """A dead header must not sit there looking like a live session."""
+    client = _CardPostFailsClient()
+
+    await route_slack_event(
+        runtime=_FakeRuntime(),
+        focus=focus,
+        default_agent="timeboxing_agent",
+        event=_slash_event(),
+        bot_user_id=None,
+        say=_noop_say,
+        client=client,
+    )
+
+    root_ts = client.posted[0]["ts"] if client.posted else "100.000001"
+    final_root = _writes_to(client, root_ts)[-1]
+    assert final_root["text"] == handlers._timeboxing_thread_root_text(
+        title="Timeboxing session",
+        request_excerpt=None,
+        state="canceled",
+    )
