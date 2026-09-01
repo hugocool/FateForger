@@ -1878,12 +1878,18 @@ async def _handle_timebox_date_reselect(
     label = format_relative_day_label(
         planned_date=reselected.date, tz_name=reselected.tz
     )
-    # In the slash-command route the date card is posted as its own session
-    # thread root, so this relabel would land on the message redrawn just
-    # above -- a text-only update that strips the card of every control and
-    # strands the session at Stage 0 (live incident, 2026-08-31 22:57). The
-    # card already shows the selected day; only a *separate* root needs the
-    # label kept in step.
+    # Legacy cards only: sessions opened before the surface convergence
+    # (2026-09-01 spec) rooted themselves at their own card, so payloads with
+    # thread_ts == prompt_ts are still live in the channel. For those, this
+    # relabel would land on the card it just redrew and strip its controls
+    # (2026-08-31 22:57 incident). New sessions always have a separate root.
+    # Delete this guard only when no pre-convergence card can still be clicked.
+    # The bare-text root relabels in the Confirm/date-confirmation path just
+    # above (~line 1738) and in timeboxing_commit.py (~457, ~533) skip this
+    # guard on purpose, not by omission: on those paths the card has already
+    # been replaced by a loading placeholder before the relabel runs, so the
+    # root and the card are never the same message and there is nothing left
+    # for a bare-text write to strip.
     root_is_this_card = reselected.thread_ts == prompt_ts
     if reselected.thread_ts and reselected.thread_ts != "dm" and not root_is_this_card:
         try:
@@ -2419,6 +2425,264 @@ async def route_slack_event(
             text=f":left_right_arrow: Continuing in <#{channel_id}>.", blocks=blocks
         )
 
+    async def _begin_timeboxing_session_surface(
+        *,
+        target_channel: str,
+        origin_key: str,
+        existing_root: dict | None = None,
+    ) -> None:
+        """Build the one surface a timeboxing session gets: root + threaded card.
+
+        Every session, whatever door it came through, is a dedicated root
+        header with the working card as its first thread reply. The root is
+        only ever a header, so relabels can never erase a control again --
+        which is the failure that ate the 2026-08-31 22:57 session's card.
+
+        `existing_root` is the origin "thinking..." ack when the session lives
+        in the channel the user is already in: it is repurposed into the root
+        rather than left beside a second one.
+        """
+        persona = _persona_for_agent("timeboxing_agent")
+        try:
+            await _invite_user_to_channels_best_effort(
+                client, user_id=user, channel_ids=[target_channel]
+            )
+        except Exception:
+            pass
+
+        if existing_root is not None:
+            root_ts = existing_root["ts"]
+            await client.chat_update(
+                channel=target_channel,
+                ts=root_ts,
+                text=_timeboxing_thread_root_text(
+                    title="Timeboxing session",
+                    request_excerpt=None,
+                    state="pending",
+                ),
+            )
+        else:
+            root_payload = {
+                "channel": target_channel,
+                "text": _timeboxing_thread_root_text(
+                    title="Timeboxing session",
+                    request_excerpt=None,
+                    state="pending",
+                ),
+            }
+            root_payload.update(_persona_payload(persona))
+            root = await client.chat_postMessage(**root_payload)
+            root_ts = root["ts"]
+
+        try:
+            focus.set_thread_label(
+                f"{target_channel}:{root_ts}",
+                title="Timeboxing session",
+                request_excerpt=None,
+                state="pending",
+                by_user=user,
+            )
+            redirect = focus.set_redirect(
+                origin_key,
+                target_channel=target_channel,
+                target_thread_ts=root_ts,
+                agent_type="timeboxing_agent",
+                by_user=user,
+                note="session-surface",
+            )
+            focus.set_focus(
+                redirect.target_key,
+                "timeboxing_agent",
+                by_user=user,
+                note="session-surface",
+            )
+            focus.set_focus(
+                origin_key, "timeboxing_agent", by_user=user, note="session-surface"
+            )
+            focus.set_user_focus(user, "timeboxing_agent")
+
+            if not is_dm and channel != target_channel:
+                await _origin_link_to_thread(
+                    channel_id=target_channel,
+                    thread_ts=root_ts,
+                    agent_label=(
+                        persona.username if persona else "timeboxing_agent"
+                    ),
+                )
+
+            processing_payload = {
+                "channel": target_channel,
+                "thread_ts": root_ts,
+                "text": ":hourglass_flowing_sand: *timeboxing_agent* is thinking...",
+            }
+            processing_payload.update(_persona_payload(persona))
+            processing = await client.chat_postMessage(**processing_payload)
+
+            try:
+                if _timebox_backend() != "legacy":
+                    result = await _run_adaptive_timebox_turn(
+                        runtime=runtime,
+                        client=client,
+                        logger=logger,
+                        session_key=redirect.target_key,
+                        actor_user_id=user,
+                        interaction_id=ts,
+                        progress_channel=processing["channel"],
+                        progress_ts=processing["ts"],
+                        card_channel=target_channel,
+                        card_thread_ts=root_ts,
+                        user_text=cleaned_text,
+                    )
+                else:
+                    handoff_msg = _build_agent_message(
+                        agent_type="timeboxing_agent",
+                        cleaned_text=cleaned_text,
+                        user=user,
+                        channel=target_channel,
+                        thread_ts=root_ts,
+                        ts=root_ts,
+                        force_channel=target_channel,
+                        force_thread_root=root_ts,
+                        force_reply=False,
+                    )
+                    result = await runtime.send_message(
+                        handoff_msg,
+                        recipient=AgentId(
+                            "timeboxing_agent", key=redirect.target_key
+                        ),
+                    )
+            except asyncio.TimeoutError:
+                await client.chat_update(
+                    channel=target_channel,
+                    ts=processing["ts"],
+                    text=":hourglass_flowing_sand: Timed out waiting for tools/LLM. Please try again.",
+                )
+                return
+            except Exception:
+                logger.exception(
+                    "timeboxing session surface turn failed (key=%s)",
+                    redirect.target_key,
+                )
+                await client.chat_update(
+                    channel=target_channel,
+                    ts=processing["ts"],
+                    text=":warning: Something went wrong while handling that request. Check bot logs.",
+                )
+                return
+
+            payload = _compact_slack_payload(**_slack_payload_from_result(result))
+            update = {
+                "channel": target_channel,
+                "ts": processing["ts"],
+                "text": payload.get("text", "") or "",
+            }
+            if payload.get("blocks"):
+                update["blocks"] = payload["blocks"]
+            await client.chat_update(**update)
+
+            if payload.get("blocks"):
+                try:
+                    meta = decode_metadata(
+                        _timebox_start_button_value(payload["blocks"])
+                    )
+                    planned_date = meta.get("date") or ""
+                    tz_name = meta.get("tz") or ""
+                    if planned_date and tz_name:
+                        label = format_relative_day_label(
+                            planned_date=planned_date, tz_name=tz_name
+                        )
+                        title = f"Timeboxing session for {label}"
+                        focus.set_thread_label(
+                            redirect.target_key,
+                            title=title,
+                            request_excerpt=None,
+                            state="pending",
+                            by_user=user,
+                        )
+                        await client.chat_update(
+                            channel=target_channel,
+                            ts=root_ts,
+                            text=_timeboxing_thread_root_text(
+                                title=title,
+                                request_excerpt=None,
+                                state="pending",
+                            ),
+                        )
+                except Exception:
+                    pass
+
+            if channel != target_channel and payload.get("blocks"):
+                try:
+                    permalink = await _permalink(target_channel, root_ts)
+                except Exception:
+                    permalink = None
+                try:
+                    dm_channel = channel if is_dm else ""
+                    if not dm_channel:
+                        dm = await client.conversations_open(users=[user])
+                        dm_channel = (dm.get("channel") or {}).get("id") or ""
+                    if dm_channel:
+                        dm_blocks = list(payload["blocks"])
+                        if permalink:
+                            dm_blocks.extend(
+                                open_link_blocks(
+                                    text="Progress is tracked in the session thread:",
+                                    url=permalink,
+                                    button_text="Go to Session Thread",
+                                    action_id="ff_open_thread",
+                                )
+                            )
+                        if is_dm:
+                            # DM origin: the DM's own "thinking..." message
+                            # becomes the card, so the DM stays the control
+                            # surface instead of sitting on a spinner forever.
+                            await _origin_update(
+                                text=update["text"], blocks=dm_blocks
+                            )
+                        else:
+                            dm_payload = {
+                                "channel": dm_channel,
+                                "text": update["text"],
+                                "blocks": dm_blocks,
+                            }
+                            dm_payload.update(_persona_payload(persona))
+                            await client.chat_postMessage(**dm_payload)
+                except Exception:
+                    logger.debug(
+                        "Failed to DM timeboxing commit prompt", exc_info=True
+                    )
+
+            await _maybe_update_timeboxing_thread_header(
+                client=client,
+                focus=focus,
+                thread_key=redirect.target_key,
+                state=_extract_thread_state(result) or "",
+            )
+            await _update_constraints(redirect.target_key)
+        except Exception:
+            logger.exception(
+                "timeboxing session surface failed after the root was posted "
+                "(root=%s:%s)",
+                target_channel,
+                root_ts,
+            )
+            record_error(
+                component="slack_routing", error_type="session_surface_failure"
+            )
+            try:
+                await client.chat_update(
+                    channel=target_channel,
+                    ts=root_ts,
+                    text=_timeboxing_thread_root_text(
+                        title="Timeboxing session",
+                        request_excerpt=None,
+                        state="canceled",
+                    ),
+                )
+            except Exception:
+                logger.debug("could not relabel the dead root", exc_info=True)
+            return
+
     if planning and thread_ts and cleaned_text.strip():
         try:
             handled_planning_reply = await planning.maybe_handle_thread_reply(
@@ -2515,6 +2779,28 @@ async def route_slack_event(
                 thread_ts=redirect.target_thread_ts,
                 agent_label=(persona.username if persona else redirect.agent_type),
             )
+        return
+
+    # The fresh channel start used to root the session at the origin ack and
+    # then use that same message as progress card and outcome card -- the
+    # aliased layout that let a root relabel erase the Stage-0 card
+    # (2026-08-31 22:57). The harness path now builds the one real surface;
+    # only the legacy backend still takes the fallback below.
+    would_alias_root = (
+        agent_type == "timeboxing_agent"
+        and not is_dm
+        and not thread_ts
+        and not origin_thread_root_ts
+    )
+    if would_alias_root and _timebox_backend() != "legacy":
+        session_channel = _channel_for_agent("timeboxing_agent") or channel
+        await _begin_timeboxing_session_surface(
+            target_channel=session_channel,
+            origin_key=origin_key,
+            existing_root=(
+                origin_processing_msg if session_channel == channel else None
+            ),
+        )
         return
 
     forced_thread_root = (
@@ -2663,44 +2949,23 @@ async def route_slack_event(
         )
         if should_redirect:
             try:
-                persona = _persona_for_agent(handoff_target)
-                tb_title = None
-                tb_excerpt = None
                 if handoff_target == "timeboxing_agent":
-                    try:
-                        await _invite_user_to_channels_best_effort(
-                            client, user_id=user, channel_ids=[target_channel]
-                        )
-                    except Exception:
-                        pass
-                    tb_title = _timeboxing_title_from_text(cleaned_text)
-                    tb_excerpt = _timeboxing_excerpt_from_text(cleaned_text)
+                    await _begin_timeboxing_session_surface(
+                        target_channel=target_channel,
+                        origin_key=origin_key,
+                    )
+                    return
+                persona = _persona_for_agent(handoff_target)
                 root_payload = {
                     "channel": target_channel,
                     "text": (
-                        _timeboxing_thread_root_text(
-                            title="Timeboxing session",
-                            request_excerpt=None,
-                            state="pending",
-                        )
-                        if handoff_target == "timeboxing_agent"
-                        else (
-                            f"Incoming request from <@{user}> (requested in {_origin_label(event)}):\n"
-                            f"> {cleaned_text}"
-                        )
+                        f"Incoming request from <@{user}> (requested in {_origin_label(event)}):\n"
+                        f"> {cleaned_text}"
                     ),
                 }
                 root_payload.update(_persona_payload(persona))
                 root = await client.chat_postMessage(**root_payload)
                 target_thread_ts = root["ts"]
-                if handoff_target == "timeboxing_agent":
-                    focus.set_thread_label(
-                        f"{target_channel}:{target_thread_ts}",
-                        title="Timeboxing session",
-                        request_excerpt=None,
-                        state="pending",
-                        by_user=user,
-                    )
 
                 redirect = focus.set_redirect(
                     origin_key,
@@ -2729,19 +2994,18 @@ async def route_slack_event(
                         thread_ts=target_thread_ts,
                         agent_label=(persona.username if persona else handoff_target),
                     )
-                    if handoff_target != "timeboxing_agent":
-                        try:
-                            await _dm_thread_link(
-                                client,
-                                user_id=user,
-                                target_channel=target_channel,
-                                thread_root_ts=target_thread_ts,
-                                agent_label=(
-                                    persona.username if persona else handoff_target
-                                ),
-                            )
-                        except Exception:
-                            pass
+                    try:
+                        await _dm_thread_link(
+                            client,
+                            user_id=user,
+                            target_channel=target_channel,
+                            thread_root_ts=target_thread_ts,
+                            agent_label=(
+                                persona.username if persona else handoff_target
+                            ),
+                        )
+                    except Exception:
+                        pass
 
                 processing_payload = {
                     "channel": target_channel,
@@ -2763,45 +3027,10 @@ async def route_slack_event(
                     force_reply=False,
                 )
                 try:
-                    if (
-                        handoff_target == "timeboxing_agent"
-                        and _timebox_backend() != "legacy"
-                    ):
-                        # The handoff path reaches the harness too.
-                        #
-                        # Intercepting only the up-front route was not enough,
-                        # and the gap was invisible: /timebox and a thread
-                        # already bound to timeboxing went to the harness,
-                        # while the way Hugo actually starts -- saying
-                        # something in a channel and letting the receptionist
-                        # decide -- resolved to timeboxing_agent *inside* the
-                        # AutoGen runtime, where agent_type was still
-                        # receptionist_agent and this interception never saw
-                        # it. So "The Schedular runs on the harness" was true
-                        # only for the doors he does not use.
-                        #
-                        # The session key is the redirected thread, not the
-                        # origin: the durable workspace lives in the timeboxing
-                        # channel, and keying off the origin would file the
-                        # planning session under a thread nobody continues in.
-                        result = await _run_adaptive_timebox_turn(
-                            runtime=runtime,
-                            client=client,
-                            logger=logger,
-                            session_key=redirect.target_key,
-                            actor_user_id=user,
-                            interaction_id=ts,
-                            progress_channel=processing["channel"],
-                            progress_ts=processing["ts"],
-                            card_channel=target_channel,
-                            card_thread_ts=target_thread_ts,
-                            user_text=cleaned_text,
-                        )
-                    else:
-                        result = await runtime.send_message(
-                            handoff_msg,
-                            recipient=AgentId(handoff_target, key=redirect.target_key),
-                        )
+                    result = await runtime.send_message(
+                        handoff_msg,
+                        recipient=AgentId(handoff_target, key=redirect.target_key),
+                    )
                 except asyncio.TimeoutError:
                     await client.chat_update(
                         channel=target_channel,
@@ -2831,80 +3060,6 @@ async def route_slack_event(
                     update["blocks"] = payload["blocks"]
                 await client.chat_update(**update)
 
-                # Timeboxing stage-0: DM the commit prompt (with a thread deep-link button).
-                if handoff_target == "timeboxing_agent" and payload.get("blocks"):
-                    # Update the thread root header to include the suggested day (no quoted user text).
-                    try:
-                        meta = decode_metadata(
-                            _timebox_start_button_value(payload.get("blocks"))
-                        )
-                        planned_date = meta.get("date") or ""
-                        tz_name = meta.get("tz") or ""
-                        if planned_date and tz_name:
-                            label = format_relative_day_label(
-                                planned_date=planned_date, tz_name=tz_name
-                            )
-                            title = f"Timeboxing session for {label}"
-                            focus.set_thread_label(
-                                f"{target_channel}:{target_thread_ts}",
-                                title=title,
-                                request_excerpt=None,
-                                state="pending",
-                                by_user=user,
-                            )
-                            await client.chat_update(
-                                channel=target_channel,
-                                ts=target_thread_ts,
-                                text=_timeboxing_thread_root_text(
-                                    title=title,
-                                    request_excerpt=None,
-                                    state="pending",
-                                ),
-                            )
-                    except Exception:
-                        pass
-                    try:
-                        permalink = await _permalink(target_channel, target_thread_ts)
-                    except Exception:
-                        permalink = None
-                    try:
-                        dm_channel = channel if is_dm else ""
-                        if not dm_channel:
-                            dm = await client.conversations_open(users=[user])
-                            dm_channel = (dm.get("channel") or {}).get("id") or ""
-                        if dm_channel:
-                            # Update the original "thinking..." message in DM with the card.
-                            dm_blocks = list(payload["blocks"])
-                            if permalink:
-                                # Add a convenient deep-link to the durable session thread.
-                                dm_blocks.extend(
-                                    open_link_blocks(
-                                        text="Progress is tracked in the session thread:",
-                                        url=permalink,
-                                        button_text="Go to Session Thread",
-                                        action_id="ff_open_thread",
-                                    )
-                                )
-                            if is_dm:
-                                # For DM origin: update the original thinking message
-                                await _origin_update(
-                                    text=update["text"],
-                                    blocks=dm_blocks,
-                                )
-                            else:
-                                # For non-DM: post a new message to the user's DM
-                                dm_payload = {
-                                    "channel": dm_channel,
-                                    "text": update["text"],
-                                    "blocks": dm_blocks,
-                                }
-                                dm_payload.update(_persona_payload(persona))
-                                await client.chat_postMessage(**dm_payload)
-                    except Exception:
-                        logger.debug(
-                            "Failed to DM timeboxing commit prompt", exc_info=True
-                        )
-
                 # No separate approval post on the kernel route: the outcome
                 # renderer already carries the one control that can commit, and
                 # a second card would offer the same candidate twice.
@@ -2915,8 +3070,6 @@ async def route_slack_event(
                     thread_key=redirect.target_key,
                     state=_extract_thread_state(result) or "",
                 )
-                if handoff_target == "timeboxing_agent":
-                    await _update_constraints(redirect.target_key)
                 return
             except Exception:
                 # Fall back to in-thread handling if the target channel isn't accessible.
