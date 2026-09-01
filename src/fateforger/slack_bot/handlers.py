@@ -1878,12 +1878,12 @@ async def _handle_timebox_date_reselect(
     label = format_relative_day_label(
         planned_date=reselected.date, tz_name=reselected.tz
     )
-    # In the slash-command route the date card is posted as its own session
-    # thread root, so this relabel would land on the message redrawn just
-    # above -- a text-only update that strips the card of every control and
-    # strands the session at Stage 0 (live incident, 2026-08-31 22:57). The
-    # card already shows the selected day; only a *separate* root needs the
-    # label kept in step.
+    # Legacy cards only: sessions opened before the surface convergence
+    # (2026-09-01 spec) rooted themselves at their own card, so payloads with
+    # thread_ts == prompt_ts are still live in the channel. For those, this
+    # relabel would land on the card it just redrew and strip its controls
+    # (2026-08-31 22:57 incident). New sessions always have a separate root.
+    # Delete this guard only when no pre-convergence card can still be clicked.
     root_is_this_card = reselected.thread_ts == prompt_ts
     if reselected.thread_ts and reselected.thread_ts != "dm" and not root_is_this_card:
         try:
