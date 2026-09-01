@@ -418,6 +418,26 @@ def observe(record: Record, spec: ServiceSpec, repo_root: Path) -> Observed:
     )
 
 
+def dirty_at_start(repo_root: Path, runner: Runner = _run) -> int:
+    """How many tracked files differ from HEAD right now.
+
+    `status` records the git sha at launch and fingerprints the sources to spot
+    change *since*. Neither sees uncommitted work that was already there when a
+    process started -- so a service can report HEALTHY on a known sha while
+    running a stranger's half-finished feature, which is exactly what happened
+    on 2026-09-01: three green rows, `sha=fd95a0e5c`, and a live Slack turn
+    failing on an `AdaptiveTimeboxing` kernel that is not on main at all.
+
+    `demo.py` starts processes from the WORKING TREE, not from HEAD. On a
+    checkout several sessions share, that distinction decides whether "it
+    works" is a statement about main or about whatever someone is holding.
+    """
+    result = runner(["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=no"])
+    if result.returncode != 0:
+        return 0
+    return len([line for line in result.stdout.splitlines() if line.strip()])
+
+
 def profile_boots(runner: Runner = _run, home: Path | None = None) -> str | None:
     """``None`` if the harness profile can start a turn, else why it cannot.
 
@@ -845,6 +865,13 @@ def cmd_status(repo_root: Path, as_json: bool, names: Sequence[str] = ()) -> int
     # Not a service, so it gets its own line rather than a column: the profile
     # is one shared thing every turn goes through, and it is the piece with no
     # process to be healthy.
+    dirty = dirty_at_start(repo_root)
+    if dirty:
+        print(
+            f"\n{'tree':<{width}}  {dirty} tracked files differ from HEAD — these "
+            f"processes are running the WORKING TREE, not {git_head(repo_root)[:9]}"
+        )
+
     broken = profile_boots()
     if broken is None:
         print(f"\n{'profile':<{width}}  {PROFILE} loads")

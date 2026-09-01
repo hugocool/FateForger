@@ -28,6 +28,7 @@ from scripts.demo import (
     fingerprint_sources,
     listener_pids,
     memory_store_path,
+    dirty_at_start,
     parse_listener_pids,
     profile_boots,
     port_accepting,
@@ -193,6 +194,48 @@ def test_an_explicit_file_root_is_fingerprinted_even_without_a_py_suffix(tmp_pat
     before = fingerprint_sources([launcher])
     launcher.write_text("print(2)\n")
     assert fingerprint_sources([launcher]) != before
+
+
+# ---------------------------------------------------------------------------
+# dirty_at_start -- healthy, on a known sha, running a stranger's feature
+# ---------------------------------------------------------------------------
+
+
+def test_a_clean_tree_reports_nothing(tmp_path) -> None:
+    assert dirty_at_start(tmp_path, runner=lambda cmd: _completed("")) == 0
+
+
+def test_uncommitted_work_is_counted(tmp_path) -> None:
+    """The processes run the working tree; the sha column records HEAD.
+
+    On 2026-09-01 all three services read HEALTHY on a known sha while a live
+    Slack turn failed inside an `AdaptiveTimeboxing` kernel that is not on main
+    — 1,229 uncommitted lines in one file. The sha was true and told nobody
+    what was running.
+    """
+    out = " M src/a.py\n M src/b.py\nD  src/c.py\n"
+    assert dirty_at_start(tmp_path, runner=lambda cmd: _completed(out)) == 3
+
+
+def test_untracked_files_do_not_count(tmp_path) -> None:
+    """Scratch files are not what a process is running.
+
+    Counting them would make the warning permanent on any working checkout,
+    and a warning that is always on is one nobody reads.
+    """
+    seen: list[list[str]] = []
+
+    def runner(cmd):
+        seen.append(list(cmd))
+        return _completed("")
+
+    dirty_at_start(tmp_path, runner=runner)
+    assert "--untracked-files=no" in seen[0]
+
+
+def test_a_git_failure_is_silent(tmp_path) -> None:
+    """Outside a repo this must not invent a warning about nothing."""
+    assert dirty_at_start(tmp_path, runner=lambda cmd: _completed("", 128)) == 0
 
 
 # ---------------------------------------------------------------------------
