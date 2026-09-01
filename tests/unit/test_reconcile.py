@@ -34,7 +34,16 @@ class FakeScheduler:
         return list(self._jobs.values())
 
     def add_job(self, func, trigger, run_date, id, kwargs, replace_existing, **_):
-        self._jobs[id] = type("Job", (), {"id": id, "run_date": run_date, "kwargs": kwargs})
+        # Shaped like a real APScheduler Job: the scheduled time lives on the
+        # trigger (`DateTrigger.run_date`), which is what production reads. A
+        # double that exposed only a flat `run_date` would let a change pass
+        # here and fail live -- which is how the len()-over-a-count bug shipped.
+        job_trigger = type("DateTrigger", (), {"run_date": run_date})()
+        self._jobs[id] = type(
+            "Job",
+            (),
+            {"id": id, "run_date": run_date, "trigger": job_trigger, "kwargs": kwargs},
+        )
 
     def remove_job(self, job_id):
         self._jobs.pop(job_id, None)
@@ -139,7 +148,10 @@ async def test_reconcile_adds_and_clears_jobs():
 
     client._events = [
         {
-            "id": "evt-planning",
+            # The minted id, not the title. `planning_event_id_for_user` stamps
+            # `ffplanning...` on every planning event this system creates, and
+            # that is the only thing the reconciler now recognises.
+            "id": "ffplanningu1abc",
             "summary": "Planning session",
             "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
             "end": {"dateTime": "2025-01-01T10:30:00+00:00"},
@@ -340,7 +352,21 @@ async def test_reconcile_does_not_confuse_social_planning_events():
 
 
 @pytest.mark.asyncio
-async def test_reconcile_accepts_timeboxing_fallback_event():
+async def test_an_unmarked_event_is_not_adopted_however_it_is_titled():
+    """This test asserted the opposite until 2026-09-01, and it was wrong.
+
+    An event titled "timeboxing" used to score 70 and be adopted as the user's
+    planning session. That is a judgement about what a title someone wrote
+    means, made by a keyword table -- the thing CLAUDE.md sends to a model and
+    never to a pattern. It also had to be defended by hand: "Planning with wife"
+    needed a -40 guardrail, "poker" needed its own, and that list has no end
+    because it is a list of every way a person might phrase something.
+
+    So an event carrying no mark this system minted is not adopted, whatever it
+    is called. The user is nudged, the nudge books a session, and the booked one
+    carries the mark. Nudging about a session that exists is visible and
+    correctable in one reply; silently adopting a poker night is neither.
+    """
     scheduler = FakeScheduler()
     client = DummyCalendarClient(
         events=[
@@ -352,23 +378,42 @@ async def test_reconcile_accepts_timeboxing_fallback_event():
             }
         ]
     )
-    store = FakePlanningSessionStore()
-    reconciler = PlanningReconciler(
-        scheduler, calendar_client=client, planning_session_store=store
-    )
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
 
     now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
     jobs = await reconciler.reconcile_missing_planning(
-        scope="U1",
-        user_id="U1",
-        channel_id="C1",
-        now=now,
+        scope="U1", user_id="U1", channel_id="C1", now=now
     )
 
-    assert jobs == []
-    assert store.upserts
-    assert store.upserts[-1]["event_id"] == "evt-timeboxing"
+    assert len(jobs) == 6, "an unmarked event was adopted as the planning session"
 
+
+@pytest.mark.asyncio
+async def test_a_marked_event_is_adopted_whatever_it_is_titled():
+    """The other half: identity decides, so the title is irrelevant both ways.
+
+    A planning event the user renamed to something unrecognisable is still
+    theirs, and would have scored 0 under the old table.
+    """
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(
+        events=[
+            {
+                "id": "ffplanningu1xyz",
+                "summary": "zzz",
+                "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
+                "end": {"dateTime": "2025-01-01T10:30:00+00:00"},
+            }
+        ]
+    )
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1", user_id="U1", channel_id="C1", now=now
+    )
+
+    assert jobs == [], "a marked event was not recognised"
 
 @pytest.mark.asyncio
 async def test_reconcile_logs_outcome_for_nudges_scheduled(caplog):

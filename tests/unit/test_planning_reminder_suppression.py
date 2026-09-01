@@ -267,7 +267,7 @@ async def test_planning_still_missing_refreshes_anchor_on_success_path():
                         user_id="U1",
                         planned_date=start.date(),
                         calendar_id="primary",
-                        event_id="canonical-event-abc",
+                        event_id="ffplanningcanonicalabc",
                     )
                 ]
             ),
@@ -275,7 +275,7 @@ async def test_planning_still_missing_refreshes_anchor_on_success_path():
                 _DummyCalendarClient(
                     events=[
                         {
-                            "id": "canonical-event-abc",
+                            "id": "ffplanningcanonicalabc",
                             "summary": "Daily planning session",
                             "start": {"dateTime": start.isoformat()},
                             "end": {"dateTime": end.isoformat()},
@@ -306,4 +306,4 @@ async def test_planning_still_missing_refreshes_anchor_on_success_path():
 
     assert still_missing is False
     assert runtime.planning_anchor_store.upserts
-    assert runtime.planning_anchor_store.upserts[-1]["event_id"] == "canonical-event-abc"
+    assert runtime.planning_anchor_store.upserts[-1]["event_id"] == "ffplanningcanonicalabc"

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Protocol
@@ -57,7 +56,6 @@ class PlanningRuleConfig:
     stored_session_consistency_grace: timedelta = timedelta(minutes=5)
     # TODO(refactor,typed-contracts): Remove summary keyword list and use a typed
     # event marker/label schema for planning-session detection.
-    summary_keywords: tuple[str, ...] = ("plan", "planning", "review", "timebox")
     calendar_id: str = "primary"
 
 
@@ -226,7 +224,9 @@ class PlanningSessionRule:
         )
         list_count = len(events)
 
-        fallback = self._resolve_planning_from_fallback(events, start=start, end=end)
+        fallback = self._resolve_planning_from_fallback(
+            events, start=start, end=end, planning_event_id=planning_event_id
+        )
         fallback_hit = fallback is not None
         if fallback:
             await self._sync_fallback_session_record(
@@ -446,39 +446,46 @@ class PlanningSessionRule:
         return delta <= self._config.stored_session_consistency_grace
 
     def _resolve_planning_from_fallback(
-        self, events: Iterable[dict], *, start: datetime, end: datetime
+        self,
+        events: Iterable[dict],
+        *,
+        start: datetime,
+        end: datetime,
+        planning_event_id: str | None = None,
     ) -> dict | None:
-        scored: list[tuple[int, dict]] = []
+        """The planning event in this window, identified by a mark we minted.
+
+        This used to score calendar titles: a set of exact titles, a list of
+        phrases, substring tests, and a hand-tuned table that subtracted 40 for
+        `" with "` and had a special case for `"poker"`. That decides what a
+        title someone wrote *means*, which CLAUDE.md sends to a model and never
+        to a pattern -- and it decided when Hugo gets nudged, so it was wrong in
+        both directions silently. "Planning with wife" scored as a planning
+        session until a guardrail was hand-added for it; "poker" needed its own.
+        There is no end to that list, because it is a list of every way a person
+        might phrase something.
+
+        The judgement is not made better here, it is removed. The planning
+        event is one this system CREATES, and creation is where identity
+        belongs: `planning_event_id_for_user` mints a deterministic
+        `ffplanning...` id per user. Matching that is comparing two identifiers
+        this system minted, which is identification and carries no opinion about
+        anyone's words.
+
+        The cost is honest and small: an event Hugo booked by hand, with no
+        mark, is no longer adopted. He is nudged, the nudge books one, and the
+        booked one carries the mark. Nudging about a session that exists is
+        visible and correctable in one reply. Silently adopting the wrong event
+        -- a poker night, a call with his wife -- is neither.
+        """
         for event in events:
             if not isinstance(event, dict):
                 continue
             if not _event_within_window(event, start, end):
                 continue
-            score = self._planning_event_score(event)
-            if score >= 60:
-                scored.append((score, event))
-
-        if not scored:
-            return None
-
-        scored.sort(key=lambda pair: pair[0], reverse=True)
-        if len(scored) == 1:
-            return scored[0][1]
-
-        top_score, top_event = scored[0]
-        second_score, _ = scored[1]
-        top_id = str(top_event.get("id") or "").lower()
-
-        # Multiple close matches are ambiguous unless we have a deterministic ID.
-        if not top_id.startswith("ffplanning") and (top_score - second_score) < 10:
-            logger.info(
-                "Planning fallback ambiguous: top_score=%s second_score=%s top_summary=%r",
-                top_score,
-                second_score,
-                top_event.get("summary"),
-            )
-            return None
-        return top_event
+            if _carries_planning_mark(event, planning_event_id):
+                return event
+        return None
 
     async def _sync_fallback_session_record(
         self, *, user_id: str | None, event: dict, start: datetime
@@ -514,55 +521,6 @@ class PlanningSessionRule:
                 user_id,
                 event_id,
             )
-
-    def _planning_event_score(self, event: dict) -> int:
-        event_id = str(event.get("id") or "").lower()
-        summary = _normalize_summary_text(
-            event.get("summary") or event.get("title") or ""
-        )
-        score = 0
-
-        if event_id.startswith("ffplanning"):
-            score = max(score, 100)
-
-        exact_titles = {
-            "planning",
-            "planning session",
-            "plan session",
-            "daily planning session",
-            "timeboxing",
-            "timebox",
-            "timeboxing session",
-            "timebox session",
-        }
-        if summary in exact_titles:
-            score = max(score, 90)
-
-        phrase_titles = (
-            "planning session",
-            "plan session",
-            "timeboxing session",
-            "timebox session",
-        )
-        if any(phrase in summary for phrase in phrase_titles):
-            score = max(score, 80)
-
-        if "timeboxing" in summary or "timebox" in summary:
-            score = max(score, 70)
-
-        # Keep legacy broad keyword support as low confidence only.
-        if any(keyword in summary for keyword in self._config.summary_keywords):
-            score = max(score, 30)
-
-        # Guardrails against social/planning-adjacent false positives.
-        if " with " in summary and "session" not in summary:
-            score -= 40
-        if "poker" in summary:
-            score -= 40
-        if "wife" in summary:
-            score -= 25
-
-        return score
 
     @staticmethod
     def _message_for_nudge(attempt: int) -> str:
@@ -636,19 +594,35 @@ class PlanningReconciler:
             first_nudge_offset=first_nudge_offset,
         )
         prefix = f"rule:{self._rule.rule_id}:{scope}:"
-        current_ids = {
-            job.id for job in self._scheduler.get_jobs() if job.id.startswith(prefix)
+        scheduled = {
+            job.id: getattr(getattr(job, "trigger", None), "run_date", None)
+            for job in self._scheduler.get_jobs()
+            if job.id.startswith(prefix)
         }
+        current_ids = set(scheduled)
         desired_ids = {job.key.as_id() for job in desired}
 
         for job_id in current_ids - desired_ids:
             self._scheduler.remove_job(job_id)
 
+        # A caller supplying `first_nudge_offset` is deliberately re-timing the
+        # ladder (planning_guardian does this), so let it move. Otherwise keep
+        # the time a job already has: `evaluate` anchors every offset to `now`,
+        # so recomputing on each pass re-arms nudge1 forever and the exponential
+        # backoff never advances. Identity was already stable -- JobKey carries
+        # the day -- so this makes reconciliation idempotent in time as well.
+        retime = first_nudge_offset is not None
+
         for job in desired:
+            run_at = job.run_at
+            if not retime:
+                already = scheduled.get(job.key.as_id())
+                if already is not None:
+                    run_at = already
             self._scheduler.add_job(
                 self._emit_reminder,
                 trigger="date",
-                run_date=job.run_at,
+                run_date=run_at,
                 id=job.key.as_id(),
                 kwargs={"reminder": job.payload},
                 replace_existing=job.replace_existing,
@@ -729,11 +703,35 @@ def _normalize_events(payload: Any) -> list[dict]:
     return []
 
 
-def _normalize_summary_text(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    normalized = re.sub(r"[^a-z0-9]+", " ", value.lower())
-    return " ".join(normalized.split())
+#: The prefix `planning_event_id_for_user` stamps on every planning event this
+#: system creates. A system-minted identifier, so comparing it decides nothing
+#: about what anyone wrote.
+_PLANNING_ID_PREFIX = "ffplanning"
+
+#: A private extended property carried by events this system creates, for the
+#: case where the id cannot be relied on. Read but not yet written -- #210 is
+#: measuring whether Google preserves these across a UI edit, and until that
+#: answers, an event whose id changed is simply not adopted rather than guessed
+#: at. Absent is treated as absent; nothing here infers a mark from a title.
+_PLANNING_MARK_PROPERTY = "ff_planning"
+
+
+def _carries_planning_mark(event: dict, planning_event_id: str | None) -> bool:
+    """Whether this event is one we created, by identity alone."""
+    event_id = str(event.get("id") or "").strip()
+    if not event_id:
+        return False
+    if planning_event_id and event_id == str(planning_event_id).strip():
+        return True
+    # `startswith` on an id this system minted, not on anything a user typed.
+    if event_id.lower().startswith(_PLANNING_ID_PREFIX):
+        return True
+    extended = event.get("extendedProperties")
+    if isinstance(extended, dict):
+        private = extended.get("private")
+        if isinstance(private, dict) and private.get(_PLANNING_MARK_PROPERTY):
+            return True
+    return False
 
 
 def _normalize_event(payload: Any) -> dict | None:
