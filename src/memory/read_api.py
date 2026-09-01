@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from memory.constraint import ConstraintView
+from memory.constraint import Constraint, ConstraintView, Necessity
 from memory.constraint_store import ConstraintStore
 
 
@@ -45,14 +45,51 @@ def get_active_constraints(
     `stage` is accepted and currently unused; it is part of the agreed call
     shape and will select stage-relevant constraints once stage vocabulary
     exists.
+
+    **Ordered, boundaries first and recent evidence next.** Until 2026-08-31
+    this returned rows in whatever order the store produced, which is
+    `ORDER BY created_at` — so a hard boundary and a mild preference arrived
+    interleaved by the accident of when each was first stored, and a rule
+    stated this morning sat behind one from months ago. Nothing was dropped,
+    because every applicable rule is returned, but the reader met them in an
+    order that carried no meaning.
+
+    Ordering is arithmetic on an enum and a timestamp, so the read path stays
+    synchronous and model-free (I1). It is also the precondition for ever
+    capping this list: a cap over an unordered list keeps whatever happened to
+    be created first, which is the failure a cap exists to prevent.
     """
     return [
         c.to_view()
-        for c in store.durable()
-        if c.applicability.applies_on(day, day_type)
-        and not c.has_faded(day)
-        and (reachable is None or c.uid in reachable)
+        for c in sorted(
+            (
+                c
+                for c in store.durable()
+                if c.applicability.applies_on(day, day_type)
+                and not c.has_faded(day)
+                and (reachable is None or c.uid in reachable)
+            ),
+            key=_ordering_key,
+        )
     ]
+
+
+def _ordering_key(constraint: Constraint) -> tuple[int, float]:
+    """Necessity first, then most recently observed.
+
+    Necessity outranks recency deliberately and must keep doing so: a MUST
+    nobody has restated for a month is still a boundary, and a PREFER stated
+    this morning is still a preference. Inverting these would let enthusiasm
+    outrank a rule the user cannot break.
+
+    Recency is `last_observed_at` rather than `created_at` — the question is
+    when the user last said this, not when the system first wrote it down.
+    Re-stating a rule should move it up; re-projecting one should not.
+    """
+    return (
+        0 if constraint.necessity is Necessity.MUST else 1,
+        -constraint.last_observed_at.timestamp(),
+    )
 
 
 def get_faded_constraints(
