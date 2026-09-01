@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from memory.constraint import ConstraintView
+from memory.constraint import Constraint, ConstraintView, Necessity
 from memory.constraint_store import ConstraintStore
 
 
@@ -46,13 +46,14 @@ def get_active_constraints(
     shape and will select stage-relevant constraints once stage vocabulary
     exists.
     """
-    return [
-        c.to_view()
+    applicable = [
+        c
         for c in store.durable()
         if c.applicability.applies_on(day, day_type)
         and not c.has_faded(day)
         and (reachable is None or c.uid in reachable)
     ]
+    return [c.to_view() for c in sorted(applicable, key=_reading_order)]
 
 
 def get_faded_constraints(
@@ -147,3 +148,28 @@ def get_session_constraints(
         elif not c.has_faded(day):
             live.append(c.to_view())
     return live
+
+
+#: Boundaries before preferences. A rank rather than the enum's own order,
+#: because relying on declaration order makes adding a member silently
+#: reorder every planning prompt.
+_NECESSITY_ORDER = {Necessity.MUST: 0, Necessity.SHOULD: 1}
+
+
+def _reading_order(constraint: Constraint) -> tuple[int, float]:
+    """Sort key: what the planner should read first.
+
+    Boundaries before preferences, then most recently restated first.
+
+    Necessity outranks recency deliberately. A MUST stated in January is still
+    a boundary and a preference stated this morning is still a preference, so
+    letting recency float a SHOULD above a MUST would invert the one
+    distinction the constraint block exists to make.
+
+    Arithmetic on stored fields, so it stays inside the read path's contract --
+    no model call, and the same day read twice orders identically.
+    """
+    return (
+        _NECESSITY_ORDER.get(constraint.necessity, len(_NECESSITY_ORDER)),
+        -constraint.last_observed_at.timestamp(),
+    )
