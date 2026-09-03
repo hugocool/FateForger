@@ -129,24 +129,50 @@ concern and already ticketed elsewhere.
 Strict Pydantic. Everything the renderer needs and nothing it does not.
 
 ```
-StageLine     index: 1..5, name: str, next_action_label: str
-ContextItem   text: str, source: Literal["memory","calendar","user","planner"]
-DecidedItem   text: str, kind: Literal["assumption","fact"], ref: str,
-              steer: SteerControl | None
-SteerControl  label: str, fact_kind: FactKind, value: JsonValue   # increment B
-Control       action: Literal["proceed","back","cancel"], label: str
-StageCard     stage: StageLine
-              context: list[ContextItem]
-              decided: list[DecidedItem]
-              asking: PendingBlocker | None
-              controls: list[Control]
-              done: str | None          # set only on a receipt
-              artifact_id, artifact_revision, artifact_digest, session_key,
-              expected_revision                                 # press binding
+StageLine       index: int (ge=1, le=5), name: str, next_action_label: str
+ContextItem     text: str, source: Literal["memory","calendar","user","planner"]
+DecidedItem     text: str, kind: Literal["assumption","fact"], ref: str
+Asking          requirement_id: str, question: str, why_needed: str,
+                options: list[BlockerOption]
+
+# Controls are a discriminated union on `kind`, not one shape with an action
+# name: each control carries exactly the binding its own press needs, so a
+# renderer cannot draw a button whose value it has nothing to fill in.
+ApproveControl  kind: "approve", artifact_id: str, artifact_revision: int,
+                artifact_digest: str
+DayTypeControl  kind: "day_type", user_id: str, channel_id: str, thread_ts: str,
+                planned_date: str, tz_name: str
+CommitControl   kind: "commit", candidate_id: str, calendar_id: str | None,
+                day: str | None
+UndoControl     kind: "undo", tx_id: str
+BackControl     kind: "back"
+CancelControl   kind: "cancel"
+Control       = Annotated[Union[ApproveControl, DayTypeControl, CommitControl,
+                                UndoControl, BackControl, CancelControl],
+                          Field(discriminator="kind")]
+
+StageCard       stage: StageLine
+                session_key: str
+                expected_revision: int          # press binding, per card
+                context: list[ContextItem]
+                decided: list[DecidedItem]
+                asking: Asking | None
+                body: str                       # the stage's own text
+                controls: list[Control]
+                done: str | None                # set only on a receipt
 ```
 
-`StageCard.as_receipt(done: str)` returns a copy with `controls=[]`, `asking=None`, `done`
-set. A receipt is the same model through the same renderer; there is no second card type.
+Artifact identity (`artifact_id`, `artifact_revision`, `artifact_digest`) is on
+`ApproveControl`, not on the card: it binds the press, and a card that offers no approval has
+no artifact to bind. `session_key` and `expected_revision` stay on the card, because every
+control drawn from it carries both. `DecidedItem.steer` and `SteerControl` are not built; the
+`ref` is what increment B will steer by.
+
+`StageCard.as_receipt(done: str)` returns a copy with `asking=None`, `done` set, and every
+control dropped **except `UndoControl`** — an undo names a write that reached the calendar and
+outlives the card that announced it, while every other control asks the kernel to advance a
+stage that has moved on. A receipt is the same model through the same renderer; there is no
+second card type.
 
 Increment A derives the stage from the turn outcome: `AwaitingApproval(planning_day)` → 1;
 `AwaitingUser` → 1 when the pending blocker is a `DAY_FRAME` fact, otherwise 2; a skeleton → 3; a
@@ -166,9 +192,15 @@ steer press names it exactly, never by text.
 (`harness_bridge.py`) hand-writes the skeleton shape into the brief as prose when the target
 artifact is a skeleton — a restatement, not an imported schema; wiring the prompt to
 `SkeletonPayload.model_json_schema()` so the two cannot drift (#158, import-not-copy) is still
-open. Every mapper validates `artifact.payload` into its model **before** reading a field. This
-is the root fix for #267: a skeleton payload that carries `blocks` and no `markdown` fails
-validation loudly instead of rendering an empty card.
+open. A mapper validates `artifact.payload` into its model **before** reading a field: the
+skeleton through `SkeletonPayload`, the planning day through `PlanningDay` (JSON mode — the
+stored payload is a `model_dump(mode="json")` and the contracts are strict). This is the root
+fix for #267: a skeleton payload that carries `blocks` and no `markdown` fails validation
+loudly instead of rendering an empty card. Two payloads are not read that way yet. The
+candidate goes through the `ValidatedTimeboxCandidate` dataclass, lenient on purpose so a
+missing key is refused at the commit gate rather than inside a renderer; the commit receipt is
+still read key by key (`committed`, `tx_id`, `durable`, `reason`), because `ReceiptPayload`
+does not exist.
 
 `SkeletonPayload` carries `markdown: str` (the `# anchor` / `-` outline) and `reasoning: str`
 (the "talks it back" paragraph). No `blocks` field; blocks are the renderer's business.
@@ -239,7 +271,11 @@ The harness path stores no message ts for its cards; only the legacy proposal pa
 #### Kernel: `GoBack`
 
 `GoBack` (`_go_back`, `adaptive_timeboxing.py`) is the ladder as built, top match wins, never
-past a commit: committed → `TurnFailed(code="session_committed")`; a candidate exists →
+past a commit: the session holds a `COMMIT_RECEIPT` saying `committed` (or reads `committed`)
+→ `TurnFailed(code="session_committed")` — the receipt and not the status alone, because a
+revision reopens a committed session and `_invalidate` keeps its receipt, so a status-only
+guard let Back walk a day that is already on the calendar; any other non-`open` status
+(cancelled) → `TurnFailed(code="session_cancelled")`; a candidate exists →
 invalidate the skeleton (the run loop re-presents it); a skeleton exists → invalidate captured
 inputs and re-ask `skeleton.requested_activity`; the planning day is set → clear it (the
 planning-day gate re-presents the existing day artifact); nothing of the above →
@@ -265,9 +301,11 @@ is a `PendingBlocker` with two options — *this day* / *always* — and only th
 1. Press → `ArtifactActionMeta` → control table → `TimeboxIntent`. Typed text → interpreter →
    the same `TimeboxIntent`. Unchanged.
 2. Kernel applies the intent → `(outcome, snapshot)`.
-3. Registry lookup for `session_key`. If a card is registered **and** the outcome's artifact
-   (`artifact_id`, `revision`) differs from the registered one, the mapper builds the *old*
-   card from the current snapshot, `as_receipt(done=…)`, and the host `chat_update`s it.
+3. Registry lookup for `session_key`. If a card is registered at a *different* message than
+   the one this turn is drawing into, the registered card — the `StageCard` as it was shown,
+   kept by the registry rather than re-derived — is `as_receipt(done=…)`d and `chat_update`d
+   in place. A receipt drawn from the wrong state would be a lie; a missing one is cosmetic,
+   so the edit is best-effort and never fails the turn.
 4. Mapper builds the new `StageCard`; renderer posts it; registry records the new ts.
 5. `GoBack` follows the same path: step 3 rewrites the later stage's card to a receipt whose
    `done` reads "reopened"; step 4 re-posts the earlier stage live.
@@ -299,14 +337,22 @@ Unit tests opt in to the harness backend the way `test_timebox_session_surface.p
 - **Control table round-trip** — for every `StageCard` a mapper can produce, every drawn
   control decodes to an intent the kernel accepts at that revision (drive the kernel with the
   decoded intent and assert it is not `TurnFailed(invalid_intent|unsupported_intent)`).
-- **Kernel `GoBack`** — withdraws approval, invalidates dependents, clears blocker, refuses at
-  stage 1.
+- **Kernel `GoBack`** — one test per rung of the ladder: a written day (a `COMMIT_RECEIPT`, or
+  a `committed` status) refuses with `session_committed` and keeps its `planning_day`, before
+  and after a reopen; a cancelled session refuses with `session_cancelled`; a candidate is
+  dropped and the skeleton re-presented, with the skeleton's approval withdrawn; a skeleton is
+  dropped and `skeleton.requested_activity` re-asked, with the facts kept; a set `planning_day`
+  is cleared and its approval withdrawn; nothing left refuses with `nothing_to_go_back_to`.
 - **Registry / transition** — old card becomes a receipt, new card posted, ts recorded; the
   `chat_update` failure path posts the new card regardless.
 - **Payload models** — the 2026-09-02 skeleton payload (`blocks`, no `markdown`) fails
   validation (#267 regression).
-- **AST guard** — `stage_cards.py` imports nothing from `slack_sdk` and nothing under
-  `fateforger.slack_bot` except its own models.
+- **AST guard** — `stage_cards.py` imports nothing from `slack_sdk`, and nothing under
+  `fateforger.slack_bot` that renders or routes (`handlers`, `timeboxing_cards`,
+  `timeboxing_commit`) — an import from any of those would drag a Slack client in. What it does
+  import from `slack_bot` is `timebox_candidate`: the mapper arms the pending candidate as it
+  draws the stage-4 card, so the button it renders and the entry the commit gate spends are
+  minted together. That module is pure host state with no client of its own.
 - **E2e** — the five-stage walk is covered in A by `tests/replay` and
   `tests/unit/test_stage_receipts_in_the_turn.py`. The e2e walk with a Back press, extending
   `tests/e2e/test_slack_timebox_command.py` to assert the receipt edit and the re-posted card,
