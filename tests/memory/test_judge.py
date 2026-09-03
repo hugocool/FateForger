@@ -61,6 +61,25 @@ def test_stub_satisfies_the_protocol():
 
 
 def await_sync(coro):
+    """Run one coroutine from a synchronous test, owning the loop.
+
+    `asyncio.get_event_loop()` was used here, and it only worked by accident.
+    On Python 3.11 it returns the RUNNING loop if there is one, otherwise the
+    loop someone previously set, and raises when neither exists. These are
+    sync tests, so there is never a running loop -- they depended entirely on
+    some earlier test having left one set.
+
+    `pytest-asyncio` in auto mode creates a loop per async test and closes it,
+    so whether one is left behind depends on what ran before. `pytest
+    tests/memory` alone passed; `pytest tests/unit tests/memory` failed six
+    tests with `RuntimeError: There is no current event loop in thread
+    'MainThread'` (#269). The suite's result depended on the order the
+    directories were named in, in the one area that holds Hugo's real
+    preference corpus.
+
+    `asyncio.run` creates a fresh loop, runs the coroutine, and closes it. It
+    borrows nothing, so nothing can take it away.
+    """
     import asyncio
 
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)

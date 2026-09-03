@@ -40,7 +40,10 @@ def test_stub_returns_its_canned_class():
     import asyncio
 
     judge = StubJudge(decay_classes={"cap framing at 15m": DecayClass.PROJECT})
-    r = asyncio.get_event_loop().run_until_complete(
+    # `asyncio.run`, not `get_event_loop`: this is a sync test, so there
+    # is never a running loop and the old call depended on some earlier
+    # test having left one set. It made the suite order-dependent (#269).
+    r = asyncio.run(
         judge.tier(_obs("cap framing at 15m"))
     )
     assert r.decay_class is DecayClass.PROJECT
