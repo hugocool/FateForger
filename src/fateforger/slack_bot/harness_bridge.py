@@ -46,6 +46,7 @@ from fateforger.agents.timeboxing.session_contracts import (
 
 from .planning_result_mcp import OPEN_REQUIREMENTS_FILE_ENV
 from .dsh_progress_hook import COMMIT_FILE_ENV, PROGRESS_FILE_ENV, ProgressEvent
+from .schedule_render import candidate_display_text
 from .mrkdwn import to_mrkdwn
 from .progress_events import (
     ProgressPhase as TimeboxProgressPhase,
@@ -804,12 +805,11 @@ def ask(
         raise HarnessError("planner exited without the required typed planning result")
 
     # A candidate offered for approval is displayed from tmbx's own validated
-    # render, never from model prose that could describe a different draft.
-    answer = (
-        candidate.rendered.strip()
-        if candidate is not None and candidate.rendered.strip()
-        else (done.stdout or "").strip()
-    )
+    # result, never from model prose that could describe a different draft.
+    # From the resolved rows when the server sent them -- a person reads a
+    # schedule, not a handle table -- and from the table only for an older
+    # artifact that carries nothing else.
+    answer = candidate_display_text(candidate) or (done.stdout or "").strip()
     if not answer and planning_result is None:
         # Silence is only a failure when nothing else stands in for the answer.
         # A planning turn renders from its typed artifact, so an empty stdout

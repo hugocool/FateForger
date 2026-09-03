@@ -15,6 +15,12 @@ class ValidatedTimeboxCandidate:
     snapshot: dict[str, Any]
     patch: dict[str, Any]
     rendered: str = ""
+    #: The resolved rows behind `rendered`, for showing a person -- named `rows`
+    #: because `blocks` is already the planner's own readable submission in
+    #: the same artifact payload, and a merge would clobber it. Empty for an
+    #: artifact written before the server returned them, in which case the
+    #: table is all there is to show.
+    rows: tuple[dict[str, Any], ...] = ()
     candidate_id: str = ""
     owner_user_id: str = ""
 
@@ -42,11 +48,15 @@ class ValidatedTimeboxCandidate:
         fields = payload if isinstance(payload, dict) else {}
         snapshot = fields.get("snapshot")
         patch = fields.get("patch")
+        rows = fields.get("rows")
         return cls(
             digest=str(fields.get("digest") or ""),
             snapshot=snapshot if isinstance(snapshot, dict) else {},
             patch=patch if isinstance(patch, dict) else {},
             rendered=str(fields.get("rendered") or ""),
+            rows=tuple(r for r in rows if isinstance(r, dict))
+            if isinstance(rows, list)
+            else (),
         )
 
     def as_commit_basis(self) -> dict[str, Any]:
@@ -63,6 +73,7 @@ class ValidatedTimeboxCandidate:
             "patch": self.patch,
             "digest": self.digest,
             "rendered": self.rendered,
+            "rows": list(self.rows),
         }
 
 

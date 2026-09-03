@@ -69,6 +69,10 @@ def record_validation_result(
                 "snapshot": tool_input["snapshot"],
                 "patch": tool_input["patch"],
                 "rendered": response.get("rendered", ""),
+                # The same rows the table was built from, as data. The card
+                # that shows a person the candidate renders from these; the
+                # table stays for the model, which patches by handle.
+                "rows": _rows(response.get("rows")),
             },
         )
 
@@ -104,6 +108,7 @@ def read_validated_candidate(source: str | Path | None):
         snapshot=candidate_input["snapshot"],
         patch=candidate_input["patch"],
         rendered=rendered,
+        rows=tuple(_rows(payload.get("rows"))),
     )
 
 
@@ -180,6 +185,13 @@ def _candidate_digest(value: object) -> str | None:
     except (TypeError, ValueError):
         return None
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _rows(value: object) -> list[dict[str, Any]]:
+    """Only well-formed rows survive; a malformed one is dropped, never guessed."""
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, dict)]
 
 
 def _object(value: object) -> dict[str, Any]:

@@ -35,6 +35,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     TurnOutcome,
 )
 
+from .schedule_render import candidate_display_text
 from .timebox_candidate import PendingTimeboxCandidates, ValidatedTimeboxCandidate
 
 
@@ -393,7 +394,10 @@ def map_outcome(
             )
             calendar_id = owned.snapshot.get("calendar_id")
             day = owned.snapshot.get("day")
-            body = owned.rendered or "A validated plan is ready for your approval."
+            # A person reads a schedule, not a handle table (#272). An older
+            # artifact without rows still shows the table; the model-facing
+            # table is untouched, it is what the next turn patches against.
+            body = candidate_display_text(owned) or "A validated plan is ready for your approval."
             notice = commit_basis_notice(owned.snapshot, owned.patch)
             if notice:
                 body = f"{notice}\n\n{body}"

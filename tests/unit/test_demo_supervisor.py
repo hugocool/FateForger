@@ -29,6 +29,7 @@ from scripts.demo import (
     listener_pids,
     memory_store_path,
     dirty_at_start,
+    foreign_slack_bots,
     parse_listener_pids,
     profile_boots,
     port_accepting,
@@ -194,6 +195,57 @@ def test_an_explicit_file_root_is_fingerprinted_even_without_a_py_suffix(tmp_pat
     before = fingerprint_sources([launcher])
     launcher.write_text("print(2)\n")
     assert fingerprint_sources([launcher]) != before
+
+
+# ---------------------------------------------------------------------------
+# foreign_slack_bots -- two bots answering one workspace
+# ---------------------------------------------------------------------------
+
+
+_BOT = (
+    "/x/.venv/bin/python -c import asyncio,logging; logging.basicConfig(level=logging.INFO); "
+    "from fateforger.slack_bot.bot import start; asyncio.run(start())"
+)
+
+
+def test_a_bot_from_another_checkout_is_found() -> None:
+    """`slack-bot` binds no port, so `--reclaim` cannot see it.
+
+    A bot started from a worktree therefore survives a restart from the parent
+    and both answer the same Slack workspace. On 2026-09-03 that presented as a
+    mention going unacknowledged for 61 seconds — five eliminations chased into
+    `instant_ack`, which was working throughout.
+    """
+    ps = f"  111 {_BOT}\n  222 /usr/bin/python -m http.server\n"
+    found = foreign_slack_bots(runner=lambda cmd: _completed(ps))
+    assert list(found) == [111]
+
+
+def test_the_bot_we_are_about_to_replace_is_excluded() -> None:
+    """Otherwise a restart stops the bot it just started."""
+    ps = f"  111 {_BOT}\n"
+    assert foreign_slack_bots(exclude=111, runner=lambda cmd: _completed(ps)) == {}
+
+
+def test_it_matches_the_module_not_a_path() -> None:
+    """The point is bots from checkouts this supervisor knows nothing about.
+
+    Anchoring on any directory would find only the ones already accounted for,
+    which is the opposite of the requirement.
+    """
+    elsewhere = _BOT.replace("/x/.venv", "/somewhere/entirely/else/.venv")
+    found = foreign_slack_bots(runner=lambda cmd: _completed(f"  777 {elsewhere}\n"))
+    assert list(found) == [777]
+
+
+def test_an_unrelated_python_process_is_not_a_bot() -> None:
+    """Killing a stranger's process would be a much worse bug than the one fixed."""
+    ps = "  333 /usr/bin/python -c from fateforger.slack_bot import handlers\n"
+    assert foreign_slack_bots(runner=lambda cmd: _completed(ps)) == {}
+
+
+def test_a_failed_ps_reports_nothing_rather_than_guessing() -> None:
+    assert foreign_slack_bots(runner=lambda cmd: _completed("", 1)) == {}
 
 
 # ---------------------------------------------------------------------------

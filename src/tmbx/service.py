@@ -67,7 +67,7 @@ from .core.models import (
     Violation,
 )
 from .core.ops import MoveBlock, Patch, RemoveBlock, UpdateBlock, apply_ops
-from .core.render import render_plan
+from .core.render import plan_rows, render_plan
 from .core.unallocated import Gap, unallocated
 from .journal.models import EntryKind, JournalEntry, PatchOutcome
 from .journal.store import JournalStore
@@ -288,6 +288,11 @@ class ApplyResult(BaseModel):
 
     plan: Plan
     rendered: str
+    #: The rows `rendered` was built from, as data -- one dict per block keyed
+    #: by the table's column names. A host showing a person the schedule
+    #: renders from these; the table stays for the model, which patches by
+    #: handle. Same resolution, so the two cannot disagree.
+    rows: list[dict[str, str]]
     violations: list[Violation]
     overspecified: list[str]
     unallocated: list[Gap]
@@ -701,6 +706,7 @@ class PlanService:
         return ApplyResult(
             plan=patched,
             rendered=render_plan(patched, foreign_uids),
+            rows=plan_rows(patched, foreign_uids),
             violations=violations,
             overspecified=overspecified(patched),
             unallocated=unallocated(patched),
