@@ -118,9 +118,12 @@ Three units, each answerable in one sentence:
 
 The kernel stays the authority on which stage a session is in (`_derive_target`,
 `adaptive_timeboxing.py`) and which intents it accepts at a revision. Increment A gave it one
-new capability: a real `GoBack` (`_go_back`, `adaptive_timeboxing.py`). `ReviseArtifact` still
-returns `TurnFailed(code="unsupported_intent")` from `_apply_intent`; it is the stage-4 loop's
-concern and already ticketed elsewhere.
+new capability: a real `GoBack` (`_go_back`, `adaptive_timeboxing.py`), and — after the
+2026-09-03 live walk found "make the finances block 30 minutes" refused over the 4/5 card —
+a `ReviseArtifact` honoured at every stage (#258): the intent names the current artifact of
+any kind, the facts it carried and the instruction are filed, and the artifact is discarded
+with what derives from it (`_discard`); a receipt reopens as before. A candidate is redrafted
+from the same approved skeleton.
 
 ### Components
 
@@ -280,8 +283,11 @@ invalidate the skeleton (the run loop re-presents it); a skeleton exists → inv
 inputs and re-ask `skeleton.requested_activity`; the planning day is set → clear it (the
 planning-day gate re-presents the existing day artifact); nothing of the above →
 `TurnFailed(code="nothing_to_go_back_to")`. Facts are kept throughout — back is not forget.
-`ReviseArtifact` remains as it is; it is the stage-4 loop's concern and already ticketed
-elsewhere.
+`ReviseArtifact` against a skeleton or candidate files a `REVISION_INSTRUCTION` fact naming
+that artifact, files any facts the intent carried, and discards the artifact with its
+descendants — the approved skeleton under a revised candidate stands. Discarding an artifact
+retires the planner assumptions made to produce it (`TimeboxRequirements.target_of`), so the
+Decided list does not grow by one placement assumption per redraft.
 
 #### Steering facts (increment B)
 
@@ -386,7 +392,8 @@ Each increment is its own implementation plan.
 
 - Notion and TickTick as a task backend (own grilling ticket, map C). Stage 2's "from your
   board" section is the consumer and stays empty until then.
-- `ReviseArtifact` semantics in the kernel (stage-4 loop).
+- A revision's *quality* loop at stage 4 (diffing the redraft against the previous candidate,
+  steering by block); the kernel semantics landed in increment A.
 - Task marshalling as a session.
 - Deleting the legacy agent (`2026-08-24-harvest-then-delete…` spec).
 
