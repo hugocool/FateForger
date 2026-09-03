@@ -31,6 +31,13 @@
   - proposed commit message(s)
 - If commit/push is not explicitly requested, leave changes unstaged or staged locally and wait for user instruction.
 
+## Worktrees, e2e testing, and PRs (critical)
+- Worktrees are for building. The moment a change needs end-to-end testing (Slack, calendar, the live stack), it moves to a branch with a PR — e2e never runs out of a worktree.
+- Order: first rebase the branch on `main` (align with the other agent sessions on merge order — their PRs first if agreed), push, open the PR.
+- Then run it e2e the normal way: `scripts/demo.py start` from a clean checkout at the branch, stock config. **Never** repoint startup scripts, `.venv` editable installs, `PYTHONPATH`, or profile files at a worktree to make a test pass — the thing under test must be the thing that ships.
+- The PR body carries three things: the problem being solved (with the incident or issue it came from); the proof of the e2e rubric that was run — the actual Slack exchanges, journal lines, and `demo.py status` output, not a claim that it passed; and a `## Before merging` checklist for the human to tick before merging into `main`.
+- Why (2026-09-03): two bots answered one workspace on code 451 lines apart, a parent `.venv` was silently re-pointed at a worktree twice in one day, and "HEALTHY on a known sha" was true while every planning turn failed. Each came from testing against a repointed or stale setup instead of the real one.
+
 ## Issue/PR tracking & acceptance criteria (critical)
 Before any implementation work:
 - **System-of-record split (authoritative boundaries):**
