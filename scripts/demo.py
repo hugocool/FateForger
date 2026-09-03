@@ -779,6 +779,87 @@ def wait_for_port(port: int, pid: int, *, timeout: float = 30.0) -> bool:
     return False
 
 
+#: The import line every supervised Slack bot runs, whatever checkout started
+#: it. Matching on it identifies the PROCESS rather than a port, which is the
+#: only handle a socket-mode bot offers.
+_SLACK_BOT_MARKER = "from fateforger.slack_bot.bot import start"
+
+
+def foreign_slack_bots(*, exclude: int | None = None, runner: Runner = _run) -> dict[int, str]:
+    """Every Slack bot running on this machine, by process identity.
+
+    `slack-bot` binds no port -- it is socket mode -- so `--reclaim`, which
+    reclaims ports, cannot see it. A bot started from a worktree therefore
+    SURVIVES a restart from the parent, and two bots answer the same Slack
+    workspace on different code, each posting its own reply.
+
+    That is not hypothetical. On 2026-09-03 the parent's bot and one from
+    `.worktrees/post-mortem-2026-09-02` ran together on code 451 lines apart,
+    and it presented as a mention going unacknowledged for 61 seconds -- five
+    eliminations chased into `instant_ack`, which was working the whole time.
+    `status` reported the parent's bot HEALTHY on a known sha and said nothing
+    about the other.
+
+    A Slack workspace has one app, so a second bot is never a second worker.
+    It is a duplicate answer and a corrupted diagnosis.
+
+    Matching the module's own import line rather than a path: the point is to
+    find bots from checkouts this supervisor knows nothing about, so anchoring
+    on any particular directory would find only the ones already accounted for.
+    """
+    result = runner(["ps", "ax", "-o", "pid=,command="])
+    if result.returncode != 0:
+        return {}
+    found: dict[int, str] = {}
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped or _SLACK_BOT_MARKER not in stripped:
+            continue
+        head, _, command = stripped.partition(" ")
+        try:
+            pid = int(head)
+        except ValueError:
+            continue
+        if pid == exclude or pid == os.getpid():
+            continue
+        found[pid] = command.strip()
+    return found
+
+
+def stop_foreign_slack_bots(*, exclude: int | None = None) -> list[str]:
+    """Stop every other Slack bot, so exactly one answers the workspace.
+
+    Unconditional rather than behind `--reclaim`. A second bot is not a
+    resource conflict a person might legitimately want, like a held port; it is
+    two systems replying to the same message, and there is no configuration in
+    which that is the intent.
+
+    SIGTERM first and only escalating if it is ignored, so the bot's own
+    shutdown runs -- the same courtesy `reclaim_port` extends, for the same
+    reason: a bot killed outright leaves its supervisor's state file claiming a
+    process that is gone.
+    """
+    notes: list[str] = []
+    for pid, command in sorted(foreign_slack_bots(exclude=exclude).items()):
+        notes.append(f"slack-bot: another bot is answering this workspace — pid {pid} ({command[:90]})")
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                break
+            except PermissionError as exc:
+                notes.append(f"slack-bot: cannot signal pid {pid}: {exc}")
+                break
+            for _ in range(40):
+                if not pid_alive(pid):
+                    break
+                time.sleep(0.1)
+            if not pid_alive(pid):
+                notes.append(f"slack-bot: stopped pid {pid}")
+                break
+    return notes
+
+
 def reclaim_port(port: int) -> list[str]:
     """Signal whatever holds ``port``. Only ever called behind ``--reclaim``."""
     notes: list[str] = []
@@ -892,6 +973,21 @@ def cmd_status(repo_root: Path, as_json: bool, names: Sequence[str] = ()) -> int
     # Not a service, so it gets its own line rather than a column: the profile
     # is one shared thing every turn goes through, and it is the piece with no
     # process to be healthy.
+    supervised = {row["pid"] for row in rows if row.get("pid")}
+    intruders = {
+        pid: command
+        for pid, command in foreign_slack_bots().items()
+        if pid not in supervised
+    }
+    if intruders:
+        for pid, command in sorted(intruders.items()):
+            print(
+                f"\n{'slack-bot':<{width}}  ANOTHER BOT IS ANSWERING THIS WORKSPACE"
+                f"\n{'':<{width}}    pid {pid} ({command[:100]})"
+                f"\n{'':<{width}}    it binds no port, so a restart does not replace it;"
+                f" `demo.py start` now stops it"
+            )
+
     dirty = dirty_at_start(repo_root)
     if dirty:
         print(
@@ -905,7 +1001,11 @@ def cmd_status(repo_root: Path, as_json: bool, names: Sequence[str] = ()) -> int
     else:
         print(f"\n{'profile':<{width}}  {PROFILE} CANNOT BOOT -- no turn can run")
         print(f"{'':<{width}}    {broken}")
-    return 0 if (broken is None and all(not row["problems"] for row in rows)) else 1
+    return (
+        0
+        if (broken is None and not intruders and all(not row["problems"] for row in rows))
+        else 1
+    )
 
 
 def cmd_stop(repo_root: Path, names: Sequence[str] = ()) -> int:
@@ -964,6 +1064,12 @@ def cmd_start(repo_root: Path, reclaim: bool, names: Sequence[str] = ()) -> int:
                     continue
                 for note in reclaim_port(spec.port):
                     print(note)
+
+        if spec.name == "slack-bot":
+            # Before starting, not after: two bots overlapping even briefly
+            # both answer whatever arrives in that window.
+            for note in stop_foreign_slack_bots():
+                print(note)
 
         record = start_service(spec, repo_root, dotenv)
         records[spec.name] = record
