@@ -33,6 +33,7 @@ from fateforger.core.logging_config import (
     record_error,
     record_tool_call,
 )
+from fateforger.core.llm_attribution import llm_attribution
 from fateforger.haunt.event_draft_store import (
     DraftStatus,
     EventDraftPayload,
@@ -188,10 +189,19 @@ class PlanningCoordinator:
             f"User reply:\n{text}"
         )
         try:
-            response = await interpreter.on_messages(
-                [TextMessage(content=prompt, source=draft.user_id)],
-                CancellationToken(),
-            )
+            # Driven from a Slack listener rather than runtime.send_message,
+            # so AutoGen has no agent id to stamp on the event and the tokens
+            # would otherwise be indistinguishable from every other unnamed
+            # call in fateforger_llm_tokens_total.
+            with llm_attribution(
+                agent="planning_thread_reply_interpreter",
+                call_label="planning_thread_reply",
+                key=draft.user_id,
+            ):
+                response = await interpreter.on_messages(
+                    [TextMessage(content=prompt, source=draft.user_id)],
+                    CancellationToken(),
+                )
             content = getattr(getattr(response, "chat_message", None), "content", None)
             if isinstance(content, PlanningThreadReplyDecision):
                 decision = content

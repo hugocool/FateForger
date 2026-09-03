@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/.venv/bin/python -m fateforger.slack_bot.dsh_progress_hook",
+            "command": "${FF_HOOK_PYTHON:-${CLAUDE_PROJECT_DIR}/.venv/bin/python} -m fateforger.slack_bot.dsh_progress_hook",
             "timeout": 5
           }
         ]
@@ -18,17 +18,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/.venv/bin/python -m fateforger.slack_bot.dsh_timebox_attempt_guard_hook",
+            "command": "${FF_HOOK_PYTHON:-${CLAUDE_PROJECT_DIR}/.venv/bin/python} -m fateforger.slack_bot.dsh_timebox_attempt_guard_hook",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/.venv/bin/python -m fateforger.slack_bot.dsh_commit_gate_hook",
+            "command": "${FF_HOOK_PYTHON:-${CLAUDE_PROJECT_DIR}/.venv/bin/python} -m fateforger.slack_bot.dsh_commit_gate_hook",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/.venv/bin/python -m fateforger.slack_bot.dsh_progress_hook",
+            "command": "${FF_HOOK_PYTHON:-${CLAUDE_PROJECT_DIR}/.venv/bin/python} -m fateforger.slack_bot.dsh_progress_hook",
             "timeout": 5
           }
         ]

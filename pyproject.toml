@@ -51,6 +51,7 @@ dependencies = [
     # ultimate-notion; named here because a transitive pin is not a promise,
     # and losing it would break every harness reply rather than a doc build.
     "mistune (>=3.0.0,<4.0.0)",
+    "greenlet (>=3.1.0,<4.0.0)",
 ]
 
 [project.scripts]

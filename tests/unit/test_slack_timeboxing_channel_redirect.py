@@ -6,6 +6,23 @@ pytest.importorskip("autogen_agentchat")
 
 from autogen_agentchat.messages import HandoffMessage, TextMessage
 
+from datetime import date
+
+from fateforger.agents.timeboxing.adaptive_timeboxing import (
+    InMemoryPlanningSessionRepository,
+)
+from fateforger.agents.timeboxing.session_contracts import (
+    Advance,
+    ArtifactApproval,
+    ArtifactDraft,
+    ArtifactKind,
+    FactKind,
+    PlanningArtifact,
+    PlanningDay,
+    PlanningFact,
+    PlanningResult,
+    PlanningSessionSnapshot,
+)
 from fateforger.core.config import settings
 from fateforger.slack_bot import handlers
 from fateforger.slack_bot.focus import FocusManager
@@ -15,7 +32,10 @@ from fateforger.slack_bot.handlers import (
     route_slack_event,
 )
 from fateforger.slack_bot.messages import SlackBlockMessage, SlackThreadStateMessage
-from fateforger.slack_bot.timebox_candidate import ValidatedTimeboxCandidate
+from fateforger.slack_bot.timebox_candidate import (
+    PendingTimeboxCandidates,
+    ValidatedTimeboxCandidate,
+)
 from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID,
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
@@ -269,33 +289,133 @@ async def test_timeboxing_done_updates_thread_header_emoji(monkeypatch):
     )
 
 
+class _KernelRuntime(DummyRuntime):
+    """The receptionist still answers through AutoGen; timeboxing does not.
+
+    The handoff itself is an AutoGen decision, so `send_message` stays. What
+    changes after the redirect is who plans: the adaptive session kernel, whose
+    adapters hang off the same runtime object.
+    """
+
+    def __init__(self, *, repository, planner) -> None:
+        super().__init__()
+        self.timeboxing_session_store = repository
+        self.timeboxing_planner = planner
+        self.timeboxing_intent_interpreter = _AdvancingInterpreter()
+        self.timeboxing_calendar_id = "cal"
+        self.timeboxing_constraint_store = _ConstraintStore()
+
+
+class _ConstraintStore:
+    async def query_constraints(self, *, filters, limit):
+        return []
+
+
+class _AdvancingInterpreter:
+    async def interpret(self, user_text, snapshot):
+        return Advance()
+
+
+class _CandidatePlanner:
+    def __init__(self) -> None:
+        self.briefs = []
+
+    async def produce(self, brief, progress):
+        self.briefs.append(brief)
+        return PlanningResult(
+            artifact_updates=[
+                ArtifactDraft(
+                    kind=ArtifactKind.VALIDATED_CANDIDATE,
+                    payload={
+                        "digest": "a" * 64,
+                        "rendered": "canonical plan",
+                        "snapshot": {"calendar_id": "cal", "day": "2026-08-30"},
+                        "patch": {"ops": [{"op": "update", "h": "PR1", "n": "Focused"}]},
+                    },
+                    dependency_revisions={"skeleton": 1},
+                )
+            ]
+        )
+
+
+def _session_past_the_skeleton_gate(session_key: str) -> PlanningSessionSnapshot:
+    day = PlanningDay.lock_default(
+        value=date(2026, 8, 30), timezone="Europe/Amsterdam", lock_revision=1
+    )
+    skeleton = PlanningArtifact.create(
+        kind=ArtifactKind.SKELETON,
+        revision=1,
+        payload={"markdown": "## Sunday"},
+        dependency_revisions={"planning_day": 1},
+    )
+    return PlanningSessionSnapshot(
+        session_key=session_key,
+        revision=3,
+        owner_user_id="U1",
+        planning_day=day,
+        facts=[
+            PlanningFact(
+                fact_id="a1",
+                kind=FactKind.REQUESTED_ACTIVITY,
+                value="gym",
+                source="user",
+            )
+        ],
+        artifacts=[skeleton],
+        approvals=[
+            ArtifactApproval(
+                artifact_id=skeleton.artifact_id,
+                artifact_revision=skeleton.revision,
+                artifact_digest=skeleton.digest,
+                actor_user_id="U1",
+                session_revision=2,
+            )
+        ],
+    )
+
+
 @pytest.mark.asyncio
-async def test_harness_redirect_posts_owned_approval_card_in_timeboxing_thread(
+async def test_harness_redirect_offers_the_owned_approval_in_the_timeboxing_thread(
     monkeypatch,
 ):
-    """Catches returning from receptionist redirect before offering approval."""
+    """The plan and the control that commits it must land in the same thread.
+
+    Hugo starts by saying something in a channel and letting the receptionist
+    decide, so the planning session is filed under the *redirected* thread in
+    the timeboxing channel, not the thread he typed in. An approval offered
+    anywhere else names a session nobody continues, and the plan it guards
+    cannot be reached again.
+
+    The kernel route renders the approval control beside the plan rather than
+    posting it afterwards, so this asserts on the message the outcome edits.
+    """
 
     monkeypatch.setattr(
         settings, "slack_timeboxing_channel_id", "C_TIMEBOX", raising=False
     )
     monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
-    candidate = ValidatedTimeboxCandidate(
-        digest="a" * 64,
-        snapshot={"calendar_id": "primary", "day": "2026-08-30"},
-        patch={"ops": [{"op": "update", "h": "PR1", "n": "Focused"}]},
-        rendered="canonical plan",
+    monkeypatch.setattr(
+        handlers, "_pending_candidates", PendingTimeboxCandidates()
     )
 
-    async def fake_harness_turn(
-        *, text, thread_key, owner_user_id, on_phase, session_id=None
-    ):
-        handlers._pending_candidates.replace(
-            thread_key, candidate, owner_user_id=owner_user_id
-        )
-        return TextMessage(content="canonical plan", source="timeboxing_agent")
+    class _RecordingTmbx:
+        """The candidate stage reads a baseline; nothing here may leave the box."""
 
-    monkeypatch.setattr(handlers, "_harness_turn", fake_harness_turn)
-    runtime = DummyRuntime()
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def read(self, calendar_id, day):
+            return {"ok": True, "calendar_id": calendar_id, "day": day}
+
+    monkeypatch.setattr(
+        "fateforger.slack_bot.tmbx_client.TmbxClient", _RecordingTmbx
+    )
+
+    repository = InMemoryPlanningSessionRepository(
+        [_session_past_the_skeleton_gate("C_TIMEBOX:tb_root")]
+    )
+    planner = _CandidatePlanner()
+    runtime = _KernelRuntime(repository=repository, planner=planner)
     client = DummyClient()
     focus = FocusManager(
         ttl_seconds=3600, allowed_agents=["receptionist_agent", "timeboxing_agent"]
@@ -316,14 +436,36 @@ async def test_harness_redirect_posts_owned_approval_card_in_timeboxing_thread(
         client=client,
     )
 
-    approval_posts = [
+    assert [brief.session_key for brief in planner.briefs] == ["C_TIMEBOX:tb_root"]
+
+    approval_updates = [
+        update
+        for update in client.updates
+        if FF_HARNESS_APPROVE_ACTION_ID in str(update.get("blocks"))
+    ]
+    assert len(approval_updates) == 1
+    assert approval_updates[0]["channel"] == "C_TIMEBOX"
+    # The outcome edits the "thinking" message, so the thread it belongs to is
+    # the thread that message was posted into.
+    processing = [
         post
         for post in client.posted
-        if FF_HARNESS_APPROVE_ACTION_ID in str(post.get("blocks"))
+        if post.get("channel") == "C_TIMEBOX"
+        and post.get("thread_ts") == "tb_root"
     ]
-    assert len(approval_posts) == 1
-    assert approval_posts[0]["channel"] == "C_TIMEBOX"
-    assert approval_posts[0]["thread_ts"] == "tb_root"
-    action = approval_posts[0]["blocks"][1]["elements"][0]
+    assert processing, client.posted
+    assert approval_updates[0]["ts"] == "tb_proc"
+
+    action = next(
+        element
+        for block in approval_updates[0]["blocks"]
+        for element in block.get("elements") or ()
+        if element.get("action_id") == FF_HARNESS_APPROVE_ACTION_ID
+    )
     payload = HarnessApproveActionPayload.model_validate_json(action["value"])
     assert payload.thread_key == "C_TIMEBOX:tb_root"
+    assert payload.expected_revision is not None
+    # Owned by the person who asked, so nobody else's press can spend it.
+    assert (
+        handlers._pending_candidates.peek("C_TIMEBOX:tb_root").owner_user_id == "U1"
+    )

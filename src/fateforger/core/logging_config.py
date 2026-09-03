@@ -192,8 +192,47 @@ _STRUCTURED_EXTRACT_FIELDS: frozenset[str] = frozenset(
         "session_key",
         "thread_ts",
         "channel_id",
+        # The three the codebase actually passes. Their absence meant JSON
+        # mode dropped every extra in use, exactly as the plain formatter did.
+        "error_type",
+        "quality_snapshot",
+        "reason_code",
     }
 )
+
+
+#: Attribute names the logging module puts on every record. Taken from a real
+#: record rather than typed out, so a Python upgrade that adds one cannot turn
+#: it into spurious `taskName=None` on every line. These are logging's own
+#: identifiers, not anybody's words.
+_STANDARD_RECORD_ATTRS: frozenset[str] = frozenset(
+    logging.LogRecord(
+        name="", level=0, pathname="", lineno=0, msg="", args=(), exc_info=None
+    ).__dict__
+) | {"message", "asctime", "taskName"}
+
+
+class ExtraAwareFormatter(logging.Formatter):
+    """Render the message, then whatever ``extra=`` carried.
+
+    The stdlib formatter renders the format string and nothing else, so every
+    ``logger.error(..., extra={"error_type": ...})`` in this codebase wrote a
+    field that reached no output at all. That is the worst shape a diagnostic
+    can take: the author believes the failure is explained, and the reader sees
+    a bare sentence.
+
+    Appended rather than interpolated, so a record with no extras renders
+    byte-identically to before and existing greps keep working.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        base = super().format(record)
+        extras = [
+            f"{key}={value}"
+            for key, value in record.__dict__.items()
+            if key not in _STANDARD_RECORD_ATTRS and not key.startswith("_")
+        ]
+        return f"{base} {' '.join(extras)}" if extras else base
 
 
 class StructuredJsonFormatter(logging.Formatter):
@@ -310,6 +349,20 @@ class StructuredJsonFormatter(logging.Formatter):
         }
 
 
+def _install_extra_aware_formatter() -> None:
+    """Give the root stream handlers a formatter that shows ``extra=``.
+
+    Keeps the stdlib default format so existing lines are unchanged; only
+    records actually carrying extras grow a suffix.
+    """
+
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, logging.StreamHandler):
+            handler.setFormatter(
+                ExtraAwareFormatter("%(levelname)s:%(name)s:%(message)s")
+            )
+
+
 def configure_logging(*, default_level: str | int = "INFO") -> None:
     """
     Configure application logging with sane defaults.
@@ -318,6 +371,10 @@ def configure_logging(*, default_level: str | int = "INFO") -> None:
     """
 
     logging.basicConfig(level=_coerce_level(os.getenv("LOG_LEVEL", default_level)))
+    # Without this the root handler keeps the stdlib formatter, which renders
+    # the format string and drops every ``extra=`` in the codebase. Applied
+    # before _configure_json_stdout so JSON mode, when enabled, still wins.
+    _install_extra_aware_formatter()
     _configure_prometheus_exporter()
     _configure_json_stdout()
     _configure_llm_audit_pipeline()
@@ -429,7 +486,17 @@ def _configure_llm_audit_pipeline() -> None:
     if not _is_truthy(os.getenv("OBS_LLM_AUDIT_ENABLED", "1")):
         _LLM_AUDIT_SINK = "off"
         return
-    sink = _coerce_llm_audit_sink(os.getenv("OBS_LLM_AUDIT_SINK", "loki"))
+    # `file`, not `loki`. The default was loki, pointing at
+    # http://localhost:3100 -- which on this machine is figjam-bridge, and it
+    # answered every push with 426. The pipeline logged "enabled (sink=loki)"
+    # on every start and discarded every record, so `timebox_log_query.py llm`
+    # read an empty index and the per-call token detail nobody could find was
+    # being thrown away at the last hop.
+    #
+    # A file always exists. Loki is worth having and is one env var away, but
+    # it should be opted into rather than assumed, because the failure of a
+    # sink nobody checks is indistinguishable from having nothing to say.
+    sink = _coerce_llm_audit_sink(os.getenv("OBS_LLM_AUDIT_SINK", "file"))
     if sink == "off":
         _LLM_AUDIT_SINK = "off"
         return
@@ -703,7 +770,11 @@ def _coerce_autogen_events_full_payload_mode(value: str | None) -> str:
 
 
 def _coerce_llm_audit_sink(value: str | None) -> str:
-    sink = (value or "loki").strip().lower()
+    # Two defaults for one setting is one too many: this said "loki" while the
+    # caller said "loki" separately, so fixing the caller alone left the
+    # fallback still pointing at a sink that refuses. They agree now, and a
+    # test asserts it.
+    sink = (value or "file").strip().lower()
     if sink not in {"off", "loki", "file", "both"}:
         raise ValueError("OBS_LLM_AUDIT_SINK must be one of: off, loki, file, both")
     return sink
@@ -993,9 +1064,15 @@ def _record_observability_event(payload: dict[str, Any], *, record_level: int) -
     agent = _bounded_label(
         _sanitize_agent_label(event.agent_id) or event.agent_id, fallback="unknown"
     )
+    from fateforger.core.llm_attribution import current_call_label  # noqa: PLC0415
+
     call_label = _bounded_label(
         _derive_call_label(
-            call_label=event.call_label,
+            # AutoGen's LLMCallEvent has no call_label of its own, so for an
+            # in-pipeline call this is always the context var -- which is the
+            # only thing that can tell one of an agent's assistants from
+            # another.
+            call_label=event.call_label or current_call_label(),
             stage=event.stage,
             agent_id=event.agent_id,
             event_type=event.type,

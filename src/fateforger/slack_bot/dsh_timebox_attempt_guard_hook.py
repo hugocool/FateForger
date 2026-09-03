@@ -112,11 +112,32 @@ def _record_exhaustion(attempt: int) -> None:
         return
 
 
+#: Attempts a planner gets to converge on a committable patch.
+#:
+#: Was 5, with the resolver wrapping the environment variable in `min(5, ...)`
+#: so the knob could not raise it and did not say so. Five was tuned against an
+#: in-memory calendar with an empty day, where nothing has to be fitted around
+#: anything and one or two attempts suffice.
+#:
+#: On the first session against a real calendar the planner spent all five and
+#: reported it was one five-minute change from converging -- lunch overlapping a
+#: pre-existing meeting by five minutes. A day with events in it legitimately
+#: needs more iterations than an empty one.
+#:
+#: It stays a **ceiling**, not a soft default -- attempts are expensive. The
+#: turn that exhausted five of them took 604 seconds, so roughly 150s each, and
+#: an unbounded budget trades a failed turn for one nobody will wait out. Eight
+#: is the smallest number the evidence supports: the planner was one change from
+#: converging at five.
+_MAX_ATTEMPTS_CEILING = 8
+
+
 def _max_attempts() -> int:
     try:
-        return min(5, max(1, int(os.environ.get(_MAX_ATTEMPTS_ENV, "5"))))
+        configured = int(os.environ.get(_MAX_ATTEMPTS_ENV, _MAX_ATTEMPTS_CEILING))
     except ValueError:
-        return 5
+        return _MAX_ATTEMPTS_CEILING
+    return min(_MAX_ATTEMPTS_CEILING, max(1, configured))
 
 
 def main() -> int:

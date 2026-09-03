@@ -68,6 +68,7 @@ from .core.models import (
 )
 from .core.ops import MoveBlock, Patch, RemoveBlock, UpdateBlock, apply_ops
 from .core.render import render_plan
+from .core.unallocated import Gap, unallocated
 from .journal.models import EntryKind, JournalEntry, PatchOutcome
 from .journal.store import JournalStore
 
@@ -275,12 +276,21 @@ class ApplyResult(BaseModel):
     committable while carrying violations is exactly the mismatch #170 was.
     It answers only "would ``commit`` refuse this plan?" — it says nothing
     about calendar drift, which ``apply`` deliberately never checks.
+
+    ``overspecified`` and ``unallocated`` are the two directions of least
+    commitment and neither gates ``committable``: a day may be pinned harder
+    than it needs to be, or have three hours in the middle with nothing in
+    them, and still be a day the calendar will accept. They are what a
+    caller reads to tell a reasoned plan from an arbitrary one — which is
+    the difference the user cannot see in a rendered plan and cannot correct
+    without being told.
     """
 
     plan: Plan
     rendered: str
     violations: list[Violation]
     overspecified: list[str]
+    unallocated: list[Gap]
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -292,6 +302,11 @@ class CommitResult(BaseModel):
     tx_id: str | None
     committed: bool
     conflicts: list[str] = []
+    #: Which calendar the write actually reached. "committed": true against
+    #: FakeCalendar is a true statement about an in-memory dict, and read
+    #: alone it is indistinguishable from a real day being scheduled.
+    calendar_backend: str = ""
+    durable: bool = False
 
 
 _FALLBACK_TYPE = ET.M
@@ -682,6 +697,7 @@ class PlanService:
             rendered=render_plan(patched, foreign_uids),
             violations=violations,
             overspecified=overspecified(patched),
+            unallocated=unallocated(patched),
         )
 
     async def commit(
@@ -715,6 +731,8 @@ class PlanService:
                         tx_id=idempotency_key,
                         committed=True,
                         conflicts=[],
+                        calendar_backend=getattr(self.calendar, "backend", ""),
+                        durable=bool(getattr(self.calendar, "durable", False)),
                     )
                 return await self._commit_once(
                     snapshot,
@@ -801,7 +819,13 @@ class PlanService:
             before=before,
             post_etags=post_snapshot.etags,
         )
-        return CommitResult(tx_id=tx_id, committed=True, conflicts=conflicts)
+        return CommitResult(
+            tx_id=tx_id,
+            committed=True,
+            conflicts=conflicts,
+            calendar_backend=getattr(self.calendar, "backend", ""),
+            durable=bool(getattr(self.calendar, "durable", False)),
+        )
 
     async def undo(self, tx_id: str) -> CommitResult:
         """Restore the pre-commit state, refusing to clobber newer edits.
@@ -867,7 +891,12 @@ class PlanService:
             undoes_tx=tx_id,
         )
         await self.store.append(entry)
-        return CommitResult(tx_id=undo_tx, committed=True)
+        return CommitResult(
+            tx_id=undo_tx,
+            committed=True,
+            calendar_backend=getattr(self.calendar, "backend", ""),
+            durable=bool(getattr(self.calendar, "durable", False)),
+        )
 
     async def _write(
         self,

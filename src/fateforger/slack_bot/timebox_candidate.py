@@ -23,6 +23,48 @@ class ValidatedTimeboxCandidate:
             return self
         return replace(self, candidate_id=secrets.token_urlsafe(18))
 
+    @classmethod
+    def from_artifact_payload(cls, payload: object) -> ValidatedTimeboxCandidate:
+        """Read the commit basis out of a validated-candidate artifact.
+
+        These four keys are the whole contract between the planner that writes
+        them and the two places that read them, and each side spelled it out
+        for itself with no type anywhere -- so `digest` could be renamed on one
+        side and the other would go on returning "".
+
+        The coercion stays lenient on purpose. An artifact that is missing a
+        key has to render as an empty basis and be refused at the commit gate,
+        which already checks it; raising here would put the failure inside a
+        Slack renderer, where it reaches the user as a turn that went wrong
+        rather than as a plan that cannot be committed.
+        """
+
+        fields = payload if isinstance(payload, dict) else {}
+        snapshot = fields.get("snapshot")
+        patch = fields.get("patch")
+        return cls(
+            digest=str(fields.get("digest") or ""),
+            snapshot=snapshot if isinstance(snapshot, dict) else {},
+            patch=patch if isinstance(patch, dict) else {},
+            rendered=str(fields.get("rendered") or ""),
+        )
+
+    def as_commit_basis(self) -> dict[str, Any]:
+        """The same four keys, written the way `from_artifact_payload` reads.
+
+        The opaque id and the owner are deliberately absent: they are this
+        host's record of who may spend the candidate, not part of what the
+        planner produced, and putting them in an artifact payload would make
+        them look forgeable by whoever writes the next one.
+        """
+
+        return {
+            "snapshot": self.snapshot,
+            "patch": self.patch,
+            "digest": self.digest,
+            "rendered": self.rendered,
+        }
+
 
 class PendingTimeboxCandidates:
     """Per-thread proposals; replacement invalidates all older buttons."""

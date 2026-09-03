@@ -2,8 +2,7 @@ import os
 import sys
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
+from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
@@ -15,23 +14,30 @@ os.environ.setdefault("SLACK_BOT_TOKEN", "alembic-dummy")
 os.environ.setdefault("SLACK_SIGNING_SECRET", "alembic-dummy")
 os.environ.setdefault("OPENAI_API_KEY", "alembic-dummy")
 os.environ.setdefault("CALENDAR_WEBHOOK_SECRET", "alembic-dummy")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///alembic.db")
 
-# Import our models
-from productivity_bot.models import Base
+# DATABASE_URL is deliberately NOT defaulted here. It was, to "sqlite:///alembic.db",
+# and get_url() reads the environment before alembic.ini -- so with the real URL
+# living in .env and never exported, every `alembic upgrade head` migrated a
+# throwaway file and reported success. The database the application actually opens
+# went years without the migrations that were supposedly applied to it, and nothing
+# ever failed. A default that silently redirects a write is worse than a missing
+# one, which is why the remaining dummies above are credentials nothing writes to.
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
 
 # Interpret the config file for Python logging.
-# This line sets up loggers basically.
+# disable_existing_loggers defaults to True, which silences every logger already
+# configured in the host process. That is harmless for the `alembic` CLI, which
+# owns its process, and not harmless in-process: a test that runs a migration
+# leaves pytest's caplog handler detached, so an unrelated test later in the
+# same session sees no records and fails only when the two run together.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-# add your model's MetaData object here
-# for 'autogenerate' support
-target_metadata = Base.metadata
+# Migrations are hand-written; partial ORM metadata would make autogenerate unsafe.
+target_metadata = None
 
 
 # Get the database URL from environment variable or use the one in alembic.ini

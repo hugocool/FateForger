@@ -1188,3 +1188,36 @@ async def test_the_calendar_default_anchor_source_is_never_persisted(empty_servi
 
     plan, _snapshot = await svc.read("primary", DAY)
     assert plan.by_handle("MTG1").anchor_source == "calendar"
+
+
+async def test_a_preview_reports_the_hours_nothing_claims(empty_service):
+    """The dual of ``overspecified``, through the service. A day can be
+    *under*-determined — hours with nothing in them — and a preview that
+    reports only violations and gratuitous pins gives an agent no way to
+    tell a reasoned placement from an arbitrary one. Three unclaimed hours
+    between two named blocks is arithmetic the caller can act on; whether
+    they matter is a judgement, and stays outside tmbx.
+    """
+    svc = empty_service
+
+    async def _add(after, h, n, t, p):
+        _, snapshot = await svc.read("primary", DAY)
+        assert (
+            await svc.commit(
+                snapshot,
+                Patch(ops=[AddBlock(after=after, h=h, n=n, t=t, p=p, anchor_source="user")]),
+            )
+        ).committed
+
+    await _add(None, "DW1", "Deep work", ET.DW,
+               FixedStart(st=time(9, 30), dur=timedelta(hours=2)))
+    await _add("DW1", "GY1", "Gym", ET.H,
+               FixedStart(st=time(14, 30), dur=timedelta(hours=1)))
+
+    _, snapshot = await svc.read("primary", DAY)
+    preview = await svc.apply(snapshot, Patch(ops=[UpdateBlock(h="DW1", n="Focus")]))
+
+    assert [gap.model_dump(mode="json") for gap in preview.unallocated] == [
+        {"start": "11:30:00", "end": "14:30:00", "duration": "PT3H",
+         "after": "DW1", "before": "GY1"},
+    ]

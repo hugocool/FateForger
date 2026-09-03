@@ -58,14 +58,69 @@ class CommitOutcomeUnknown(RuntimeError):
     """A commit was dispatched but no definitive result could be reconciled."""
 
 
+class ReadUnavailable(RuntimeError):
+    """The calendar snapshot could not be read from tmbx."""
+
+
 class TmbxClient:
     """The only thing here that knows tmbx exists."""
 
     def __init__(self, *, server_url: str | None = None, timeout: float = 20.0) -> None:
-        url = server_url or os.environ.get("TMBX_MCP_URL") or _TMBX_ENDPOINT.policy.default_url
+        url = (
+            server_url
+            or os.environ.get("TMBX_MCP_URL")
+            or _TMBX_ENDPOINT.policy.default_url
+        )
         self._client = StreamableHttpMcpClient(
             resolver=_TMBX_ENDPOINT, server_url=url, timeout=timeout
         )
+
+    async def read(self, calendar_id: str, day: str) -> dict[str, Any]:
+        """Read the exact host-selected calendar/day without external effects.
+
+        A read can be retried safely because it precedes any planner-owned
+        write. Provider exception text stays behind this boundary: callers get
+        one stable typed failure and logs retain only the exception class.
+        """
+        from autogen_core import CancellationToken
+
+        unavailable_message = "calendar service unavailable"
+        request = {"calendar_id": calendar_id, "day": day}
+        for attempt in range(2):
+            try:
+                tools = await self._client.get_tools()
+            except Exception as exc:  # noqa: BLE001 - provider boundary is sanitized
+                logger.warning(
+                    "plan_read tool discovery failed attempt=%d error_type=%s",
+                    attempt + 1,
+                    type(exc).__name__,
+                )
+                continue
+            tool = next(
+                (candidate for candidate in tools if candidate.name == "plan_read"),
+                None,
+            )
+            if tool is None:
+                unavailable_message = "calendar read unavailable"
+                continue
+            try:
+                raw = await tool.run_json(request, CancellationToken())
+            except Exception as exc:  # noqa: BLE001 - provider boundary is sanitized
+                logger.warning(
+                    "plan_read failed attempt=%d error_type=%s",
+                    attempt + 1,
+                    type(exc).__name__,
+                )
+                continue
+            payload = _as_payload(raw, operation="plan_read")
+            if payload.get("reason") in {
+                "unparseable_response",
+                "unexpected_response",
+            }:
+                unavailable_message = "calendar read returned no trustworthy snapshot"
+                continue
+            return payload
+        raise ReadUnavailable(unavailable_message)
 
     async def undo(self, tx_id: str) -> dict[str, Any]:
         """Reverse one committed transaction, by the id that commit returned.
@@ -192,9 +247,7 @@ def _text_of(raw: Any) -> str:
         return raw
     blocks = raw if isinstance(raw, (list, tuple)) else [raw]
     parts = [
-        block.text
-        for block in blocks
-        if isinstance(getattr(block, "text", None), str)
+        block.text for block in blocks if isinstance(getattr(block, "text", None), str)
     ]
     return "".join(parts) if parts else str(raw)
 
@@ -202,6 +255,7 @@ def _text_of(raw: Any) -> str:
 __all__ = [
     "CommitOutcomeUnknown",
     "CommitUnavailable",
+    "ReadUnavailable",
     "TmbxClient",
     "UndoUnavailable",
 ]

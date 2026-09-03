@@ -122,22 +122,19 @@ Rules
 """.strip()
 
 
-FRAME_SLOT_CANONICAL_VALUES: frozenset[str] = frozenset({
-    "morning_ritual",
-    "commute_out",
-    "work_window",
-    "lunch_break",
-    "commute_back",
-    "gym",
-    "pre_gym_meal",
-    "dinner",
-    "evening_wind_down",
-    "music_making",
-    "shutdown",
-    "dog_walk",
-    "sleep_target",
-    "reading",
-})
+#: Deliberately absent: there is no canonical list of a person's daily slots.
+#:
+#: There was one -- fourteen hand-typed slugs. Measured against the anchors the
+#: memory server had actually learned from Hugo: ten of the fourteen named
+#: things he has never once said (`dog_walk`, `music_making`, `pre_gym_meal`,
+#: `sleep_target`, `work_window`), while fourteen things he does do were absent
+#: (`fika`, `market_visits`, `nature_reservation`, `prep_food`, `admin`,
+#: `finance`). Wrong in both directions, which is what a hand-typed model of
+#: somebody else's life is always going to be.
+#:
+#: The right vocabulary already exists and is discovered rather than declared:
+#: `anchors` in the memory corpus, 29 of them, grown from what the user said.
+#: A slot is an anchor, and an anchor is a row.
 
 CONSTRAINT_INTERPRETER_PROMPT = """
 You are Schedular, interpreting whether a message contains explicit scheduling constraints/preferences and what scope the user intended.
@@ -170,13 +167,11 @@ object with the following fields:
 - category (string): open category string. Use one of these well-known values when applicable:
     sleep | work | exercise | family | pet | social | transport | hobby | nutrition | health | learning
   Use any other meaningful string for categories not in this list.
-- frame_slot (string or null): use this to anchor the constraint to a fixed daily slot.
-  Canonical values (reuse when an exact match exists):
-    morning_ritual | commute_out | work_window | lunch_break | commute_back |
-    gym | pre_gym_meal | dinner | evening_wind_down | music_making |
-    shutdown | dog_walk | sleep_target | reading
-  If the activity is genuinely novel and none of the above fits, invent a concise
-  lowercase_snake_case slug (e.g. "saxophone_practice", "evening_run").
+- frame_slot (string or null): use this to anchor the constraint to a fixed daily slot,
+  as a concise lowercase_snake_case slug naming the recurring activity itself
+  ("morning_ritual", "evening_shutdown_ritual", "saxophone_practice").
+  Reuse the same slug across turns for the same slot; the vocabulary is the
+  user's own habits, not a fixed list.
   Never leave frame_slot null for a recurring daily routine or lifestyle anchor.
   Null is only correct for one-off or purely conditional constraints.
 - is_startup_prefetch (bool): true when this constraint anchors the day and should be loaded at
