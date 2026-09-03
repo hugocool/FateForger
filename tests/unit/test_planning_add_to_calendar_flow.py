@@ -5,6 +5,7 @@ import pytest
 
 pytest.importorskip("autogen_agentchat")
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ from autogen_core import AgentId
 from fateforger.agents.schedular.messages import UpsertCalendarEvent, UpsertCalendarEventResult
 from fateforger.haunt.event_draft_store import DraftStatus, EventDraftPayload
 from fateforger.slack_bot.planning import PlanningCoordinator, ThreadReplyOutcome
+from fateforger.slack_bot.planning_surface import InterpretedPlanningTurn
 from fateforger.slack_bot.surface_intents import SurfaceIntentInterpreter
 
 VALID_EVENT_URL = (
@@ -562,3 +564,36 @@ async def test_interpreter_failure_on_a_surface_thread_raises():
         await coordinator.maybe_handle_thread_reply(
             channel_id="D1", thread_ts="123.456", text="Okay!", thread_respond=_thread_respond
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,event_url,expected_context_substring",
+    [
+        (DraftStatus.SUCCESS, VALID_EVENT_URL, "already added"),
+        (DraftStatus.PENDING, None, "being added"),
+    ],
+)
+async def test_a_settled_draft_routes_its_reply_with_context_and_touches_nothing(
+    status, event_url, expected_context_substring
+):
+    draft = replace(_draft_fixture(), status=status, event_url=event_url)
+    store = _FakeDraftStore(draft)
+    runtime = _DummyRuntime(None)
+    client = _FakeClient()
+    model_client = _SchemaOutputClient({"decision": "none"})
+    coordinator = _coordinator(store, runtime, client, model_client)
+
+    async def _thread_respond(*, text: str, blocks=None):
+        raise AssertionError("a settled draft must post nothing")
+
+    reply = await coordinator.maybe_handle_thread_reply(
+        channel_id="D1", thread_ts="123.456", text="Okay!", thread_respond=_thread_respond
+    )
+
+    assert reply.outcome is ThreadReplyOutcome.NO_PRESS
+    assert expected_context_substring in (reply.context or "")
+    assert runtime.calls == []
+    assert store.status_updates == []
+    assert client.updates == []
+    assert model_client.calls[0][1] is InterpretedPlanningTurn
