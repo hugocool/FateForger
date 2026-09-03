@@ -70,6 +70,7 @@ from fateforger.slack_bot.messages import (
     SlackBlockMessage,
     SlackThreadStateMessage,
 )
+from fateforger.slack_bot.mrkdwn import to_mrkdwn
 from fateforger.slack_bot.planning import (
     FF_EVENT_ADD_ACTION_ID,
     FF_EVENT_ADD_DISABLED_ACTION_ID,
@@ -609,8 +610,11 @@ def _with_agent_attribution(payload: dict, agent_type: str) -> dict:
             }
         )
         return {"text": payload.get("text") or "", "blocks": decorated}
+    # The model writes markdown; Slack renders mrkdwn. The agent id was a
+    # debugging label that reached users as `*admonisher_agent*` on
+    # 2026-09-03; the persona already names who is speaking.
     text = payload.get("text") or "(no response)"
-    return {"text": f"*{agent_type}*\n{text}"}
+    return {"text": to_mrkdwn(text)}
 
 
 def _origin_label(event: dict) -> str:

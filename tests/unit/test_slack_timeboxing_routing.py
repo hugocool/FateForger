@@ -9,7 +9,7 @@ from autogen_core import AgentId
 
 from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
 from fateforger.slack_bot.focus import FocusManager
-from fateforger.slack_bot.handlers import route_slack_event
+from fateforger.slack_bot.handlers import _with_agent_attribution, route_slack_event
 from fateforger.slack_bot.messages import SlackBlockMessage
 from fateforger.slack_bot.planning import ThreadReply, ThreadReplyOutcome
 
@@ -485,3 +485,15 @@ async def test_a_handoff_root_quotes_the_users_words_not_the_card_context(monkey
     root_text = handoff_roots[0]["text"]
     assert "why 10:38?" in root_text
     assert "CARD CONTEXT" not in root_text
+
+
+def test_a_text_reply_is_mrkdwn_without_an_agent_label():
+    payload = _with_agent_attribution({"text": "**Focus Session**: pick one task."}, "admonisher_agent")
+
+    assert payload == {"text": "*Focus Session*: pick one task."}
+
+
+def test_a_block_reply_keeps_its_context_footer():
+    payload = _with_agent_attribution({"text": "t", "blocks": [{"type": "section"}]}, "planner_agent")
+
+    assert payload["blocks"][-1]["type"] == "context"
