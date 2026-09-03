@@ -510,6 +510,7 @@ def intent_from_date_action(value: str) -> TimeboxActionEnvelope | None:
 
 __all__ = [
     "ArtifactActionMeta",
+    "Clock",
     "DayFrameDraft",
     "DayFrameFactDraft",
     "InterpretedTimeboxTurn",
