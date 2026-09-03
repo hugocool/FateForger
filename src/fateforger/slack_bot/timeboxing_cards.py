@@ -33,6 +33,7 @@ from .messages import (
     SlackBlockMessage,
 )
 from .timebox_candidate import PendingTimeboxCandidates, ValidatedTimeboxCandidate
+from .schedule_render import candidate_display_text
 from .timeboxing_commit import build_timebox_date_card
 from .timeboxing_host import planning_timezone
 from .timeboxing_intents import ArtifactActionMeta
@@ -430,7 +431,11 @@ def render_candidate(
     owned = pending.replace(session_key, candidate, owner_user_id=actor_user_id)
     calendar_id = owned.snapshot.get("calendar_id")
     day = owned.snapshot.get("day")
-    text = owned.rendered or "A validated plan is ready for your approval."
+    # A person reads a schedule, not a handle table. The rows arrived with
+    # #272; an older artifact without them still shows the table, because a
+    # table beats a blank card. The model-facing table is untouched -- it is
+    # what the next turn patches against.
+    text = candidate_display_text(owned) or "A validated plan is ready for your approval."
     return SlackBlockMessage(
         text=text[:SLACK_MAX_TEXT_CHARS],
         blocks=[
