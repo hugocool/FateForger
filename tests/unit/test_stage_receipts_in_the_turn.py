@@ -27,7 +27,10 @@ from fateforger.slack_bot.timebox_candidate import (
     PendingTimeboxCandidates,
     ValidatedTimeboxCandidate,
 )
-from fateforger.slack_bot.timeboxing_cards import FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID
+from fateforger.slack_bot.timeboxing_cards import (
+    FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID,
+    TIMEBOX_TURN_FAILED_TEXT,
+)
 
 
 class _Client:
@@ -302,3 +305,42 @@ async def test_the_candidate_on_offer_stays_armed(monkeypatch) -> None:
     await _turn(runtime, _Client(), ts="100.1")
 
     assert pending.peek("C1:1.0") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_skeleton_older_than_its_contract_fails_the_turn(
+    monkeypatch, caplog
+) -> None:
+    """The mapper refuses a stored payload that is not a `SkeletonPayload`
+    (#267: `{"blocks": []}`, the 2026-09-02 shape, which used to be drawn as an
+    empty day). The turn itself is already saved, so only its picture failed:
+    the user gets the one stable failure sentence, and the card they are
+    standing on stays live rather than being receipted over as confirmed.
+    """
+    stale = PlanningArtifact.create(
+        artifact_id="skeleton-old",
+        kind=ArtifactKind.SKELETON,
+        revision=1,
+        payload={"blocks": []},
+        dependency_revisions={"planning_day": 1},
+    )
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=3, owner_user_id="U1", planning_day=_day()
+    )
+    runtime, registry = _wire(
+        monkeypatch,
+        outcome=AwaitingApproval(artifact=_skeleton()),
+        intent=Advance(),
+        snapshot=snapshot,
+    )
+    client = _Client()
+    await _turn(runtime, client, ts="100.1")
+
+    _wire(monkeypatch, outcome=AwaitingApproval(artifact=stale), intent=Advance(), snapshot=snapshot)
+    monkeypatch.setattr(handlers, "_stage_cards", registry)
+    with caplog.at_level(logging.ERROR):
+        message = await _turn(runtime, client, ts="100.2")
+
+    assert message.text == TIMEBOX_TURN_FAILED_TEXT
+    assert [u for u in client.updates if u.get("ts") == "100.1"] == []
+    assert registry.shown("C1:1.0").ts == "100.1"
