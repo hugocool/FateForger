@@ -1988,15 +1988,25 @@ async def _handle_timebox_date_reselect(
     # Legacy cards only: sessions opened before the surface convergence
     # (2026-09-01 spec) rooted themselves at their own card, so payloads with
     # thread_ts == prompt_ts are still live in the channel. For those, this
-    # relabel would land on the card it just redrew and strip its controls
-    # (2026-08-31 22:57 incident). New sessions always have a separate root.
-    # Delete this guard only when no pre-convergence card can still be clicked.
-    # The bare-text root relabels in the Confirm/date-confirmation path just
-    # above (~line 1738) and in timeboxing_commit.py (~457, ~533) skip this
-    # guard on purpose, not by omission: on those paths the card has already
-    # been replaced by a loading placeholder before the relabel runs, so the
-    # root and the card are never the same message and there is nothing left
-    # for a bare-text write to strip.
+    # relabel would land on the card it just redrew -- this handler updates
+    # prompt_ts with blocks and then writes bare text to the root -- and strip
+    # its controls (2026-08-31 22:57 incident). New sessions always have a
+    # separate root. Delete this guard only when no pre-convergence card can
+    # still be clicked.
+    #
+    # The typed path relabels the root in exactly one other place --
+    # `_run_adaptive_timebox_turn`, for both the button and the typed day
+    # change (#265) -- and its guard is not this one.
+    # `_handle_timebox_date_confirmation` overwrites the card with a
+    # loading placeholder before its turn runs, so by the time the relabel in
+    # `_run_adaptive_timebox_turn` fires there is nothing left on that message
+    # to strip. That turn's own guard -- `card_thread_ts not in ("dm",
+    # progress_ts)` -- covers a DM, which has no root, and the message route's
+    # fallback where card_thread_ts *is* the message this turn is drawing its
+    # card into. It does not cover a pre-convergence session whose thread root
+    # is a live card reached by typed text: there card_thread_ts is that card's
+    # ts, progress_ts is a fresh "thinking" message, and a typed day change
+    # writes bare text over the card. See the final-fix report (M3).
     root_is_this_card = reselected.thread_ts == prompt_ts
     if reselected.thread_ts and reselected.thread_ts != "dm" and not root_is_this_card:
         try:

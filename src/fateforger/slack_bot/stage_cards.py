@@ -15,6 +15,7 @@ here keys on an enum this system minted. Nothing reads what the user wrote.
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,13 +27,13 @@ from fateforger.agents.timeboxing.session_contracts import (
     BlockerOption,
     Committed,
     FactKind,
+    PlanningDay,
     PlanningSessionSnapshot,
     SkeletonPayload,
     TurnOutcome,
 )
 
 from .timebox_candidate import PendingTimeboxCandidates, ValidatedTimeboxCandidate
-from .timeboxing_host import planning_timezone
 
 
 class _Frozen(BaseModel):
@@ -228,9 +229,11 @@ _QUESTION_STAGE: dict[FactKind, int] = {
 }
 
 #: Which facts count as "decided" on a card, and how they are labelled.
-#: DAY_FRAME is deliberately absent: it is already surfaced by the date card
-#: at stage 1 (the planning day it locked), and repeating it here would show
-#: the same fact twice under two different names.
+#: DAY_FRAME is deliberately absent, and not because it is shown elsewhere --
+#: nothing shows it: the date card shows the date it locked, never the wake
+#: and sleep times. It is `context` by the spec's own division rather than a
+#: decision the user made on this ladder, and context beyond the skeleton's
+#: reasoning is increment B's work.
 _FACT_LABELS: dict[FactKind, str] = {
     FactKind.REQUESTED_ACTIVITY: "wanted",
     FactKind.ACTIVITY_READING: "read as",
@@ -315,15 +318,22 @@ def map_outcome(
     if isinstance(outcome, AwaitingApproval):
         artifact = outcome.artifact
         if artifact.kind is ArtifactKind.PLANNING_DAY:
-            payload = artifact.payload if isinstance(artifact.payload, dict) else {}
+            # Through the model, not through `.get`. The stored payload is a
+            # `PlanningDay.model_dump(mode="json")`, so it is read back the way
+            # it was written -- and a payload that is not one stops here rather
+            # than drawing a date card with an empty date on it. JSON mode
+            # because that is the shape on disk: the contracts are strict, and
+            # strict Python-mode validation rejects the ISO date string a JSON
+            # dump actually carries.
+            day = PlanningDay.model_validate_json(json.dumps(artifact.payload))
             return date_stage_card(
                 session_key=session_key,
                 expected_revision=snapshot.revision,
                 user_id=actor_user_id,
                 channel_id=channel_id,
                 thread_ts=thread_ts,
-                planned_date=str(payload.get("date") or ""),
-                tz_name=str(payload.get("timezone") or planning_timezone()),
+                planned_date=day.date.isoformat(),
+                tz_name=day.timezone,
             )
         if artifact.kind is ArtifactKind.SKELETON:
             # Loud on purpose: the submit gate refuses this shape, so a stored
@@ -379,7 +389,16 @@ def map_outcome(
                     *_nav(back=True),
                 ],
             )
-        return None
+        # Loud, not `None`. The kernel only ever awaits approval of a planning
+        # day, a skeleton or a candidate, so another kind here is a kernel this
+        # mapper has not been taught. Returning `None` sent it to
+        # `present_outcome`'s catch-all, which answers with a failure message
+        # and no card -- and the turn then receipts the card the user is still
+        # standing on as "✅ confirmed", which is the one thing that did not
+        # happen.
+        raise ValueError(
+            f"no stage card is defined for an approval of {artifact.kind.value}"
+        )
 
     if isinstance(outcome, Committed):
         payload = (

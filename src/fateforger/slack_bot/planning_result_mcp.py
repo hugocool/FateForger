@@ -324,7 +324,7 @@ def _validated(
             "this submission carries neither an artifact nor a blocker, so the "
             "turn would end with nothing for the user to review."
         )
-    if artifact is not None and target_artifact == "skeleton":
+    if artifact is not None and target_artifact == ArtifactKind.SKELETON.value:
         # The one payload whose shape the card depends on. A skeleton that
         # arrives without `markdown` is stored, approved, and drawn as an empty
         # day (#267); refusing it here costs the planner one retry in the same

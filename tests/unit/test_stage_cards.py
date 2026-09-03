@@ -313,3 +313,32 @@ def test_stage_cards_knows_no_slack() -> None:
         name for name in imported if any(part in forbidden for part in name.split("."))
     }
     assert offending == set(), offending
+
+
+def test_an_unmappable_approval_fails_loudly() -> None:
+    """Silence here is a lie downstream: `None` reached `present_outcome`'s
+    catch-all, which answers with a failure and no card, and the turn then
+    receipted the live card the user is standing on as `✅ confirmed`."""
+    inputs = PlanningArtifact.create(
+        artifact_id="inputs-1",
+        kind=ArtifactKind.CAPTURED_INPUTS,
+        revision=1,
+        payload={"facts": []},
+        dependency_revisions={},
+    )
+    with pytest.raises(ValueError):
+        _map(AwaitingApproval(artifact=inputs), _snapshot())
+
+
+def test_a_planning_day_payload_that_is_not_one_fails_loudly() -> None:
+    """The date card is read back through `PlanningDay`, so a payload that is
+    not one stops here instead of drawing a card with an empty date on it."""
+    artifact = PlanningArtifact.create(
+        artifact_id="day-1",
+        kind=ArtifactKind.PLANNING_DAY,
+        revision=1,
+        payload={"date": "2026-09-03"},
+        dependency_revisions={},
+    )
+    with pytest.raises(ValidationError):
+        _map(AwaitingApproval(artifact=artifact), _snapshot())
