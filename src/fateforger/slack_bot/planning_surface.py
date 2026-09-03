@@ -36,6 +36,28 @@ class InterpretedPlanningTurn(BaseModel):
     selected_time: Clock | None = None
 
 
+class InterpretedSettledPlanningTurn(BaseModel):
+    """The schema of a card that has nothing left to decide.
+
+    A settled card's view allows only `none`, and a schema that still offers
+    the time decisions invites the model to answer one -- which the allowed
+    check then rejects, so "move it to 17:00" on an added card came back as
+    "I couldn't read that reply" instead of being routed to an agent.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    decision: Literal["none"]
+
+
+def schema_for(draft: EventDraftPayload) -> type[BaseModel]:
+    """The turn schema this card's state can actually express."""
+
+    if draft.status in (DraftStatus.PENDING, DraftStatus.SUCCESS):
+        return InterpretedSettledPlanningTurn
+    return InterpretedPlanningTurn
+
+
 PLANNING_PROMPT_FRAGMENT = """The proposal is a calendar event with a start time shown to the user.
 If the user names a clock time (17:00, 5pm, half past one), give it as
 selected_time in 24-hour HH:MM. Set selected_time only when they state one.
@@ -127,7 +149,9 @@ def describe(draft: EventDraftPayload) -> str:
     return "\n".join(lines)
 
 
-def bind(interpreted: InterpretedPlanningTurn) -> PlanningPress | None:
+def bind(
+    interpreted: InterpretedPlanningTurn | InterpretedSettledPlanningTurn,
+) -> PlanningPress | None:
     """One schema decision to one press; identity comes from the host, not the model."""
 
     decision = interpreted.decision
@@ -140,7 +164,7 @@ def bind(interpreted: InterpretedPlanningTurn) -> PlanningPress | None:
         raise ValueError(f"choose_option without an offered option: {option_id!r}")
     if decision == "none":
         return None
-    if interpreted.selected_time is None:
+    if getattr(interpreted, "selected_time", None) is None:
         raise ValueError(f"{decision} without a time")
     return PlanningPress(kind=decision, selected_time=interpreted.selected_time)
 
@@ -148,6 +172,7 @@ def bind(interpreted: InterpretedPlanningTurn) -> PlanningPress | None:
 __all__ = [
     "ADD_OPTION_ID",
     "InterpretedPlanningTurn",
+    "InterpretedSettledPlanningTurn",
     "PLANNING_PROMPT_FRAGMENT",
     "PlanningPress",
     "RETRY_OPTION_ID",
@@ -155,4 +180,5 @@ __all__ = [
     "bind",
     "describe",
     "planning_view",
+    "schema_for",
 ]

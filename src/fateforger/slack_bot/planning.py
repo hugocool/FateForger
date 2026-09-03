@@ -60,11 +60,11 @@ from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.planning_surface import (
     PLANNING_PROMPT_FRAGMENT,
     SURFACE_KIND,
-    InterpretedPlanningTurn,
     PlanningPress,
     bind,
     describe,
     planning_view,
+    schema_for,
 )
 from fateforger.slack_bot.surface_intents import SurfaceIntentInterpreter
 from fateforger.slack_bot.workspace import DEFAULT_PERSONAS, WorkspaceRegistry
@@ -176,7 +176,7 @@ class PlanningCoordinator:
         interpreted = await self._ensure_intent_interpreter().interpret(
             view=planning_view(draft),
             user_text=text,
-            schema=InterpretedPlanningTurn,
+            schema=schema_for(draft),
             prompt_fragment=PLANNING_PROMPT_FRAGMENT,
             attribution=(f"{SURFACE_KIND}_intent_interpreter", f"{SURFACE_KIND}_intent", draft.user_id),
         )

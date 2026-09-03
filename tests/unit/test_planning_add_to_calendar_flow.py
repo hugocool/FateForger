@@ -14,7 +14,7 @@ from autogen_core import AgentId
 from fateforger.agents.schedular.messages import UpsertCalendarEvent, UpsertCalendarEventResult
 from fateforger.haunt.event_draft_store import DraftStatus, EventDraftPayload
 from fateforger.slack_bot.planning import PlanningCoordinator, ThreadReplyOutcome
-from fateforger.slack_bot.planning_surface import InterpretedPlanningTurn
+from fateforger.slack_bot.planning_surface import InterpretedSettledPlanningTurn
 from fateforger.slack_bot.surface_intents import SurfaceIntentInterpreter
 
 VALID_EVENT_URL = (
@@ -606,4 +606,4 @@ async def test_a_settled_draft_routes_its_reply_with_context_and_touches_nothing
     assert runtime.calls == []
     assert store.status_updates == []
     assert client.updates == []
-    assert model_client.calls[0][1] is InterpretedPlanningTurn
+    assert model_client.calls[0][1] is InterpretedSettledPlanningTurn

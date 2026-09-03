@@ -3,16 +3,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from pydantic import ValidationError
 
 from fateforger.haunt.event_draft_store import DraftStatus, EventDraftPayload
 from fateforger.slack_bot.planning_surface import (
     ADD_OPTION_ID,
     RETRY_OPTION_ID,
     InterpretedPlanningTurn,
+    InterpretedSettledPlanningTurn,
     PlanningPress,
     bind,
     describe,
     planning_view,
+    schema_for,
 )
 from fateforger.slack_bot.surface_intents import CHOOSE_OPTION, narrow_schema
 
@@ -123,3 +126,21 @@ def test_a_failed_draft_offers_the_full_decision_set() -> None:
         "none",
         CHOOSE_OPTION,
     )
+
+
+@pytest.mark.parametrize("status", [DraftStatus.PENDING, DraftStatus.SUCCESS])
+def test_a_settled_cards_schema_cannot_express_a_time_decision(status: DraftStatus) -> None:
+    # The view allows only `none` there; leaving the time decisions in the
+    # schema let the model answer one and turned a routable question into
+    # "I couldn't read that reply".
+    schema = schema_for(_draft(status))
+
+    assert schema is InterpretedSettledPlanningTurn
+    with pytest.raises(ValidationError):
+        schema.model_validate({"decision": "update_time", "selected_time": "17:00"})
+    assert bind(schema.model_validate({"decision": "none"})) is None
+
+
+@pytest.mark.parametrize("status", [DraftStatus.DRAFT, DraftStatus.FAILURE])
+def test_a_live_card_keeps_the_full_turn_schema(status: DraftStatus) -> None:
+    assert schema_for(_draft(status)) is InterpretedPlanningTurn
