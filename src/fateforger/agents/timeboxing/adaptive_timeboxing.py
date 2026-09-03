@@ -27,6 +27,7 @@ from .session_contracts import (
     ArtifactSnapshot,
     AwaitingApproval,
     CandidateNotApplied,
+    NeedsAnotherTurn,
     AwaitingUser,
     BlockerOption,
     Cancelled,
@@ -1089,6 +1090,15 @@ class AdaptiveTimeboxing:
             update for update in result.artifact_updates if update.kind is target
         ]
         if not matching:
+            if result.continuation is not None:
+                # Nothing to approve yet, but nothing went wrong either: the
+                # planner is mid-fix and said so. Keep its assumptions and let
+                # it resume, rather than discarding a turn's work because it
+                # could not finish inside one.
+                return (
+                    self._continue_later(snapshot, assumptions),
+                    self._another_turn(result),
+                )
             return snapshot, TurnFailed(
                 code="missing_required_artifact",
                 message="The planner did not produce the required artifact.",
@@ -1128,7 +1138,39 @@ class AdaptiveTimeboxing:
                 "assumptions": [*updated.assumptions, *assumptions],
             }
         )
+        if result.continuation is not None:
+            # It produced something *and* wants to keep going. The artifact is
+            # kept -- it is real work -- but it is not offered for approval,
+            # because the planner has just said it is not finished.
+            return updated, self._another_turn(result)
         return updated, AwaitingApproval(artifact=artifact)
+
+    def _another_turn(self, result: PlanningResult) -> NeedsAnotherTurn:
+        """Log it and type it.
+
+        Logged at warning because a planner that asks every turn is a bug, and
+        a silent continuation is indistinguishable from slow progress -- which
+        is how a loop would hide.
+        """
+
+        assert result.continuation is not None
+        logger.warning(
+            "planner asked for another turn reason=%s", result.continuation.reason
+        )
+        return NeedsAnotherTurn(reason=result.continuation.reason)
+
+    def _continue_later(
+        self,
+        snapshot: PlanningSessionSnapshot,
+        assumptions: list[PlannerAssumption],
+    ) -> PlanningSessionSnapshot:
+        """Keep what the turn established, without advancing the stage."""
+
+        if not assumptions:
+            return snapshot
+        return snapshot.model_copy(
+            update={"assumptions": [*snapshot.assumptions, *assumptions]}
+        )
 
     def _build_brief(
         self,

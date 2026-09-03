@@ -363,6 +363,11 @@ def _planning_obligation(brief: PlanningBrief) -> str:
         f"`submit_planning_result` once, with target_artifact `{target}`. Your "
         "final message is presentation only: it records nothing, and a turn "
         f"that ends without that call has produced nothing.{apply_first}{payload_shape}"
+        "\nIf you cannot finish but have not failed -- a retry budget spent "
+        "mid-fix, say -- submit a `continuation` saying what is left and what "
+        "you already worked out. What you produced is kept and you resume from "
+        "that reason, so write it for yourself. It is not a way to hand back a "
+        "decision that is yours to make."
     )
 
 

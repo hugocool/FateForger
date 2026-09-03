@@ -926,7 +926,12 @@ class PlanningCoordinator:
         *,
         draft_id: str,
         respond,
+        notify=None,
     ) -> None:
+        # `respond` edits the card, which is the source of truth. `notify`, when
+        # given, is the thread the request came from: an add started by a reply
+        # used to answer only on the card, so the thread's last line stayed
+        # "Adding…" forever and the user had to ask whether it had worked.
         if not self._draft_store:
             logger.warning(
                 "start_add_to_calendar skipped: event_draft_store missing (draft_id=%s)",
@@ -968,7 +973,9 @@ class PlanningCoordinator:
             )
 
         asyncio.create_task(
-            self._add_to_calendar_async(draft_id=draft.draft_id, respond=respond)
+            self._add_to_calendar_async(
+                draft_id=draft.draft_id, respond=respond, notify=notify
+            )
         )
         record_admonishment_event(
             component="planning_card", event="add_to_calendar", status="queued"
@@ -1067,7 +1074,9 @@ class PlanningCoordinator:
                     else "Adding this planning session to your calendar…"
                 )
             )
-            await self.start_add_to_calendar(draft_id=draft.draft_id, respond=_card_respond)
+            await self.start_add_to_calendar(
+                draft_id=draft.draft_id, respond=_card_respond, notify=thread_respond
+            )
             return True
 
         return False
@@ -1124,7 +1133,9 @@ class PlanningCoordinator:
                     return draft_id
         return None
 
-    async def _add_to_calendar_async(self, *, draft_id: str, respond) -> None:
+    async def _add_to_calendar_async(
+        self, *, draft_id: str, respond, notify=None
+    ) -> None:
         if not self._draft_store:
             logger.warning(
                 "_add_to_calendar_async skipped: event_draft_store missing (draft_id=%s)",
@@ -1233,6 +1244,10 @@ class PlanningCoordinator:
                     blocks=payload["blocks"],
                     replace_original=True,
                 )
+                await self._tell_thread(
+                    notify,
+                    f"✅ Added to calendar — <{updated.event_url}|Open in Google Calendar>",
+                )
             if self._planning_session_store:
                 try:
                     planned_day = start_utc.astimezone(tz).date()
@@ -1315,6 +1330,22 @@ class PlanningCoordinator:
             await respond(
                 text=payload["text"], blocks=payload["blocks"], replace_original=True
             )
+            await self._tell_thread(
+                notify, f"⚠️ Not added: {updated.last_error or 'unknown error'}"
+            )
+
+    async def _tell_thread(self, notify, text: str) -> None:
+        """Answer in the thread a request came from, if it came from one.
+
+        Never lets a failed follow-up look like a failed add: by the time this
+        runs the calendar write is already settled and recorded on the card.
+        """
+        if notify is None:
+            return
+        try:
+            await notify(text=text)
+        except Exception:  # noqa: BLE001 - the add is already settled
+            logger.warning("thread follow-up failed after add; card is authoritative")
 
     async def refresh_card_for_message(
         self, *, channel_id: str, message_ts: str, respond
