@@ -61,7 +61,7 @@ must converge to the same typed input contract and the same execution path.
 ## Current Scan (2026-03-06)
 
 1. Planning event card (`slack_bot/planning.py`) - compliant baseline
-- NL interpreter returns typed decision (`PlanningThreadReplyDecision`).
+- NL interpreter (`SurfaceIntentInterpreter`) returns a typed decision (`InterpretedPlanningTurn`), which `bind()` maps to a press.
 - NL and button actions converge to `start_add_to_calendar()` and `_add_to_calendar_async()`.
 - Existing tests cover NL/action parity.
 
