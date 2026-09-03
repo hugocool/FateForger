@@ -13,6 +13,7 @@ from fateforger.agents.timeboxing.session_contracts import BlockerOption
 from fateforger.slack_bot import surface_intents
 from fateforger.slack_bot.surface_intents import (
     CHOOSE_OPTION,
+    SurfaceIntentError,
     SurfaceIntentInterpreter,
     SurfaceView,
     narrow_schema,
@@ -86,7 +87,7 @@ async def test_a_decision_outside_the_allowed_set_raises() -> None:
     client = _SchemaOutputClient({"decision": "go"})
     interpreter = SurfaceIntentInterpreter(client)
 
-    with pytest.raises(ValueError, match="not allowed"):
+    with pytest.raises(SurfaceIntentError, match="not allowed"):
         await interpreter.interpret(
             view=_view(allowed_decisions=("none",)),
             user_text="go",
@@ -101,7 +102,7 @@ async def test_a_surface_that_accepts_nothing_raises_before_any_call() -> None:
     client = _SchemaOutputClient()
     interpreter = SurfaceIntentInterpreter(client)
 
-    with pytest.raises(ValueError, match="does not accept"):
+    with pytest.raises(SurfaceIntentError, match="does not accept"):
         await interpreter.interpret(
             view=_view(allowed_decisions=()),
             user_text="anything",
@@ -126,3 +127,23 @@ def test_the_module_never_reads_user_text_itself() -> None:
                 "membership test in surface_intents.py — if it is over user text, "
                 "that is the banned judgement"
             )
+
+
+@pytest.mark.asyncio
+async def test_a_model_failure_arrives_as_a_surface_intent_error() -> None:
+    class _Raises:
+        async def create(self, messages, *, json_output):  # noqa: ANN001
+            raise RuntimeError("model unavailable")
+
+    interpreter = SurfaceIntentInterpreter(_Raises())
+
+    with pytest.raises(SurfaceIntentError) as raised:
+        await interpreter.interpret(
+            view=_view(),
+            user_text="Okay!",
+            schema=_Turn,
+            prompt_fragment="",
+            attribution=("test_intent", "test_intent", "k"),
+        )
+
+    assert isinstance(raised.value.__cause__, RuntimeError)

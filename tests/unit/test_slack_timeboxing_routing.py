@@ -12,6 +12,7 @@ from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.handlers import _with_agent_attribution, route_slack_event
 from fateforger.slack_bot.messages import SlackBlockMessage
 from fateforger.slack_bot.planning import ThreadReply, ThreadReplyOutcome
+from fateforger.slack_bot.surface_intents import SurfaceIntentError
 
 
 class _FakeResult:
@@ -386,16 +387,45 @@ async def test_a_non_press_reply_routes_with_the_card_described():
 
 
 @pytest.mark.asyncio
-async def test_an_interpreter_failure_is_reported_and_never_routed():
+async def test_an_interpreter_failure_is_reported_and_never_routed(monkeypatch):
     focus = FocusManager(ttl_seconds=60, allowed_agents=["receptionist_agent", "planner_agent"])
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="should not run", source="bot"))])
     client = _FakeClient()
-    planning = _PlanningReplyHandler(RuntimeError("model unavailable"))
+    planning = _PlanningReplyHandler(SurfaceIntentError("model unavailable"))
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.record_error",
+        lambda *, component, error_type: errors.append((component, error_type)),
+    )
 
     await _route(runtime=runtime, focus=focus, client=client, planning=planning, event=_dm_reply_event())
 
     assert runtime.calls == []
-    assert "planning card" in (client.updates[-1].get("text") or "").lower()
+    assert "couldn't read that reply" in (client.updates[-1].get("text") or "")
+    assert ("surface_intent", "interpret_failure") in errors
+
+
+@pytest.mark.asyncio
+async def test_a_failure_during_the_press_is_not_reported_as_an_unread_reply(monkeypatch):
+    # By then "Adding this planning session..." is already in the thread. A
+    # store or Slack failure there is a failed press, not an unreadable reply,
+    # and it must still never be routed.
+    focus = FocusManager(ttl_seconds=60, allowed_agents=["receptionist_agent", "planner_agent"])
+    runtime = _FakeRuntime([_FakeResult(TextMessage(content="should not run", source="bot"))])
+    client = _FakeClient()
+    planning = _PlanningReplyHandler(RuntimeError("store down"))
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.record_error",
+        lambda *, component, error_type: errors.append((component, error_type)),
+    )
+
+    await _route(runtime=runtime, focus=focus, client=client, planning=planning, event=_dm_reply_event())
+
+    assert runtime.calls == []
+    posted = client.updates[-1].get("text") or ""
+    assert "couldn't apply it" in posted
+    assert ("surface_intent", "press_failure") in errors
 
 
 @pytest.mark.asyncio

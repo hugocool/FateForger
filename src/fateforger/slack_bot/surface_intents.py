@@ -23,6 +23,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ValidationError,
     create_model,
 )
 
@@ -115,6 +116,20 @@ Never invent identifiers; the host owns identity.
 """
 
 
+class SurfaceIntentError(RuntimeError, ValueError):
+    """Reading one reply against one surface failed.
+
+    Interpretation only. It never covers executing the press the reading
+    asked for: a store or Slack failure mid-press, after the surface already
+    told the user it was acting, is a different failure and gets its own
+    words.
+
+    Also a ``ValueError`` because the schema violations it wraps already were
+    one, and callers that catch that shape (the timeboxing session's own
+    refusals) must keep catching it.
+    """
+
+
 class SurfaceIntentInterpreter:
     def __init__(self, model_client: ChatCompletionClient) -> None:
         self.model_client = model_client
@@ -129,7 +144,9 @@ class SurfaceIntentInterpreter:
         attribution: tuple[str, str, str],
     ) -> T:
         if not view.allowed_decisions:
-            raise ValueError(f"the {view.surface_kind} does not accept another intent")
+            raise SurfaceIntentError(
+                f"the {view.surface_kind} does not accept another intent"
+            )
         narrowed = narrow_schema(schema, view.offered_options)
         allowed = tuple(view.allowed_decisions)
         if view.offered_options and not any(
@@ -159,22 +176,35 @@ class SurfaceIntentInterpreter:
             payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
         )
         agent, call_label, key = attribution
-        # Awaited straight from the Slack listener, not dispatched through the
-        # AutoGen runtime, so without a name the tokens land under "unknown".
-        with llm_attribution(agent=agent, call_label=call_label, key=key):
-            result = await self.model_client.create(
-                [
-                    SystemMessage(content=GENERIC_PREAMBLE + prompt_fragment),
-                    UserMessage(content=prompt, source="user"),
-                ],
-                json_output=narrowed,
-            )
-        content = getattr(result, "content", None)
-        if not isinstance(content, str):
-            raise ValueError("intent model returned no schema-bound JSON content")
-        interpreted = narrowed.model_validate_json(content)
+        try:
+            # Awaited straight from the Slack listener, not dispatched through
+            # the AutoGen runtime, so without a name the tokens land under
+            # "unknown".
+            with llm_attribution(agent=agent, call_label=call_label, key=key):
+                result = await self.model_client.create(
+                    [
+                        SystemMessage(content=GENERIC_PREAMBLE + prompt_fragment),
+                        UserMessage(content=prompt, source="user"),
+                    ],
+                    json_output=narrowed,
+                )
+            content = getattr(result, "content", None)
+            if not isinstance(content, str):
+                raise SurfaceIntentError(
+                    "intent model returned no schema-bound JSON content"
+                )
+            interpreted = narrowed.model_validate_json(content)
+        except (SurfaceIntentError, ValidationError):
+            # A schema violation is already the precise typed reading failure,
+            # and the surfaces that bind one read its field errors. It travels
+            # as itself; the seam that reports to a user wraps it.
+            raise
+        except Exception as exc:
+            raise SurfaceIntentError(
+                f"could not read the reply against the {view.surface_kind}"
+            ) from exc
         if not any(interpreted.decision == item for item in allowed):
-            raise ValueError(
+            raise SurfaceIntentError(
                 f"decision {interpreted.decision!r} is not allowed in "
                 f"{view.display_state}"
             )
@@ -185,6 +215,7 @@ __all__ = [
     "CHOOSE_OPTION",
     "Clock",
     "GENERIC_PREAMBLE",
+    "SurfaceIntentError",
     "SurfaceIntentInterpreter",
     "SurfaceView",
     "narrow_schema",

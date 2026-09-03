@@ -15,7 +15,7 @@ from fateforger.agents.schedular.messages import UpsertCalendarEvent, UpsertCale
 from fateforger.haunt.event_draft_store import DraftStatus, EventDraftPayload
 from fateforger.slack_bot.planning import PlanningCoordinator, ThreadReplyOutcome
 from fateforger.slack_bot.planning_surface import InterpretedSettledPlanningTurn
-from fateforger.slack_bot.surface_intents import SurfaceIntentInterpreter
+from fateforger.slack_bot.surface_intents import SurfaceIntentError, SurfaceIntentInterpreter
 
 VALID_EVENT_URL = (
     "https://www.google.com/calendar/event?eid="
@@ -570,7 +570,29 @@ async def test_interpreter_failure_on_a_surface_thread_raises():
     async def _thread_respond(*, text: str, blocks=None):
         return None
 
-    with pytest.raises(RuntimeError, match="model unavailable"):
+    with pytest.raises(SurfaceIntentError) as raised:
+        await coordinator.maybe_handle_thread_reply(
+            channel_id="D1", thread_ts="123.456", text="Okay!", thread_respond=_thread_respond
+        )
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_a_schema_violation_reaches_the_caller_as_a_reading_failure():
+    # The seam reports one shape, so the caller can tell an unread reply from
+    # a press that failed while it was being applied.
+    coordinator = _coordinator(
+        _FakeDraftStore(_draft_fixture()),
+        _DummyRuntime(None),
+        _FakeClient(),
+        _SchemaOutputClient({"decision": "teleport"}),
+    )
+
+    async def _thread_respond(*, text: str, blocks=None):
+        return None
+
+    with pytest.raises(SurfaceIntentError):
         await coordinator.maybe_handle_thread_reply(
             channel_id="D1", thread_ts="123.456", text="Okay!", thread_respond=_thread_respond
         )

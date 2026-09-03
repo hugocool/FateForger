@@ -86,6 +86,7 @@ from fateforger.slack_bot.planning import (
     ThreadReplyOutcome,
     parse_draft_id_from_value,
 )
+from fateforger.slack_bot.surface_intents import SurfaceIntentError
 from fateforger.slack_bot.progress import HarnessProgressCard
 from fateforger.slack_bot.progress_events import (
     ProgressPhase as TimeboxProgressPhase,
@@ -2914,7 +2915,7 @@ async def route_slack_event(
                 text=cleaned_text,
                 thread_respond=_origin_update,
             )
-        except Exception:
+        except SurfaceIntentError:
             # Loud, by design. The 2026-09-03 cold menu was this path
             # degrading to "not mine" and routing the message anyway.
             logger.exception(
@@ -2927,6 +2928,24 @@ async def route_slack_event(
                 text=(
                     ":warning: I couldn't read that reply against the planning card. "
                     "Use the card's controls, or say it again."
+                )
+            )
+            return
+        except Exception:
+            # The reading succeeded and the press did not. By now the seam has
+            # already said it was acting, so "I couldn't read that" would name
+            # the wrong failure and send the user back to rephrasing a reply
+            # that was understood.
+            logger.exception(
+                "planning-card press failed channel=%s thread_ts=%s",
+                channel,
+                thread_ts,
+            )
+            record_error(component="surface_intent", error_type="press_failure")
+            await _origin_update(
+                text=(
+                    ":warning: I read that as a press on the planning card but "
+                    "couldn't apply it. Check the card, or use its buttons."
                 )
             )
             return

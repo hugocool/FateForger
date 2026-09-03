@@ -66,7 +66,10 @@ from fateforger.slack_bot.planning_surface import (
     planning_view,
     schema_for,
 )
-from fateforger.slack_bot.surface_intents import SurfaceIntentInterpreter
+from fateforger.slack_bot.surface_intents import (
+    SurfaceIntentError,
+    SurfaceIntentInterpreter,
+)
 from fateforger.slack_bot.workspace import DEFAULT_PERSONAS, WorkspaceRegistry
 
 logger = logging.getLogger(__name__)
@@ -173,14 +176,23 @@ class PlanningCoordinator:
         the 2026-09-03 cold-menu shape.
         """
 
-        interpreted = await self._ensure_intent_interpreter().interpret(
-            view=planning_view(draft),
-            user_text=text,
-            schema=schema_for(draft),
-            prompt_fragment=PLANNING_PROMPT_FRAGMENT,
-            attribution=(f"{SURFACE_KIND}_intent_interpreter", f"{SURFACE_KIND}_intent", draft.user_id),
-        )
-        return bind(interpreted)
+        try:
+            interpreted = await self._ensure_intent_interpreter().interpret(
+                view=planning_view(draft),
+                user_text=text,
+                schema=schema_for(draft),
+                prompt_fragment=PLANNING_PROMPT_FRAGMENT,
+                attribution=(f"{SURFACE_KIND}_intent_interpreter", f"{SURFACE_KIND}_intent", draft.user_id),
+            )
+            return bind(interpreted)
+        except SurfaceIntentError:
+            raise
+        except Exception as exc:
+            # One shape out of the reading, so the caller can tell it apart
+            # from a failure in the press that reading asks for.
+            raise SurfaceIntentError(
+                f"could not read the reply against the {SURFACE_KIND}"
+            ) from exc
 
     async def _handle_timeboxing_idle(self, user_id: str) -> None:
         if not self._guardian:
