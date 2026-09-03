@@ -394,13 +394,15 @@ class AdaptiveTimeboxing:
 
         base_revision = snapshot.revision
         progress_sink = _BestEffortProgress(progress)
-        applied, intent_failure = self._apply_intent(snapshot, request)
-        if intent_failure is not None:
+        applied, early_outcome = self._apply_intent(snapshot, request)
+        if early_outcome is not None:
+            # A refusal, or an intent whose whole effect is already in the
+            # snapshot (GoBack to a question): nothing downstream to derive.
             return await self._save(
                 applied,
                 base_revision=base_revision,
                 request=request,
-                outcome=intent_failure,
+                outcome=early_outcome,
             )
         snapshot = applied
 
@@ -582,7 +584,7 @@ class AdaptiveTimeboxing:
 
     def _apply_intent(
         self, snapshot: PlanningSessionSnapshot, request: TurnRequest
-    ) -> tuple[PlanningSessionSnapshot, TurnFailed | None]:
+    ) -> tuple[PlanningSessionSnapshot, TurnOutcome | None]:
         intent = request.intent
         if isinstance(intent, (StartSession, Advance)):
             return snapshot, None
@@ -718,13 +720,76 @@ class AdaptiveTimeboxing:
             # built on the shape the user has just overruled is not a skeleton
             # of this day any more.
             return self._invalidate(answered, ArtifactKind.CAPTURED_INPUTS), None
-        if isinstance(intent, (ReviseArtifact, GoBack)):
+        if isinstance(intent, GoBack):
+            return self._go_back(snapshot)
+        if isinstance(intent, ReviseArtifact):
             return snapshot, TurnFailed(
                 code="unsupported_intent",
                 message="This typed planning operation is not available yet.",
             )
         return snapshot, TurnFailed(
             code="invalid_intent", message="The planning intent is not supported."
+        )
+
+    def _go_back(
+        self, snapshot: PlanningSessionSnapshot
+    ) -> tuple[PlanningSessionSnapshot, TurnOutcome | None]:
+        """One stage down the ladder the artifacts define, never past a commit.
+
+        Top match wins. Each branch leaves the run loop able to re-present the
+        previous stage from what is left: dropping the candidate makes
+        `_pending_approval` show the skeleton again; dropping the skeleton and
+        holding the activity question is the stage-two card; clearing
+        `planning_day` makes `_planning_day_gate` show the day it already has.
+        Facts are kept throughout -- back is not forget.
+        """
+
+        if snapshot.status == "committed":
+            return snapshot, TurnFailed(
+                code="session_committed",
+                message=(
+                    "This day is already on the calendar. Tell me what to "
+                    "change and I will revise it."
+                ),
+            )
+        if self._latest_artifact(snapshot, ArtifactKind.VALIDATED_CANDIDATE):
+            reopened = self._invalidate(snapshot, ArtifactKind.SKELETON)
+            return reopened.model_copy(update={"pending_blocker": None}), None
+        if self._latest_artifact(snapshot, ArtifactKind.SKELETON):
+            without_skeleton = self._invalidate(
+                snapshot, ArtifactKind.CAPTURED_INPUTS
+            )
+            gap = self._requirements.evaluate(
+                ArtifactKind.SKELETON, without_skeleton
+            ).by_id("skeleton.requested_activity")
+            return (
+                self._hold_question(without_skeleton, gap, []),
+                AwaitingUser(
+                    requirement_id=gap.requirement_id,
+                    question=gap.question,
+                    why_needed=gap.why_needed,
+                ),
+            )
+        if snapshot.planning_day is not None:
+            day_ids = {
+                artifact.artifact_id
+                for artifact in snapshot.artifacts
+                if artifact.kind is ArtifactKind.PLANNING_DAY
+            }
+            return snapshot.model_copy(
+                update={
+                    "planning_day": None,
+                    "pending_blocker": None,
+                    "approvals": [
+                        approval
+                        for approval in snapshot.approvals
+                        if approval.artifact_id not in day_ids
+                    ],
+                }
+            ), None
+        return snapshot, TurnFailed(
+            code="nothing_to_go_back_to",
+            message="This is the first step; there is nothing before it.",
         )
 
     async def _planning_day_gate(

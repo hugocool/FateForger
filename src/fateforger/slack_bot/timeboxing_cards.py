@@ -191,6 +191,10 @@ TIMEBOX_STALE_CHOICE_TEXT = (
 TIMEBOX_FAILURE_TEXTS = {
     "stale_blocker_choice": TIMEBOX_STALE_CHOICE_TEXT,
     "session_committed": TIMEBOX_SESSION_COMMITTED_TEXT,
+    "nothing_to_go_back_to": (
+        "This is the first step of the session, so there is nothing to go "
+        "back to. Pick the day, or cancel."
+    ),
 }
 
 

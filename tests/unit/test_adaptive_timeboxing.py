@@ -1871,3 +1871,144 @@ async def test_a_dependency_failure_is_logged_with_its_message_and_traceback(cap
     record = next(r for r in caplog.records if "context resolution" in r.getMessage())
     assert "no calendar is configured" in record.getMessage()
     assert record.exc_info is not None
+
+
+# -- GoBack ---------------------------------------------------------------
+# GoBack walks one stage down the artifact ladder and never past a commit.
+# Before this the intent existed in the contract, the card decoder produced
+# it, and the kernel answered `unsupported_intent` (#264). Every branch below
+# asserts the outcome the next card is drawn from and the state that survives,
+# over identifiers this system minted.
+
+from fateforger.agents.timeboxing.session_contracts import (  # noqa: E402
+    GoBack,
+    PendingBlocker,
+)
+
+
+def _planning_day_artifact() -> PlanningArtifact:
+    return PlanningArtifact.create(
+        artifact_id="planning-day-1",
+        kind=ArtifactKind.PLANNING_DAY,
+        revision=1,
+        payload=_locked_day().model_dump(mode="json"),
+        dependency_revisions={},
+    )
+
+
+def _with(snapshot: PlanningSessionSnapshot, **update) -> PlanningSessionSnapshot:
+    return snapshot.model_copy(update=update)
+
+
+def _go_back(*, expected_revision: int = 3) -> TurnRequest:
+    return TurnRequest(
+        session_key="C1:1.0",
+        interaction_id="back-1",
+        actor_user_id="U1",
+        expected_revision=expected_revision,
+        intent=GoBack(),
+    )
+
+
+def _back_kernel(repo: InMemoryPlanningSessionRepository) -> AdaptiveTimeboxing:
+    return _kernel(repo, RecordedPlanner(_skeleton_result()))
+
+
+@pytest.mark.asyncio
+async def test_back_from_the_candidate_reopens_the_skeleton() -> None:
+    skeleton = _skeleton()
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), skeleton, _candidate()],
+        approvals=[_approval(_planning_day_artifact()), _approval(skeleton)],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert outcome.artifact.kind is ArtifactKind.SKELETON
+    assert outcome.artifact.artifact_id == "skeleton-1"
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    kinds = [artifact.kind for artifact in saved.artifacts]
+    assert ArtifactKind.VALIDATED_CANDIDATE not in kinds
+    assert ArtifactKind.SKELETON in kinds
+    # The skeleton is shown for approval again, so its old approval is gone.
+    assert all(a.artifact_id != "skeleton-1" for a in saved.approvals)
+
+
+@pytest.mark.asyncio
+async def test_back_from_the_skeleton_reopens_the_activity_question() -> None:
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), _skeleton()],
+        approvals=[_approval(_planning_day_artifact())],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, AwaitingUser)
+    assert outcome.requirement_id == "skeleton.requested_activity"
+    assert outcome.options == []
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert ArtifactKind.SKELETON not in [a.kind for a in saved.artifacts]
+    assert saved.pending_blocker is not None
+    assert saved.pending_blocker.fact_kind is FactKind.REQUESTED_ACTIVITY
+    # What the user already said is kept: back is not forget.
+    assert [f.fact_id for f in saved.facts] == ["activity-1", "gym-1", "frame-1"]
+
+
+@pytest.mark.asyncio
+async def test_back_from_a_question_reopens_the_date_card() -> None:
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact()],
+        approvals=[_approval(_planning_day_artifact())],
+        pending_blocker=PendingBlocker(
+            requirement_id="skeleton.requested_activity",
+            fact_kind=FactKind.REQUESTED_ACTIVITY,
+            options=[],
+        ),
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert outcome.artifact.kind is ArtifactKind.PLANNING_DAY
+    assert outcome.artifact.artifact_id == "planning-day-1"
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert saved.planning_day is None
+    assert saved.pending_blocker is None
+    assert saved.approvals == []
+
+
+@pytest.mark.asyncio
+async def test_back_from_the_date_card_has_nowhere_to_go() -> None:
+    snapshot = _with(
+        _incident_snapshot(), planning_day=None, artifacts=[_planning_day_artifact()]
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "nothing_to_go_back_to"
+
+
+@pytest.mark.asyncio
+async def test_back_never_crosses_a_commit() -> None:
+    snapshot = _with(
+        _incident_snapshot(),
+        status="committed",
+        artifacts=[_planning_day_artifact(), _skeleton(), _candidate()],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "session_committed"
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert len(saved.artifacts) == 3
