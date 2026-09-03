@@ -120,8 +120,12 @@ async def test_shutdown_runtime_is_noop_when_uninitialized() -> None:
         runtime_module._runtime = original_runtime
 
 
-def test_runtime_builds_one_zero_temperature_intent_client(monkeypatch) -> None:
-    """Catches per-turn model-client construction or nondeterministic temperature."""
+def test_runtime_builds_one_intent_client_without_a_sampling_pin(monkeypatch) -> None:
+    """Catches per-turn model-client construction or a reintroduced sampling pin.
+
+    No temperature pin (CLAUDE.md): the client is built with no sampling
+    parameter at all, not with temperature pinned to zero.
+    """
 
     created: list[tuple[str, dict[str, object]]] = []
     client = _FakeIntentModelClient()
@@ -136,7 +140,7 @@ def test_runtime_builds_one_zero_temperature_intent_client(monkeypatch) -> None:
         runtime_module._build_timeboxing_intent_interpreter()
     )
 
-    assert created == [("timeboxing_agent", {"temperature": 0})]
+    assert created == [("timeboxing_agent", {})]
     assert owned_client is client
     assert interpreter.model_client is client
 
