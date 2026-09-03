@@ -552,6 +552,16 @@ async def test_an_unknown_thread_is_not_a_surface():
 
 
 @pytest.mark.asyncio
+async def test_owns_thread_answers_from_the_draft_store_without_a_model():
+    coordinator = _coordinator(
+        _FakeDraftStore(_draft_fixture()), _DummyRuntime(None), _FakeClient(), _RaisingClient()
+    )
+
+    assert await coordinator.owns_thread(channel_id="D1", thread_ts="123.456") is True
+    assert await coordinator.owns_thread(channel_id="D1", thread_ts="999.0") is False
+
+
+@pytest.mark.asyncio
 async def test_interpreter_failure_on_a_surface_thread_raises():
     coordinator = _coordinator(
         _FakeDraftStore(_draft_fixture()), _DummyRuntime(None), _FakeClient(), _RaisingClient()

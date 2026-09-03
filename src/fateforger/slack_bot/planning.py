@@ -916,6 +916,21 @@ class PlanningCoordinator:
             component="planning_card", event="add_to_calendar", status="queued"
         )
 
+    async def owns_thread(self, *, channel_id: str, thread_ts: str) -> bool:
+        """Whether this thread hangs off a planning card, from durable state.
+
+        The routing resolvers ask this before any of them claims the thread:
+        ownership is a property of the draft store, not of whatever the focus
+        cache or a channel-wide session key happens to remember.
+        """
+
+        if not self._draft_store:
+            return False
+        draft = await self._resolve_thread_draft(
+            channel_id=channel_id, thread_ts=thread_ts
+        )
+        return draft is not None
+
     async def maybe_handle_thread_reply(
         self,
         *,

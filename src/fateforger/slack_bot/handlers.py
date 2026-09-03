@@ -2503,18 +2503,39 @@ async def route_slack_event(
     if thread_ts and agent_type != "timeboxing_agent":
         session_store = getattr(runtime, "timeboxing_session_store", None)
         if session_store is not None:
-            session_key = f"{channel}:dm" if is_dm else f"{channel}:{thread_ts}"
-            try:
-                session = await session_store.load(session_key)
-            except Exception:
-                logger.exception("session lookup failed for %s", session_key)
-                session = None
-            if session is not None and session.status != "cancelled":
-                agent_type = "timeboxing_agent"
+            # Ordered resolvers, planning first. The DM session key names the
+            # whole DM, not this thread, so a live session would otherwise
+            # claim the planning card's own thread and pin focus onto it.
+            claimed_by_planning = False
+            if planning is not None:
                 try:
-                    focus.set_focus(origin_key, agent_type, by_user=user, note="surface")
-                except ValueError:
-                    pass
+                    claimed_by_planning = await planning.owns_thread(
+                        channel_id=channel, thread_ts=thread_ts
+                    )
+                except Exception:
+                    logger.exception(
+                        "planning thread ownership lookup failed for %s:%s",
+                        channel,
+                        thread_ts,
+                    )
+                    record_error(
+                        component="surface_intent", error_type="resolver_failure"
+                    )
+            if not claimed_by_planning:
+                session_key = f"{channel}:dm" if is_dm else f"{channel}:{thread_ts}"
+                try:
+                    session = await session_store.load(session_key)
+                except Exception:
+                    logger.exception("session lookup failed for %s", session_key)
+                    session = None
+                if session is not None and session.status != "cancelled":
+                    try:
+                        focus.set_focus(
+                            origin_key, "timeboxing_agent", by_user=user, note="surface"
+                        )
+                    except ValueError:
+                        pass
+                    agent_type = "timeboxing_agent"
 
     cleaned_text = _strip_bot_mention(text, bot_user_id)
     # The seam below may prefix `cleaned_text` with card context meant for

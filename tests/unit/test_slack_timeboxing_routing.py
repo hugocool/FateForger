@@ -75,9 +75,15 @@ class _FailsFirstUpdateClient(_FakeClient):
 
 
 class _PlanningReplyHandler:
-    def __init__(self, reply: ThreadReply | Exception):
+    def __init__(self, reply: ThreadReply | Exception, owns: bool = False):
         self.calls = []
+        self.ownership_calls = []
         self._reply = reply
+        self._owns = owns
+
+    async def owns_thread(self, *, channel_id: str, thread_ts: str) -> bool:
+        self.ownership_calls.append((channel_id, thread_ts))
+        return self._owns
 
     async def maybe_handle_thread_reply(
         self, *, channel_id: str, thread_ts: str, text: str, thread_respond
@@ -398,7 +404,7 @@ async def test_a_dm_timeboxing_thread_is_found_in_the_store_after_focus_is_gone(
     runtime = _FakeRuntime([])
     runtime.timeboxing_session_store = _SessionStore({"D1:dm": SimpleNamespace(status="open")})
     client = _FakeClient()
-    planning = _PlanningReplyHandler(ThreadReply(ThreadReplyOutcome.NOT_A_SURFACE))
+    planning = _PlanningReplyHandler(ThreadReply(ThreadReplyOutcome.NOT_A_SURFACE), owns=False)
     ran: list[dict] = []
 
     async def _fake_turn(**kwargs):
@@ -413,6 +419,39 @@ async def test_a_dm_timeboxing_thread_is_found_in_the_store_after_focus_is_gone(
     assert runtime.timeboxing_session_store.asked == ["D1:dm"]
     assert ran and ran[0]["session_key"] == "D1:dm"
     assert runtime.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_planning_thread_in_a_dm_is_never_claimed_by_a_live_session():
+    # The DM session key is thread-blind: `D1:dm` names the whole DM, so a
+    # live session would otherwise claim the planning card's own thread and
+    # pin focus on it. Resolvers are ordered, and planning comes first.
+    focus = FocusManager(
+        ttl_seconds=60, allowed_agents=["receptionist_agent", "timeboxing_agent"]
+    )
+    runtime = _FakeRuntime([_FakeResult(TextMessage(content="answer", source="bot"))])
+    runtime.timeboxing_session_store = _SessionStore(
+        {"D1:dm": SimpleNamespace(status="open")}
+    )
+    client = _FakeClient()
+    planning = _PlanningReplyHandler(
+        ThreadReply(ThreadReplyOutcome.NO_PRESS, context="CARD CONTEXT"), owns=True
+    )
+
+    await _route(
+        runtime=runtime,
+        focus=focus,
+        client=client,
+        planning=planning,
+        event=_dm_reply_event("why 10:38?"),
+    )
+
+    assert planning.ownership_calls == [("D1", "root")]
+    assert runtime.timeboxing_session_store.asked == []
+    assert focus.get_focus("D1:root") is None
+    assert len(runtime.calls) == 1
+    assert runtime.calls[0][1].type == "receptionist_agent"
+    assert "CARD CONTEXT" in runtime.calls[0][0].content
 
 
 @pytest.mark.asyncio
