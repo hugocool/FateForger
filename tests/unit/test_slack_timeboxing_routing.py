@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("autogen_agentchat")
@@ -8,6 +10,8 @@ from autogen_core import AgentId
 from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
 from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.handlers import route_slack_event
+from fateforger.slack_bot.messages import SlackBlockMessage
+from fateforger.slack_bot.planning import ThreadReply, ThreadReplyOutcome
 
 
 class _FakeResult:
@@ -71,19 +75,57 @@ class _FailsFirstUpdateClient(_FakeClient):
 
 
 class _PlanningReplyHandler:
-    def __init__(self):
+    def __init__(self, reply: ThreadReply | Exception):
         self.calls = []
+        self._reply = reply
 
     async def maybe_handle_thread_reply(
         self, *, channel_id: str, thread_ts: str, text: str, thread_respond
-    ) -> bool:
+    ) -> ThreadReply:
         self.calls.append((channel_id, thread_ts, text))
-        await thread_respond(text="planning thread handled")
-        return True
+        if isinstance(self._reply, Exception):
+            raise self._reply
+        if self._reply.outcome is ThreadReplyOutcome.HANDLED:
+            await thread_respond(text="planning thread handled")
+        return self._reply
+
+
+class _SessionStore:
+    def __init__(self, keys: dict[str, object]):
+        self._keys = keys
+        self.asked: list[str] = []
+
+    async def load(self, session_key: str):
+        self.asked.append(session_key)
+        return self._keys.get(session_key)
+
+
+def _dm_reply_event(text: str = "Okay!") -> dict:
+    return {
+        "channel": "D1",
+        "channel_type": "im",
+        "user": "U1",
+        "text": text,
+        "thread_ts": "root",
+        "ts": "777",
+    }
 
 
 async def _unused_say(**_kwargs):
     return {"channel": "C1", "ts": "unused"}
+
+
+async def _route(*, runtime, focus, client, planning, event):
+    await route_slack_event(
+        runtime=runtime,
+        focus=focus,
+        default_agent="receptionist_agent",
+        event=event,
+        bot_user_id=None,
+        say=_unused_say,
+        client=client,
+        planning=planning,
+    )
 
 
 @pytest.mark.asyncio
@@ -308,32 +350,81 @@ async def test_route_slack_event_constraint_refresh_failure_is_non_fatal(monkeyp
 
 @pytest.mark.asyncio
 async def test_route_slack_event_uses_planning_thread_reply_handler_before_runtime():
-    focus = FocusManager(
-        ttl_seconds=60, allowed_agents=["receptionist_agent", "planner_agent"]
-    )
+    focus = FocusManager(ttl_seconds=60, allowed_agents=["receptionist_agent", "planner_agent"])
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="should not run", source="bot"))])
     client = _FakeClient()
-    planning = _PlanningReplyHandler()
+    planning = _PlanningReplyHandler(ThreadReply(ThreadReplyOutcome.HANDLED))
 
-    await route_slack_event(
-        runtime=runtime,
-        focus=focus,
-        default_agent="receptionist_agent",
-        event={
-            "channel": "D1",
-            "channel_type": "im",
-            "user": "U1",
-            "text": "yes plan it at 17:00",
-            "thread_ts": "root",
-            "ts": "777",
-        },
-        bot_user_id=None,
-        say=_unused_say,
-        client=client,
-        planning=planning,
-    )
+    await _route(runtime=runtime, focus=focus, client=client, planning=planning, event=_dm_reply_event("yes plan it at 17:00"))
 
     assert len(planning.calls) == 1
     assert runtime.calls == []
-    assert client.updates
     assert "planning thread handled" in (client.updates[-1].get("text") or "")
+
+
+@pytest.mark.asyncio
+async def test_a_non_press_reply_routes_with_the_card_described():
+    focus = FocusManager(ttl_seconds=60, allowed_agents=["receptionist_agent", "planner_agent"])
+    runtime = _FakeRuntime([_FakeResult(TextMessage(content="answer", source="bot"))])
+    client = _FakeClient()
+    planning = _PlanningReplyHandler(
+        ThreadReply(ThreadReplyOutcome.NO_PRESS, context="The user is replying under a planning card titled X.")
+    )
+
+    await _route(runtime=runtime, focus=focus, client=client, planning=planning, event=_dm_reply_event("why 10:38?"))
+
+    assert len(runtime.calls) == 1
+    sent = runtime.calls[0][0]
+    assert sent.content.startswith("The user is replying under a planning card titled X.")
+    assert sent.content.rstrip().endswith("why 10:38?")
+
+
+@pytest.mark.asyncio
+async def test_an_interpreter_failure_is_reported_and_never_routed():
+    focus = FocusManager(ttl_seconds=60, allowed_agents=["receptionist_agent", "planner_agent"])
+    runtime = _FakeRuntime([_FakeResult(TextMessage(content="should not run", source="bot"))])
+    client = _FakeClient()
+    planning = _PlanningReplyHandler(RuntimeError("model unavailable"))
+
+    await _route(runtime=runtime, focus=focus, client=client, planning=planning, event=_dm_reply_event())
+
+    assert runtime.calls == []
+    assert "planning card" in (client.updates[-1].get("text") or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_a_dm_timeboxing_thread_is_found_in_the_store_after_focus_is_gone(monkeypatch):
+    focus = FocusManager(ttl_seconds=60, allowed_agents=["receptionist_agent", "timeboxing_agent"])
+    runtime = _FakeRuntime([])
+    runtime.timeboxing_session_store = _SessionStore({"D1:dm": SimpleNamespace(status="open")})
+    client = _FakeClient()
+    planning = _PlanningReplyHandler(ThreadReply(ThreadReplyOutcome.NOT_A_SURFACE))
+    ran: list[dict] = []
+
+    async def _fake_turn(**kwargs):
+        ran.append(kwargs)
+        return SlackBlockMessage(text="turn ran", blocks=[])
+
+    monkeypatch.setattr("fateforger.slack_bot.handlers._run_adaptive_timebox_turn", _fake_turn)
+    monkeypatch.setattr("fateforger.slack_bot.handlers._timebox_backend", lambda: "harness")
+
+    await _route(runtime=runtime, focus=focus, client=client, planning=planning, event=_dm_reply_event("move gym to 19:00"))
+
+    assert runtime.timeboxing_session_store.asked == ["D1:dm"]
+    assert ran and ran[0]["session_key"] == "D1:dm"
+    assert runtime.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_thread_that_is_no_surface_routes_as_before():
+    focus = FocusManager(ttl_seconds=60, allowed_agents=["receptionist_agent"])
+    runtime = _FakeRuntime([_FakeResult(TextMessage(content="hello", source="bot"))])
+    runtime.timeboxing_session_store = _SessionStore({})
+    client = _FakeClient()
+    planning = _PlanningReplyHandler(ThreadReply(ThreadReplyOutcome.NOT_A_SURFACE))
+
+    await _route(runtime=runtime, focus=focus, client=client, planning=planning, event=_dm_reply_event("hi"))
+
+    assert len(runtime.calls) == 1
+    assert runtime.calls[0][0].content == "hi"
+    assert runtime.calls[0][1].type == "receptionist_agent"

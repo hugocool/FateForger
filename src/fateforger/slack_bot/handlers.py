@@ -82,6 +82,7 @@ from fateforger.slack_bot.planning import (
     FF_EVENT_START_DATE_ACTION_ID,
     FF_EVENT_START_TIME_ACTION_ID,
     PlanningCoordinator,
+    ThreadReplyOutcome,
     parse_draft_id_from_value,
 )
 from fateforger.slack_bot.progress import HarnessProgressCard
@@ -2491,6 +2492,26 @@ async def route_slack_event(
         else (user_focus or channel_default_agent or default_agent)
     )
 
+    # A thread that belongs to a planning session is one whatever FocusManager
+    # remembers. Focus is an in-memory TTL cache and the bot restarted twice on
+    # 2026-09-03; the session store is where the thread's ownership actually
+    # lives. Asked, never created (Task 1's `load`).
+    if thread_ts and agent_type != "timeboxing_agent":
+        session_store = getattr(runtime, "timeboxing_session_store", None)
+        if session_store is not None:
+            session_key = f"{channel}:dm" if is_dm else f"{channel}:{thread_ts}"
+            try:
+                session = await session_store.load(session_key)
+            except Exception:
+                logger.exception("session lookup failed for %s", session_key)
+                session = None
+            if session is not None and session.status != "cancelled":
+                agent_type = "timeboxing_agent"
+                try:
+                    focus.set_focus(origin_key, agent_type, by_user=user, note="surface")
+                except ValueError:
+                    pass
+
     cleaned_text = _strip_bot_mention(text, bot_user_id)
     # Post the "thinking" message with the active agent persona, so the eventual reply
     # (via chat.update) keeps the correct name/icon.
@@ -2854,21 +2875,33 @@ async def route_slack_event(
 
     if planning and thread_ts and cleaned_text.strip():
         try:
-            handled_planning_reply = await planning.maybe_handle_thread_reply(
+            reply = await planning.maybe_handle_thread_reply(
                 channel_id=channel,
                 thread_ts=thread_ts,
                 text=cleaned_text,
                 thread_respond=_origin_update,
             )
         except Exception:
+            # Loud, by design. The 2026-09-03 cold menu was this path
+            # degrading to "not mine" and routing the message anyway.
             logger.exception(
-                "planning thread-reply handling failed channel=%s thread_ts=%s",
+                "planning-card reply interpretation failed channel=%s thread_ts=%s",
                 channel,
                 thread_ts,
             )
-            handled_planning_reply = False
-        if handled_planning_reply:
+            record_error(component="surface_intent", error_type="interpret_failure")
+            await _origin_update(
+                text=(
+                    ":warning: I couldn't read that reply against the planning card. "
+                    "Use the card's controls, or say it again."
+                )
+            )
             return
+        if reply.outcome is ThreadReplyOutcome.HANDLED:
+            return
+        if reply.outcome is ThreadReplyOutcome.NO_PRESS and reply.context:
+            # Whoever answers now knows what the card is.
+            cleaned_text = f"{reply.context}\n\nThe user's reply:\n{cleaned_text}"
 
     redirect = focus.get_redirect(origin_key)
     if redirect and agent_type == redirect.agent_type:

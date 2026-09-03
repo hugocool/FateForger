@@ -49,6 +49,7 @@
 - NL interpretation must be schema-bound (typed AutoGen output or schema-in-prompt JSON contract), not regex/keyword/substring heuristics.
 - If a proposal supports user edits, edits must be represented as typed patch operations (or typed update fields) before execution.
 - Every proposal flow must log correlation fields (`proposal_id`, `intent_source`, `intent`, `submit_mode`) and have parity tests proving NL and UI execute the same backend path.
+- A reply that presses nothing routes *with the surface described* (`ThreadReplyOutcome.NO_PRESS`); it never falls through as if the thread had no surface. See contract item 7.
 
 ## Sync Engine Integration
 
