@@ -280,6 +280,32 @@ def test_it_reports_the_message_and_not_just_the_exit_code() -> None:
     assert detail is not None and "exit 1" in detail
 
 
+def test_it_boots_the_way_a_person_does_not_the_way_slack_does() -> None:
+    """The bare path is the one whose breakage is found last.
+
+    A Slack turn sets FF_DSH_PROGRESS_FILE, FF_DSH_SESSION_KEY and
+    FF_DSH_PLANNING_RESULT_FILE; a direct `dsh --profile tmbx` sets none. On
+    2026-09-02 three profile entries read those with no `|| ''` fallback, so
+    unset meant `undefined` and the profile refused to load — while every
+    Slack-driven turn kept working. The only broken path was the one a person
+    uses to check whether anything is broken.
+
+    Inheriting them from whatever shell ran `status` would make this probe
+    agree with Slack and miss exactly that.
+    """
+    seen: list[list[str]] = []
+
+    def runner(cmd):
+        seen.append(list(cmd))
+        return _completed("usage")
+
+    profile_boots(runner=runner)
+    cleared = {arg[2:] for arg in seen[0] if arg.startswith("-u")}
+    assert "FF_DSH_PROGRESS_FILE" in cleared
+    assert "FF_DSH_SESSION_KEY" in cleared
+    assert "FF_DSH_PLANNING_RESULT_FILE" in cleared
+
+
 def test_it_loads_the_profile_and_does_not_run_a_turn() -> None:
     """`--help` resolves the routes and exits.
 

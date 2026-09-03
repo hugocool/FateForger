@@ -1,6 +1,10 @@
 # src/memory/service.py
 from __future__ import annotations
 
+import threading
+
+import sqlite3
+
 from datetime import date, datetime
 
 from pydantic import BaseModel
@@ -41,9 +45,25 @@ class MemoryService:
     """
 
     def __init__(self, db_path: str, judge: Judge) -> None:
-        self._observations = ObservationStore(db_path)
-        self._constraints = ConstraintStore(db_path)
-        self._anchors = AnchorStore(db_path)
+        # One connection and one lock across all three, not three of each over
+        # the same file. `observe` appends an observation through one store and
+        # projects a constraint through another; on separate connections no
+        # transaction can span the two, so a crash between them leaves an
+        # observation with no constraint derived from it (#186).
+        #
+        # This is the prerequisite, not the cure: commit boundaries still live
+        # inside the individual stores, so ingest is not yet atomic. It is what
+        # makes the boundary expressible at all, which it was not before.
+        #
+        # The lock is shared with the connection because this build's SQLite is
+        # multithread mode -- one connection may cross threads only if uses
+        # never overlap, and two stores serialising on two locks over one
+        # connection is precisely that overlap.
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        lock = threading.RLock()
+        self._observations = ObservationStore(db_path, conn=conn, lock=lock)
+        self._constraints = ConstraintStore(db_path, conn=conn, lock=lock)
+        self._anchors = AnchorStore(db_path, conn=conn, lock=lock)
         self._judge = judge
 
     async def observe(

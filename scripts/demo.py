@@ -446,6 +446,17 @@ def dirty_at_start(repo_root: Path, runner: Runner = _run) -> int:
     return len([line for line in result.stdout.splitlines() if line.strip()])
 
 
+#: Variables a Slack turn sets and a direct run does not. Cleared before the
+#: boot probe so it exercises the bare path -- the one a person uses by hand,
+#: and therefore the one whose breakage is discovered last.
+_SLACK_ONLY_ENV = (
+    "FF_DSH_PROGRESS_FILE",
+    "FF_DSH_SESSION_KEY",
+    "FF_DSH_PLANNING_RESULT_FILE",
+    "FF_DSH_APPROVAL_FILE",
+)
+
+
 def profile_boots(runner: Runner = _run, home: Path | None = None) -> str | None:
     """``None`` if the harness profile can start a turn, else why it cannot.
 
@@ -472,13 +483,29 @@ def profile_boots(runner: Runner = _run, home: Path | None = None) -> str | None
     A profile lives in $DSH_HOME and is edited by hand, by several sessions,
     with no version control -- so it goes wrong in ways nothing else here
     watches.
+
+    **It boots the profile the way a PERSON does, not the way Slack does.**
+    A Slack turn sets FF_DSH_PROGRESS_FILE, FF_DSH_SESSION_KEY and
+    FF_DSH_PLANNING_RESULT_FILE; a direct `dsh --profile tmbx` or a bare
+    `ask()` sets none of them. On 2026-09-02 three profile entries read those
+    variables with no `|| ''` fallback, so unset meant `undefined`, and
+    `dsh-mcp-client` types `env` as strings -- the whole profile refused to
+    load. Slack-driven turns were fine throughout. Every direct run was dead.
+
+    That is the worst shape available: **the path a person uses to check
+    whether something is broken was the only broken path.** So this check
+    clears those variables before booting, which makes it test the bare case
+    rather than inheriting a Slack turn's leftovers from whatever shell ran it.
     """
     home = home or Path.home() / ".dsh"
     cli = HARNESS_REPO / "apps" / "cli" / "lib" / "bin.js"
     if not cli.is_file():
         return None
     env_note = _harness_env(home)
-    result = runner([_NODE, str(cli), "--profile", PROFILE, "--help"])
+    result = runner(
+        ["env", *(f"-u{name}" for name in _SLACK_ONLY_ENV),
+         _NODE, str(cli), "--profile", PROFILE, "--help"]
+    )
     if result.returncode == 0:
         return None
     # The message is on stderr and is the useful half; the exit code alone

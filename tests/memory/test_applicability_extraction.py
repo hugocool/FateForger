@@ -37,7 +37,10 @@ def test_stub_returns_canned_days_of_week():
     judge = StubJudge(days_of_week={"client on Tue and Thu": [1, 3]})
     import asyncio
 
-    result = asyncio.get_event_loop().run_until_complete(
+    # `asyncio.run`, not `get_event_loop`: this is a sync test, so there
+    # is never a running loop and the old call depended on some earlier
+    # test having left one set. It made the suite order-dependent (#269).
+    result = asyncio.run(
         judge.tier(_obs("client on Tue and Thu"))
     )
     assert result.days_of_week == [1, 3]

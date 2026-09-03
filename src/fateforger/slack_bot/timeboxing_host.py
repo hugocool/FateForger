@@ -172,6 +172,23 @@ class HostPlanningContext:
         from .tmbx_client import TmbxClient
 
         calendar_snapshot = await TmbxClient().read(calendar_id, day)
+        if not _read_succeeded(calendar_snapshot):
+            # `TmbxClient.read` answers `ok: false` for most refusals rather
+            # than raising, so this was filed as a CALENDAR_SNAPSHOT fact and
+            # the readiness gate -- a presence test -- reported the requirement
+            # satisfied. A gate that exists to guarantee the plan accounts for
+            # the real calendar was satisfied by the ABSENCE of the real
+            # calendar, and only the planner noticed, one layer later (#226).
+            #
+            # Same rule as the constraint-store probe on #206: absence and
+            # failure must not read as data. Named rather than generic, because
+            # "the calendar could not be read" and "no calendar is configured"
+            # are different problems for whoever has to fix one.
+            reason = str((calendar_snapshot or {}).get("reason") or "").strip()
+            raise AdaptiveDependencyUnavailable(
+                f"the calendar {calendar_id} could not be read for {day}"
+                + (f" ({reason})" if reason else "")
+            )
         constraints = await self._active_constraints(planning_day)
         return PlanningContext(
             facts=planning_facts(
@@ -239,6 +256,22 @@ class HostPlanningContext:
         )
 
 
+def _read_succeeded(calendar_snapshot: Any) -> bool:
+    """Whether a `plan_read` payload actually carries a calendar.
+
+    `ok` is a field tmbx mints, so reading it is a field lookup and not a
+    judgement about anything a person wrote.
+
+    A missing `ok` counts as success: tmbx has answered without one, and
+    treating an unrecognised-but-present payload as a failure would refuse
+    every turn on a shape change rather than on a real problem. An explicitly
+    false `ok` is the case this exists for.
+    """
+    if not isinstance(calendar_snapshot, dict):
+        return False
+    return calendar_snapshot.get("ok", True) is not False
+
+
 def _block_count(calendar_snapshot: Any) -> int | None:
     """However many blocks the read reported, without assuming its shape.
 
@@ -280,6 +313,13 @@ def planning_facts(
     the shape stays the one place the data lives.
     """
 
+    facts: list[PlanningFact] = []
+    if not _read_succeeded(calendar_snapshot):
+        # Defence in depth behind `resolve`'s refusal. `satisfied_by` is a
+        # presence test, so filing this fact for a failed read is the whole
+        # defect -- and a second caller arriving later must not reintroduce it
+        # by calling this function directly.
+        return facts
     return [
         PlanningFact(
             fact_id=f"calendar:{day}",
