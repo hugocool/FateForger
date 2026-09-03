@@ -2012,3 +2012,53 @@ async def test_back_never_crosses_a_commit() -> None:
     assert outcome.code == "session_committed"
     saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
     assert len(saved.artifacts) == 3
+
+
+@pytest.mark.asyncio
+async def test_back_after_a_reopen_still_will_not_cross_the_commit() -> None:
+    """The receipt, not the status.
+
+    A revision reopens a committed session (`_reopen` sets `status` back to
+    `open`) and `_invalidate` keeps the `COMMIT_RECEIPT` on purpose. A guard
+    reading only the status let Back walk that session freely: one press to
+    the activity question, a second clearing the `planning_day` of a day
+    already on the calendar, after which a different day could be picked and
+    committed as a second full day.
+    """
+
+    reopened = _committed_snapshot().model_copy(
+        update={"status": "open", "revision": 6}
+    )
+    repo = InMemoryPlanningSessionRepository([reopened])
+
+    outcome = await _back_kernel(repo).turn(
+        _go_back(expected_revision=6), progress=RecordingProgressSink()
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "session_committed"
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert saved.planning_day == reopened.planning_day
+    assert [a.kind for a in saved.artifacts] == [a.kind for a in reopened.artifacts]
+
+
+@pytest.mark.asyncio
+async def test_back_does_not_walk_a_cancelled_session() -> None:
+    """A session that is not open has no ladder to walk either: cancelled fell
+    through every rung and answered as if the session were live."""
+
+    snapshot = _with(
+        _incident_snapshot(),
+        status="cancelled",
+        artifacts=[_planning_day_artifact(), _skeleton()],
+        approvals=[_approval(_planning_day_artifact())],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "session_cancelled"
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert ArtifactKind.SKELETON in [a.kind for a in saved.artifacts]
+    assert saved.planning_day is not None

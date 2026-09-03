@@ -52,6 +52,7 @@ from .session_contracts import (
     TurnFailed,
     TurnOutcome,
     UserBlockerDraft,
+    has_commit_receipt,
 )
 
 logger = logging.getLogger(__name__)
@@ -742,15 +743,30 @@ class AdaptiveTimeboxing:
         holding the activity question is the stage-two card; clearing
         `planning_day` makes `_planning_day_gate` show the day it already has.
         Facts are kept throughout -- back is not forget.
+
+        The first rung is the receipt, not the status: `_reopen` puts a
+        committed session back to `open` when the user asks for a revision and
+        `_invalidate` keeps the receipt, so a status-only guard let Back walk a
+        written day -- one press to the activity question, a second clearing
+        the `planning_day` of a day already on the calendar, after which
+        another day could be picked and committed as a second full day. The
+        next commit must be a change to *this* day.
         """
 
-        if snapshot.status == "committed":
+        if has_commit_receipt(snapshot) or snapshot.status == "committed":
             return snapshot, TurnFailed(
                 code="session_committed",
                 message=(
                     "This day is already on the calendar. Tell me what to "
                     "change and I will revise it."
                 ),
+            )
+        if snapshot.status != "open":
+            # Cancelled. There is no ladder in a session that has ended, and
+            # falling through the rungs answered as though there were.
+            return snapshot, TurnFailed(
+                code="session_cancelled",
+                message="This session was cancelled. Start a new one to plan a day.",
             )
         if self._latest_artifact(snapshot, ArtifactKind.VALIDATED_CANDIDATE):
             reopened = self._invalidate(snapshot, ArtifactKind.SKELETON)

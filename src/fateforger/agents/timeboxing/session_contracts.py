@@ -315,6 +315,32 @@ class PlanningSessionSnapshot(_StrictModel):
         return cls(session_key=session_key, revision=0, owner_user_id=owner_user_id)
 
 
+def has_commit_receipt(snapshot: PlanningSessionSnapshot | None) -> bool:
+    """Whether anything this session did has reached the calendar.
+
+    The receipt, not the status. `status` says what the session is doing now:
+    a revision reopens a committed session (`_reopen`) and it reads `open`
+    again, while `_invalidate` keeps the `COMMIT_RECEIPT` precisely because
+    history cannot be rebuilt. So the receipt is the only durable answer to
+    "has this day been written?", and it is what the kernel and the cards must
+    both gate on.
+
+    A receipt is only ever stored for a write the adapter reported as
+    committed, but the payload is checked anyway: a store written before that
+    guard existed can hold `{"committed": false}`, and a refused commit is not
+    a day on the calendar.
+    """
+
+    if snapshot is None:
+        return False
+    return any(
+        artifact.kind is ArtifactKind.COMMIT_RECEIPT
+        and isinstance(artifact.payload, dict)
+        and artifact.payload.get("committed") is True
+        for artifact in snapshot.artifacts
+    )
+
+
 class StartSession(_StrictModel):
     kind: Literal["start_session"] = "start_session"
 
@@ -545,6 +571,7 @@ __all__ = [
     "FactKind",
     "GoBack",
     "HandledInteraction",
+    "has_commit_receipt",
     "PendingBlocker",
     "PlannerAssumption",
     "PlannerAssumptionDraft",

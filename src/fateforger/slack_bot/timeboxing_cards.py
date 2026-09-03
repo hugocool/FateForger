@@ -15,13 +15,13 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 from fateforger.agents.timeboxing.session_contracts import (
-    ArtifactKind,
     ArtifactReady,
     Cancelled,
     PlanningArtifact,
     PlanningSessionSnapshot,
     TurnFailed,
     TurnOutcome,
+    has_commit_receipt,
 )
 
 from .messages import (
@@ -207,23 +207,6 @@ TIMEBOX_FAILURE_TEXTS = {
 }
 
 
-def _has_committed(snapshot: PlanningSessionSnapshot | None) -> bool:
-    """Whether anything this session did has reached the calendar.
-
-    The receipt, not the status: a session reopened for a revision is `open`
-    again and its first commit is no less on the calendar for it.
-    """
-
-    if snapshot is None:
-        return False
-    return any(
-        artifact.kind is ArtifactKind.COMMIT_RECEIPT
-        and isinstance(artifact.payload, dict)
-        and artifact.payload.get("committed") is True
-        for artifact in snapshot.artifacts
-    )
-
-
 def timebox_failure_message(
     code: str | None = None, *, snapshot: PlanningSessionSnapshot | None = None
 ) -> SlackBlockMessage:
@@ -237,7 +220,7 @@ def timebox_failure_message(
     """
     default = (
         TIMEBOX_TURN_FAILED_AFTER_COMMIT_TEXT
-        if _has_committed(snapshot)
+        if has_commit_receipt(snapshot)
         else TIMEBOX_TURN_FAILED_TEXT
     )
     text = TIMEBOX_FAILURE_TEXTS.get(code or "", default)
