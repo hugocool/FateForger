@@ -28,6 +28,8 @@ import pytest
 
 from fateforger.agents.schedular.messages import UpsertCalendarEventResult
 from fateforger.haunt.event_draft_store import DraftStatus, EventDraftPayload
+from fateforger.slack_bot.planning import ThreadReplyOutcome
+from fateforger.slack_bot.planning_surface import PlanningPress
 from fateforger.slack_bot.planning import PlanningCoordinator
 
 from .test_planning_add_to_calendar_flow import (
@@ -157,9 +159,10 @@ async def test_the_thread_reply_path_hands_its_own_responder_through(monkeypatch
     )
 
     async def decided(*, text, draft):
-        return SimpleNamespace(should_handle=True, commit=True, selected_time=None)
+        # The reply read as the card's primary control: the add press.
+        return PlanningPress(kind="add", selected_time=None)
 
-    monkeypatch.setattr(coordinator, "_interpret_planning_thread_reply", decided)
+    monkeypatch.setattr(coordinator, "_interpret_reply", decided)
 
     seen: dict = {}
 
@@ -175,7 +178,7 @@ async def test_the_thread_reply_path_hands_its_own_responder_through(monkeypatch
     )
     await asyncio.sleep(0)  # let the scheduled add task run
 
-    assert handled is True
+    assert handled.outcome is ThreadReplyOutcome.HANDLED
     assert seen.get("draft_id") == "draft_thread_1"
     assert seen.get("notify") is thread, "the thread responder must reach the add"
     assert any("Adding" in c["text"] for c in thread.calls)

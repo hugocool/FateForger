@@ -46,10 +46,22 @@ must converge to the same typed input contract and the same execution path.
   - NL patch + submit behavior matches equivalent UI edits + submit.
   - invalid structured interpretation does not silently fallback to heuristic execution.
 
+7. A reply on a proposal thread has three outcomes, never two
+- Not a proposal thread: ordinary routing.
+- A proposal thread and the reply pressed a control: the surface executes it, through the
+  same executor the button calls, and nothing is routed.
+- A proposal thread and the reply pressed nothing: the message is routed, prefixed with the
+  surface's own description (title, proposed values, status, controls offered), so whichever
+  agent answers cannot answer cold.
+- Interpreter failure on a proposal thread is reported in-thread and metered
+  (`component="surface_intent"`); it never becomes "pressed nothing".
+- Surfaces are resolved from durable state (draft store, session store), never from the
+  in-memory focus cache. The 2026-09-03 incident is the shape this clause forbids.
+
 ## Current Scan (2026-03-06)
 
 1. Planning event card (`slack_bot/planning.py`) - compliant baseline
-- NL interpreter returns typed decision (`PlanningThreadReplyDecision`).
+- NL interpreter (`SurfaceIntentInterpreter`) returns a typed decision (`InterpretedPlanningTurn`), which `bind()` maps to a press.
 - NL and button actions converge to `start_add_to_calendar()` and `_add_to_calendar_async()`.
 - Existing tests cover NL/action parity.
 

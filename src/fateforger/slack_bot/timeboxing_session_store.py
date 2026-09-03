@@ -72,6 +72,17 @@ class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
         async with lock:
             yield
 
+    async def load(self, session_key: str) -> PlanningSessionSnapshot | None:
+        """Read a session without establishing one; the seam's question."""
+
+        async with self._sessionmaker() as session:
+            row = await self._load_row(session, session_key)
+            if row is None:
+                return None
+            return self._parse_envelope(row.snapshot_json).snapshot.model_copy(
+                deep=True
+            )
+
     async def load_or_create(
         self, session_key: str, *, owner_user_id: str
     ) -> PlanningSessionSnapshot:

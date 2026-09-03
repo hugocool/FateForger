@@ -70,6 +70,7 @@ from fateforger.slack_bot.messages import (
     SlackBlockMessage,
     SlackThreadStateMessage,
 )
+from fateforger.slack_bot.mrkdwn import to_mrkdwn
 from fateforger.slack_bot.planning import (
     FF_EVENT_ADD_ACTION_ID,
     FF_EVENT_ADD_DISABLED_ACTION_ID,
@@ -82,8 +83,10 @@ from fateforger.slack_bot.planning import (
     FF_EVENT_START_DATE_ACTION_ID,
     FF_EVENT_START_TIME_ACTION_ID,
     PlanningCoordinator,
+    ThreadReplyOutcome,
     parse_draft_id_from_value,
 )
+from fateforger.slack_bot.surface_intents import SurfaceIntentError
 from fateforger.slack_bot.progress import HarnessProgressCard
 from fateforger.slack_bot.progress_events import (
     ProgressPhase as TimeboxProgressPhase,
@@ -608,8 +611,11 @@ def _with_agent_attribution(payload: dict, agent_type: str) -> dict:
             }
         )
         return {"text": payload.get("text") or "", "blocks": decorated}
+    # The model writes markdown; Slack renders mrkdwn. The agent id was a
+    # debugging label that reached users as `*admonisher_agent*` on
+    # 2026-09-03; the persona already names who is speaking.
     text = payload.get("text") or "(no response)"
-    return {"text": f"*{agent_type}*\n{text}"}
+    return {"text": to_mrkdwn(text)}
 
 
 def _origin_label(event: dict) -> str:
@@ -2491,7 +2497,64 @@ async def route_slack_event(
         else (user_focus or channel_default_agent or default_agent)
     )
 
+    # A thread that belongs to a planning session is one whatever FocusManager
+    # remembers. Focus is an in-memory TTL cache and the bot restarted twice on
+    # 2026-09-03; the session store is where the thread's ownership actually
+    # lives. Asked, never created (Task 1's `load`).
+    if thread_ts and agent_type != "timeboxing_agent":
+        session_store = getattr(runtime, "timeboxing_session_store", None)
+        if session_store is not None:
+            # Ordered resolvers, planning first. The DM session key names the
+            # whole DM, not this thread, so a live session would otherwise
+            # claim the planning card's own thread and pin focus onto it.
+            claimed_by_planning = False
+            if planning is not None:
+                try:
+                    claimed_by_planning = await planning.owns_thread(
+                        channel_id=channel, thread_ts=thread_ts
+                    )
+                except Exception:
+                    logger.exception(
+                        "planning thread ownership lookup failed for %s:%s",
+                        channel,
+                        thread_ts,
+                    )
+                    record_error(
+                        component="surface_intent", error_type="resolver_failure"
+                    )
+            if not claimed_by_planning:
+                session_key = f"{channel}:dm" if is_dm else f"{channel}:{thread_ts}"
+                try:
+                    session = await session_store.load(session_key)
+                except Exception:
+                    logger.exception("session lookup failed for %s", session_key)
+                    record_error(
+                        component="surface_intent", error_type="resolver_failure"
+                    )
+                    session = None
+                # `open | committed | cancelled`: only an open session is
+                # still running. Committed or cancelled, the session is over.
+                if session is not None and session.status == "open":
+                    # The binding is the claim: an agent the focus manager
+                    # refuses is not one this route may hand the reply to.
+                    try:
+                        focus.set_focus(
+                            origin_key, "timeboxing_agent", by_user=user, note="surface"
+                        )
+                    except ValueError:
+                        logger.warning(
+                            "focus refused the timeboxing claim for %s", origin_key
+                        )
+                    else:
+                        agent_type = "timeboxing_agent"
+
     cleaned_text = _strip_bot_mention(text, bot_user_id)
+    # The seam below may prefix `cleaned_text` with card context meant for
+    # whichever agent answers. `user_reply_text` stays the user's own words,
+    # for the one place downstream that quotes the message back to a human
+    # (the handoff "Incoming request" root) -- that quote must never grow
+    # interpreter prose the user never typed.
+    user_reply_text = cleaned_text
     # Post the "thinking" message with the active agent persona, so the eventual reply
     # (via chat.update) keeps the correct name/icon.
     # `instant_ack` replies under a top-level app mention. Its own `ts` is
@@ -2854,21 +2917,51 @@ async def route_slack_event(
 
     if planning and thread_ts and cleaned_text.strip():
         try:
-            handled_planning_reply = await planning.maybe_handle_thread_reply(
+            reply = await planning.maybe_handle_thread_reply(
                 channel_id=channel,
                 thread_ts=thread_ts,
                 text=cleaned_text,
                 thread_respond=_origin_update,
             )
-        except Exception:
+        except SurfaceIntentError:
+            # Loud, by design. The 2026-09-03 cold menu was this path
+            # degrading to "not mine" and routing the message anyway.
             logger.exception(
-                "planning thread-reply handling failed channel=%s thread_ts=%s",
+                "planning-card reply interpretation failed channel=%s thread_ts=%s",
                 channel,
                 thread_ts,
             )
-            handled_planning_reply = False
-        if handled_planning_reply:
+            record_error(component="surface_intent", error_type="interpret_failure")
+            await _origin_update(
+                text=(
+                    ":warning: I couldn't read that reply against the planning card. "
+                    "Use the card's controls, or say it again."
+                )
+            )
             return
+        except Exception:
+            # The reading succeeded and the press did not. By now the seam has
+            # already said it was acting, so "I couldn't read that" would name
+            # the wrong failure and send the user back to rephrasing a reply
+            # that was understood.
+            logger.exception(
+                "planning-card press failed channel=%s thread_ts=%s",
+                channel,
+                thread_ts,
+            )
+            record_error(component="surface_intent", error_type="press_failure")
+            await _origin_update(
+                text=(
+                    ":warning: I read that as a press on the planning card but "
+                    "couldn't apply it. Check the card, or use its buttons."
+                )
+            )
+            return
+        if reply.outcome is ThreadReplyOutcome.HANDLED:
+            return
+        if reply.outcome is ThreadReplyOutcome.NO_PRESS and reply.context:
+            # Whoever answers now knows what the card is.
+            cleaned_text = f"{reply.context}\n\nThe user's reply:\n{cleaned_text}"
 
     redirect = focus.get_redirect(origin_key)
     if redirect and agent_type == redirect.agent_type:
@@ -3130,7 +3223,7 @@ async def route_slack_event(
                     "channel": target_channel,
                     "text": (
                         f"Incoming request from <@{user}> (requested in {_origin_label(event)}):\n"
-                        f"> {cleaned_text}"
+                        f"> {user_reply_text}"
                     ),
                 }
                 root_payload.update(_persona_payload(persona))

@@ -136,6 +136,15 @@ class PlanningSessionRepository(Protocol):
 
         ...
 
+    async def load(self, session_key: str) -> PlanningSessionSnapshot | None:
+        """The session if one exists, never creating one.
+
+        The routing seam asks this for every thread reply, and a thread that is
+        not a planning session must not become one by being asked about.
+        """
+
+        ...
+
     async def load_or_create(
         self, session_key: str, *, owner_user_id: str
     ) -> PlanningSessionSnapshot: ...
@@ -232,6 +241,10 @@ class InMemoryPlanningSessionRepository:
         lock = self._session_locks.setdefault(session_key, asyncio.Lock())
         async with lock:
             yield
+
+    async def load(self, session_key: str) -> PlanningSessionSnapshot | None:
+        snapshot = self._snapshots.get(session_key)
+        return None if snapshot is None else snapshot.model_copy(deep=True)
 
     async def load_or_create(
         self, session_key: str, *, owner_user_id: str

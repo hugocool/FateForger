@@ -501,10 +501,13 @@ def _create_scheduler(database_url: str | None) -> AsyncIOScheduler:
 def _build_timeboxing_intent_interpreter() -> tuple[
     TimeboxingIntentInterpreter, ChatCompletionClient
 ]:
-    """Build the runtime-owned schema interpreter and its shared client."""
-    model_client = build_autogen_chat_client(
-        "timeboxing_agent", temperature=0
-    )
+    """Build the runtime-owned schema interpreter and its shared client.
+
+    No temperature pin. Two identical passes over the corpus showed no field
+    disagreeing less at 0 and whole-record disagreement higher; a pin that
+    looks like a guarantee invites skipping the resample (CLAUDE.md).
+    """
+    model_client = build_autogen_chat_client("timeboxing_agent")
     return TimeboxingIntentInterpreter(model_client), model_client
 
 

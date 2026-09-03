@@ -4,18 +4,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import date, datetime, time, timedelta
-from typing import Annotated, Literal, cast, get_args
+from datetime import date, timedelta
+from typing import Annotated, Literal, cast
 from uuid import uuid4
 
-from autogen_core.models import ChatCompletionClient, SystemMessage, UserMessage
+from autogen_core.models import ChatCompletionClient
 from pydantic import (
-    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
     ValidationError,
-    create_model,
     model_validator,
 )
 
@@ -38,41 +36,16 @@ from fateforger.agents.timeboxing.session_contracts import (
     ReviseArtifact,
     TimeboxIntent,
 )
-from fateforger.core.llm_attribution import llm_attribution
+from fateforger.slack_bot.surface_intents import (
+    Clock,
+    SurfaceIntentInterpreter,
+    SurfaceView,
+)
 from fateforger.slack_bot.timeboxing_commit import TimeboxCommitMeta
 
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-
-
-def _clock(value: str) -> str:
-    """Normalise a clock time the model wrote to ``HH:MM`` in the planning zone.
-
-    Format parsing of the model's own output, not a reading of the user's
-    words: the schema asked for a 24-hour clock and "8:30" or "08:30:00Z" is
-    one. Any offset is dropped -- the frame is in the planning timezone by
-    contract, and a zone the model appended is noise, not information.
-    """
-
-    try:
-        parsed = time.fromisoformat(value)
-    except ValueError:
-        parsed = datetime.strptime(value, "%H:%M").time()
-    return parsed.replace(tzinfo=None).isoformat(timespec="minutes")
-
-
-#: A string, not ``datetime.time``, on purpose: AutoGen dumps the parsed
-#: completion in python mode for its ``LLMCallEvent`` and ``str()``s it with
-#: ``json.dumps``, so a non-JSON-native leaf here breaks every log formatter
-#: that sees the call. Verified live on 2026-09-02: 8 of 8 draws raised
-#: ``TypeError: Object of type time is not JSON serializable`` out of
-#: ``logger.info`` before the intent was ever returned.
-Clock = Annotated[
-    str,
-    AfterValidator(_clock),
-    Field(description="24-hour clock time on the planning day, HH:MM"),
-]
 
 
 class DayFrameDraft(_StrictModel):
@@ -138,38 +111,6 @@ class InterpretedTimeboxTurn(_StrictModel):
     day_offset: int | None = Field(default=None, ge=-7, le=14)
 
 
-def _turn_schema(
-    options: tuple[BlockerOption, ...],
-) -> type[InterpretedTimeboxTurn]:
-    """Narrow one turn's schema to exactly the answers that were offered.
-
-    Deciding which of the offered options somebody meant is a judgement about
-    their words, so it goes to a model -- what the rule bans is the other way
-    of doing it, comparing the reply to the labels. What the schema adds is the
-    shape of the answer: the model names an id the host minted, never text.
-
-    Where nothing was offered there is nothing to choose, and the base schema
-    cannot express a choice at all -- so an open question like "what do you want
-    out of the day" has no way to come back as a press-shaped answer.
-    """
-
-    if not options:
-        return InterpretedTimeboxTurn
-    decisions = (
-        "choose_option",
-        *get_args(InterpretedTimeboxTurn.model_fields["decision"].annotation),
-    )
-    return create_model(
-        "InterpretedTimeboxTurnWithOptions",
-        __base__=InterpretedTimeboxTurn,
-        decision=(Literal[decisions], ...),
-        option_id=(
-            Literal[tuple(option.option_id for option in options)] | None,
-            None,
-        ),
-    )
-
-
 class ArtifactActionMeta(_StrictModel):
     schema_version: Literal[1] = 1
     session_key: str = Field(min_length=1)
@@ -214,10 +155,7 @@ class TimeboxActionEnvelope(_StrictModel):
     intent: TimeboxIntent
 
 
-_SYSTEM_PROMPT = """You interpret one adaptive timeboxing user turn.
-Return only the requested schema.
-Choose only a decision listed in allowed_decisions.
-Extract facts only when the user actually supplies them.
+_TIMEBOX_PROMPT_FRAGMENT = """Extract facts only when the user actually supplies them.
 Fact kinds you may extract: requested_activity (one per thing the user wants
 the day to hold, value a short description in their words) and day_frame
 (when they get up and when they go to sleep on the planning day, value
@@ -229,8 +167,6 @@ times against a day_frame question is that fact, even without the words
 Set day_type only when the user says what kind of day it is. Leave it out
 otherwise: the host derives working and weekend from the weekday and is right
 about them, and an override it did not ask for overwrites a fact with a guess.
-When offered_options is present and the user picked one of them, answer with
-that option's option_id exactly as given.
 Set day_offset only when the user asks for a different day from the one in
 proposed_day, and give it as a number of days from that day. Leave it out when
 they accept the proposal. Never answer with a date; the host owns the calendar.
@@ -345,6 +281,7 @@ def _display_context(
 class TimeboxingIntentInterpreter:
     def __init__(self, model_client: ChatCompletionClient) -> None:
         self.model_client = model_client
+        self._core = SurfaceIntentInterpreter(model_client)
 
     async def interpret(
         self, user_text: str, snapshot: PlanningSessionSnapshot
@@ -352,60 +289,34 @@ class TimeboxingIntentInterpreter:
         display_stage, allowed_decisions, pending = _display_context(snapshot)
         if not allowed_decisions:
             raise ValueError("the planning session does not accept another intent")
-        options = _offered_options(snapshot)
-        schema = _turn_schema(options)
-        prompt = json.dumps(
-            {
+        view = SurfaceView(
+            surface_kind="timebox_session",
+            display_state=display_stage,
+            allowed_decisions=tuple(allowed_decisions),
+            offered_options=_offered_options(snapshot),
+            # The question this turn may be answering, and the kind of fact
+            # that answers it (#251).
+            open_question=_open_question(snapshot),
+            context={
+                # Timeboxing's own prompt key names, kept byte-identical for
+                # callers and tests that assert on them.
                 "display_stage": display_stage,
-                "allowed_decisions": list(allowed_decisions),
-                # The labels and effects are the context the choice needs. An
-                # id on its own would ask the model to pick between two names
-                # it has never seen.
-                "offered_options": [
-                    {
-                        "option_id": option.option_id,
-                        "label": option.label,
-                        "effect": option.effect,
-                    }
-                    for option in options
-                ],
                 "pending_artifact_kind": pending.kind.value if pending else None,
-                # The question this turn may be answering, and the kind of
-                # fact that answers it. "8:30 to half past midnight" is a day
-                # frame only to a reader who knows the frame was asked (#251).
-                "open_question": _open_question(snapshot),
-                # What day_offset is measured from. Without it the model would
-                # be asked how far away Monday is with no idea what today is.
+                # What day_offset is measured from.
                 "proposed_day": _proposed_day_context(pending),
-                "user_text": user_text,
             },
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
         )
-        # Nothing dispatches this call through the AutoGen runtime -- it is
-        # awaited straight from the Slack listener -- so without a name here
-        # its tokens land under agent="unknown" with every other unnamed call.
-        with llm_attribution(
-            agent="timebox_intent_interpreter",
-            call_label="timebox_intent",
-            key=snapshot.session_key,
-        ):
-            result = await self.model_client.create(
-                [
-                    SystemMessage(content=_SYSTEM_PROMPT),
-                    UserMessage(content=prompt, source="user"),
-                ],
-                json_output=schema,
-            )
-        content = getattr(result, "content", None)
-        if not isinstance(content, str):
-            raise ValueError("intent model returned no schema-bound JSON content")
-        interpreted = schema.model_validate_json(content)
-        if interpreted.decision not in allowed_decisions:
-            raise ValueError(
-                f"decision {interpreted.decision!r} is not allowed in {display_stage}"
-            )
+        interpreted = await self._core.interpret(
+            view=view,
+            user_text=user_text,
+            schema=InterpretedTimeboxTurn,
+            prompt_fragment=_TIMEBOX_PROMPT_FRAGMENT,
+            attribution=(
+                "timebox_intent_interpreter",
+                "timebox_intent",
+                snapshot.session_key,
+            ),
+        )
         return _intent_from_interpreted(
             interpreted, snapshot=snapshot, pending=pending
         )
@@ -599,6 +510,7 @@ def intent_from_date_action(value: str) -> TimeboxActionEnvelope | None:
 
 __all__ = [
     "ArtifactActionMeta",
+    "Clock",
     "DayFrameDraft",
     "DayFrameFactDraft",
     "InterpretedTimeboxTurn",

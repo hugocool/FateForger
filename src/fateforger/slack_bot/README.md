@@ -163,7 +163,7 @@ Use this reusable pattern for Slack proposal cards/modals:
 
 Canonical baseline implementation:
 - Planning card flow in `planning.py`:
-  - typed NL interpretation (`PlanningThreadReplyDecision`)
+  - typed NL interpretation: `SurfaceIntentInterpreter` reads the reply against `planning_surface.planning_view(draft)`, producing `InterpretedPlanningTurn` -> `bind()` -> `PlanningPress | None`; `maybe_handle_thread_reply` returns `ThreadReply(outcome=NOT_A_SURFACE | HANDLED | NO_PRESS, context)`
   - shared submit path (`start_add_to_calendar` -> `_add_to_calendar_async`)
 
 Reference spec:
