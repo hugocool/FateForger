@@ -513,6 +513,66 @@ async def test_a_planning_thread_in_a_dm_is_never_claimed_by_a_live_session():
 
 
 @pytest.mark.asyncio
+async def test_a_focus_manager_that_refuses_the_agent_also_refuses_the_claim():
+    # The claim and the focus binding are one decision. Assigning the agent
+    # anyway left the route pointed at an agent the focus manager rejected.
+    focus = FocusManager(ttl_seconds=60, allowed_agents=["receptionist_agent"])
+    runtime = _FakeRuntime([_FakeResult(TextMessage(content="hello", source="bot"))])
+    runtime.timeboxing_session_store = _SessionStore(
+        {"D1:dm": SimpleNamespace(status="open")}
+    )
+    client = _FakeClient()
+    planning = _PlanningReplyHandler(ThreadReply(ThreadReplyOutcome.NOT_A_SURFACE))
+
+    await _route(
+        runtime=runtime,
+        focus=focus,
+        client=client,
+        planning=planning,
+        event=_dm_reply_event("move gym to 19:00"),
+    )
+
+    assert len(runtime.calls) == 1
+    assert runtime.calls[0][1].type == "receptionist_agent"
+
+
+@pytest.mark.asyncio
+async def test_a_resolver_lookup_failure_is_metered(monkeypatch):
+    class _ExplodingSessionStore:
+        async def load(self, session_key: str):
+            raise RuntimeError("session store unavailable")
+
+    class _ExplodingOwnership(_PlanningReplyHandler):
+        async def owns_thread(self, *, channel_id: str, thread_ts: str) -> bool:
+            raise RuntimeError("draft store unavailable")
+
+    focus = FocusManager(
+        ttl_seconds=60, allowed_agents=["receptionist_agent", "timeboxing_agent"]
+    )
+    runtime = _FakeRuntime([_FakeResult(TextMessage(content="hello", source="bot"))])
+    runtime.timeboxing_session_store = _ExplodingSessionStore()
+    client = _FakeClient()
+    planning = _ExplodingOwnership(ThreadReply(ThreadReplyOutcome.NOT_A_SURFACE))
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers.record_error",
+        lambda *, component, error_type: errors.append((component, error_type)),
+    )
+
+    await _route(
+        runtime=runtime,
+        focus=focus,
+        client=client,
+        planning=planning,
+        event=_dm_reply_event("hi"),
+    )
+
+    assert errors.count(("surface_intent", "resolver_failure")) == 2
+    assert len(runtime.calls) == 1
+    assert runtime.calls[0][1].type == "receptionist_agent"
+
+
+@pytest.mark.asyncio
 async def test_a_thread_that_is_no_surface_routes_as_before():
     focus = FocusManager(ttl_seconds=60, allowed_agents=["receptionist_agent"])
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="hello", source="bot"))])

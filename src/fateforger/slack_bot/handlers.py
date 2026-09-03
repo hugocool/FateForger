@@ -2528,17 +2528,25 @@ async def route_slack_event(
                     session = await session_store.load(session_key)
                 except Exception:
                     logger.exception("session lookup failed for %s", session_key)
+                    record_error(
+                        component="surface_intent", error_type="resolver_failure"
+                    )
                     session = None
                 # `open | committed | cancelled`: only an open session is
                 # still running. Committed or cancelled, the session is over.
                 if session is not None and session.status == "open":
+                    # The binding is the claim: an agent the focus manager
+                    # refuses is not one this route may hand the reply to.
                     try:
                         focus.set_focus(
                             origin_key, "timeboxing_agent", by_user=user, note="surface"
                         )
                     except ValueError:
-                        pass
-                    agent_type = "timeboxing_agent"
+                        logger.warning(
+                            "focus refused the timeboxing claim for %s", origin_key
+                        )
+                    else:
+                        agent_type = "timeboxing_agent"
 
     cleaned_text = _strip_bot_mention(text, bot_user_id)
     # The seam below may prefix `cleaned_text` with card context meant for
