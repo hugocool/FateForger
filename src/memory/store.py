@@ -19,14 +19,41 @@ class ObservationStore:
     I2: there is deliberately no update or delete. A correction is a new row.
     """
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        conn: sqlite3.Connection | None = None,
+        lock: threading.RLock | None = None,
+    ) -> None:
+        """Open the store, or adopt a connection a sibling already opened.
+
+        Pass `conn` and `lock` to share one connection with sibling stores over
+        the same file. `MemoryService` does, because `observe` writes an
+        observation through one store and projects a constraint through
+        another: on separate connections there is no transaction that can span
+        the two, and a crash between them leaves an observation with no
+        constraint derived from it (#186). Sharing is the prerequisite the
+        transaction boundary needs; it does not by itself make ingest atomic.
+
+        The lock travels with the connection and is not optional. This build's
+        SQLite is multithread mode, so one connection may cross threads only if
+        uses never overlap -- two stores serialising on two different locks
+        over one connection is exactly the overlap that rule forbids.
+        """
         # check_same_thread=False because the MCP server dispatches sync tool
         # handlers to worker threads. This build's SQLite is multithread mode
         # (sqlite3.threadsafety == 1): a connection may cross threads only if
         # uses never overlap, so every method serialises on _lock. RLock, not
         # Lock — ConstraintStore._row calls observations_for re-entrantly.
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._lock = threading.RLock()
+        if (conn is None) != (lock is None):
+            raise ValueError(
+                "conn and lock are shared together or not at all; one "
+                "without the other lets two stores overlap on one connection"
+            )
+        self._shared = conn is not None
+        self._conn = conn or sqlite3.connect(db_path, check_same_thread=False)
+        self._lock = lock or threading.RLock()
         self._conn.row_factory = sqlite3.Row
         apply_migrations(self._conn)
 

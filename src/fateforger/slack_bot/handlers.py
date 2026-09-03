@@ -1369,11 +1369,27 @@ async def instant_ack(client, event: dict) -> dict | None:
     "thinking" state edits this message rather than posting a second one --
     otherwise the fast ack buys a duplicate.
 
-    Returns None on any failure. An acknowledgement that could break the turn
-    it is acknowledging would be a bad trade.
+    Returns None on any failure -- an acknowledgement that could break the turn
+    it is acknowledging would be a bad trade -- but it says so first.
+
+    It used to fail in silence, and that cost a day. On 2026-09-01 a fresh
+    mention got nothing for 61 seconds; the handler ran, this was its first
+    statement, and no `:eyes:` ever appeared. Ruling out the causes took five
+    separate eliminations from outside the process -- reproducing this exact
+    `chat.postMessage` by hand (ok: true), confirming the message handler
+    defers to this one, confirming there is no second listener, and proving
+    from the Slack `ts` that no ack was posted and later edited away. Every one
+    of those would have been unnecessary against one log line.
+
+    Silent is not the only alternative to fatal. `logger.warning` cannot fail
+    the turn and cannot be missed.
     """
     channel = event.get("channel")
     if not channel:
+        logger.warning(
+            "instant_ack skipped: the event names no channel (keys=%s)",
+            sorted(event)[:12],
+        )
         return None
     # Threaded under the message being acknowledged, including when that
     # message started no thread of its own -- a top-level ack reads as an
@@ -1385,7 +1401,18 @@ async def instant_ack(client, event: dict) -> dict | None:
         payload["thread_ts"] = thread_ts
     try:
         return await client.chat_postMessage(**payload)
-    except Exception:
+    except Exception as exc:
+        # `exc_info` on purpose: a Slack error carries its own `error` field,
+        # and "which one" is the whole question. `channel_not_found`,
+        # `not_in_channel`, a rate limit and an expired token are four
+        # different problems and only the traceback distinguishes them.
+        logger.warning(
+            "instant_ack failed for channel=%s thread_ts=%s: %s",
+            channel,
+            thread_ts,
+            type(exc).__name__,
+            exc_info=True,
+        )
         return None
 
 
