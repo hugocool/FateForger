@@ -516,6 +516,40 @@ async def test_okay_is_the_add_press(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_try_again_on_a_failed_card_is_the_retry_press(monkeypatch):
+    # The retry option is the only press a FAILURE card offers, and it must
+    # reach the same executor the button calls.
+    draft = replace(_draft_fixture(), status=DraftStatus.FAILURE, last_error="calendar unreachable")
+    store = _FakeDraftStore(draft)
+    runtime = _DummyRuntime(
+        UpsertCalendarEventResult(ok=True, calendar_id="primary", event_id="ffplanningxyz", event_url=VALID_EVENT_URL)
+    )
+    coordinator = _coordinator(
+        store, runtime, _FakeClient(),
+        _SchemaOutputClient({"decision": "choose_option", "option_id": "retry_add_to_calendar"}),
+    )
+    scheduled: list[asyncio.Task] = []
+    original_create_task = asyncio.create_task
+    monkeypatch.setattr(
+        "fateforger.slack_bot.planning.asyncio.create_task",
+        lambda coro: scheduled.append(original_create_task(coro)) or scheduled[-1],
+    )
+
+    async def _thread_respond(*, text: str, blocks=None):
+        return None
+
+    reply = await coordinator.maybe_handle_thread_reply(
+        channel_id="D1", thread_ts="123.456", text="try again", thread_respond=_thread_respond
+    )
+
+    assert reply.outcome is ThreadReplyOutcome.HANDLED
+    await asyncio.gather(*scheduled)
+    assert isinstance(runtime.calls[-1][0], UpsertCalendarEvent)
+    assert store.status_updates[0][0] == DraftStatus.PENDING
+    assert store.status_updates[-1][0] == DraftStatus.SUCCESS
+
+
+@pytest.mark.asyncio
 async def test_a_non_press_reply_returns_the_card_as_context():
     draft = _draft_fixture()
     coordinator = _coordinator(
