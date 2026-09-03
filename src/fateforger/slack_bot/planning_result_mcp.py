@@ -29,6 +29,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     BlockerOption,
     PlannerAssumptionDraft,
     PlanningResult,
+    SkeletonPayload,
     UserBlockerDraft,
 )
 
@@ -323,6 +324,19 @@ def _validated(
             "this submission carries neither an artifact nor a blocker, so the "
             "turn would end with nothing for the user to review."
         )
+    if artifact is not None and target_artifact == "skeleton":
+        # The one payload whose shape the card depends on. A skeleton that
+        # arrives without `markdown` is stored, approved, and drawn as an empty
+        # day (#267); refusing it here costs the planner one retry in the same
+        # turn, with the field names in hand.
+        try:
+            SkeletonPayload.model_validate(artifact)
+        except ValidationError as exc:
+            raise PlanningResultRefused(
+                "a skeleton payload is {\"markdown\": <the day as loose "
+                "markdown>, \"reasoning\": <why it is shaped that way>} and "
+                f"nothing else; this one does not match ({_shape_codes(exc)})."
+            ) from exc
 
     updates = (
         [] if artifact is None else [{"kind": target_artifact, "payload": artifact}]
@@ -413,6 +427,7 @@ def _known_field_names() -> frozenset[str]:
         PlanningResult,
         ArtifactDraft,
         PlannerAssumptionDraft,
+        SkeletonPayload,
         UserBlockerDraft,
         BlockerOption,
     )
@@ -432,18 +447,23 @@ def _shape_codes(exc: ValidationError) -> str:
     over 31 planner draws: 4-11 failed submissions per turn, after which the
     planner read the host's own source to recover the names it was never told.
 
-    The path is safe to repeat because every segment is either an index or a
-    field name this system declared. A segment that is neither is a key the
-    model invented, and it is replaced rather than echoed -- Pydantic's own
-    message quotes the offending input, which is model-authored text on a path
-    that ends in the host's logs.
+    The path is safe to repeat because every segment is either an index, a
+    field name this system declared, or -- for `extra_forbidden` -- the key
+    the model just invented. That last case used to be replaced rather than
+    echoed, on the theory that Pydantic's own message quotes model-authored
+    text; but the invented key is exactly the name a planner needs back to
+    stop inventing it, this refusal returns to no one but the model that just
+    wrote the key, and #267's skeleton went unrefused for want of it. Any
+    other unrecognised segment (a value, not a key this tool ever declared)
+    is still masked.
     """
 
     codes = set()
     for error in exc.errors():
+        extra_key = error["type"] == "extra_forbidden"
         parts = [
             str(segment)
-            if isinstance(segment, int) or segment in _KNOWN_FIELDS
+            if isinstance(segment, int) or segment in _KNOWN_FIELDS or extra_key
             else "<unknown-field>"
             for segment in error["loc"]
         ] or ["result"]

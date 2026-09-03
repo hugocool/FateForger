@@ -476,6 +476,19 @@ class ArtifactDraft(_StrictModel):
     dependency_revisions: dict[str, int] = Field(default_factory=dict)
 
 
+class SkeletonPayload(_StrictModel):
+    """What a `skeleton` artifact's payload has to carry to be drawn.
+
+    Loose markdown -- `# anchor` headings and `-` bullets -- plus the reasoning
+    that put things where they are. `blocks`, `events` and any other shape a
+    planner invents are refused here by name rather than rendered as an empty
+    card (#267). Strictness is inherited: no coercion, no extra keys.
+    """
+
+    markdown: str = Field(min_length=1)
+    reasoning: str = ""
+
+
 class PlannerAssumptionDraft(_StrictModel):
     """A planner-proposed assumption awaiting kernel validation."""
 
@@ -543,6 +556,7 @@ __all__ = [
     "PlanningSessionSnapshot",
     "ProvidePlanningFacts",
     "ReviseArtifact",
+    "SkeletonPayload",
     "StartSession",
     "TimeboxIntent",
     "TurnFailed",

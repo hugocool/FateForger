@@ -779,13 +779,13 @@ def test_a_retry_reordering_keys_is_the_same_submission(tmp_path, monkeypatch) -
 
     first = submit_planning_result(
         target_artifact="skeleton",
-        artifact={"markdown": "## Saturday", "title": "Saturday"},
+        artifact={"markdown": "## Saturday", "reasoning": "Saturday"},
         assumptions=[],
         blockers=[],
     )
     second = submit_planning_result(
         target_artifact="skeleton",
-        artifact={"title": "Saturday", "markdown": "## Saturday"},
+        artifact={"reasoning": "Saturday", "markdown": "## Saturday"},
         assumptions=[],
         blockers=[],
     )
