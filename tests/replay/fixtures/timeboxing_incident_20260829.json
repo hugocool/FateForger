@@ -76,6 +76,13 @@
         "value": true,
         "source": "user",
         "source_interaction_id": "incident-capture"
+      },
+      {
+        "fact_id": "frame:2026-08-29",
+        "kind": "day_frame",
+        "value": {"wake": "08:00", "sleep": "23:30"},
+        "source": "user",
+        "source_interaction_id": "incident-capture"
       }
     ],
     "one_named_activity": [
@@ -90,6 +97,13 @@
         "fact_id": "gym-wanted",
         "kind": "requested_activity",
         "value": true,
+        "source": "user",
+        "source_interaction_id": "conflict-capture"
+      },
+      {
+        "fact_id": "frame:2026-08-29",
+        "kind": "day_frame",
+        "value": {"wake": "08:00", "sleep": "23:30"},
         "source": "user",
         "source_interaction_id": "conflict-capture"
       }
