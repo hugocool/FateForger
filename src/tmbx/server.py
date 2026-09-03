@@ -390,6 +390,9 @@ def build_server(service: PlanService) -> FastMCP:
                 "committable": result.committable,
                 "block_count": len(result.plan.blocks),
                 "rendered": result.rendered,
+                # The same rows the table was built from, as data, so a host
+                # can show a person a schedule instead of a handle table.
+                "rows": result.rows,
                 "violations": [
                     violation.model_dump(mode="json") for violation in result.violations
                 ],
