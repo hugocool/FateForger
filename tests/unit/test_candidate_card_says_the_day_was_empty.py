@@ -10,11 +10,14 @@ from __future__ import annotations
 
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactKind,
+    AwaitingApproval,
     PlanningArtifact,
+    PlanningSessionSnapshot,
 )
+from fateforger.slack_bot.stage_cards import map_outcome
 from fateforger.slack_bot.timeboxing_cards import (
     PendingTimeboxCandidates,
-    render_candidate,
+    render_stage_card,
 )
 
 
@@ -41,13 +44,17 @@ def _candidate(*, event_ids: dict[str, str], ops: list[dict]) -> PlanningArtifac
 
 
 def _render(artifact: PlanningArtifact) -> str:
-    return render_candidate(
-        artifact,
+    card = map_outcome(
+        AwaitingApproval(artifact=artifact),
+        PlanningSessionSnapshot(session_key="C1:1.0", revision=5, owner_user_id="U1"),
         pending=PendingTimeboxCandidates(),
-        session_key="C1:1.0",
         actor_user_id="U1",
-        expected_revision=5,
-    ).text
+        session_key="C1:1.0",
+        channel_id="C1",
+        thread_ts="1.0",
+    )
+    assert card is not None
+    return render_stage_card(card).text
 
 
 def test_an_empty_read_built_into_a_full_day_is_said_on_the_card() -> None:

@@ -112,6 +112,7 @@ from fateforger.slack_bot.timeboxing_cards import (
     _undo_outcome_text,
     harness_approve_block,
     harness_undo_block,
+    present_outcome,
     render_outcome,
     timebox_failure_message,
 )
