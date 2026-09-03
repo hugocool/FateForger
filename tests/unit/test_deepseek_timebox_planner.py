@@ -408,7 +408,17 @@ async def test_actual_kernel_brief_preserves_exact_typed_approvals() -> None:
                 value="Write the proposal",
                 source="user",
                 source_interaction_id="1777651201.0",
-            )
+            ),
+            # The skeleton gate asks for the day's frame before it will plan
+            # (#251); without this fact the turn stops at that question and the
+            # harness seam this test is about is never reached.
+            PlanningFact(
+                fact_id="frame-1",
+                kind=FactKind.DAY_FRAME,
+                value={"wake": "08:30", "sleep": "00:30"},
+                source="user",
+                source_interaction_id="1777651202.0",
+            ),
         ],
         artifacts=[day_frame],
         approvals=[approval],
@@ -694,3 +704,62 @@ def test_the_calendar_setting_binds_to_the_documented_variable(monkeypatch) -> N
     monkeypatch.setenv("TIMEBOX_CALENDAR_ID", "someone@example.com")
 
     assert Settings().timebox_calendar_id == "someone@example.com"
+
+
+# --- One host read per turn (#252) -----------------------------------------------
+
+
+async def test_a_snapshot_the_host_just_read_for_this_day_is_not_read_again() -> None:
+    """Measured live on 2026-09-02: `plan_read` three times in one candidate turn,
+    identical arguments, identical snapshot token. The kernel's context port had
+    already read this calendar and this day into the brief; the planner threw
+    that away and asked again. Reuse is keyed on identifiers tmbx minted --
+    `ok`, `snapshot.calendar_id`, `snapshot.day` -- so a brief carrying a read
+    of some other day, or a stub, still triggers a fresh read.
+    """
+
+    host_read = {
+        "ok": True,
+        "snapshot": {"calendar_id": "hugo.evers@gmail.com", "day": "2026-08-29", "etags": {}},
+        "rendered": "blocks[0]",
+        "blocks": 0,
+    }
+    tmbx = _RecordedTmbx({"ok": True, "snapshot": {}})
+    runner = _RecordedHarnessRunner()
+    planner = DeepSeekTimeboxPlanner(
+        tmbx_client=tmbx,
+        constraint_reader=_RecordedConstraintReader([]),
+        calendar_id="hugo.evers@gmail.com",
+        clock=lambda: datetime(2026, 8, 29, tzinfo=UTC),
+        harness_runner=runner,
+    )
+    brief = _input_brief().model_copy(update={"calendar_snapshot": host_read})
+
+    await planner.produce(brief, _Progress())
+
+    assert tmbx.calls == [], "the host read this turn; reading again buys nothing"
+    assert runner.calls[0][0].calendar_snapshot == host_read
+
+
+async def test_a_snapshot_of_another_day_or_calendar_is_replaced() -> None:
+    other_day = {
+        "ok": True,
+        "snapshot": {"calendar_id": "hugo.evers@gmail.com", "day": "2026-08-28"},
+    }
+    other_calendar = {
+        "ok": True,
+        "snapshot": {"calendar_id": "work@example.com", "day": "2026-08-29"},
+    }
+    for stale in (other_day, other_calendar):
+        tmbx = _RecordedTmbx({"ok": True, "snapshot": {}})
+        planner = DeepSeekTimeboxPlanner(
+            tmbx_client=tmbx,
+            constraint_reader=_RecordedConstraintReader([]),
+            calendar_id="hugo.evers@gmail.com",
+            clock=lambda: datetime(2026, 8, 29, tzinfo=UTC),
+            harness_runner=_RecordedHarnessRunner(),
+        )
+        await planner.produce(
+            _input_brief().model_copy(update={"calendar_snapshot": stale}), _Progress()
+        )
+        assert tmbx.calls == [("hugo.evers@gmail.com", "2026-08-29")]

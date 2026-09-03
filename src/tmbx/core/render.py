@@ -51,6 +51,17 @@ COLUMNS = ("H", "own", "type", "summary", "ST", "ET", "mode", "dur")
 
 _DELIMITER = ","
 
+EMPTY_DAY_LINE = "(empty day: no blocks on this calendar for this date)"
+"""What follows the header when the plan has no blocks.
+
+A bare ``blocks[0]{...}:`` -- a column spec, a colon, nothing -- is what
+``plan_read`` returned for an empty day on 2026-09-02 (#253), and to the
+model reading it, it looks like a string cut off mid-way rather than a
+fact about the day. The header stays (its count is the table's contract);
+this sentence makes "nothing here" explicit. It starts with ``(`` so it
+cannot be mistaken for a row -- rows begin with a handle.
+"""
+
 
 def _escape(value: str) -> str:
     """Quote a free-text field so it can't be mistaken for column structure.
@@ -170,7 +181,7 @@ def render_plan(plan: Plan, foreign_uids: Collection[str] = ()) -> str:
     """
     header = f"blocks[{len(plan.blocks)}]{{{','.join(COLUMNS)}}}:"
     if not plan.blocks:
-        return header
+        return f"{header}\n{EMPTY_DAY_LINE}"
 
     # Built from the same rows a host renders for a person, so the table the
     # model patches against and the schedule the user approves cannot differ.
@@ -184,4 +195,4 @@ def render_plan(plan: Plan, foreign_uids: Collection[str] = ()) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["COLUMNS", "plan_rows", "render_plan"]
+__all__ = ["COLUMNS", "EMPTY_DAY_LINE", "plan_rows", "render_plan"]

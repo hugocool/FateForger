@@ -93,16 +93,20 @@ class DeepSeekTimeboxPlanner:
 
         locked_day = brief.locked_day
         day = locked_day.date.isoformat()
-        try:
-            calendar_snapshot = await self._tmbx_client.read(self._calendar_id, day)
-        except Exception as exc:
-            logger.warning(
-                "adaptive planner calendar read unavailable error_type=%s",
-                type(exc).__name__,
-            )
-            raise DependencyUnavailable("calendar dependency unavailable") from exc
-        if calendar_snapshot.get("ok") is not True:
-            raise DependencyUnavailable("calendar dependency unavailable")
+        calendar_snapshot = self._host_read_of(brief, day)
+        if calendar_snapshot is None:
+            try:
+                calendar_snapshot = await self._tmbx_client.read(
+                    self._calendar_id, day
+                )
+            except Exception as exc:
+                logger.warning(
+                    "adaptive planner calendar read unavailable error_type=%s",
+                    type(exc).__name__,
+                )
+                raise DependencyUnavailable("calendar dependency unavailable") from exc
+            if calendar_snapshot.get("ok") is not True:
+                raise DependencyUnavailable("calendar dependency unavailable")
 
         try:
             constraints = await self._constraint_reader.query_constraints(
@@ -144,6 +148,32 @@ class DeepSeekTimeboxPlanner:
                 type(exc).__name__,
             )
             raise DependencyUnavailable("planner dependency unavailable") from exc
+
+    def _host_read_of(self, brief: PlanningBrief, day: str) -> dict[str, Any] | None:
+        """The calendar read the kernel's context port already made this turn.
+
+        Measured live on 2026-09-02: `plan_read` three times in one candidate
+        turn with identical arguments and an identical snapshot token. One was
+        the host's, one was this planner discarding the host's and asking
+        again, one was the model's own (it needs the token for `plan_apply`).
+        The middle one bought nothing.
+
+        Reuse is decided over identifiers tmbx minted -- `ok`, and the
+        `calendar_id` and `day` inside the snapshot -- so a brief carrying a
+        stub, or a read of some other day, still triggers a fresh read. A
+        snapshot is a precondition, not a cache: if the calendar moved in the
+        seconds between, the commit's etags refuse it either way.
+        """
+
+        candidate = brief.calendar_snapshot
+        if not isinstance(candidate, dict) or candidate.get("ok") is not True:
+            return None
+        snapshot = candidate.get("snapshot")
+        if not isinstance(snapshot, dict):
+            return None
+        if snapshot.get("calendar_id") != self._calendar_id or snapshot.get("day") != day:
+            return None
+        return candidate
 
 
 class HarnessBridgeRunner:

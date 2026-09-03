@@ -45,15 +45,46 @@ class StreamableHttpMcpClient:
 
     async def get_tools(self) -> list:
         """Load MCP tools from the configured endpoint."""
-        from autogen_ext.tools.mcp import mcp_server_tools
+        from fateforger.tools.mcp_tool_schemas import streamable_http_tools
 
         ok, reason = self.probe()
         if not ok:
             raise RuntimeError(reason or f"{self._endpoint_name()} endpoint is unavailable.")
-        tools = await mcp_server_tools(self._params)
+        tools = await streamable_http_tools(self._params)
         if not tools:
             raise RuntimeError(f"{self._endpoint_name()} server returned no tools")
         return tools
+
+    async def read_resource_text(self, uri: str) -> str | None:
+        """The text of one MCP resource, or None when the server does not publish it.
+
+        Resources are how a server states facts about itself without adding a
+        tool the planner would see and pay for. A server that has never heard
+        of ``uri`` answers None so the caller can say "unknown" rather than
+        mistake an old server for a broken one; a server that cannot be
+        reached raises, because that is a different problem.
+        """
+        from autogen_ext.tools.mcp._session import create_mcp_server_session
+        from mcp.shared.exceptions import McpError
+        from pydantic import AnyUrl
+
+        ok, reason = self.probe()
+        if not ok:
+            raise RuntimeError(reason or f"{self._endpoint_name()} endpoint is unavailable.")
+        async with create_mcp_server_session(self._params) as session:
+            await session.initialize()
+            listed = await session.list_resources()
+            if uri not in {str(resource.uri) for resource in listed.resources}:
+                return None
+            try:
+                result = await session.read_resource(AnyUrl(uri))
+            except McpError:
+                return None
+        for content in result.contents:
+            text = getattr(content, "text", None)
+            if isinstance(text, str):
+                return text
+        return None
 
 
 __all__ = ["StreamableHttpMcpClient"]

@@ -1444,3 +1444,27 @@ def test_a_handle_on_the_first_add_builds_around_a_block_already_there():
                       p=FixedStart(st=time(12, 0), dur=timedelta(minutes=60)))
     result = apply_ops(_plan(), Patch(ops=ops), mint_uid=_mint)
     assert [b.h for b in result.blocks] == ["PR1", "DW1", "ZL1", "MG1", "BW1", "DW2"]
+
+
+# ---------------------------------------------------------------------------
+# #253 item 1: "PT0M" arrived at the tool boundary, "PT0S" landed in the
+# journal. That is the type doing its job -- ``dur`` is a time span, not a
+# string, and every ISO spelling of zero is the same span -- but it has to
+# be a stated decision, not a surprise found in a post-mortem.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("spelling", ["PT0M", "PT0S", "P0D", "PT0H0M0S"])
+def test_every_iso_spelling_of_zero_is_one_duration(spelling):
+    op = AddBlock(after=None, h="WK1", n="Wake", t=ET.M, p=FixedStart(st=time(7, 0), dur=spelling))
+    assert op.p.dur == timedelta(0)
+
+
+def test_durations_are_journaled_in_one_canonical_spelling():
+    """Whatever the caller wrote, the record reads ``PT0S`` -- so two
+    journal rows for the same plan compare equal, and a reader of the
+    history never sees the caller's spelling and wonders whether ``PT0M``
+    and ``PT0S`` were meant to differ."""
+    patch = Patch(ops=[AddBlock(after=None, h="WK1", n="Wake", t=ET.M, p=FixedStart(st=time(7, 0), dur="PT0M"))])
+    assert '"dur":"PT0S"' in patch.model_dump_json()
+    assert "PT0M" not in patch.model_dump_json()

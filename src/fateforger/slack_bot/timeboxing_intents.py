@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import date, timedelta
-from typing import Literal, cast, get_args
+from datetime import date, datetime, time, timedelta
+from typing import Annotated, Literal, cast, get_args
 from uuid import uuid4
 
 from autogen_core.models import ChatCompletionClient, SystemMessage, UserMessage
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
-    JsonValue,
     ValidationError,
     create_model,
     model_validator,
@@ -46,9 +46,63 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class PlanningFactDraft(_StrictModel):
-    kind: FactKind
-    value: JsonValue
+def _clock(value: str) -> str:
+    """Normalise a clock time the model wrote to ``HH:MM`` in the planning zone.
+
+    Format parsing of the model's own output, not a reading of the user's
+    words: the schema asked for a 24-hour clock and "8:30" or "08:30:00Z" is
+    one. Any offset is dropped -- the frame is in the planning timezone by
+    contract, and a zone the model appended is noise, not information.
+    """
+
+    try:
+        parsed = time.fromisoformat(value)
+    except ValueError:
+        parsed = datetime.strptime(value, "%H:%M").time()
+    return parsed.replace(tzinfo=None).isoformat(timespec="minutes")
+
+
+#: A string, not ``datetime.time``, on purpose: AutoGen dumps the parsed
+#: completion in python mode for its ``LLMCallEvent`` and ``str()``s it with
+#: ``json.dumps``, so a non-JSON-native leaf here breaks every log formatter
+#: that sees the call. Verified live on 2026-09-02: 8 of 8 draws raised
+#: ``TypeError: Object of type time is not JSON serializable`` out of
+#: ``logger.info`` before the intent was ever returned.
+Clock = Annotated[
+    str,
+    AfterValidator(_clock),
+    Field(description="24-hour clock time on the planning day, HH:MM"),
+]
+
+
+class DayFrameDraft(_StrictModel):
+    """The sleep window as the model read it, a boundary left null when unstated."""
+
+    wake: Clock | None
+    sleep: Clock | None
+
+    def as_value(self) -> dict[str, str | None]:
+        return {"wake": self.wake, "sleep": self.sleep}
+
+
+class RequestedActivityDraft(_StrictModel):
+    kind: Literal["requested_activity"]
+    value: str = Field(min_length=1)
+
+
+class DayFrameFactDraft(_StrictModel):
+    kind: Literal["day_frame"]
+    value: DayFrameDraft
+
+
+#: One shape per fact kind the interpreter may extract, discriminated on
+#: ``kind`` so the schema itself tells the model what a day_frame looks like.
+#: With ``value: JsonValue`` the schema said "anything", and on the live model
+#: 8 of 8 draws for "I'll sleep today from 00:30 untill 8:30" answered the
+#: right times as a JSON-encoded *string* -- correct judgement, unusable shape.
+PlanningFactDraft = Annotated[
+    RequestedActivityDraft | DayFrameFactDraft, Field(discriminator="kind")
+]
 
 
 class InterpretedTimeboxTurn(_StrictModel):
@@ -164,6 +218,14 @@ _SYSTEM_PROMPT = """You interpret one adaptive timeboxing user turn.
 Return only the requested schema.
 Choose only a decision listed in allowed_decisions.
 Extract facts only when the user actually supplies them.
+Fact kinds you may extract: requested_activity (one per thing the user wants
+the day to hold, value a short description in their words) and day_frame
+(when they get up and when they go to sleep on the planning day, value
+{"wake": "HH:MM", "sleep": "HH:MM"} in 24-hour time, null for a boundary they
+did not state). A bedtime or wake time is a day_frame, never an activity.
+When open_question is present, the user is answering it: a reply naming
+times against a day_frame question is that fact, even without the words
+"wake" or "sleep". Never fill in a boundary they did not state.
 Set day_type only when the user says what kind of day it is. Leave it out
 otherwise: the host derives working and weekend from the weekday and is right
 about them, and an override it did not ask for overwrites a fact with a guess.
@@ -220,6 +282,16 @@ def _offered_options(
     return () if pending is None else tuple(pending.options)
 
 
+def _open_question(snapshot: PlanningSessionSnapshot) -> dict[str, str] | None:
+    pending = snapshot.pending_blocker
+    if pending is None:
+        return None
+    return {
+        "requirement_id": pending.requirement_id,
+        "answered_by": pending.fact_kind.value,
+    }
+
+
 def _display_context(
     snapshot: PlanningSessionSnapshot,
 ) -> tuple[str, tuple[str, ...], PlanningArtifact | None]:
@@ -227,7 +299,18 @@ def _display_context(
     if snapshot.status == "cancelled":
         return "cancelled", (), pending
     if snapshot.status == "committed":
-        return "committed", (), pending
+        # The day is on the calendar and the user is still talking, which on
+        # 2026-09-02 meant "move the work two hours later, I sleep 00:30-08:30"
+        # eighty seconds after the commit. The session key is the thread, so a
+        # stage that offers nothing here is a thread that is dead for good.
+        # What is offered is what changes the day: facts, or an instruction
+        # against the receipt. Not cancel -- the calendar is written -- and
+        # not approve, which has nothing left to approve.
+        return (
+            "committed",
+            ("provide_facts", "revise"),
+            _latest_artifact(snapshot, ArtifactKind.COMMIT_RECEIPT),
+        )
     if snapshot.planning_day is None:
         # Confirming belongs here as much as cancelling does. Without it a
         # session driven by typing cannot get past stage 0 at all, and the two
@@ -287,6 +370,10 @@ class TimeboxingIntentInterpreter:
                     for option in options
                 ],
                 "pending_artifact_kind": pending.kind.value if pending else None,
+                # The question this turn may be answering, and the kind of
+                # fact that answers it. "8:30 to half past midnight" is a day
+                # frame only to a reader who knows the frame was asked (#251).
+                "open_question": _open_question(snapshot),
                 # What day_offset is measured from. Without it the model would
                 # be asked how far away Monday is with no idea what today is.
                 "proposed_day": _proposed_day_context(pending),
@@ -399,17 +486,7 @@ def _intent_from_interpreted(
     if interpreted.decision == "provide_facts":
         if not interpreted.facts:
             raise ValueError("provide_facts requires at least one typed fact")
-        return ProvidePlanningFacts(
-            facts=[
-                PlanningFact(
-                    fact_id=str(uuid4()),
-                    kind=fact.kind,
-                    value=fact.value,
-                    source="user",
-                )
-                for fact in interpreted.facts
-            ]
-        )
+        return ProvidePlanningFacts(facts=_typed_facts(interpreted))
 
     if pending is None:
         raise ValueError(f"{interpreted.decision} requires a pending artifact")
@@ -422,12 +499,30 @@ def _intent_from_interpreted(
 
     if interpreted.revision_instruction is None:
         raise ValueError("revise requires a revision instruction")
+    # The facts the model read out of the same message ride with the
+    # instruction. Dropping them here was how "move the work an hour later,
+    # I'll sleep until 8:30" redrafted the day against the old wake time.
     return ReviseArtifact(
         artifact_id=pending.artifact_id,
         artifact_revision=pending.revision,
         artifact_digest=pending.digest,
         instruction=interpreted.revision_instruction,
+        facts=_typed_facts(interpreted),
     )
+
+
+def _typed_facts(interpreted: InterpretedTimeboxTurn) -> list[PlanningFact]:
+    return [
+        PlanningFact(
+            fact_id=str(uuid4()),
+            kind=FactKind(fact.kind),
+            value=fact.value.as_value()
+            if isinstance(fact.value, DayFrameDraft)
+            else fact.value,
+            source="user",
+        )
+        for fact in interpreted.facts
+    ]
 
 
 def intent_from_artifact_action(
@@ -504,8 +599,11 @@ def intent_from_date_action(value: str) -> TimeboxActionEnvelope | None:
 
 __all__ = [
     "ArtifactActionMeta",
+    "DayFrameDraft",
+    "DayFrameFactDraft",
     "InterpretedTimeboxTurn",
     "PlanningFactDraft",
+    "RequestedActivityDraft",
     "TimeboxActionEnvelope",
     "TimeboxingIntentInterpreter",
     "intent_from_artifact_action",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import dataclass
 from typing import Literal, Mapping
 
@@ -13,6 +14,45 @@ from fateforger.core.config import settings
 ReasoningEffort = Literal["minimal", "low", "medium", "high"]
 
 logger = logging.getLogger(__name__)
+
+
+def suppress_upstream_parsed_typevar_warning() -> None:
+    """Mute one Pydantic serializer warning that is openai-python's, not ours.
+
+    Every schema-bound ``create(json_output=Model)`` logged (#254)::
+
+        PydanticSerializationUnexpectedValue(Expected `none` - serialized
+        value may not be as expected [field_name='parsed', ...])
+
+    ``openai.lib._parsing._completions.parse_chat_completion`` builds
+    ``ParsedChatCompletion[ResponseFormatT]`` with the TypeVar unsolved, so
+    the ``parsed`` field's serializer is typed for ``None`` whatever model
+    was asked for; AutoGen's ``OpenAIChatCompletionClient`` then
+    ``model_dump()``s that object for its ``LLMCallEvent``, and pydantic
+    falls back to duck-typed serialisation and says so. Reproduced with
+    openai alone -- no fateforger code involved -- on 2.54.0 and on 3.7.0,
+    the latest release at 2026-09-02, so upgrading does not clear it.
+
+    The filter is pinned to that one field on that one warning shape so a
+    serializer warning about anything else still surfaces. The match is
+    over a diagnostic string pydantic minted, not over anything a user
+    wrote. ``tests/unit/test_parsed_completion_warning_is_not_ours.py``
+    holds a control that fails once upstream fixes the type -- delete this
+    function then.
+    """
+
+    warnings.filterwarnings(
+        "ignore",
+        message=(
+            r"Pydantic serializer warnings:\s+PydanticSerializationUnexpectedValue"
+            r"\(Expected `none` - serialized value may not be as expected "
+            r"\[field_name='parsed'"
+        ),
+        category=UserWarning,
+    )
+
+
+suppress_upstream_parsed_typevar_warning()
 
 
 @dataclass(frozen=True)

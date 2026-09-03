@@ -61,10 +61,25 @@ class FactKind(StrEnum):
     """Core planning facts consumed by the initial readiness policy."""
 
     REQUESTED_ACTIVITY = "requested_activity"
+    #: When the user gets up and when they go to sleep on the planning day, as
+    #: ``{"wake": "HH:MM", "sleep": "HH:MM"}`` in the planning timezone. The
+    #: user's to state, whether typed today or already on record in constraint
+    #: memory -- never the planner's to assume. On 2026-09-02 the planner
+    #: assumed it, committed the day, and the user's next message was the
+    #: correction the committed session then refused (#251).
+    DAY_FRAME = "day_frame"
+    #: How a requested activity the planner could not read is to be titled --
+    #: the user's pick among the readings the planner proposed. Recorded by a
+    #: press, so the value is the option's label and effect (#251).
+    ACTIVITY_READING = "activity_reading"
     ORDINARY_PLACEMENT = "ordinary_placement"
     CALENDAR_SNAPSHOT = "calendar_snapshot"
     ACTIVE_CONSTRAINTS = "active_constraints"
     CONCRETE_PLACEMENTS = "concrete_placements"
+    #: What the user asked to change about an artifact, in their words. No
+    #: requirement is satisfied by it; it is carried so the planner rebuilding
+    #: the artifact can read what was wrong with the last one.
+    REVISION_INSTRUCTION = "revision_instruction"
 
 
 class PlanningDay(_StrictModel):
@@ -300,6 +315,32 @@ class PlanningSessionSnapshot(_StrictModel):
         return cls(session_key=session_key, revision=0, owner_user_id=owner_user_id)
 
 
+def has_commit_receipt(snapshot: PlanningSessionSnapshot | None) -> bool:
+    """Whether anything this session did has reached the calendar.
+
+    The receipt, not the status. `status` says what the session is doing now:
+    a revision reopens a committed session (`_reopen`) and it reads `open`
+    again, while `_invalidate` keeps the `COMMIT_RECEIPT` precisely because
+    history cannot be rebuilt. So the receipt is the only durable answer to
+    "has this day been written?", and it is what the kernel and the cards must
+    both gate on.
+
+    A receipt is only ever stored for a write the adapter reported as
+    committed, but the payload is checked anyway: a store written before that
+    guard existed can hold `{"committed": false}`, and a refused commit is not
+    a day on the calendar.
+    """
+
+    if snapshot is None:
+        return False
+    return any(
+        artifact.kind is ArtifactKind.COMMIT_RECEIPT
+        and isinstance(artifact.payload, dict)
+        and artifact.payload.get("committed") is True
+        for artifact in snapshot.artifacts
+    )
+
+
 class StartSession(_StrictModel):
     kind: Literal["start_session"] = "start_session"
 
@@ -331,6 +372,11 @@ class ReviseArtifact(_StrictModel):
     artifact_revision: int = Field(ge=1)
     artifact_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     instruction: str = Field(min_length=1)
+    #: What the user stated in the same breath as the instruction. "Move the
+    #: work an hour later, I'll sleep until 8:30" is one message carrying a
+    #: day frame and a revision; a turn takes one intent, so the facts ride
+    #: with it and are filed before the redraft reads them.
+    facts: list[PlanningFact] = Field(default_factory=list)
 
 
 class ApproveArtifact(_StrictModel):
@@ -461,6 +507,19 @@ class ArtifactDraft(_StrictModel):
     dependency_revisions: dict[str, int] = Field(default_factory=dict)
 
 
+class SkeletonPayload(_StrictModel):
+    """What a `skeleton` artifact's payload has to carry to be drawn.
+
+    Loose markdown -- `# anchor` headings and `-` bullets -- plus the reasoning
+    that put things where they are. `blocks`, `events` and any other shape a
+    planner invents are refused here by name rather than rendered as an empty
+    card (#267). Strictness is inherited: no coercion, no extra keys.
+    """
+
+    markdown: str = Field(min_length=1)
+    reasoning: str = ""
+
+
 class PlannerAssumptionDraft(_StrictModel):
     """A planner-proposed assumption awaiting kernel validation."""
 
@@ -517,6 +576,7 @@ __all__ = [
     "FactKind",
     "GoBack",
     "HandledInteraction",
+    "has_commit_receipt",
     "PendingBlocker",
     "PlannerAssumption",
     "PlannerAssumptionDraft",
@@ -528,6 +588,7 @@ __all__ = [
     "PlanningSessionSnapshot",
     "ProvidePlanningFacts",
     "ReviseArtifact",
+    "SkeletonPayload",
     "StartSession",
     "TimeboxIntent",
     "TurnFailed",

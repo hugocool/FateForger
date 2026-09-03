@@ -352,14 +352,19 @@ class StructuredJsonFormatter(logging.Formatter):
 def _install_extra_aware_formatter() -> None:
     """Give the root stream handlers a formatter that shows ``extra=``.
 
-    Keeps the stdlib default format so existing lines are unchanged; only
-    records actually carrying extras grow a suffix.
+    Keeps the stdlib default shape after a leading timestamp, so greps on
+    ``LEVEL:name:`` still hit; only records actually carrying extras grow a
+    suffix. The timestamp is not optional: tmbx.log has one and the bot log
+    did not, so every cross-service time in the 2026-09-02 post-mortem was
+    recovered from Slack ``ts`` values embedded in message text.
     """
 
     for handler in logging.getLogger().handlers:
         if isinstance(handler, logging.StreamHandler):
             handler.setFormatter(
-                ExtraAwareFormatter("%(levelname)s:%(name)s:%(message)s")
+                ExtraAwareFormatter(
+                    "%(asctime)s %(levelname)s:%(name)s:%(message)s"
+                )
             )
 
 

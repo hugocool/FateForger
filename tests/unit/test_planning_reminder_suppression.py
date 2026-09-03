@@ -5,9 +5,8 @@ from datetime import date
 
 import pytest
 
+from fateforger.haunt.event_draft_store import DraftStatus, EventDraftPayload
 from fateforger.haunt.reconcile import PlanningReminder
-from fateforger.haunt.timeboxing_activity import TimeboxingActivityTracker
-from fateforger.slack_bot import planning as planning_mod
 from fateforger.slack_bot.planning import PlanningCoordinator
 
 
@@ -94,35 +93,226 @@ class _SessionRef:
     updated_at: datetime = datetime(2026, 3, 6, 21, 0, tzinfo=timezone.utc)
 
 
-@pytest.mark.asyncio
-async def test_dispatch_skips_when_timeboxing_active(monkeypatch):
-    tracker = TimeboxingActivityTracker(idle_timeout=timedelta(hours=1))
-    monkeypatch.setattr(planning_mod, "timeboxing_activity", tracker)
+class _RecordingDraftStore:
+    """Enough of the draft store for a card to be built and posted."""
 
-    runtime = type(
-        "Runtime",
-        (),
-        {"event_draft_store": object(), "planning_guardian": None, "planning_reconciler": None},
-    )()
+    def __init__(self):
+        self.created = []
+
+    async def create(self, **kwargs):
+        self.created.append(kwargs)
+        return EventDraftPayload(
+            draft_id=kwargs["draft_id"],
+            user_id=kwargs["user_id"],
+            channel_id=kwargs["channel_id"],
+            message_ts=None,
+            calendar_id=kwargs["calendar_id"],
+            event_id=kwargs["event_id"],
+            title=kwargs["title"],
+            description=kwargs["description"],
+            timezone=kwargs["timezone"],
+            start_at_utc=kwargs["start_at_utc"],
+            duration_min=kwargs["duration_min"],
+            status=DraftStatus.PENDING,
+            event_url=None,
+            last_error=None,
+        )
+
+    async def attach_message(self, **kwargs):  # noqa: ARG002
+        return None
+
+
+class _NoSlotRuntime:
+    """A runtime whose planner never answers, so the dispatcher uses defaults."""
+
+    event_draft_store = None
+    planning_guardian = None
+    planning_reconciler = None
+    timeboxing_session_store = None
+
+    def __init__(self, *, ledger):
+        self.event_draft_store = _RecordingDraftStore()
+        self.timeboxing_session_store = ledger
+
+    async def send_message(self, *args, **kwargs):  # noqa: ARG002
+        return None
+
+
+def _session(session_key, *, status, day=None, owner="U1"):
+    from fateforger.agents.timeboxing.session_contracts import (
+        DayType,
+        PlanningDay,
+        PlanningSessionSnapshot,
+    )
+
+    snapshot = PlanningSessionSnapshot(
+        session_key=session_key, revision=3, owner_user_id=owner, status=status
+    )
+    if day is not None:
+        snapshot = snapshot.model_copy(
+            update={
+                "planning_day": PlanningDay(
+                    date=day,
+                    timezone="Europe/Amsterdam",
+                    iso_weekday=day.isoweekday(),
+                    day_type=DayType.WORKING,
+                    classification_basis="calendar",
+                    lock_revision=1,
+                )
+            }
+        )
+    return snapshot
+
+
+def _reminder(user_id="U1"):
+    return PlanningReminder(
+        scope=user_id,
+        kind="nudge1",
+        attempt=1,
+        message="nudge",
+        user_id=user_id,
+        channel_id="D1",
+    )
+
+
+async def _dispatch(ledger):
+    runtime = _NoSlotRuntime(ledger=ledger)
+    client = DummyClient()
+    coordinator = PlanningCoordinator(runtime=runtime, focus=object(), client=client)  # type: ignore[arg-type]
+    await coordinator.dispatch_planning_reminder(_reminder())
+    return client, runtime.event_draft_store
+
+
+@pytest.mark.asyncio
+async def test_a_user_with_no_session_is_nudged():
+    """The control: without it every suppression test below is vacuous."""
+
+    from fateforger.agents.timeboxing.adaptive_timeboxing import (
+        InMemoryPlanningSessionRepository,
+    )
+
+    client, drafts = await _dispatch(InMemoryPlanningSessionRepository())
+
+    assert len(client.posted) == 1
+    assert len(drafts.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_is_silent_while_a_timeboxing_session_is_open():
+    """#256: the 00:33:26 card, posted to a user mid-session.
+
+    Read from the session store, not from a flag the turn handler sets --
+    the flag and the calendar disagreed twelve times in one evening.
+    """
+
+    from fateforger.agents.timeboxing.adaptive_timeboxing import (
+        InMemoryPlanningSessionRepository,
+    )
+
+    ledger = InMemoryPlanningSessionRepository([_session("C1:1.0", status="open")])
+
+    client, drafts = await _dispatch(ledger)
+
+    assert client.posted == []
+    assert drafts.created == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_is_silent_after_the_day_was_committed():
+    """#256: the 00:43:58 card, posted eleven minutes after a 19-block commit."""
+
+    from fateforger.agents.timeboxing.adaptive_timeboxing import (
+        InMemoryPlanningSessionRepository,
+    )
+
+    today = datetime.now(timezone.utc).date()
+    ledger = InMemoryPlanningSessionRepository(
+        [_session("C1:1.0", status="committed", day=today)]
+    )
+
+    client, drafts = await _dispatch(ledger)
+
+    assert client.posted == []
+    assert drafts.created == []
+
+
+@pytest.mark.asyncio
+async def test_a_day_committed_last_week_does_not_silence_this_weeks_nudge():
+    from fateforger.agents.timeboxing.adaptive_timeboxing import (
+        InMemoryPlanningSessionRepository,
+    )
+
+    last_week = datetime.now(timezone.utc).date() - timedelta(days=7)
+    ledger = InMemoryPlanningSessionRepository(
+        [_session("C1:1.0", status="committed", day=last_week)]
+    )
+
+    client, _ = await _dispatch(ledger)
+
+    assert len(client.posted) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_open_session_abandoned_hours_ago_no_longer_silences():
+    """Suppression that never lifted would be the opposite silent failure."""
+
+    from fateforger.agents.timeboxing.adaptive_timeboxing import (
+        InMemoryPlanningSessionRepository,
+    )
+
+    stale = datetime.now(timezone.utc) - timedelta(hours=3)
+    ledger = InMemoryPlanningSessionRepository(
+        [_session("C1:1.0", status="open")], clock=lambda: stale
+    )
+
+    client, _ = await _dispatch(ledger)
+
+    assert len(client.posted) == 1
+
+
+@pytest.mark.asyncio
+async def test_someone_elses_open_session_is_not_this_users():
+    from fateforger.agents.timeboxing.adaptive_timeboxing import (
+        InMemoryPlanningSessionRepository,
+    )
+
+    ledger = InMemoryPlanningSessionRepository(
+        [_session("C9:1.0", status="open", owner="U2")]
+    )
+
+    client, _ = await _dispatch(ledger)
+
+    assert len(client.posted) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_session_opened_during_the_slow_part_still_wins():
+    """The check runs again before the first side effect, not only at entry.
+
+    Between entry and the draft the dispatcher awaits the calendar and a
+    slot suggestion -- up to ten seconds. A turn that begins in that window
+    is exactly the mid-session interruption the ticket describes.
+    """
+
+    from fateforger.agents.timeboxing.adaptive_timeboxing import (
+        InMemoryPlanningSessionRepository,
+    )
+
+    ledger = InMemoryPlanningSessionRepository()
+    runtime = _NoSlotRuntime(ledger=ledger)
+
+    async def _turn_begins_meanwhile(*args, **kwargs):  # noqa: ARG001
+        await ledger.load_or_create("C1:1.0", owner_user_id="U1")
+        return None
+
+    runtime.send_message = _turn_begins_meanwhile  # type: ignore[method-assign]
     client = DummyClient()
     coordinator = PlanningCoordinator(runtime=runtime, focus=object(), client=client)  # type: ignore[arg-type]
 
-    tracker.mark_active(user_id="U1", channel_id="C1", thread_ts="T1")
-
-    await coordinator.dispatch_planning_reminder(
-        PlanningReminder(
-            scope="U1",
-            kind="nudge1",
-            attempt=1,
-            message="nudge",
-            user_id="U1",
-            channel_id="C1",
-        )
-    )
-
-    tracker.mark_inactive(user_id="U1")
+    await coordinator.dispatch_planning_reminder(_reminder())
 
     assert client.posted == []
+    assert runtime.event_draft_store.created == []
 
 
 @pytest.mark.asyncio
@@ -307,3 +497,40 @@ async def test_planning_still_missing_refreshes_anchor_on_success_path():
     assert still_missing is False
     assert runtime.planning_anchor_store.upserts
     assert runtime.planning_anchor_store.upserts[-1]["event_id"] == "ffplanningcanonicalabc"
+
+
+@pytest.mark.asyncio
+async def test_the_planning_anchor_lives_on_the_timeboxing_calendar():
+    """#256 part three: one calendar id for the session and the nudger.
+
+    The anchor went to "primary" while the session wrote to
+    TIMEBOX_CALENDAR_ID, so the reconciler looked for planning on a calendar
+    the session never touched.
+    """
+
+    from fateforger.agents.timeboxing.adaptive_timeboxing import (
+        InMemoryPlanningSessionRepository,
+    )
+
+    runtime = _NoSlotRuntime(ledger=InMemoryPlanningSessionRepository())
+    runtime.timeboxing_calendar_id = "hugo.evers@gmail.com"  # type: ignore[attr-defined]
+    runtime.planning_anchor_store = _PayloadAnchorStore()  # type: ignore[attr-defined]
+    client = DummyClient()
+    coordinator = PlanningCoordinator(runtime=runtime, focus=object(), client=client)  # type: ignore[arg-type]
+
+    await coordinator.dispatch_planning_reminder(_reminder())
+
+    upserts = runtime.planning_anchor_store.upserts  # type: ignore[attr-defined]
+    assert upserts and upserts[-1]["calendar_id"] == "hugo.evers@gmail.com"
+    assert runtime.event_draft_store.created[-1]["calendar_id"] == "hugo.evers@gmail.com"
+
+
+class _PayloadAnchorStore(_DummyAnchorStore):
+    async def get(self, *, user_id):  # noqa: ARG002
+        return None
+
+    async def upsert(self, **kwargs):
+        from fateforger.haunt.planning_store import PlanningAnchorPayload
+
+        self.upserts.append(kwargs)
+        return PlanningAnchorPayload(**kwargs)

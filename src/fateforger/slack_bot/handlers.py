@@ -41,9 +41,12 @@ from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     ApproveArtifact,
     ArtifactKind,
+    Cancelled,
+    ConfirmPlanningDay,
     DayType,
     PlanningSessionSnapshot,
     TimeboxIntent,
+    TurnFailed,
 )
 from fateforger.core.config import settings
 from fateforger.core.logging_config import observe_stage_duration, record_error
@@ -93,6 +96,8 @@ from fateforger.slack_bot.progress_events import (
     ProgressStatus as TimeboxProgressStatus,
 )
 from fateforger.slack_bot.reply_guard import agent_reply_text
+from fateforger.slack_bot.stage_card_registry import StageCardRegistry, receipt_body, receipt_label
+from fateforger.slack_bot.stage_cards import date_stage_card
 from fateforger.slack_bot.task_cards import (
     FF_TASK_DETAILS_ACTION_ID,
     FF_TASK_EDIT_MODAL_CALLBACK_ID,
@@ -103,6 +108,7 @@ from fateforger.slack_bot.timeboxing_cards import (
     FF_HARNESS_APPROVE_ACTION_ID,
     FF_HARNESS_UNDO_ACTION_ID,
     FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
+    FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID,
     FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
     FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
     FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID,
@@ -112,7 +118,8 @@ from fateforger.slack_bot.timeboxing_cards import (
     _undo_outcome_text,
     harness_approve_block,
     harness_undo_block,
-    render_outcome,
+    present_outcome,
+    render_stage_card,
     timebox_failure_message,
 )
 from fateforger.slack_bot.timeboxing_commit import (
@@ -120,7 +127,6 @@ from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
     TimeboxCommitMeta,
     TimeboxingCommitCoordinator,
-    build_timebox_date_card,
     day_type_action_id,
     format_relative_day_label,
 )
@@ -1108,6 +1114,9 @@ _TIMEBOX_STALE_CHOICE_TEXT = TIMEBOX_STALE_CHOICE_TEXT
 #: it would touch every renderer for one boolean that only this path reads.
 _pending_candidates = PendingTimeboxCandidates()
 
+#: The card each session is currently showing, so the next turn can close it.
+_stage_cards = StageCardRegistry()
+
 
 def take_pending_approval(thread_key: str) -> str | None:
     """Return the opaque id of the exact candidate awaiting approval.
@@ -1556,6 +1565,7 @@ async def _run_adaptive_timebox_turn(
     user_text: str = "",
     action: TimeboxActionEnvelope | None = None,
     candidate_id: str | None = None,
+    focus: FocusManager | None = None,
 ) -> SlackBlockMessage:
     """Carry one Slack turn through the planning-session kernel.
 
@@ -1580,13 +1590,11 @@ async def _run_adaptive_timebox_turn(
         )
         return timebox_failure_message()
 
-    # Tell the nudge suppressor a session is under way. `dispatch_planning_reminder`
-    # already refuses to nudge while `timeboxing_activity.is_active`, but every
-    # `mark_active` in the tree was in the legacy TimeboxingFlowAgent, which
-    # Slack reaches only under FF_TIMEBOX_BACKEND=legacy. Nothing sets that, so
-    # the guard was permanently false and the Admonisher asked the user to book
-    # a planning session twelve times while they were mid-session doing exactly
-    # that -- several of the cards four seconds apart.
+    # The activity tracker no longer decides whether the Admonisher nudges --
+    # `dispatch_planning_reminder` reads the session store for that (#256).
+    # What it still owns is the idle timer: ten quiet minutes after the last
+    # turn it asks the guardian to reconcile, which is how an abandoned
+    # session earns its nudge back.
     timeboxing_activity.mark_active(
         user_id=actor_user_id,
         channel_id=card_channel,
@@ -1596,6 +1604,7 @@ async def _run_adaptive_timebox_turn(
     progress_card = HarnessProgressCard(
         client, channel=progress_channel, message_ts=progress_ts
     )
+    snapshot: PlanningSessionSnapshot | None = None
     try:
         snapshot = await repository.load_or_create(
             session_key, owner_user_id=actor_user_id
@@ -1622,32 +1631,127 @@ async def _run_adaptive_timebox_turn(
             session_key, owner_user_id=actor_user_id
         )
         if current.status != "open":
-            # Committed or cancelled: the session is over, so stop suppressing.
-            # Left set, a finished session would keep the Admonisher quiet for
-            # the tracker's full idle timeout -- the opposite failure, and just
-            # as silent.
+            # Committed or cancelled: the session is over, so the idle timer
+            # has nothing left to watch.
             timeboxing_activity.mark_inactive(user_id=actor_user_id)
+        # What the commit gate actually spends is the pending candidate, not
+        # the artifact, so a turn that leaves none on offer has to disarm it.
+        # Back off stage 4 drops the `validated_candidate` and receipts the
+        # card, but that edit is best-effort and swallowed: a Commit button
+        # that survives it reaches `_handle_timebox_candidate_approval`, finds
+        # no candidate artifact, returns False, and falls through to
+        # `_execute_harness_approval`, which spends the still-armed candidate
+        # and commits the plan the user just went back from. Bound to what the
+        # session now holds rather than to which intent ran, and before the
+        # mapper, which re-arms whenever it draws a candidate card.
+        if not _candidate_is_on_offer(current):
+            _pending_candidates.invalidate(session_key)
     except Exception as exc:  # noqa: BLE001 - one failure shape reaches Slack
+        # The message and the traceback, not the class alone. The card keeps
+        # the detail out of Slack on the promise that the log has it; on
+        # 2026-09-02 the log had `error_type=ValueError` and the sentence that
+        # named the cause had to be reconstructed from source.
         logger.error(
-            "adaptive timeboxing turn failed session_key=%s interaction=%s error_type=%s",
+            "adaptive timeboxing turn failed session_key=%s interaction=%s "
+            "error_type=%s error=%s",
             session_key,
             interaction_id,
             type(exc).__name__,
+            exc,
+            exc_info=True,
         )
-        return timebox_failure_message()
+        return timebox_failure_message(snapshot=snapshot)
     finally:
         await progress_card.close()
 
-    return render_outcome(
-        outcome,
-        pending=_pending_candidates,
-        snapshot=current,
+    try:
+        message, card = present_outcome(
+            outcome,
+            pending=_pending_candidates,
+            snapshot=current,
+            session_key=session_key,
+            actor_user_id=actor_user_id,
+            channel_id=card_channel,
+            thread_ts=card_thread_ts,
+            logger=logger,
+        )
+    except Exception as exc:  # noqa: BLE001 - a stored artifact the mapper refuses
+        # The turn is saved; only its picture failed. A skeleton whose payload
+        # is not a `SkeletonPayload` lands here (Task 1 refuses new ones at
+        # submit, but a store older than that contract can still hold one).
+        logger.error(
+            "adaptive timeboxing outcome could not be presented session_key=%s "
+            "revision=%s error_type=%s error=%s",
+            session_key,
+            current.revision,
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        return timebox_failure_message(snapshot=current)
+
+    # Close the card the user just acted on, then register this one. A failed
+    # turn keeps the previous card live: its Retry is the way back.
+    previous = _stage_cards.shown(session_key)
+    receipt_body_text = None
+    if isinstance(outcome, TurnFailed):
+        done = None
+    elif isinstance(outcome, Cancelled):
+        done = "🚫 cancelled"
+    elif previous is not None:
+        done = receipt_label(intent, previous.card)
+        receipt_body_text = receipt_body(intent, previous.card)
+    else:
+        done = None
+    await _stage_cards.transition(
+        client,
         session_key=session_key,
-        actor_user_id=actor_user_id,
-        channel_id=card_channel,
-        thread_ts=card_thread_ts,
+        done=done,
+        body=receipt_body_text,
+        new_card=card,
+        channel=progress_channel,
+        ts=progress_ts,
         logger=logger,
     )
+
+    # A typed day change never relabelled the root; only the button path did
+    # (#265). One place now, for both, over the day the kernel accepted.
+    if (
+        isinstance(intent, ConfirmPlanningDay)
+        and not isinstance(outcome, TurnFailed)
+        and card_thread_ts
+        and card_thread_ts not in ("dm", progress_ts)
+    ):
+        label = format_relative_day_label(
+            planned_date=intent.planning_day.date.isoformat(),
+            tz_name=intent.planning_day.timezone,
+        )
+        title = f"Timeboxing session for {label}"
+        # The message route redraws the root from the focus label at the end
+        # of every turn (`_maybe_update_timeboxing_thread_constraints`), so a
+        # relabel that only wrote Slack text was overwritten with the day
+        # the session *opened* on, milliseconds later. The label is the
+        # source; the write below is the same text, drawn now.
+        if focus is not None:
+            focus.set_thread_label(
+                session_key,
+                title=title,
+                request_excerpt=None,
+                state="in_progress",
+                by_user=actor_user_id,
+            )
+        try:
+            await client.chat_update(
+                channel=card_channel,
+                ts=card_thread_ts,
+                text=_timeboxing_thread_root_text(
+                    title=title, request_excerpt=None, state="in_progress"
+                ),
+            )
+        except Exception:
+            logger.debug("could not relabel the session thread root", exc_info=True)
+
+    return message
 
 
 async def _deliver_timebox_turn(
@@ -1662,6 +1766,7 @@ async def _deliver_timebox_turn(
     thread_ts: str,
     action: TimeboxActionEnvelope,
     candidate_id: str | None = None,
+    focus: FocusManager | None = None,
 ) -> None:
     """Run one card-driven turn in the session thread and show its result.
 
@@ -1691,6 +1796,7 @@ async def _deliver_timebox_turn(
         card_thread_ts=thread_ts,
         action=action,
         candidate_id=candidate_id,
+        focus=focus,
     )
     payload = _compact_slack_payload(text=message.text, blocks=message.blocks)
     update: dict = {
@@ -1713,6 +1819,7 @@ async def _handle_timebox_date_confirmation(
     prompt_ts: str,
     actor_user_id: str | None,
     interaction_id: str,
+    focus: FocusManager | None = None,
 ) -> None:
     """Lock the planning day the user picked, through the session kernel.
 
@@ -1755,17 +1862,8 @@ async def _handle_timebox_date_confirmation(
         channel_id=meta.channel_id,
         thread_ts=meta.thread_ts,
         action=envelope,
+        focus=focus,
     )
-
-    if meta.thread_ts and meta.thread_ts != "dm":
-        try:
-            await client.chat_update(
-                channel=meta.channel_id,
-                ts=meta.thread_ts,
-                text=f":large_blue_circle: Timeboxing session for {display_day}",
-            )
-        except Exception:
-            logger.debug("could not relabel the session thread root", exc_info=True)
 
 
 def _card_interaction_id(action: dict, action_id: str, fallback_ts: str) -> str:
@@ -1782,6 +1880,38 @@ def _card_interaction_id(action: dict, action_id: str, fallback_ts: str) -> str:
     return action_ts or f"{action_id}:{fallback_ts}"
 
 
+def _latest_candidate(snapshot: PlanningSessionSnapshot) -> PlanningArtifact | None:
+    """The validated candidate this session would present, if it has one."""
+
+    candidates = [
+        artifact
+        for artifact in snapshot.artifacts
+        if artifact.kind is ArtifactKind.VALIDATED_CANDIDATE
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda artifact: artifact.revision)
+
+
+def _candidate_is_on_offer(snapshot: PlanningSessionSnapshot) -> bool:
+    """Whether a Commit press could still be honoured against this session.
+
+    An approved candidate is spent: the kernel commits it in the same turn it
+    is approved, through the port that consumes the pending entry. So "on
+    offer" is a candidate the session holds and has not approved.
+    """
+
+    latest = _latest_candidate(snapshot)
+    if latest is None:
+        return False
+    return not any(
+        approval.artifact_id == latest.artifact_id
+        and approval.artifact_revision == latest.revision
+        and approval.artifact_digest == latest.digest
+        for approval in snapshot.approvals
+    )
+
+
 def _pending_candidate_approval(
     snapshot: PlanningSessionSnapshot,
 ) -> ApproveArtifact | None:
@@ -1793,14 +1923,9 @@ def _pending_candidate_approval(
     after a newer candidate exists fails on the revision it stamped, so binding
     late here cannot silently retarget it.
     """
-    candidates = [
-        artifact
-        for artifact in snapshot.artifacts
-        if artifact.kind is ArtifactKind.VALIDATED_CANDIDATE
-    ]
-    if not candidates:
+    latest = _latest_candidate(snapshot)
+    if latest is None:
         return None
-    latest = max(candidates, key=lambda artifact: artifact.revision)
     return ApproveArtifact(
         artifact_id=latest.artifact_id,
         artifact_revision=latest.revision,
@@ -1886,7 +2011,7 @@ async def _handle_timebox_date_reselect(
         logger.warning("timebox day selection carried an unusable date")
         return
 
-    card = build_timebox_date_card(
+    stage_card = date_stage_card(
         session_key=reselected.session_key,
         expected_revision=reselected.expected_revision,
         user_id=reselected.user_id,
@@ -1895,11 +2020,17 @@ async def _handle_timebox_date_reselect(
         planned_date=reselected.date,
         tz_name=reselected.tz,
     )
+    card = render_stage_card(stage_card)
     await client.chat_update(
         channel=prompt_channel_id,
         ts=prompt_ts,
         text=card.text,
         blocks=card.blocks,
+    )
+    # The redraw is the card the user now sees, so it is the one the next
+    # receipt has to be drawn from.
+    _stage_cards.remember(
+        reselected.session_key, channel=prompt_channel_id, ts=prompt_ts, card=stage_card
     )
 
     label = format_relative_day_label(
@@ -1908,15 +2039,25 @@ async def _handle_timebox_date_reselect(
     # Legacy cards only: sessions opened before the surface convergence
     # (2026-09-01 spec) rooted themselves at their own card, so payloads with
     # thread_ts == prompt_ts are still live in the channel. For those, this
-    # relabel would land on the card it just redrew and strip its controls
-    # (2026-08-31 22:57 incident). New sessions always have a separate root.
-    # Delete this guard only when no pre-convergence card can still be clicked.
-    # The bare-text root relabels in the Confirm/date-confirmation path just
-    # above (~line 1738) and in timeboxing_commit.py (~457, ~533) skip this
-    # guard on purpose, not by omission: on those paths the card has already
-    # been replaced by a loading placeholder before the relabel runs, so the
-    # root and the card are never the same message and there is nothing left
-    # for a bare-text write to strip.
+    # relabel would land on the card it just redrew -- this handler updates
+    # prompt_ts with blocks and then writes bare text to the root -- and strip
+    # its controls (2026-08-31 22:57 incident). New sessions always have a
+    # separate root. Delete this guard only when no pre-convergence card can
+    # still be clicked.
+    #
+    # The typed path relabels the root in exactly one other place --
+    # `_run_adaptive_timebox_turn`, for both the button and the typed day
+    # change (#265) -- and its guard is not this one.
+    # `_handle_timebox_date_confirmation` overwrites the card with a
+    # loading placeholder before its turn runs, so by the time the relabel in
+    # `_run_adaptive_timebox_turn` fires there is nothing left on that message
+    # to strip. That turn's own guard -- `card_thread_ts not in ("dm",
+    # progress_ts)` -- covers a DM, which has no root, and the message route's
+    # fallback where card_thread_ts *is* the message this turn is drawing its
+    # card into. It does not cover a pre-convergence session whose thread root
+    # is a live card reached by typed text: there card_thread_ts is that card's
+    # ts, progress_ts is a fresh "thinking" message, and a typed day change
+    # writes bare text over the card. See the final-fix report (M3).
     root_is_this_card = reselected.thread_ts == prompt_ts
     if reselected.thread_ts and reselected.thread_ts != "dm" and not root_is_this_card:
         try:
@@ -2559,6 +2700,7 @@ async def route_slack_event(
                         card_channel=target_channel,
                         card_thread_ts=root_ts,
                         user_text=cleaned_text,
+                        focus=focus,
                     )
                 else:
                     handoff_msg = _build_agent_message(
@@ -2925,6 +3067,7 @@ async def route_slack_event(
                     or origin_processing_msg["ts"]
                 ),
                 user_text=cleaned_text,
+                focus=focus,
             )
         else:
             result = await runtime.send_message(
@@ -4148,6 +4291,7 @@ def register_handlers(
             prompt_ts=message_ts,
             actor_user_id=actor_user_id,
             interaction_id=str(action.get("action_ts") or message_ts),
+            focus=focus,
         )
 
     # One registration per button: Slack refuses a message whose interactive
@@ -4182,6 +4326,7 @@ def register_handlers(
             prompt_ts=message_ts,
             actor_user_id=actor_user_id,
             interaction_id=str(action.get("action_ts") or message_ts),
+            focus=focus,
         )
 
     async def _on_timebox_artifact_action(ack, body, client, logger):
@@ -4209,6 +4354,7 @@ def register_handlers(
         )
 
     app.action(FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID)(_on_timebox_artifact_action)
+    app.action(FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID)(_on_timebox_artifact_action)
     app.action(FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID)(_on_timebox_artifact_action)
     app.action(FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID)(_on_timebox_artifact_action)
     # An option press is the same envelope with a different decision in it, so

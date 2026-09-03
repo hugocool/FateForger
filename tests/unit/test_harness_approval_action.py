@@ -662,6 +662,7 @@ async def test_the_kernel_review_controls_are_registered(monkeypatch):
     )
     assert {
         handlers.FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
+        handlers.FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID,
         handlers.FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
         handlers.FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
         FF_HARNESS_APPROVE_ACTION_ID,

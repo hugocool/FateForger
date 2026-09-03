@@ -5,7 +5,7 @@ from datetime import date, time, timedelta
 import pytest
 
 from tmbx.core.models import ET, AfterPrev, BeforeNext, Block, FixedStart, FixedWindow, Plan
-from tmbx.core.render import render_plan
+from tmbx.core.render import EMPTY_DAY_LINE, render_plan
 
 
 def _named(name, p, *, h="XX1", t=ET.DW, anchor_source="user"):
@@ -59,9 +59,17 @@ def test_uid_is_never_rendered():
     assert "u1" not in body and "u2" not in body
 
 
-def test_empty_plan_renders_header_only():
+def test_empty_plan_says_so_instead_of_trailing_off(  # #253 item 3
+):
+    """``plan_read`` on 2026-09-02 returned a column spec, a colon, and
+    nothing -- indistinguishable from a truncated string to whoever reads
+    it next. The header keeps the ``blocks[0]`` count (it is the table's
+    contract), and one sentence after it says the day is empty."""
     plan = Plan(date=date(2026, 8, 17), blocks=[])
-    assert len(render_plan(plan).strip().splitlines()) == 1
+    header, sentence = render_plan(plan).splitlines()
+    assert header.startswith("blocks[0]{")
+    assert sentence == EMPTY_DAY_LINE
+    assert "empty" in EMPTY_DAY_LINE.lower()
 
 
 def test_midnight_crossing_end_gets_a_day_offset_marker():

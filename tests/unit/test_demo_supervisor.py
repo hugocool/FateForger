@@ -891,3 +891,96 @@ def test_a_misspelt_service_is_refused_rather_than_silently_doing_nothing() -> N
     and leave the process running."""
     with pytest.raises(SystemExit):
         selected_specs(Path("/repo"), ("tmbex",))
+
+
+# ---------------------------------------------------------------------------
+# start -- a stale tmbx is replaced, and every start is bannered (#255)
+# ---------------------------------------------------------------------------
+#
+# The 2026-09-02 post-mortem asked whether a tmbx could keep answering on old
+# sources while the bot beside it was rebuilt. `start` already refuses that:
+# an existing record whose sources have moved is stopped and replaced, and each
+# launch writes its own banner. Pinned here because the ticket found the
+# behaviour undocumented, and undocumented is one edit from gone.
+
+
+def _portless_spec(tmp_path: Path, name: str = "tmbx") -> ServiceSpec:
+    return ServiceSpec(
+        name=name,
+        argv=("/repo/.venv/bin/tmbx-mcp",),
+        env={},
+        port=None,
+        source_roots=(tmp_path / "src" / "tmbx",),
+    )
+
+
+def _drive_start(monkeypatch, tmp_path: Path, *, existing: Record | None, observed_fingerprint: str):
+    import scripts.demo as demo
+
+    spec = _portless_spec(tmp_path)
+    stopped: list[Record] = []
+    started: list[str] = []
+
+    monkeypatch.setattr(demo, "selected_specs", lambda root, names: (spec,))
+    monkeypatch.setattr(demo, "load_dotenv_values", lambda root: {})
+    monkeypatch.setattr(demo, "read_state", lambda path: {existing.name: existing} if existing else {})
+    monkeypatch.setattr(demo, "write_state", lambda path, records: None)
+    monkeypatch.setattr(
+        demo,
+        "observe",
+        lambda record, spec_, root: _observed(fingerprint=observed_fingerprint, listener_pids=None, port_accepting=False),
+    )
+    monkeypatch.setattr(demo, "stop_record", lambda record: stopped.append(record) or "stopped")
+    monkeypatch.setattr(
+        demo,
+        "start_service",
+        lambda spec_, root, dotenv: started.append(spec_.name) or _record(name=spec_.name, pid=5151, port=None),
+    )
+    monkeypatch.setattr(demo, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(demo.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(demo, "cmd_status", lambda root, as_json, names: 0)
+
+    code = demo.cmd_start(tmp_path, reclaim=False, names=("tmbx",))
+    return code, stopped, started
+
+
+def test_start_replaces_a_tmbx_whose_sources_moved_since_it_was_launched(monkeypatch, tmp_path: Path) -> None:
+    existing = _record(port=None, fingerprint="fingerprint-at-start")
+    code, stopped, started = _drive_start(
+        monkeypatch, tmp_path, existing=existing, observed_fingerprint="fingerprint-after-an-edit"
+    )
+    assert code == 0
+    assert stopped == [existing]
+    assert started == ["tmbx"]
+
+
+def test_start_leaves_a_tmbx_on_current_sources_alone(monkeypatch, tmp_path: Path) -> None:
+    existing = _record(port=None, fingerprint="fingerprint-at-start")
+    code, stopped, started = _drive_start(
+        monkeypatch, tmp_path, existing=existing, observed_fingerprint="fingerprint-at-start"
+    )
+    assert code == 0
+    assert stopped == []
+    assert started == []
+
+
+def test_every_start_writes_its_own_banner_into_the_service_log(monkeypatch, tmp_path: Path) -> None:
+    import scripts.demo as demo
+
+    class _Child:
+        pid = 7777
+
+    monkeypatch.setattr(demo.subprocess, "Popen", lambda *args, **kwargs: _Child())
+    monkeypatch.setattr(demo, "process_start_time", lambda pid: "now")
+    monkeypatch.setattr(demo, "git_head", lambda root, **kwargs: "b" * 40)
+    (tmp_path / "src" / "tmbx").mkdir(parents=True)
+    (tmp_path / "src" / "tmbx" / "a.py").write_text("pass\n")
+
+    spec = _portless_spec(tmp_path)
+    demo.start_service(spec, tmp_path, {})
+    demo.start_service(spec, tmp_path, {})
+
+    log = (tmp_path / "logs" / "demo" / "tmbx.log").read_text()
+    banners = [line for line in log.splitlines() if line.startswith("===== demo start ")]
+    assert len(banners) == 2
+    assert all(f"sha={'b' * 40}" in line for line in banners)

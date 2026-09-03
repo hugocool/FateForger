@@ -342,6 +342,18 @@ def _planning_obligation(brief: PlanningBrief) -> str:
         if brief.target_artifact is ArtifactKind.VALIDATED_CANDIDATE
         else ""
     )
+    # The skeleton is the one artifact whose payload the review card reads
+    # field by field, and nothing used to say what those fields were: the
+    # planner shipped `blocks`, the host stored it, the card was blank (#267).
+    payload_shape = (
+        "\nThe `skeleton` payload is exactly {\"markdown\": ..., \"reasoning\": "
+        "...}: `markdown` is the day as loose markdown -- a `# heading` per "
+        "anchor, `-` bullets under it, no times you were not given -- and "
+        "`reasoning` is one short paragraph on why it is shaped that way. Any "
+        "other key is refused."
+        if brief.target_artifact is ArtifactKind.SKELETON
+        else ""
+    )
     return (
         "This planning turn is host-driven. The brief below is authoritative "
         "for the day, the facts, the prior artifacts and the approvals; do not "
@@ -350,7 +362,7 @@ def _planning_obligation(brief: PlanningBrief) -> str:
         f"Produce exactly one `{target}` and end this turn by calling "
         f"`submit_planning_result` once, with target_artifact `{target}`. Your "
         "final message is presentation only: it records nothing, and a turn "
-        f"that ends without that call has produced nothing.{apply_first}"
+        f"that ends without that call has produced nothing.{apply_first}{payload_shape}"
     )
 
 

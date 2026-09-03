@@ -77,6 +77,7 @@ def _incident_snapshot() -> PlanningSessionSnapshot:
         facts=[
             _fact("activity-1", FactKind.REQUESTED_ACTIVITY, "Plan Saturday"),
             _fact("gym-1", FactKind.REQUESTED_ACTIVITY, True),
+            _fact("frame-1", FactKind.DAY_FRAME, {"wake": "08:00", "sleep": "23:30"}),
         ],
     )
 
@@ -950,13 +951,14 @@ async def test_offered_options_reach_the_user_with_the_question() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_open_question_still_reaches_the_user_and_is_answerable() -> None:
-    """The catalog's one user-owned ask has no closed answer set, and must not grow one.
+async def test_a_request_with_no_sleep_facts_and_no_bedtime_rule_blocks_at_capture() -> None:
+    """The 2026-09-02 session: one message, no question, a frame the planner assumed.
 
-    "What do you want to get out of the day?" is answered in Hugo's words, so
-    this walks the whole open path: the question goes out with nothing to press,
-    the answer arrives as a typed fact, and the next advance produces the
-    skeleton it was waiting for.
+    "serious c2f work, some finances, ... gym for chest" states what the day is
+    for and nothing about when it starts or ends. Nothing in the corpus says so
+    either -- the context port resolves no frame. That is a user-owned hard gap,
+    so the ladder stops here with the planner uncalled; it does not advance on
+    an assumption the user then has to correct after the commit.
     """
 
     snapshot = PlanningSessionSnapshot(
@@ -964,6 +966,181 @@ async def test_an_open_question_still_reaches_the_user_and_is_answerable() -> No
         revision=3,
         owner_user_id="U1",
         planning_day=_locked_day(),
+        facts=[
+            _fact(
+                "activity-1",
+                FactKind.REQUESTED_ACTIVITY,
+                "serious c2f work, some finances, gym for chest",
+            )
+        ],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_skeleton_result())
+    kernel = _kernel(repo, planner)
+
+    asked = await kernel.turn(_advance_request(), progress=RecordingProgressSink())
+
+    assert isinstance(asked, AwaitingUser)
+    assert asked.requirement_id == "skeleton.day_frame"
+    assert planner.calls == 0
+
+    answered = await kernel.turn(
+        TurnRequest(
+            session_key="C1:1.0",
+            interaction_id="1772.3",
+            actor_user_id="U1",
+            expected_revision=4,
+            intent=ProvidePlanningFacts(
+                facts=[
+                    _fact(
+                        "frame-1",
+                        FactKind.DAY_FRAME,
+                        {"wake": "08:30", "sleep": "00:30"},
+                    )
+                ]
+            ),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(answered, AwaitingApproval)
+    assert answered.artifact.kind is ArtifactKind.SKELETON
+    assert planner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_planner_that_cannot_read_a_name_may_ask_with_its_readings_as_options() -> None:
+    """The typo goes to the user as a question with a proposed reading, not onto the calendar."""
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    options = [
+        BlockerOption(
+            option_id="reading-1",
+            label="Validate the agent analysis demos",
+            effect="the block is titled that way",
+        ),
+        BlockerOption(
+            option_id="reading-2",
+            label="Keep it as written",
+            effect="the block is titled agent-in-ysis",
+        ),
+    ]
+    planner = RecordedPlanner(
+        PlanningResult(
+            blockers=[
+                UserBlockerDraft(
+                    requirement_id="skeleton.activity_reading",
+                    why_needed="I cannot read 'agent-in-ysis' as a thing to put on a calendar",
+                    options=options,
+                )
+            ]
+        )
+    )
+
+    outcome = await _kernel(repo, planner).turn(
+        _advance_request(), progress=RecordingProgressSink()
+    )
+
+    assert isinstance(outcome, AwaitingUser)
+    assert outcome.requirement_id == "skeleton.activity_reading"
+    assert outcome.options == options
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert saved.pending_blocker is not None
+    assert saved.pending_blocker.fact_kind is FactKind.ACTIVITY_READING
+
+
+@pytest.mark.asyncio
+async def test_a_frame_the_corpus_already_states_is_not_asked_again() -> None:
+    """A bedtime rule on record answers the question before it is put."""
+
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=3,
+        owner_user_id="U1",
+        planning_day=_locked_day(),
+        facts=[_fact("activity-1", FactKind.REQUESTED_ACTIVITY, "c2f work")],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_skeleton_result())
+    context = RecordedContextPort(
+        facts=(
+            PlanningFact(
+                fact_id="frame:2026-08-29",
+                kind=FactKind.DAY_FRAME,
+                value={"wake": "07:30", "sleep": "23:30"},
+                source="constraint_memory",
+            ),
+        )
+    )
+
+    outcome = await _kernel(repo, planner, context=context).turn(
+        _advance_request(), progress=RecordingProgressSink()
+    )
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert outcome.artifact.kind is ArtifactKind.SKELETON
+    assert planner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_planner_assumption_about_the_frame_is_refused() -> None:
+    """The frame is the user's; a planner that fills it in has overstepped.
+
+    This is what the 2026-09-02 planner effectively did, filed under a
+    requirement id it was allowed to assume. Under the id that names the frame
+    the kernel refuses it, so the shape cannot recur by renaming.
+    """
+
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=3,
+        owner_user_id="U1",
+        planning_day=_locked_day(),
+        facts=[
+            _fact("activity-1", FactKind.REQUESTED_ACTIVITY, "c2f work"),
+            _fact("frame-1", FactKind.DAY_FRAME, {"wake": "08:30", "sleep": "00:30"}),
+        ],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(
+        PlanningResult(
+            artifact_updates=_skeleton_result().artifact_updates,
+            assumptions=[
+                PlannerAssumptionDraft(
+                    requirement_id="skeleton.day_frame",
+                    value={"wake": "07:00", "sleep": "23:00"},
+                    why_needed="a typical day",
+                    invalidated_by=["sleep"],
+                )
+            ],
+        )
+    )
+
+    outcome = await _kernel(repo, planner).turn(
+        _advance_request(), progress=RecordingProgressSink()
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "invalid_planner_result"
+
+
+@pytest.mark.asyncio
+async def test_an_open_question_still_reaches_the_user_and_is_answerable() -> None:
+    """The catalog's user-owned asks have no closed answer set, and must not grow one.
+
+    "What do you want to get out of the day?" is answered in Hugo's words, so
+    this walks the whole open path: the question goes out with nothing to press,
+    the answer arrives as a typed fact, and the next advance produces the
+    skeleton it was waiting for. The frame is stated up front so the activity
+    is the one open question; the frame's own ask is exercised separately.
+    """
+
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=3,
+        owner_user_id="U1",
+        planning_day=_locked_day(),
+        facts=[_fact("frame-1", FactKind.DAY_FRAME, {"wake": "08:00", "sleep": "23:30"})],
     )
     repo = InMemoryPlanningSessionRepository([snapshot])
     # No assumption: with no gym fact the gym placement requirement is already
@@ -1443,3 +1620,688 @@ async def test_an_assumption_over_someone_elses_decision_still_fails(caplog) -> 
 
     assert isinstance(outcome, TurnFailed)
     assert outcome.code == "invalid_planner_result"
+
+
+# --- A committed day is a day that can still be changed (#247) -----------------
+
+
+def _receipt(*, candidate: PlanningArtifact) -> PlanningArtifact:
+    return PlanningArtifact.create(
+        artifact_id="receipt-1",
+        kind=ArtifactKind.COMMIT_RECEIPT,
+        revision=1,
+        payload={"candidate_digest": candidate.digest, "committed": True, "tx_id": "tx-1"},
+        dependency_revisions={"validated_candidate": candidate.revision},
+    )
+
+
+def _committed_snapshot() -> PlanningSessionSnapshot:
+    """The 2026-09-02 session one turn after its commit landed."""
+
+    skeleton = _skeleton()
+    candidate = _candidate()
+    return _incident_snapshot().model_copy(
+        update={
+            "revision": 5,
+            "artifacts": [skeleton, candidate, _receipt(candidate=candidate)],
+            "approvals": [_approval(skeleton), _approval(candidate)],
+            "status": "committed",
+        }
+    )
+
+
+def _committed_request(intent, *, interaction_id: str = "after-commit") -> TurnRequest:
+    return TurnRequest(
+        session_key="C1:1.0",
+        interaction_id=interaction_id,
+        actor_user_id="U1",
+        expected_revision=5,
+        intent=intent,
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_facts_reopen_a_committed_session_without_losing_its_receipt() -> None:
+    """Catches the dead thread of 2026-09-02.
+
+    The day was committed at 00:32:01 and the user's correction arrived at
+    00:33:25. The session key is the Slack thread, so a session that will not
+    take another intent once committed is a thread that is dead for good --
+    and the day on the calendar stays wrong. New facts must reopen it, and
+    the reopened session must still know it committed: the receipt is the
+    record of an external effect, not a derived artifact, and dropping it is
+    how a second full commit lands on top of the first (#224).
+    """
+
+    repo = InMemoryPlanningSessionRepository([_committed_snapshot()])
+    planner = RecordedPlanner(_skeleton_result())
+
+    outcome = await _kernel(repo, planner).turn(
+        _committed_request(
+            ProvidePlanningFacts(
+                facts=[_fact("sleep-1", FactKind.REQUESTED_ACTIVITY, "sleep 00:30-08:30")]
+            )
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert outcome.artifact.kind is ArtifactKind.SKELETON
+    assert planner.calls == 1
+    brief = planner.briefs[0]
+    assert brief.target_artifact is ArtifactKind.SKELETON
+    assert {a.kind for a in brief.current_artifacts} >= {ArtifactKind.COMMIT_RECEIPT}
+    stored = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert stored.status == "open"
+    kinds = [artifact.kind for artifact in stored.artifacts]
+    assert ArtifactKind.COMMIT_RECEIPT in kinds
+    assert kinds.count(ArtifactKind.SKELETON) == 1, "the committed skeleton is superseded"
+    assert ArtifactKind.VALIDATED_CANDIDATE not in kinds
+    assert any(fact.fact_id == "sleep-1" for fact in stored.facts)
+
+
+@pytest.mark.asyncio
+async def test_a_revision_against_the_receipt_reopens_and_records_the_instruction() -> None:
+    from fateforger.agents.timeboxing.session_contracts import ReviseArtifact
+
+    snapshot = _committed_snapshot()
+    receipt = next(a for a in snapshot.artifacts if a.kind is ArtifactKind.COMMIT_RECEIPT)
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_skeleton_result())
+
+    outcome = await _kernel(repo, planner).turn(
+        _committed_request(
+            ReviseArtifact(
+                artifact_id=receipt.artifact_id,
+                artifact_revision=receipt.revision,
+                artifact_digest=receipt.digest,
+                instruction="move all the work two hours later",
+            )
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert planner.calls == 1
+    stored = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert stored.status == "open"
+    instructions = [f for f in stored.facts if f.kind is FactKind.REVISION_INSTRUCTION]
+    assert len(instructions) == 1
+    assert instructions[0].source == "user"
+    assert instructions[0].value == {
+        "artifact_kind": "commit_receipt",
+        "artifact_id": receipt.artifact_id,
+        "instruction": "move all the work two hours later",
+    }
+    assert any(a.kind is ArtifactKind.COMMIT_RECEIPT for a in stored.artifacts)
+
+
+@pytest.mark.asyncio
+async def test_a_stale_revision_against_a_committed_session_is_refused() -> None:
+    from fateforger.agents.timeboxing.session_contracts import ReviseArtifact
+
+    repo = InMemoryPlanningSessionRepository([_committed_snapshot()])
+    planner = RecordedPlanner(_skeleton_result())
+
+    outcome = await _kernel(repo, planner).turn(
+        _committed_request(
+            ReviseArtifact(
+                artifact_id="receipt-1",
+                artifact_revision=7,
+                artifact_digest="0" * 64,
+                instruction="move all the work two hours later",
+            )
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "stale_revision_target"
+    assert planner.calls == 0
+    stored = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert stored.status == "committed"
+
+
+@pytest.mark.asyncio
+async def test_advance_on_a_committed_session_reports_the_commit_it_made() -> None:
+    repo = InMemoryPlanningSessionRepository([_committed_snapshot()])
+    planner = RecordedPlanner(_skeleton_result())
+
+    outcome = await _kernel(repo, planner).turn(
+        _committed_request(Advance()), progress=RecordingProgressSink()
+    )
+
+    assert isinstance(outcome, Committed)
+    assert outcome.receipt.artifact_id == "receipt-1"
+    assert planner.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_committed_session_is_refused_with_a_typed_code() -> None:
+    """A cancelled status over a written calendar would be a lie about the day."""
+
+    from fateforger.agents.timeboxing.session_contracts import CancelSession
+
+    repo = InMemoryPlanningSessionRepository([_committed_snapshot()])
+
+    outcome = await _kernel(repo, RecordedPlanner(PlanningResult())).turn(
+        _committed_request(CancelSession()), progress=RecordingProgressSink()
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "session_committed"
+    stored = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert stored.status == "committed"
+
+
+@pytest.mark.asyncio
+async def test_a_second_commit_after_reopening_is_a_second_receipt_not_a_replacement() -> None:
+    """The reopened day commits again; both receipts stay, in order."""
+
+    skeleton = _skeleton(revision=2)
+    candidate = PlanningArtifact.create(
+        artifact_id="candidate-2",
+        kind=ArtifactKind.VALIDATED_CANDIDATE,
+        revision=2,
+        payload={"events": [{"summary": "Gym", "start": "19:00"}]},
+        dependency_revisions={"skeleton": 2},
+    )
+    first_receipt = _receipt(candidate=_candidate())
+    reopened = _incident_snapshot().model_copy(
+        update={
+            "revision": 8,
+            "artifacts": [first_receipt, skeleton, candidate],
+            "approvals": [_approval(skeleton)],
+            "status": "open",
+        }
+    )
+    repo = InMemoryPlanningSessionRepository([reopened])
+    commit = RecordedCommitPort()
+
+    outcome = await _kernel(repo, RecordedPlanner(PlanningResult()), commit=commit).turn(
+        TurnRequest(
+            session_key="C1:1.0",
+            interaction_id="second-commit",
+            actor_user_id="U1",
+            expected_revision=8,
+            intent=ApproveArtifact(
+                artifact_id=candidate.artifact_id,
+                artifact_revision=candidate.revision,
+                artifact_digest=candidate.digest,
+            ),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, Committed)
+    assert commit.digests == [candidate.digest]
+    stored = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    receipts = sorted(
+        (a for a in stored.artifacts if a.kind is ArtifactKind.COMMIT_RECEIPT),
+        key=lambda a: a.revision,
+    )
+    assert [r.revision for r in receipts] == [1, 2]
+    assert len({r.artifact_id for r in receipts}) == 2
+    assert outcome.receipt.revision == 2
+    assert stored.status == "committed"
+
+
+# --- The kernel's own catch sites keep the message and the traceback (#249) -----
+
+
+class _FailingContextPort(RecordedContextPort):
+    async def resolve(self, snapshot, *, target, progress):
+        raise RuntimeError("no calendar is configured")
+
+
+@pytest.mark.asyncio
+async def test_a_dependency_failure_is_logged_with_its_message_and_traceback(caplog) -> None:
+    """`error_type=RuntimeError` names the class of every failure and none of them."""
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    planner = RecordedPlanner(_skeleton_result())
+
+    with caplog.at_level(logging.ERROR, logger=adaptive_module.__name__):
+        outcome = await _kernel(repo, planner, context=_FailingContextPort()).turn(
+            _advance_request(), progress=RecordingProgressSink()
+        )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "dependency_unavailable"
+    record = next(r for r in caplog.records if "context resolution" in r.getMessage())
+    assert "no calendar is configured" in record.getMessage()
+    assert record.exc_info is not None
+
+
+# -- GoBack ---------------------------------------------------------------
+# GoBack walks one stage down the artifact ladder and never past a commit.
+# Before this the intent existed in the contract, the card decoder produced
+# it, and the kernel answered `unsupported_intent` (#264). Every branch below
+# asserts the outcome the next card is drawn from and the state that survives,
+# over identifiers this system minted.
+
+from fateforger.agents.timeboxing.session_contracts import (  # noqa: E402
+    GoBack,
+    PendingBlocker,
+)
+
+
+def _planning_day_artifact() -> PlanningArtifact:
+    return PlanningArtifact.create(
+        artifact_id="planning-day-1",
+        kind=ArtifactKind.PLANNING_DAY,
+        revision=1,
+        payload=_locked_day().model_dump(mode="json"),
+        dependency_revisions={},
+    )
+
+
+def _with(snapshot: PlanningSessionSnapshot, **update) -> PlanningSessionSnapshot:
+    return snapshot.model_copy(update=update)
+
+
+def _go_back(*, expected_revision: int = 3) -> TurnRequest:
+    return TurnRequest(
+        session_key="C1:1.0",
+        interaction_id="back-1",
+        actor_user_id="U1",
+        expected_revision=expected_revision,
+        intent=GoBack(),
+    )
+
+
+def _back_kernel(repo: InMemoryPlanningSessionRepository) -> AdaptiveTimeboxing:
+    return _kernel(repo, RecordedPlanner(_skeleton_result()))
+
+
+@pytest.mark.asyncio
+async def test_back_from_the_candidate_reopens_the_skeleton() -> None:
+    skeleton = _skeleton()
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), skeleton, _candidate()],
+        approvals=[_approval(_planning_day_artifact()), _approval(skeleton)],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert outcome.artifact.kind is ArtifactKind.SKELETON
+    assert outcome.artifact.artifact_id == "skeleton-1"
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    kinds = [artifact.kind for artifact in saved.artifacts]
+    assert ArtifactKind.VALIDATED_CANDIDATE not in kinds
+    assert ArtifactKind.SKELETON in kinds
+    # The skeleton is shown for approval again, so its old approval is gone.
+    assert all(a.artifact_id != "skeleton-1" for a in saved.approvals)
+
+
+@pytest.mark.asyncio
+async def test_back_from_the_skeleton_reopens_the_activity_question() -> None:
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), _skeleton()],
+        approvals=[_approval(_planning_day_artifact())],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, AwaitingUser)
+    assert outcome.requirement_id == "skeleton.requested_activity"
+    assert outcome.options == []
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert ArtifactKind.SKELETON not in [a.kind for a in saved.artifacts]
+    assert saved.pending_blocker is not None
+    assert saved.pending_blocker.fact_kind is FactKind.REQUESTED_ACTIVITY
+    # What the user already said is kept: back is not forget.
+    assert [f.fact_id for f in saved.facts] == ["activity-1", "gym-1", "frame-1"]
+
+
+@pytest.mark.asyncio
+async def test_back_from_a_question_reopens_the_date_card() -> None:
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact()],
+        approvals=[_approval(_planning_day_artifact())],
+        pending_blocker=PendingBlocker(
+            requirement_id="skeleton.requested_activity",
+            fact_kind=FactKind.REQUESTED_ACTIVITY,
+            options=[],
+        ),
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert outcome.artifact.kind is ArtifactKind.PLANNING_DAY
+    assert outcome.artifact.artifact_id == "planning-day-1"
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert saved.planning_day is None
+    assert saved.pending_blocker is None
+    assert saved.approvals == []
+
+
+@pytest.mark.asyncio
+async def test_back_from_the_date_card_has_nowhere_to_go() -> None:
+    snapshot = _with(
+        _incident_snapshot(), planning_day=None, artifacts=[_planning_day_artifact()]
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "nothing_to_go_back_to"
+
+
+@pytest.mark.asyncio
+async def test_back_never_crosses_a_commit() -> None:
+    snapshot = _with(
+        _incident_snapshot(),
+        status="committed",
+        artifacts=[_planning_day_artifact(), _skeleton(), _candidate()],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "session_committed"
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert len(saved.artifacts) == 3
+
+
+@pytest.mark.asyncio
+async def test_back_after_a_reopen_still_will_not_cross_the_commit() -> None:
+    """The receipt, not the status.
+
+    A revision reopens a committed session (`_reopen` sets `status` back to
+    `open`) and `_invalidate` keeps the `COMMIT_RECEIPT` on purpose. A guard
+    reading only the status let Back walk that session freely: one press to
+    the activity question, a second clearing the `planning_day` of a day
+    already on the calendar, after which a different day could be picked and
+    committed as a second full day.
+    """
+
+    reopened = _committed_snapshot().model_copy(
+        update={"status": "open", "revision": 6}
+    )
+    repo = InMemoryPlanningSessionRepository([reopened])
+
+    outcome = await _back_kernel(repo).turn(
+        _go_back(expected_revision=6), progress=RecordingProgressSink()
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "session_committed"
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert saved.planning_day == reopened.planning_day
+    assert [a.kind for a in saved.artifacts] == [a.kind for a in reopened.artifacts]
+
+
+@pytest.mark.asyncio
+async def test_back_does_not_walk_a_cancelled_session() -> None:
+    """A session that is not open has no ladder to walk either: cancelled fell
+    through every rung and answered as if the session were live."""
+
+    snapshot = _with(
+        _incident_snapshot(),
+        status="cancelled",
+        artifacts=[_planning_day_artifact(), _skeleton()],
+        approvals=[_approval(_planning_day_artifact())],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "session_cancelled"
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert ArtifactKind.SKELETON in [a.kind for a in saved.artifacts]
+    assert saved.planning_day is not None
+
+
+# -- Assumptions are retired with the artifact they were made for ---------------
+# Live on 2026-09-03 the Decided list carried the planner's placement assumption
+# once after the first sketch, twice after Back-and-redo, three times after the
+# candidate. Every planner run appended its assumptions and nothing retired the
+# ones whose artifact had just been thrown away.
+
+
+@pytest.mark.asyncio
+async def test_back_from_the_candidate_retires_the_candidates_assumptions_only() -> None:
+    from fateforger.agents.timeboxing.session_contracts import PlannerAssumption
+
+    skeleton = _skeleton()
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), skeleton, _candidate()],
+        approvals=[_approval(_planning_day_artifact()), _approval(skeleton)],
+        assumptions=[
+            PlannerAssumption(
+                assumption_id="a-skel",
+                requirement_id="skeleton.ordinary_placement",
+                value="finances first",
+                why_needed="the flexible blocks need an order",
+            ),
+            PlannerAssumption(
+                assumption_id="a-cand",
+                requirement_id="candidate.concrete_placements",
+                value="09:30",
+                why_needed="the blocks need times",
+            ),
+        ],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert outcome.artifact.kind is ArtifactKind.SKELETON
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    # The skeleton is shown again as it was, so what the planner assumed to
+    # make it still stands; the candidate is gone and so is what it assumed.
+    assert [a.assumption_id for a in saved.assumptions] == ["a-skel"]
+
+
+@pytest.mark.asyncio
+async def test_new_facts_retire_every_assumption_the_redraft_replaces() -> None:
+    from fateforger.agents.timeboxing.session_contracts import PlannerAssumption
+
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), _skeleton()],
+        approvals=[_approval(_planning_day_artifact())],
+        assumptions=[
+            PlannerAssumption(
+                assumption_id="a-skel",
+                requirement_id="skeleton.ordinary_placement",
+                value="finances first",
+                why_needed="the flexible blocks need an order",
+            )
+        ],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_skeleton_result())
+
+    outcome = await _kernel(repo, planner).turn(
+        TurnRequest(
+            session_key="C1:1.0",
+            interaction_id="facts-1",
+            actor_user_id="U1",
+            expected_revision=3,
+            intent=ProvidePlanningFacts(
+                facts=[_fact("finances-1", FactKind.REQUESTED_ACTIVITY, "finances")]
+            ),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert planner.calls == 1
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    ids = [a.assumption_id for a in saved.assumptions]
+    assert "a-skel" not in ids, "the redraft's own assumption replaces the old one"
+    assert [a.requirement_id for a in saved.assumptions] == ["skeleton.ordinary_placement"]
+
+
+# -- A revision against a pending artifact redrafts it --------------------------
+# Live on 2026-09-03 "make the finances block 30 minutes instead of 45", typed
+# over the 4/5 card, was refused `unsupported_intent`. The interpreter offers
+# `revise` at the skeleton and candidate stages and the kernel honoured it
+# against a commit receipt only (#258). The receipt path already shows the
+# shape: file the instruction as a fact the planner reads, drop what it
+# supersedes, keep everything above it.
+
+
+def _revise(artifact: PlanningArtifact, instruction: str, **update) -> TurnRequest:
+    from fateforger.agents.timeboxing.session_contracts import ReviseArtifact
+
+    return TurnRequest(
+        session_key="C1:1.0",
+        interaction_id="revise-1",
+        actor_user_id="U1",
+        expected_revision=3,
+        intent=ReviseArtifact(
+            artifact_id=artifact.artifact_id,
+            artifact_revision=update.pop("artifact_revision", artifact.revision),
+            artifact_digest=artifact.digest,
+            instruction=instruction,
+            **update,
+        ),
+    )
+
+
+def _candidate_result() -> PlanningResult:
+    return PlanningResult(
+        artifact_updates=[
+            ArtifactDraft(
+                kind=ArtifactKind.VALIDATED_CANDIDATE,
+                payload={"events": [{"summary": "Finances", "start": "13:45"}]},
+                dependency_revisions={"skeleton": 1},
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_revision_against_the_candidate_redrafts_it_from_the_approved_skeleton() -> None:
+    skeleton = _skeleton()
+    candidate = _candidate()
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), skeleton, candidate],
+        approvals=[_approval(_planning_day_artifact()), _approval(skeleton)],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_candidate_result())
+    context = RecordedContextPort(
+        facts=(
+            _fact("cal-1", FactKind.CALENDAR_SNAPSHOT, {"fetched": True, "blocks": 3}),
+            _fact("con-1", FactKind.ACTIVE_CONSTRAINTS, {"fetched": True, "count": 1}),
+        )
+    )
+
+    outcome = await _kernel(repo, planner, context=context).turn(
+        _revise(candidate, "finances 30 minutes, not 45"),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, AwaitingApproval), outcome
+    assert outcome.artifact.kind is ArtifactKind.VALIDATED_CANDIDATE
+    assert planner.calls == 1
+    assert planner.briefs[0].target_artifact is ArtifactKind.VALIDATED_CANDIDATE
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    instructions = [f for f in saved.facts if f.kind is FactKind.REVISION_INSTRUCTION]
+    assert [i.value for i in instructions] == [
+        {
+            "artifact_kind": "validated_candidate",
+            "artifact_id": candidate.artifact_id,
+            "instruction": "finances 30 minutes, not 45",
+        }
+    ]
+    # The approved skeleton is untouched: the candidate is redrafted from it.
+    assert any(a.artifact_id == skeleton.artifact_id for a in saved.approvals)
+    assert [a.kind for a in saved.artifacts].count(ArtifactKind.VALIDATED_CANDIDATE) == 1
+    assert outcome.artifact.digest != candidate.digest
+
+
+@pytest.mark.asyncio
+async def test_a_revision_against_the_skeleton_redrafts_it_and_keeps_the_facts() -> None:
+    skeleton = _skeleton()
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), skeleton],
+        approvals=[_approval(_planning_day_artifact())],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_skeleton_result())
+
+    outcome = await _kernel(repo, planner).turn(
+        _revise(skeleton, "put the gym before dinner"),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, AwaitingApproval), outcome
+    assert outcome.artifact.kind is ArtifactKind.SKELETON
+    assert planner.calls == 1
+    assert planner.briefs[0].target_artifact is ArtifactKind.SKELETON
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    # Revise is not forget: what the user said stands, plus the instruction.
+    assert [f.fact_id for f in saved.facts][:3] == ["activity-1", "gym-1", "frame-1"]
+    instructions = [f for f in saved.facts if f.kind is FactKind.REVISION_INSTRUCTION]
+    assert len(instructions) == 1
+    assert instructions[0].value["artifact_kind"] == "skeleton"
+    assert [a.kind for a in saved.artifacts].count(ArtifactKind.SKELETON) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_revision_naming_a_superseded_artifact_is_refused() -> None:
+    skeleton = _skeleton()
+    candidate = _candidate()
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), skeleton, candidate],
+        approvals=[_approval(_planning_day_artifact()), _approval(skeleton)],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_candidate_result())
+
+    outcome = await _kernel(repo, planner).turn(
+        _revise(candidate, "finances 30 minutes", artifact_revision=candidate.revision + 1),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "stale_revision_target"
+    assert planner.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_revision_carrying_facts_files_them_before_the_redraft() -> None:
+    """The kernel half of "move the work later, I'll sleep until 8:30": the
+    frame the user stated in the same breath as the instruction reaches the
+    facts, so the redraft is against the frame he meant."""
+
+    snapshot = _committed_snapshot()
+    receipt = next(a for a in snapshot.artifacts if a.kind is ArtifactKind.COMMIT_RECEIPT)
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_skeleton_result())
+    request = _committed_request(
+        _revise(
+            receipt,
+            "move all the work one hour later",
+            facts=[_fact("frame-2", FactKind.DAY_FRAME, {"wake": "08:30", "sleep": None})],
+        ).intent
+    )
+
+    outcome = await _kernel(repo, planner).turn(request, progress=RecordingProgressSink())
+
+    assert isinstance(outcome, AwaitingApproval), outcome
+    stored = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert any(f.fact_id == "frame-2" for f in stored.facts)
+    assert any(f.kind is FactKind.REVISION_INSTRUCTION for f in stored.facts)
+    assert any(f.fact_id == "frame-2" for f in planner.briefs[0].facts)

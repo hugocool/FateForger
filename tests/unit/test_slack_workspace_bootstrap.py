@@ -6,6 +6,13 @@ from fateforger.slack_bot.bootstrap import ensure_workspace_ready
 from fateforger.slack_bot.workspace import WorkspaceRegistry
 
 
+@pytest.fixture(autouse=True)
+def _reset_workspace_registry():
+    WorkspaceRegistry.set_global(None)
+    yield
+    WorkspaceRegistry.set_global(None)
+
+
 class DummyClient:
     def __init__(self, *, existing=None):
         self._existing = dict(existing or {})

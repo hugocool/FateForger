@@ -15,16 +15,13 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 from fateforger.agents.timeboxing.session_contracts import (
-    ArtifactKind,
     ArtifactReady,
-    AwaitingApproval,
-    AwaitingUser,
     Cancelled,
-    Committed,
     PlanningArtifact,
     PlanningSessionSnapshot,
     TurnFailed,
     TurnOutcome,
+    has_commit_receipt,
 )
 
 from .messages import (
@@ -32,10 +29,18 @@ from .messages import (
     SLACK_MAX_TEXT_CHARS,
     SlackBlockMessage,
 )
-from .timebox_candidate import PendingTimeboxCandidates, ValidatedTimeboxCandidate
-from .schedule_render import candidate_display_text
+from .stage_cards import (
+    ApproveControl,
+    BackControl,
+    CancelControl,
+    CommitControl,
+    DayTypeControl,
+    StageCard,
+    UndoControl,
+    map_outcome,
+)
+from .timebox_candidate import PendingTimeboxCandidates
 from .timeboxing_commit import build_timebox_date_card
-from .timeboxing_host import planning_timezone
 from .timeboxing_intents import ArtifactActionMeta
 
 #: The one control that opens the commit gate.
@@ -142,6 +147,9 @@ def _undo_outcome_text(payload: dict) -> str:
 FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID = "ff_timebox_artifact_approve"
 FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID = "ff_timebox_artifact_cancel"
 FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID = "ff_timebox_artifact_retry"
+#: Back is the same envelope with `decision: "back"`; the kernel decides what
+#: "back" means from the artifacts it holds (#264).
+FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID = "ff_timebox_artifact_back"
 #: One id for every offered option, the same way the day-type row uses one for
 #: all five: which option was pressed belongs in the encoded metadata, and an
 #: id that spelled out its own answer would be a second place the offer could
@@ -154,8 +162,25 @@ SLACK_MAX_BUTTON_TEXT_CHARS = 75
 
 TIMEBOX_TURN_FAILED_TEXT = (
     ":warning: I could not carry that planning step through, and nothing "
-    "reached your calendar. Ask me where the session stands and we can pick "
-    "it up from there."
+    "reached your calendar. Say it again and I will retry."
+)
+
+#: The same failure, on a day that has already been written. On 2026-09-02 the
+#: sentence above went out ninety seconds after nineteen blocks had reached the
+#: calendar, and the one reassurance it made was the one that was false. Which
+#: of the two is shown is decided by the receipt in the session -- state this
+#: system wrote -- never by the message that failed.
+TIMEBOX_TURN_FAILED_AFTER_COMMIT_TEXT = (
+    ":warning: I could not carry that change through. The day you approved is "
+    "still on your calendar as it was committed; this change did not reach it. "
+    "Tell me again what to change and I will retry."
+)
+
+#: Refusing to cancel a day that is already on the calendar. A `cancelled`
+#: session over a written calendar would describe a day that does not exist.
+TIMEBOX_SESSION_COMMITTED_TEXT = (
+    "This day is already on your calendar, so I did not cancel anything. Tell "
+    "me what to change and I will revise it."
 )
 
 #: A press the kernel would not honour. `stale_blocker_choice` covers three
@@ -172,17 +197,33 @@ TIMEBOX_STALE_CHOICE_TEXT = (
 #: so choosing between them reads nothing anybody wrote. Anything absent gets
 #: the one stable sentence above, which is the right default: a message that
 #: guessed at a code it did not recognise would be confidently wrong.
-TIMEBOX_FAILURE_TEXTS = {"stale_blocker_choice": TIMEBOX_STALE_CHOICE_TEXT}
+TIMEBOX_FAILURE_TEXTS = {
+    "stale_blocker_choice": TIMEBOX_STALE_CHOICE_TEXT,
+    "session_committed": TIMEBOX_SESSION_COMMITTED_TEXT,
+    "nothing_to_go_back_to": (
+        "This is the first step of the session, so there is nothing to go "
+        "back to. Pick the day, or cancel."
+    ),
+}
 
-def timebox_failure_message(code: str | None = None) -> SlackBlockMessage:
+
+def timebox_failure_message(
+    code: str | None = None, *, snapshot: PlanningSessionSnapshot | None = None
+) -> SlackBlockMessage:
     """One stable sentence, with the detail left where it belongs: the log.
 
     A provider payload pasted into a thread is unreadable and a leak at once,
     and the correlation fields are already on the log line beside this call.
     A refusal the user can act on gets its own sentence, chosen by the code the
-    kernel minted rather than by anything they wrote.
+    kernel minted rather than by anything they wrote. Which stable sentence is
+    chosen by what the session's receipts say about the calendar.
     """
-    text = TIMEBOX_FAILURE_TEXTS.get(code or "", TIMEBOX_TURN_FAILED_TEXT)
+    default = (
+        TIMEBOX_TURN_FAILED_AFTER_COMMIT_TEXT
+        if has_commit_receipt(snapshot)
+        else TIMEBOX_TURN_FAILED_TEXT
+    )
+    text = TIMEBOX_FAILURE_TEXTS.get(code or "", default)
     return SlackBlockMessage(
         text=text,
         blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
@@ -225,235 +266,194 @@ def artifact_action_value(
     return ArtifactActionMeta.model_validate(fields).model_dump_json()
 
 
-def render_date_card(
-    artifact: PlanningArtifact,
-    *,
-    session_key: str,
-    expected_revision: int,
-    user_id: str,
-    channel_id: str,
-    thread_ts: str,
-) -> SlackBlockMessage:
-    payload = artifact.payload if isinstance(artifact.payload, dict) else {}
-    return build_timebox_date_card(
-        session_key=session_key,
-        expected_revision=expected_revision,
-        user_id=user_id,
-        channel_id=channel_id,
-        thread_ts=thread_ts,
-        planned_date=str(payload.get("date") or ""),
-        tz_name=str(payload.get("timezone") or planning_timezone()),
-    )
+#: Longer lists are cut by count, not by characters: the last item that fits
+#: is a whole line, and the tail is one number.
+STAGE_LIST_CAP = 8
+
+#: The controls that accept a typed reply as well as a press.
+_TYPING_STAGES = frozenset({1, 2, 3, 4})
 
 
-def render_skeleton(
-    artifact: PlanningArtifact,
-    *,
-    snapshot: PlanningSessionSnapshot,
-    session_key: str,
-) -> SlackBlockMessage:
-    """Present the skeleton and what the planner decided on its own.
+def _section(text: str) -> dict:
+    return {
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": text[:SLACK_MAX_BLOCK_TEXT_CHARS]},
+    }
 
-    Assumptions are listed apart from anything being asked, because a choice
-    the planner already made and a question it needs answered read the same
-    when they share a paragraph -- and that is how a delegated decision came
-    back as a question.
+
+def _bullets(title: str, lines: list[str]) -> dict:
+    shown = [f"• {line}" for line in lines[:STAGE_LIST_CAP]]
+    rest = len(lines) - len(shown)
+    if rest > 0:
+        shown.append(f"_+{rest} more_")
+    return _section(f"*{title}*\n" + "\n".join(shown))
+
+
+def _nav_button(action_id: str, label: str, value: str, *, primary: bool = False) -> dict:
+    button = {
+        "type": "button",
+        "action_id": action_id,
+        "text": {"type": "plain_text", "text": label[:SLACK_MAX_BUTTON_TEXT_CHARS]},
+        "value": value,
+    }
+    if primary:
+        button["style"] = "primary"
+    return button
+
+
+def render_stage_card(card: StageCard) -> SlackBlockMessage:
+    """Draw one stage card, live or as a receipt, from its typed value.
+
+    The header is the one thing every card and every receipt shares, so the
+    thread reads as a ladder. A receipt is the same card with no controls and
+    a `done` label -- what the user acted on, kept legible after the fact.
     """
-    payload = artifact.payload if isinstance(artifact.payload, dict) else {}
-    markdown = str(payload.get("markdown") or "").strip()
-    blocks: list[dict] = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*The shape of the day*\n{markdown}"[
-                    :SLACK_MAX_BLOCK_TEXT_CHARS
-                ],
-            },
-        }
-    ]
-    if snapshot.assumptions:
-        chosen = "\n".join(
-            f"• {assumption.value} — {assumption.why_needed}"
-            for assumption in snapshot.assumptions[:10]
-        )
-        blocks.append(
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*I chose these myself*\n{chosen}"[
-                        :SLACK_MAX_BLOCK_TEXT_CHARS
+
+    header = f"*{card.stage.index}/5 · {card.stage.name}*"
+    if card.done:
+        header = f"{header}  —  {card.done}"
+    blocks: list[dict] = [_section(header)]
+    text_lines = [f"{card.stage.index}/5 · {card.stage.name}"]
+
+    if card.context:
+        blocks.append(_bullets("Context", [item.text for item in card.context]))
+    if card.decided:
+        blocks.append(_bullets("Decided", [item.text for item in card.decided]))
+    if card.body:
+        blocks.append(_section(card.body))
+        text_lines.append(card.body)
+
+    if card.asking is not None:
+        asking = card.asking
+        blocks.append(_section(f"{asking.question}\n_{asking.why_needed}_"))
+        text_lines.append(asking.question)
+        if asking.options:
+            effects = "\n".join(
+                f"*{option.label}* — {option.effect}" for option in asking.options
+            )
+            blocks.append(
+                {
+                    "type": "context",
+                    "block_id": "ff_timebox_blocker_effects",
+                    "elements": [
+                        {"type": "mrkdwn", "text": effects[:SLACK_MAX_BLOCK_TEXT_CHARS]}
                     ],
-                },
-            }
-        )
-    blocks.append(
-        {
-            "type": "actions",
-            "block_id": "ff_timebox_artifact_controls",
-            "elements": [
+                }
+            )
+            blocks.append(
                 {
-                    "type": "button",
-                    "action_id": FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
-                    "style": "primary",
-                    "text": {"type": "plain_text", "text": "Proceed"},
-                    "value": artifact_action_value(
-                        session_key=session_key,
-                        expected_revision=snapshot.revision,
-                        decision="approve",
-                        artifact=artifact,
+                    "type": "actions",
+                    "block_id": "ff_timebox_blocker_options",
+                    "elements": [
+                        _nav_button(
+                            FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID,
+                            option.label,
+                            artifact_action_value(
+                                session_key=card.session_key,
+                                expected_revision=card.expected_revision,
+                                decision="choose_option",
+                                artifact=None,
+                                requirement_id=asking.requirement_id,
+                                option_id=option.option_id,
+                            ),
+                        )
+                        for option in asking.options
+                    ],
+                }
+            )
+
+    nav: list[dict] = []
+    for control in card.controls:
+        if isinstance(control, DayTypeControl):
+            date_card = build_timebox_date_card(
+                session_key=card.session_key,
+                expected_revision=card.expected_revision,
+                user_id=control.user_id,
+                channel_id=control.channel_id,
+                thread_ts=control.thread_ts,
+                planned_date=control.planned_date,
+                tz_name=control.tz_name,
+            )
+            blocks.extend(date_card.blocks)
+            text_lines.append(date_card.text)
+        elif isinstance(control, CommitControl):
+            blocks.append(
+                harness_approve_block(
+                    card.session_key,
+                    control.candidate_id,
+                    calendar_id=control.calendar_id,
+                    day=control.day,
+                    expected_revision=card.expected_revision,
+                )
+            )
+        elif isinstance(control, UndoControl):
+            blocks.append(harness_undo_block(control.tx_id))
+        elif isinstance(control, ApproveControl):
+            nav.append(
+                _nav_button(
+                    FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
+                    card.stage.next_action_label,
+                    ArtifactActionMeta.model_validate(
+                        {
+                            "session_key": card.session_key,
+                            "expected_revision": card.expected_revision,
+                            "decision": "approve",
+                            "artifact_id": control.artifact_id,
+                            "artifact_revision": control.artifact_revision,
+                            "artifact_digest": control.artifact_digest,
+                        }
+                    ).model_dump_json(),
+                    primary=True,
+                )
+            )
+        elif isinstance(control, BackControl):
+            nav.append(
+                _nav_button(
+                    FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID,
+                    "Back",
+                    artifact_action_value(
+                        session_key=card.session_key,
+                        expected_revision=card.expected_revision,
+                        decision="back",
+                        artifact=None,
                     ),
-                },
-                {
-                    "type": "button",
-                    "action_id": FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
-                    "text": {"type": "plain_text", "text": "Cancel"},
-                    "value": artifact_action_value(
-                        session_key=session_key,
-                        expected_revision=snapshot.revision,
+                )
+            )
+        elif isinstance(control, CancelControl):
+            nav.append(
+                _nav_button(
+                    FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
+                    "Cancel",
+                    artifact_action_value(
+                        session_key=card.session_key,
+                        expected_revision=card.expected_revision,
                         decision="cancel",
                         artifact=None,
                     ),
-                },
-            ],
-        }
-    )
-    blocks.append(
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": "Reply in this thread with anything you want changed.",
-                }
-            ],
-        }
-    )
-    return SlackBlockMessage(
-        text=f"The shape of the day\n{markdown}"[:SLACK_MAX_TEXT_CHARS],
-        blocks=blocks,
-    )
-
-
-def render_question(
-    outcome: AwaitingUser,
-    *,
-    session_key: str,
-    expected_revision: int,
-) -> SlackBlockMessage:
-    """Put one open question, with its answers as buttons where it has any.
-
-    An empty option list is the ordinary case and renders as a text box, not as
-    a row of nothing: the catalog's one user-owned ask is what somebody wants
-    out of their day, and that has no closed answer set to draw.
-
-    Where the answers are known, the label is the button and the effect is the
-    line beside it. They are different lengths and they answer different
-    questions -- one names the choice, the other says what it costs -- so
-    truncating the second onto the first loses the half that decides it.
-    """
-
-    text = f"{outcome.question}\n_{outcome.why_needed}_"
-    blocks: list[dict] = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": text[:SLACK_MAX_BLOCK_TEXT_CHARS],
-            },
-        }
-    ]
-    if not outcome.options:
-        return SlackBlockMessage(text=text[:SLACK_MAX_TEXT_CHARS], blocks=blocks)
-    effects = "\n".join(
-        f"*{option.label}* — {option.effect}" for option in outcome.options
-    )
-    blocks.append(
-        {
-            "type": "context",
-            "block_id": "ff_timebox_blocker_effects",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": effects[:SLACK_MAX_BLOCK_TEXT_CHARS],
-                }
-            ],
-        }
-    )
-    blocks.append(
-        {
-            "type": "actions",
-            "block_id": "ff_timebox_blocker_options",
-            "elements": [
-                {
-                    "type": "button",
-                    "action_id": FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID,
-                    "text": {
-                        "type": "plain_text",
-                        "text": option.label[:SLACK_MAX_BUTTON_TEXT_CHARS],
-                    },
-                    # The pair the kernel checks against the question it is
-                    # holding. Neither is trusted for having been in a button.
-                    "value": artifact_action_value(
-                        session_key=session_key,
-                        expected_revision=expected_revision,
-                        decision="choose_option",
-                        artifact=None,
-                        requirement_id=outcome.requirement_id,
-                        option_id=option.option_id,
-                    ),
-                }
-                for option in outcome.options
-            ],
-        }
-    )
-    return SlackBlockMessage(
-        text=f"{text}\n{effects}"[:SLACK_MAX_TEXT_CHARS], blocks=blocks
-    )
-
-
-def render_candidate(
-    artifact: PlanningArtifact,
-    *,
-    pending: PendingTimeboxCandidates,
-    session_key: str,
-    actor_user_id: str,
-    expected_revision: int,
-) -> SlackBlockMessage:
-    """Show the validated candidate behind the one control that can commit it.
-
-    The approve payload is the existing opaque candidate identity, so the
-    commit gate stays the one already proven rather than a second one shaped
-    like it.
-    """
-    candidate = ValidatedTimeboxCandidate.from_artifact_payload(artifact.payload)
-    owned = pending.replace(session_key, candidate, owner_user_id=actor_user_id)
-    calendar_id = owned.snapshot.get("calendar_id")
-    day = owned.snapshot.get("day")
-    # A person reads a schedule, not a handle table. The rows arrived with
-    # #272; an older artifact without them still shows the table, because a
-    # table beats a blank card. The model-facing table is untouched -- it is
-    # what the next turn patches against.
-    text = candidate_display_text(owned) or "A validated plan is ready for your approval."
-    return SlackBlockMessage(
-        text=text[:SLACK_MAX_TEXT_CHARS],
-        blocks=[
+                )
+            )
+    if nav:
+        blocks.append(
             {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": text[:SLACK_MAX_BLOCK_TEXT_CHARS],
-                },
-            },
-            harness_approve_block(
-                session_key,
-                owned.candidate_id,
-                calendar_id=calendar_id if isinstance(calendar_id, str) else None,
-                day=day if isinstance(day, str) else None,
-                expected_revision=expected_revision,
-            ),
-        ],
+                "type": "actions",
+                "block_id": "ff_timebox_artifact_controls",
+                "elements": nav,
+            }
+        )
+    if card.controls and card.done is None and card.stage.index in _TYPING_STAGES:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "Reply in this thread with anything you want changed.",
+                    }
+                ],
+            }
+        )
+    return SlackBlockMessage(
+        text="\n".join(text_lines)[:SLACK_MAX_TEXT_CHARS], blocks=blocks
     )
 
 
@@ -475,7 +475,7 @@ def render_failure(
     already cancelled or committed has nothing to advance, and a session owned
     by somebody else will refuse this actor for the same reason it just did.
     """
-    message = timebox_failure_message(code)
+    message = timebox_failure_message(code, snapshot=snapshot)
     if snapshot.status != "open" or snapshot.owner_user_id != actor_user_id:
         return message
     return SlackBlockMessage(
@@ -515,6 +515,80 @@ def render_failure(
     )
 
 
+def present_outcome(
+    outcome: TurnOutcome,
+    *,
+    pending: PendingTimeboxCandidates,
+    snapshot: PlanningSessionSnapshot,
+    session_key: str,
+    actor_user_id: str,
+    channel_id: str,
+    thread_ts: str,
+    logger,
+) -> tuple[SlackBlockMessage, StageCard | None]:
+    """One domain outcome to one Slack message, plus the card it was drawn from.
+
+    The card is returned so the router can remember it and turn it into a
+    receipt later; it is None for the outcomes that are not stages.
+    """
+
+    if isinstance(outcome, TurnFailed):
+        logger.warning(
+            "adaptive timeboxing turn refused code=%s session_key=%s revision=%s",
+            outcome.code,
+            session_key,
+            snapshot.revision,
+        )
+        return (
+            render_failure(
+                snapshot=snapshot,
+                session_key=session_key,
+                actor_user_id=actor_user_id,
+                code=outcome.code,
+            ),
+            None,
+        )
+
+    if isinstance(outcome, Cancelled):
+        text = "Planning session cancelled. Nothing was written anywhere."
+        return (
+            SlackBlockMessage(
+                text=text,
+                blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+            ),
+            None,
+        )
+
+    card = map_outcome(
+        outcome,
+        snapshot,
+        pending=pending,
+        actor_user_id=actor_user_id,
+        session_key=session_key,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+    )
+    if card is not None:
+        return render_stage_card(card), card
+
+    if isinstance(outcome, ArtifactReady):
+        text = f"Prepared the {outcome.artifact.kind.value.replace('_', ' ')}."
+        return (
+            SlackBlockMessage(
+                text=text,
+                blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+            ),
+            None,
+        )
+
+    logger.error(
+        "adaptive timeboxing produced an unrenderable outcome kind=%s session_key=%s",
+        getattr(outcome, "kind", "unknown"),
+        session_key,
+    )
+    return timebox_failure_message(), None
+
+
 def render_outcome(
     outcome: TurnOutcome,
     *,
@@ -528,100 +602,14 @@ def render_outcome(
 ) -> SlackBlockMessage:
     """Turn exactly one domain outcome into exactly one Slack message."""
 
-    if isinstance(outcome, TurnFailed):
-        logger.warning(
-            "adaptive timeboxing turn refused code=%s session_key=%s revision=%s",
-            outcome.code,
-            session_key,
-            snapshot.revision,
-        )
-        return render_failure(
-            snapshot=snapshot,
-            session_key=session_key,
-            actor_user_id=actor_user_id,
-            code=outcome.code,
-        )
-
-    if isinstance(outcome, Cancelled):
-        text = "Planning session cancelled. Nothing was written anywhere."
-        return SlackBlockMessage(
-            text=text,
-            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
-        )
-
-    if isinstance(outcome, AwaitingUser):
-        return render_question(
-            outcome,
-            session_key=session_key,
-            expected_revision=snapshot.revision,
-        )
-
-    if isinstance(outcome, AwaitingApproval):
-        artifact = outcome.artifact
-        if artifact.kind is ArtifactKind.PLANNING_DAY:
-            return render_date_card(
-                artifact,
-                session_key=session_key,
-                expected_revision=snapshot.revision,
-                user_id=actor_user_id,
-                channel_id=channel_id,
-                thread_ts=thread_ts,
-            )
-        if artifact.kind is ArtifactKind.SKELETON:
-            return render_skeleton(
-                artifact, snapshot=snapshot, session_key=session_key
-            )
-        if artifact.kind is ArtifactKind.VALIDATED_CANDIDATE:
-            return render_candidate(
-                artifact,
-                pending=pending,
-                session_key=session_key,
-                actor_user_id=actor_user_id,
-                expected_revision=snapshot.revision,
-            )
-
-    if isinstance(outcome, Committed):
-        payload = (
-            outcome.receipt.payload
-            if isinstance(outcome.receipt.payload, dict)
-            else {}
-        )
-        tx_id = payload.get("tx_id")
-        if payload.get("committed") is True and isinstance(tx_id, str) and tx_id:
-            text = ":white_check_mark: Committed the plan you approved."
-            if payload.get("durable") is not True:
-                # A commit against the in-memory calendar is a true commit and
-                # an empty day. Saying only "committed" here is what made an
-                # unwired backend indistinguishable from a scheduled day.
-                where = str(payload.get("calendar_backend") or "unknown")
-                text = (
-                    ":warning: Committed to the *"
-                    f"{where}* calendar — nothing reached your real one."
-                )
-            return SlackBlockMessage(
-                text=text,
-                blocks=[
-                    {"type": "section", "text": {"type": "mrkdwn", "text": text}},
-                    harness_undo_block(tx_id),
-                ],
-            )
-        reason = str(payload.get("reason") or "commit_refused")
-        text = f":warning: Nothing was committed — `{reason}`."
-        return SlackBlockMessage(
-            text=text,
-            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
-        )
-
-    if isinstance(outcome, ArtifactReady):
-        text = f"Prepared the {outcome.artifact.kind.value.replace('_', ' ')}."
-        return SlackBlockMessage(
-            text=text,
-            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
-        )
-
-    logger.error(
-        "adaptive timeboxing produced an unrenderable outcome kind=%s session_key=%s",
-        getattr(outcome, "kind", "unknown"),
-        session_key,
+    message, _card = present_outcome(
+        outcome,
+        pending=pending,
+        snapshot=snapshot,
+        session_key=session_key,
+        actor_user_id=actor_user_id,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+        logger=logger,
     )
-    return timebox_failure_message()
+    return message

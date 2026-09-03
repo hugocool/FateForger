@@ -12,12 +12,12 @@ pytest.importorskip("autogen_ext.tools.mcp")
 async def test_get_tools_raises_when_loader_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import autogen_ext.tools.mcp as mcp_mod
+    import fateforger.tools.mcp_tool_schemas as loader_mod
 
     async def _failing_loader(_params):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(mcp_mod, "mcp_server_tools", _failing_loader)
+    monkeypatch.setattr(loader_mod, "streamable_http_tools", _failing_loader)
     client = TickTickMcpClient.__new__(TickTickMcpClient)
     client._params = object()
     client._server_url = "http://ticktick-mcp:8000/mcp"
@@ -35,12 +35,12 @@ async def test_get_tools_raises_when_loader_fails(
 async def test_get_tools_raises_when_loader_returns_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import autogen_ext.tools.mcp as mcp_mod
+    import fateforger.tools.mcp_tool_schemas as loader_mod
 
     async def _empty_loader(_params):
         return []
 
-    monkeypatch.setattr(mcp_mod, "mcp_server_tools", _empty_loader)
+    monkeypatch.setattr(loader_mod, "streamable_http_tools", _empty_loader)
     client = TickTickMcpClient.__new__(TickTickMcpClient)
     client._params = object()
     client._server_url = "http://ticktick-mcp:8000/mcp"

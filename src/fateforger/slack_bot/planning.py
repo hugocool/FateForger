@@ -27,6 +27,10 @@ from fateforger.agents.schedular.messages import (
     UpsertCalendarEvent,
     UpsertCalendarEventResult,
 )
+from fateforger.agents.timeboxing.adaptive_timeboxing import (
+    TimeboxingSessionLedger,
+    TimeboxingStanding,
+)
 from fateforger.core.logging_config import (
     observe_stage_duration,
     record_admonishment_event,
@@ -159,6 +163,20 @@ class PlanningCoordinator:
         self._reconciler: PlanningReconciler | None = getattr(
             runtime, "planning_reconciler", None
         )
+        # The adaptive session store doubles as the nudge suppressor's source
+        # of truth (#256). None only when adaptive timeboxing is unwired, in
+        # which case there is no session to be interrupted.
+        self._timeboxing_ledger: TimeboxingSessionLedger | None = getattr(
+            runtime, "timeboxing_session_store", None
+        )
+        # The calendar the timeboxing session writes to. The planning anchor
+        # and the reconciler's revalidation used to look at "primary" while the
+        # session wrote to TIMEBOX_CALENDAR_ID, so a fully planned day was
+        # invisible to the nudger by construction (#256).
+        self._calendar_id: str = (
+            str(getattr(runtime, "timeboxing_calendar_id", "") or "").strip()
+            or "primary"
+        )
         self._thread_reply_interpreter: AssistantAgent | None = None
         if self._guardian:
             timeboxing_activity.set_on_idle(self._handle_timeboxing_idle)
@@ -249,10 +267,11 @@ class PlanningCoordinator:
         *,
         user_id: str,
         channel_id: str | None,
-        calendar_id: str = "primary",
+        calendar_id: str | None = None,
     ) -> PlanningAnchorPayload:
         from fateforger.slack_bot.planning_ids import planning_event_id_for_user
 
+        calendar_id = calendar_id or self._calendar_id
         event_id = planning_event_id_for_user(user_id)
         if not self._anchor_store:
             return PlanningAnchorPayload(
@@ -331,15 +350,60 @@ class PlanningCoordinator:
             duration_s=perf_counter() - total_started,
         )
 
+    #: How long an open session keeps the Admonisher quiet after its last
+    #: saved turn. A turn can run for minutes while the planner works, so this
+    #: is well above the activity tracker's ten-minute idle; a session nobody
+    #: has touched for this long is abandoned, and nudging is right again.
+    OPEN_SESSION_UNDER_WAY = timedelta(hours=1)
+
+    async def _timeboxing_standing(
+        self, *, user_id: str, now: datetime
+    ) -> TimeboxingStanding:
+        """Ask the session store whether this user is mid-session or done.
+
+        Read from the same table the turn handler writes, at the moment the
+        decision is made -- not from a flag set earlier by other code. The
+        planned window is the reconciler's own horizon, so a day committed
+        for tomorrow answers tonight's "have you planned tomorrow".
+        """
+
+        if self._timeboxing_ledger is None:
+            return TimeboxingStanding()
+        horizon = PlanningRuleConfig().horizon
+        return await self._timeboxing_ledger.standing_for(
+            owner_user_id=user_id,
+            open_since=now - self.OPEN_SESSION_UNDER_WAY,
+            planned_from=now.date(),
+            planned_to=(now + horizon).date(),
+        )
+
+    async def _timeboxing_silences(self, *, user_id: str, at: str) -> bool:
+        standing = await self._timeboxing_standing(
+            user_id=user_id, now=datetime.now(timezone.utc)
+        )
+        if standing.under_way:
+            logger.info(
+                "dispatch_planning_reminder: timeboxing session %s under way for %s; skipping at %s",
+                standing.open_session_key,
+                user_id,
+                at,
+            )
+            return True
+        if standing.planned:
+            logger.info(
+                "dispatch_planning_reminder: timeboxing session %s already committed the day for %s; skipping at %s",
+                standing.committed_session_key,
+                user_id,
+                at,
+            )
+            return True
+        return False
+
     async def dispatch_planning_reminder(self, reminder: PlanningReminder) -> None:
         if not reminder.user_id:
             logger.debug("dispatch_planning_reminder: no user_id, skipping")
             return
-        if timeboxing_activity.is_active(reminder.user_id):
-            logger.info(
-                "dispatch_planning_reminder: timeboxing active for %s; skipping",
-                reminder.user_id,
-            )
+        if await self._timeboxing_silences(user_id=reminder.user_id, at="start"):
             return
         if not self._draft_store:
             logger.warning("event_draft_store not configured; skipping planning card")
@@ -402,6 +466,14 @@ class PlanningCoordinator:
             tz_name = (
                 suggested.tz if suggested else DEFAULT_TIMEZONE
             ) or DEFAULT_TIMEZONE
+
+            # Everything above awaited the calendar and the slot suggester, up
+            # to ten seconds of it. A turn that started meanwhile must win:
+            # re-read the store before the first side effect.
+            if await self._timeboxing_silences(
+                user_id=reminder.user_id, at="draft"
+            ):
+                return
 
             draft_id = f"draft_{uuid.uuid4().hex}"
             logger.debug("dispatch_planning_reminder: creating draft %s", draft_id)

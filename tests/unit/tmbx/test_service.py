@@ -171,6 +171,20 @@ async def test_apply_records_a_violation_for_an_overlap_without_raising(service)
     assert rows[-1].outcome == PatchOutcome.VALIDATION_FAILED
 
 
+async def test_apply_journals_which_violation_failed_validation(service):
+    """#250: the 2026-09-02 session journaled four VALIDATION_FAILED rows
+    with ``error=None``. The violation was known at the journaling site
+    and returned to the caller; only the row lost it. A row that says a
+    plan was refused and cannot say why is not a post-mortem record."""
+    _, snapshot = await service.read("primary", DAY)
+    patch = Patch(ops=[UpdateBlock(h="DW1", p=FixedWindow(st=time(9, 30), et=time(11, 0)))])
+    result = await service.apply(snapshot, patch)
+    (violation,) = result.violations
+    rows = await service.store.by_day("primary", DAY)
+    assert rows[-1].outcome == PatchOutcome.VALIDATION_FAILED
+    assert rows[-1].error == violation.message
+
+
 async def test_commit_writes_to_the_calendar_and_returns_a_tx_id(service):
     _, snapshot = await service.read("primary", DAY)
     result = await service.commit(snapshot, Patch(ops=[UpdateBlock(h="DW1", n="Renamed")]))
@@ -561,6 +575,51 @@ async def empty_service(tmp_path):
     store = JournalStore(await init_journal(tmp_path / "j.db"))
     counter = itertools.count(1)
     return PlanService(calendar, store, mint_uid=lambda: f"u-new-{next(counter)}")
+
+
+async def test_a_zero_duration_constraint_anchor_is_written_and_reads_back_as_one(
+    empty_service,
+):
+    """#253 item 2. ``WK1 Wake`` / ``BED1 Bed`` -- ``PT0S``, ``fs``,
+    ``anchor_source=constraint`` -- went to Google Calendar as events on
+    2026-09-02, and the ticket asked whether they should.
+
+    Decision: yes, written, and marked. The plan is re-derived from the
+    calendar on every call (``service`` module docstring); a frame held
+    anywhere else is state the next read cannot see, and a chain anchored
+    ``ap``/``bn`` on a wake marker that is not on the calendar has nothing
+    to resolve against after a restart. What distinguishes the marker from
+    an activity is what the write already stamps in ``extendedProperties``
+    -- ``timing_mode=fs``, ``anchor_source=constraint`` -- plus the zero
+    span itself; all three must survive the round trip, or the read side
+    rebuilds it as a plain zero-length fixed window with no provenance."""
+    svc = empty_service
+    _, snapshot = await svc.read("primary", DAY)
+    result = await svc.commit(
+        snapshot,
+        Patch(
+            ops=[
+                AddBlock(
+                    after=None,
+                    h="WK1",
+                    n="Wake",
+                    t=ET.M,
+                    p=FixedStart(st=time(7, 0), dur=timedelta(0)),
+                    anchor_source="constraint",
+                )
+            ]
+        ),
+    )
+    assert result.committed
+    live = await svc.calendar.list_day("primary", DAY, "Europe/Amsterdam")
+    (event,) = live
+    assert event.start == event.end
+    assert (event.timing_mode, event.anchor_source) == ("fs", "constraint")
+
+    plan, _ = await svc.read("primary", DAY)
+    (block,) = plan.blocks
+    assert block.p.a == "fs" and block.p.dur == timedelta(0)
+    assert block.anchor_source == "constraint"
 
 
 async def test_commit_and_reread_round_trips_every_timing_mode(empty_service):

@@ -779,13 +779,13 @@ def test_a_retry_reordering_keys_is_the_same_submission(tmp_path, monkeypatch) -
 
     first = submit_planning_result(
         target_artifact="skeleton",
-        artifact={"markdown": "## Saturday", "title": "Saturday"},
+        artifact={"markdown": "## Saturday", "reasoning": "Saturday"},
         assumptions=[],
         blockers=[],
     )
     second = submit_planning_result(
         target_artifact="skeleton",
-        artifact={"title": "Saturday", "markdown": "## Saturday"},
+        artifact={"reasoning": "Saturday", "markdown": "## Saturday"},
         assumptions=[],
         blockers=[],
     )
@@ -950,8 +950,10 @@ def test_a_refusal_names_the_field_that_was_wrong(tmp_path, monkeypatch) -> None
     missing `requirement_id` came back as `assumptions:missing` -- true, and
     useless. The planner's recorded recovery was to grep the host's source.
 
-    The path is safe to repeat: every segment is an index or a name this system
-    declared. A key the model invented is replaced, not echoed.
+    The path is safe to repeat: every segment is an index, a field name this
+    system declared, or -- for `extra_forbidden` -- the key the model just
+    invented, which is echoed back deliberately so the planner can stop
+    inventing it. Any other unrecognised segment is masked.
     """
 
     destination = tmp_path / "planning-result.json"

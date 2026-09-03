@@ -14,6 +14,14 @@ it but is only ever informational: this repository is worked on with a dirty
 tree, so an unchanged HEAD says nothing about whether the files moved. The
 content hash is the signal; the SHA is the human-readable anchor next to it.
 
+``start`` applies the same judgement before it does anything: a recorded
+service whose sources have moved is stopped and relaunched, one on current
+sources is left alone, and every launch writes a dated banner into the
+service's log. The record here only covers processes this supervisor started;
+the tmbx server also states its own identity on every boot (``tmbx build
+identity ...`` in its log) and publishes it as ``tmbx://build/identity``, which
+the Slack bot reads at startup and compares against its own ``src/tmbx`` (#255).
+
 ``stop`` reads PIDs from the same file, so nobody has to hunt for them, and it
 signals the process *group*. It refuses to signal a PID whose start time no
 longer matches the recorded one: a recycled PID belongs to somebody else, and

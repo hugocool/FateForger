@@ -99,12 +99,33 @@ def _skeleton_result() -> PlanningResult:
     )
 
 
+class EmptyConstraintMemory:
+    """A corpus with nothing on record, so capture asks the user about the frame."""
+
+    async def query_constraints(self, *, filters: Any, limit: int) -> list[dict]:
+        return []
+
+
+class ForbiddenModelClient:
+    """Nothing on record means nothing to judge; a call here is a defect."""
+
+    async def create(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("no model call is warranted for an empty corpus")
+
+
 class Runtime:
-    """Only the attributes the kernel route is allowed to read."""
+    """Only the attributes the kernel route is allowed to read.
+
+    Since #251 the capture stage reads constraint memory for a bedtime rule
+    before asking the user, so the two adapters that read exists here too --
+    empty, and with a model client that trips if the empty corpus is judged.
+    """
 
     def __init__(self, *, repository: Any, planner: Any) -> None:
         self.timeboxing_session_store = repository
         self.timeboxing_planner = planner
+        self.timeboxing_constraint_store = EmptyConstraintMemory()
+        self.timeboxing_intent_model_client = ForbiddenModelClient()
 
     async def send_message(self, message: Any, recipient: Any) -> Any:
         raise AssertionError("the kernel route must not reach the AutoGen runtime")
@@ -307,6 +328,18 @@ def _fact(fact_id: str, kind: FactKind, value: Any) -> PlanningFact:
     return PlanningFact(fact_id=fact_id, kind=kind, value=value, source="user")
 
 
+def _frame(fact_id: str) -> PlanningFact:
+    """The sleep window the user states alongside the activity.
+
+    Since #251 a skeleton needs one: a message that names what the day is for
+    and nothing about when it starts and ends stops at a question instead of
+    reaching the planner, and every route through these tests that expects a
+    skeleton is a user who said both.
+    """
+
+    return _fact(fact_id, FactKind.DAY_FRAME, {"wake": "08:00", "sleep": "23:30"})
+
+
 async def _start_and_confirm_saturday(
     *,
     runtime: Runtime,
@@ -350,7 +383,7 @@ async def test_confirming_the_card_locks_saturday_as_a_weekend_the_host_derived(
     planner = RecordedPlanner()
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym")])]
+        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
     )
     client = Client()
 
@@ -401,7 +434,7 @@ async def test_a_fresh_repository_rehydrates_the_session_without_the_transcript(
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
         [
             ProvidePlanningFacts(
-                facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym")]
+                facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")]
             ),
             ProvidePlanningFacts(
                 facts=[_fact("a2", FactKind.REQUESTED_ACTIVITY, "supermarket")]
@@ -454,7 +487,7 @@ async def test_a_fresh_repository_rehydrates_the_session_without_the_transcript(
     restarted = planner.briefs[1]
     assert restarted.locked_day.date == SATURDAY
     assert restarted.locked_day.day_type is DayType.WEEKEND
-    assert {fact.fact_id for fact in restarted.facts} == {"a1", "a2"}
+    assert {fact.fact_id for fact in restarted.facts} == {"a1", "a1-frame", "a2"}
     assert restarted.session_key == session_key
 
 
@@ -521,7 +554,7 @@ async def test_a_skeleton_turn_touches_no_calendar_and_stores_no_candidate(
     planner = RecordedPlanner()
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym")])]
+        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
     )
     client = Client()
 
@@ -583,7 +616,7 @@ async def test_only_an_approved_skeleton_unlocks_the_first_validated_candidate(
     planner = RecordedPlanner([_skeleton_result(), _candidate_result()])
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym")])]
+        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
     )
     runtime.timeboxing_calendar_id = "cal"
     runtime.timeboxing_constraint_store = _ConstraintStore()
@@ -646,7 +679,7 @@ async def test_a_failed_turn_says_one_stable_thing_and_leaks_no_payload(
 
     runtime = Runtime(repository=repository, planner=_ExplodingPlanner())
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym")])]
+        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
     )
     client = Client()
 
@@ -923,7 +956,7 @@ async def test_a_failed_turn_offers_retry_and_cancel_bound_to_the_session(
     planner = FlakyPlanner()
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym")])]
+        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
     )
     client = Client()
 
@@ -986,7 +1019,7 @@ async def test_retry_and_a_typed_advance_reach_one_executor_with_one_intent(
     pressed_planner = FlakyPlanner()
     pressed_runtime = Runtime(repository=repository, planner=pressed_planner)
     pressed_runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym")])]
+        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
     )
     pressed_client = Client()
     pressed_key = await _drive_to_a_failed_turn(
@@ -1012,7 +1045,7 @@ async def test_retry_and_a_typed_advance_reach_one_executor_with_one_intent(
     typed_runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
         [
             ProvidePlanningFacts(
-                facts=[_fact("b1", FactKind.REQUESTED_ACTIVITY, "gym")]
+                facts=[_fact("b1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("b1-frame")]
             ),
             Advance(),
         ]
@@ -1056,9 +1089,10 @@ async def test_an_open_question_is_asked_without_a_button_row(
     """The one thing the user is ever asked cannot be enumerated.
 
     `skeleton.requested_activity` is the catalog's only USER-owned `ask`, and
-    what somebody wants out of their day has no closed answer set. A button row
-    here would be a worse question, not a faster one, so its absence is
-    asserted rather than left to taste.
+    what somebody wants out of their day has no closed answer set. A row of
+    option buttons here would be a worse question, not a faster one, so its
+    absence is asserted rather than left to taste -- the nav row (Back,
+    Cancel) is a different thing and may still be drawn.
     """
 
     planner = RecordedPlanner()
@@ -1080,9 +1114,11 @@ async def test_an_open_question_is_asked_without_a_button_row(
     # being asked.
     assert "skeleton.requested_activity" not in text
     assert [
-        block
+        element.get("action_id")
         for block in asked.get("blocks") or ()
         if block.get("type") == "actions"
+        for element in block.get("elements") or ()
+        if element.get("action_id") == handlers.FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID
     ] == []
 
 
@@ -1103,7 +1139,7 @@ async def test_approving_a_superseded_skeleton_plans_nothing(
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
         [
             ProvidePlanningFacts(
-                facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym")]
+                facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")]
             ),
             ProvidePlanningFacts(
                 facts=[_fact("a2", FactKind.REQUESTED_ACTIVITY, "supermarket")]
@@ -1279,7 +1315,7 @@ async def test_approving_the_candidate_commits_it_and_records_the_receipt(
     planner = RecordedPlanner([_skeleton_result(), _candidate_result()])
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym")])]
+        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
     )
     runtime.timeboxing_calendar_id = "cal"
     runtime.timeboxing_constraint_store = _ConstraintStore()
@@ -1357,6 +1393,7 @@ def _stamped_identity(action_id: str, value: str) -> tuple[str, int]:
         return meta.session_key, meta.expected_revision
     if action_id in (
         handlers.FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
+        handlers.FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID,
         handlers.FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
         handlers.FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
         handlers.FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID,
@@ -1412,7 +1449,7 @@ async def test_every_rendered_control_names_its_session_and_revision(
     planner = RecordedPlanner([_skeleton_result(), _candidate_result()])
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym")])]
+        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
     )
     runtime.timeboxing_calendar_id = "cal"
     runtime.timeboxing_constraint_store = _ConstraintStore()

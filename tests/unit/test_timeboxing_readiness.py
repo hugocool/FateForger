@@ -51,6 +51,11 @@ def test_gym_placement_is_planner_owned_and_does_not_block_skeleton() -> None:
             value="Prepare the presentation",
         ),
         _fact(fact_id="gym-1", kind=FactKind.REQUESTED_ACTIVITY),
+        _fact(
+            fact_id="frame-1",
+            kind=FactKind.DAY_FRAME,
+            value={"wake": "08:00", "sleep": "23:30"},
+        ),
     )
 
     report = TimeboxRequirements().evaluate(ArtifactKind.SKELETON, snapshot)
@@ -198,3 +203,113 @@ def test_changed_artifact_invalidates_only_its_downstream_artifacts(
     invalidated = TimeboxRequirements().invalidate_from(changed)
 
     assert invalidated == expected
+
+
+def test_a_day_whose_sleep_window_nobody_stated_is_a_user_blocker() -> None:
+    """The 2026-09-02 session assumed the frame and the user had to correct it after commit.
+
+    Wake and sleep are the user's to state. With an activity given and no frame
+    fact, the frame is the one hard user-owned gap, so the ladder must stop and
+    ask rather than let the planner file an assumption in its place.
+    """
+
+    snapshot = _locked_snapshot(
+        _fact(
+            fact_id="activity-1",
+            kind=FactKind.REQUESTED_ACTIVITY,
+            value="serious c2f work, gym for chest",
+        ),
+    )
+
+    report = TimeboxRequirements().evaluate(ArtifactKind.SKELETON, snapshot)
+
+    blocker = report.first_hard_user_blocker()
+    assert blocker is not None
+    assert blocker.requirement_id == "skeleton.day_frame"
+    assert blocker.owner is RequirementOwner.USER
+    assert blocker.resolution == "ask"
+
+
+def test_a_stated_sleep_window_satisfies_the_frame_whoever_stated_it() -> None:
+    """A frame from the constraint corpus counts the same as one typed today."""
+
+    snapshot = _locked_snapshot(
+        _fact(
+            fact_id="activity-1",
+            kind=FactKind.REQUESTED_ACTIVITY,
+            value="serious c2f work",
+        ),
+        PlanningFact(
+            fact_id="frame:2026-08-29",
+            kind=FactKind.DAY_FRAME,
+            value={"wake": "08:30", "sleep": "00:30"},
+            source="constraint_memory",
+        ),
+    )
+
+    report = TimeboxRequirements().evaluate(ArtifactKind.SKELETON, snapshot)
+
+    assert report.by_id("skeleton.day_frame").satisfied
+    assert report.first_hard_user_blocker() is None
+
+
+def test_the_activity_is_asked_before_the_frame() -> None:
+    """With nothing stated, the first question is what the day is for."""
+
+    report = TimeboxRequirements().evaluate(ArtifactKind.SKELETON, _locked_snapshot())
+
+    blocker = report.first_hard_user_blocker()
+    assert blocker is not None
+    assert blocker.requirement_id == "skeleton.requested_activity"
+
+
+def test_an_unreadable_activity_name_is_the_planners_to_raise_and_the_users_to_settle() -> None:
+    """`Validate agent-in-ysis demos` went onto the calendar verbatim on 2026-09-02.
+
+    Which names are unreadable is a model judgement, so the catalog cannot
+    compute it; what the catalog can do is hold a user-owned requirement open
+    that the planner may raise a blocker against, with its proposed readings as
+    the options. It is soft: a readable name needs no answer and must not stop
+    the ladder.
+    """
+
+    snapshot = _locked_snapshot(
+        _fact(
+            fact_id="activity-1",
+            kind=FactKind.REQUESTED_ACTIVITY,
+            value="validate the agent-in-ysis demos",
+        ),
+        _fact(
+            fact_id="frame-1",
+            kind=FactKind.DAY_FRAME,
+            value={"wake": "08:30", "sleep": "00:30"},
+        ),
+    )
+
+    report = TimeboxRequirements().evaluate(ArtifactKind.SKELETON, snapshot)
+
+    reading = report.by_id("skeleton.activity_reading")
+    assert reading.owner is RequirementOwner.USER
+    assert not reading.hard
+    assert not reading.satisfied
+    assert reading.resolution == "ask"
+    assert report.first_hard_user_blocker() is None
+
+
+def test_a_chosen_reading_settles_the_name() -> None:
+    snapshot = _locked_snapshot(
+        _fact(fact_id="activity-1", kind=FactKind.REQUESTED_ACTIVITY, value="x"),
+        _fact(
+            fact_id="reading-1",
+            kind=FactKind.ACTIVITY_READING,
+            value={
+                "requirement_id": "skeleton.activity_reading",
+                "label": "Validate the agent analysis demos",
+                "effect": "the block is titled that way",
+            },
+        ),
+    )
+
+    report = TimeboxRequirements().evaluate(ArtifactKind.SKELETON, snapshot)
+
+    assert report.by_id("skeleton.activity_reading").satisfied

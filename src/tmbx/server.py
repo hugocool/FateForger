@@ -70,6 +70,12 @@ from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
+from .build_identity import (
+    RESOURCE_URI as _BUILD_IDENTITY_URI,
+    BuildIdentity,
+    current_build_identity,
+    describe,
+)
 from .calendar.port import CalendarPort, Snapshot
 from .core.models import Plan
 from .core.ops import Patch
@@ -170,6 +176,10 @@ A new handle (add's `h`) must be 2-5 uppercase letters then 1-2 digits
 (e.g. DW1, MTNG12) — anything else is refused as reason "invalid_patch"
 before anything is written.
 
+`dur` is an ISO 8601 duration and is parsed to a time span on input: PT0M,
+PT0S and P0D are one value, and the journal, history and rendered plan
+all spell it PT0S. What you wrote is not preserved; what it meant is.
+
 A handle may belong to a FOREIGN block — a calendar event tmbx did not
 create (e.g. someone else's meeting); the rendered plan's "own" column
 marks these "foreign". Naming one as an add/move `after` anchor is fine —
@@ -234,8 +244,17 @@ def _plan_violation_message(error: PlanViolationError) -> str:
     return f"Refused — nothing was written. {detail}. {remedy}"
 
 
-def build_server(service: PlanService) -> FastMCP:
-    """Build the MCP server around a plan service."""
+def build_server(
+    service: PlanService, *, build: BuildIdentity | None = None
+) -> FastMCP:
+    """Build the MCP server around a plan service.
+
+    ``build`` is what this process will say it is running. Computed once here
+    rather than per request, because the answer is a fact about the process's
+    lifetime: the sources it imported do not change while it is up, however
+    much the files on disk do. That gap is the thing a client compares against.
+    """
+    build = build or current_build_identity()
     mcp = FastMCP(
         name="tmbx",
         instructions=(
@@ -249,6 +268,7 @@ def build_server(service: PlanService) -> FastMCP:
         ),
     )
     mcp.tmbx_service = service  # type: ignore[attr-defined]
+    mcp.tmbx_build = build  # type: ignore[attr-defined]
 
     @mcp.tool(name="plan_read", structured_output=False)
     async def plan_read(calendar_id: str, day: str) -> str:
@@ -268,7 +288,10 @@ def build_server(service: PlanService) -> FastMCP:
         handle (the "H" column). Its "own" column marks each block "tmbx"
         (editable) or "foreign" (a calendar event tmbx did not create,
         such as someone else's meeting — see tmbx://policy/planning for
-        what that means for editing it).
+        what that means for editing it). An empty day renders as the
+        header ("blocks[0]{...}:") followed by one line in parentheses
+        saying the day is empty — that is a complete answer, not a
+        truncated one, and "blocks" is 0.
 
         A result with "ok": false is a refusal: reason "malformed_input"
         means `day` was not a valid date — "message" says how.
@@ -448,6 +471,15 @@ def build_server(service: PlanService) -> FastMCP:
           a domain rule — "message" says how. Fix it and call again.
 
         On success, "tx_id" identifies this write for plan_undo.
+
+        Every block in the patch becomes a calendar event, zero-duration
+        ones included: a wake or bed marker (`dur` "PT0S", mode "fs",
+        `anchor_source` "constraint") is written as a zero-length event
+        stamped with its mode and anchor_source, because the plan is
+        re-derived from the calendar on every call and a frame held
+        anywhere else is one the next read cannot see. Do not omit anchors
+        to keep the calendar tidy; do not add them as timed activities to
+        make them visible.
 
         `idempotency_key`, when supplied, must be the canonical SHA-256 digest
         of the raw snapshot+patch object. A previously journaled successful
@@ -640,6 +672,16 @@ def build_server(service: PlanService) -> FastMCP:
         """Timing grammar, least-commitment policy, and foreign blocks."""
         return PLANNING_POLICY
 
+    @mcp.resource(_BUILD_IDENTITY_URI)
+    def build_identity() -> str:
+        """Which sources this server imported: git sha, content fingerprint, start time.
+
+        A resource rather than a tool, so the planner never sees it and pays
+        nothing for it; the host reads it once at its own startup to check that
+        the server answering plan_read runs the same src/tmbx it does (#255).
+        """
+        return json.dumps(build.as_dict(), indent=2)
+
     return mcp
 
 
@@ -696,12 +738,25 @@ def main() -> None:
     """
     import asyncio
     import os
+    import sys
 
     from .journal.store import JournalStore, init_journal
 
+    build = current_build_identity()
+    # Said by the process itself, on every start, whatever started it. The demo
+    # supervisor writes its own banner into the same log, but a server started
+    # by hand -- or from another checkout -- has only this line to identify the
+    # code it is running, and on 2026-09-02 that was the line nobody had (#255).
+    print(
+        f"tmbx build identity {describe(build)} package_root={build.package_root} "
+        f"started_at={build.started_at}",
+        file=sys.stderr,
+        flush=True,
+    )
+
     async def _build() -> FastMCP:
         store = JournalStore(await init_journal())
-        return build_server(PlanService(_build_calendar_port(), store))
+        return build_server(PlanService(_build_calendar_port(), store), build=build)
 
     server = asyncio.run(_build())
     transport = os.environ.get("TMBX_MCP_TRANSPORT", "stdio")
