@@ -129,6 +129,30 @@ def _row(plan_date: date_type, r: Resolved, *, foreign: bool) -> str:
     )
 
 
+def plan_rows(plan: Plan, foreign_uids: Collection[str] = ()) -> list[dict[str, str]]:
+    """The rows behind `render_plan`, as data.
+
+    Same resolution, same ownership rule, same clock formatting -- one dict
+    per block, keyed by the table's own column names. A host that shows the
+    schedule to a person renders from these; before this the table was the
+    only form that crossed the boundary, so a human view had to parse it back.
+    """
+    foreign = set(foreign_uids)
+    return [
+        {
+            "h": r.h,
+            "own": "foreign" if r.uid in foreign else "tmbx",
+            "type": r.t.value,
+            "summary": r.n,
+            "start": _fmt_clock(r.start, r.start_dt, plan.date),
+            "end": _fmt_clock(r.end, r.end_dt, plan.date),
+            "mode": r.mode,
+            "dur": _iso_duration(r.dur),
+        }
+        for r in plan.resolve(check_overlap=False)
+    ]
+
+
 def render_plan(plan: Plan, foreign_uids: Collection[str] = ()) -> str:
     """Render ``plan`` as a TOON-style table: a header naming the row count
     and columns, then one comma-separated row per block, in plan order.
@@ -148,10 +172,16 @@ def render_plan(plan: Plan, foreign_uids: Collection[str] = ()) -> str:
     if not plan.blocks:
         return header
 
-    foreign = set(foreign_uids)
-    rows = plan.resolve(check_overlap=False)
-    lines = [header] + [_row(plan.date, r, foreign=r.uid in foreign) for r in rows]
+    # Built from the same rows a host renders for a person, so the table the
+    # model patches against and the schedule the user approves cannot differ.
+    lines = [header] + [
+        _DELIMITER.join(
+            [row["h"], row["own"], row["type"], _escape(row["summary"]),
+             row["start"], row["end"], row["mode"], row["dur"]]
+        )
+        for row in plan_rows(plan, foreign_uids)
+    ]
     return "\n".join(lines)
 
 
-__all__ = ["COLUMNS", "render_plan"]
+__all__ = ["COLUMNS", "plan_rows", "render_plan"]

@@ -888,3 +888,29 @@ async def test_plan_apply_description_says_unallocated_is_not_advice(server):
     tool = next(tool for tool in await server.list_tools() if tool.name == "plan_apply")
 
     assert "unallocated" in (tool.description or "")
+
+
+async def test_plan_apply_returns_the_resolved_rows_as_data_beside_the_table(built):
+    """The table is for the model; a host showing a person needs the rows.
+
+    Until this, `rendered` was the only form of the schedule that crossed the
+    boundary, so a Slack card could only echo the handle table or parse it
+    back. The rows are the same resolution the table is built from.
+    """
+    server, _service = built
+    read = await server.call_tool("plan_read", {"calendar_id": "primary", "day": DAY})
+    payload = json.loads(_text(read))
+    result = await server.call_tool(
+        "plan_apply",
+        {
+            "snapshot": payload["snapshot"],
+            "patch": {"ops": [{"op": "update", "h": "PR1", "n": "Renamed"}]},
+        },
+    )
+    body = json.loads(_text(result))
+    assert body["ok"] is True
+    rows = body["rows"]
+    assert [r["h"] for r in rows] == ["PR1"]
+    assert rows[0]["summary"] == "Renamed"
+    assert rows[0]["own"] == "tmbx"
+    assert rows[0]["start"] and rows[0]["end"]

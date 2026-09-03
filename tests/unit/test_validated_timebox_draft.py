@@ -129,3 +129,28 @@ def test_failed_later_preview_invalidates_exported_candidate(tmp_path):
 
 def test_candidate_output_env_name_is_stable_for_the_profile():
     assert CANDIDATE_OUTPUT_FILE_ENV == "FF_DSH_CANDIDATE_OUTPUT_FILE"
+
+
+def _apply_event_with_rows(*, day: str = "2026-08-27") -> dict:
+    event = _apply_event(committable=True, day=day)
+    response = json.loads(event["tool_response"])
+    response["rows"] = [
+        {
+            "h": "deep-work", "own": "tmbx", "type": "DW", "summary": "Deep work",
+            "start": "09:00", "end": "11:00", "mode": "fs", "dur": "PT2H",
+        }
+    ]
+    event["tool_response"] = json.dumps(response)
+    return event
+
+
+def test_committable_preview_exports_the_resolved_rows_beside_the_table(tmp_path):
+    """The card that shows the candidate renders people a schedule, not a
+    handle table, and it can only do that from the rows."""
+    state = tmp_path / "state.json"
+    out = tmp_path / "candidate.json"
+    record_validation_result(_apply_event_with_rows(), str(state), str(out))
+    exported = json.loads(out.read_text())
+    assert exported["rows"][0]["summary"] == "Deep work"
+    assert exported["rows"][0]["start"] == "09:00"
+    assert exported["rendered"] == "09:00-11:00 Deep work"
