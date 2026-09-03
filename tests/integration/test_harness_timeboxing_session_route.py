@@ -1089,9 +1089,10 @@ async def test_an_open_question_is_asked_without_a_button_row(
     """The one thing the user is ever asked cannot be enumerated.
 
     `skeleton.requested_activity` is the catalog's only USER-owned `ask`, and
-    what somebody wants out of their day has no closed answer set. A button row
-    here would be a worse question, not a faster one, so its absence is
-    asserted rather than left to taste.
+    what somebody wants out of their day has no closed answer set. A row of
+    option buttons here would be a worse question, not a faster one, so its
+    absence is asserted rather than left to taste -- the nav row (Back,
+    Cancel) is a different thing and may still be drawn.
     """
 
     planner = RecordedPlanner()
@@ -1113,9 +1114,11 @@ async def test_an_open_question_is_asked_without_a_button_row(
     # being asked.
     assert "skeleton.requested_activity" not in text
     assert [
-        block
+        element.get("action_id")
         for block in asked.get("blocks") or ()
         if block.get("type") == "actions"
+        for element in block.get("elements") or ()
+        if element.get("action_id") == handlers.FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID
     ] == []
 
 
