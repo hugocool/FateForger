@@ -41,9 +41,12 @@ from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     ApproveArtifact,
     ArtifactKind,
+    Cancelled,
+    ConfirmPlanningDay,
     DayType,
     PlanningSessionSnapshot,
     TimeboxIntent,
+    TurnFailed,
 )
 from fateforger.core.config import settings
 from fateforger.core.logging_config import observe_stage_duration, record_error
@@ -93,6 +96,8 @@ from fateforger.slack_bot.progress_events import (
     ProgressStatus as TimeboxProgressStatus,
 )
 from fateforger.slack_bot.reply_guard import agent_reply_text
+from fateforger.slack_bot.stage_card_registry import StageCardRegistry, receipt_label
+from fateforger.slack_bot.stage_cards import date_stage_card
 from fateforger.slack_bot.task_cards import (
     FF_TASK_DETAILS_ACTION_ID,
     FF_TASK_EDIT_MODAL_CALLBACK_ID,
@@ -103,6 +108,7 @@ from fateforger.slack_bot.timeboxing_cards import (
     FF_HARNESS_APPROVE_ACTION_ID,
     FF_HARNESS_UNDO_ACTION_ID,
     FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
+    FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID,
     FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
     FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
     FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID,
@@ -113,7 +119,7 @@ from fateforger.slack_bot.timeboxing_cards import (
     harness_approve_block,
     harness_undo_block,
     present_outcome,
-    render_outcome,
+    render_stage_card,
     timebox_failure_message,
 )
 from fateforger.slack_bot.timeboxing_commit import (
@@ -121,7 +127,6 @@ from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
     TimeboxCommitMeta,
     TimeboxingCommitCoordinator,
-    build_timebox_date_card,
     day_type_action_id,
     format_relative_day_label,
 )
@@ -1109,6 +1114,9 @@ _TIMEBOX_STALE_CHOICE_TEXT = TIMEBOX_STALE_CHOICE_TEXT
 #: it would touch every renderer for one boolean that only this path reads.
 _pending_candidates = PendingTimeboxCandidates()
 
+#: The card each session is currently showing, so the next turn can close it.
+_stage_cards = StageCardRegistry()
+
 
 def take_pending_approval(thread_key: str) -> str | None:
     """Return the opaque id of the exact candidate awaiting approval.
@@ -1616,16 +1624,75 @@ async def _run_adaptive_timebox_turn(
     finally:
         await progress_card.close()
 
-    return render_outcome(
-        outcome,
-        pending=_pending_candidates,
-        snapshot=current,
+    try:
+        message, card = present_outcome(
+            outcome,
+            pending=_pending_candidates,
+            snapshot=current,
+            session_key=session_key,
+            actor_user_id=actor_user_id,
+            channel_id=card_channel,
+            thread_ts=card_thread_ts,
+            logger=logger,
+        )
+    except Exception as exc:  # noqa: BLE001 - a stored artifact the mapper refuses
+        # The turn is saved; only its picture failed. A skeleton whose payload
+        # is not a `SkeletonPayload` lands here (Task 1 refuses new ones at
+        # submit, but a store older than that contract can still hold one).
+        logger.error(
+            "adaptive timeboxing outcome could not be presented session_key=%s "
+            "revision=%s error_type=%s error=%s",
+            session_key,
+            current.revision,
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        return timebox_failure_message(snapshot=current)
+
+    # Close the card the user just acted on, then register this one. A failed
+    # turn keeps the previous card live: its Retry is the way back.
+    previous = _stage_cards.shown(session_key)
+    if isinstance(outcome, TurnFailed):
+        done = None
+    elif isinstance(outcome, Cancelled):
+        done = "🚫 cancelled"
+    elif previous is not None:
+        done = receipt_label(intent, previous.card)
+    else:
+        done = None
+    await _stage_cards.transition(
+        client,
         session_key=session_key,
-        actor_user_id=actor_user_id,
-        channel_id=card_channel,
-        thread_ts=card_thread_ts,
+        done=done,
+        new_card=card,
+        channel=progress_channel,
+        ts=progress_ts,
         logger=logger,
     )
+
+    # A typed day change never relabelled the root; only the button path did
+    # (#265). One place now, for both, over the day the kernel accepted.
+    if (
+        isinstance(intent, ConfirmPlanningDay)
+        and not isinstance(outcome, TurnFailed)
+        and card_thread_ts
+        and card_thread_ts not in ("dm", progress_ts)
+    ):
+        label = format_relative_day_label(
+            planned_date=intent.planning_day.date.isoformat(),
+            tz_name=intent.planning_day.timezone,
+        )
+        try:
+            await client.chat_update(
+                channel=card_channel,
+                ts=card_thread_ts,
+                text=f":large_blue_circle: Timeboxing session for {label}",
+            )
+        except Exception:
+            logger.debug("could not relabel the session thread root", exc_info=True)
+
+    return message
 
 
 async def _deliver_timebox_turn(
@@ -1734,16 +1801,6 @@ async def _handle_timebox_date_confirmation(
         thread_ts=meta.thread_ts,
         action=envelope,
     )
-
-    if meta.thread_ts and meta.thread_ts != "dm":
-        try:
-            await client.chat_update(
-                channel=meta.channel_id,
-                ts=meta.thread_ts,
-                text=f":large_blue_circle: Timeboxing session for {display_day}",
-            )
-        except Exception:
-            logger.debug("could not relabel the session thread root", exc_info=True)
 
 
 def _card_interaction_id(action: dict, action_id: str, fallback_ts: str) -> str:
@@ -1864,7 +1921,7 @@ async def _handle_timebox_date_reselect(
         logger.warning("timebox day selection carried an unusable date")
         return
 
-    card = build_timebox_date_card(
+    stage_card = date_stage_card(
         session_key=reselected.session_key,
         expected_revision=reselected.expected_revision,
         user_id=reselected.user_id,
@@ -1873,11 +1930,17 @@ async def _handle_timebox_date_reselect(
         planned_date=reselected.date,
         tz_name=reselected.tz,
     )
+    card = render_stage_card(stage_card)
     await client.chat_update(
         channel=prompt_channel_id,
         ts=prompt_ts,
         text=card.text,
         blocks=card.blocks,
+    )
+    # The redraw is the card the user now sees, so it is the one the next
+    # receipt has to be drawn from.
+    _stage_cards.remember(
+        reselected.session_key, channel=prompt_channel_id, ts=prompt_ts, card=stage_card
     )
 
     label = format_relative_day_label(

@@ -54,7 +54,6 @@ async def test_the_live_turn_marks_the_user_active(monkeypatch) -> None:
     monkeypatch.setattr(handlers, "derive_timebox_intent",
                         lambda *a, **k: _noop_intent())
     monkeypatch.setattr(handlers, "HarnessProgressCard", _StubCard)
-    monkeypatch.setattr(handlers, "render_outcome", lambda *a, **k: "rendered")
     monkeypatch.setattr(handlers, "present_outcome", lambda *a, **k: ("rendered", None))
 
     timeboxing_activity.mark_inactive(user_id="U1")
@@ -127,7 +126,6 @@ async def test_a_finished_session_stops_suppressing(monkeypatch) -> None:
     monkeypatch.setattr(handlers, "_timeboxing_kernel", lambda *a, **k: Kernel())
     monkeypatch.setattr(handlers, "derive_timebox_intent", lambda *a, **k: _noop_intent())
     monkeypatch.setattr(handlers, "HarnessProgressCard", _StubCard)
-    monkeypatch.setattr(handlers, "render_outcome", lambda *a, **k: "rendered")
     monkeypatch.setattr(handlers, "present_outcome", lambda *a, **k: ("rendered", None))
 
     await handlers._run_adaptive_timebox_turn(
