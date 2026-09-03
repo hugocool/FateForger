@@ -2528,7 +2528,9 @@ async def route_slack_event(
                 except Exception:
                     logger.exception("session lookup failed for %s", session_key)
                     session = None
-                if session is not None and session.status != "cancelled":
+                # `open | committed | cancelled`: only an open session is
+                # still running. Committed or cancelled, the session is over.
+                if session is not None and session.status == "open":
                     try:
                         focus.set_focus(
                             origin_key, "timeboxing_agent", by_user=user, note="surface"
