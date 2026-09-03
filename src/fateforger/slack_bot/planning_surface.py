@@ -148,6 +148,10 @@ def describe(draft: EventDraftPayload) -> str:
     ]
     if controls:
         lines.append("Controls on the card: " + "; ".join(controls) + ".")
+    if draft.status is DraftStatus.SUCCESS and draft.event_url:
+        # "Where did it end up?" is the question an added card gets, and the
+        # agent answering it can only hand over a link it was given.
+        lines.append(f"Calendar link: {draft.event_url}")
     return "\n".join(lines)
 
 

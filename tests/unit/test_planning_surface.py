@@ -20,7 +20,9 @@ from fateforger.slack_bot.planning_surface import (
 from fateforger.slack_bot.surface_intents import CHOOSE_OPTION, narrow_schema
 
 
-def _draft(status: DraftStatus = DraftStatus.DRAFT) -> EventDraftPayload:
+def _draft(
+    status: DraftStatus = DraftStatus.DRAFT, event_url: str | None = None
+) -> EventDraftPayload:
     return EventDraftPayload(
         draft_id="draft_abc",
         user_id="U1",
@@ -34,7 +36,7 @@ def _draft(status: DraftStatus = DraftStatus.DRAFT) -> EventDraftPayload:
         start_at_utc=datetime(2026, 9, 3, 8, 38, tzinfo=timezone.utc).isoformat(),
         duration_min=30,
         status=status,
-        event_url=None,
+        event_url=event_url,
         last_error=None,
     )
 
@@ -144,3 +146,15 @@ def test_a_settled_cards_schema_cannot_express_a_time_decision(status: DraftStat
 @pytest.mark.parametrize("status", [DraftStatus.DRAFT, DraftStatus.FAILURE])
 def test_a_live_card_keeps_the_full_turn_schema(status: DraftStatus) -> None:
     assert schema_for(_draft(status)) is InterpretedPlanningTurn
+
+
+def test_an_added_card_describes_its_calendar_link() -> None:
+    # The routed agent is the one asked "where did it go?"; without the link
+    # it has to answer that it cannot say.
+    text = describe(_draft(DraftStatus.SUCCESS, event_url="https://cal.example/e/1"))
+
+    assert "Calendar link: https://cal.example/e/1" in text
+
+
+def test_a_draft_has_no_calendar_link_to_describe() -> None:
+    assert "Calendar link" not in describe(_draft())
