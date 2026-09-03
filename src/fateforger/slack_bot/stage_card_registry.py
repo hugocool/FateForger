@@ -15,10 +15,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fateforger.agents.timeboxing.session_contracts import GoBack, TimeboxIntent
+from fateforger.agents.timeboxing.session_contracts import (
+    ConfirmPlanningDay,
+    GoBack,
+    TimeboxIntent,
+)
 
 from .stage_cards import StageCard
 from .timeboxing_cards import render_stage_card
+from .timeboxing_commit import format_relative_day_label
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +38,15 @@ def receipt_label(intent: TimeboxIntent, previous: StageCard) -> str:
 
     if isinstance(intent, GoBack):
         return "↩️ reopened"
+    if isinstance(intent, ConfirmPlanningDay):
+        # The date card's body is the day it offered. A typed change accepts
+        # a different one, and the card as shown is never re-derived, so the
+        # accepted day has to be written where the receipt goes.
+        day = intent.planning_day
+        label = format_relative_day_label(
+            planned_date=day.date.isoformat(), tz_name=day.timezone
+        )
+        return f"✅ {label} — {day.day_type.value} day"
     if previous.asking is not None:
         return "answered"
     return "✅ confirmed"

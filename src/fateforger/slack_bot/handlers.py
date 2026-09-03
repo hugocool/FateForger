@@ -1538,6 +1538,7 @@ async def _run_adaptive_timebox_turn(
     user_text: str = "",
     action: TimeboxActionEnvelope | None = None,
     candidate_id: str | None = None,
+    focus: FocusManager | None = None,
 ) -> SlackBlockMessage:
     """Carry one Slack turn through the planning-session kernel.
 
@@ -1695,11 +1696,27 @@ async def _run_adaptive_timebox_turn(
             planned_date=intent.planning_day.date.isoformat(),
             tz_name=intent.planning_day.timezone,
         )
+        title = f"Timeboxing session for {label}"
+        # The message route redraws the root from the focus label at the end
+        # of every turn (`_maybe_update_timeboxing_thread_constraints`), so a
+        # relabel that only wrote Slack text was overwritten with the day
+        # the session *opened* on, milliseconds later. The label is the
+        # source; the write below is the same text, drawn now.
+        if focus is not None:
+            focus.set_thread_label(
+                session_key,
+                title=title,
+                request_excerpt=None,
+                state="in_progress",
+                by_user=actor_user_id,
+            )
         try:
             await client.chat_update(
                 channel=card_channel,
                 ts=card_thread_ts,
-                text=f":large_blue_circle: Timeboxing session for {label}",
+                text=_timeboxing_thread_root_text(
+                    title=title, request_excerpt=None, state="in_progress"
+                ),
             )
         except Exception:
             logger.debug("could not relabel the session thread root", exc_info=True)
@@ -1719,6 +1736,7 @@ async def _deliver_timebox_turn(
     thread_ts: str,
     action: TimeboxActionEnvelope,
     candidate_id: str | None = None,
+    focus: FocusManager | None = None,
 ) -> None:
     """Run one card-driven turn in the session thread and show its result.
 
@@ -1748,6 +1766,7 @@ async def _deliver_timebox_turn(
         card_thread_ts=thread_ts,
         action=action,
         candidate_id=candidate_id,
+        focus=focus,
     )
     payload = _compact_slack_payload(text=message.text, blocks=message.blocks)
     update: dict = {
@@ -1770,6 +1789,7 @@ async def _handle_timebox_date_confirmation(
     prompt_ts: str,
     actor_user_id: str | None,
     interaction_id: str,
+    focus: FocusManager | None = None,
 ) -> None:
     """Lock the planning day the user picked, through the session kernel.
 
@@ -1812,6 +1832,7 @@ async def _handle_timebox_date_confirmation(
         channel_id=meta.channel_id,
         thread_ts=meta.thread_ts,
         action=envelope,
+        focus=focus,
     )
 
 
@@ -2649,6 +2670,7 @@ async def route_slack_event(
                         card_channel=target_channel,
                         card_thread_ts=root_ts,
                         user_text=cleaned_text,
+                        focus=focus,
                     )
                 else:
                     handoff_msg = _build_agent_message(
@@ -3015,6 +3037,7 @@ async def route_slack_event(
                     or origin_processing_msg["ts"]
                 ),
                 user_text=cleaned_text,
+                focus=focus,
             )
         else:
             result = await runtime.send_message(
@@ -4238,6 +4261,7 @@ def register_handlers(
             prompt_ts=message_ts,
             actor_user_id=actor_user_id,
             interaction_id=str(action.get("action_ts") or message_ts),
+            focus=focus,
         )
 
     # One registration per button: Slack refuses a message whose interactive
@@ -4272,6 +4296,7 @@ def register_handlers(
             prompt_ts=message_ts,
             actor_user_id=actor_user_id,
             interaction_id=str(action.get("action_ts") or message_ts),
+            focus=focus,
         )
 
     async def _on_timebox_artifact_action(ack, body, client, logger):

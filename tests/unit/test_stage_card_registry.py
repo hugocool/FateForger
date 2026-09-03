@@ -159,3 +159,23 @@ def test_receipt_labels_come_from_the_intent_and_the_card() -> None:
     assert receipt_label(GoBack(), _card(3)) == "↩️ reopened"
     assert receipt_label(Advance(), asked) == "answered"
     assert receipt_label(Advance(), _card(3)) == "✅ confirmed"
+
+
+def test_a_confirmed_day_receipt_names_the_day_that_was_accepted() -> None:
+    """The date card's body is the day it *offered*; a typed change accepts a
+    different one. The receipt is the only place the accepted day is written
+    down on that card (#265)."""
+    from datetime import date
+
+    from fateforger.agents.timeboxing.session_contracts import (
+        ConfirmPlanningDay,
+        PlanningDay,
+    )
+
+    friday = PlanningDay.lock_default(
+        value=date(2026, 9, 4), timezone="Europe/Amsterdam", lock_revision=2
+    )
+    label = receipt_label(ConfirmPlanningDay(planning_day=friday), _card(1))
+    assert label.startswith("✅ ")
+    assert "4 September" in label
+    assert "working day" in label
