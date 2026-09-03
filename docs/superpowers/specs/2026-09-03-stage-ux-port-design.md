@@ -117,9 +117,10 @@ Three units, each answerable in one sentence:
   and kernel intents only.
 
 The kernel stays the authority on which stage a session is in (`_derive_target`,
-`adaptive_timeboxing.py`) and which intents it accepts at a revision. It gains one capability:
-a real `GoBack`. Today `GoBack` and `ReviseArtifact` return
-`TurnFailed(code="unsupported_intent")` ([adaptive_timeboxing.py:721](../../../src/fateforger/agents/timeboxing/adaptive_timeboxing.py#L721)).
+`adaptive_timeboxing.py`) and which intents it accepts at a revision. Increment A gave it one
+new capability: a real `GoBack` (`_go_back`, `adaptive_timeboxing.py`). `ReviseArtifact` still
+returns `TurnFailed(code="unsupported_intent")` from `_apply_intent`; it is the stage-4 loop's
+concern and already ticketed elsewhere.
 
 ### Components
 
@@ -147,10 +148,13 @@ StageCard     stage: StageLine
 `StageCard.as_receipt(done: str)` returns a copy with `controls=[]`, `asking=None`, `done`
 set. A receipt is the same model through the same renderer; there is no second card type.
 
-Stage index is a fixed table from `ArtifactKind`:
-`planning_day`, `day_frame`, `captured_inputs` → 1; `skeleton` → 3; `validated_candidate` → 4;
-`commit_receipt` → 5. Stage 2 in increment A is a view over `captured_inputs` (see
-*Increments*); the table gains a `priorities` kind when that artifact exists.
+Increment A derives the stage from the turn outcome: `AwaitingApproval(planning_day)` → 1;
+`AwaitingUser` → 1 when the pending blocker is a `DAY_FRAME` fact, otherwise 2; a skeleton → 3; a
+candidate → 4; `Committed` → 5. Requirement ids and the readiness ladder are not renamed in A.
+The kernel never mints a `day_frame` or `captured_inputs` artifact to read the stage from
+(`_derive_target`, `adaptive_timeboxing.py`, ladders `SKELETON → VALIDATED_CANDIDATE →
+COMMIT_RECEIPT` once the planning-day gate has passed); a `priorities` kind and a `day_frame`
+reading of the calendar are B's work (see *Increments*).
 
 `ref` on a `DecidedItem` is the assumption's or fact's own identifier (system-minted) so a
 steer press names it exactly, never by text.
@@ -158,27 +162,37 @@ steer press names it exactly, never by text.
 #### Payload models (`session_contracts.py`)
 
 `DayFramePayload`, `CapturedInputsPayload`, `SkeletonPayload`, `CandidatePayload`,
-`ReceiptPayload`. The planner instruction prompt imports their JSON schema rather than restating
-it (#158, import-not-copy). Every mapper validates `artifact.payload` into its model **before**
-reading a field. This is the root fix for #267: a skeleton payload that carries `blocks` and no
-`markdown` fails validation loudly instead of rendering an empty card.
+`ReceiptPayload` were the target set; only `SkeletonPayload` is typed in A. `_planning_obligation`
+(`harness_bridge.py`) hand-writes the skeleton shape into the brief as prose when the target
+artifact is a skeleton — a restatement, not an imported schema; wiring the prompt to
+`SkeletonPayload.model_json_schema()` so the two cannot drift (#158, import-not-copy) is still
+open. Every mapper validates `artifact.payload` into its model **before** reading a field. This
+is the root fix for #267: a skeleton payload that carries `blocks` and no `markdown` fails
+validation loudly instead of rendering an empty card.
 
 `SkeletonPayload` carries `markdown: str` (the `# anchor` / `-` outline) and `reasoning: str`
 (the "talks it back" paragraph). No `blocks` field; blocks are the renderer's business.
 
-`CapturedInputsPayload` carries `open_questions: list[str]` so a planner that asks something has
-somewhere to put it (#259). The mapper surfaces them in `asking` — as a free-text
-`PendingBlocker` when there is exactly one, otherwise as a context item prefixed by the
-planner so the user can answer in prose.
+The candidate payload stays free-form at submit because the host attaches
+`rendered`/`snapshot`/`patch`/`digest` after the model returns (`_with_commit_basis`,
+`deepseek_timebox_planner.py:231`); typing it is B's work, once the host-attached commit basis
+has a home of its own.
+
+`CapturedInputsPayload.open_questions` (#259) is deferred to B along with the `priorities`
+artifact: the kernel mints no `captured_inputs` artifact in A, so there is nothing to carry them
+on. In A, a planner's open question surfaces the same way any user-owned question does — as the
+turn's `AwaitingUser` outcome, mapped straight to the card's `asking` field.
 
 #### Mappers (`slack_bot/stage_cards.py`)
 
 One function per kind, `map_<kind>(outcome, snapshot) -> StageCard`, plus a dispatch
 `map_outcome(outcome, snapshot) -> StageCard`. Rules every mapper follows:
 
-- `context` is built from the snapshot, not the artifact: `applicable_constraints`,
-  `calendar_snapshot`, and the `DAY_FRAME` fact. The artifact is the planner's output; the
-  snapshot is what the planner was *given*. Showing the latter is what #262 and #260 ask for.
+- `context` is built from the snapshot, not the artifact — but in A the only snapshot-derived
+  context is the skeleton card's `reasoning` line. `applicable_constraints`, `calendar_snapshot`,
+  and the `DAY_FRAME` fact feeding `context` on every card is B's work (stage 1 depth, #262,
+  #260). The artifact is the planner's output; the snapshot is what the planner was *given*;
+  showing the latter is what #262 and #260 ask for, once B wires it in.
 - `decided` lists every `PlannerAssumption` not yet invalidated plus every user-supplied
   `PlanningFact` that bears on this stage.
 - `controls` is computed from `(kind, snapshot.pending_blocker, snapshot.approvals)`:
@@ -195,8 +209,10 @@ section (buttons when `options` non-empty, otherwise a prompt naming the require
 actions block from `controls` encoded with the existing `artifact_action_value`. A receipt
 renders `done` in place of the actions block and drops `asking`.
 
-`render_outcome` keeps its `TurnFailed` / `Cancelled` / `Committed` branches; the
-`AwaitingUser` and `AwaitingApproval` branches become `render_stage_card(map_outcome(...))`.
+`present_outcome` is the one function that turns a `TurnOutcome` into a Slack message and the
+`StageCard` it was drawn from (`None` for the outcomes that are not stages). `render_outcome`
+remains as a façade over `present_outcome(...)[0]` for the one caller that only needs the
+message (`tests/unit/tmbx/test_commit_says_which_calendar.py`).
 `render_date_card`, `render_skeleton`, `render_candidate`, `render_question` are deleted.
 
 Length guard: context and decided sections truncate by *item count* with a trailing
@@ -222,11 +238,14 @@ The harness path stores no message ts for its cards; only the legacy proposal pa
 
 #### Kernel: `GoBack`
 
-`GoBack` withdraws the approval of the most recently approved artifact, runs the existing
-`_invalidate` on its dependents (`readiness._DIRECT_DEPENDENTS`), clears any
-`pending_blocker`, and returns `AwaitingApproval` for the reopened artifact. With nothing
-approved it returns `TurnFailed(code="nothing_to_go_back_to")`. `ReviseArtifact` remains as it
-is; it is the stage-4 loop's concern and already ticketed elsewhere.
+`GoBack` (`_go_back`, `adaptive_timeboxing.py`) is the ladder as built, top match wins, never
+past a commit: committed → `TurnFailed(code="session_committed")`; a candidate exists →
+invalidate the skeleton (the run loop re-presents it); a skeleton exists → invalidate captured
+inputs and re-ask `skeleton.requested_activity`; the planning day is set → clear it (the
+planning-day gate re-presents the existing day artifact); nothing of the above →
+`TurnFailed(code="nothing_to_go_back_to")`. Facts are kept throughout — back is not forget.
+`ReviseArtifact` remains as it is; it is the stage-4 loop's concern and already ticketed
+elsewhere.
 
 #### Steering facts (increment B)
 
@@ -261,7 +280,7 @@ is relabelled by the existing root-relabel path.
 
 | Case | Behaviour |
 |---|---|
-| Stale press (revision mismatch) | Refused by the envelope as today; the refusal names the stage: "this 3/5 card is out of date — the live one is below." |
+| Stale press (revision mismatch) | Refused with the existing generic copy (`TIMEBOX_FAILURE_TEXTS`, `timeboxing_cards.py`); A does not name the stage in the refusal — that needs the failure card to know the stage, which is B's work alongside the steer controls. |
 | Payload fails validation | `ValidationError` logged at error with artifact id and kind; the failure card is rendered. Never a blank card. |
 | `chat_update` of the receipt fails | Logged; the new card is still posted. A live card is never held hostage by a cosmetic edit. |
 | Back on stage 1 / while a blocker is open | Control not drawn. If the intent arrives anyway (typed), kernel returns `TurnFailed(code="nothing_to_go_back_to")` and the host renders it. |
@@ -288,8 +307,10 @@ Unit tests opt in to the harness backend the way `test_timebox_session_surface.p
   validation (#267 regression).
 - **AST guard** — `stage_cards.py` imports nothing from `slack_sdk` and nothing under
   `fateforger.slack_bot` except its own models.
-- **E2e** — `tests/e2e/test_slack_timebox_command.py` extended: walk all five stages, press
-  Back once, assert the receipt edit and the re-posted card.
+- **E2e** — the five-stage walk is covered in A by `tests/replay` and
+  `tests/unit/test_stage_receipts_in_the_turn.py`. The e2e walk with a Back press, extending
+  `tests/e2e/test_slack_timebox_command.py` to assert the receipt edit and the re-posted card,
+  lands with B, when stage 2 is a real card rather than a question.
 
 No eval tests: nothing here asks a model a new question. Stage-2 prompt work (B) will need
 them and says so in its own plan.
@@ -297,10 +318,11 @@ them and says so in its own plan.
 ### Increments
 
 **A — breadth.** Resolves #264, #265, #267.
-`StageCard`, renderer, mappers for all kinds, receipts, `GoBack` in the kernel, payload
-models, card registry, control-table `back`. Stage 2 renders from `captured_inputs` as a thin
-"2/5 Priorities" card: `decided` = requested activities, an empty "from your board" section,
-Proceed/Back/Cancel. No drill-down yet.
+`StageCard`, renderer, mappers for all kinds, receipts, `GoBack` in the kernel, `SkeletonPayload`,
+card registry, control-table `back`. Stage 2 is a thin "2/5 Priorities" card built straight from
+the `AwaitingUser` turn outcome, not from a `captured_inputs` artifact the kernel does not mint:
+`decided` = requested activities, an empty "from your board" section, Proceed/Back/Cancel. No
+drill-down yet.
 
 **B — depth.** Stage 1 first (#262, #260): context section fed from `applicable_constraints`
 and `calendar_snapshot`, per-item steer controls, the "this day / always" blocker, the
@@ -308,6 +330,11 @@ evocation prompt. Then stage 2 (#261, #259, #263): a `priorities` artifact, the 
 question, one thing + two conditional, AVBD check, windowed/floating.
 
 Each increment is its own implementation plan.
+
+## Open questions
+
+- A `captured_inputs` gate — refusing to plan the skeleton until stage 2 has been shown — is
+  deferred to B.
 
 ## Out of scope
 
@@ -320,9 +347,12 @@ Each increment is its own implementation plan.
 ## Files
 
 New: `src/fateforger/slack_bot/stage_cards.py`, `src/fateforger/slack_bot/stage_card_registry.py`,
-`tests/unit/test_stage_cards.py`, `tests/unit/test_stage_card_registry.py`,
-`tests/unit/test_kernel_go_back.py`.
-Changed: `session_contracts.py` (payload models, `FactKind`), `adaptive_timeboxing.py`
-(`GoBack`), `timeboxing_cards.py` (`render_stage_card`, `render_outcome`), `timeboxing_intents.py`
-(control table), `handlers.py` (transition step), planner instructions (schema import).
+`tests/unit/test_stage_cards.py`, `tests/unit/test_render_stage_card.py`,
+`tests/unit/test_stage_card_registry.py`, `tests/unit/test_stage_receipts_in_the_turn.py`,
+`tests/unit/test_back_press_reaches_the_kernel.py`. `GoBack`'s kernel tests were appended to the
+existing `tests/unit/test_adaptive_timeboxing.py` rather than a new file.
+Changed: `session_contracts.py` (`SkeletonPayload`), `adaptive_timeboxing.py`
+(`GoBack`/`_go_back`), `timeboxing_cards.py` (`render_stage_card`, `present_outcome`,
+`render_outcome`), `timeboxing_intents.py` (control table), `handlers.py` (transition step),
+`harness_bridge.py` (`_planning_obligation` states the skeleton payload shape in the brief).
 Deleted: `render_date_card`, `render_skeleton`, `render_candidate`, `render_question`.
