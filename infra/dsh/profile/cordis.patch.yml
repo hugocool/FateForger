@@ -294,8 +294,8 @@
         cwd: !!js process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1'
         env:
           PYTHONPATH: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/src'
-          FF_DSH_PROGRESS_FILE: !!js process.env.FF_DSH_PROGRESS_FILE
-          FF_DSH_SESSION_KEY: !!js process.env.FF_DSH_SESSION_KEY
+          FF_DSH_PROGRESS_FILE: !!js process.env.FF_DSH_PROGRESS_FILE || ''
+          FF_DSH_SESSION_KEY: !!js process.env.FF_DSH_SESSION_KEY || ''
         toolCallTimeoutMs: 5000
         failOnStartupError: true
 
@@ -333,7 +333,7 @@
         cwd: !!js process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1'
         env:
           PYTHONPATH: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/src'
-          FF_DSH_PLANNING_RESULT_FILE: !!js process.env.FF_DSH_PLANNING_RESULT_FILE
+          FF_DSH_PLANNING_RESULT_FILE: !!js process.env.FF_DSH_PLANNING_RESULT_FILE || ''
         toolCallTimeoutMs: 5000
         failOnStartupError: true
 
