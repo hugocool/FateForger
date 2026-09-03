@@ -2513,6 +2513,12 @@ async def route_slack_event(
                     pass
 
     cleaned_text = _strip_bot_mention(text, bot_user_id)
+    # The seam below may prefix `cleaned_text` with card context meant for
+    # whichever agent answers. `user_reply_text` stays the user's own words,
+    # for the one place downstream that quotes the message back to a human
+    # (the handoff "Incoming request" root) -- that quote must never grow
+    # interpreter prose the user never typed.
+    user_reply_text = cleaned_text
     # Post the "thinking" message with the active agent persona, so the eventual reply
     # (via chat.update) keeps the correct name/icon.
     # `instant_ack` replies under a top-level app mention. Its own `ts` is
@@ -3163,7 +3169,7 @@ async def route_slack_event(
                     "channel": target_channel,
                     "text": (
                         f"Incoming request from <@{user}> (requested in {_origin_label(event)}):\n"
-                        f"> {cleaned_text}"
+                        f"> {user_reply_text}"
                     ),
                 }
                 root_payload.update(_persona_payload(persona))

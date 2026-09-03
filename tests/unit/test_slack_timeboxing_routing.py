@@ -428,3 +428,60 @@ async def test_a_thread_that_is_no_surface_routes_as_before():
     assert len(runtime.calls) == 1
     assert runtime.calls[0][0].content == "hi"
     assert runtime.calls[0][1].type == "receptionist_agent"
+
+
+@pytest.mark.asyncio
+async def test_a_handoff_root_quotes_the_users_words_not_the_card_context(monkeypatch):
+    # NO_PRESS prefixes `cleaned_text` with the card's own description so the
+    # *agent* doesn't answer cold. That prefix must never leak into a message
+    # a human reads as if it were the user's own words -- confirmed site: the
+    # handoff "Incoming request" root posted to the target channel.
+    import fateforger.slack_bot.handlers as handlers_mod
+
+    focus = FocusManager(ttl_seconds=60, allowed_agents=["receptionist_agent", "planner_agent"])
+    runtime = _FakeRuntime(
+        [
+            _FakeResult(_FakeHandoffMessage("planner_agent")),
+            _FakeResult(TextMessage(content="ok", source="bot")),
+        ]
+    )
+    client = _FakeClient()
+    planning = _PlanningReplyHandler(
+        ThreadReply(ThreadReplyOutcome.NO_PRESS, context="CARD CONTEXT")
+    )
+    monkeypatch.setattr(
+        handlers_mod,
+        "_channel_for_agent",
+        lambda agent_type: "C2" if agent_type == "planner_agent" else None,
+    )
+
+    await route_slack_event(
+        runtime=runtime,
+        focus=focus,
+        default_agent="receptionist_agent",
+        event={
+            "channel": "C1",
+            "user": "U1",
+            "text": "why 10:38?",
+            "thread_ts": "root",
+            "ts": "999",
+        },
+        bot_user_id=None,
+        say=_unused_say,
+        client=client,
+        planning=planning,
+    )
+
+    # The agent-bound sends carry the card context.
+    assert len(runtime.calls) == 2
+    assert "CARD CONTEXT" in runtime.calls[0][0].content
+    assert "CARD CONTEXT" in runtime.calls[1][0].content
+
+    # The human-visible handoff root quotes the raw reply, never the context.
+    handoff_roots = [
+        p for p in client.posted if "Incoming request" in str(p.get("text") or "")
+    ]
+    assert len(handoff_roots) == 1
+    root_text = handoff_roots[0]["text"]
+    assert "why 10:38?" in root_text
+    assert "CARD CONTEXT" not in root_text
