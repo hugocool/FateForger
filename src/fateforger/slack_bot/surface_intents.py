@@ -110,8 +110,7 @@ GENERIC_PREAMBLE = """You interpret one user reply against a proposal the assist
 Return only the requested schema.
 Choose only a decision listed in allowed_decisions.
 When offered_options is present and the user picked one of them, answer with
-that option's option_id exactly as given. Accepting, confirming, or agreeing
-with the proposal as shown is picking its primary option.
+that option's option_id exactly as given.
 Never invent identifiers; the host owns identity.
 """
 

@@ -59,6 +59,8 @@ def schema_for(draft: EventDraftPayload) -> type[BaseModel]:
 
 
 PLANNING_PROMPT_FRAGMENT = """The proposal is a calendar event with a start time shown to the user.
+Accepting, confirming, or agreeing with the proposal as shown is picking its
+primary option.
 If the user names a clock time (17:00, 5pm, half past one), give it as
 selected_time in 24-hour HH:MM. Set selected_time only when they state one.
 Naming a new time is, by default, agreement to add the event at that
