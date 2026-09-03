@@ -4250,6 +4250,7 @@ def register_handlers(
         )
 
     app.action(FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID)(_on_timebox_artifact_action)
+    app.action(FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID)(_on_timebox_artifact_action)
     app.action(FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID)(_on_timebox_artifact_action)
     app.action(FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID)(_on_timebox_artifact_action)
     # An option press is the same envelope with a different decision in it, so

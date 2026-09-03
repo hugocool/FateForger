@@ -1393,6 +1393,7 @@ def _stamped_identity(action_id: str, value: str) -> tuple[str, int]:
         return meta.session_key, meta.expected_revision
     if action_id in (
         handlers.FF_TIMEBOX_ARTIFACT_APPROVE_ACTION_ID,
+        handlers.FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID,
         handlers.FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
         handlers.FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
         handlers.FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID,
