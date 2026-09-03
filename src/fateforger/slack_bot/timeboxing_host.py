@@ -150,15 +150,15 @@ class HostPlanningContext:
         target: ArtifactKind,
         progress,
     ) -> PlanningContext:
+        if target is ArtifactKind.SKELETON:
+            return await self._frame_from_corpus(snapshot)
         if target is not ArtifactKind.VALIDATED_CANDIDATE:
             # Stage 3 presents the skeleton. Reading the remote baseline here
             # would make the presentation stage touch the calendar, which is
             # exactly the boundary this route exists to hold.
             return PlanningContext()
 
-        planning_day = snapshot.planning_day
-        if planning_day is None:
-            raise AdaptiveDependencyUnavailable("the planning day is not locked")
+        planning_day = self._locked_day(snapshot)
         day = planning_day.date.isoformat()
 
         calendar_id = (
@@ -168,27 +168,74 @@ class HostPlanningContext:
             # An invented calendar id is how a plan lands on a calendar nobody
             # reads. Absence stays absence.
             raise AdaptiveDependencyUnavailable("no calendar is configured")
-        store = getattr(self._runtime, "timeboxing_constraint_store", None)
-        if store is None:
-            raise AdaptiveDependencyUnavailable("constraint memory is unavailable")
 
         from .tmbx_client import TmbxClient
 
         calendar_snapshot = await TmbxClient().read(calendar_id, day)
-        constraints = await store.query_constraints(
-            filters={
-                "planned_day": day,
-                "day_type": planning_day.day_type.value,
-                "require_active": True,
-            },
-            limit=200,
-        )
+        constraints = await self._active_constraints(planning_day)
         return PlanningContext(
             facts=planning_facts(
                 day=day, calendar_snapshot=calendar_snapshot, constraints=constraints
             ),
             applicable_constraints=constraints,
             calendar_snapshot=calendar_snapshot,
+        )
+
+    async def _frame_from_corpus(
+        self, snapshot: PlanningSessionSnapshot
+    ) -> PlanningContext:
+        """What memory already says about the day's sleep window, as a fact.
+
+        The skeleton stage still touches no calendar. It does read constraint
+        memory, because `skeleton.day_frame` is user-owned and the user may
+        already have stated it -- a bedtime rule on record answers the question
+        before it is put (#251). Whether a rule states a wake or sleep time is
+        a judgement about the rule's meaning, so `DayFrameJudge` asks a model.
+
+        A frame the user typed this session is left alone: nothing is fetched
+        and nothing is asked. Re-deriving it from the corpus could only agree
+        with them or contradict them, and neither is worth a call.
+        """
+
+        if any(fact.kind is FactKind.DAY_FRAME for fact in snapshot.facts):
+            return PlanningContext()
+        planning_day = self._locked_day(snapshot)
+        model_client = getattr(self._runtime, "timeboxing_intent_model_client", None)
+        if model_client is None:
+            # Not "no frame on record". A host that cannot judge must fail the
+            # turn, or a misconfigured client becomes indistinguishable from a
+            # corpus with no bedtime rule -- and that one asks the user every
+            # day, forever, quietly.
+            raise AdaptiveDependencyUnavailable("no model client for the frame judgement")
+        constraints = await self._active_constraints(planning_day)
+
+        from fateforger.agents.timeboxing.day_frame import DayFrameJudge
+
+        frame = await DayFrameJudge(model_client).frame_on_record(
+            day=planning_day,
+            constraints=constraints,
+            session_key=snapshot.session_key,
+        )
+        return PlanningContext(facts=[] if frame is None else [frame])
+
+    @staticmethod
+    def _locked_day(snapshot: PlanningSessionSnapshot) -> PlanningDay:
+        planning_day = snapshot.planning_day
+        if planning_day is None:
+            raise AdaptiveDependencyUnavailable("the planning day is not locked")
+        return planning_day
+
+    async def _active_constraints(self, planning_day: PlanningDay) -> Any:
+        store = getattr(self._runtime, "timeboxing_constraint_store", None)
+        if store is None:
+            raise AdaptiveDependencyUnavailable("constraint memory is unavailable")
+        return await store.query_constraints(
+            filters={
+                "planned_day": planning_day.date.isoformat(),
+                "day_type": planning_day.day_type.value,
+                "require_active": True,
+            },
+            limit=200,
         )
 
 

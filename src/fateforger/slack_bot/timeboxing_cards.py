@@ -153,8 +153,25 @@ SLACK_MAX_BUTTON_TEXT_CHARS = 75
 
 TIMEBOX_TURN_FAILED_TEXT = (
     ":warning: I could not carry that planning step through, and nothing "
-    "reached your calendar. Ask me where the session stands and we can pick "
-    "it up from there."
+    "reached your calendar. Say it again and I will retry."
+)
+
+#: The same failure, on a day that has already been written. On 2026-09-02 the
+#: sentence above went out ninety seconds after nineteen blocks had reached the
+#: calendar, and the one reassurance it made was the one that was false. Which
+#: of the two is shown is decided by the receipt in the session -- state this
+#: system wrote -- never by the message that failed.
+TIMEBOX_TURN_FAILED_AFTER_COMMIT_TEXT = (
+    ":warning: I could not carry that change through. The day you approved is "
+    "still on your calendar as it was committed; this change did not reach it. "
+    "Tell me again what to change and I will retry."
+)
+
+#: Refusing to cancel a day that is already on the calendar. A `cancelled`
+#: session over a written calendar would describe a day that does not exist.
+TIMEBOX_SESSION_COMMITTED_TEXT = (
+    "This day is already on your calendar, so I did not cancel anything. Tell "
+    "me what to change and I will revise it."
 )
 
 #: A press the kernel would not honour. `stale_blocker_choice` covers three
@@ -171,17 +188,46 @@ TIMEBOX_STALE_CHOICE_TEXT = (
 #: so choosing between them reads nothing anybody wrote. Anything absent gets
 #: the one stable sentence above, which is the right default: a message that
 #: guessed at a code it did not recognise would be confidently wrong.
-TIMEBOX_FAILURE_TEXTS = {"stale_blocker_choice": TIMEBOX_STALE_CHOICE_TEXT}
+TIMEBOX_FAILURE_TEXTS = {
+    "stale_blocker_choice": TIMEBOX_STALE_CHOICE_TEXT,
+    "session_committed": TIMEBOX_SESSION_COMMITTED_TEXT,
+}
 
-def timebox_failure_message(code: str | None = None) -> SlackBlockMessage:
+
+def _has_committed(snapshot: PlanningSessionSnapshot | None) -> bool:
+    """Whether anything this session did has reached the calendar.
+
+    The receipt, not the status: a session reopened for a revision is `open`
+    again and its first commit is no less on the calendar for it.
+    """
+
+    if snapshot is None:
+        return False
+    return any(
+        artifact.kind is ArtifactKind.COMMIT_RECEIPT
+        and isinstance(artifact.payload, dict)
+        and artifact.payload.get("committed") is True
+        for artifact in snapshot.artifacts
+    )
+
+
+def timebox_failure_message(
+    code: str | None = None, *, snapshot: PlanningSessionSnapshot | None = None
+) -> SlackBlockMessage:
     """One stable sentence, with the detail left where it belongs: the log.
 
     A provider payload pasted into a thread is unreadable and a leak at once,
     and the correlation fields are already on the log line beside this call.
     A refusal the user can act on gets its own sentence, chosen by the code the
-    kernel minted rather than by anything they wrote.
+    kernel minted rather than by anything they wrote. Which stable sentence is
+    chosen by what the session's receipts say about the calendar.
     """
-    text = TIMEBOX_FAILURE_TEXTS.get(code or "", TIMEBOX_TURN_FAILED_TEXT)
+    default = (
+        TIMEBOX_TURN_FAILED_AFTER_COMMIT_TEXT
+        if _has_committed(snapshot)
+        else TIMEBOX_TURN_FAILED_TEXT
+    )
+    text = TIMEBOX_FAILURE_TEXTS.get(code or "", default)
     return SlackBlockMessage(
         text=text,
         blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
@@ -412,6 +458,30 @@ def render_question(
     )
 
 
+def _empty_day_notice(snapshot: dict, patch: dict) -> str:
+    """Say so when the candidate builds a whole day onto an empty read.
+
+    On 2026-09-02 the read returned no blocks and the candidate added nineteen.
+    The journal agrees the day was empty, so the plan was probably right -- but
+    building an entire day from nothing is a decision, and the card presented
+    it as a refinement. Decided over what tmbx minted: the snapshot's
+    ``event_ids`` is every event the read saw, and each op's ``op`` is a
+    schema value. Nothing here reads a title (#251).
+    """
+
+    event_ids = snapshot.get("event_ids")
+    if not isinstance(event_ids, dict) or event_ids:
+        return ""
+    ops = patch.get("ops")
+    if not isinstance(ops, list) or not ops:
+        return ""
+    added = sum(1 for op in ops if isinstance(op, dict) and op.get("op") == "add")
+    return (
+        ":information_source: The calendar for this day was *empty* when this "
+        f"was drafted, so approving builds the whole day: {added} blocks added."
+    )
+
+
 def render_candidate(
     artifact: PlanningArtifact,
     *,
@@ -431,6 +501,9 @@ def render_candidate(
     calendar_id = owned.snapshot.get("calendar_id")
     day = owned.snapshot.get("day")
     text = owned.rendered or "A validated plan is ready for your approval."
+    notice = _empty_day_notice(owned.snapshot, owned.patch)
+    if notice:
+        text = f"{notice}\n\n{text}"
     return SlackBlockMessage(
         text=text[:SLACK_MAX_TEXT_CHARS],
         blocks=[
@@ -470,7 +543,7 @@ def render_failure(
     already cancelled or committed has nothing to advance, and a session owned
     by somebody else will refuse this actor for the same reason it just did.
     """
-    message = timebox_failure_message(code)
+    message = timebox_failure_message(code, snapshot=snapshot)
     if snapshot.status != "open" or snapshot.owner_user_id != actor_user_id:
         return message
     return SlackBlockMessage(

@@ -801,3 +801,259 @@ async def test_intent_call_is_named_for_the_token_counter() -> None:
     # The session key rides in the instance key, which is what lets the
     # observability path recover channel and thread for free.
     assert client.agent_id == f"timebox_intent_interpreter/{snapshot.session_key}"
+
+
+# --- A committed session still listens (#247) -----------------------------------
+
+
+def _committed_snapshot() -> PlanningSessionSnapshot:
+    skeleton = _skeleton()
+    candidate = PlanningArtifact.create(
+        artifact_id="candidate-1",
+        kind=ArtifactKind.VALIDATED_CANDIDATE,
+        revision=1,
+        payload={"events": []},
+        dependency_revisions={"skeleton": 2},
+    )
+    receipt = PlanningArtifact.create(
+        artifact_id="receipt-1",
+        kind=ArtifactKind.COMMIT_RECEIPT,
+        revision=1,
+        payload={"committed": True, "tx_id": "tx-1", "candidate_digest": candidate.digest},
+        dependency_revisions={"validated_candidate": 1},
+    )
+    return _capture_snapshot().model_copy(
+        update={
+            "revision": 5,
+            "artifacts": [skeleton, candidate, receipt],
+            "status": "committed",
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_committed_session_takes_a_revision_bound_to_its_receipt() -> None:
+    """Catches the 2026-09-02 dead thread.
+
+    `interpret` raised before asking the model, because the committed stage
+    offered no decisions. The thread is the session key, so from the commit
+    on every message in it died the same way. The stage must offer a way to
+    change the day, and the revision must bind to the receipt -- identity the
+    host holds, never text the model wrote.
+    """
+
+    from fateforger.agents.timeboxing.session_contracts import ReviseArtifact
+
+    snapshot = _committed_snapshot()
+    receipt = next(a for a in snapshot.artifacts if a.kind is ArtifactKind.COMMIT_RECEIPT)
+    client = _SchemaOutputClient(
+        {
+            "decision": "revise",
+            "facts": [],
+            "revision_instruction": "move all the work two hours later",
+        }
+    )
+
+    intent = await TimeboxingIntentInterpreter(client).interpret(
+        "Can you move all the work stuff 2 hours later", snapshot
+    )
+
+    assert intent == ReviseArtifact(
+        artifact_id=receipt.artifact_id,
+        artifact_revision=receipt.revision,
+        artifact_digest=receipt.digest,
+        instruction="move all the work two hours later",
+    )
+    prompt = "\n".join(message.content for message in client.calls[0][0])
+    assert '"display_stage":"committed"' in prompt
+    assert '"pending_artifact_kind":"commit_receipt"' in prompt
+    allowed = json.loads(client.calls[0][0][1].content)["allowed_decisions"]
+    assert set(allowed) == {"provide_facts", "revise"}
+
+
+@pytest.mark.asyncio
+async def test_a_committed_session_takes_new_facts() -> None:
+    from fateforger.agents.timeboxing.session_contracts import ProvidePlanningFacts
+
+    client = _SchemaOutputClient(
+        {
+            "decision": "provide_facts",
+            "facts": [{"kind": "requested_activity", "value": "sleep 00:30-08:30"}],
+        }
+    )
+
+    intent = await TimeboxingIntentInterpreter(client).interpret(
+        "I'll sleep today from 00:30 until 8:30", _committed_snapshot()
+    )
+
+    assert isinstance(intent, ProvidePlanningFacts)
+    assert [f.kind for f in intent.facts] == [FactKind.REQUESTED_ACTIVITY]
+
+
+@pytest.mark.asyncio
+async def test_a_committed_session_does_not_offer_to_cancel_or_approve() -> None:
+    """The model may only pick what the kernel will honour; the schema says so."""
+
+    client = _SchemaOutputClient({"decision": "cancel", "facts": []})
+
+    with pytest.raises(ValueError, match="not allowed in committed"):
+        await TimeboxingIntentInterpreter(client).interpret(
+            "forget it", _committed_snapshot()
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_stated_sleep_window_arrives_as_a_day_frame_fact() -> None:
+    """"I'll sleep today from 00:30 until 8:30" is the frame, typed (#251).
+
+    The schema accepts the kind and the value flows through untouched; the
+    kernel's readiness check is what reads it. What is asserted here is the
+    plumbing -- not the model's wording.
+    """
+
+    from fateforger.agents.timeboxing.session_contracts import ProvidePlanningFacts
+
+    client = _SchemaOutputClient(
+        {
+            "decision": "provide_facts",
+            "facts": [
+                {"kind": "day_frame", "value": {"wake": "08:30", "sleep": "00:30"}}
+            ],
+        }
+    )
+
+    intent = await TimeboxingIntentInterpreter(client).interpret(
+        "I'll sleep today from 00:30 until 8:30", _capture_snapshot()
+    )
+
+    assert isinstance(intent, ProvidePlanningFacts)
+    assert [fact.kind for fact in intent.facts] == [FactKind.DAY_FRAME]
+    assert intent.facts[0].value == {"wake": "08:30", "sleep": "00:30"}
+    assert intent.facts[0].source == "user"
+
+
+def test_the_schema_tells_the_model_what_a_day_frame_looks_like() -> None:
+    """The fact drafts are discriminated on kind, each with its own value shape.
+
+    A ``value: JsonValue`` schema said "anything", and the live model answered
+    the right times as a JSON-encoded string 8 of 8 times -- correct judgement,
+    unusable shape. The schema is where the shape is enforced, so it is what
+    is asserted.
+    """
+
+    schema = InterpretedTimeboxTurn.model_json_schema()
+    drafts = schema["properties"]["facts"]["items"]
+    assert set(drafts["discriminator"]["mapping"]) == {
+        "requested_activity",
+        "day_frame",
+    }
+    frame = schema["$defs"]["DayFrameDraft"]["properties"]
+    assert set(frame) == {"wake", "sleep"}
+    assert {"type": "null"} in frame["wake"]["anyOf"]
+    assert any(
+        branch.get("type") == "string" and "HH:MM" in branch.get("description", "")
+        for branch in frame["wake"]["anyOf"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_parsed_turn_stays_json_native_for_autogens_call_log() -> None:
+    """AutoGen ``json.dumps`` the parsed completion for its LLMCallEvent.
+
+    A ``datetime.time`` leaf in the draft made ``str(event)`` raise inside
+    ``logger.info`` on every live draw. The dump of a validated turn must
+    therefore round-trip through ``json.dumps`` untouched.
+    """
+
+    turn = InterpretedTimeboxTurn.model_validate(
+        {
+            "decision": "provide_facts",
+            "facts": [
+                {"kind": "day_frame", "value": {"wake": "08:30:00Z", "sleep": "0:30"}}
+            ],
+        }
+    )
+
+    dumped = json.loads(json.dumps(turn.model_dump()))
+
+    assert dumped["facts"][0]["value"] == {"wake": "08:30", "sleep": "00:30"}
+
+
+@pytest.mark.asyncio
+async def test_a_day_frame_encoded_as_a_string_is_refused_not_stored() -> None:
+    """The exact shape the live model produced before the schema pinned it."""
+
+    client = _SchemaOutputClient(
+        {
+            "decision": "provide_facts",
+            "facts": [
+                {"kind": "day_frame", "value": '{"wake": "08:30", "sleep": "00:30"}'}
+            ],
+        }
+    )
+
+    with pytest.raises(ValidationError):
+        await TimeboxingIntentInterpreter(client).interpret(
+            "I'll sleep today from 00:30 until 8:30", _capture_snapshot()
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_one_digit_hour_is_normalised_and_an_unstated_boundary_kept_null() -> None:
+    from fateforger.agents.timeboxing.session_contracts import ProvidePlanningFacts
+
+    client = _SchemaOutputClient(
+        {
+            "decision": "provide_facts",
+            "facts": [{"kind": "day_frame", "value": {"wake": "8:30", "sleep": None}}],
+        }
+    )
+
+    intent = await TimeboxingIntentInterpreter(client).interpret(
+        "up at half eight", _capture_snapshot()
+    )
+
+    assert isinstance(intent, ProvidePlanningFacts)
+    assert intent.facts[0].value == {"wake": "08:30", "sleep": None}
+
+
+@pytest.mark.asyncio
+async def test_the_open_question_is_named_to_the_model_with_what_answers_it() -> None:
+    """A reply of "8:30 to half past midnight" only reads as a frame if the model knows what was asked."""
+
+    client = _SchemaOutputClient(
+        {
+            "decision": "provide_facts",
+            "facts": [
+                {"kind": "day_frame", "value": {"wake": "08:30", "sleep": "00:30"}}
+            ],
+        }
+    )
+    snapshot = _capture_snapshot().model_copy(
+        update={
+            "pending_blocker": PendingBlocker(
+                requirement_id="skeleton.day_frame",
+                fact_kind=FactKind.DAY_FRAME,
+                options=[],
+            )
+        }
+    )
+
+    await TimeboxingIntentInterpreter(client).interpret("8:30 to half past midnight", snapshot)
+
+    (messages, _schema), = client.calls
+    sent = json.loads(messages[-1].content)
+    assert sent["open_question"] == {
+        "requirement_id": "skeleton.day_frame",
+        "answered_by": "day_frame",
+    }
+
+
+@pytest.mark.asyncio
+async def test_no_open_question_is_sent_as_none() -> None:
+    client = _SchemaOutputClient({"decision": "advance", "facts": []})
+
+    await TimeboxingIntentInterpreter(client).interpret("go ahead", _capture_snapshot())
+
+    (messages, _schema), = client.calls
+    assert json.loads(messages[-1].content)["open_question"] is None

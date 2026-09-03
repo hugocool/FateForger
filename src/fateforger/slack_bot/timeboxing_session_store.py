@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Date, DateTime, Integer, String, Text, select, update
+from sqlalchemy import Date, DateTime, Integer, String, Text, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -17,6 +17,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
     PlanningSessionRepository,
     StaleSessionRevision,
+    TimeboxingStanding,
 )
 from fateforger.agents.timeboxing.session_contracts import (
     HandledInteraction,
@@ -189,6 +190,48 @@ class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
                 raise StaleSessionRevision
             await session.commit()
             return saved.model_copy(deep=True)
+
+    async def standing_for(
+        self,
+        *,
+        owner_user_id: str,
+        open_since: datetime,
+        planned_from: date,
+        planned_to: date,
+    ) -> TimeboxingStanding:
+        """One query over the indexed columns; the snapshot JSON is never read.
+
+        ``updated_at`` is written naive in UTC by ``save``, so the bound is
+        compared the same way.
+        """
+
+        since = open_since.astimezone(UTC).replace(tzinfo=None)
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(
+                    _TimeboxingSessionState.session_key,
+                    _TimeboxingSessionState.status,
+                )
+                .where(
+                    _TimeboxingSessionState.owner_user_id == owner_user_id,
+                    or_(
+                        (_TimeboxingSessionState.status == "open")
+                        & (_TimeboxingSessionState.updated_at >= since),
+                        (_TimeboxingSessionState.status == "committed")
+                        & (_TimeboxingSessionState.planning_date >= planned_from)
+                        & (_TimeboxingSessionState.planning_date <= planned_to),
+                    ),
+                )
+                .order_by(_TimeboxingSessionState.updated_at.desc())
+            )
+            rows = result.all()
+        open_key = next((key for key, status in rows if status == "open"), None)
+        committed_key = next(
+            (key for key, status in rows if status == "committed"), None
+        )
+        return TimeboxingStanding(
+            open_session_key=open_key, committed_session_key=committed_key
+        )
 
     @staticmethod
     async def _load_row(

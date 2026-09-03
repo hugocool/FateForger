@@ -1,0 +1,328 @@
+# Stage UX port onto the harness — design
+
+**Date:** 2026-09-03
+**Decision ticket:** #266. **Defects it resolves:** #259, #260, #261, #262, #263, #264, #265, #267.
+**Maps:** #157 (rebuild), #121 (timeboxing session). **Prior kernel spec:**
+`2026-08-29-adaptive-timeboxing-session-kernel-design.md`.
+
+## Problem
+
+The second live run of 2026-09-02 (Slack thread `1788336557.980289`) showed that the harness
+backend (`FF_TIMEBOX_BACKEND=harness`, now the default) produces a working *kernel* and a
+broken *conversation*. The user never sees which stage they are in, cannot go back, cannot see
+what the planner read from memory or the calendar, cannot steer an assumption except by
+retyping the whole thing, and one card renders blank because the renderer reads a field the
+artifact does not carry. Proceed jumps skeleton → candidate → Approve with nothing in between.
+
+The legacy agent had all of this (`stage_gating.py`, `agent.py`
+`_format_stage_message` / `_render_stage_action_blocks`, `constraint_review.py`,
+`timeboxing_stage_actions.py`) and the harness port kept the kernel and dropped the surface.
+
+This spec ports the surface without re-importing the legacy agent's monolith.
+
+## The five stages (user-corrected 2026-09-02)
+
+The stage line the user sees. Kernel artifact kinds map onto it; the user never sees an
+artifact kind.
+
+| Stage | Name | What happens | Kernel artifacts |
+|---|---|---|---|
+| 1/5 | **Constraints** | Day type first (working / weekend / …). Then load the initial constraints — memory rules for the day, calendar immovables, standing constraints — and *evoke the user to state tomorrow's constraints that would otherwise go unspoken*: fixed meetings, commute, gym, sleep target, anything unique. Mirror back for confirmation. | `planning_day`, `day_frame`, `captured_inputs` (constraint part) |
+| 2/5 | **Priorities** | Progressive drill-down grounded in the productivity principles this system is built on: show what the user wants out of the day → the focusing question → one thing, plus up to two conditional items; each AVBD-checked; floating vs windowed. | `captured_inputs` (activity part); later a `priorities` artifact |
+| 3/5 | **Sketch** | A loose skeleton. No optimisation, no breaks, no buffers. Generated fast. Markdown `# {part of day / day anchor}` with `-` bullets, no forced template beyond that. Carries brief reasoning and "talks it back". | `skeleton` |
+| 4/5 | **Refine** | The validated candidate with the Revise / Back loop against tmbx. | `validated_candidate` |
+| 5/5 | **Commit** | Receipt. | `commit_receipt` |
+
+`planning_brief` is internal and never gets a card.
+
+**Task marshalling** (backlog refinement — inbox zero, close-out, tomorrow preview with 1–3
+MITs, stale purge, brain dump) is a *separate step before timeboxing*. Stage 2 consumes its
+output; it does not perform it. In this spec stage 2 reads what the user types. A "from your
+board" section exists on the stage-2 card from the first increment and is empty until Notion
+and TickTick are wired (own grilling ticket on map C, filed alongside this spec).
+
+## Research that shaped stage 1 and stage 2
+
+From the library index (`librarian-index`, 639 documents) and the user's Notion:
+
+- **Implementation intentions** (Atomic Habits, ch. 5): "I will *X* at *TIME* in *PLACE*" —
+  91 % follow-through against 35 % without. This is why stage 2 asks *windowed or floating* for
+  each committed item and why stage 3 places items against day anchors rather than listing
+  them.
+- **Standardise before you optimise** (Atomic Habits): stage 3 is deliberately unoptimised.
+  Buffers and breaks are stage 4's job.
+- **Decisive moments / two-minute rule** (Atomic Habits; Allen's 2-minute rule appears only as
+  an endnote): stage 2 does not schedule two-minute items; they belong in marshalling.
+- **Generative Agents** (Park et al.): a day plan as 5–8 coarse chunks, recursively refined.
+  That is stage 3 → stage 4 exactly, and the reason the sketch is a short markdown outline.
+- **Notion "🎯 Task Marshalling — Daily EOD Session"**: five steps; **AVBD** test (Action
+  verb / Visible done / Bounded / Dated-or-delegated); red flag "Tomorrow > 7 MITs → 3
+  committed + 2 conditional". Stage 2's cap of one thing + two conditional comes from here.
+- **Notion "⏱️ Timebox Agent — Standing Context & Read Sources"**: session-open read order is
+  latest Weekly Review row (Intention, Must Outcome, Timebox Directives, Start/Stop/Continue,
+  Risks) → pending Outcomes → in-progress Tasks. Standing constraints: no screens after 23:00,
+  bed-ready 22:30, finance blocks fixed, lunch, sports fixed, commute; deep work mornings only.
+  Outcomes that retire high-exposure assumptions are non-negotiable — flag before deferring.
+  These are the sources the stage-1 *context* section will show once wired; the standing
+  constraints already live in memory.
+- **April 2026 Notion prompt** for the constraint interview: fixed meetings, commute, gym,
+  sleep target, anything unique; mirror back. This is stage 1's evocation text.
+
+Not available as text in the index (dead stubs or blank pages): Deep Work, GTD, Essentialism,
+Make Time, The ONE Thing. Their principles are applied from the user's own summaries in Notion,
+not from the books.
+
+## Approaches considered
+
+**Shape 1 — one typed card model, one renderer, one control table (chosen).** Every stage is a
+`StageCard`. A per-artifact mapper turns `(outcome, snapshot)` into a `StageCard`; one
+renderer turns a `StageCard` into blocks; one table turns a control press into the same
+`TimeboxIntent` the typed interpreter produces. Stage transitions edit the previous card into a
+receipt and post the next card.
+
+**Shape 2 — artifacts render themselves (rejected).** Each `PlanningArtifact` kind owning its
+own block rendering puts Slack knowledge in the kernel's contracts and gives five places for
+the stage line, Back, and receipts to drift. That drift is precisely what the legacy agent
+suffered from.
+
+**Shape 3 — one live card updated in place over the whole session (rejected).** Hits
+`msg_too_long` by stage 3 on a real day, and leaves no thread history — the user could not
+scroll up to see what stage 1 concluded, which is the thing they asked for.
+
+## Design
+
+### Architecture
+
+```
+kernel (adaptive_timeboxing)
+   │  (TurnOutcome, PlanningSessionSnapshot)
+   ▼
+stage mapper  slack_bot/stage_cards.py        pure: no Slack, no model
+   │  StageCard
+   ▼
+renderer      timeboxing_cards.render_stage_card
+   │  SlackBlockMessage
+   ▼
+Slack ◀──── card registry (chat_update previous card → receipt)
+
+Slack press ──▶ ArtifactActionMeta ──▶ control table ──▶ TimeboxIntent ──▶ kernel
+typed text  ──▶ interpreter        ──▶ same TimeboxIntent ───────────────▶ kernel
+```
+
+Three units, each answerable in one sentence:
+
+- **Mapper** — *what* is on the card for this outcome. Depends on kernel contracts only.
+- **Renderer** — *how* a card looks. Depends on `StageCard` only.
+- **Control table** — *which intent* a drawn control means. Depends on `ArtifactActionMeta`
+  and kernel intents only.
+
+The kernel stays the authority on which stage a session is in (`_derive_target`,
+`adaptive_timeboxing.py`) and which intents it accepts at a revision. It gains one capability:
+a real `GoBack`. Today `GoBack` and `ReviseArtifact` return
+`TurnFailed(code="unsupported_intent")` ([adaptive_timeboxing.py:721](../../../src/fateforger/agents/timeboxing/adaptive_timeboxing.py#L721)).
+
+### Components
+
+#### `StageCard` (new, `slack_bot/stage_cards.py`)
+
+Strict Pydantic. Everything the renderer needs and nothing it does not.
+
+```
+StageLine     index: 1..5, name: str, next_action_label: str
+ContextItem   text: str, source: Literal["memory","calendar","user","planner"]
+DecidedItem   text: str, kind: Literal["assumption","fact"], ref: str,
+              steer: SteerControl | None
+SteerControl  label: str, fact_kind: FactKind, value: JsonValue   # increment B
+Control       action: Literal["proceed","back","cancel"], label: str
+StageCard     stage: StageLine
+              context: list[ContextItem]
+              decided: list[DecidedItem]
+              asking: PendingBlocker | None
+              controls: list[Control]
+              done: str | None          # set only on a receipt
+              artifact_id, artifact_revision, artifact_digest, session_key,
+              expected_revision                                 # press binding
+```
+
+`StageCard.as_receipt(done: str)` returns a copy with `controls=[]`, `asking=None`, `done`
+set. A receipt is the same model through the same renderer; there is no second card type.
+
+Stage index is a fixed table from `ArtifactKind`:
+`planning_day`, `day_frame`, `captured_inputs` → 1; `skeleton` → 3; `validated_candidate` → 4;
+`commit_receipt` → 5. Stage 2 in increment A is a view over `captured_inputs` (see
+*Increments*); the table gains a `priorities` kind when that artifact exists.
+
+`ref` on a `DecidedItem` is the assumption's or fact's own identifier (system-minted) so a
+steer press names it exactly, never by text.
+
+#### Payload models (`session_contracts.py`)
+
+`DayFramePayload`, `CapturedInputsPayload`, `SkeletonPayload`, `CandidatePayload`,
+`ReceiptPayload`. The planner instruction prompt imports their JSON schema rather than restating
+it (#158, import-not-copy). Every mapper validates `artifact.payload` into its model **before**
+reading a field. This is the root fix for #267: a skeleton payload that carries `blocks` and no
+`markdown` fails validation loudly instead of rendering an empty card.
+
+`SkeletonPayload` carries `markdown: str` (the `# anchor` / `-` outline) and `reasoning: str`
+(the "talks it back" paragraph). No `blocks` field; blocks are the renderer's business.
+
+`CapturedInputsPayload` carries `open_questions: list[str]` so a planner that asks something has
+somewhere to put it (#259). The mapper surfaces them in `asking` — as a free-text
+`PendingBlocker` when there is exactly one, otherwise as a context item prefixed by the
+planner so the user can answer in prose.
+
+#### Mappers (`slack_bot/stage_cards.py`)
+
+One function per kind, `map_<kind>(outcome, snapshot) -> StageCard`, plus a dispatch
+`map_outcome(outcome, snapshot) -> StageCard`. Rules every mapper follows:
+
+- `context` is built from the snapshot, not the artifact: `applicable_constraints`,
+  `calendar_snapshot`, and the `DAY_FRAME` fact. The artifact is the planner's output; the
+  snapshot is what the planner was *given*. Showing the latter is what #262 and #260 ask for.
+- `decided` lists every `PlannerAssumption` not yet invalidated plus every user-supplied
+  `PlanningFact` that bears on this stage.
+- `controls` is computed from `(kind, snapshot.pending_blocker, snapshot.approvals)`:
+  `proceed` when the kernel would accept `Advance`/`ApproveArtifact` at this revision; `back`
+  when some earlier artifact is approved (never on stage 1); `cancel` always.
+- Never a model call, never a string comparison on user text (CLAUDE.md). A mapper that would
+  need to *judge* content has found a fact the planner should have recorded.
+
+#### Renderer (`timeboxing_cards.render_stage_card`)
+
+Header `*{index}/5 · {name}*`; a context section (one line per item, source as a leading
+emoji); a decided section (each item one line, steer button on the right in B); the asking
+section (buttons when `options` non-empty, otherwise a prompt naming the requirement); an
+actions block from `controls` encoded with the existing `artifact_action_value`. A receipt
+renders `done` in place of the actions block and drops `asking`.
+
+`render_outcome` keeps its `TurnFailed` / `Cancelled` / `Committed` branches; the
+`AwaitingUser` and `AwaitingApproval` branches become `render_stage_card(map_outcome(...))`.
+`render_date_card`, `render_skeleton`, `render_candidate`, `render_question` are deleted.
+
+Length guard: context and decided sections truncate by *item count* with a trailing
+"+N more" line. Text is never sliced.
+
+#### Control table (`timeboxing_intents.py`)
+
+`ArtifactActionMeta.decision` already admits `"back"`; the host never mapped it. The existing
+decision → intent function gains `back → GoBack()`. Steer presses (B) map
+`steer → ProvidePlanningFacts(facts=[PlanningFact(kind=meta.fact_kind, value=meta.value)])`,
+which requires adding `fact_kind` and `value` to `ArtifactActionMeta` under a validator that
+demands both together, the same way `choose_option` demands `requirement_id` and `option_id`.
+
+No per-button handler. Every control decodes through the one table, and a test walks the table
+against every drawn control.
+
+#### Card registry (`slack_bot/stage_card_registry.py`)
+
+The harness path stores no message ts for its cards; only the legacy proposal path does
+(`proposal_message_ts` in `handlers.py`). A per-thread record
+`{session_key: (channel_id, ts, artifact_id, artifact_revision)}` beside
+`PendingTimeboxCandidates`. Host state only — the snapshot never learns a Slack ts.
+
+#### Kernel: `GoBack`
+
+`GoBack` withdraws the approval of the most recently approved artifact, runs the existing
+`_invalidate` on its dependents (`readiness._DIRECT_DEPENDENTS`), clears any
+`pending_blocker`, and returns `AwaitingApproval` for the reopened artifact. With nothing
+approved it returns `TurnFailed(code="nothing_to_go_back_to")`. `ReviseArtifact` remains as it
+is; it is the stage-4 loop's concern and already ticketed elsewhere.
+
+#### Steering facts (increment B)
+
+Three new `FactKind` values — `SUSPENDED_CONSTRAINT`, `DENIED_ASSUMPTION`,
+`DAY_SPECIFIC_CONSTRAINT` — plus `ONE_THING` for stage 2. All are `PlanningFact`s filed by
+`ProvidePlanningFacts`, so they invalidate `captured_inputs` and everything downstream for the
+same reason a typed fact does. Superseded, never deleted: reverting a suspension is a new fact
+that names the earlier one. The brief reflects the current set by construction because the
+brief is built from the snapshot.
+
+The memory server is touched only when the user says the change is permanent ("always"). That
+is a `PendingBlocker` with two options — *this day* / *always* — and only the second calls
+`memory_observe`. Nothing writes to memory from a steer press alone.
+
+### Data flow — one turn
+
+1. Press → `ArtifactActionMeta` → control table → `TimeboxIntent`. Typed text → interpreter →
+   the same `TimeboxIntent`. Unchanged.
+2. Kernel applies the intent → `(outcome, snapshot)`.
+3. Registry lookup for `session_key`. If a card is registered **and** the outcome's artifact
+   (`artifact_id`, `revision`) differs from the registered one, the mapper builds the *old*
+   card from the current snapshot, `as_receipt(done=…)`, and the host `chat_update`s it.
+4. Mapper builds the new `StageCard`; renderer posts it; registry records the new ts.
+5. `GoBack` follows the same path: step 3 rewrites the later stage's card to a receipt whose
+   `done` reads "reopened"; step 4 re-posts the earlier stage live.
+
+Typed day change (#265): the kernel already invalidates everything; step 3 turns the stale
+stage-1 card into a receipt reading "superseded", step 4 posts the fresh one. The thread root
+is relabelled by the existing root-relabel path.
+
+### Error handling
+
+| Case | Behaviour |
+|---|---|
+| Stale press (revision mismatch) | Refused by the envelope as today; the refusal names the stage: "this 3/5 card is out of date — the live one is below." |
+| Payload fails validation | `ValidationError` logged at error with artifact id and kind; the failure card is rendered. Never a blank card. |
+| `chat_update` of the receipt fails | Logged; the new card is still posted. A live card is never held hostage by a cosmetic edit. |
+| Back on stage 1 / while a blocker is open | Control not drawn. If the intent arrives anyway (typed), kernel returns `TurnFailed(code="nothing_to_go_back_to")` and the host renders it. |
+| Planner emits `open_questions` | Surfaced in `asking` (or as a planner context line when several). Never dropped. |
+| Steer press on an item the snapshot no longer holds | `ref` does not resolve → refused with the stale-press message. |
+
+### Testing
+
+Unit tests opt in to the harness backend the way `test_timebox_session_surface.py` does
+(`tests/conftest.py` pins legacy by default).
+
+- **Mappers** — one fixture snapshot per kind; assert `stage.index`, presence and `source` of
+  context items, `decided` refs, and the exact `controls` list. Break each on purpose once.
+- **Renderer** — golden tests on block *structure*: header text, action ids, section count.
+  Never on prose.
+- **Control table round-trip** — for every `StageCard` a mapper can produce, every drawn
+  control decodes to an intent the kernel accepts at that revision (drive the kernel with the
+  decoded intent and assert it is not `TurnFailed(invalid_intent|unsupported_intent)`).
+- **Kernel `GoBack`** — withdraws approval, invalidates dependents, clears blocker, refuses at
+  stage 1.
+- **Registry / transition** — old card becomes a receipt, new card posted, ts recorded; the
+  `chat_update` failure path posts the new card regardless.
+- **Payload models** — the 2026-09-02 skeleton payload (`blocks`, no `markdown`) fails
+  validation (#267 regression).
+- **AST guard** — `stage_cards.py` imports nothing from `slack_sdk` and nothing under
+  `fateforger.slack_bot` except its own models.
+- **E2e** — `tests/e2e/test_slack_timebox_command.py` extended: walk all five stages, press
+  Back once, assert the receipt edit and the re-posted card.
+
+No eval tests: nothing here asks a model a new question. Stage-2 prompt work (B) will need
+them and says so in its own plan.
+
+### Increments
+
+**A — breadth.** Resolves #264, #265, #267.
+`StageCard`, renderer, mappers for all kinds, receipts, `GoBack` in the kernel, payload
+models, card registry, control-table `back`. Stage 2 renders from `captured_inputs` as a thin
+"2/5 Priorities" card: `decided` = requested activities, an empty "from your board" section,
+Proceed/Back/Cancel. No drill-down yet.
+
+**B — depth.** Stage 1 first (#262, #260): context section fed from `applicable_constraints`
+and `calendar_snapshot`, per-item steer controls, the "this day / always" blocker, the
+evocation prompt. Then stage 2 (#261, #259, #263): a `priorities` artifact, the focusing
+question, one thing + two conditional, AVBD check, windowed/floating.
+
+Each increment is its own implementation plan.
+
+## Out of scope
+
+- Notion and TickTick as a task backend (own grilling ticket, map C). Stage 2's "from your
+  board" section is the consumer and stays empty until then.
+- `ReviseArtifact` semantics in the kernel (stage-4 loop).
+- Task marshalling as a session.
+- Deleting the legacy agent (`2026-08-24-harvest-then-delete…` spec).
+
+## Files
+
+New: `src/fateforger/slack_bot/stage_cards.py`, `src/fateforger/slack_bot/stage_card_registry.py`,
+`tests/unit/test_stage_cards.py`, `tests/unit/test_stage_card_registry.py`,
+`tests/unit/test_kernel_go_back.py`.
+Changed: `session_contracts.py` (payload models, `FactKind`), `adaptive_timeboxing.py`
+(`GoBack`), `timeboxing_cards.py` (`render_stage_card`, `render_outcome`), `timeboxing_intents.py`
+(control table), `handlers.py` (transition step), planner instructions (schema import).
+Deleted: `render_date_card`, `render_skeleton`, `render_candidate`, `render_question`.

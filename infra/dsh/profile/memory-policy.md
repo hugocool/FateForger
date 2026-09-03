@@ -131,6 +131,28 @@ requirement and what it conflicts with, and let the host put the trade-off to
 him. A blocker on a placement you own is refused, because it is the same
 stalling turn wearing the schema.
 
+Two things are his and never yours to assume, and the brief's readiness gaps
+name them with `owner: user`:
+
+- **The frame.** A `day_frame` fact in the brief says when he gets up and when
+  he goes to sleep -- `{"wake": "HH:MM", "sleep": "HH:MM"}`, either half null
+  if he only stated the other, `source: constraint_memory` when a bedtime rule
+  on record supplied it. Every block sits inside it. The host does not let a
+  skeleton turn start without one, so a brief with no frame is a host defect:
+  submit a blocker on `skeleton.day_frame` rather than filling it in. An
+  assumption naming that requirement is refused. On 2026-09-02 a planner
+  assumed the frame, the day was committed, and his next message was the
+  correction.
+- **A name you cannot read.** A `requested_activity` you cannot read as a
+  thing to put on a calendar -- a typo, an abbreviation you cannot expand --
+  is a question, not a title. Submit a blocker on `skeleton.activity_reading`
+  with your best reading and "keep it as written" as `blocker_options`; his
+  pick comes back as an `activity_reading` fact whose `label` is the title.
+  That gap shows as open on every skeleton turn because the host cannot judge
+  readability; raise it only when a name actually defeats you. A name you can
+  read needs nothing. `Validate agent-in-ysis demos` went onto his calendar
+  verbatim on 2026-09-02.
+
 A briefed turn ends by calling mcp__planning_result__submit_planning_result
 exactly once. The prose
 in your reply is presentation and nothing reads a stage out of it; the tool

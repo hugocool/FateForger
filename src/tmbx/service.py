@@ -679,6 +679,7 @@ class PlanService:
 
         violations: list[Violation] = []
         outcome = PatchOutcome.APPLIED
+        error: str | None = None
         try:
             patched = apply_ops(plan, patch, mint_uid=self._mint_uid)
         except ValueError as exc:
@@ -690,8 +691,13 @@ class PlanService:
         except PlanViolation as exc:
             violations.append(exc.violation)
             outcome = PatchOutcome.VALIDATION_FAILED
+            # The row is the only record of the attempt that survives the
+            # session. Four of them read ``error=None`` on 2026-09-02 (#250)
+            # while the violation itself went back to the caller and was
+            # dropped there. Record it the same way ``_commit_once`` does.
+            error = exc.violation.message
 
-        await self._journal(snapshot, patch, outcome)
+        await self._journal(snapshot, patch, outcome, error=error)
         return ApplyResult(
             plan=patched,
             rendered=render_plan(patched, foreign_uids),

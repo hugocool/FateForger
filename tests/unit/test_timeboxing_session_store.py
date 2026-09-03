@@ -214,3 +214,69 @@ async def test_duplicate_interaction_id_replays_without_overwriting_outcome(
         )
     finally:
         await engine.dispose()
+
+
+async def test_standing_reads_open_and_committed_sessions_from_the_indexed_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#256: the nudge suppressor asks this table, and only this table.
+
+    Three sessions for one user: an open one saved just now, a day committed
+    inside the window (the status column changes on save, not on create, so
+    the committed one is saved through), and a cancelled one that must count
+    as neither. A fourth belongs to someone else.
+    """
+
+    from datetime import datetime, timedelta, timezone
+
+    engine, maker = _migrated_test_database(tmp_path, monkeypatch)
+    try:
+        repo = SqlAlchemyTimeboxingSessionRepository(maker)
+        opened = await repo.load_or_create("C1:open", owner_user_id="U1")
+        await repo.save(
+            opened.model_copy(update={"planning_day": _locked_day()}),
+            expected_revision=0,
+            interaction_id="A1",
+            outcome=AwaitingUser(
+                requirement_id="x", question="q", why_needed="w"
+            ),
+        )
+        committed = await repo.load_or_create("C1:done", owner_user_id="U1")
+        await repo.save(
+            committed.model_copy(
+                update={"planning_day": _locked_day(), "status": "committed"}
+            ),
+            expected_revision=0,
+            interaction_id="B1",
+            outcome=Cancelled(),
+        )
+        cancelled = await repo.load_or_create("C1:gone", owner_user_id="U1")
+        await repo.save(
+            cancelled.model_copy(update={"status": "cancelled"}),
+            expected_revision=0,
+            interaction_id="C1",
+            outcome=Cancelled(),
+        )
+        await repo.load_or_create("C2:open", owner_user_id="U2")
+
+        now = datetime.now(timezone.utc)
+        standing = await repo.standing_for(
+            owner_user_id="U1",
+            open_since=now - timedelta(hours=1),
+            planned_from=date(2026, 8, 31),
+            planned_to=date(2026, 9, 1),
+        )
+        assert standing.open_session_key == "C1:open"
+        assert standing.committed_session_key == "C1:done"
+
+        stale = await repo.standing_for(
+            owner_user_id="U1",
+            open_since=now + timedelta(minutes=1),
+            planned_from=date(2026, 9, 1),
+            planned_to=date(2026, 9, 2),
+        )
+        assert stale.open_session_key is None
+        assert stale.committed_session_key is None
+        assert not stale.under_way and not stale.planned
+    finally:
+        await engine.dispose()

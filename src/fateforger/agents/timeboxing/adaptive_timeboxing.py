@@ -7,8 +7,8 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from copy import deepcopy
-from datetime import datetime, timezone
-from typing import Protocol
+from datetime import date, datetime, timezone
+from typing import Callable, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
@@ -155,6 +155,51 @@ class PlanningSessionRepository(Protocol):
     ) -> PlanningSessionSnapshot: ...
 
 
+class TimeboxingStanding(BaseModel):
+    """What the session store says about one user's planning, for the nudger.
+
+    Both are session keys so the log can name the session that silenced a
+    reminder. ``open_session_key`` is a session still under way; a stale open
+    session -- abandoned mid-way -- stops counting once it has not been saved
+    since ``open_since``, or the Admonisher would never speak again.
+    ``committed_session_key`` is a day already planned inside the window asked
+    about (#256).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    open_session_key: str | None = None
+    committed_session_key: str | None = None
+
+    @property
+    def under_way(self) -> bool:
+        return self.open_session_key is not None
+
+    @property
+    def planned(self) -> bool:
+        return self.committed_session_key is not None
+
+
+class TimeboxingSessionLedger(Protocol):
+    """The reconciler's read of the session store: is this user busy or done?
+
+    One question answered from one table, so the nudge suppressor and the
+    dispatch decision read the same truth. On 2026-09-02 the suppressor read
+    an in-process flag set by the turn handler while the reconciler read the
+    calendar for a planning event, and the two disagreed twelve times in one
+    session -- a card mid-session, then more after the day was committed.
+    """
+
+    async def standing_for(
+        self,
+        *,
+        owner_user_id: str,
+        open_since: datetime,
+        planned_from: date,
+        planned_to: date,
+    ) -> TimeboxingStanding: ...
+
+
 class StaleSessionRevision(RuntimeError):
     """The persisted session no longer matches the expected revision."""
 
@@ -163,7 +208,10 @@ class InMemoryPlanningSessionRepository:
     """Revision-safe repository used by unit and deterministic replay tests."""
 
     def __init__(
-        self, snapshots: list[PlanningSessionSnapshot] | None = None
+        self,
+        snapshots: list[PlanningSessionSnapshot] | None = None,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         snapshots = snapshots or []
         self._snapshots = {
@@ -172,6 +220,10 @@ class InMemoryPlanningSessionRepository:
         }
         self._outcomes: dict[tuple[str, str], TurnOutcome] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
+        self._clock = clock
+        self._updated_at: dict[str, datetime] = {
+            key: self._clock() for key in self._snapshots
+        }
 
     @asynccontextmanager
     async def session_guard(self, session_key: str) -> AsyncIterator[None]:
@@ -188,6 +240,7 @@ class InMemoryPlanningSessionRepository:
                 session_key=session_key, owner_user_id=owner_user_id
             )
             self._snapshots[session_key] = snapshot
+            self._updated_at[session_key] = self._clock()
         return snapshot.model_copy(deep=True)
 
     async def load_outcome(
@@ -227,8 +280,34 @@ class InMemoryPlanningSessionRepository:
             },
         )
         self._snapshots[snapshot.session_key] = saved
+        self._updated_at[snapshot.session_key] = self._clock()
         self._outcomes[replay_key] = deepcopy(outcome)
         return saved.model_copy(deep=True)
+
+    async def standing_for(
+        self,
+        *,
+        owner_user_id: str,
+        open_since: datetime,
+        planned_from: date,
+        planned_to: date,
+    ) -> TimeboxingStanding:
+        open_key: str | None = None
+        committed_key: str | None = None
+        for key, snapshot in self._snapshots.items():
+            if snapshot.owner_user_id != owner_user_id:
+                continue
+            if snapshot.status == "open" and self._updated_at[key] >= open_since:
+                open_key = key
+            elif (
+                snapshot.status == "committed"
+                and snapshot.planning_day is not None
+                and planned_from <= snapshot.planning_day.date <= planned_to
+            ):
+                committed_key = key
+        return TimeboxingStanding(
+            open_session_key=open_key, committed_session_key=committed_key
+        )
 
 
 class _BestEffortProgress:
@@ -297,6 +376,20 @@ class AdaptiveTimeboxing:
             return TurnFailed(
                 code="stale_session_revision",
                 message="The planning session changed before this interaction arrived.",
+            )
+
+        if snapshot.status == "committed" and isinstance(
+            request.intent, CancelSession
+        ):
+            # The day is on the calendar. A `cancelled` status over a written
+            # calendar would describe a day that does not exist; what the user
+            # can still do is change it, and that path is the reopen below.
+            return TurnFailed(
+                code="session_committed",
+                message=(
+                    "This day is already on the calendar. Tell me what to "
+                    "change and I will revise it."
+                ),
             )
 
         base_revision = snapshot.revision
@@ -375,8 +468,10 @@ class AdaptiveTimeboxing:
             )
         except Exception as exc:  # noqa: BLE001 - dependency maps to domain failure
             logger.error(
-                "planning context resolution failed",
+                "planning context resolution failed: %s",
+                exc,
                 extra={"error_type": type(exc).__name__},
+                exc_info=True,
             )
             await progress_sink.emit(
                 {"phase": "resolving_context", "status": "failed"}
@@ -449,7 +544,10 @@ class AdaptiveTimeboxing:
             )
         except Exception as exc:  # noqa: BLE001 - provider details stay behind port
             logger.error(
-                "planner invocation failed error_type=%s", type(exc).__name__
+                "planner invocation failed error_type=%s error=%s",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
             )
             outcome = TurnFailed(
                 code="dependency_unavailable",
@@ -518,7 +616,48 @@ class AdaptiveTimeboxing:
             merged = self._merge_facts(snapshot, intent.facts)
             if merged.facts == snapshot.facts:
                 return snapshot, None
-            return self._invalidate(merged, ArtifactKind.CAPTURED_INPUTS), None
+            return self._reopen(
+                self._invalidate(merged, ArtifactKind.CAPTURED_INPUTS)
+            ), None
+        if isinstance(intent, ReviseArtifact):
+            receipt = self._latest_artifact(snapshot, ArtifactKind.COMMIT_RECEIPT)
+            if (
+                snapshot.status == "committed"
+                and receipt is not None
+                and receipt.artifact_id == intent.artifact_id
+            ):
+                if (
+                    receipt.revision != intent.artifact_revision
+                    or receipt.digest != intent.artifact_digest
+                ):
+                    return snapshot, TurnFailed(
+                        code="stale_revision_target",
+                        message="This revision names a plan that is no longer current.",
+                    )
+                # The 2026-09-02 shape: the day is committed and the user says
+                # what is wrong with it. The instruction is filed as a fact the
+                # planner reads while rebuilding, the derived artifacts go, the
+                # receipt stays -- the next commit must be a change to this
+                # day, not a second copy of it.
+                instructed = self._merge_facts(
+                    snapshot,
+                    [
+                        PlanningFact(
+                            fact_id=str(uuid4()),
+                            kind=FactKind.REVISION_INSTRUCTION,
+                            value={
+                                "artifact_kind": receipt.kind.value,
+                                "artifact_id": receipt.artifact_id,
+                                "instruction": intent.instruction,
+                            },
+                            source="user",
+                            source_interaction_id=request.interaction_id,
+                        )
+                    ],
+                )
+                return self._reopen(
+                    self._invalidate(instructed, ArtifactKind.CAPTURED_INPUTS)
+                ), None
         if isinstance(intent, ApproveArtifact):
             artifact = self._artifact_matching_approval(snapshot, intent)
             if artifact is None:
@@ -598,8 +737,10 @@ class AdaptiveTimeboxing:
             day = await self._context.propose_planning_day(request)
         except Exception as exc:  # noqa: BLE001 - dependency maps to domain failure
             logger.error(
-                "planning day proposal failed",
+                "planning day proposal failed: %s",
+                exc,
                 extra={"error_type": type(exc).__name__},
+                exc_info=True,
             )
             return (
                 TurnFailed(
@@ -633,8 +774,9 @@ class AdaptiveTimeboxing:
     def _derive_target(
         self, snapshot: PlanningSessionSnapshot
     ) -> ArtifactKind | None:
-        receipt = self._latest_artifact(snapshot, ArtifactKind.COMMIT_RECEIPT)
-        if receipt is not None:
+        # Status, not the receipt: a reopened session carries the receipt of
+        # the commit it is now revising, and still has a next artifact.
+        if snapshot.status == "committed":
             return None
         skeleton = self._latest_artifact(snapshot, ArtifactKind.SKELETON)
         if skeleton is None:
@@ -664,8 +806,10 @@ class AdaptiveTimeboxing:
             receipt = await self._commit.commit(candidate, digest=candidate.digest)
         except Exception as exc:  # noqa: BLE001 - external ambiguity is typed
             logger.error(
-                "candidate commit failed",
+                "candidate commit failed: %s",
+                exc,
                 extra={"error_type": type(exc).__name__},
+                exc_info=True,
             )
             return (
                 TurnFailed(
@@ -718,6 +862,18 @@ class AdaptiveTimeboxing:
                 ),
                 snapshot,
             )
+        # The adapter reports the effect; the kernel owns identity. A port
+        # numbers every receipt 1 because it has no session to count in, and
+        # two receipts at revision 1 with one id would make the second commit
+        # invisible to `_latest_artifact`.
+        receipt = PlanningArtifact.create(
+            kind=ArtifactKind.COMMIT_RECEIPT,
+            revision=self._next_artifact_revision(
+                snapshot, ArtifactKind.COMMIT_RECEIPT
+            ),
+            payload=receipt.payload,
+            dependency_revisions=receipt.dependency_revisions,
+        )
         updated = snapshot.model_copy(
             update={
                 "artifacts": [*snapshot.artifacts, receipt],
@@ -1049,7 +1205,13 @@ class AdaptiveTimeboxing:
     def _invalidate(
         self, snapshot: PlanningSessionSnapshot, changed_kind: ArtifactKind
     ) -> PlanningSessionSnapshot:
-        invalidated = self._requirements.invalidate_from(changed_kind)
+        # A receipt is the record of something that happened to the calendar,
+        # not something derived from the inputs above it. Invalidation is for
+        # what can be rebuilt; history cannot, and a session that forgets it
+        # committed will commit the whole day again (#224).
+        invalidated = self._requirements.invalidate_from(changed_kind) - {
+            ArtifactKind.COMMIT_RECEIPT
+        }
         approval_invalidated_kinds = invalidated | {changed_kind}
         invalidated_approval_ids = {
             artifact.artifact_id
@@ -1070,6 +1232,18 @@ class AdaptiveTimeboxing:
                 ],
             }
         )
+
+    @staticmethod
+    def _reopen(snapshot: PlanningSessionSnapshot) -> PlanningSessionSnapshot:
+        """A committed day the user has more to say about is open again.
+
+        Only `committed` reopens. `cancelled` is refused upstream and an open
+        session is already open; this is not a general status reset.
+        """
+
+        if snapshot.status != "committed":
+            return snapshot
+        return snapshot.model_copy(update={"status": "open"})
 
     @staticmethod
     def _merge_facts(
@@ -1145,5 +1319,7 @@ __all__ = [
     "PlanningSessionRepository",
     "ProgressSink",
     "StaleSessionRevision",
+    "TimeboxingSessionLedger",
+    "TimeboxingStanding",
     "TurnRequest",
 ]

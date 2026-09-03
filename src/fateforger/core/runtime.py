@@ -56,6 +56,8 @@ from fateforger.haunt.reconcile import (
     McpCalendarClient,
     PlanningReconciler,
     PlanningReminder,
+    PlanningRuleConfig,
+    PlanningSessionRule,
 )
 from fateforger.haunt.service import HauntingService
 from fateforger.haunt.settings_store import (
@@ -72,6 +74,8 @@ from fateforger.slack_bot.deepseek_timebox_planner import (
 )
 from fateforger.slack_bot.timeboxing_intents import TimeboxingIntentInterpreter
 from fateforger.slack_bot.tmbx_client import TmbxClient
+from tmbx.build_identity import BuildIdentity, current_build_identity
+from tmbx.build_identity import describe as describe_build
 from fateforger.slack_bot.timeboxing_session_store import (
     SqlAlchemyTimeboxingSessionRepository,
 )
@@ -111,6 +115,12 @@ class _McpStartupProbeResult:
     ok: bool
     tool_count: int
     error: str | None = None
+    # The exception behind ``error`` when discovery raised inside this
+    # process rather than failing to reach the server. notion-mcp was
+    # logged as "unavailable" on every startup while the real cause was a
+    # TypeError in schema conversion (#257); a crash and an outage need
+    # different log lines.
+    internal_failure: BaseException | None = None
 
 
 def _repo_root_for_runtime() -> Path:
@@ -221,7 +231,9 @@ async def _discover_mcp_tools(
     headers: dict[str, str] | None,
     timeout_s: float,
 ) -> list:
-    from autogen_ext.tools.mcp import StreamableHttpServerParams, mcp_server_tools
+    from autogen_ext.tools.mcp import StreamableHttpServerParams
+
+    from fateforger.tools.mcp_tool_schemas import streamable_http_tools
 
     params_kwargs: dict[str, object] = {
         "url": url,
@@ -235,7 +247,27 @@ async def _discover_mcp_tools(
         )
     except TypeError:
         params = StreamableHttpServerParams(**params_kwargs)
-    return await asyncio.wait_for(mcp_server_tools(params), timeout=timeout_s + 0.5)
+    return await asyncio.wait_for(streamable_http_tools(params), timeout=timeout_s + 0.5)
+
+
+def _is_connectivity_failure(exc: BaseException) -> bool:
+    """Did discovery fail to reach the server, as opposed to crashing here?
+
+    Transport errors arrive as ``OSError`` (``ConnectionError`` and
+    friends), ``TimeoutError``, ``httpx`` errors, or the MCP layer's own
+    ``McpError`` -- often wrapped in an ``ExceptionGroup`` by anyio's task
+    groups, so the leaves are what get classified. Anything else
+    (``TypeError``, ``KeyError``, a schema the converter cannot express)
+    came from code running in this process and is a bug to fix, not a
+    dependency to wait for.
+    """
+
+    if isinstance(exc, BaseExceptionGroup):
+        return all(_is_connectivity_failure(leaf) for leaf in exc.exceptions)
+    import httpx
+    from mcp.shared.exceptions import McpError
+
+    return isinstance(exc, (OSError, TimeoutError, httpx.HTTPError, McpError))
 
 
 async def _probe_runtime_mcp_server(
@@ -264,6 +296,7 @@ async def _probe_runtime_mcp_server(
             ok=False,
             tool_count=0,
             error=f"{type(exc).__name__}: {message}",
+            internal_failure=None if _is_connectivity_failure(exc) else exc,
         )
     if not tools:
         return _McpStartupProbeResult(
@@ -324,6 +357,72 @@ def _log_memory_runtime_identity() -> None:
     )
 
 
+def tmbx_identity_verdict(
+    local: BuildIdentity, remote: BuildIdentity | None
+) -> tuple[int, str]:
+    """What to log about the tmbx server's code against this bot's src/tmbx.
+
+    Returns a logging level and the line. Pure, so the judgement can be pinned
+    without a server.
+
+    The comparison is over the source fingerprint, not the git sha. The sha is
+    what a process happened to have checked out when it started; on a shared
+    working copy with hundreds of uncommitted lines it says nothing about the
+    bytes imported. Two shas with the same fingerprint are the same tmbx --
+    HEAD moved, the sources did not -- and warning there would train the
+    reader to skip the one warning that matters (#255).
+    """
+    local_line = describe_build(local)
+    if remote is None:
+        return (
+            logging.WARNING,
+            "tmbx build identity UNKNOWN: the server publishes none (it predates "
+            f"#255); this bot's src/tmbx is {local_line}. Which src/tmbx answers "
+            "plan_read cannot be told from here -- restart tmbx from this checkout "
+            "before attributing its behaviour to the code on disk.",
+        )
+    remote_line = describe_build(remote)
+    if remote.source_fingerprint != local.source_fingerprint:
+        return (
+            logging.WARNING,
+            f"tmbx build identity MISMATCH: server runs {remote_line} (started "
+            f"{remote.started_at} from {remote.package_root}); this bot's src/tmbx "
+            f"is {local_line}. tmbx is serving code that is not the tree this bot "
+            "imports -- restart it (`python scripts/demo.py start tmbx`) before "
+            "attributing its behaviour to the code on disk.",
+        )
+    return (
+        logging.INFO,
+        f"tmbx build identity {remote_line} matches this bot's src/tmbx "
+        f"(server started {remote.started_at})",
+    )
+
+
+async def _log_tmbx_build_identity(client: TmbxClient | None = None) -> None:
+    """Log which src/tmbx the warm server runs, next to this bot's own.
+
+    Sits beside `Runtime git identity` so the two shas that decide what a
+    session exercised are on adjacent lines. A server that cannot be reached
+    is a warning, not a startup failure: tmbx is not a required probe, and
+    every call to it later fails loudly on its own.
+    """
+    local = current_build_identity()
+    try:
+        remote = await asyncio.wait_for(
+            (client or TmbxClient(timeout=5.0)).build_identity(), timeout=5.5
+        )
+    except Exception as exc:  # noqa: BLE001 - startup diagnostics must not raise
+        logger.warning(
+            "tmbx build identity UNREACHABLE (%s): this bot's src/tmbx is %s; the "
+            "server's could not be asked",
+            type(exc).__name__,
+            describe_build(local),
+        )
+        return
+    level, message = tmbx_identity_verdict(local, remote)
+    logger.log(level, message)
+
+
 async def _assert_mcp_servers_available() -> None:
     probes = _runtime_mcp_servers()
     results = await asyncio.gather(
@@ -332,6 +431,16 @@ async def _assert_mcp_servers_available() -> None:
     required_failures = [r for r in results if not r.ok and not r.server.optional]
     optional_failures = [r for r in results if not r.ok and r.server.optional]
     for result in optional_failures:
+        if result.internal_failure is not None:
+            logger.error(
+                "Optional MCP server skipped because tool discovery raised in this "
+                "process (a bug, not an outage): %s [%s] -> %s",
+                result.server.name,
+                result.server.url,
+                result.error,
+                exc_info=result.internal_failure,
+            )
+            continue
         logger.warning(
             "Optional MCP server unavailable (skipping): %s [%s] -> %s",
             result.server.name,
@@ -578,7 +687,9 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
         git_identity.dirty,
     )
     _log_memory_runtime_identity()
-    await _assert_mcp_servers_available()
+    await asyncio.gather(
+        _assert_mcp_servers_available(), _log_tmbx_build_identity()
+    )
     scheduler = _create_scheduler(settings.database_url)
     scheduler.start()
 
@@ -652,11 +763,21 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
             recipient=AgentId(USER_CHANNEL_AGENT_TYPE, key=reminder.scope),
         )
 
+    # The reconciler looks for the planning event on the same calendar the
+    # timeboxing session writes to. Left at the rule's "primary" default it
+    # evaluated a calendar the session never touched (#256).
     reconciler = PlanningReconciler(
         scheduler,
         calendar_client=calendar_client,
         dispatcher=dispatch_planning,
         planning_session_store=planning_session_store,
+        rule=PlanningSessionRule(
+            calendar_client=calendar_client,
+            planning_session_store=planning_session_store,
+            config=PlanningRuleConfig(
+                calendar_id=timeboxing_calendar_id or "primary"
+            ),
+        ),
     )
 
     await PlannerAgent.register(

@@ -61,10 +61,25 @@ class FactKind(StrEnum):
     """Core planning facts consumed by the initial readiness policy."""
 
     REQUESTED_ACTIVITY = "requested_activity"
+    #: When the user gets up and when they go to sleep on the planning day, as
+    #: ``{"wake": "HH:MM", "sleep": "HH:MM"}`` in the planning timezone. The
+    #: user's to state, whether typed today or already on record in constraint
+    #: memory -- never the planner's to assume. On 2026-09-02 the planner
+    #: assumed it, committed the day, and the user's next message was the
+    #: correction the committed session then refused (#251).
+    DAY_FRAME = "day_frame"
+    #: How a requested activity the planner could not read is to be titled --
+    #: the user's pick among the readings the planner proposed. Recorded by a
+    #: press, so the value is the option's label and effect (#251).
+    ACTIVITY_READING = "activity_reading"
     ORDINARY_PLACEMENT = "ordinary_placement"
     CALENDAR_SNAPSHOT = "calendar_snapshot"
     ACTIVE_CONSTRAINTS = "active_constraints"
     CONCRETE_PLACEMENTS = "concrete_placements"
+    #: What the user asked to change about an artifact, in their words. No
+    #: requirement is satisfied by it; it is carried so the planner rebuilding
+    #: the artifact can read what was wrong with the last one.
+    REVISION_INSTRUCTION = "revision_instruction"
 
 
 class PlanningDay(_StrictModel):

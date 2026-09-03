@@ -29,6 +29,8 @@ from typing import Any
 
 from fateforger.tools.mcp_http_client import StreamableHttpMcpClient
 from fateforger.tools.mcp_url_validation import McpEndpointPolicy, McpEndpointResolver
+from tmbx.build_identity import RESOURCE_URI as BUILD_IDENTITY_URI
+from tmbx.build_identity import BuildIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,22 @@ class TmbxClient:
         self._client = StreamableHttpMcpClient(
             resolver=_TMBX_ENDPOINT, server_url=url, timeout=timeout
         )
+
+    async def build_identity(self) -> BuildIdentity | None:
+        """Which src/tmbx the running server imported, as it reports it.
+
+        None means the server answered but publishes no identity -- one older
+        than #255 -- which the caller must show as *unknown*, not as a match.
+        Unreachable raises, like every other call here.
+        """
+        text = await self._client.read_resource_text(BUILD_IDENTITY_URI)
+        if text is None:
+            return None
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return None
+        return BuildIdentity.from_dict(payload)
 
     async def read(self, calendar_id: str, day: str) -> dict[str, Any]:
         """Read the exact host-selected calendar/day without external effects.
