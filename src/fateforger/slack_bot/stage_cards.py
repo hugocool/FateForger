@@ -144,7 +144,23 @@ class StageCard(_Frozen):
     done: str | None = None
 
     def as_receipt(self, done: str) -> StageCard:
-        return self.model_copy(update={"controls": [], "asking": None, "done": done})
+        """The same card, closed: no way left to act on a stage already left.
+
+        Undo is the exception, and only Undo. Every other control asks the
+        kernel to advance a stage that has moved on, so a press on one is at
+        best refused; an undo names a write that reached the calendar, and it
+        outlives the card that announced it. Dropping it meant a reopen-to-
+        revise eighty seconds after the commit rewrote the stage-5 card to
+        `5/5 · Commit — ✅ confirmed` and took away the only affordance for
+        reversing the write -- the undo action id is drawn nowhere else.
+        """
+
+        kept: list[Control] = [
+            control for control in self.controls if isinstance(control, UndoControl)
+        ]
+        return self.model_copy(
+            update={"controls": kept, "asking": None, "done": done}
+        )
 
 
 def date_stage_card(

@@ -205,3 +205,39 @@ def test_long_lists_are_capped_by_count() -> None:
     )
     assert decided["text"]["text"].count("•") == 8
     assert "+4 more" in decided["text"]["text"]
+
+
+def test_a_receipted_commit_card_keeps_its_undo() -> None:
+    """Every other control is dropped by `as_receipt`, and Undo went with
+    them: a reopen-to-revise 80s after the commit rewrote the stage-5 card to
+    `5/5 · Commit — ✅ confirmed` with no way left to reverse the write, and
+    the undo action id is drawn nowhere else."""
+    card = StageCard(
+        stage=stage(5),
+        session_key="C1:1.0",
+        expected_revision=7,
+        body=":white_check_mark: Committed the plan you approved.",
+        controls=[UndoControl(tx_id="tx-9")],
+    )
+    message = render_stage_card(card.as_receipt("✅ confirmed"))
+    assert _action_ids(message) == {FF_HARNESS_UNDO_ACTION_ID}
+    assert "✅ confirmed" in message.blocks[0]["text"]["text"]
+
+
+def test_a_receipted_candidate_card_cannot_be_committed_again() -> None:
+    """The commit gate is not an undo: a receipted stage-4 card keeps nothing
+    pressable, or the plan the user moved on from stays committable."""
+    card = StageCard(
+        stage=stage(4),
+        session_key="C1:1.0",
+        expected_revision=6,
+        body="09:00 memo",
+        controls=[
+            CommitControl(candidate_id="cand-1", calendar_id="cal", day="2026-09-03"),
+            BackControl(),
+            CancelControl(),
+        ],
+    )
+    message = render_stage_card(card.as_receipt("↩️ reopened"))
+    assert _action_ids(message) == set()
+    assert FF_HARNESS_APPROVE_ACTION_ID not in _buttons(message)
