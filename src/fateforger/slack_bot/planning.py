@@ -8,17 +8,14 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from time import perf_counter
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
-from autogen_agentchat.agents import AssistantAgent
-from autogen_agentchat.messages import TextMessage
-from autogen_core import CancellationToken
 from autogen_core import AgentId
 from dateutil import parser as date_parser
-from pydantic import BaseModel, Field, TypeAdapter
 from slack_sdk.web.async_client import AsyncWebClient
 
 from fateforger.agents.schedular.messages import (
@@ -37,7 +34,6 @@ from fateforger.core.logging_config import (
     record_error,
     record_tool_call,
 )
-from fateforger.core.llm_attribution import llm_attribution
 from fateforger.haunt.event_draft_store import (
     DraftStatus,
     EventDraftPayload,
@@ -61,6 +57,16 @@ from fateforger.haunt.reconcile import (
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
 from fateforger.llm import build_autogen_chat_client
 from fateforger.slack_bot.focus import FocusManager
+from fateforger.slack_bot.planning_surface import (
+    PLANNING_PROMPT_FRAGMENT,
+    SURFACE_KIND,
+    InterpretedPlanningTurn,
+    PlanningPress,
+    bind,
+    describe,
+    planning_view,
+)
+from fateforger.slack_bot.surface_intents import SurfaceIntentInterpreter
 from fateforger.slack_bot.workspace import DEFAULT_PERSONAS, WorkspaceRegistry
 
 logger = logging.getLogger(__name__)
@@ -90,27 +96,6 @@ DEFAULT_DURATION_OPTIONS = (15, 30, 45, 60, 90, 120)
 DEFAULT_DURATION_MINUTES = 30
 DEFAULT_TIMEZONE = "Europe/Amsterdam"
 
-PLANNING_THREAD_REPLY_INTERPRETER_PROMPT = """
-You interpret user replies in a planning-card thread.
-
-Your task:
-- Decide whether the reply should change the draft time and/or add the draft to calendar.
-- Return STRICT JSON matching PlanningThreadReplyDecision.
-
-Action definitions:
-- ignore: no planning-card action should run.
-- update_time: change draft time only (no add yet).
-- add_to_calendar: add draft without changing time.
-- update_time_and_add_to_calendar: change time, then add.
-
-Rules:
-- Understand natural language in any language.
-- If the user gives a clock time (e.g. 17:00, 5pm), normalize to 24h HH:MM.
-- Only set selected_time when user explicitly specifies a time.
-- If uncertain, choose action=ignore.
-- Never invent times.
-""".strip()
-
 
 @dataclass(frozen=True)
 class SlotSuggestion:
@@ -119,28 +104,17 @@ class SlotSuggestion:
     tz: str
 
 
-class PlanningThreadReplyDecision(BaseModel):
-    action: Literal[
-        "ignore", "update_time", "add_to_calendar", "update_time_and_add_to_calendar"
-    ] = Field(
-        description="Interpretation action for this planning-card thread reply."
-    )
-    selected_time: str | None = Field(
-        default=None, description="24h time HH:MM when user explicitly requested one."
-    )
-    confidence: float | None = Field(
-        default=None, ge=0.0, le=1.0, description="Confidence score for telemetry."
-    )
-    explanation: str | None = Field(
-        default=None, description="Short debug rationale; not user-facing."
-    )
+class ThreadReplyOutcome(Enum):
+    NOT_A_SURFACE = "not_a_surface"
+    HANDLED = "handled"
+    NO_PRESS = "no_press"
 
 
 @dataclass(frozen=True)
-class PlanningThreadReplyIntent:
-    should_handle: bool
-    commit: bool
-    selected_time: str | None
+class ThreadReply:
+    outcome: ThreadReplyOutcome
+    #: What an agent is told about the card, when the reply pressed nothing.
+    context: str | None = None
 
 
 class PlanningCoordinator:
@@ -177,75 +151,36 @@ class PlanningCoordinator:
             str(getattr(runtime, "timeboxing_calendar_id", "") or "").strip()
             or "primary"
         )
-        self._thread_reply_interpreter: AssistantAgent | None = None
+        self._intent_interpreter: SurfaceIntentInterpreter | None = None
         if self._guardian:
             timeboxing_activity.set_on_idle(self._handle_timeboxing_idle)
 
-    def _ensure_thread_reply_interpreter(self) -> AssistantAgent:
-        if self._thread_reply_interpreter:
-            return self._thread_reply_interpreter
-        self._thread_reply_interpreter = AssistantAgent(
-            name="planning_card_thread_reply_interpreter",
-            model_client=build_autogen_chat_client("planner_agent"),
-            output_content_type=PlanningThreadReplyDecision,
-            system_message=PLANNING_THREAD_REPLY_INTERPRETER_PROMPT,
-            reflect_on_tool_use=False,
-            max_tool_iterations=1,
-        )
-        return self._thread_reply_interpreter
-
-    async def _interpret_planning_thread_reply(
-        self, *, text: str, draft: EventDraftPayload
-    ) -> PlanningThreadReplyIntent:
-        interpreter = self._ensure_thread_reply_interpreter()
-        prompt = (
-            "Planning draft context:\n"
-            f"- title: {draft.title}\n"
-            f"- timezone: {draft.timezone}\n"
-            f"- current_start_utc: {draft.start_at_utc}\n"
-            f"- duration_min: {draft.duration_min}\n\n"
-            f"User reply:\n{text}"
-        )
-        try:
-            # Driven from a Slack listener rather than runtime.send_message,
-            # so AutoGen has no agent id to stamp on the event and the tokens
-            # would otherwise be indistinguishable from every other unnamed
-            # call in fateforger_llm_tokens_total.
-            with llm_attribution(
-                agent="planning_thread_reply_interpreter",
-                call_label="planning_thread_reply",
-                key=draft.user_id,
-            ):
-                response = await interpreter.on_messages(
-                    [TextMessage(content=prompt, source=draft.user_id)],
-                    CancellationToken(),
-                )
-            content = getattr(getattr(response, "chat_message", None), "content", None)
-            if isinstance(content, PlanningThreadReplyDecision):
-                decision = content
-            else:
-                decision = TypeAdapter(PlanningThreadReplyDecision).validate_python(
-                    content
-                )
-        except Exception:
-            logger.warning("planning thread reply interpretation failed", exc_info=True)
-            return PlanningThreadReplyIntent(
-                should_handle=False, commit=False, selected_time=None
+    def _ensure_intent_interpreter(self) -> SurfaceIntentInterpreter:
+        if self._intent_interpreter is None:
+            # No temperature pin: CLAUDE.md retired it on measurement.
+            self._intent_interpreter = SurfaceIntentInterpreter(
+                build_autogen_chat_client("planner_agent")
             )
+        return self._intent_interpreter
 
-        selected_time = (decision.selected_time or "").strip() or None
-        commit = decision.action in {
-            "add_to_calendar",
-            "update_time_and_add_to_calendar",
-        }
-        should_handle = decision.action != "ignore"
-        if decision.action in {"update_time", "update_time_and_add_to_calendar"}:
-            should_handle = bool(selected_time)
-        return PlanningThreadReplyIntent(
-            should_handle=should_handle,
-            commit=commit,
-            selected_time=selected_time,
+    async def _interpret_reply(
+        self, *, text: str, draft: EventDraftPayload
+    ) -> PlanningPress | None:
+        """The reply as a press on the card, or None. Raises on failure -- loudly.
+
+        Degrading to "no press" would make a model outage indistinguishable
+        from a user who said something that pressed nothing, which is exactly
+        the 2026-09-03 cold-menu shape.
+        """
+
+        interpreted = await self._ensure_intent_interpreter().interpret(
+            view=planning_view(draft),
+            user_text=text,
+            schema=InterpretedPlanningTurn,
+            prompt_fragment=PLANNING_PROMPT_FRAGMENT,
+            attribution=(f"{SURFACE_KIND}_intent_interpreter", f"{SURFACE_KIND}_intent", draft.user_id),
         )
+        return bind(interpreted)
 
     async def _handle_timeboxing_idle(self, user_id: str) -> None:
         if not self._guardian:
@@ -988,98 +923,62 @@ class PlanningCoordinator:
         thread_ts: str,
         text: str,
         thread_respond,
-    ) -> bool:
-        """Handle NL replies on planning-card threads using the same add path as card actions."""
+    ) -> ThreadReply:
+        """Read a thread reply against the planning card it sits under.
+
+        Three answers, because two of them used to share a False: this is not a
+        card thread; it is, and the reply pressed something (done here, through
+        the button's own executor); it is, and the reply pressed nothing (the
+        caller routes it, with the card described).
+        """
         if not self._draft_store:
-            return False
+            return ThreadReply(ThreadReplyOutcome.NOT_A_SURFACE)
         draft = await self._resolve_thread_draft(channel_id=channel_id, thread_ts=thread_ts)
         if not draft:
-            return False
+            return ThreadReply(ThreadReplyOutcome.NOT_A_SURFACE)
 
-        parsed = await self._interpret_planning_thread_reply(text=text, draft=draft)
-        if not parsed.should_handle:
-            return False
+        press = await self._interpret_reply(text=text, draft=draft)
+        if press is None:
+            return ThreadReply(ThreadReplyOutcome.NO_PRESS, context=describe(draft))
 
         async def _card_respond(*, text: str, blocks, replace_original: bool) -> None:
-            payload: dict[str, Any] = {
-                "channel": channel_id,
-                "ts": thread_ts,
-                "text": text,
-            }
+            payload: dict[str, Any] = {"channel": channel_id, "ts": thread_ts, "text": text}
             if blocks:
                 payload["blocks"] = blocks
             await self._client.chat_update(**payload)
 
-        if parsed.selected_time:
+        if press.selected_time:
             draft_message_ts = (draft.message_ts or "").strip()
             if not draft_message_ts:
-                return False
+                raise ValueError("a time press needs the card's message_ts to update it")
             await self.handle_start_time_changed(
                 channel_id=draft.channel_id,
                 message_ts=draft_message_ts,
-                selected_time=parsed.selected_time,
+                selected_time=press.selected_time,
             )
-            if not parsed.commit:
-                updated_draft = await self._draft_store.get_by_draft_id(
-                    draft_id=draft.draft_id
-                )
-                if updated_draft:
-                    payload = _card_payload(
-                        updated_draft, status_override=_status_text(updated_draft)
-                    )
-                    await _card_respond(
-                        text=payload["text"],
-                        blocks=payload["blocks"],
-                        replace_original=True,
-                    )
+            updated = await self._draft_store.get_by_draft_id(draft_id=draft.draft_id)
+            if updated:
+                draft = updated
+            if press.kind == "update_time":
+                payload = _card_payload(draft, status_override=_status_text(draft))
+                await _card_respond(text=payload["text"], blocks=payload["blocks"], replace_original=True)
                 await thread_respond(
-                    text=f"Updated draft time to {parsed.selected_time}. Press Add to calendar when ready."
+                    text=f"Updated draft time to {press.selected_time}. Press Add to calendar when ready."
                 )
-                return True
-            updated_draft = await self._draft_store.get_by_draft_id(
-                draft_id=draft.draft_id
-            )
-            if updated_draft:
-                draft = updated_draft
+                return ThreadReply(ThreadReplyOutcome.HANDLED)
 
-        if parsed.commit:
-            if draft.status is DraftStatus.SUCCESS:
-                payload = _card_payload(draft)
-                await _card_respond(
-                    text=payload["text"],
-                    blocks=payload["blocks"],
-                    replace_original=True,
-                )
-                if draft.event_url:
-                    await thread_respond(
-                        text=(
-                            "This planning session is already on your calendar.\n"
-                            f"{draft.event_url}"
-                        )
-                    )
-                else:
-                    await thread_respond(
-                        text="This planning session is already on your calendar."
-                    )
-                return True
-            if draft.status is DraftStatus.PENDING:
-                await thread_respond(
-                    text="Still adding this planning session to your calendar…"
-                )
-                return True
-            await thread_respond(
-                text=(
-                    f"Applying your update at {parsed.selected_time} and adding to calendar…"
-                    if parsed.selected_time
-                    else "Adding this planning session to your calendar…"
-                )
+        # add, update_time_and_add, retry: the same executor the button calls.
+        await thread_respond(
+            text=(
+                f"Applying your update at {press.selected_time} and adding to calendar…"
+                if press.selected_time
+                else "Adding this planning session to your calendar…"
             )
-            await self.start_add_to_calendar(
-                draft_id=draft.draft_id, respond=_card_respond, notify=thread_respond
-            )
-            return True
-
-        return False
+        )
+        await self.start_add_to_calendar(
+            draft_id=draft.draft_id, respond=_card_respond, notify=thread_respond
+        )
+        return ThreadReply(ThreadReplyOutcome.HANDLED)
 
     async def _resolve_thread_draft(
         self, *, channel_id: str, thread_ts: str
