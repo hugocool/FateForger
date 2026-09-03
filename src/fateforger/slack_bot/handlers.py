@@ -1606,6 +1606,18 @@ async def _run_adaptive_timebox_turn(
             # Committed or cancelled: the session is over, so the idle timer
             # has nothing left to watch.
             timeboxing_activity.mark_inactive(user_id=actor_user_id)
+        # What the commit gate actually spends is the pending candidate, not
+        # the artifact, so a turn that leaves none on offer has to disarm it.
+        # Back off stage 4 drops the `validated_candidate` and receipts the
+        # card, but that edit is best-effort and swallowed: a Commit button
+        # that survives it reaches `_handle_timebox_candidate_approval`, finds
+        # no candidate artifact, returns False, and falls through to
+        # `_execute_harness_approval`, which spends the still-armed candidate
+        # and commits the plan the user just went back from. Bound to what the
+        # session now holds rather than to which intent ran, and before the
+        # mapper, which re-arms whenever it draws a candidate card.
+        if not _candidate_is_on_offer(current):
+            _pending_candidates.invalidate(session_key)
     except Exception as exc:  # noqa: BLE001 - one failure shape reaches Slack
         # The message and the traceback, not the class alone. The card keeps
         # the detail out of Slack on the promise that the log has it; on
@@ -1817,6 +1829,38 @@ def _card_interaction_id(action: dict, action_id: str, fallback_ts: str) -> str:
     return action_ts or f"{action_id}:{fallback_ts}"
 
 
+def _latest_candidate(snapshot: PlanningSessionSnapshot) -> PlanningArtifact | None:
+    """The validated candidate this session would present, if it has one."""
+
+    candidates = [
+        artifact
+        for artifact in snapshot.artifacts
+        if artifact.kind is ArtifactKind.VALIDATED_CANDIDATE
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda artifact: artifact.revision)
+
+
+def _candidate_is_on_offer(snapshot: PlanningSessionSnapshot) -> bool:
+    """Whether a Commit press could still be honoured against this session.
+
+    An approved candidate is spent: the kernel commits it in the same turn it
+    is approved, through the port that consumes the pending entry. So "on
+    offer" is a candidate the session holds and has not approved.
+    """
+
+    latest = _latest_candidate(snapshot)
+    if latest is None:
+        return False
+    return not any(
+        approval.artifact_id == latest.artifact_id
+        and approval.artifact_revision == latest.revision
+        and approval.artifact_digest == latest.digest
+        for approval in snapshot.approvals
+    )
+
+
 def _pending_candidate_approval(
     snapshot: PlanningSessionSnapshot,
 ) -> ApproveArtifact | None:
@@ -1828,14 +1872,9 @@ def _pending_candidate_approval(
     after a newer candidate exists fails on the revision it stamped, so binding
     late here cannot silently retarget it.
     """
-    candidates = [
-        artifact
-        for artifact in snapshot.artifacts
-        if artifact.kind is ArtifactKind.VALIDATED_CANDIDATE
-    ]
-    if not candidates:
+    latest = _latest_candidate(snapshot)
+    if latest is None:
         return None
-    latest = max(candidates, key=lambda artifact: artifact.revision)
     return ApproveArtifact(
         artifact_id=latest.artifact_id,
         artifact_revision=latest.revision,

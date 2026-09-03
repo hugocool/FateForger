@@ -13,6 +13,8 @@ from fateforger.agents.timeboxing.session_contracts import (
     Advance,
     ArtifactKind,
     AwaitingApproval,
+    Cancelled,
+    CancelSession,
     ConfirmPlanningDay,
     GoBack,
     PlanningArtifact,
@@ -21,6 +23,10 @@ from fateforger.agents.timeboxing.session_contracts import (
     TurnFailed,
 )
 from fateforger.slack_bot.stage_card_registry import StageCardRegistry
+from fateforger.slack_bot.timebox_candidate import (
+    PendingTimeboxCandidates,
+    ValidatedTimeboxCandidate,
+)
 from fateforger.slack_bot.timeboxing_cards import FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID
 
 
@@ -193,3 +199,106 @@ async def test_a_typed_day_change_relabels_the_thread_root(monkeypatch) -> None:
     assert len(root_writes) == 1
     assert "Timeboxing session for" in root_writes[0]["text"]
     assert "blocks" not in root_writes[0]
+
+
+# -- The armed commit button outlives the card that drew it --------------------
+# `_pending_candidates` is what the commit gate actually spends. Back off stage
+# 4 drops the `validated_candidate` artifact, but nothing cleared the armed
+# candidate: the receipt edit that neutralises the stale Commit button is
+# best-effort and swallowed, and a press on a button that survived it reaches
+# `_handle_timebox_candidate_approval`, finds no candidate artifact, returns
+# False, falls through to `_execute_harness_approval` -- which consumes the
+# still-armed candidate and commits the plan the user just went Back from.
+
+
+def _armed(monkeypatch) -> PendingTimeboxCandidates:
+    pending = PendingTimeboxCandidates()
+    pending.replace(
+        "C1:1.0",
+        ValidatedTimeboxCandidate(
+            digest="d" * 64,
+            snapshot={"calendar_id": "cal", "day": "2026-09-03"},
+            patch={"ops": []},
+            rendered="09:00 memo",
+        ),
+        owner_user_id="U1",
+    )
+    monkeypatch.setattr(handlers, "_pending_candidates", pending)
+    return pending
+
+
+@pytest.mark.asyncio
+async def test_back_off_the_candidate_disarms_the_commit_button(monkeypatch) -> None:
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=3, owner_user_id="U1", planning_day=_day()
+    )
+    runtime, _registry = _wire(
+        monkeypatch,
+        outcome=AwaitingApproval(artifact=_skeleton()),
+        intent=GoBack(),
+        snapshot=snapshot,
+    )
+    pending = _armed(monkeypatch)
+
+    await _turn(runtime, _Client(), ts="100.1")
+
+    assert pending.peek("C1:1.0") is None
+
+
+@pytest.mark.asyncio
+async def test_cancelling_disarms_the_commit_button(monkeypatch) -> None:
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=3,
+        owner_user_id="U1",
+        planning_day=_day(),
+        status="cancelled",
+    )
+    runtime, _registry = _wire(
+        monkeypatch,
+        outcome=Cancelled(),
+        intent=CancelSession(),
+        snapshot=snapshot,
+    )
+    pending = _armed(monkeypatch)
+
+    await _turn(runtime, _Client(), ts="100.1")
+
+    assert pending.peek("C1:1.0") is None
+
+
+@pytest.mark.asyncio
+async def test_the_candidate_on_offer_stays_armed(monkeypatch) -> None:
+    """The disarm is bound to what the session holds, not to which intent ran:
+    a turn that re-presents the candidate must leave a spendable one behind, or
+    the Commit button it just drew answers nothing."""
+    candidate = PlanningArtifact.create(
+        artifact_id="candidate-1",
+        kind=ArtifactKind.VALIDATED_CANDIDATE,
+        revision=1,
+        payload={
+            "digest": "d" * 64,
+            "snapshot": {"calendar_id": "cal", "day": "2026-09-03"},
+            "patch": {"ops": []},
+            "rendered": "09:00 memo",
+        },
+        dependency_revisions={"skeleton": 1},
+    )
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=3,
+        owner_user_id="U1",
+        planning_day=_day(),
+        artifacts=[candidate],
+    )
+    runtime, _registry = _wire(
+        monkeypatch,
+        outcome=AwaitingApproval(artifact=candidate),
+        intent=Advance(),
+        snapshot=snapshot,
+    )
+    pending = _armed(monkeypatch)
+
+    await _turn(runtime, _Client(), ts="100.1")
+
+    assert pending.peek("C1:1.0") is not None
