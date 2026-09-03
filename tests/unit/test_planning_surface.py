@@ -96,3 +96,30 @@ def test_bind_refuses_a_time_decision_without_a_time() -> None:
 
 def test_bind_none_is_no_press() -> None:
     assert bind(InterpretedPlanningTurn(decision="none")) is None
+
+
+def test_bind_maps_the_retry_option_to_the_retry_press() -> None:
+    schema = narrow_schema(InterpretedPlanningTurn, planning_view(_draft(DraftStatus.FAILURE)).offered_options)
+    turn = schema.model_validate({"decision": CHOOSE_OPTION, "option_id": RETRY_OPTION_ID})
+
+    assert bind(turn) == PlanningPress(kind="retry", selected_time=None)
+
+
+def test_bind_raises_for_choose_option_with_unoffered_option_id() -> None:
+    schema = narrow_schema(InterpretedPlanningTurn, planning_view(_draft()).offered_options)
+    # Use model_construct to bypass validation, since the schema rejects it
+    turn = schema.model_construct(decision=CHOOSE_OPTION, option_id="cancel")
+
+    with pytest.raises(ValueError, match="without an offered option"):
+        bind(turn)
+
+
+def test_a_failed_draft_offers_the_full_decision_set() -> None:
+    view = planning_view(_draft(DraftStatus.FAILURE))
+
+    assert view.allowed_decisions == (
+        "update_time",
+        "update_time_and_add",
+        "none",
+        CHOOSE_OPTION,
+    )
