@@ -342,3 +342,49 @@ def test_a_planning_day_payload_that_is_not_one_fails_loudly() -> None:
     )
     with pytest.raises(ValidationError):
         _map(AwaitingApproval(artifact=artifact), _snapshot())
+
+
+def test_a_candidate_onto_a_populated_day_says_what_it_changes() -> None:
+    """The first candidate of 2026-09-03 said "the calendar was empty, 8 blocks
+    added". The second was a patch onto a day that already held eleven blocks
+    and said nothing about it -- three of those blocks belonged to another
+    session and were about to be renamed. A patch onto a populated day is a
+    decision too, and the card has to say what it does to what is there.
+    Decided over what tmbx minted: ``event_ids`` and each op's ``op``."""
+
+    from fateforger.slack_bot.stage_cards import commit_basis_notice
+
+    base = _candidate()
+    payload = dict(base.payload)
+    payload["snapshot"] = {
+        **payload["snapshot"],
+        "event_ids": {"PR1": "e1", "DW1": "e2", "INV1": "e3", "LN1": "e4"},
+    }
+    payload["patch"] = {
+        "ops": [
+            {"op": "update", "h": "PR1"},
+            {"op": "update", "h": "DW1"},
+            {"op": "add", "h": "X1"},
+            {"op": "remove", "h": "LN1"},
+        ]
+    }
+    populated = PlanningArtifact.create(
+        artifact_id="candidate-2",
+        kind=ArtifactKind.VALIDATED_CANDIDATE,
+        revision=2,
+        payload=payload,
+        dependency_revisions={"skeleton": 1},
+    )
+
+    card = _map(AwaitingApproval(artifact=populated), _snapshot(), PendingTimeboxCandidates())
+
+    assert card is not None
+    assert "already has 4 blocks" in card.body
+    assert "1 added" in card.body
+    assert "2 updated" in card.body
+    assert "1 removed" in card.body
+    assert "empty" not in card.body
+    # The empty-day sentence is unchanged, and a patch with no ops says nothing.
+    empty = commit_basis_notice({"event_ids": {}}, {"ops": [{"op": "add"}]})
+    assert "*empty*" in empty and "1 blocks added" in empty
+    assert commit_basis_notice(payload["snapshot"], {"ops": []}) == ""

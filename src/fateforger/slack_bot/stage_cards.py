@@ -15,6 +15,8 @@ here keys on an enum this system minted. Nothing reads what the user wrote.
 
 from __future__ import annotations
 
+from collections import Counter
+
 import json
 from typing import Annotated, Literal, Union
 
@@ -197,27 +199,48 @@ def date_stage_card(
     )
 
 
-def empty_day_notice(snapshot: dict, patch: dict) -> str:
-    """Say so when the candidate builds a whole day onto an empty read.
+def commit_basis_notice(snapshot: dict, patch: dict) -> str:
+    """Say what approving does to the day that is on the calendar.
 
     On 2026-09-02 the read returned no blocks and the candidate added nineteen.
     The journal agrees the day was empty, so the plan was probably right -- but
     building an entire day from nothing is a decision, and the card presented
-    it as a refinement. Decided over what tmbx minted: the snapshot's
-    ``event_ids`` is every event the read saw, and each op's ``op`` is a
-    schema value. Nothing here reads a title (#251).
+    it as a refinement. On 2026-09-03 the opposite case said nothing at all: a
+    patch onto a day that already held eleven blocks, three of them written by
+    another session minutes earlier, renamed them on approval and the card
+    gave no sign that anything was there to change. Both are decided over
+    what tmbx minted: the snapshot's ``event_ids`` is every event the read
+    saw, and each op's ``op`` is a schema value. Nothing here reads a title
+    (#251).
     """
 
-    event_ids = snapshot.get("event_ids")
-    if not isinstance(event_ids, dict) or event_ids:
-        return ""
     ops = patch.get("ops")
     if not isinstance(ops, list) or not ops:
         return ""
-    added = sum(1 for op in ops if isinstance(op, dict) and op.get("op") == "add")
+    event_ids = snapshot.get("event_ids")
+    if not isinstance(event_ids, dict):
+        return ""
+    counts = Counter(op.get("op") for op in ops if isinstance(op, dict))
+    if not event_ids:
+        return (
+            ":information_source: The calendar for this day was *empty* when this "
+            f"was drafted, so approving builds the whole day: {counts['add']} blocks added."
+        )
+    changes = [
+        f"{counts[op]} {label}"
+        for op, label in (
+            ("add", "added"),
+            ("update", "updated"),
+            ("move", "moved"),
+            ("remove", "removed"),
+        )
+        if counts[op]
+    ]
+    if not changes:
+        return ""
     return (
-        ":information_source: The calendar for this day was *empty* when this "
-        f"was drafted, so approving builds the whole day: {added} blocks added."
+        f":information_source: The calendar for this day already has {len(event_ids)} "
+        f"blocks; approving changes it: {', '.join(changes)}."
     )
 
 
@@ -371,7 +394,7 @@ def map_outcome(
             calendar_id = owned.snapshot.get("calendar_id")
             day = owned.snapshot.get("day")
             body = owned.rendered or "A validated plan is ready for your approval."
-            notice = empty_day_notice(owned.snapshot, owned.patch)
+            notice = commit_basis_notice(owned.snapshot, owned.patch)
             if notice:
                 body = f"{notice}\n\n{body}"
             return StageCard(
@@ -447,7 +470,7 @@ __all__ = [
     "StageLine",
     "UndoControl",
     "date_stage_card",
-    "empty_day_notice",
+    "commit_basis_notice",
     "map_outcome",
     "stage",
 ]
