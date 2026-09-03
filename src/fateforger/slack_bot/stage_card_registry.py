@@ -52,6 +52,18 @@ def receipt_label(intent: TimeboxIntent, previous: StageCard) -> str:
     return "✅ confirmed"
 
 
+def receipt_body(intent: TimeboxIntent, previous: StageCard) -> str:
+    """The receipt's body: the card's own, unless the intent decided the very
+    thing the body named. The date card's body is the day it *offered*, and
+    on 2026-09-03 a receipt read "✅ Saturday 5 September" over "Planning
+    2026-09-03" -- the label had been fixed to name the accepted day and the
+    body, minted before the decision, contradicted it."""
+
+    if isinstance(intent, ConfirmPlanningDay):
+        return f"Planning {intent.planning_day.date.isoformat()}"
+    return previous.body
+
+
 class StageCardRegistry:
     def __init__(self) -> None:
         self._shown: dict[str, ShownCard] = {}
@@ -75,6 +87,7 @@ class StageCardRegistry:
         channel: str,
         ts: str,
         logger,
+        body: str | None = None,
     ) -> None:
         """Close the previous card with `done`, then register the new one.
 
@@ -91,7 +104,10 @@ class StageCardRegistry:
             and previous is not None
             and (previous.channel, previous.ts) != (channel, ts)
         ):
-            receipt = render_stage_card(previous.card.as_receipt(done))
+            closed = previous.card.as_receipt(done)
+            if body is not None:
+                closed = closed.model_copy(update={"body": body})
+            receipt = render_stage_card(closed)
             try:
                 await client.chat_update(
                     channel=previous.channel,
@@ -115,4 +131,4 @@ class StageCardRegistry:
         self._shown[session_key] = ShownCard(channel=channel, ts=ts, card=new_card)
 
 
-__all__ = ["ShownCard", "StageCardRegistry", "receipt_label"]
+__all__ = ["ShownCard", "StageCardRegistry", "receipt_body", "receipt_label"]

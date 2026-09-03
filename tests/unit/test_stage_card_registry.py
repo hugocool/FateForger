@@ -179,3 +179,47 @@ def test_a_confirmed_day_receipt_names_the_day_that_was_accepted() -> None:
     assert label.startswith("✅ ")
     assert "4 September" in label
     assert "working day" in label
+
+
+def test_a_confirmed_day_receipt_body_is_the_day_that_was_accepted() -> None:
+    """Live 2026-09-03: the receipt's label said "✅ Saturday 5 September —
+    weekend day" and its body, minted when the card offered Thursday, still
+    said "Planning 2026-09-03". The body is the accepted day or nothing."""
+    from datetime import date
+
+    from fateforger.agents.timeboxing.session_contracts import (
+        ConfirmPlanningDay,
+        PlanningDay,
+    )
+    from fateforger.slack_bot.stage_card_registry import receipt_body
+
+    saturday = PlanningDay.lock_default(
+        value=date(2026, 9, 5), timezone="Europe/Amsterdam", lock_revision=2
+    )
+    offered = _card(1, body="Planning 2026-09-03")
+    assert receipt_body(ConfirmPlanningDay(planning_day=saturday), offered) == "Planning 2026-09-05"
+    assert receipt_body(Advance(), offered) == "Planning 2026-09-03"
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_can_carry_a_body_the_card_did_not_have() -> None:
+    registry = StageCardRegistry()
+    client = _Client()
+    registry.remember("C1:1.0", channel="C1", ts="100.1", card=_card(1, body="Planning 2026-09-03"))
+
+    await registry.transition(
+        client,
+        session_key="C1:1.0",
+        done="✅ Saturday 5 September — weekend day",
+        body="Planning 2026-09-05",
+        new_card=_card(2),
+        channel="C1",
+        ts="100.2",
+        logger=logging.getLogger(__name__),
+    )
+
+    sections = [
+        b["text"]["text"] for b in client.updates[0]["blocks"] if b.get("type") == "section"
+    ]
+    assert any("Planning 2026-09-05" in t for t in sections)
+    assert not any("2026-09-03" in t for t in sections)

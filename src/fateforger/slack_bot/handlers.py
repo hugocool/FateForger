@@ -96,7 +96,7 @@ from fateforger.slack_bot.progress_events import (
     ProgressStatus as TimeboxProgressStatus,
 )
 from fateforger.slack_bot.reply_guard import agent_reply_text
-from fateforger.slack_bot.stage_card_registry import StageCardRegistry, receipt_label
+from fateforger.slack_bot.stage_card_registry import StageCardRegistry, receipt_body, receipt_label
 from fateforger.slack_bot.stage_cards import date_stage_card
 from fateforger.slack_bot.task_cards import (
     FF_TASK_DETAILS_ACTION_ID,
@@ -1666,18 +1666,21 @@ async def _run_adaptive_timebox_turn(
     # Close the card the user just acted on, then register this one. A failed
     # turn keeps the previous card live: its Retry is the way back.
     previous = _stage_cards.shown(session_key)
+    receipt_body_text = None
     if isinstance(outcome, TurnFailed):
         done = None
     elif isinstance(outcome, Cancelled):
         done = "🚫 cancelled"
     elif previous is not None:
         done = receipt_label(intent, previous.card)
+        receipt_body_text = receipt_body(intent, previous.card)
     else:
         done = None
     await _stage_cards.transition(
         client,
         session_key=session_key,
         done=done,
+        body=receipt_body_text,
         new_card=card,
         channel=progress_channel,
         ts=progress_ts,

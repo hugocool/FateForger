@@ -414,3 +414,51 @@ async def test_a_typed_day_change_survives_the_constraints_redraw(monkeypatch) -
     assert redraw["text"].startswith(":large_blue_circle:")
     assert "Thursday" not in redraw["text"]
     assert focus.get_thread_label("C1:1.0").state == "in_progress"
+
+
+# -- The date receipt names the day that was accepted, not the one offered -----
+# The date card's body is minted from the suggested day. A typed change accepts
+# another one, and the receipt is derived from the card as shown, so on
+# 2026-09-03 the receipt read "✅ Saturday 5 September" over "Planning
+# 2026-09-03".
+
+
+@pytest.mark.asyncio
+async def test_a_typed_day_change_receipts_the_accepted_day(monkeypatch) -> None:
+    from fateforger.slack_bot.stage_cards import date_stage_card
+
+    friday = PlanningDay.lock_default(
+        value=date(2026, 9, 4), timezone="Europe/Amsterdam", lock_revision=2
+    )
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=2, owner_user_id="U1", planning_day=friday
+    )
+    runtime, registry = _wire(
+        monkeypatch,
+        outcome=AwaitingApproval(artifact=_skeleton()),
+        intent=ConfirmPlanningDay(planning_day=friday),
+        snapshot=snapshot,
+    )
+    registry.remember(
+        "C1:1.0",
+        channel="C1",
+        ts="100.0",
+        card=date_stage_card(
+            session_key="C1:1.0",
+            expected_revision=1,
+            user_id="U1",
+            channel_id="C1",
+            thread_ts="1.0",
+            planned_date="2026-09-03",
+            tz_name="Europe/Amsterdam",
+        ),
+    )
+    client = _Client()
+
+    await _turn(runtime, client, ts="100.1", user_text="Tomorrow please")
+
+    receipt = next(u for u in client.updates if u.get("ts") == "100.0")
+    sections = [b["text"]["text"] for b in receipt["blocks"] if b.get("type") == "section"]
+    assert any("4 September" in t for t in sections)
+    assert any("Planning 2026-09-04" in t for t in sections)
+    assert not any("2026-09-03" in t for t in sections)
