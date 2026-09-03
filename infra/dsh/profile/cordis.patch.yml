@@ -9,10 +9,22 @@
 #      constraint-handling policy neither server states (memory-policy.md)
 #   3. two @deepseek-ai/dsh-mcp-client rows, one per stdio server
 #
-# The calendar backend is pinned to the in-memory fake. tmbx's own default is
-# also "fake", so this is belt and braces: nothing here can reach a real
-# Google Calendar. TMBX_CALENDAR_BACKEND=google is the only value that would,
-# and it must never be written into this file.
+# The calendar backend is REAL. `scripts/demo.py` starts tmbx with
+# TMBX_CALENDAR_BACKEND=google, and that is intended: this plans Hugo's actual
+# calendar, which is the point of the system.
+#
+# This comment used to say the opposite -- that the backend was pinned to the
+# in-memory fake, that nothing here could reach a real Google Calendar, and
+# that `google` "must never be written into this file". None of that was true
+# once the mount moved to the long-lived HTTP servers, which `demo.py` starts
+# and which never read this file. A reader who trusted it concluded the
+# calendar was unreachable, which is how a commit gate stops being treated as
+# load-bearing (#190).
+#
+# So: the gate is load-bearing. `dsh_commit_gate_hook` denies `plan_commit`
+# until an approval token exists, and it is the only thing between a planning
+# turn and a real calendar. `demo.py status` reports what each process is
+# actually serving, so this claim can be checked rather than believed.
 #
 # The memory mount is allow-listed, and structurally so — see the mcp-memory row.
 # It may now write (memory_observe) and it may borrow the host's model
@@ -282,8 +294,8 @@
         cwd: !!js process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1'
         env:
           PYTHONPATH: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/src'
-          FF_DSH_PROGRESS_FILE: !!js process.env.FF_DSH_PROGRESS_FILE
-          FF_DSH_SESSION_KEY: !!js process.env.FF_DSH_SESSION_KEY
+          FF_DSH_PROGRESS_FILE: !!js process.env.FF_DSH_PROGRESS_FILE || ''
+          FF_DSH_SESSION_KEY: !!js process.env.FF_DSH_SESSION_KEY || ''
         toolCallTimeoutMs: 5000
         failOnStartupError: true
 
@@ -321,7 +333,7 @@
         cwd: !!js process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1'
         env:
           PYTHONPATH: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/src'
-          FF_DSH_PLANNING_RESULT_FILE: !!js process.env.FF_DSH_PLANNING_RESULT_FILE
+          FF_DSH_PLANNING_RESULT_FILE: !!js process.env.FF_DSH_PLANNING_RESULT_FILE || ''
         toolCallTimeoutMs: 5000
         failOnStartupError: true
 
