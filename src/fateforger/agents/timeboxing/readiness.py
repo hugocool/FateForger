@@ -274,6 +274,19 @@ class TimeboxRequirements:
             ),
         )
 
+    @staticmethod
+    def target_of(requirement_id: str) -> ArtifactKind | None:
+        """Which artifact a requirement exists to produce; None if unknown.
+
+        An assumption is recorded against a requirement id, and the artifact
+        that id serves is the one whose disappearance retires the assumption.
+        """
+
+        for requirement in _REQUIREMENTS:
+            if requirement.requirement_id == requirement_id:
+                return requirement.target_artifact
+        return None
+
     def invalidate_from(
         self, changed_artifact: ArtifactKind
     ) -> frozenset[ArtifactKind]:

@@ -372,6 +372,11 @@ class ReviseArtifact(_StrictModel):
     artifact_revision: int = Field(ge=1)
     artifact_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     instruction: str = Field(min_length=1)
+    #: What the user stated in the same breath as the instruction. "Move the
+    #: work an hour later, I'll sleep until 8:30" is one message carrying a
+    #: day frame and a revision; a turn takes one intent, so the facts ride
+    #: with it and are filed before the redraft reads them.
+    facts: list[PlanningFact] = Field(default_factory=list)
 
 
 class ApproveArtifact(_StrictModel):

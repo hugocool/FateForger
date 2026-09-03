@@ -2062,3 +2062,246 @@ async def test_back_does_not_walk_a_cancelled_session() -> None:
     saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
     assert ArtifactKind.SKELETON in [a.kind for a in saved.artifacts]
     assert saved.planning_day is not None
+
+
+# -- Assumptions are retired with the artifact they were made for ---------------
+# Live on 2026-09-03 the Decided list carried the planner's placement assumption
+# once after the first sketch, twice after Back-and-redo, three times after the
+# candidate. Every planner run appended its assumptions and nothing retired the
+# ones whose artifact had just been thrown away.
+
+
+@pytest.mark.asyncio
+async def test_back_from_the_candidate_retires_the_candidates_assumptions_only() -> None:
+    from fateforger.agents.timeboxing.session_contracts import PlannerAssumption
+
+    skeleton = _skeleton()
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), skeleton, _candidate()],
+        approvals=[_approval(_planning_day_artifact()), _approval(skeleton)],
+        assumptions=[
+            PlannerAssumption(
+                assumption_id="a-skel",
+                requirement_id="skeleton.ordinary_placement",
+                value="finances first",
+                why_needed="the flexible blocks need an order",
+            ),
+            PlannerAssumption(
+                assumption_id="a-cand",
+                requirement_id="candidate.concrete_placements",
+                value="09:30",
+                why_needed="the blocks need times",
+            ),
+        ],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+
+    outcome = await _back_kernel(repo).turn(_go_back(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert outcome.artifact.kind is ArtifactKind.SKELETON
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    # The skeleton is shown again as it was, so what the planner assumed to
+    # make it still stands; the candidate is gone and so is what it assumed.
+    assert [a.assumption_id for a in saved.assumptions] == ["a-skel"]
+
+
+@pytest.mark.asyncio
+async def test_new_facts_retire_every_assumption_the_redraft_replaces() -> None:
+    from fateforger.agents.timeboxing.session_contracts import PlannerAssumption
+
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), _skeleton()],
+        approvals=[_approval(_planning_day_artifact())],
+        assumptions=[
+            PlannerAssumption(
+                assumption_id="a-skel",
+                requirement_id="skeleton.ordinary_placement",
+                value="finances first",
+                why_needed="the flexible blocks need an order",
+            )
+        ],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_skeleton_result())
+
+    outcome = await _kernel(repo, planner).turn(
+        TurnRequest(
+            session_key="C1:1.0",
+            interaction_id="facts-1",
+            actor_user_id="U1",
+            expected_revision=3,
+            intent=ProvidePlanningFacts(
+                facts=[_fact("finances-1", FactKind.REQUESTED_ACTIVITY, "finances")]
+            ),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, AwaitingApproval)
+    assert planner.calls == 1
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    ids = [a.assumption_id for a in saved.assumptions]
+    assert "a-skel" not in ids, "the redraft's own assumption replaces the old one"
+    assert [a.requirement_id for a in saved.assumptions] == ["skeleton.ordinary_placement"]
+
+
+# -- A revision against a pending artifact redrafts it --------------------------
+# Live on 2026-09-03 "make the finances block 30 minutes instead of 45", typed
+# over the 4/5 card, was refused `unsupported_intent`. The interpreter offers
+# `revise` at the skeleton and candidate stages and the kernel honoured it
+# against a commit receipt only (#258). The receipt path already shows the
+# shape: file the instruction as a fact the planner reads, drop what it
+# supersedes, keep everything above it.
+
+
+def _revise(artifact: PlanningArtifact, instruction: str, **update) -> TurnRequest:
+    from fateforger.agents.timeboxing.session_contracts import ReviseArtifact
+
+    return TurnRequest(
+        session_key="C1:1.0",
+        interaction_id="revise-1",
+        actor_user_id="U1",
+        expected_revision=3,
+        intent=ReviseArtifact(
+            artifact_id=artifact.artifact_id,
+            artifact_revision=update.pop("artifact_revision", artifact.revision),
+            artifact_digest=artifact.digest,
+            instruction=instruction,
+            **update,
+        ),
+    )
+
+
+def _candidate_result() -> PlanningResult:
+    return PlanningResult(
+        artifact_updates=[
+            ArtifactDraft(
+                kind=ArtifactKind.VALIDATED_CANDIDATE,
+                payload={"events": [{"summary": "Finances", "start": "13:45"}]},
+                dependency_revisions={"skeleton": 1},
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_revision_against_the_candidate_redrafts_it_from_the_approved_skeleton() -> None:
+    skeleton = _skeleton()
+    candidate = _candidate()
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), skeleton, candidate],
+        approvals=[_approval(_planning_day_artifact()), _approval(skeleton)],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_candidate_result())
+    context = RecordedContextPort(
+        facts=(
+            _fact("cal-1", FactKind.CALENDAR_SNAPSHOT, {"fetched": True, "blocks": 3}),
+            _fact("con-1", FactKind.ACTIVE_CONSTRAINTS, {"fetched": True, "count": 1}),
+        )
+    )
+
+    outcome = await _kernel(repo, planner, context=context).turn(
+        _revise(candidate, "finances 30 minutes, not 45"),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, AwaitingApproval), outcome
+    assert outcome.artifact.kind is ArtifactKind.VALIDATED_CANDIDATE
+    assert planner.calls == 1
+    assert planner.briefs[0].target_artifact is ArtifactKind.VALIDATED_CANDIDATE
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    instructions = [f for f in saved.facts if f.kind is FactKind.REVISION_INSTRUCTION]
+    assert [i.value for i in instructions] == [
+        {
+            "artifact_kind": "validated_candidate",
+            "artifact_id": candidate.artifact_id,
+            "instruction": "finances 30 minutes, not 45",
+        }
+    ]
+    # The approved skeleton is untouched: the candidate is redrafted from it.
+    assert any(a.artifact_id == skeleton.artifact_id for a in saved.approvals)
+    assert [a.kind for a in saved.artifacts].count(ArtifactKind.VALIDATED_CANDIDATE) == 1
+    assert outcome.artifact.digest != candidate.digest
+
+
+@pytest.mark.asyncio
+async def test_a_revision_against_the_skeleton_redrafts_it_and_keeps_the_facts() -> None:
+    skeleton = _skeleton()
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), skeleton],
+        approvals=[_approval(_planning_day_artifact())],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_skeleton_result())
+
+    outcome = await _kernel(repo, planner).turn(
+        _revise(skeleton, "put the gym before dinner"),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, AwaitingApproval), outcome
+    assert outcome.artifact.kind is ArtifactKind.SKELETON
+    assert planner.calls == 1
+    assert planner.briefs[0].target_artifact is ArtifactKind.SKELETON
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    # Revise is not forget: what the user said stands, plus the instruction.
+    assert [f.fact_id for f in saved.facts][:3] == ["activity-1", "gym-1", "frame-1"]
+    instructions = [f for f in saved.facts if f.kind is FactKind.REVISION_INSTRUCTION]
+    assert len(instructions) == 1
+    assert instructions[0].value["artifact_kind"] == "skeleton"
+    assert [a.kind for a in saved.artifacts].count(ArtifactKind.SKELETON) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_revision_naming_a_superseded_artifact_is_refused() -> None:
+    skeleton = _skeleton()
+    candidate = _candidate()
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), skeleton, candidate],
+        approvals=[_approval(_planning_day_artifact()), _approval(skeleton)],
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_candidate_result())
+
+    outcome = await _kernel(repo, planner).turn(
+        _revise(candidate, "finances 30 minutes", artifact_revision=candidate.revision + 1),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "stale_revision_target"
+    assert planner.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_revision_carrying_facts_files_them_before_the_redraft() -> None:
+    """The kernel half of "move the work later, I'll sleep until 8:30": the
+    frame the user stated in the same breath as the instruction reaches the
+    facts, so the redraft is against the frame he meant."""
+
+    snapshot = _committed_snapshot()
+    receipt = next(a for a in snapshot.artifacts if a.kind is ArtifactKind.COMMIT_RECEIPT)
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    planner = RecordedPlanner(_skeleton_result())
+    request = _committed_request(
+        _revise(
+            receipt,
+            "move all the work one hour later",
+            facts=[_fact("frame-2", FactKind.DAY_FRAME, {"wake": "08:30", "sleep": None})],
+        ).intent
+    )
+
+    outcome = await _kernel(repo, planner).turn(request, progress=RecordingProgressSink())
+
+    assert isinstance(outcome, AwaitingApproval), outcome
+    stored = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert any(f.fact_id == "frame-2" for f in stored.facts)
+    assert any(f.kind is FactKind.REVISION_INSTRUCTION for f in stored.facts)
+    assert any(f.fact_id == "frame-2" for f in planner.briefs[0].facts)

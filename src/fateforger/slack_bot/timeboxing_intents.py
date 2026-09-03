@@ -486,19 +486,7 @@ def _intent_from_interpreted(
     if interpreted.decision == "provide_facts":
         if not interpreted.facts:
             raise ValueError("provide_facts requires at least one typed fact")
-        return ProvidePlanningFacts(
-            facts=[
-                PlanningFact(
-                    fact_id=str(uuid4()),
-                    kind=FactKind(fact.kind),
-                    value=fact.value.as_value()
-                    if isinstance(fact.value, DayFrameDraft)
-                    else fact.value,
-                    source="user",
-                )
-                for fact in interpreted.facts
-            ]
-        )
+        return ProvidePlanningFacts(facts=_typed_facts(interpreted))
 
     if pending is None:
         raise ValueError(f"{interpreted.decision} requires a pending artifact")
@@ -511,12 +499,30 @@ def _intent_from_interpreted(
 
     if interpreted.revision_instruction is None:
         raise ValueError("revise requires a revision instruction")
+    # The facts the model read out of the same message ride with the
+    # instruction. Dropping them here was how "move the work an hour later,
+    # I'll sleep until 8:30" redrafted the day against the old wake time.
     return ReviseArtifact(
         artifact_id=pending.artifact_id,
         artifact_revision=pending.revision,
         artifact_digest=pending.digest,
         instruction=interpreted.revision_instruction,
+        facts=_typed_facts(interpreted),
     )
+
+
+def _typed_facts(interpreted: InterpretedTimeboxTurn) -> list[PlanningFact]:
+    return [
+        PlanningFact(
+            fact_id=str(uuid4()),
+            kind=FactKind(fact.kind),
+            value=fact.value.as_value()
+            if isinstance(fact.value, DayFrameDraft)
+            else fact.value,
+            source="user",
+        )
+        for fact in interpreted.facts
+    ]
 
 
 def intent_from_artifact_action(

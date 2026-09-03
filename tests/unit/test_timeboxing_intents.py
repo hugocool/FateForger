@@ -1057,3 +1057,40 @@ async def test_no_open_question_is_sent_as_none() -> None:
 
     (messages, _schema), = client.calls
     assert json.loads(messages[-1].content)["open_question"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_revision_carrying_a_frame_keeps_the_frame() -> None:
+    """One message, two things in it: an instruction and a day-frame fact.
+
+    Live on 2026-09-03 (session 1788429283.534419) the interpreter answered
+    "move all the work stuff 1 hour later, I'll sleep until 8:30" with
+    ``revise`` plus a ``day_frame`` fact of wake 08:30 -- and the intent
+    builder kept only the instruction, so the kernel rebuilt the day against
+    the 07:00 wake it had just been told was wrong. What the model extracted
+    must reach the kernel whole.
+    """
+
+    from fateforger.agents.timeboxing.session_contracts import ReviseArtifact
+
+    snapshot = _committed_snapshot()
+    receipt = next(a for a in snapshot.artifacts if a.kind is ArtifactKind.COMMIT_RECEIPT)
+    client = _SchemaOutputClient(
+        {
+            "decision": "revise",
+            "facts": [{"kind": "day_frame", "value": {"wake": "08:30", "sleep": None}}],
+            "revision_instruction": "move all the work one hour later",
+        }
+    )
+
+    intent = await TimeboxingIntentInterpreter(client).interpret(
+        "Can you move all the work stuff 1 hour later? I'll sleep until 8:30",
+        snapshot,
+    )
+
+    assert isinstance(intent, ReviseArtifact)
+    assert intent.artifact_id == receipt.artifact_id
+    assert intent.instruction == "move all the work one hour later"
+    assert [fact.kind for fact in intent.facts] == [FactKind.DAY_FRAME]
+    assert intent.facts[0].value == {"wake": "08:30", "sleep": None}
+    assert intent.facts[0].source == "user"

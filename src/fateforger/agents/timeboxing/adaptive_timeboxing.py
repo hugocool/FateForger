@@ -623,44 +623,42 @@ class AdaptiveTimeboxing:
                 self._invalidate(merged, ArtifactKind.CAPTURED_INPUTS)
             ), None
         if isinstance(intent, ReviseArtifact):
-            receipt = self._latest_artifact(snapshot, ArtifactKind.COMMIT_RECEIPT)
-            if (
-                snapshot.status == "committed"
-                and receipt is not None
-                and receipt.artifact_id == intent.artifact_id
-            ):
-                if (
-                    receipt.revision != intent.artifact_revision
-                    or receipt.digest != intent.artifact_digest
-                ):
-                    return snapshot, TurnFailed(
-                        code="stale_revision_target",
-                        message="This revision names a plan that is no longer current.",
-                    )
-                # The 2026-09-02 shape: the day is committed and the user says
-                # what is wrong with it. The instruction is filed as a fact the
-                # planner reads while rebuilding, the derived artifacts go, the
-                # receipt stays -- the next commit must be a change to this
-                # day, not a second copy of it.
-                instructed = self._merge_facts(
-                    snapshot,
-                    [
-                        PlanningFact(
-                            fact_id=str(uuid4()),
-                            kind=FactKind.REVISION_INSTRUCTION,
-                            value={
-                                "artifact_kind": receipt.kind.value,
-                                "artifact_id": receipt.artifact_id,
-                                "instruction": intent.instruction,
-                            },
-                            source="user",
-                            source_interaction_id=request.interaction_id,
-                        )
-                    ],
+            target = self._revision_target(snapshot, intent)
+            if target is None:
+                return snapshot, TurnFailed(
+                    code="stale_revision_target",
+                    message="This revision names a plan that is no longer current.",
                 )
+            # One shape for every stage. The 2026-09-02 case was the committed
+            # day: the instruction is filed as a fact the planner reads while
+            # rebuilding, what it supersedes goes, the receipt stays -- the
+            # next commit must be a change to this day, not a second copy of
+            # it. On 2026-09-03 the same sentence typed over the candidate was
+            # refused `unsupported_intent` (#258); a skeleton or a candidate
+            # is revised the same way, and what it was built from -- the
+            # facts, the approved skeleton under a candidate -- stands.
+            instructed = self._merge_facts(
+                snapshot,
+                [
+                    *intent.facts,
+                    PlanningFact(
+                        fact_id=str(uuid4()),
+                        kind=FactKind.REVISION_INSTRUCTION,
+                        value={
+                            "artifact_kind": target.kind.value,
+                            "artifact_id": target.artifact_id,
+                            "instruction": intent.instruction,
+                        },
+                        source="user",
+                        source_interaction_id=request.interaction_id,
+                    ),
+                ],
+            )
+            if target.kind is ArtifactKind.COMMIT_RECEIPT:
                 return self._reopen(
                     self._invalidate(instructed, ArtifactKind.CAPTURED_INPUTS)
                 ), None
+            return self._discard(instructed, target.kind), None
         if isinstance(intent, ApproveArtifact):
             artifact = self._artifact_matching_approval(snapshot, intent)
             if artifact is None:
@@ -1286,6 +1284,9 @@ class AdaptiveTimeboxing:
     def _invalidate(
         self, snapshot: PlanningSessionSnapshot, changed_kind: ArtifactKind
     ) -> PlanningSessionSnapshot:
+        """Something above `changed_kind` moved: what derives from it goes,
+        and `changed_kind` itself is shown for approval again."""
+
         # A receipt is the record of something that happened to the calendar,
         # not something derived from the inputs above it. Invalidation is for
         # what can be rebuilt; history cannot, and a session that forgets it
@@ -1293,26 +1294,78 @@ class AdaptiveTimeboxing:
         invalidated = self._requirements.invalidate_from(changed_kind) - {
             ArtifactKind.COMMIT_RECEIPT
         }
-        approval_invalidated_kinds = invalidated | {changed_kind}
-        invalidated_approval_ids = {
+        return self._without(
+            snapshot, artifacts=invalidated, approvals=invalidated | {changed_kind}
+        )
+
+    def _discard(
+        self, snapshot: PlanningSessionSnapshot, kind: ArtifactKind
+    ) -> PlanningSessionSnapshot:
+        """`kind` is being redrafted: it goes, with what derives from it. What
+        it was derived from stands, approvals included -- a candidate revised
+        is redrafted from the same approved skeleton."""
+
+        gone = (self._requirements.invalidate_from(kind) | {kind}) - {
+            ArtifactKind.COMMIT_RECEIPT
+        }
+        return self._without(snapshot, artifacts=gone, approvals=gone)
+
+    def _without(
+        self,
+        snapshot: PlanningSessionSnapshot,
+        *,
+        artifacts: frozenset[ArtifactKind],
+        approvals: frozenset[ArtifactKind],
+    ) -> PlanningSessionSnapshot:
+        withdrawn_ids = {
             artifact.artifact_id
             for artifact in snapshot.artifacts
-            if artifact.kind in approval_invalidated_kinds
+            if artifact.kind in approvals
         }
+        # An assumption is what the planner decided to produce one artifact.
+        # Live on 2026-09-03 every planner run appended its assumptions and
+        # nothing retired them, so after Back-and-redo the card listed the
+        # same placement decision twice, then three times. The artifact an
+        # assumption served is the one whose removal retires it.
         return snapshot.model_copy(
             update={
                 "artifacts": [
                     artifact
                     for artifact in snapshot.artifacts
-                    if artifact.kind not in invalidated
+                    if artifact.kind not in artifacts
                 ],
                 "approvals": [
                     approval
                     for approval in snapshot.approvals
-                    if approval.artifact_id not in invalidated_approval_ids
+                    if approval.artifact_id not in withdrawn_ids
+                ],
+                "assumptions": [
+                    assumption
+                    for assumption in snapshot.assumptions
+                    if self._requirements.target_of(assumption.requirement_id)
+                    not in artifacts
                 ],
             }
         )
+
+    @staticmethod
+    def _revision_target(
+        snapshot: PlanningSessionSnapshot, intent: ReviseArtifact
+    ) -> PlanningArtifact | None:
+        """The artifact a revision names, only if it is exactly the current one."""
+
+        current = max(
+            (a for a in snapshot.artifacts if a.artifact_id == intent.artifact_id),
+            key=lambda artifact: artifact.revision,
+            default=None,
+        )
+        if (
+            current is None
+            or current.revision != intent.artifact_revision
+            or current.digest != intent.artifact_digest
+        ):
+            return None
+        return current
 
     @staticmethod
     def _reopen(snapshot: PlanningSessionSnapshot) -> PlanningSessionSnapshot:
