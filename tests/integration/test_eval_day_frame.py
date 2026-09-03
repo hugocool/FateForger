@@ -52,7 +52,7 @@ BEDTIME = {"uid": "c-bed", "name": "Bedtime", "description": "In bed by 00:30 on
 def _client():
     from fateforger.llm.factory import build_autogen_chat_client
 
-    return build_autogen_chat_client("timeboxing_agent", temperature=0)
+    return build_autogen_chat_client("timeboxing_agent")
 
 
 def _day():
