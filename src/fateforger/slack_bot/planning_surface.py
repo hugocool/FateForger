@@ -39,8 +39,11 @@ class InterpretedPlanningTurn(BaseModel):
 PLANNING_PROMPT_FRAGMENT = """The proposal is a calendar event with a start time shown to the user.
 If the user names a clock time (17:00, 5pm, half past one), give it as
 selected_time in 24-hour HH:MM. Set selected_time only when they state one.
-A new time together with agreement to add the event is update_time_and_add;
-a new time with an explicit wish not to add yet is update_time.
+Naming a new time is, by default, agreement to add the event at that
+corrected time: update_time_and_add. This holds whether the time comes
+alone ("13:45") or alongside a correction to the shown time ("no, let's do
+13:45") -- both replace the proposal and accept it at once. Only an
+explicit wish not to add yet, or a question, makes it update_time instead.
 """
 
 
