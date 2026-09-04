@@ -405,6 +405,25 @@ async def test_retiring_the_panel_receipts_it_and_drops_the_record() -> None:
 
 
 @pytest.mark.asyncio
+async def test_clearing_the_day_retires_the_panel() -> None:
+    """`GoBack` out of Stage 1 clears `planning_day` when Stage 1 has no
+    skeleton yet. A panel record left standing then carries a "Show rules"
+    control that can never open -- `context_fold` raises with no locked day
+    -- so the panel must be retired, not merely skipped (#281 follow-up)."""
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+
+    cleared = _snapshot_with(["c1"]).model_copy(update={"planning_day": None})
+    await _sync(registry, client, cleared)
+
+    assert [u["ts"] for u in client.updates] == ["200.1"]
+    block = client.updates[0]["blocks"][0]
+    assert "day reopened" in block["text"]["text"]
+    assert "accessory" not in block
+    assert registry.panel_shown("C1:1.0") is None
+
+
+@pytest.mark.asyncio
 async def test_a_dm_panel_is_posted_without_a_thread() -> None:
     registry, client = StageCardRegistry(), _PostingClient()
 
