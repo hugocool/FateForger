@@ -1977,7 +1977,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 3's `GateMet`, `Gate`, `AwaitingUser.gate`; Task 4's `row_label`, `criterion_label`; Task 5's `TimeboxRequirements.stage_of`.
-- Produces: `NextControl(kind="next")` in `Control`; `StageCard.gate: str | None = None`; `map_outcome(GateMet)` returns a stage-1 card with `gate` and `[NextControl, BackControl, CancelControl]`; the renderer draws Next as a primary button carrying `decision="advance"`.
+- Produces: `NextControl(kind="next")` in `Control`; `StageCard.gate: str | None = None`; `DecidedItem.filed_by: Literal["planner", "user"] | None = None`; `map_outcome(GateMet)` returns a stage-1 card with `gate` and `[NextControl, BackControl, CancelControl]`; the renderer draws Next as a primary button carrying `decision="advance"`.
 
 **Coordination:** the #266 session extends `StageCard` on top of exactly these two additions (`gate`, `NextControl`), named to it on 2026-09-04. Do not add anchor groups or deny controls here; those are its half.
 
@@ -2117,7 +2117,19 @@ In `map_outcome`, replace the `AwaitingUser` branch's stage lookup and add the g
         )
 ```
 
-In `_decided`, show who filed an assumption: change the assumption text to `f"{_as_text(assumption.value)} — {assumption.why_needed} ({assumption.filed_by})"`.
+In `DecidedItem`, add a typed field so a renderer never reads who filed an assumption out of a label (the #266 session's deny control renders differently for a user-filed assumption):
+
+```python
+class DecidedItem(_Frozen):
+    text: str
+    kind: Literal["assumption", "fact"]
+    ref: str
+    #: Present for an assumption: who supplied it. A renderer that needs this
+    #: reads the field, never the text.
+    filed_by: Literal["planner", "user"] | None = None
+```
+
+In `_decided`, pass it: `DecidedItem(text=f"{_as_text(assumption.value)} — {assumption.why_needed}", kind="assumption", ref=assumption.assumption_id, filed_by=assumption.filed_by)`. The text is unchanged. Add to the stage-card tests: an assumption with `filed_by="user"` maps to a `DecidedItem` whose `filed_by == "user"`.
 
 - [ ] **Step 5: Render**
 
