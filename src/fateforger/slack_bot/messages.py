@@ -17,6 +17,10 @@ SLACK_MAX_BLOCKS = 40
 #: this project stops at 40). The fold is the one surface that uses it.
 SLACK_MAX_MODAL_BLOCKS = 100
 SLACK_MAX_PAYLOAD_CHARS = 28000
+#: Slack's own cap on one overflow option's `value`. `_option_value` in
+#: `timeboxing_cards.py` renders against it; a value that still does not fit
+#: after dropping `note` raises rather than let Slack refuse the whole modal.
+SLACK_MAX_OPTION_VALUE_CHARS = 150
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,7 @@ __all__ = [
     "SLACK_MAX_BLOCKS",
     "SLACK_MAX_BLOCK_TEXT_CHARS",
     "SLACK_MAX_MODAL_BLOCKS",
+    "SLACK_MAX_OPTION_VALUE_CHARS",
     "SLACK_MAX_PAYLOAD_CHARS",
     "SLACK_MAX_TEXT_CHARS",
     "SlackBlockMessage",

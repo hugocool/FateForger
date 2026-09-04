@@ -12,6 +12,8 @@ produced, these functions say what the user sees; the router says where it goes.
 
 from __future__ import annotations
 
+import logging
+
 from pydantic import BaseModel, ConfigDict
 
 from fateforger.agents.timeboxing.session_contracts import (
@@ -28,6 +30,7 @@ from fateforger.agents.timeboxing.session_contracts import (
 from .messages import (
     SLACK_MAX_BLOCK_TEXT_CHARS,
     SLACK_MAX_MODAL_BLOCKS,
+    SLACK_MAX_OPTION_VALUE_CHARS,
     SLACK_MAX_TEXT_CHARS,
     SlackBlockMessage,
 )
@@ -48,6 +51,8 @@ from .stage_context import ContextFold, ContextPanel, FoldRow
 from .timebox_candidate import PendingTimeboxCandidates
 from .timeboxing_commit import build_timebox_date_card
 from .timeboxing_intents import ArtifactActionMeta
+
+logger = logging.getLogger(__name__)
 
 #: The one control that opens the commit gate.
 FF_HARNESS_APPROVE_ACTION_ID = "ff_harness_approve"
@@ -404,22 +409,58 @@ _STEER_WRONG_NOTE = "wrong"
 def _option_value(meta: ArtifactActionMeta) -> str:
     """The one encoding every overflow option's `value` goes through.
 
-    An overflow option is capped by Slack at 150 chars, unlike a button's
-    2000. Real ids leave far less room than that cap suggests: a live Slack
-    session key alone is ~29 chars, a constraint uid is 32 hex chars, an
-    assumption id is a 36-char uuid -- and even after dropping every unset
-    field (`exclude_none`) and the ever-default `schema_version`
+    An overflow option is capped by Slack at 150 chars
+    (`SLACK_MAX_OPTION_VALUE_CHARS`), unlike a button's 2000. Real ids leave
+    far less room than that cap suggests: a live Slack session key alone is
+    ~29 chars, a constraint uid is 32 hex chars, an assumption id is a
+    36-char uuid -- and even after dropping every unset field
+    (`exclude_none`) and the ever-default `schema_version`
     (`exclude_defaults`), the plain field names alone (`"expected_revision":`
     is 21 bytes on their own) push a steer-with-note option to 167 chars.
     `by_alias` writes `ArtifactActionMeta`'s short wire names (`sk`, `rev`,
     `d`, `cu`, `aid`, `n`) instead, which is the difference between fitting
-    and not: the same worst case comes in at 122. `populate_by_name=True` on
-    the model means `ArtifactActionMeta.model_validate_json` decodes this
-    exactly the way it decodes a button's full-field-name value -- one decode
-    path, two wire shapes, chosen only by which cap the control is under.
+    and not: the same worst case comes in at 122. Because `exclude_defaults`
+    drops `schema_version` (it never varies from its default), the alias
+    keys that remain -- `sk`, `rev`, `d`, and whichever optional fields are
+    set -- are the de facto discriminator a decoder sees on the wire, not the
+    schema version field its name suggests. `populate_by_name=True` on the
+    model means `ArtifactActionMeta.model_validate_json` decodes this exactly
+    the way it decodes a button's full-field-name value -- one decode path,
+    two wire shapes, chosen only by which cap the control is under.
+
+    Even the alias encoding can still overflow for a genuinely long note or
+    an unusually long session key. `note` is the one field that exists purely
+    to help a human read the option back and carries no identity, so it is
+    the first thing dropped -- at a logged cost, never silently. A value that
+    still does not fit without it would decode to the wrong rule or the wrong
+    session if Slack truncated it, so this raises instead: a render that
+    fails loudly here is preferable to a modal Slack refuses whole, or one
+    that opens with a press nobody can complete correctly.
     """
 
-    return meta.model_dump_json(exclude_none=True, exclude_defaults=True, by_alias=True)
+    encoded = meta.model_dump_json(exclude_none=True, exclude_defaults=True, by_alias=True)
+    if len(encoded) <= SLACK_MAX_OPTION_VALUE_CHARS:
+        return encoded
+    length_with_note = len(encoded)
+    if meta.note is not None:
+        without_note = meta.model_copy(update={"note": None})
+        encoded = without_note.model_dump_json(
+            exclude_none=True, exclude_defaults=True, by_alias=True
+        )
+        logger.warning(
+            "an overflow option's value exceeded %d chars; dropped its note "
+            "session_key=%s length_with_note=%d",
+            SLACK_MAX_OPTION_VALUE_CHARS,
+            meta.session_key,
+            length_with_note,
+        )
+        if len(encoded) <= SLACK_MAX_OPTION_VALUE_CHARS:
+            return encoded
+    raise ValueError(
+        f"overflow option value is {len(encoded)} chars, over Slack's "
+        f"{SLACK_MAX_OPTION_VALUE_CHARS}-char cap, even without its note "
+        f"session_key={meta.session_key!r}"
+    )
 
 
 def _steer_option(fold: ContextFold, row: FoldRow, verb: str) -> dict:
@@ -466,7 +507,15 @@ def render_context_fold(fold: ContextFold) -> dict:
         # truncated fold must not let scroll past unnoticed.
         rules, groups = fold.truncated
         blocks.append(_section(f"+{rules} rules in {groups} more groups — say the rule's name to steer it"))
-    assert len(blocks) <= SLACK_MAX_MODAL_BLOCKS, len(blocks)
+    if len(blocks) > SLACK_MAX_MODAL_BLOCKS:
+        # `_fit_groups_to_cap` (stage_context.py) is what is supposed to keep
+        # the fold under the cap; an assert here ran with `python -O` and
+        # would silently hand Slack an oversized view instead of catching the
+        # bug that let one through.
+        raise ValueError(
+            f"context fold has {len(blocks)} blocks, over Slack's modal cap "
+            f"of {SLACK_MAX_MODAL_BLOCKS}"
+        )
     return {
         "type": "modal",
         "callback_id": "ff_timebox_context_fold",
@@ -522,10 +571,13 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
     thread reads as a ladder. A receipt is the same card with no controls and
     a `done` label -- what the user acted on, kept legible after the fact.
 
-    The decided block count is now `1 + min(len, 8) + 1`, so the turn card's
-    maximum is header 1 + decided 10 + divider 1 + asking 2 + hint 1 +
-    options 1 + gate 1 + nav 1 + typing hint 1 = 19, under `SLACK_MAX_BLOCKS`
-    (40).
+    No divider is ever emitted here; the ladder reads as a sequence of
+    sections and actions blocks, nothing more. The decided block count is
+    `1 + min(len, 8) + 1` (heading, up to `STAGE_LIST_CAP` items, an optional
+    "+N more"), so the turn card's maximum is header 1 + context 1 +
+    decided 10 + body 1 + asking (question 1 + hint 1 + effects 1 +
+    options 1) 4 + gate 1 + nav 1 + typing hint 1 = 20, under
+    `SLACK_MAX_BLOCKS` (40).
     """
 
     header = f"*{card.stage.index}/5 · {card.stage.name}*"
