@@ -32,6 +32,9 @@ class IngestResult(BaseModel):
     # Default PERMANENT: a rule wrongly marked permanent is merely noisy, one
     # wrongly marked short-lived disappears without being asked.
     decay_class: DecayClass = DecayClass.PERMANENT
+    # The registered kind this rule says must be on the day; see projection
+    # for the durable-only rule.
+    requires_block: str | None = None
 
 
 # One lock per (store, session), weak-keyed so a collected store does not leak
@@ -62,12 +65,16 @@ def _lock_for(store: ObservationStore, session_id: str) -> asyncio.Lock:
 
 
 async def ingest(
-    observation: Observation, judge: Judge, store: ObservationStore
+    observation: Observation,
+    judge: Judge,
+    store: ObservationStore,
+    *,
+    kinds: list[str] = (),
 ) -> IngestResult:
     """Judge an observation and append it unless it should be suppressed.
 
-    The five judgements are independent, so they are issued concurrently:
-    one round-trip of latency rather than five. Nothing here inspects the
+    The six judgements are independent, so they are issued concurrently:
+    one round-trip of latency rather than six. Nothing here inspects the
     observation's text — every decision about meaning comes from the judge.
     """
     if observation.provenance is not Provenance.OBSERVED:
@@ -78,11 +85,15 @@ async def ingest(
     if observation.session_id is None:
         # Nothing to be stale against: dedup only ever compares within a
         # session, so an unscoped observation needs no lock and takes none.
-        return await _ingest(observation, judge, store, recent=[])
+        return await _ingest(observation, judge, store, recent=[], kinds=kinds)
 
     async with _lock_for(store, observation.session_id):
         return await _ingest(
-            observation, judge, store, recent=store.by_session(observation.session_id)
+            observation,
+            judge,
+            store,
+            recent=store.by_session(observation.session_id),
+            kinds=kinds,
         )
 
 
@@ -92,12 +103,13 @@ async def _ingest(
     store: ObservationStore,
     *,
     recent: list[Observation],
+    kinds: list[str],
 ) -> IngestResult:
     """The judged span. Callers hold the session lock around this."""
-    # return_exceptions=True so a failing judgement cannot orphan its four
+    # return_exceptions=True so a failing judgement cannot orphan its five
     # siblings: with the default, gather propagates the first exception but
     # leaves the others running, discarding their results and errors. We
-    # await all five, then re-raise the first failure to preserve the
+    # await all six, then re-raise the first failure to preserve the
     # ValueError contract callers rely on.
     results = await asyncio.gather(
         judge.anchors(observation),
@@ -105,12 +117,13 @@ async def _ingest(
         judge.meta(observation),
         judge.dedup(observation, recent),
         judge.necessity(observation),
+        judge.requires_block(observation, list(kinds)),
         return_exceptions=True,
     )
     for result in results:
         if isinstance(result, BaseException):
             raise result
-    anchor_j, tier_j, meta_j, dedup_j, necessity_j = results
+    anchor_j, tier_j, meta_j, dedup_j, necessity_j, requires_j = results
 
     if meta_j.is_meta:
         return IngestResult(stored=False, suppressed_as="meta")
@@ -142,4 +155,5 @@ async def _ingest(
         days_of_week=tier_j.days_of_week,
         day_types=tier_j.day_types,
         decay_class=tier_j.decay_class,
+        requires_block=requires_j.slug,
     )

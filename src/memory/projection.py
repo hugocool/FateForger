@@ -127,6 +127,12 @@ async def project(
             # has.
             if observation.observed_at > existing.last_observed_at:
                 existing.last_observed_at = observation.observed_at
+            # Required once, required after. A later restatement that omits the
+            # requirement does not unset it -- the same direction tier moves in,
+            # and for the same reason: unsetting on the newest observation would
+            # be last-write-wins.
+            if existing.requires_block is None and ingest_result.requires_block is not None:
+                existing.requires_block = ingest_result.requires_block
             constraint_store.upsert(existing)
             # A fold adds evidence, so it can add anchors the constraint was
             # not previously reachable from. Links are replaced rather than
@@ -159,6 +165,7 @@ async def project(
             created_at=observation.observed_at,
             decay_class=ingest_result.decay_class,
             last_observed_at=observation.observed_at,
+            requires_block=ingest_result.requires_block,
         )
         constraint_store.upsert(created)
         await _attach_anchors(created.uid, ingest_result, anchor_store, judge)

@@ -139,3 +139,23 @@ async def test_ingest_carries_the_day_types_the_tier_judgement_scoped(tmp_path):
     )
     result = await ingest(_obs("planning session on working days"), judge, store)
     assert result.day_types == ["working"]
+
+
+async def test_ingest_offers_the_registered_kinds_and_carries_the_answer(tmp_path):
+    store = ObservationStore(str(tmp_path / "m.db"))
+    judge = StubJudge(
+        tiers={"every working day has a planning session": Tier.DURABLE},
+        requires_blocks={"every working day has a planning session": "planning"},
+    )
+    result = await ingest(
+        _obs("every working day has a planning session"), judge, store, kinds=["planning"]
+    )
+    assert result.requires_block == "planning"
+    assert ("requires_block", result.uid) in judge.calls
+
+
+async def test_ingest_with_no_registered_kinds_records_no_requirement(tmp_path):
+    store = ObservationStore(str(tmp_path / "m.db"))
+    judge = StubJudge(requires_blocks={"every working day has a planning session": "planning"})
+    result = await ingest(_obs("every working day has a planning session"), judge, store)
+    assert result.requires_block is None
