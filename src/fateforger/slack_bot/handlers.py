@@ -161,11 +161,19 @@ from fateforger.slack_bot.timeboxing_submit import (
 )
 
 from .focus import FocusManager
+from .session_surface import (
+    invite_user_to_channels_best_effort as _invite_user_to_channels_best_effort,
+)
+from .session_surface import open_session_surface
+from .session_surface import persona_for_agent as _persona_for_agent
+from .session_surface import persona_payload as _persona_payload
+from .session_surface import (
+    timeboxing_thread_root_text as _timeboxing_thread_root_text,
+)
 from .timebox_candidate import PendingTimeboxCandidates
 from .ui import link_button, open_link_blocks
 from .workspace import (
     DEFAULT_PERSONAS,
-    SlackPersona,
     WorkspaceDirectory,
     WorkspaceRegistry,
 )
@@ -178,13 +186,6 @@ except Exception:  # pragma: no cover - optional dependency wiring
 
 
 FF_APPHOME_WEEKLY_REVIEW_ACTION_ID = "ff_apphome_weekly_review"
-
-_TIMEBOXING_STATE_EMOJI = {
-    "pending": ":large_yellow_circle:",
-    "in_progress": ":large_blue_circle:",
-    "done": ":white_check_mark:",
-    "canceled": ":no_entry_sign:",
-}
 
 logger = logging.getLogger(__name__)
 
@@ -277,13 +278,6 @@ def _timeboxing_excerpt_from_text(text: str) -> str:
     if len(cleaned) > 200:
         return cleaned[:197].rstrip() + "…"
     return cleaned
-
-
-def _timeboxing_thread_root_text(
-    *, title: str, request_excerpt: str | None, state: str
-) -> str:
-    emoji = _TIMEBOXING_STATE_EMOJI.get(state, _TIMEBOXING_STATE_EMOJI["pending"])
-    return f"{emoji} {title}"
 
 
 def _build_timeboxing_thread_root_blocks(
@@ -407,22 +401,6 @@ async def _maybe_update_timeboxing_thread_header(
         )
     except Exception:
         return
-
-
-async def _invite_user_to_channels_best_effort(
-    client: AsyncWebClient, *, user_id: str, channel_ids: list[str]
-) -> None:
-    if not user_id:
-        return
-    for channel_id in channel_ids:
-        if not channel_id:
-            continue
-        try:
-            await client.conversations_invite(channel=channel_id, users=[user_id])
-        except Exception:
-            # Slack workspaces vary: bots may be blocked from inviting users, or scopes may be missing.
-            # This is best-effort; the user can always join manually.
-            continue
 
 
 def _format_workspace_ready_response(directory) -> str:
@@ -708,37 +686,6 @@ def _build_app_home_view(*, user_id: str, focus_agent: str | None) -> dict:
     ]
 
     return {"type": "home", "blocks": blocks}
-
-
-def _persona_for_agent(agent_type: str) -> SlackPersona | None:
-    directory = WorkspaceRegistry.get_global()
-    if directory:
-        persona = directory.persona_for_agent(agent_type)
-        if persona:
-            return persona
-    return DEFAULT_PERSONAS.get(agent_type)
-
-
-def _persona_payload(persona: SlackPersona | None) -> dict:
-    """Slack persona overrides, absent rather than wrong when unconfigured.
-
-    Every message this bot posts under an agent's name goes through here. The
-    same three `if` statements had been written out at nine call sites against
-    whichever local happened to be in scope, so "which fields a persona sets"
-    was a fact stored nine times -- and a tenth post is written by copying
-    whichever copy was nearest, not by reading the rule.
-    """
-
-    if persona is None:
-        return {}
-    payload: dict = {}
-    if persona.username:
-        payload["username"] = persona.username
-    if persona.icon_emoji:
-        payload["icon_emoji"] = persona.icon_emoji
-    if persona.icon_url:
-        payload["icon_url"] = persona.icon_url
-    return payload
 
 
 def _persona_payload_for(agent_type: str) -> dict:
@@ -2672,66 +2619,24 @@ async def route_slack_event(
         `existing_root` is the origin "thinking..." ack when the session lives
         in the channel the user is already in: it is repurposed into the root
         rather than left beside a second one.
+
+        The root, the label and the focus are `open_session_surface`'s job --
+        one builder for every door. What stays here is what only a Slack event
+        can supply: the origin link, the working card, and the turn.
         """
+        surface = await open_session_surface(
+            client,
+            focus,
+            user_id=user,
+            target_channel=target_channel,
+            origin_key=origin_key,
+            existing_root=existing_root,
+        )
+        root_ts = surface.root_ts
+        redirect = focus.get_redirect(origin_key)
         persona = _persona_for_agent("timeboxing_agent")
-        try:
-            await _invite_user_to_channels_best_effort(
-                client, user_id=user, channel_ids=[target_channel]
-            )
-        except Exception:
-            pass
-
-        if existing_root is not None:
-            root_ts = existing_root["ts"]
-            await client.chat_update(
-                channel=target_channel,
-                ts=root_ts,
-                text=_timeboxing_thread_root_text(
-                    title="Timeboxing session",
-                    request_excerpt=None,
-                    state="pending",
-                ),
-            )
-        else:
-            root_payload = {
-                "channel": target_channel,
-                "text": _timeboxing_thread_root_text(
-                    title="Timeboxing session",
-                    request_excerpt=None,
-                    state="pending",
-                ),
-            }
-            root_payload.update(_persona_payload(persona))
-            root = await client.chat_postMessage(**root_payload)
-            root_ts = root["ts"]
 
         try:
-            focus.set_thread_label(
-                f"{target_channel}:{root_ts}",
-                title="Timeboxing session",
-                request_excerpt=None,
-                state="pending",
-                by_user=user,
-            )
-            redirect = focus.set_redirect(
-                origin_key,
-                target_channel=target_channel,
-                target_thread_ts=root_ts,
-                agent_type="timeboxing_agent",
-                by_user=user,
-                note="session-surface",
-            )
-            focus.set_focus(
-                redirect.target_key,
-                "timeboxing_agent",
-                by_user=user,
-                note="session-surface",
-            )
-            focus.set_focus(
-                origin_key, "timeboxing_agent", by_user=user, note="session-surface"
-            )
-            focus.set_user_focus(user, "timeboxing_agent")
-
             if not is_dm and channel != target_channel:
                 await _origin_link_to_thread(
                     channel_id=target_channel,
