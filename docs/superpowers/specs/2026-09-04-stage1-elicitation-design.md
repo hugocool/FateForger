@@ -15,7 +15,7 @@ Hugo's requirement adds one thing legacy never had: the *kinds* of constraint mu
 Each was a fork in the brainstorm. The choice and the reason, so nobody re-derives them.
 
 | fork | choice | why |
-| --- | --- | --- | 
+| --- | --- | --- |
 | what Stage 1 does | **show, and fill gaps dynamically** | show-only never notices what is missing; a checklist of what is missing is the disease one level up |
 | where the spec comes from | **layered: authored concern-floor + anchors from memory** | memory records what was said, never what was not; the floor is the only way to ask about something never mentioned; anchors make the floor grow irrelevant over time |
 | when Stage 1 ends | **the user ends it; the agent proposes** | the whole point of eliciting is that the other party does not close the door; a cap is a magic number deciding how much of the day the agent may learn |
@@ -94,7 +94,7 @@ One iteration of the loop, per turn:
 Offered to `SurfaceIntentInterpreter` as `allowed_decisions`; the model picks; every button has the typed equivalent for free.
 
 | decision | meaning | kernel message |
-| --- | --- | --- | 
+| --- | --- | --- |
 | `provide_facts` | a new fact or an answer to the probe | `ProvidePlanningFacts` |
 | `steer_not_today` | suspend a named rule for this session | session fact superseding the rule; dependents invalidated |
 | `steer_always` | promote a session statement to durable memory | **asks first**, then `memory_observe` |
