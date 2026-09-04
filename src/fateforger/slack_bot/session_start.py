@@ -1,0 +1,332 @@
+"""Open the planning session when its calendar event starts; close it when the
+event is over and nothing was planned.
+
+`start` and `expire` are what the reconciler's `session_start` and
+`session_expire` jobs run. Policy comes from `haunt.session_start`; this module
+only touches Slack and the kernel, through the same functions a card press uses.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import date, datetime, timedelta, timezone
+from typing import Callable
+from zoneinfo import ZoneInfo
+
+from autogen_core import AgentId
+from dateutil import parser as date_parser
+
+from fateforger.agents.timeboxing.session_contracts import (
+    CancelSession,
+    ConfirmPlanningDay,
+    PlanningDay,
+)
+from fateforger.core.logging_config import record_error
+from fateforger.haunt.messages import FollowUpSpec, UserFacingMessage
+from fateforger.haunt.reconcile import PlanningReminder
+from fateforger.haunt.session_start import (
+    LADDER_OFFSETS,
+    dm_open_line,
+    missed_line,
+    nudge_line,
+    planning_day_for,
+)
+from fateforger.slack_bot.session_surface import (
+    open_session_surface,
+    timeboxing_thread_root_text,
+)
+from fateforger.slack_bot.timeboxing_intents import TimeboxActionEnvelope
+
+logger = logging.getLogger(__name__)
+
+#: Mirrors PlanningCoordinator.OPEN_SESSION_UNDER_WAY.
+OPEN_SESSION_UNDER_WAY_HOURS = 1
+
+#: The value of `fateforger.core.runtime.USER_CHANNEL_AGENT_TYPE`, repeated
+#: here rather than imported: `core.runtime` imports the session store, whose
+#: importers reach this module, and the cycle would only show up at startup.
+USER_CHANNEL_AGENT_TYPE = "user_channel"
+
+
+def _deliver_timebox_turn(**kwargs):  # pragma: no cover - resolved at call time so tests can patch it
+    from fateforger.slack_bot.handlers import _deliver_timebox_turn as deliver
+
+    return deliver(**kwargs)
+
+
+def _event_local(reminder: PlanningReminder) -> datetime:
+    """The event's start in the timezone the day cutoff is measured in.
+
+    A reminder carries an IANA name when the calendar gave one; when it did
+    not, the offset already inside `event_start` is the timezone there is, and
+    converting it to UTC would move the cutoff hour by that offset.
+    """
+
+    parsed = date_parser.isoparse(str(reminder.event_start))
+    tz_name = (reminder.event_tz or "").strip()
+    if tz_name:
+        return parsed.astimezone(ZoneInfo(tz_name))
+    return parsed
+
+
+def _lock_timezone(reminder: PlanningReminder) -> str:
+    """The IANA name for the locked planning day; UTC when the event had none."""
+
+    return (reminder.event_tz or "").strip() or "UTC"
+
+
+class SessionStarter:
+    """Start the session the planning event stands for, and expire it unplanned."""
+
+    def __init__(
+        self,
+        *,
+        runtime,
+        client,
+        focus,
+        guardian,
+        ledger,
+        haunting_service,
+        target_channel: str,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._runtime = runtime
+        self._client = client
+        self._focus = focus
+        self._guardian = guardian
+        self._ledger = ledger
+        self._haunting = haunting_service
+        self._target_channel = target_channel
+        self._now = now or (lambda: datetime.now(timezone.utc))
+
+    # -- start ---------------------------------------------------------------
+
+    async def start(self, reminder: PlanningReminder) -> None:
+        user_id = reminder.user_id or ""
+        if not user_id or not reminder.event_start:
+            logger.warning("session_start reminder without user or event start: %r", reminder)
+            return
+        event_start = _event_local(reminder)
+        day = planning_day_for(event_start)
+        logger.info(
+            "session_start user=%s event_start=%s -> planning day %s",
+            user_id,
+            event_start.isoformat(),
+            day,
+        )
+
+        if await self._blocked(user_id=user_id, day=day):
+            return
+
+        try:
+            surface = await open_session_surface(
+                self._client, self._focus, user_id=user_id, target_channel=self._target_channel
+            )
+        except Exception:
+            logger.exception("session_start: surface failed for %s", user_id)
+            record_error(component="session_start", error_type="open_failure")
+            return
+
+        envelope = TimeboxActionEnvelope(
+            session_key=surface.session_key,
+            expected_revision=0,
+            intent=ConfirmPlanningDay(
+                planning_day=PlanningDay.lock_default(
+                    value=day, timezone=_lock_timezone(reminder), lock_revision=1
+                )
+            ),
+        )
+        try:
+            await _deliver_timebox_turn(
+                runtime=self._runtime,
+                client=self._client,
+                logger=logger,
+                session_key=surface.session_key,
+                actor_user_id=user_id,
+                interaction_id=f"session_start:{surface.session_key}",
+                channel_id=surface.channel_id,
+                thread_ts=surface.root_ts,
+                action=envelope,
+                focus=self._focus,
+            )
+        except Exception:
+            logger.exception("session_start: opening turn failed for %s", surface.session_key)
+            record_error(component="session_start", error_type="open_failure")
+            await self._relabel_root(surface.channel_id, surface.root_ts, state="canceled")
+            return
+
+        permalink = await self._permalink(surface.channel_id, surface.root_ts)
+        day_label = day.strftime("%a %-d %b")
+        await self._dm(user_id=user_id, content=dm_open_line(day_label=day_label, permalink=permalink))
+
+        # The ladder is armed after the turn on purpose: the turn itself records
+        # activity on this session key, and activity cancels a pending ladder.
+        start_hhmm = event_start.strftime("%H:%M")
+        lines = tuple(
+            nudge_line(rung, permalink=permalink, start=start_hhmm)
+            for rung in range(len(LADDER_OFFSETS))
+        )
+        try:
+            await self._haunting.schedule_followup(
+                message_id=f"planning_session:{surface.session_key}",
+                topic_id=surface.session_key,
+                task_id=None,
+                user_id=user_id,
+                channel_id=None,
+                content=lines[0],
+                spec=FollowUpSpec(
+                    should_schedule=True,
+                    offsets=LADDER_OFFSETS,
+                    lines=lines,
+                    escalation="gentle",
+                    cancel_on_user_reply=True,
+                ),
+            )
+        except Exception:
+            logger.exception("session_start: arming the ladder failed for %s", surface.session_key)
+            record_error(component="session_start", error_type="arm_failure")
+
+    # -- expire --------------------------------------------------------------
+
+    async def expire(self, reminder: PlanningReminder) -> None:
+        user_id = reminder.user_id or ""
+        if not user_id or not reminder.event_start:
+            logger.warning("session_expire reminder without user or event start: %r", reminder)
+            return
+        day = planning_day_for(_event_local(reminder))
+        standing = await self._standing(user_id=user_id, day=day)
+        if standing is None:
+            return
+        if standing.committed_session_key is not None:
+            logger.info(
+                "session_expire: %s committed %s for %s; nothing to close",
+                user_id,
+                standing.committed_session_key,
+                day,
+            )
+            return
+
+        session_key = standing.open_session_key
+        if session_key is not None:
+            try:
+                await self._haunting.cancel_followups(topic_id=session_key)
+            except Exception:
+                logger.exception("session_expire: cancel failed for %s", session_key)
+                record_error(component="session_start", error_type="cancel_failure")
+            channel_id, root_ts = session_key.split(":", 1)
+            snapshot = await self._load_snapshot(session_key)
+            if snapshot is not None and snapshot.status == "open":
+                try:
+                    await _deliver_timebox_turn(
+                        runtime=self._runtime,
+                        client=self._client,
+                        logger=logger,
+                        session_key=session_key,
+                        actor_user_id=user_id,
+                        interaction_id=f"session_expire:{session_key}",
+                        channel_id=channel_id,
+                        thread_ts=root_ts,
+                        action=TimeboxActionEnvelope(
+                            session_key=session_key,
+                            expected_revision=snapshot.revision,
+                            intent=CancelSession(),
+                        ),
+                        focus=self._focus,
+                    )
+                except Exception:
+                    logger.exception("session_expire: cancel turn failed for %s", session_key)
+                    record_error(component="session_start", error_type="expire_failure")
+            await self._relabel_root(channel_id, root_ts, state="missed")
+            try:
+                await self._client.chat_postMessage(
+                    channel=channel_id, thread_ts=root_ts, text=missed_line()
+                )
+            except Exception:
+                logger.exception("session_expire: thread line failed for %s", session_key)
+                record_error(component="session_start", error_type="expire_failure")
+
+        await self._dm(user_id=user_id, content=missed_line())
+        try:
+            await self._guardian.reconcile_user(user_id=user_id)
+        except Exception:
+            logger.exception("session_expire: reconcile_user failed for %s", user_id)
+            record_error(component="session_start", error_type="expire_failure")
+
+    # -- helpers -------------------------------------------------------------
+
+    async def _standing(self, *, user_id: str, day: date):
+        try:
+            return await self._ledger.standing_for(
+                owner_user_id=user_id,
+                open_since=self._now() - timedelta(hours=OPEN_SESSION_UNDER_WAY_HOURS),
+                planned_from=day,
+                planned_to=day,
+            )
+        except Exception:
+            logger.exception("session guard: standing lookup failed for %s", user_id)
+            record_error(component="session_start", error_type="guard_failure")
+            return None
+
+    async def _blocked(self, *, user_id: str, day: date) -> bool:
+        standing = await self._standing(user_id=user_id, day=day)
+        if standing is None:
+            return True
+        if standing.open_session_key is not None:
+            logger.info(
+                "session_start: %s already has open session %s; not starting",
+                user_id,
+                standing.open_session_key,
+            )
+            return True
+        if standing.committed_session_key is not None:
+            logger.info(
+                "session_start: %s already committed %s for %s; not starting",
+                user_id,
+                standing.committed_session_key,
+                day,
+            )
+            return True
+        return False
+
+    async def _load_snapshot(self, session_key: str):
+        try:
+            return await self._ledger.load(session_key)
+        except Exception:
+            logger.exception("session_expire: session load failed for %s", session_key)
+            record_error(component="session_start", error_type="expire_failure")
+            return None
+
+    async def _permalink(self, channel_id: str, ts: str) -> str:
+        try:
+            res = await self._client.chat_getPermalink(channel=channel_id, message_ts=ts)
+            return str(res.get("permalink") or "")
+        except Exception:
+            logger.exception("session_start: permalink failed for %s:%s", channel_id, ts)
+            record_error(component="session_start", error_type="permalink_failure")
+            return ""
+
+    async def _dm(self, *, user_id: str, content: str) -> None:
+        try:
+            await self._runtime.send_message(
+                UserFacingMessage(content=content, user_id=user_id, channel_id=None),
+                recipient=AgentId(USER_CHANNEL_AGENT_TYPE, key=user_id),
+            )
+        except Exception:
+            logger.exception("session_start: DM failed for %s", user_id)
+            record_error(component="session_start", error_type="dm_failure")
+
+    async def _relabel_root(self, channel_id: str, root_ts: str, *, state: str) -> None:
+        try:
+            await self._client.chat_update(
+                channel=channel_id,
+                ts=root_ts,
+                text=timeboxing_thread_root_text(
+                    title="Timeboxing session", request_excerpt=None, state=state
+                ),
+            )
+        except Exception:
+            logger.exception("session_start: root relabel failed for %s:%s", channel_id, root_ts)
+            record_error(component="session_start", error_type="relabel_failure")
+
+
+__all__ = ["SessionStarter"]

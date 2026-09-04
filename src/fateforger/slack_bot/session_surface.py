@@ -17,6 +17,16 @@ _TIMEBOXING_STATE_EMOJI = {
     "in_progress": ":large_blue_circle:",
     "done": ":white_check_mark:",
     "canceled": ":no_entry_sign:",
+    #: The session ran out of time with nothing planned (#164).
+    "missed": ":alarm_clock:",
+}
+
+#: States whose emoji alone does not say what happened to the session, so the
+#: header spells it out. A live session needs no word -- the card under it says
+#: where it is -- but a dead one leaves only this line behind.
+_TIMEBOXING_STATE_WORD = {
+    "canceled": "canceled",
+    "missed": "missed",
 }
 
 
@@ -55,7 +65,8 @@ def timeboxing_thread_root_text(
     *, title: str, request_excerpt: str | None, state: str
 ) -> str:
     emoji = _TIMEBOXING_STATE_EMOJI.get(state, _TIMEBOXING_STATE_EMOJI["pending"])
-    return f"{emoji} {title}"
+    word = _TIMEBOXING_STATE_WORD.get(state)
+    return f"{emoji} {title} — {word}" if word else f"{emoji} {title}"
 
 
 async def invite_user_to_channels_best_effort(
