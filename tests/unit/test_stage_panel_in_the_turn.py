@@ -1,5 +1,6 @@
 """Driven through `_run_adaptive_timebox_turn`, like the receipt tests: the
-panel is posted once, above the first card, and edited when the rows change."""
+panel is posted once, on the first row-carrying turn, right after that turn's
+card, and edited in place on every later turn."""
 
 from __future__ import annotations
 
@@ -10,9 +11,12 @@ import pytest
 
 import fateforger.slack_bot.handlers as handlers
 from fateforger.agents.timeboxing.session_contracts import (
+    ArtifactKind,
     AwaitingUser,
     Cancelled,
+    Committed,
     FactKind,
+    PlanningArtifact,
     PlanningDay,
     PlanningFact,
     PlanningSessionSnapshot,
@@ -20,6 +24,16 @@ from fateforger.agents.timeboxing.session_contracts import (
     suspension_fact_id,
 )
 from fateforger.slack_bot.stage_card_registry import StageCardRegistry
+
+
+def _receipt() -> PlanningArtifact:
+    return PlanningArtifact.create(
+        artifact_id="receipt-1",
+        kind=ArtifactKind.COMMIT_RECEIPT,
+        revision=1,
+        payload={"tx_id": "tx-A"},
+        dependency_revisions={},
+    )
 
 
 class _Client:
@@ -118,7 +132,7 @@ def _wire(
 
 
 @pytest.mark.asyncio
-async def test_the_panel_is_posted_once_above_the_first_card_then_edited(monkeypatch) -> None:
+async def test_the_panel_is_posted_once_then_edited_in_place(monkeypatch) -> None:
     runtime, registry = _wire(monkeypatch, snapshots=[_snapshot(), _snapshot(suspend=["c1"])])
     client = _Client()
     kwargs = dict(
@@ -171,3 +185,59 @@ async def test_a_cancelled_turn_retires_the_panel(monkeypatch) -> None:
     retirement = next(u for u in client.updates if u["ts"] == panel_ts)
     assert "cancelled" in retirement["blocks"][0]["text"]["text"]
     assert "accessory" not in retirement["blocks"][0]
+
+
+@pytest.mark.asyncio
+async def test_a_committed_turn_retires_the_panel(monkeypatch) -> None:
+    runtime, registry = _wire(
+        monkeypatch,
+        snapshots=[_snapshot(), _snapshot(status="committed")],
+        outcomes=[
+            AwaitingUser(requirement_id="elicit.body.unclear", question="q", why_needed="w"),
+            Committed(receipt=_receipt()),
+        ],
+    )
+    client = _Client()
+    kwargs = dict(
+        runtime=runtime,
+        client=client,
+        logger=logging.getLogger(__name__),
+        session_key="C1:1.0",
+        actor_user_id="U1",
+        progress_channel="C1",
+        progress_ts="100.1",
+        card_channel="C1",
+        card_thread_ts="1.0",
+    )
+    await handlers._run_adaptive_timebox_turn(interaction_id="i1", user_text="gym at 18", **kwargs)
+    panel_ts = registry.panel_shown("C1:1.0").ts
+
+    await handlers._run_adaptive_timebox_turn(interaction_id="i2", user_text="commit", **kwargs)
+
+    assert registry.panel_shown("C1:1.0") is None
+    retirement = next(u for u in client.updates if u["ts"] == panel_ts)
+    assert "committed" in retirement["blocks"][0]["text"]["text"]
+    assert "accessory" not in retirement["blocks"][0]
+
+
+@pytest.mark.asyncio
+async def test_a_dm_turn_posts_the_panel_top_level(monkeypatch) -> None:
+    runtime, registry = _wire(monkeypatch, snapshots=[_snapshot()])
+    client = _Client()
+    kwargs = dict(
+        runtime=runtime,
+        client=client,
+        logger=logging.getLogger(__name__),
+        session_key="C1:1.0",
+        actor_user_id="U1",
+        progress_channel="C1",
+        progress_ts="100.1",
+        card_channel="C1",
+        card_thread_ts="dm",
+    )
+    await handlers._run_adaptive_timebox_turn(interaction_id="i1", user_text="gym at 18", **kwargs)
+
+    panel_posts = [p for p in client.posts if p["blocks"][0].get("block_id") == "ff_timebox_context_panel"]
+    assert len(panel_posts) == 1
+    assert "thread_ts" not in panel_posts[0]
+    assert registry.panel_shown("C1:1.0").thread_ts is None

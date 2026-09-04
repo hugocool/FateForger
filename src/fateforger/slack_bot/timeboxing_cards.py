@@ -341,36 +341,45 @@ def _off_today_line(count: int, reason: str) -> str:
     return f" · {count} {noun} off today because it is a {reason} day"
 
 
-def render_context_panel(panel: ContextPanel) -> SlackBlockMessage:
+def render_context_panel(panel: ContextPanel, done: str | None = None) -> SlackBlockMessage:
     """Two blocks. Counts and group names are the only variable text, so the
-    panel never grows and is safe to edit in place for the whole session."""
+    panel never grows and is safe to edit in place for the whole session.
+
+    `done` retires the panel in place: the retirement label is appended to
+    the header line and the "Show rules" control is dropped, but the counts
+    stay -- a committed or cancelled session's panel keeps showing what it
+    always showed rather than being replaced by a one-line receipt that
+    throws them away."""
 
     summary = " · ".join(
         f"*{g.name if g.name is not None else 'no anchor'}* {len(g.uids)}" for g in panel.groups
     )
+    title = f"*1/5 · Constraints — what I know about a {panel.day_label}*"
+    if done is not None:
+        title += f"  —  {done}"
     head = (
-        f"*1/5 · Constraints — what I know about a {panel.day_label}*\n"
+        f"{title}\n"
         f"{panel.rule_count} rules apply ({panel.must_count} must, "
         f"{panel.rule_count - panel.must_count} should)"
         f"{_off_today_line(panel.off_today_count, panel.off_today_reason)}\n{summary}"
     )
-    blocks: list[dict] = [
-        {
-            "type": "section",
-            "block_id": "ff_timebox_context_panel",
-            "text": {"type": "mrkdwn", "text": head[:SLACK_MAX_BLOCK_TEXT_CHARS]},
-            "accessory": _nav_button(
-                FF_TIMEBOX_SHOW_RULES_ACTION_ID,
-                "Show rules",
-                artifact_action_value(
-                    session_key=panel.session_key,
-                    expected_revision=panel.expected_revision,
-                    decision="advance",  # never sent: show_rules is a host action; the value binds the session
-                    artifact=None,
-                ),
+    section: dict = {
+        "type": "section",
+        "block_id": "ff_timebox_context_panel",
+        "text": {"type": "mrkdwn", "text": head[:SLACK_MAX_BLOCK_TEXT_CHARS]},
+    }
+    if done is None:
+        section["accessory"] = _nav_button(
+            FF_TIMEBOX_SHOW_RULES_ACTION_ID,
+            "Show rules",
+            artifact_action_value(
+                session_key=panel.session_key,
+                expected_revision=panel.expected_revision,
+                decision="advance",  # never sent: show_rules is a host action; the value binds the session
+                artifact=None,
             ),
-        }
-    ]
+        )
+    blocks: list[dict] = [section]
     if panel.suspended:
         names = ", ".join(f"{s.name} (you said: {s.reason})" for s in panel.suspended)
         blocks.append(

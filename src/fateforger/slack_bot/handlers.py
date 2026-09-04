@@ -43,6 +43,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     ApproveArtifact,
     ArtifactKind,
     Cancelled,
+    Committed,
     ConfirmPlanningDay,
     DayType,
     PlanningSessionSnapshot,
@@ -1689,21 +1690,6 @@ async def _run_adaptive_timebox_turn(
     else:
         done = None
 
-    # The panel sits above the first card, so it has to post before that
-    # card's own transition; once shown, it stays put and just gets edited.
-    panel_synced_first = (
-        not isinstance(outcome, (TurnFailed, Cancelled))
-        and _stage_cards.panel_shown(session_key) is None
-    )
-    if panel_synced_first:
-        await _stage_cards.sync_panel(
-            client,
-            session_key=session_key,
-            snapshot=current,
-            channel=card_channel,
-            thread_ts=card_thread_ts,
-            logger=logger,
-        )
     await _stage_cards.transition(
         client,
         session_key=session_key,
@@ -1714,21 +1700,37 @@ async def _run_adaptive_timebox_turn(
         ts=progress_ts,
         logger=logger,
     )
+    # `transition` posts nothing of its own -- the card's message is the
+    # processing message every caller already posted before this turn
+    # started, so the panel is chronologically after that card regardless of
+    # call order. It is posted on the first row-carrying turn (below, via
+    # `sync_panel`) and lands right after that turn's card; every later
+    # turn's card is posted after it in the same thread.
     if isinstance(outcome, Cancelled):
         # `transition` above only forgets the card (it pops `_shown` when a
         # cancelled turn draws no new card); the panel is a separate record
         # and a cancelled session must not leave a pressable "Show rules"
         # button behind, so it gets its own retirement receipt here.
         await _stage_cards.retire_panel(
-            client, session_key=session_key, done="🚫 cancelled", logger=logger
+            client, session_key=session_key, done=done, logger=logger
         )
-    elif not panel_synced_first and not isinstance(outcome, TurnFailed):
+    elif isinstance(outcome, Committed):
+        # Same reasoning as Cancelled: a committed session is also over, and
+        # must not leave a live control behind either.
+        await _stage_cards.retire_panel(
+            client, session_key=session_key, done="✅ committed", logger=logger
+        )
+    elif not isinstance(outcome, TurnFailed):
+        # `card_thread_ts` is the DM route's sentinel for "this session's
+        # thread"; there is no such thread on a DM, and Slack refuses
+        # `chat_postMessage(thread_ts="dm")` outright, so it becomes a
+        # top-level post there instead.
         await _stage_cards.sync_panel(
             client,
             session_key=session_key,
             snapshot=current,
             channel=card_channel,
-            thread_ts=card_thread_ts,
+            thread_ts=None if card_thread_ts == "dm" else card_thread_ts,
             logger=logger,
         )
 

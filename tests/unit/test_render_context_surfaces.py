@@ -115,6 +115,19 @@ def test_the_panel_is_two_blocks_with_a_show_rules_control() -> None:
     _validated_message(message.blocks)
 
 
+def test_a_retired_panel_keeps_its_counts_and_loses_its_control() -> None:
+    """`done` retires the panel (committed or cancelled) in place: the same
+    counts stay, but there is no live session left for the control to act
+    on."""
+    panel = context_panel(_snapshot(_rows(41), suspend=["c3"]), first_shown_with=None)
+    message = render_context_panel(panel, done="✅ committed")
+    assert len(message.blocks) == 2
+    assert "accessory" not in message.blocks[0]
+    assert "✅ committed" in message.blocks[0]["text"]["text"]
+    assert f"{panel.rule_count} rules apply" in message.blocks[0]["text"]["text"]
+    _validated_message(message.blocks)
+
+
 def test_the_fold_is_a_modal_under_the_cap_with_a_steer_menu_per_row() -> None:
     fold = context_fold(_snapshot(_rows(41), suspend=["c3"]), first_shown_with=None)
     view = render_context_fold(fold)

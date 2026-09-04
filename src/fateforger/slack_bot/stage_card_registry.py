@@ -21,6 +21,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     TimeboxIntent,
 )
 
+from .messages import SlackBlockMessage
 from .stage_cards import StageCard
 from .stage_context import ContextPanel, context_panel, shown_with_of
 from .timeboxing_cards import render_context_panel, render_stage_card
@@ -40,8 +41,10 @@ class ShownPanel:
     #: The panel message itself.
     ts: str
     #: The session thread it was posted into; a modal press has no message
-    #: to read this from, so the record keeps it.
-    thread_ts: str
+    #: to read this from, so the record keeps it. None on the DM route,
+    #: where there is no thread to post into -- the panel is a top-level
+    #: message there.
+    thread_ts: str | None
     panel: ContextPanel
 
 
@@ -76,14 +79,14 @@ def receipt_body(intent: TimeboxIntent, previous: StageCard) -> str:
     return previous.body
 
 
-def _panel_receipt(panel: ContextPanel, done: str) -> tuple[str, list[dict]]:
-    """The one-block receipt a panel becomes once it stops being live --
-    superseded by a day change, or retired outright on cancel. Drawn from the
-    panel's own first line, exactly the same shape either way."""
+def _panel_receipt(panel: ContextPanel, done: str) -> SlackBlockMessage:
+    """The panel once it stops being live -- superseded by a day change, or
+    retired outright on cancel or commit. `render_context_panel` itself draws
+    this shape (counts kept, control dropped, `done` appended) so the retired
+    panel still says what it always said instead of shrinking to a one-line
+    receipt that throws the counts away."""
 
-    rendered = render_context_panel(panel)
-    head = rendered.blocks[0]["text"]["text"].splitlines()[0] + f"  —  {done}"
-    return head, [{"type": "section", "text": {"type": "mrkdwn", "text": head}}]
+    return render_context_panel(panel, done)
 
 
 class StageCardRegistry:
@@ -98,7 +101,7 @@ class StageCardRegistry:
         return self._shown.get(session_key)
 
     def remember_panel(
-        self, session_key: str, *, channel: str, ts: str, thread_ts: str, panel: ContextPanel
+        self, session_key: str, *, channel: str, ts: str, thread_ts: str | None, panel: ContextPanel
     ) -> None:
         self._panels[session_key] = ShownPanel(channel=channel, ts=ts, thread_ts=thread_ts, panel=panel)
 
@@ -163,11 +166,17 @@ class StageCardRegistry:
         self._shown[session_key] = ShownCard(channel=channel, ts=ts, card=new_card)
 
     async def sync_panel(
-        self, client, *, session_key: str, snapshot, channel: str, thread_ts: str, logger
+        self, client, *, session_key: str, snapshot, channel: str, thread_ts: str | None, logger
     ) -> None:
         """Post the panel once, edit it when its rows change, replace it on a
         day change. Best-effort: the turn is saved before this runs, and a
-        Slack failure here is logged, never raised."""
+        Slack failure here is logged, never raised.
+
+        `thread_ts` is None on the DM route: there is no thread to post into
+        there, so the panel goes up as a top-level message instead. Slack
+        refuses `chat_postMessage(thread_ts="dm")` outright -- the sentinel
+        the DM route otherwise uses for "this session's thread" -- so callers
+        translate that sentinel to None before calling this."""
 
         if snapshot.planning_day is None:
             return
@@ -199,9 +208,11 @@ class StageCardRegistry:
             # sync would only re-edit the same message. A failed re-post
             # below then falls through to a plain first-draw post next time,
             # never a retry of the receipt.
-            head, receipt = _panel_receipt(previous.panel, "superseded")
+            receipt = _panel_receipt(previous.panel, "superseded")
             try:
-                await client.chat_update(channel=previous.channel, ts=previous.ts, text=head, blocks=receipt)
+                await client.chat_update(
+                    channel=previous.channel, ts=previous.ts, text=receipt.text, blocks=receipt.blocks
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "could not receipt the superseded context panel session_key=%s error_type=%s error=%s",
@@ -210,10 +221,11 @@ class StageCardRegistry:
             self._panels.pop(session_key, None)
         panel = context_panel(snapshot, None)
         message = render_context_panel(panel)
+        post_kwargs: dict = {"channel": channel, "text": message.text, "blocks": message.blocks}
+        if thread_ts is not None:
+            post_kwargs["thread_ts"] = thread_ts
         try:
-            posted = await client.chat_postMessage(
-                channel=channel, thread_ts=thread_ts, text=message.text, blocks=message.blocks
-            )
+            posted = await client.chat_postMessage(**post_kwargs)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "could not post the context panel session_key=%s error_type=%s error=%s",
@@ -234,9 +246,11 @@ class StageCardRegistry:
         previous = self._panels.get(session_key)
         if previous is None:
             return
-        head, receipt = _panel_receipt(previous.panel, done)
+        receipt = _panel_receipt(previous.panel, done)
         try:
-            await client.chat_update(channel=previous.channel, ts=previous.ts, text=head, blocks=receipt)
+            await client.chat_update(
+                channel=previous.channel, ts=previous.ts, text=receipt.text, blocks=receipt.blocks
+            )
         except Exception as exc:  # noqa: BLE001 - presentation never owns the turn
             logger.warning(
                 "could not retire the context panel session_key=%s ts=%s error_type=%s error=%s",

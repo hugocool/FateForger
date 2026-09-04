@@ -33,6 +33,7 @@ from fateforger.slack_bot.handlers import (
     harness_approve_block,
     register_handlers,
 )
+from fateforger.slack_bot.stage_card_registry import StageCardRegistry
 from fateforger.slack_bot.timebox_candidate import (
     PendingTimeboxCandidates,
     ValidatedTimeboxCandidate,
@@ -546,6 +547,9 @@ async def test_top_level_mention_routes_card_and_approval_through_actual_root(
     monkeypatch.setattr(
         handlers, "_pending_candidates", PendingTimeboxCandidates()
     )
+    # A fresh registry, not the process-global one: otherwise this test's
+    # panel-post count depends on whatever state another test left behind.
+    monkeypatch.setattr(handlers, "_stage_cards", StageCardRegistry())
 
     async def fake_remember(**_kwargs):
         return None
@@ -610,7 +614,7 @@ async def test_top_level_mention_routes_card_and_approval_through_actual_root(
     assert approval.thread_key == "C1:user-root"
     assert carded[-1]["ts"] == "ack-reply"
     # The card itself is an edit of the ack message; the one new message this
-    # turn posts is the context panel, above the card in the same thread.
+    # turn posts is the context panel, in the same thread, right after it.
     assert len(client.posts) == 1, client.posts
     panel_post = client.posts[0]
     assert panel_post["channel"] == "C1"
