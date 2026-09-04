@@ -479,17 +479,18 @@ async def test_reprojection_writes_nothing_unless_asked(tmp_path):
     assert constraints.get(stale.uid).applicability.days_of_week == [1, 3]
 
 
-async def test_reprojection_preserves_day_types_nothing_can_re_derive(tmp_path):
-    """A field no judgement produces must survive re-derivation.
+async def test_reprojection_carries_the_existing_day_types_when_none_are_judged(tmp_path):
+    """The existing value survives a pass in which no judgement supplies one.
 
-    Applicability was rebuilt from the tier judgement, which carries dates and
-    weekdays but no day kind -- so re-projection dropped `day_types` from every
-    constraint that had one. Measured on the real store that silently unscoped
-    22 of 33 and returned the whole working week on a day off, while the run
-    reported `changed` and looked like a success.
+    The tier judgement writes `day_types` now, so this is the fallback half of
+    that rule rather than a field nothing can re-derive: when no observation is
+    judged to scope the rule, what the constraint already carries stands.
 
-    Same rule as prose: a field nothing can re-derive must not be rebuilt from
-    something unable to express it.
+    Before the writer existed, applicability was rebuilt from a judgement that
+    could not express a day kind at all, so re-projection dropped `day_types`
+    from every constraint that had one. Measured on the real store that
+    silently unscoped 22 of 33 and returned the whole working week on a day
+    off, while the run reported `changed` and looked like a success.
     """
     from memory.constraint import Applicability, Constraint, Necessity, Scope, Source, Status
     from memory.models import DecayClass, Observation, Provenance
@@ -522,8 +523,8 @@ async def test_reprojection_preserves_day_types_nothing_can_re_derive(tmp_path):
     carried = _derive([observation], judgements, existing)
     assert carried["applicability"].day_types == ["working"]
 
-    # The old behaviour, reproduced exactly: with no existing constraint to
-    # carry from, the field is rebuilt from a judgement that cannot express it.
+    # The old behaviour, reproduced exactly: with nothing to carry from and
+    # nothing judged, the field comes back empty.
     dropped = _derive([observation], judgements, None)
     assert dropped["applicability"].day_types == []
 
