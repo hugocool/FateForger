@@ -12,7 +12,12 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningSessionSnapshot,
     suspension_fact_id,
 )
-from fateforger.slack_bot.stage_context import group_rows, rank_rows
+from fateforger.slack_bot.stage_context import (
+    context_panel,
+    group_rows,
+    rank_rows,
+    shown_with_of,
+)
 
 
 def _day() -> PlanningDay:
@@ -146,3 +151,35 @@ def test_stage_context_knows_no_slack_and_no_store() -> None:
     forbidden = {"slack_sdk", "handlers", "timeboxing_cards", "timeboxing_commit", "memory", "sqlite3"}
     offending = {n for n in imported if any(part in forbidden for part in n.split("."))}
     assert offending == set(), offending
+
+
+def test_the_panel_counts_and_groups() -> None:
+    rows = [_row("c1", GYM, necessity="must"), _row("c2", GYM), _row("c3")]
+    panel = context_panel(
+        _snapshot(rows, [_suspend("c3")], suspended_constraint_count=3),
+        first_shown_with=None,
+    )
+    assert panel.day == "2026-09-08"
+    assert (panel.rule_count, panel.must_count, panel.off_today_count) == (3, 1, 3)
+    assert panel.off_today_reason == "working"
+    assert [g.name for g in panel.groups] == [None, "gym"]  # suspended c3 ranks first
+    assert [s.uid for s in panel.suspended] == ["c3"]
+    assert panel.suspended[0].reason == "not today"
+
+
+def test_shown_with_is_row_uids_plus_suspension_fact_ids() -> None:
+    rows = [_row("c1", GYM), _row("c2", GYM)]
+    snapshot = _snapshot(rows, [_suspend("c2")])
+    assert shown_with_of(snapshot) == frozenset({"c1", "c2", suspension_fact_id("c2")})
+    panel = context_panel(snapshot, first_shown_with=None)
+    assert panel.shown_with == shown_with_of(snapshot)
+
+
+def test_first_draw_seeds_first_shown_with_and_later_draws_keep_it() -> None:
+    first = context_panel(_snapshot([_row("c1", GYM)]), first_shown_with=None)
+    assert first.first_shown_with == frozenset({"c1"})
+    later = context_panel(
+        _snapshot([_row("c1", GYM), _row("c2", GYM)]), first_shown_with=first.first_shown_with
+    )
+    assert later.first_shown_with == frozenset({"c1"})
+    assert [g.uids for g in later.groups] == [["c2", "c1"]]
