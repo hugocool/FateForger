@@ -10,6 +10,7 @@ from fateforger.haunt.reconcile import (
     PlanningReminder,
     PlanningRuleConfig,
 )
+from fateforger.haunt.session_start import SESSION_EXPIRE_KIND, SESSION_START_KIND
 
 
 class DummyCalendarClient:
@@ -250,6 +251,10 @@ async def test_haunt_calendar_client_logs_mcp_tool_error_payload(caplog) -> None
 
 @pytest.mark.asyncio
 async def test_reconcile_uses_anchor_event_id_when_provided():
+    # An anchor still ahead now schedules its own session_start/session_expire
+    # instead of nothing (#see task-3: "anchor in window" used to mean "quiet
+    # until the ladder's own horizon logic kicks in" -- it now means the event
+    # owns the window and drives its own two jobs).
     scheduler = FakeScheduler()
     client = DummyCalendarClient(events=[])
     reconciler = PlanningReconciler(scheduler, calendar_client=client)
@@ -269,12 +274,17 @@ async def test_reconcile_uses_anchor_event_id_when_provided():
         now=now,
     )
 
-    assert jobs == []
-    assert scheduler.get_jobs() == []
+    kinds = {job.key.kind for job in jobs}
+    assert kinds == {SESSION_START_KIND, SESSION_EXPIRE_KIND}
+    scheduled_kinds = {job.kwargs["reminder"].kind for job in scheduler.get_jobs()}
+    assert scheduled_kinds == {SESSION_START_KIND, SESSION_EXPIRE_KIND}
 
 
 @pytest.mark.asyncio
 async def test_reconcile_logs_outcome_for_anchor_match(caplog):
+    # Same event, but now asserting the outcome label: an anchor still ahead
+    # logs "anchor_ahead", not the old "anchor_match" (which meant "found and
+    # silenced"); see test_reconcile_uses_anchor_event_id_when_provided above.
     scheduler = FakeScheduler()
     client = DummyCalendarClient(events=[])
     reconciler = PlanningReconciler(scheduler, calendar_client=client)
@@ -295,8 +305,8 @@ async def test_reconcile_logs_outcome_for_anchor_match(caplog):
             now=now,
         )
 
-    assert jobs == []
-    assert "planning_reconcile evaluate outcome=anchor_match" in caplog.text
+    assert {job.key.kind for job in jobs} == {SESSION_START_KIND, SESSION_EXPIRE_KIND}
+    assert "planning_reconcile evaluate outcome=anchor_ahead" in caplog.text
 
 
 @pytest.mark.asyncio

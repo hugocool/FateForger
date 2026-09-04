@@ -4,9 +4,12 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Protocol
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser as date_parser
+
+from .session_start import SESSION_EXPIRE_KIND, SESSION_START_KIND, planning_day_for
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,9 @@ class PlanningRuleConfig:
     # TODO(refactor,typed-contracts): Remove summary keyword list and use a typed
     # event marker/label schema for planning-session detection.
     calendar_id: str = "primary"
+    # How long after the planning event's end the auto-opened session is
+    # declared missed and the ordinary missing-planning ladder takes over.
+    expire_after: timedelta = timedelta(minutes=60)
 
 
 @dataclass(frozen=True)
@@ -79,6 +85,9 @@ class PlanningReminder:
     message: str
     user_id: str | None = None
     channel_id: str | None = None
+    event_start: str | None = None
+    event_end: str | None = None
+    event_tz: str | None = None
 
 
 @dataclass
@@ -147,10 +156,12 @@ class PlanningSessionRule:
         calendar_client: CalendarClient,
         config: PlanningRuleConfig | None = None,
         planning_session_store: PlanningSessionStore | None = None,
+        timeboxing_ledger: Any | None = None,
     ) -> None:
         self._calendar_client = calendar_client
         self._config = config or PlanningRuleConfig()
         self._planning_session_store = planning_session_store
+        self._timeboxing_ledger = timeboxing_ledger
 
     async def evaluate(
         self,
@@ -176,25 +187,63 @@ class PlanningSessionRule:
                 event_id=planning_event_id,
             )
             anchor_found = anchor is not None
-            anchor_in_window = bool(
-                anchor and _event_within_window(anchor, start, end)
+            # Bounded above by the horizon (an anchor booked further out than
+            # `end` is not this window's concern yet) but not below: a passed
+            # anchor must still reach the branch below to be told apart from
+            # one still ahead, rather than being excluded by an overlap test
+            # that only recognises events yet to happen.
+            anchor_probe_start = (
+                _parse_event_dt(anchor.get("start"), tz=start.tzinfo or timezone.utc)
+                if anchor
+                else None
             )
-            if anchor_in_window:
-                self._log_evaluate_outcome(
-                    outcome="anchor_match",
-                    scope=scope,
-                    user_id=user_id,
-                    planning_event_id=planning_event_id,
-                    start=start,
-                    end=end,
-                    anchor_found=anchor_found,
-                    anchor_in_window=anchor_in_window,
-                    stored_hit=stored_hit,
-                    list_count=list_count,
-                    fallback_hit=fallback_hit,
-                    jobs_count=0,
-                )
-                return []
+            anchor_in_window = bool(
+                anchor_probe_start is not None and anchor_probe_start <= end
+            )
+            if anchor_found and anchor_in_window:
+                anchor_tz_name = _event_tz_name(anchor)
+                anchor_tz = ZoneInfo(anchor_tz_name) if anchor_tz_name else timezone.utc
+                anchor_start = _parse_event_dt(anchor.get("start"), tz=anchor_tz)
+                anchor_end = _parse_event_dt(anchor.get("end"), tz=anchor_tz)
+                if anchor_start is not None and anchor_end is not None:
+                    local_start = anchor_start.astimezone(anchor_tz)
+                    if anchor_end > start:
+                        # Ahead or under way: the event owns the window. Start the
+                        # session at its start (now, if the bot came up mid-window)
+                        # and declare it missed expire_after past its end.
+                        window_start = start.date().isoformat()
+                        session_run_at = max(anchor_start, start + timedelta(seconds=5))
+                        reminder_fields = dict(
+                            scope=scope,
+                            user_id=user_id,
+                            channel_id=channel_id,
+                            event_start=anchor_start.isoformat(),
+                            event_end=anchor_end.isoformat(),
+                            event_tz=anchor_tz_name or "UTC",
+                        )
+                        jobs = [
+                            DesiredJob(
+                                key=JobKey("rule", self.rule_id, scope, window_start, SESSION_START_KIND),
+                                run_at=session_run_at,
+                                payload=PlanningReminder(kind=SESSION_START_KIND, attempt=1, message="", **reminder_fields),
+                            ),
+                            DesiredJob(
+                                key=JobKey("rule", self.rule_id, scope, window_start, SESSION_EXPIRE_KIND),
+                                run_at=anchor_end + self._config.expire_after,
+                                payload=PlanningReminder(kind=SESSION_EXPIRE_KIND, attempt=1, message="", **reminder_fields),
+                            ),
+                        ]
+                        self._log_evaluate_outcome(outcome="anchor_ahead", scope=scope, user_id=user_id, planning_event_id=planning_event_id, start=start, end=end, anchor_found=anchor_found, anchor_in_window=anchor_in_window, stored_hit=stored_hit, list_count=list_count, fallback_hit=fallback_hit, jobs_count=len(jobs))
+                        return jobs
+                    # The event has passed. It counts only if the day it planned
+                    # was committed; otherwise the planning session is missing again.
+                    if await self._committed_for(user_id=user_id, day=planning_day_for(local_start), now=start):
+                        self._log_evaluate_outcome(outcome="anchor_past_committed", scope=scope, user_id=user_id, planning_event_id=planning_event_id, start=start, end=end, anchor_found=anchor_found, anchor_in_window=anchor_in_window, stored_hit=stored_hit, list_count=list_count, fallback_hit=fallback_hit, jobs_count=0)
+                        return []
+                    # fall through to the stored/fallback checks and the nudge ladder
+                else:
+                    self._log_evaluate_outcome(outcome="anchor_match", scope=scope, user_id=user_id, planning_event_id=planning_event_id, start=start, end=end, anchor_found=anchor_found, anchor_in_window=anchor_in_window, stored_hit=stored_hit, list_count=list_count, fallback_hit=fallback_hit, jobs_count=0)
+                    return []
 
         stored = await self._resolve_planning_from_stored_sessions(
             user_id=user_id, start=start, end=end
@@ -522,6 +571,21 @@ class PlanningSessionRule:
                 event_id,
             )
 
+    async def _committed_for(self, *, user_id: str | None, day: date, now: datetime) -> bool:
+        if not user_id or self._timeboxing_ledger is None:
+            return False
+        try:
+            standing = await self._timeboxing_ledger.standing_for(
+                owner_user_id=user_id,
+                open_since=now - timedelta(hours=1),
+                planned_from=day,
+                planned_to=day,
+            )
+        except Exception:
+            logger.exception("committed-session lookup failed for user=%s day=%s", user_id, day)
+            return False
+        return standing.committed_session_key is not None
+
     @staticmethod
     def _message_for_nudge(attempt: int) -> str:
         attempt = max(int(attempt or 1), 1)
@@ -615,7 +679,8 @@ class PlanningReconciler:
 
         for job in desired:
             run_at = job.run_at
-            if not retime:
+            event_anchored = job.key.kind in (SESSION_START_KIND, SESSION_EXPIRE_KIND)
+            if not retime and not event_anchored:
                 already = scheduled.get(job.key.as_id())
                 if already is not None:
                     run_at = already
@@ -744,6 +809,14 @@ def _normalize_event(payload: Any) -> dict | None:
         val = payload.get(key)
         if isinstance(val, dict):
             return val
+    return None
+
+
+def _event_tz_name(event: dict) -> str | None:
+    start = event.get("start")
+    if isinstance(start, dict):
+        name = start.get("timeZone")
+        return str(name) if name else None
     return None
 
 
