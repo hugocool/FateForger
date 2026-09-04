@@ -47,6 +47,8 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | `timeboxing_commit.py` | Stage 0 "commit day" Slack UI: day picker + start button. Handles user day-selection before a timeboxing session begins. Action IDs: `FF_TIMEBOX_COMMIT_*`. |
 | `timeboxing_submit.py` | Stage 5 submit/cancel/undo Slack action bridge. Parses button metadata and dispatches typed submit/undo messages to `timeboxing_agent`. |
 | `constraint_review.py` | Block Kit modals and action payloads for reviewing/editing timeboxing constraints extracted from conversations. |
+| `stage_context.py` | Stage 1 context surfaces as typed values: `ContextPanel` (two blocks, counts by anchor group) and `ContextFold` (the rules modal), built from the session snapshot alone; ranking by what changed and what is uncertain first. |
+| `stage_card_registry.py` | Remembers each session's live stage card and context panel; receipts the card on transition, edits the panel in place, retires it when the session ends. |
 
 ### Planning/Scheduling UI
 
@@ -83,6 +85,16 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
           -> relay_agent.py drains agent output queue
             -> Bolt posts messages to Slack thread
 ```
+
+Stage 1 has three surfaces. The **turn card** (`StageCard`) is posted per kernel turn
+and receipted on the next. The **context panel** (`stage_context.context_panel`) is
+posted on the first row-carrying turn and lands after that turn's card (later cards
+follow it); it is edited in place by `StageCardRegistry.sync_panel` when the row set or
+a session suspension changes, and retired — control removed, counts kept — on commit or
+cancel. The **fold** (`stage_context.context_fold`) is the modal behind the panel's
+*Show rules* button (`ff_timebox_show_rules`); an overflow pick in it
+(`ff_timebox_steer`) or on a decided item (`ff_timebox_decided`) goes through
+`intent_from_artifact_action` like any button.
 
 ### Thread Focus
 
@@ -151,6 +163,9 @@ Button/action callbacks registered in `handlers.py`:
 | `ff_timebox_undo_submit` | `timeboxing_submit.py` | Undo latest Stage 5 submission |
 | `ff_harness_approve` | `handlers.py` + `timebox_candidate.py` | Commit the exact user-owned harness candidate once |
 | `ff_harness_undo` | `handlers.py` + `tmbx_client.py` | Reverse the reported tmbx transaction directly |
+| `ff_timebox_show_rules` | `handlers.py` + `timeboxing_cards.py` | Open the Stage 1 rules modal from the context panel (reads state, changes nothing) |
+| `ff_timebox_steer` | `handlers.py` | A Not today / This is wrong / Restore pick inside the rules modal; goes through `intent_from_artifact_action` like a button, then redraws the modal |
+| `ff_timebox_decided` | `handlers.py` | Deny pick on a decided item; the same handler as the card buttons |
 
 ## Proposal Object Interaction Contract
 
