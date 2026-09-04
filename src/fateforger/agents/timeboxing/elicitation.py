@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .session_contracts import (
     CellRef,
@@ -87,6 +87,8 @@ ALL_CELLS: tuple[CellRef, ...] = tuple(
     CellRef(row=row, criterion=criterion.key) for row in ROWS for criterion in CRITERIA
 )
 
+_WEEKDAYS: tuple[str, ...] = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
 CellState = Literal["covered", "uncovered", "not_applicable"]
 
 
@@ -112,9 +114,32 @@ class CoverageMatrix(BaseModel):
     #: anchor uid -> row key, the placement these cells were classified against
     placement: dict[str, str] = Field(default_factory=dict)
     rows: dict[str, RowStats] = Field(default_factory=dict)
-    #: cells the generator could not ground a probe for; still open, shown on
-    #: the gate line rather than asked
+    #: still open, ranked after every askable cell, so the gate line shows it and
+    #: the kernel asks it only when nothing askable remains
     unaskable: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_cells_are_complete(self) -> CoverageMatrix:
+        """Ensure cells dict contains exactly the forty ALL_CELLS, no more, no fewer."""
+        expected = {cell.id for cell in ALL_CELLS}
+        actual = set(self.cells.keys())
+        if actual != expected:
+            missing = expected - actual
+            extra = actual - expected
+            msg = "coverage matrix cells are incomplete"
+            if missing:
+                msg += f"; missing: {missing}"
+            if extra:
+                msg += f"; extra: {extra}"
+            raise ValueError(msg)
+
+        # Validate that all unaskable ids are valid cell ids
+        unaskable_set = set(self.unaskable)
+        invalid_unaskable = unaskable_set - expected
+        if invalid_unaskable:
+            raise ValueError(f"unaskable contains invalid cell ids: {invalid_unaskable}")
+
+        return self
 
 
 def coverage_matrix(snapshot: PlanningSessionSnapshot) -> CoverageMatrix | None:
@@ -140,22 +165,29 @@ def ranked_open_cells(matrix: CoverageMatrix) -> list[CellRef]:
 
     A row with rules or stated facts before one with neither; a row carrying a
     `must` before one carrying only `should`s; then the criterion order above.
+    Unaskable cells are included and ranked after every askable cell.
     """
     order = {c.key: i for i, c in enumerate(CRITERIA)}
-    open_cells = [cell for cell in ALL_CELLS if matrix.cells.get(cell.id) == "uncovered"]
+    unaskable_set = set(matrix.unaskable)
+    open_cells = [
+        cell for cell in ALL_CELLS
+        if matrix.cells[cell.id] == "uncovered" or cell.id in unaskable_set
+    ]
 
-    def key(cell: CellRef) -> tuple[int, int, int]:
+    def key(cell: CellRef) -> tuple[int, int, int, int]:
+        is_unaskable = 1 if cell.id in unaskable_set else 0
         stats = matrix.rows.get(cell.row, RowStats())
         has_content = 1 if (stats.rule_count + stats.stated) > 0 else 0
         has_must = 1 if stats.must_count > 0 else 0
-        return (-has_content, -has_must, order[cell.criterion])
+        return (is_unaskable, -has_content, -has_must, order[cell.criterion])
 
     return sorted(open_cells, key=key)
 
 
 def day_label(planning_day: PlanningDay) -> str:
-    """"working Tuesday": the day type and the weekday, both minted by the host."""
-    return f"{planning_day.day_type.value} {planning_day.date.strftime('%A')}"
+    """The day type and the weekday, both minted by the host; the weekday name comes from a fixed table so the label does not follow the process locale."""
+    weekday_name = _WEEKDAYS[planning_day.date.isoweekday() - 1]
+    return f"{planning_day.day_type.value} {weekday_name}"
 
 
 def stage1_gate(snapshot: PlanningSessionSnapshot) -> Gate:

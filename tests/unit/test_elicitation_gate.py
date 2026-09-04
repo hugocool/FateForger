@@ -136,3 +136,70 @@ def test_a_malformed_matrix_fact_is_refused_not_ignored() -> None:
     )
     with pytest.raises(ValueError):
         coverage_matrix(snapshot)
+
+
+def test_unaskable_cells_are_included_and_ranked_after_askable_ones() -> None:
+    matrix = _matrix(
+        **{
+            "elicit.body.unclear": "uncovered",
+            "elicit.movement.unclear": "uncovered",
+        }
+    )
+    matrix = matrix.model_copy(
+        update={
+            "unaskable": ["elicit.movement.unclear"],
+            "rows": {
+                "body": RowStats(rule_count=5, must_count=0, stated=0),
+                "movement": RowStats(rule_count=5, must_count=0, stated=0),
+            }
+        }
+    )
+    ranked = ranked_open_cells(matrix)
+    assert [c.id for c in ranked] == [
+        "elicit.body.unclear",
+        "elicit.movement.unclear",
+    ]
+
+
+def test_missing_cell_ids_are_refused() -> None:
+    import pytest
+
+    cells = {cell.id: "not_applicable" for cell in ALL_CELLS}
+    # Remove one cell
+    del cells[ALL_CELLS[0].id]
+    with pytest.raises(ValueError, match="missing"):
+        CoverageMatrix(cells=cells)
+
+
+def test_extra_cell_ids_are_refused() -> None:
+    import pytest
+
+    cells = {cell.id: "not_applicable" for cell in ALL_CELLS}
+    cells["elicit.bogus.cell"] = "uncovered"
+    with pytest.raises(ValueError, match="extra"):
+        CoverageMatrix(cells=cells)
+
+
+def test_coverage_matrix_returns_none_for_snapshot_with_no_planning_day() -> None:
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=2,
+        owner_user_id="U1",
+        planning_day=None,
+        facts=[],
+    )
+    assert coverage_matrix(snapshot) is None
+
+
+def test_stage1_gate_raises_for_snapshot_with_no_planning_day() -> None:
+    import pytest
+
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=2,
+        owner_user_id="U1",
+        planning_day=None,
+        facts=[],
+    )
+    with pytest.raises(ValueError, match="locked planning day"):
+        stage1_gate(snapshot)
