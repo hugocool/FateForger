@@ -179,6 +179,16 @@ class StageCardRegistry:
         translate that sentinel to None before calling this."""
 
         if snapshot.planning_day is None:
+            # `GoBack` out of Stage 1 clears the day when Stage 1 has no
+            # skeleton yet. A panel record left standing here survives with a
+            # "Show rules" control that can never open -- `context_fold`
+            # raises on a snapshot with no locked day -- so a record still on
+            # file is retired rather than left as a live, permanently broken
+            # button.
+            if self._panels.get(session_key) is not None:
+                await self.retire_panel(
+                    client, session_key=session_key, done="↩️ day reopened", logger=logger
+                )
             return
         previous = self._panels.get(session_key)
         day = snapshot.planning_day.date.isoformat()

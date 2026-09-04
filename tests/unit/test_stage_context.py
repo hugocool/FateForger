@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from fateforger.agents.timeboxing.session_contracts import (
     FactKind,
     PlanningDay,
@@ -233,6 +235,18 @@ def test_groups_that_fit_exactly_at_the_cap_are_all_kept() -> None:
     assert sum(len(g.rows) for g in fold.groups) == 97
     assert fold_block_count(fold) <= SLACK_MAX_MODAL_BLOCKS
     assert fold_block_count(fold) == 100
+
+
+def test_a_panel_needs_a_locked_day() -> None:
+    snapshot = _snapshot([_row("c1", GYM)], planning_day=None)
+    with pytest.raises(ValueError):
+        context_panel(snapshot, first_shown_with=None)
+
+
+def test_a_fold_needs_a_locked_day() -> None:
+    snapshot = _snapshot([_row("c1", GYM)], planning_day=None)
+    with pytest.raises(ValueError):
+        context_fold(snapshot, first_shown_with=None)
 
 
 def test_an_oversized_top_group_is_kept_partially_under_the_cap() -> None:
