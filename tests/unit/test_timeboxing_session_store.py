@@ -283,16 +283,18 @@ async def test_standing_reads_open_and_committed_sessions_from_the_indexed_colum
 
 
 @pytest.mark.asyncio
-async def test_open_sessions_for_day_names_every_open_session_and_how_far_it_got(
+async def test_open_sessions_names_every_open_session_and_how_far_it_got(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#164: expiry asks which sessions stand for one day, not who is busy.
+    """#164, #299: which sessions this user holds open, and what each stands for.
 
-    Four sessions for one user on the locked day: one still at the opening
-    turn's revision, one the user has worked in, one already cancelled, and
-    one planned for a different day. A fifth belongs to someone else. Only
-    the two open ones for that day come back, each carrying the revision that
-    says whether anybody touched it.
+    Five sessions for one user: one still at the opening turn's revision, one
+    the user has worked in, one already cancelled, one planned for a different
+    day, and one that never locked a day at all. A sixth belongs to someone
+    else. Every open row of this user's comes back, each carrying the revision
+    that says whether anybody touched it and the day it stands for -- None for
+    the one that locked none, which is the row a day filter in SQL could never
+    return (#299).
     """
 
     engine, maker = _migrated_test_database(tmp_path, monkeypatch)
@@ -345,6 +347,8 @@ async def test_open_sessions_for_day_names_every_open_session_and_how_far_it_got
             outcome=AwaitingUser(requirement_id="x", question="q", why_needed="w"),
         )
 
+        await repo.load_or_create("C1:dayless", owner_user_id="U1")
+
         stranger = await repo.load_or_create("C2:auto", owner_user_id="U2")
         await repo.save(
             stranger.model_copy(update={"planning_day": _locked_day()}),
@@ -353,20 +357,25 @@ async def test_open_sessions_for_day_names_every_open_session_and_how_far_it_got
             outcome=AwaitingUser(requirement_id="x", question="q", why_needed="w"),
         )
 
-        rows = await repo.open_sessions_for_day(
-            owner_user_id="U1", planning_date=date(2026, 8, 31)
-        )
+        rows = await repo.open_sessions(owner_user_id="U1")
 
         assert {row.session_key: row.revision for row in rows} == {
             "C1:auto": 1,
             "C1:live": 2,
+            "C1:tomorrow": 1,
+            "C1:dayless": 0,
         }
-
-        assert (
-            await repo.open_sessions_for_day(
-                owner_user_id="U1", planning_date=date(2026, 9, 2)
-            )
-            == []
+        assert {row.session_key: row.planning_date for row in rows} == {
+            "C1:auto": date(2026, 8, 31),
+            "C1:live": date(2026, 8, 31),
+            "C1:tomorrow": date(2026, 9, 1),
+            "C1:dayless": None,
+        }
+        # Newest save first, so a caller reading one row reads the freshest.
+        assert [row.updated_at for row in rows] == sorted(
+            (row.updated_at for row in rows), reverse=True
         )
+
+        assert await repo.open_sessions(owner_user_id="U3") == []
     finally:
         await engine.dispose()

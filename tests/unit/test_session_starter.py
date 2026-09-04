@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -38,11 +38,20 @@ def _reminder(kind: str = SESSION_START_KIND) -> PlanningReminder:
 NOW_NAIVE = START.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def _row(session_key: str, revision: int, *, stale_minutes: int = 60) -> OpenSessionRow:
+def _row(
+    session_key: str,
+    revision: int,
+    *,
+    stale_minutes: int = 60,
+    planning_date: date | None = START.date(),
+) -> OpenSessionRow:
+    """One open row. `planning_date` is None for a session that locked no day."""
+
     return OpenSessionRow(
         session_key=session_key,
         revision=revision,
         updated_at=NOW_NAIVE - timedelta(minutes=stale_minutes),
+        planning_date=planning_date,
     )
 
 
@@ -80,7 +89,7 @@ class _Ledger:
         self.standing = TimeboxingStanding(open_session_key=open_key, committed_session_key=committed_key)
         self.rows = list(rows)
         self.standing_error = standing_error
-        self.asked_for_day = []
+        self.asked_for = []
         self._events = events
         # Session keys whose snapshot carries no auto-open interaction id: the
         # user opened these by hand and expiry may never close them.
@@ -94,8 +103,8 @@ class _Ledger:
             raise self.standing_error
         return self.standing
 
-    async def open_sessions_for_day(self, *, owner_user_id, planning_date):
-        self.asked_for_day.append((owner_user_id, planning_date))
+    async def open_sessions(self, *, owner_user_id):
+        self.asked_for.append(owner_user_id)
         return list(self.rows)
 
     async def load(self, key):
@@ -249,14 +258,87 @@ async def test_an_event_without_a_named_timezone_keeps_its_own_offset(monkeypatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("standing", [_Ledger(open_key="C1:old"), _Ledger(committed_key="C1:done")])
-async def test_an_open_or_committed_session_blocks_the_start(monkeypatch, standing):
+async def test_a_committed_day_blocks_the_start(monkeypatch):
     haunting = _Haunting()
-    starter, turns = _starter(monkeypatch, ledger=standing, haunting=haunting)
+    starter, turns = _starter(monkeypatch, ledger=_Ledger(committed_key="C1:done"), haunting=haunting)
 
     await starter.start(_reminder())
 
     assert turns == [] and haunting.scheduled == []
+
+
+@pytest.mark.asyncio
+async def test_a_stale_day_less_session_the_user_opened_does_not_block(monkeypatch):
+    # #299, as it happened: a session that proposed a day and never locked one
+    # sits open at revision 1 with no planning_date. `standing`'s hour-wide
+    # window still names it, but nobody has been in it for 45 minutes and it
+    # stands for no day at all -- it may not swallow the day's auto-start, and
+    # it is not ours to close either.
+    haunting = _Haunting()
+    ledger = _Ledger(
+        open_key="C1:halfopen",
+        rows=[_row("C1:halfopen", 1, stale_minutes=45, planning_date=None)],
+        hand_opened=("C1:halfopen",),
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert len(turns) == 1 and isinstance(turns[0]["action"].intent, ConfirmPlanningDay)
+    assert haunting.cancelled == [], "a session that is not ours is never closed"
+    assert haunting.scheduled, "the ladder still arms for a fresh start"
+
+
+@pytest.mark.asyncio
+async def test_our_own_abandoned_opening_is_recovered_and_the_start_proceeds(monkeypatch):
+    # A restart mid-opening leaves our own half-open session behind: open, no
+    # day locked, nobody in it. It is ours, so we close it and start again
+    # rather than leaving it to block the day for an hour.
+    errors = []
+    monkeypatch.setattr(
+        "fateforger.slack_bot.session_start.record_error",
+        lambda **kwargs: errors.append(kwargs),
+    )
+    haunting = _Haunting()
+    ledger = _Ledger(
+        open_key="C1:halfopen",
+        rows=[_row("C1:halfopen", 1, stale_minutes=45, planning_date=None)],
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert haunting.cancelled == [{"topic_id": "C1:halfopen"}]
+    assert isinstance(turns[0]["action"].intent, CancelSession)
+    assert turns[0]["session_key"] == "C1:halfopen"
+    assert turns[0]["action"].expected_revision == 1
+    assert any("canceled" in (u.get("text") or "") for u in starter._client.updates)
+    assert not any(
+        "Missed" in (post.get("text") or "") for post in starter._client.posted
+    ), "recovery is not an expiry: nothing is announced as missed"
+    assert {"component": "session_start", "error_type": "half_open_recovered"} in errors
+    # And the day gets the session it was owed.
+    assert isinstance(turns[1]["action"].intent, ConfirmPlanningDay)
+    assert haunting.scheduled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hand_opened", [(), ("C1:live",)])
+async def test_a_day_less_session_touched_minutes_ago_blocks_the_start(monkeypatch, hand_opened):
+    # No day locked, but somebody saved it two minutes ago: they are in it.
+    # Ours or theirs, a second session on top of that one is the double open
+    # this guard exists to stop -- and nothing is closed underneath them.
+    haunting = _Haunting()
+    ledger = _Ledger(
+        rows=[_row("C1:live", 1, stale_minutes=2, planning_date=None)],
+        hand_opened=hand_opened,
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert turns == [] and haunting.scheduled == [] and haunting.cancelled == []
+    assert starter._client.posted == []
 
 
 @pytest.mark.asyncio
@@ -304,7 +386,7 @@ async def test_expire_closes_the_session_nobody_touched_and_hands_over(monkeypat
 
     await starter.expire(_reminder(SESSION_EXPIRE_KIND))
 
-    assert ledger.asked_for_day == [("U1", START.date())]
+    assert ledger.asked_for == ["U1"]
     assert haunting.cancelled == [{"topic_id": "C1:root.1"}]
     assert isinstance(turns[0]["action"].intent, CancelSession) and turns[0]["action"].expected_revision == 1
     relabel = starter._client.updates[-1]
@@ -367,7 +449,7 @@ async def test_expire_after_a_commit_does_nothing(monkeypatch):
     await starter.expire(_reminder(SESSION_EXPIRE_KIND))
 
     assert turns == [] and haunting.cancelled == [] and guardian.reconciled == []
-    assert ledger.asked_for_day == []
+    assert ledger.asked_for == []
 
 
 @pytest.mark.asyncio
@@ -432,10 +514,63 @@ async def test_an_auto_opened_session_past_the_untouched_revision_is_live(monkey
 
 
 @pytest.mark.asyncio
+async def test_expire_closes_our_own_day_less_session(monkeypatch):
+    # A session of ours that never locked a day is invisible to a day filter,
+    # so nothing ever closed it. Its revision says nothing about the user
+    # having engaged -- the day it stands for was never agreed -- so it is
+    # closed however far it got.
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(rows=[_row("C1:root.1", 3, planning_date=None)])
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert haunting.cancelled == [{"topic_id": "C1:root.1"}]
+    assert isinstance(turns[0]["action"].intent, CancelSession)
+    assert any("Missed" in m.content for m, _ in runtime.sent)
+    assert guardian.reconciled == ["U1"]
+
+
+@pytest.mark.asyncio
+async def test_expire_leaves_a_day_less_session_the_user_opened_alone(monkeypatch):
+    # Hugo's store holds these from ordinary manual sessions. Stale or not,
+    # they are his, and expiry closes nothing it cannot prove it opened.
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(
+        rows=[_row("C1:hand", 1, stale_minutes=240, planning_date=None)],
+        hand_opened=("C1:hand",),
+    )
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == []
+    assert any("Missed" in m.content for m, _ in runtime.sent)
+
+
+@pytest.mark.asyncio
+async def test_expire_ignores_a_session_locked_to_another_day(monkeypatch):
+    # The day filter moved into Python when the query stopped carrying it;
+    # a session standing for tomorrow is not this expiry's to close.
+    haunting, guardian = _Haunting(), _Guardian()
+    ledger = _Ledger(rows=[_row("C1:tomorrow", 1, planning_date=date(2026, 9, 5))])
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting, guardian=guardian)
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == []
+
+
+@pytest.mark.asyncio
 async def test_expire_says_nothing_while_another_session_still_stands(monkeypatch):
-    # A session with no planning_date yet is invisible to open_sessions_for_day
-    # but stands in `standing`. DMing "Missed" at a user who is mid-session,
-    # with no day locked, is the one message that must not go out.
+    # `standing` and the row list are two reads of one store: a session saved
+    # between them stands in the first and is missing from the second. DMing
+    # "Missed" at a user who is mid-session is the one message that must not
+    # go out, so the row list not having seen it is not permission to.
     haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
     ledger = _Ledger(open_key="C1:hand")
     starter, turns = _starter(
@@ -531,7 +666,7 @@ async def test_the_missed_line_names_the_day_that_was_missed(monkeypatch):
     # An evening event plans tomorrow: "today's planning session" names the
     # wrong day for every session that does.
     runtime = _Runtime()
-    ledger = _Ledger(rows=[_row("C1:root.1", 1)])
+    ledger = _Ledger(rows=[_row("C1:root.1", 1, planning_date=date(2026, 9, 5))])
     starter, _ = _starter(monkeypatch, ledger=ledger, runtime=runtime)
     evening = START.replace(hour=18)
     reminder = PlanningReminder(

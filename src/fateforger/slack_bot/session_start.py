@@ -52,6 +52,13 @@ OPEN_SESSION_UNDER_WAY_HOURS = 1
 #: expiry must leave it alone.
 UNTOUCHED_REVISION = 1
 
+#: The root labels the two closers write, and the one a failed opening turn
+#: leaves behind. `missed` is a session the user was expected in and did not
+#: use; `canceled` is one of our own openings they never saw. Strings this
+#: system minted for its own thread roots, not user text.
+MISSED_STATE = "missed"
+CANCELED_STATE = "canceled"
+
 #: The second half of a session key opened in a DM (`f"{channel}:dm"`), where
 #: there is no thread root. A convention this system minted, not user text.
 DM_SESSION_SUFFIX = "dm"
@@ -188,7 +195,7 @@ class SessionStarter:
             logger.exception("session_start: opening turn failed for %s", surface.session_key)
             record_error(component="session_start", error_type="open_failure")
             await self._relabel_root(
-                surface.channel_id, surface.root_ts, state="canceled", day=day
+                surface.channel_id, surface.root_ts, state=CANCELED_STATE, day=day
             )
             return
 
@@ -260,11 +267,22 @@ class SessionStarter:
             )
             return
 
-        rows = await self._open_sessions_for_day(user_id=user_id, day=day)
+        rows = await self._open_sessions(user_id=user_id)
         if rows is None:
             return
+        # This expiry's business is the sessions standing for its day -- plus
+        # the ones standing for no day at all, which is what a session that
+        # proposed a day and never locked one looks like (#299). Those were
+        # invisible to the old day-filtered query, so nothing ever closed them.
+        standing_rows = [
+            row
+            for row in rows
+            if row.planning_date is None or row.planning_date == day
+        ]
 
-        live, closed_keys = await self._sweep(user_id=user_id, rows=rows, day=day)
+        live, closed_keys = await self._sweep(
+            user_id=user_id, rows=standing_rows, day=day
+        )
 
         if live:
             logger.info(
@@ -320,7 +338,10 @@ class SessionStarter:
                 )
                 continue
             if auto:
-                if row.revision <= UNTOUCHED_REVISION:
+                # A day-less row of ours never got past the opening turn, so
+                # its revision says nothing about the user having engaged:
+                # whatever it counted, it counted before any day was agreed.
+                if row.planning_date is None or row.revision <= UNTOUCHED_REVISION:
                     await self._close_untouched(user_id=user_id, row=row, day=day)
                     closed.add(row.session_key)
                 else:
@@ -386,9 +407,22 @@ class SessionStarter:
         return now - updated <= LIVE_RECENCY
 
     async def _close_untouched(
-        self, *, user_id: str, row: OpenSessionRow, day: date
+        self,
+        *,
+        user_id: str,
+        row: OpenSessionRow,
+        day: date,
+        state: str = MISSED_STATE,
     ) -> None:
-        """Shut one session nobody worked in: ladder off, cancelled, relabelled."""
+        """Shut one session nobody worked in: ladder off, cancelled, relabelled.
+
+        `state` is the root's new label, and it also says whether the thread
+        hears about it. Expiry closes a session the user was expected in, so
+        the root reads `missed` and the thread says so. Recovery closes an
+        opening of ours the user never answered and no day was ever locked in,
+        so the root reads `canceled` and nothing is announced: there was
+        nothing to miss.
+        """
 
         session_key = row.session_key
         try:
@@ -425,7 +459,9 @@ class SessionStarter:
                 "session_expire: %s is a DM session; no root to relabel", session_key
             )
             return
-        await self._relabel_root(channel_id, root_ts, state="missed", day=day)
+        await self._relabel_root(channel_id, root_ts, state=state, day=day)
+        if state != MISSED_STATE:
+            return
         try:
             await self._client.chat_postMessage(
                 channel=channel_id, thread_ts=root_ts, text=missed_line(day_label=_day_label(day))
@@ -450,15 +486,19 @@ class SessionStarter:
             return None
 
     async def _blocked(self, *, user_id: str, day: date) -> bool:
+        """Is there already a session this start would duplicate?
+
+        Three ways there is, and only three: the day is committed; a session
+        of ours already stands for it, however old; or somebody was writing in
+        some session within `LIVE_RECENCY`. `standing.open_session_key` is not
+        one of them any more -- its window is an hour wide and answers "was
+        anything saved lately", which a session abandoned mid-way answers yes
+        to for an hour after the user walked away (#299). "Open" is not
+        "live", and a session that never locked a day has not started.
+        """
+
         standing = await self._standing(user_id=user_id, day=day)
         if standing is None:
-            return True
-        if standing.open_session_key is not None:
-            logger.info(
-                "session_start: %s already has open session %s; not starting",
-                user_id,
-                standing.open_session_key,
-            )
             return True
         if standing.committed_session_key is not None:
             logger.info(
@@ -468,18 +508,29 @@ class SessionStarter:
                 day,
             )
             return True
-        # `standing`'s recency window is an hour wide. A planning event longer
-        # than that, or a restart past it, leaves the session already open for
-        # this day invisible there. But "open" is not "live": Hugo can carry
-        # several manually opened sessions from earlier in the day that
-        # nobody will ever touch again, and those must not block a fresh
-        # start. Only a row this starter itself opened still blocks, at any
-        # age -- that is what stops a double open after a restart during a
-        # long event.
-        rows = await self._open_sessions_for_day(user_id=user_id, day=day)
+        rows = await self._open_sessions(user_id=user_id)
+        if rows is None:
+            return True
+        rows = await self._recover_half_open(user_id=user_id, rows=rows, day=day)
         if rows is None:
             return True
         for row in rows:
+            # Somebody saved this session minutes ago -- whether or not it has
+            # a day, whether or not it is ours, they are in it now, and a
+            # second session on top of that is the double open this guard is
+            # for.
+            if self._touched_recently(row):
+                logger.info(
+                    "session_start: %s was saved at %s; somebody is in it, not starting",
+                    row.session_key,
+                    row.updated_at,
+                )
+                return True
+            if row.planning_date != day:
+                # Cold, and standing for another day or for none: Hugo carries
+                # several of these from manual sessions nobody will touch
+                # again, and they are not this day's business.
+                continue
             auto = await self._auto_opened(row)
             if auto is None:
                 # Unreadable, not "not ours": the guard fails closed here,
@@ -492,6 +543,9 @@ class SessionStarter:
                 )
                 return True
             if auto:
+                # Ours and standing for this very day: a session already
+                # exists, at any age. This is what stops a double open after a
+                # restart during a planning event longer than an hour.
                 logger.info(
                     "session_start: %s already has our own %s open for %s; not starting",
                     user_id,
@@ -501,13 +555,58 @@ class SessionStarter:
                 return True
         return False
 
-    async def _open_sessions_for_day(
-        self, *, user_id: str, day: date
+    async def _recover_half_open(
+        self, *, user_id: str, rows: list[OpenSessionRow], day: date
     ) -> list[OpenSessionRow] | None:
-        try:
-            return await self._ledger.open_sessions_for_day(
-                owner_user_id=user_id, planning_date=day
+        """Close our own openings that locked no day and nobody is in.
+
+        A restart during the opening turn leaves one behind: open, revision 1,
+        `planning_date` NULL. It stands for no day, so no expiry ever sees it,
+        and while it looks recent it makes `standing` say the user is busy --
+        the day then goes unplanned and the row stays forever (#299).
+
+        Ours and cold is the only pair we may close. A day-less row the user
+        opened is theirs however stale -- the same ruling `_sweep` makes -- and
+        one saved within `LIVE_RECENCY` is being worked in right now.
+
+        Returns the rows still to be judged, or `None` when a snapshot could
+        not be read: the guard fails closed on that, as it does everywhere.
+        """
+
+        remaining: list[OpenSessionRow] = []
+        for row in rows:
+            if row.planning_date is not None or self._touched_recently(row):
+                remaining.append(row)
+                continue
+            auto = await self._auto_opened(row)
+            if auto is None:
+                logger.info(
+                    "session_start: could not tell whether %s is ours; blocking to be safe",
+                    row.session_key,
+                )
+                return None
+            if not auto:
+                remaining.append(row)
+                continue
+            logger.info(
+                "session_start: %s is our own opening with no day locked and nobody in it "
+                "(rev %s, last saved %s); closing it before starting",
+                row.session_key,
+                row.revision,
+                row.updated_at,
             )
+            # Not a failure -- a recovery. It is metered so that a restart
+            # storm leaving these behind is visible as a rate rather than as a
+            # day that quietly went unplanned.
+            record_error(component="session_start", error_type="half_open_recovered")
+            await self._close_untouched(
+                user_id=user_id, row=row, day=day, state=CANCELED_STATE
+            )
+        return remaining
+
+    async def _open_sessions(self, *, user_id: str) -> list[OpenSessionRow] | None:
+        try:
+            return await self._ledger.open_sessions(owner_user_id=user_id)
         except Exception:
             logger.exception("session guard: open-session lookup failed for %s", user_id)
             record_error(component="session_start", error_type="guard_failure")
