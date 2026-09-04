@@ -43,6 +43,10 @@ class PromoteOutcome(BaseModel):
     anchor_uid: str
     anchor_created: bool
     constraint_uid: str | None = None
+    # Always True on a returned outcome: a promotion whose own rule the judge
+    # does not map to the new kind is not a promotion, it raises and removes the
+    # kind (see promote_kind). Kept on the model because hosts display it and
+    # because "the rule states the requirement" is the thing a promotion is for.
     requires_block_recorded: bool = False
 
 
@@ -213,10 +217,29 @@ class MemoryService:
 
         The one write that mints a kind. `observe` never does: a kind is a
         decision, not a threshold, and the host asks the user before calling
-        this. Order matters and is deliberate -- the kind is registered
-        *before* the rule is observed so the sixth judgement can choose it,
-        and unregistered again if observing fails, so a half-promotion leaves
-        no kind nothing states.
+        this.
+
+        The order is the whole design. The rule is stored FIRST, through the
+        ordinary observe path, and only then is the kind registered -- so there
+        is no moment at which a kind row exists that no rule states. The
+        earlier order had one, and two things fell into it: a concurrent
+        observe could be offered a slug this call was about to roll back, and a
+        failure after registering left the compensating delete as the only
+        thing standing between the store and a kind nothing states.
+
+        The write is identified by the slug, which this system minted, so a
+        retry after a failure between the two writes adopts the observation the
+        first attempt left rather than restating the rule into an append-only
+        log.
+
+        Registering last costs one thing: the rule is judged before the kind
+        exists, so it cannot name it. That is what the re-derivation below is
+        for -- the same `reproject` any judgement improvement goes through,
+        aimed at one constraint with the kind now on offer. If the judge still
+        does not map the promotion's own rule to the kind, the promotion has
+        failed: nothing would ever require a block of it. The kind is removed
+        and the caller is told. The rule stays -- it is a durable statement the
+        user made, and the log is append-only (I2).
         """
         validate_slug(slug)
         if self._kinds.get(slug) is not None:
@@ -226,33 +249,36 @@ class MemoryService:
         (anchor_uid,) = await resolve_anchors([anchor_name], self._anchors, self._judge)
         anchor_created = anchor_uid not in known_before
 
-        observation = Observation(
-            text=rule_text,
+        outcome = await self.observe(
+            rule_text,
             channel=Channel.REVIEW,
-            provenance=Provenance.OBSERVED,
             session_id=f"promotion:{slug}",
             observed_at=observed_at,
+            write_uid=f"promotion-{slug}",
         )
+        if not outcome.stored:
+            raise ValueError(
+                f"the promotion's rule was suppressed as {outcome.suppressed_as!r}; "
+                f"a kind with no rule stating it would be enforced by nothing"
+            )
+
         self._kinds.add(
             EnforceableKind(
                 slug=slug,
                 anchor_uid=anchor_uid,
-                rule_observation_uid=observation.uid,
+                rule_observation_uid=f"promotion-{slug}",
                 created_at=observed_at,
             )
         )
         try:
-            result = await ingest(
-                observation, self._judge, self._observations, kinds=self._kinds.slugs()
-            )
-            if not result.stored:
+            await self.reproject(uid=outcome.constraint_uid, apply=True)
+            constraint = self._constraints.get(outcome.constraint_uid)
+            if constraint.requires_block != slug:
                 raise ValueError(
-                    f"the promotion's rule was suppressed as {result.suppressed_as!r}; "
-                    f"a kind with no rule stating it would be enforced by nothing"
+                    f"the judge did not map the promotion's own rule to {slug!r} "
+                    f"(it answered {constraint.requires_block!r}); nothing would "
+                    f"enforce it"
                 )
-            constraint = await project(
-                observation, result, self._judge, self._constraints, self._anchors
-            )
         except Exception:
             self._kinds.remove(slug)
             raise
@@ -261,7 +287,7 @@ class MemoryService:
             anchor_uid=anchor_uid,
             anchor_created=anchor_created,
             constraint_uid=constraint.uid,
-            requires_block_recorded=constraint.requires_block == slug,
+            requires_block_recorded=True,
         )
 
     async def split_constraint(
