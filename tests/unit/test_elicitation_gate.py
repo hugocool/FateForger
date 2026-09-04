@@ -160,7 +160,9 @@ def test_a_malformed_matrix_fact_is_refused_not_ignored() -> None:
         coverage_matrix(snapshot)
 
 
-def test_unaskable_cells_are_included_and_ranked_after_askable_ones() -> None:
+def test_an_unaskable_cell_ranks_last_among_the_cells_already_open() -> None:
+    """`unaskable` orders the open list; it does not decide what is on it."""
+
     matrix = _matrix(
         **{
             "elicit.body.unclear": "uncovered",
@@ -181,6 +183,31 @@ def test_unaskable_cells_are_included_and_ranked_after_askable_ones() -> None:
         "elicit.body.unclear",
         "elicit.movement.unclear",
     ]
+
+
+def test_an_unaskable_cell_that_is_covered_is_not_open() -> None:
+    """The spec's gate is "met when no cell is uncovered", and nothing else.
+
+    Unioning `unaskable` into the open set instead made a cell a judge had
+    already marked covered hold the gate shut, so Next could never appear on a
+    day whose matrix listed anything unaskable.
+    """
+
+    matrix = _matrix(
+        **{"elicit.body.unclear": "uncovered", "elicit.movement.unclear": "covered"}
+    )
+    # movement.unclear is covered, fixed.unclear is not_applicable; being
+    # listed unaskable changes neither.
+    matrix = matrix.model_copy(
+        update={"unaskable": ["elicit.movement.unclear", "elicit.fixed.unclear"]}
+    )
+    assert [c.id for c in ranked_open_cells(matrix)] == ["elicit.body.unclear"]
+
+
+def test_the_gate_is_met_when_every_unaskable_cell_is_covered() -> None:
+    matrix = _matrix()
+    matrix = matrix.model_copy(update={"unaskable": ["elicit.body.unclear"]})
+    assert ranked_open_cells(matrix) == []
 
 
 def test_missing_cell_ids_are_refused() -> None:

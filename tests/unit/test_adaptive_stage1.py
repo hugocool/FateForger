@@ -22,8 +22,10 @@ from fateforger.agents.timeboxing.elicitation import ALL_CELLS, CoverageMatrix
 from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     Advance,
+    ArtifactApproval,
     ArtifactDraft,
     ArtifactKind,
+    PlanningArtifact,
     AwaitingUser,
     ConfirmPlanningDay,
     DayType,
@@ -430,3 +432,144 @@ def test_back_to_the_day_card_and_reconfirm_reopens_stage_one() -> None:
     assert planner.briefs == []
     _turn(kernel, _load(repository), Advance())
     assert len(planner.briefs) == 1
+
+
+class _StagedContext:
+    """What the host actually does: only the Stage 1 resolve counts suspensions.
+
+    `_frame_from_corpus` calls `count_suspended`; the candidate resolve reads
+    the calendar and the rules and never asks for the count. Both return rows.
+    """
+
+    def __init__(self) -> None:
+        self.targets: list[ArtifactKind] = []
+
+    async def propose_planning_day(self, request):
+        raise AssertionError("day is locked in these tests")
+
+    async def resolve(self, snapshot, *, target, progress):
+        self.targets.append(target)
+        if target is ArtifactKind.SKELETON:
+            return PlanningContext(
+                applicable_constraints=ROWS, suspended_constraint_count=7
+            )
+        return PlanningContext(
+            facts=[
+                PlanningFact(
+                    fact_id=f"calendar:{DAY.isoformat()}",
+                    kind=FactKind.CALENDAR_SNAPSHOT,
+                    value={"ok": True, "events": []},
+                    source="system",
+                ),
+                PlanningFact(
+                    fact_id=f"constraints:{DAY.isoformat()}",
+                    kind=FactKind.ACTIVE_CONSTRAINTS,
+                    value={"count": len(ROWS)},
+                    source="system",
+                ),
+                PlanningFact(
+                    fact_id="placements-1",
+                    kind=FactKind.CONCRETE_PLACEMENTS,
+                    value={"count": 1},
+                    source="system",
+                ),
+            ],
+            applicable_constraints=ROWS,
+            calendar_snapshot={"ok": True, "events": []},
+        )
+
+
+class _CandidatePlanner:
+    def __init__(self) -> None:
+        self.briefs = []
+
+    async def produce(self, brief, progress):
+        self.briefs.append(brief)
+        return PlanningResult(
+            artifact_updates=[
+                ArtifactDraft(
+                    kind=ArtifactKind.VALIDATED_CANDIDATE,
+                    payload={"events": [{"summary": "Gym", "start": "17:00"}]},
+                    dependency_revisions={"skeleton": 1},
+                )
+            ]
+        )
+
+
+def _approved_skeleton_snapshot() -> PlanningSessionSnapshot:
+    skeleton = PlanningArtifact.create(
+        artifact_id="skeleton-1",
+        kind=ArtifactKind.SKELETON,
+        revision=1,
+        payload={"markdown": "## Tuesday"},
+        dependency_revisions={"planning_day": 1},
+    )
+    return _snapshot(
+        # Stage 1 consent is given; this test is about what follows.
+        stage1="closed",
+        artifacts=[skeleton],
+        approvals=[
+            ArtifactApproval(
+                artifact_id=skeleton.artifact_id,
+                artifact_revision=skeleton.revision,
+                artifact_digest=skeleton.digest,
+                actor_user_id="U1",
+                session_revision=1,
+            )
+        ],
+        suspended_constraint_count=7,
+    )
+
+
+def test_a_candidate_turn_keeps_the_count_stage_one_wrote() -> None:
+    """Catches the count being reset to zero on every turn after Stage 1.
+
+    The candidate resolve knows the rows and not the count. While the kernel
+    wrote both together, its default of 0 overwrote what Stage 1 had measured,
+    and the card's "12 working-day rules off because today is a vacation day"
+    line silently became "0" one turn after it was true.
+    """
+
+    snapshot = _approved_skeleton_snapshot()
+    repository = InMemoryPlanningSessionRepository([snapshot])
+    context = _StagedContext()
+    kernel = AdaptiveTimeboxing(
+        repository=repository,
+        requirements=TimeboxRequirements(),
+        planner=_CandidatePlanner(),
+        context=context,
+        commit=_Commit(),
+    )
+    _turn(kernel, snapshot, Advance())
+
+    assert context.targets == [ArtifactKind.VALIDATED_CANDIDATE]
+    after = _load(repository)
+    assert [row["uid"] for row in after.applicable_constraints] == ["c-gym", "c-plan"]
+    assert after.suspended_constraint_count == 7
+
+
+def test_a_resolve_that_did_not_count_leaves_the_last_count_alone() -> None:
+    """`None` is "this resolve did not look", which is not the answer zero."""
+
+    snapshot = _snapshot(stage1="proposed", suspended_constraint_count=7)
+    repository = InMemoryPlanningSessionRepository([snapshot])
+
+    class _RowsOnly:
+        async def propose_planning_day(self, request):
+            raise AssertionError("day is locked in these tests")
+
+        async def resolve(self, snapshot, *, target, progress):
+            return PlanningContext(applicable_constraints=ROWS)
+
+    kernel = AdaptiveTimeboxing(
+        repository=repository,
+        requirements=TimeboxRequirements(),
+        planner=_Planner(),
+        context=_RowsOnly(),
+        commit=_Commit(),
+    )
+    _turn(kernel, snapshot, Advance())
+
+    after = _load(repository)
+    assert [row["uid"] for row in after.applicable_constraints] == ["c-gym", "c-plan"]
+    assert after.suspended_constraint_count == 7
