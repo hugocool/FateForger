@@ -572,6 +572,10 @@ class PlanningCoordinator:
                 calendar_client=self._reconciler.calendar_client,
                 planning_session_store=self._planning_session_store,
                 config=PlanningRuleConfig(calendar_id=calendar_id),
+                # Without it the rule cannot ask whether the day was committed,
+                # so a passed anchor over a planned day reads as missing and
+                # the ladder this call exists to suppress starts over.
+                timeboxing_ledger=self._timeboxing_ledger,
             )
             desired = await rule.evaluate(
                 now=now_utc,
