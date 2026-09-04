@@ -75,6 +75,7 @@ class _Ledger:
         events=None,
         standing_error=None,
         hand_opened=(),
+        unreadable=(),
     ):
         self.standing = TimeboxingStanding(open_session_key=open_key, committed_session_key=committed_key)
         self.rows = list(rows)
@@ -84,6 +85,9 @@ class _Ledger:
         # Session keys whose snapshot carries no auto-open interaction id: the
         # user opened these by hand and expiry may never close them.
         self._hand_opened = set(hand_opened)
+        # Session keys whose snapshot cannot be loaded at all -- a transient
+        # store error, distinct from "loaded and not ours".
+        self._unreadable = set(unreadable)
 
     async def standing_for(self, **_):
         if self.standing_error is not None:
@@ -95,6 +99,8 @@ class _Ledger:
         return list(self.rows)
 
     async def load(self, key):
+        if key in self._unreadable:
+            raise RuntimeError("store unavailable")
         return _snapshot(key, auto_opened=key not in self._hand_opened)
 
 
@@ -471,6 +477,28 @@ async def test_a_stale_open_session_does_not_block_the_start(monkeypatch):
 
     assert len(turns) == 1
     assert haunting.scheduled, "the ladder still arms for a fresh start"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_row_blocks_the_start(monkeypatch):
+    # Unreadable is not the same finding as "not ours": the guard cannot
+    # prove the row isn't its own, and letting a fresh start through on that
+    # uncertainty is how a restart double-opens a session. It fails closed,
+    # the opposite of what `_sweep` does on the same unreadable row.
+    errors = []
+    monkeypatch.setattr(
+        "fateforger.slack_bot.session_start.record_error",
+        lambda **kwargs: errors.append(kwargs),
+    )
+    haunting = _Haunting()
+    ledger = _Ledger(rows=[_row("C1:mystery", 1)], unreadable=("C1:mystery",))
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert turns == [] and haunting.scheduled == []
+    assert starter._client.posted == [], "no surface may be opened on an unreadable row"
+    assert {"component": "session_start", "error_type": "guard_failure"} in errors
 
 
 @pytest.mark.asyncio

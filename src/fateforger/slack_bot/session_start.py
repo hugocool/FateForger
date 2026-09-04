@@ -309,7 +309,17 @@ class SessionStarter:
         live: list[OpenSessionRow] = []
         closed: set[str] = set()
         for row in rows:
-            if await self._auto_opened(row):
+            auto = await self._auto_opened(row)
+            if auto is None:
+                # Unreadable is not ours: closing a session we cannot prove
+                # this starter opened is the mistake that matters here, so an
+                # unreadable row is left alone rather than claimed.
+                logger.info(
+                    "session_expire: could not read %s; not ours to close, leaving it alone",
+                    row.session_key,
+                )
+                continue
+            if auto:
                 if row.revision <= UNTOUCHED_REVISION:
                     await self._close_untouched(user_id=user_id, row=row, day=day)
                     closed.add(row.session_key)
@@ -331,24 +341,31 @@ class SessionStarter:
                 )
         return live, closed
 
-    async def _auto_opened(self, row: OpenSessionRow) -> bool:
+    async def _auto_opened(self, row: OpenSessionRow) -> bool | None:
         """Whether `start` is the one that opened this session.
 
         The evidence is the interaction id `start` writes its opening turn
-        under, kept on the snapshot by the kernel's idempotency record. A
-        session that cannot be read is never claimed: closing one this starter
-        did not open is the failure that matters here.
+        under, kept on the snapshot by the kernel's idempotency record.
+
+        Returns `None`, not `False`, when the snapshot cannot be read --
+        "not ours" and "unreadable" are different findings, and the two
+        callers must fail in opposite directions on the second one. `_sweep`
+        treats `None` as not ours: closing a session it cannot prove this
+        starter opened is the mistake that matters there, so an unreadable
+        row is left alone. `_blocked` treats `None` as blocking: an
+        unreadable row it happens to own would otherwise let a fresh start
+        through and double-open it, so the guard fails closed instead.
         """
 
         wanted = auto_open_interaction_id(row.session_key)
         try:
             snapshot = await self._ledger.load(row.session_key)
         except Exception:
-            logger.exception("session_expire: snapshot load failed for %s", row.session_key)
+            logger.exception("session guard: snapshot load failed for %s", row.session_key)
             record_error(component="session_start", error_type="guard_failure")
-            return False
+            return None
         if snapshot is None:
-            logger.info("session_expire: no snapshot behind %s; not ours to close", row.session_key)
+            logger.info("session guard: no snapshot behind %s; not ours", row.session_key)
             return False
         return any(
             handled.interaction_id == wanted for handled in snapshot.handled_interactions
@@ -463,7 +480,18 @@ class SessionStarter:
         if rows is None:
             return True
         for row in rows:
-            if await self._auto_opened(row):
+            auto = await self._auto_opened(row)
+            if auto is None:
+                # Unreadable, not "not ours": the guard fails closed here,
+                # the opposite of `_sweep`'s call on the same `None`. An
+                # unreadable row this starter happens to own would otherwise
+                # let a fresh start through and double-open it.
+                logger.info(
+                    "session_start: could not tell whether %s is ours; blocking to be safe",
+                    row.session_key,
+                )
+                return True
+            if auto:
                 logger.info(
                     "session_start: %s already has our own %s open for %s; not starting",
                     user_id,
