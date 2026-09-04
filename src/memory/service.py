@@ -15,6 +15,7 @@ from memory.anchoring import resolve_anchors
 from memory.constraint_store import ConstraintStore
 from memory.ingest import ingest
 from memory.judge import Judge
+from memory.kind_store import DuplicateKind, EnforceableKind, EnforceableKindStore, validate_slug
 from memory.models import Channel, Observation, Provenance, Tier
 from memory.projection import project
 from memory.read_api import get_active_constraints as _read
@@ -33,6 +34,20 @@ class ObserveOutcome(BaseModel):
     constraint_uid: str | None = None
     constraint_name: str | None = None
     tier: Tier | None = None
+
+
+class PromoteOutcome(BaseModel):
+    """What a promotion wrote, in terms a host can display."""
+
+    slug: str
+    anchor_uid: str
+    anchor_created: bool
+    constraint_uid: str | None = None
+    # Always True on a returned outcome: a promotion whose own rule the judge
+    # does not map to the new kind is not a promotion, it raises and removes the
+    # kind (see promote_kind). Kept on the model because hosts display it and
+    # because "the rule states the requirement" is the thing a promotion is for.
+    requires_block_recorded: bool = False
 
 
 class MemoryService:
@@ -64,6 +79,7 @@ class MemoryService:
         self._observations = ObservationStore(db_path, conn=conn, lock=lock)
         self._constraints = ConstraintStore(db_path, conn=conn, lock=lock)
         self._anchors = AnchorStore(db_path, conn=conn, lock=lock)
+        self._kinds = EnforceableKindStore(db_path, conn=conn, lock=lock)
         self._judge = judge
 
     async def observe(
@@ -117,7 +133,9 @@ class MemoryService:
                 # appending a duplicate of a row that is already here.
                 observation = existing
 
-        result = await ingest(observation, self._judge, self._observations)
+        result = await ingest(
+            observation, self._judge, self._observations, kinds=self._kinds.slugs()
+        )
         if not result.stored:
             return ObserveOutcome(stored=False, suppressed_as=result.suppressed_as)
         constraint = await project(
@@ -145,7 +163,12 @@ class MemoryService:
         only record of what moved.
         """
         return await reproject(
-            self._observations, self._constraints, self._judge, uid=uid, apply=apply
+            self._observations,
+            self._constraints,
+            self._judge,
+            kinds=self._kinds.slugs(),
+            uid=uid,
+            apply=apply,
         )
 
     async def classify_day(self, events: list[str]) -> str:
@@ -178,6 +201,95 @@ class MemoryService:
         """
         return await resolve_anchors(names, self._anchors, self._judge)
 
+    def kinds(self) -> list[str]:
+        """The registered enforceable kinds, by slug. No model call."""
+        return self._kinds.slugs()
+
+    async def promote_kind(
+        self,
+        slug: str,
+        *,
+        anchor_name: str,
+        rule_text: str,
+        observed_at: datetime,
+    ) -> PromoteOutcome:
+        """Register a kind of block a rule may require (spec §1, decision 6).
+
+        The one write that mints a kind. `observe` never does: a kind is a
+        decision, not a threshold, and the host asks the user before calling
+        this.
+
+        The order is the whole design. The rule is stored FIRST, through the
+        ordinary observe path, and only then is the kind registered -- so there
+        is no moment at which a kind row exists that no rule states. The
+        earlier order had one, and two things fell into it: a concurrent
+        observe could be offered a slug this call was about to roll back, and a
+        failure after registering left the compensating delete as the only
+        thing standing between the store and a kind nothing states.
+
+        The write is identified by the slug, which this system minted, so a
+        retry after a failure between the two writes adopts the observation the
+        first attempt left rather than restating the rule into an append-only
+        log.
+
+        Registering last costs one thing: the rule is judged before the kind
+        exists, so it cannot name it. That is what the re-derivation below is
+        for -- the same `reproject` any judgement improvement goes through,
+        aimed at one constraint with the kind now on offer. If the judge still
+        does not map the promotion's own rule to the kind, the promotion has
+        failed: nothing would ever require a block of it. The kind is removed
+        and the caller is told. The rule stays -- it is a durable statement the
+        user made, and the log is append-only (I2).
+        """
+        validate_slug(slug)
+        if self._kinds.get(slug) is not None:
+            raise DuplicateKind(f"kind {slug!r} is already registered")
+
+        known_before = {a.uid for a in self._anchors.all()}
+        (anchor_uid,) = await resolve_anchors([anchor_name], self._anchors, self._judge)
+        anchor_created = anchor_uid not in known_before
+
+        outcome = await self.observe(
+            rule_text,
+            channel=Channel.REVIEW,
+            session_id=f"promotion:{slug}",
+            observed_at=observed_at,
+            write_uid=f"promotion-{slug}",
+        )
+        if not outcome.stored:
+            raise ValueError(
+                f"the promotion's rule was suppressed as {outcome.suppressed_as!r}; "
+                f"a kind with no rule stating it would be enforced by nothing"
+            )
+
+        self._kinds.add(
+            EnforceableKind(
+                slug=slug,
+                anchor_uid=anchor_uid,
+                rule_observation_uid=f"promotion-{slug}",
+                created_at=observed_at,
+            )
+        )
+        try:
+            await self.reproject(uid=outcome.constraint_uid, apply=True)
+            constraint = self._constraints.get(outcome.constraint_uid)
+            if constraint.requires_block != slug:
+                raise ValueError(
+                    f"the judge did not map the promotion's own rule to {slug!r} "
+                    f"(it answered {constraint.requires_block!r}); nothing would "
+                    f"enforce it"
+                )
+        except Exception:
+            self._kinds.remove(slug)
+            raise
+        return PromoteOutcome(
+            slug=slug,
+            anchor_uid=anchor_uid,
+            anchor_created=anchor_created,
+            constraint_uid=constraint.uid,
+            requires_block_recorded=True,
+        )
+
     async def split_constraint(
         self, uid: str, observation_uids: list[str]
     ) -> tuple[str, str]:
@@ -199,6 +311,7 @@ class MemoryService:
             uid=uid,
             observation_uids=observation_uids,
             anchor_store=self._anchors,
+            kinds=self._kinds.slugs(),
         )
 
     def get_active_constraints(

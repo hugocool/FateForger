@@ -31,6 +31,7 @@ async def test_the_server_exposes_exactly_the_session_verbs(tmp_path):
         "memory_get_session_constraints",
         "memory_get_suspended_constraints",
         "memory_get_faded_constraints",
+        "memory_promote_kind",
     }
 
 
@@ -84,3 +85,20 @@ async def test_the_read_tool_is_not_async_in_the_service(tmp_path):
     from memory.service import MemoryService as S
 
     assert not inspect.iscoroutinefunction(S.get_active_constraints)
+
+
+async def test_promote_kind_tool_round_trips(tmp_path):
+    rule = "Every working day has a planning session in which the next day is timeboxed."
+    judge = StubJudge(
+        tiers={rule: Tier.DURABLE},
+        requires_blocks={rule: "planning"},
+        anchors={rule: ["planning session"]},
+    )
+    server = build_server(_service(tmp_path, judge))
+    result = await server.call_tool(
+        "memory_promote_kind",
+        {"slug": "planning", "anchor_name": "planning session", "rule_text": rule},
+    )
+    payload = json.loads(result[0].text)
+    assert payload["slug"] == "planning"
+    assert payload["requires_block_recorded"] is True

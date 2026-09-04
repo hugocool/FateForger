@@ -1,4 +1,4 @@
-"""The three stores share one connection, which #186 needs before anything else.
+"""The four stores share one connection, which #186 needs before anything else.
 
 `MemoryService.observe` appends an observation through one store and projects a
 constraint through another. On separate connections to the same file there is
@@ -23,8 +23,13 @@ from memory.constraint_store import ConstraintStore
 from memory.store import ObservationStore
 
 
-def test_a_service_gives_all_three_the_same_connection(tmp_path):
-    """The property #186 asks for, asserted on identity rather than on count."""
+def test_a_service_gives_all_four_the_same_connection(tmp_path):
+    """The property #186 asks for, asserted on identity rather than on count.
+
+    The enforceable-kind registry is the fourth (#212). A promotion writes the
+    rule through one store and the kind row through this one, so it is inside
+    the span that has to be able to become one transaction.
+    """
     from memory.service import MemoryService
 
     class _Judge:
@@ -35,6 +40,7 @@ def test_a_service_gives_all_three_the_same_connection(tmp_path):
         id(service._observations._conn),
         id(service._constraints._conn),
         id(service._anchors._conn),
+        id(service._kinds._conn),
     }
     assert len(conns) == 1, "the stores still hold separate connections"
 
@@ -42,6 +48,7 @@ def test_a_service_gives_all_three_the_same_connection(tmp_path):
         id(service._observations._lock),
         id(service._constraints._lock),
         id(service._anchors._lock),
+        id(service._kinds._lock),
     }
     assert len(locks) == 1, "one connection guarded by more than one lock"
 

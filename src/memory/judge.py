@@ -8,6 +8,37 @@ from pydantic import BaseModel, Field
 
 from memory.models import DecayClass, Observation, Tier
 
+# The kinds of day a rule can be scoped to. Words this system minted, not words
+# read off anything the user said: `DayJudgement.day_type` answers with exactly
+# one of them and `TierJudgement.day_types` scopes a rule to a subset of them,
+# so the read path can filter by equality over identifiers rather than by a
+# judgement about meaning.
+#
+# One tuple, named in the prompt text and enforced by the transport, so the
+# words the model is told and the words it is allowed to answer cannot drift
+# apart. A paraphrase that got through -- "workday" for "working" -- would be
+# stored and then match no day at all, silently.
+DAY_TYPES: tuple[str, ...] = ("working", "weekend", "vacation", "holiday", "sick")
+
+
+class UnknownKind(ValueError):
+    """A slug that is not in the registry (spec §5, code `unknown_kind`).
+
+    Raised where a model answers with a kind nobody registered. It is a
+    ValueError so every caller that already handled one is unaffected, and it
+    carries its code in the message because the MCP tool surfaces that message
+    as-is: a host can branch on the code without reading the English.
+
+    Here rather than in kind_store because this port must stay free of any
+    import from the layer that owns the registry -- the same reason
+    applicability rides on TierJudgement as raw fields.
+    """
+
+    code = "unknown_kind"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"[{self.code}] {message}")
+
 
 class AnchorJudgement(BaseModel):
     """The recurring kinds of thing an observation mentions.
@@ -34,6 +65,14 @@ class TierJudgement(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     days_of_week: list[int] = Field(default_factory=list)  # 0=Mon .. 6=Sun
+
+    # Which kinds of day the rule is limited to, from DAY_TYPES -- the
+    # system-minted vocabulary DayJudgement answers from. Empty means every
+    # kind, and a value outside DAY_TYPES is refused by the transport that
+    # parsed it, never stored. This is the writer
+    # Applicability.day_types never had: its reader shipped first, and until
+    # now the field could only be seeded by hand.
+    day_types: list[str] = Field(default_factory=list)
 
     # Seed vocabulary — see DecayClass. Default PERMANENT because the safe
     # failure is a rule that never fades, not one that vanishes unasked.
@@ -106,6 +145,21 @@ class DayJudgement(BaseModel):
     rationale: str = ""
 
 
+class RequiresBlockJudgement(BaseModel):
+    """Which registered kind of block, if any, this statement says must be on
+    the day (#212).
+
+    `slug` is one of the kinds the caller offered or None -- a closed choice
+    over identifiers this system minted, verified by the transport before it
+    is returned. Deciding that "end-of-day closure block" is the `planning`
+    kind is a judgement about meaning and stays with the model; deciding that
+    the answer is *one of the offered words* is set membership and stays here.
+    """
+
+    slug: str | None = None
+    rationale: str = ""
+
+
 @runtime_checkable
 class AnchorLike(Protocol):
     """The shape resolve_anchors needs from an existing anchor.
@@ -135,7 +189,7 @@ class ConstraintLike(Protocol):
 class Judge(Protocol):
     """The only way this package learns what an observation means.
 
-    Five independent questions. Implementations must not answer any of them
+    Six independent questions. Implementations must not answer any of them
     with pattern matching; see CLAUDE.md.
     """
 
@@ -144,6 +198,10 @@ class Judge(Protocol):
     async def tier(self, observation: Observation) -> TierJudgement: ...
 
     async def necessity(self, observation: Observation) -> NecessityJudgement: ...
+
+    async def requires_block(
+        self, observation: Observation, kinds: list[str]
+    ) -> RequiresBlockJudgement: ...
 
     async def resolve_anchors(
         self, names: list[str], candidates: list[AnchorLike]
@@ -157,16 +215,6 @@ class Judge(Protocol):
         self, observation: Observation, recent: list[Observation]
     ) -> DedupJudgement: ...
 
-    async def resolve_anchors(
-        self, names: list[str], candidates: list[AnchorLike]
-    ) -> AnchorResolutions:
-        self.calls.append(("resolve_anchors", ",".join(names)))
-        return AnchorResolutions(
-            resolutions=[
-                AnchorResolution(name=n, anchor_uid=self._anchor_uids.get(n))
-                for n in names
-            ]
-        )
 
     async def canonicalise(
         self, observation: Observation, candidates: list[ConstraintLike]
@@ -196,6 +244,8 @@ class StubJudge:
         bindings: dict[str, bool] | None = None,
         anchor_uids: dict[str, str] | None = None,
         day_type: str = "working",
+        requires_blocks: dict[str, str] | None = None,
+        day_types: dict[str, list[str]] | None = None,
     ) -> None:
         self._anchors = anchors or {}
         self._tiers = tiers or {}
@@ -210,6 +260,8 @@ class StubJudge:
         self._bindings = bindings or {}
         self._anchor_uids = anchor_uids or {}
         self._day_type = day_type
+        self._requires_blocks = requires_blocks or {}
+        self._day_types = day_types or {}
         self.calls: list[tuple[str, str]] = []
 
     async def anchors(self, observation: Observation) -> AnchorJudgement:
@@ -224,6 +276,7 @@ class StubJudge:
             start_date=self._start_dates.get(observation.text),
             end_date=self._end_dates.get(observation.text),
             days_of_week=self._days_of_week.get(observation.text, []),
+            day_types=self._day_types.get(observation.text, []),
             decay_class=self._decay_classes.get(
                 observation.text, DecayClass.PERMANENT
             ),
@@ -234,6 +287,13 @@ class StubJudge:
         return NecessityJudgement(
             is_binding=self._bindings.get(observation.text, False)
         )
+
+    async def requires_block(
+        self, observation: Observation, kinds: list[str]
+    ) -> RequiresBlockJudgement:
+        self.calls.append(("requires_block", observation.uid))
+        slug = self._requires_blocks.get(observation.text)
+        return RequiresBlockJudgement(slug=slug if slug in kinds else None)
 
     async def meta(self, observation: Observation) -> MetaJudgement:
         self.calls.append(("meta", observation.uid))

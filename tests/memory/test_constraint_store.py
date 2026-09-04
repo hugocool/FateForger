@@ -181,3 +181,16 @@ def test_weekday_indices_outside_zero_to_six_are_rejected():
 def test_the_full_valid_week_is_accepted():
     a = Applicability(days_of_week=[0, 1, 2, 3, 4, 5, 6])
     assert len(a.days_of_week) == 7
+
+
+def test_requires_block_round_trips_and_clears(tmp_path):
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    store.upsert(_c(requires_block="planning"))
+    c = store.get(store.all()[0].uid)
+    assert c.requires_block == "planning"
+    assert c.to_view().requires_block == "planning"
+    c.requires_block = None
+    store.upsert(c)
+    c2 = store.get(c.uid)
+    assert c2.requires_block is None
+    assert c2.to_view().requires_block is None

@@ -89,6 +89,18 @@ class ConstraintStore:
                 ),
             )
             self._conn.commit()
+            if constraint.requires_block is None:
+                self._conn.execute(
+                    "DELETE FROM constraint_required_blocks WHERE constraint_uid = ?",
+                    (constraint.uid,),
+                )
+            else:
+                self._conn.execute(
+                    "INSERT INTO constraint_required_blocks (constraint_uid, slug) "
+                    "VALUES (?,?) ON CONFLICT(constraint_uid) DO UPDATE SET slug=excluded.slug",
+                    (constraint.uid, constraint.requires_block),
+                )
+            self._conn.commit()
             # Re-projection can DROP an observation, not only add one, so set the
             # links rather than appending to them. link_observation remains for the
             # incremental fold path, where adding is exactly what is meant.
@@ -155,6 +167,14 @@ class ConstraintStore:
             ).fetchall()
         return [r["observation_uid"] for r in rows]
 
+    def required_block_for(self, constraint_uid: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT slug FROM constraint_required_blocks WHERE constraint_uid = ?",
+                (constraint_uid,),
+            ).fetchone()
+        return row["slug"] if row else None
+
     def get(self, uid: str) -> Constraint | None:
         with self._lock:
             row = self._conn.execute(
@@ -220,4 +240,5 @@ class ConstraintStore:
             created_at=datetime.fromisoformat(row["created_at"]),
             decay_class=DecayClass(row["decay_class"]),
             last_observed_at=datetime.fromisoformat(row["last_observed_at"]),
+            requires_block=self.required_block_for(row["uid"]),
         )

@@ -145,3 +145,42 @@ def test_migrating_twice_is_a_no_op(tmp_path):
     assert apply_migrations(conn) == SCHEMA_VERSION
     assert apply_migrations(conn) == SCHEMA_VERSION
     conn.close()
+
+
+def test_version_four_adds_the_kind_registry_and_the_required_block_link(tmp_path):
+    db = str(tmp_path / "m.db")
+    ObservationStore(db)
+    conn = sqlite3.connect(db)
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"enforceable_kinds", "constraint_required_blocks"} <= tables
+        kind_cols = {r[1] for r in conn.execute("PRAGMA table_info(enforceable_kinds)")}
+        assert kind_cols == {"slug", "anchor_uid", "rule_observation_uid", "created_at"}
+        link_cols = {r[1] for r in conn.execute("PRAGMA table_info(constraint_required_blocks)")}
+        assert link_cols == {"constraint_uid", "slug"}
+    finally:
+        conn.close()
+    assert _version(db) == 4
+
+
+def test_a_version_three_store_upgrades_to_four_and_keeps_its_rows(tmp_path):
+    """The case nothing exercised before #155: a store older than the code."""
+    db = str(tmp_path / "m.db")
+    conn = sqlite3.connect(db)
+    try:
+        from memory.migrations import _MIGRATIONS
+
+        for v in (1, 2, 3):
+            conn.executescript(_MIGRATIONS[v])
+        conn.execute("PRAGMA user_version = 3")
+        conn.execute(
+            "INSERT INTO constraints VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("c1", "n", "d", "must", "profile", "proposed", "user", None, "durable",
+             "{}", "2026-01-01T00:00:00+00:00", "permanent", "2026-01-01T00:00:00+00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    store = ConstraintStore(db)
+    assert _version(db) == 4
+    assert [c.uid for c in store.all()] == ["c1"]

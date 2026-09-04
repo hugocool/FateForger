@@ -13,11 +13,14 @@ from memory.judge import (
     AnchorResolutions,
     CanonicaliseJudgement,
     ConstraintLike,
+    DAY_TYPES,
     DayJudgement,
     DedupJudgement,
     MetaJudgement,
     NecessityJudgement,
+    RequiresBlockJudgement,
     TierJudgement,
+    UnknownKind,
 )
 from memory.models import Observation
 
@@ -57,6 +60,11 @@ Also say when the rule applies, if the statement scopes it:
   gets an empty list.
 - start_date / end_date: ISO dates, only when the statement names a period.
   A standing rule gets null for both.
+- day_types: which kinds of day the rule is limited to, from exactly these
+  words: """ + ", ".join(f'"{d}"' for d in DAY_TYPES) + """. Only when the
+  statement scopes it -- "on workdays", "when I'm on holiday". A rule that
+  holds on every kind of day gets an empty list. Weekdays are not a stand-in:
+  "Mon-Fri" is days_of_week, "working days" is day_types ["working"].
 
 Do not invent scoping. "Sleep at 23:00" applies every day: empty list, null
 dates. "Go to client on Tuesdays and Thursdays" is [1, 3].
@@ -87,7 +95,7 @@ excuse to guess short-lived.
 
 Respond with JSON only:
 {"tier": "durable"|"session", "label": "...",
- "days_of_week": [...], "start_date": null, "end_date": null,
+ "days_of_week": [...], "day_types": [...], "start_date": null, "end_date": null,
  "decay_class": "permanent"|"seasonal"|"project"|"daily", "rationale": "..."}\
 """
 
@@ -119,6 +127,39 @@ recoverable and which the planner gets to see.
 
 Respond with JSON only:
 {"is_binding": true|false, "rationale": "..."}\
+"""
+
+REQUIRES_BLOCK_PROMPT = """\
+You decide whether a statement says that a block of some kind MUST BE PRESENT
+on the day's plan, and if so which of the listed kinds it means.
+
+The kinds are given as short words. Answer with exactly one of them, or null.
+Never invent a word that is not in the list: if the statement requires a kind
+of block the list does not have, answer null.
+
+"Requires a block" means the rule is about existence: the day is wrong if no
+such block is on it. "Every working day has a planning session" requires one.
+"I start each morning with a check-in where I decide what the day is for"
+requires one. These do NOT: a rule about how long a block runs ("deep work
+blocks run 90-120 minutes"), when it sits relative to another ("oats two hours
+before gym"), how blocks alternate, or a guardrail on what may be scheduled
+("no meetings before 13:00"). Those describe blocks the day may have; they do
+not say the day must have one.
+
+A kind's word is a label for a recurring session, not a string to look for in
+the statement. Match by what the required session is FOR, not by whether the
+statement repeats the kind's word. A weekly review that settles what the next
+week holds is the same recurring session as a "planning" block even though the
+statement never says "plan", and a session named for its hour or its ritual is
+still that kind if deciding how time gets spent is what it is for. Reject a
+kind only when the statement's block serves a genuinely different purpose than
+every kind on the list, not merely a different word.
+
+When unsure, answer null. A block wrongly marked required is placed on every
+matching day and nagged about when absent; a required block wrongly missed is
+visible the first day it is absent and can be stated again.
+
+Respond with JSON only: {"slug": "<one of the listed kinds>"|null, "rationale": "..."}\
 """
 
 META_PROMPT = """\
@@ -318,13 +359,52 @@ class PromptJudge(ABC):
         for required in ("tier", "label"):
             if required not in payload:
                 raise ValueError(f"could not parse judge response: {payload!r}")
-        return self._build(TierJudgement, payload)
+        judgement = self._build(TierJudgement, payload)
+        unlisted = [d for d in judgement.day_types if d not in DAY_TYPES]
+        if unlisted:
+            # Set membership over words this system minted -- explicitly
+            # outside the no-matching rule, and the same check requires_block
+            # makes on its slug. The read path compares day_types by equality,
+            # so a paraphrase like "workday" is not a near miss: it is a rule
+            # scoped to a kind of day that never occurs, and nothing downstream
+            # could tell it apart from a rule that genuinely never applies.
+            raise ValueError(
+                f"judge returned day_type(s) {unlisted!r} outside the "
+                f"vocabulary {list(DAY_TYPES)}"
+            )
+        return judgement
 
     async def necessity(self, observation: Observation) -> NecessityJudgement:
         payload = await self._ask(NECESSITY_PROMPT, observation.text)
         if "is_binding" not in payload:
             raise ValueError(f"could not parse judge response: {payload!r}")
         return self._build(NecessityJudgement, payload)
+
+    async def requires_block(
+        self, observation: Observation, kinds: list[str]
+    ) -> RequiresBlockJudgement:
+        if not kinds:
+            # Nothing to choose from, so nothing to ask. A model offered an
+            # empty list can only answer null or invent, and inventing is the
+            # failure the verification below exists to catch.
+            return RequiresBlockJudgement()
+        user = (
+            f"Statement:\n{json.dumps(observation.text, ensure_ascii=False)}"
+            f"\n\nRegistered kinds:\n{json.dumps(kinds, ensure_ascii=False)}"
+        )
+        payload = await self._ask(REQUIRES_BLOCK_PROMPT, user)
+        if "slug" not in payload:
+            raise ValueError(f"could not parse judge response: {payload!r}")
+        judgement = self._build(RequiresBlockJudgement, payload)
+        if judgement.slug is not None and judgement.slug not in kinds:
+            # Set membership over identifiers this system minted -- explicitly
+            # outside the no-matching rule, and the one check that keeps an
+            # invented kind out of the store.
+            raise UnknownKind(
+                f"judge returned kind {judgement.slug!r} which is not among the "
+                f"{len(kinds)} registered kinds offered"
+            )
+        return judgement
 
     async def meta(self, observation: Observation) -> MetaJudgement:
         payload = await self._ask(META_PROMPT, observation.text)

@@ -71,22 +71,25 @@ class ReprojectionReport(BaseModel):
 class _Judged(NamedTuple):
     tier: object
     necessity: object
+    requires_block: object
 
 
 async def _judge_all(
-    observations: list[Observation], judge: Judge
+    observations: list[Observation], judge: Judge, kinds: list[str]
 ) -> dict[str, _Judged]:
     """Re-ask the derivable questions for every observation, concurrently.
 
-    Two of the six are re-asked. `anchors` was written into the append-only
-    log at ingest and cannot be revised here without violating I2. `meta` and
-    `dedup` are admission gates whose answers already decided what got stored;
-    re-running them would mean un-storing, which I2 also forbids. And
-    `canonicalise` merges rather than derives — see the note on reproject.
+    Three of the seven are re-asked (anchors, meta, dedup, canonicalise stay
+    excluded for the reasons already stated). `anchors` was written into the
+    append-only log at ingest and cannot be revised here without violating
+    I2. `meta` and `dedup` are admission gates whose answers already decided
+    what got stored; re-running them would mean un-storing, which I2 also
+    forbids. And `canonicalise` merges rather than derives — see the note on
+    reproject.
 
-    Both questions for every observation go out in one gather rather than one
-    gather per question, so the fan-out is over the whole work set instead of
-    being serialised into two rounds.
+    All three questions for every observation go out in one gather rather
+    than one gather per question, so the fan-out is over the whole work set
+    instead of being serialised into three rounds.
     """
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT_JUDGEMENTS)
 
@@ -101,6 +104,7 @@ async def _judge_all(
             for factory in (
                 lambda o=observation: judge.tier(o),
                 lambda o=observation: judge.necessity(o),
+                lambda o=observation: judge.requires_block(o, list(kinds)),
             )
         ),
         return_exceptions=True,
@@ -110,7 +114,9 @@ async def _judge_all(
             raise result
     return {
         observation.uid: _Judged(
-            tier=results[i * 2], necessity=results[i * 2 + 1]
+            tier=results[i * 3],
+            necessity=results[i * 3 + 1],
+            requires_block=results[i * 3 + 2],
         )
         for i, observation in enumerate(observations)
     }
@@ -168,20 +174,19 @@ def _derive(
     # later restatement that happens to omit the scoping words should not
     # widen a rule back to every day.
     #
-    # `day_types` is carried across from the existing constraint rather than
-    # re-derived, because nothing derives it: no judgement produces a day
-    # kind, so rebuilding applicability from scratch drops the field entirely.
-    # Measured on the real store, that silently unscoped 22 of 33 constraints
-    # and returned the whole working week on a day off -- a run that reports
-    # `changed` and looks like a success. Same rule as prose above: a field
-    # nothing can re-derive must not be rebuilt from something that cannot
-    # express it.
-    #
-    # A judgement that produces day kinds would change this. Until one exists,
-    # preserving is the only honest option.
+    # day_types now has a writer (the tier judgement), so take it from the
+    # newest observation that names any; carry the existing constraint's value
+    # only when no judgement does. Before the writer existed this was carried
+    # unconditionally, because rebuilding from a judgement that could not
+    # express it silently unscoped 22 of 33 constraints on the real store.
     carried_day_types = list(existing.applicability.day_types) if existing else []
+    judged_day_types = next(
+        (list(judgements[o.uid].tier.day_types) for o in reversed(ordered)
+         if judgements[o.uid].tier.day_types),
+        carried_day_types,
+    )
 
-    applicability = Applicability(day_types=carried_day_types)
+    applicability = Applicability(day_types=judged_day_types)
     for observation in reversed(ordered):
         judgement = judgements[observation.uid].tier
         if judgement.start_date or judgement.end_date or judgement.days_of_week:
@@ -189,7 +194,7 @@ def _derive(
                 start_date=judgement.start_date,
                 end_date=judgement.end_date,
                 days_of_week=judgement.days_of_week,
-                day_types=carried_day_types,
+                day_types=judged_day_types,
             )
             break
 
@@ -208,6 +213,29 @@ def _derive(
         "decay_class": newest_j.decay_class,
         "created_at": ordered[0].observed_at,
         "last_observed_at": ordered[-1].observed_at,
+        # Required once, required after: the newest observation that names a
+        # kind wins, and one that names none does not unset it -- so the
+        # fallback is the value the constraint already carries, not None. The
+        # same fold projection's branch follows, and for the same reason: a
+        # judgement answering null does not mean "this rule stopped requiring
+        # a block", it means this pass had nothing to say. Rebuilding from it
+        # would unset the requirement silently, and the only symptom is a block
+        # nobody places and nobody nags about.
+        #
+        # Durable-only (spec decision 10): a session-tier statement about
+        # tomorrow's session is a fact for the planner, not a standing
+        # requirement, and projection's session branch never writes the field.
+        # Gating on the *derived* tier rather than the existing one keeps the
+        # two halves of this function agreeing about one constraint.
+        "requires_block": (
+            next(
+                (judgements[o.uid].requires_block.slug for o in reversed(ordered)
+                 if judgements[o.uid].requires_block.slug is not None),
+                existing.requires_block if existing else None,
+            )
+            if tier is Tier.DURABLE
+            else None
+        ),
     }
     if len(ordered) == 1:
         # One observation cannot contradict itself, so there is nothing to
@@ -222,6 +250,7 @@ async def reproject(
     constraint_store: ConstraintStore,
     judge: Judge,
     *,
+    kinds: list[str] = (),
     uid: str | None = None,
     apply: bool = False,
 ) -> ReprojectionReport:
@@ -286,7 +315,7 @@ async def reproject(
             )
             continue
 
-        judgements = await _judge_all(observations, judge)
+        judgements = await _judge_all(observations, judge, kinds)
         derived = _derive(observations, judgements, constraint)
         if len(observations) > 1:
             report.contested.append(
@@ -338,6 +367,7 @@ async def split(
     uid: str,
     observation_uids: list[str],
     anchor_store: "AnchorStore | None" = None,
+    kinds: list[str] = (),
 ) -> tuple[str, str]:
     """Separate observations wrongly folded into one constraint.
 
@@ -414,7 +444,12 @@ async def split(
         # this, and leaving the halves un-derived would be worse than either
         # outcome — each would keep describing the merge it came from.
         await reproject(
-            observation_store, constraint_store, judge, uid=target, apply=True
+            observation_store,
+            constraint_store,
+            judge,
+            kinds=kinds,
+            uid=target,
+            apply=True,
         )
 
     if anchor_store is not None:

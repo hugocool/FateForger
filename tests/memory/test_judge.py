@@ -60,6 +60,18 @@ def test_stub_satisfies_the_protocol():
     assert isinstance(StubJudge(), Judge)
 
 
+def test_stub_returns_its_canned_required_kind():
+    from memory.judge import RequiresBlockJudgement
+
+    judge = StubJudge(requires_blocks={"a planning session every working day": "planning"})
+    result = await_sync(
+        judge.requires_block(_obs("a planning session every working day"), ["planning", "sleep"])
+    )
+    assert result == RequiresBlockJudgement(slug="planning")
+    assert await_sync(judge.requires_block(_obs("sleep at 23:00"), ["planning"])).slug is None
+    assert ("requires_block", judge.calls[-1][1]) == judge.calls[-1]
+
+
 def await_sync(coro):
     """Run one coroutine from a synchronous test, owning the loop.
 

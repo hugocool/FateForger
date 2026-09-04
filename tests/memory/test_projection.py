@@ -210,3 +210,57 @@ async def test_channel_maps_to_the_consumers_source_vocabulary(tmp_path):
         )
         c = await project(obs, result, StubJudge(), store)
         assert c.source is expected
+
+
+async def test_projection_writes_day_types_into_applicability(tmp_path):
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    result = IngestResult(
+        stored=True, uid="obs-1", tier=Tier.DURABLE, day_types=["working"]
+    )
+    c = await project(_obs("planning session on working days"), result, StubJudge(), store)
+    assert c.applicability.day_types == ["working"]
+    assert store.get(c.uid).applicability.day_types == ["working"]
+
+
+async def test_a_durable_rule_carries_its_required_kind(tmp_path):
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    result = IngestResult(stored=True, uid="obs-1", tier=Tier.DURABLE, requires_block="planning")
+    c = await project(_obs("every working day has a planning session"), result, StubJudge(), store)
+    assert c.requires_block == "planning"
+    assert store.get(c.uid).to_view().requires_block == "planning"
+
+
+async def test_a_session_fact_never_carries_a_required_kind(tmp_path):
+    """Durable-only (spec decision 10): 'plan tomorrow's session at 17:00' is a
+    fact for the planner, not a standing requirement."""
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    obs = _obs("plan tomorrow's session at 17:00")
+    session_result = IngestResult(
+        stored=True, uid="obs-1", tier=Tier.SESSION, requires_block="planning"
+    )
+    durable_result = IngestResult(
+        stored=True, uid="obs-2", tier=Tier.DURABLE, requires_block="planning"
+    )
+    session_c = await project(obs, session_result, StubJudge(), store)
+    durable_c = await project(obs, durable_result, StubJudge(), store)
+    assert session_c.requires_block is None
+    assert durable_c.requires_block == "planning"
+
+
+async def test_a_fold_sets_the_required_kind_once_and_never_unsets_it(tmp_path):
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    existing = _existing(store, "planning session")
+    judge = StubJudge(canonical={"we plan every working day": existing.uid,
+                                 "planning again": existing.uid})
+    folded = await project(
+        _obs("we plan every working day"),
+        IngestResult(stored=True, uid="obs-1", tier=Tier.DURABLE, requires_block="planning"),
+        judge, store,
+    )
+    assert folded.requires_block == "planning"
+    again = await project(
+        _obs("planning again"),
+        IngestResult(stored=True, uid="obs-2", tier=Tier.DURABLE, requires_block=None),
+        judge, store,
+    )
+    assert again.requires_block == "planning"

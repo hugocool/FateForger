@@ -479,17 +479,18 @@ async def test_reprojection_writes_nothing_unless_asked(tmp_path):
     assert constraints.get(stale.uid).applicability.days_of_week == [1, 3]
 
 
-async def test_reprojection_preserves_day_types_nothing_can_re_derive(tmp_path):
-    """A field no judgement produces must survive re-derivation.
+async def test_reprojection_carries_the_existing_day_types_when_none_are_judged(tmp_path):
+    """The existing value survives a pass in which no judgement supplies one.
 
-    Applicability was rebuilt from the tier judgement, which carries dates and
-    weekdays but no day kind -- so re-projection dropped `day_types` from every
-    constraint that had one. Measured on the real store that silently unscoped
-    22 of 33 and returned the whole working week on a day off, while the run
-    reported `changed` and looked like a success.
+    The tier judgement writes `day_types` now, so this is the fallback half of
+    that rule rather than a field nothing can re-derive: when no observation is
+    judged to scope the rule, what the constraint already carries stands.
 
-    Same rule as prose: a field nothing can re-derive must not be rebuilt from
-    something unable to express it.
+    Before the writer existed, applicability was rebuilt from a judgement that
+    could not express a day kind at all, so re-projection dropped `day_types`
+    from every constraint that had one. Measured on the real store that
+    silently unscoped 22 of 33 and returned the whole working week on a day
+    off, while the run reported `changed` and looked like a success.
     """
     from memory.constraint import Applicability, Constraint, Necessity, Scope, Source, Status
     from memory.models import DecayClass, Observation, Provenance
@@ -517,12 +518,95 @@ async def test_reprojection_preserves_day_types_nothing_can_re_derive(tmp_path):
         last_observed_at=observed_at,
     )
     judge = StubJudge(tiers={observation.text: Tier.DURABLE})
-    judgements = await _judge_all([observation], judge)
+    judgements = await _judge_all([observation], judge, [])
 
     carried = _derive([observation], judgements, existing)
     assert carried["applicability"].day_types == ["working"]
 
-    # The old behaviour, reproduced exactly: with no existing constraint to
-    # carry from, the field is rebuilt from a judgement that cannot express it.
+    # The old behaviour, reproduced exactly: with nothing to carry from and
+    # nothing judged, the field comes back empty.
     dropped = _derive([observation], judgements, None)
     assert dropped["applicability"].day_types == []
+
+
+async def test_reprojection_gives_an_old_rule_its_required_kind(tmp_path):
+    """The #212 done-criterion: a judgement improvement reaches rows that already exist."""
+    obs_store, c_store = _stores(tmp_path)
+    obs = _observe(obs_store, "every working day has a planning session")
+    stale = _stale_constraint(c_store, obs)
+    judge = StubJudge(
+        tiers={obs.text: Tier.DURABLE},
+        requires_blocks={obs.text: "planning"},
+        day_types={obs.text: ["working"]},
+    )
+    preview = await reproject(obs_store, c_store, judge, kinds=["planning"])
+    assert preview.applied is False
+    assert set(preview.changed[0].fields) >= {"requires_block", "applicability"}
+    assert c_store.get(stale.uid).requires_block is None, "preview writes nothing"
+    await reproject(obs_store, c_store, judge, kinds=["planning"], apply=True)
+    after = c_store.get(stale.uid)
+    assert after.requires_block == "planning"
+    assert after.applicability.day_types == ["working"]
+
+
+async def test_reprojection_takes_judged_day_types_and_carries_them_only_when_none_are_judged(tmp_path):
+    """The tier judgement is the writer for day_types now; the hand-seeded
+    value is carried only as a fallback when nothing judges any."""
+    obs_store, c_store = _stores(tmp_path)
+    obs_a = _observe(obs_store, "planning session on working days")
+    obs_b = _observe(obs_store, "sleep at 23:00")
+    stale_a = _stale_constraint(
+        c_store, obs_a, applicability=Applicability(day_types=["weekend"])
+    )
+    stale_b = _stale_constraint(
+        c_store, obs_b, applicability=Applicability(day_types=["weekend"])
+    )
+    judge = StubJudge(
+        tiers={obs_a.text: Tier.DURABLE, obs_b.text: Tier.DURABLE},
+        day_types={obs_a.text: ["working"]},
+    )
+    await reproject(obs_store, c_store, judge, apply=True)
+    assert c_store.get(stale_a.uid).applicability.day_types == ["working"]
+    assert c_store.get(stale_b.uid).applicability.day_types == ["weekend"]
+
+
+async def test_reprojection_does_not_unset_a_required_kind_nothing_re_derives(tmp_path):
+    """Required once, required after -- the fold projection already follows.
+
+    The judgement can answer null for reasons that are not "this rule stopped
+    requiring a block": an empty registry when the caller forgot the kinds, a
+    draw that went the other way. Rebuilding the field from that answer silently
+    unsets a requirement, and the only visible consequence is a planning block
+    nobody places and nobody nags about -- the same shape as the day_types drop
+    that unscoped 22 of 33 constraints on the real store.
+    """
+    obs_store, c_store = _stores(tmp_path)
+    obs = _observe(obs_store, "every working day has a planning session")
+    stale = _stale_constraint(c_store, obs, requires_block="planning")
+
+    judge = StubJudge(tiers={obs.text: Tier.DURABLE})  # answers no kind at all
+    await reproject(obs_store, c_store, judge, kinds=["planning"], apply=True)
+
+    assert c_store.get(stale.uid).requires_block == "planning"
+
+
+async def test_a_session_tier_rule_carries_no_required_kind(tmp_path):
+    """requires_block is durable-only (spec decision 10).
+
+    A session-tier statement about tomorrow's session is a fact for the planner,
+    not a standing requirement -- projection's session branch never writes the
+    field, and re-projection must not put it back on the way past.
+    """
+    obs_store, c_store = _stores(tmp_path)
+    obs = _observe(obs_store, "I'll do tomorrow's planning session after dinner")
+    stale = _stale_constraint(c_store, obs, tier=Tier.SESSION, scope=Scope.SESSION)
+
+    judge = StubJudge(
+        tiers={obs.text: Tier.SESSION},
+        requires_blocks={obs.text: "planning"},
+    )
+    await reproject(obs_store, c_store, judge, kinds=["planning"], apply=True)
+
+    after = c_store.get(stale.uid)
+    assert after.tier is Tier.SESSION
+    assert after.requires_block is None
