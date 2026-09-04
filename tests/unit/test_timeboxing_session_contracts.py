@@ -262,3 +262,62 @@ def test_snapshot_round_trip_keeps_the_question_it_is_still_holding() -> None:
     restored = PlanningSessionSnapshot.model_validate_json(snapshot.model_dump_json())
 
     assert restored == snapshot
+
+
+from datetime import date
+
+from fateforger.agents.timeboxing.session_contracts import (
+    CellRef,
+    DenyAssumption,
+    FileAssumption,
+    Gate,
+    GateMet,
+    PlannerAssumption,
+    RestoreConstraint,
+    coverage_fact_id,
+    elicited_fact_id,
+    suspension_fact_id,
+)
+
+
+def test_stable_fact_ids_are_minted_from_identifiers_only() -> None:
+    assert coverage_fact_id(date(2026, 9, 8)) == "coverage:2026-09-08"
+    assert suspension_fact_id("abc123") == "suspend:abc123"
+    first, second = elicited_fact_id("elicit.body.unclear"), elicited_fact_id("elicit.body.unclear")
+    assert first.startswith("elicited:elicit.body.unclear:")
+    assert first != second
+    assert elicited_fact_id(None).startswith("elicited:free:")
+
+
+def test_a_cell_ref_names_its_requirement() -> None:
+    assert CellRef(row="body", criterion="unclear").id == "elicit.body.unclear"
+
+
+def test_gate_met_carries_no_open_cells() -> None:
+    gate = Gate(open_cells=[], day_label="working Tuesday")
+    assert GateMet(gate=gate).kind == "gate_met"
+    assert gate.note is None
+
+
+def test_an_assumption_is_filed_by_the_planner_unless_said_otherwise() -> None:
+    base = dict(assumption_id="a1", requirement_id="elicit.body.unclear", value="x", why_needed="y")
+    assert PlannerAssumption(**base).filed_by == "planner"
+    assert PlannerAssumption(**base, filed_by="user").filed_by == "user"
+
+
+def test_new_intents_are_discriminated_by_kind() -> None:
+    assert DenyAssumption(assumption_id="a1").kind == "deny_assumption"
+    assert FileAssumption(requirement_id="r", value="v", why_needed="w").kind == "file_assumption"
+    assert RestoreConstraint(constraint_uid="c1").kind == "restore_constraint"
+
+
+def test_a_snapshot_without_the_new_fields_still_loads() -> None:
+    """Stored sessions predate these fields; the defaults must carry them."""
+    from fateforger.agents.timeboxing.session_contracts import PlanningSessionSnapshot
+
+    snapshot = PlanningSessionSnapshot.model_validate(
+        {"session_key": "C1:1.0", "revision": 0, "owner_user_id": "U1"}
+    )
+    assert snapshot.stage1 == "open"
+    assert snapshot.applicable_constraints == []
+    assert snapshot.suspended_constraint_count == 0

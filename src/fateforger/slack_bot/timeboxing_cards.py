@@ -36,6 +36,7 @@ from .stage_cards import (
     CancelControl,
     CommitControl,
     DayTypeControl,
+    NextControl,
     StageCard,
     UndoControl,
     map_outcome,
@@ -363,6 +364,10 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
                 }
             )
 
+    if card.gate:
+        blocks.append(_section(card.gate))
+        text_lines.append(card.gate)
+
     nav: list[dict] = []
     for control in card.controls:
         if isinstance(control, DayTypeControl):
@@ -404,6 +409,20 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
                             "artifact_digest": control.artifact_digest,
                         }
                     ).model_dump_json(),
+                    primary=True,
+                )
+            )
+        elif isinstance(control, NextControl):
+            nav.append(
+                _nav_button(
+                    FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
+                    "Next",
+                    artifact_action_value(
+                        session_key=card.session_key,
+                        expected_revision=card.expected_revision,
+                        decision="advance",
+                        artifact=None,
+                    ),
                     primary=True,
                 )
             )

@@ -201,30 +201,26 @@ class HostPlanningContext:
     async def _frame_from_corpus(
         self, snapshot: PlanningSessionSnapshot
     ) -> PlanningContext:
-        """What memory already says about the day's sleep window, as a fact.
+        """What memory says about the day: the active rules, and the sleep
+        window as a fact when the user has not stated one.
 
-        The skeleton stage still touches no calendar. It does read constraint
-        memory, because `skeleton.day_frame` is user-owned and the user may
-        already have stated it -- a bedtime rule on record answers the question
-        before it is put (#251). Whether a rule states a wake or sleep time is
-        a judgement about the rule's meaning, so `DayFrameJudge` asks a model.
-
-        A frame the user typed this session is left alone: nothing is fetched
-        and nothing is asked. Re-deriving it from the corpus could only agree
-        with them or contradict them, and neither is worth a call.
+        The rules are returned in every case. Until 2026-09-04 they were
+        fetched here only to feed the frame judgement and handed to nobody, so
+        Stage 1 had nothing to show (#262). The frame judgement is unchanged:
+        skipped when the user typed a frame this session, a model call
+        otherwise, and a host that cannot judge fails the turn rather than
+        asking the user every day forever.
         """
-
-        if any(fact.kind is FactKind.DAY_FRAME for fact in snapshot.facts):
-            return PlanningContext()
         planning_day = self._locked_day(snapshot)
+        constraints = await self._active_constraints(planning_day)
+        suspended = await self._suspended_count(planning_day)
+        if any(fact.kind is FactKind.DAY_FRAME for fact in snapshot.facts):
+            return PlanningContext(
+                applicable_constraints=constraints, suspended_constraint_count=suspended
+            )
         model_client = getattr(self._runtime, "timeboxing_intent_model_client", None)
         if model_client is None:
-            # Not "no frame on record". A host that cannot judge must fail the
-            # turn, or a misconfigured client becomes indistinguishable from a
-            # corpus with no bedtime rule -- and that one asks the user every
-            # day, forever, quietly.
             raise AdaptiveDependencyUnavailable("no model client for the frame judgement")
-        constraints = await self._active_constraints(planning_day)
 
         from fateforger.agents.timeboxing.day_frame import DayFrameJudge
 
@@ -233,7 +229,21 @@ class HostPlanningContext:
             constraints=constraints,
             session_key=snapshot.session_key,
         )
-        return PlanningContext(facts=[] if frame is None else [frame])
+        return PlanningContext(
+            facts=[] if frame is None else [frame],
+            applicable_constraints=constraints,
+            suspended_constraint_count=suspended,
+        )
+
+    async def _suspended_count(self, planning_day: PlanningDay) -> int:
+        store = getattr(self._runtime, "timeboxing_constraint_store", None)
+        if store is None:
+            raise AdaptiveDependencyUnavailable("constraint memory is unavailable")
+        return int(
+            await store.count_suspended(
+                planning_day.date.isoformat(), planning_day.day_type.value
+            )
+        )
 
     @staticmethod
     def _locked_day(snapshot: PlanningSessionSnapshot) -> PlanningDay:

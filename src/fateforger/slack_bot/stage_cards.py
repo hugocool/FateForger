@@ -22,6 +22,8 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from fateforger.agents.timeboxing.elicitation import criterion_label, row_label
+from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactKind,
     AwaitingApproval,
@@ -29,6 +31,8 @@ from fateforger.agents.timeboxing.session_contracts import (
     BlockerOption,
     Committed,
     FactKind,
+    Gate,
+    GateMet,
     PlanningDay,
     PlanningSessionSnapshot,
     SkeletonPayload,
@@ -73,6 +77,9 @@ class DecidedItem(_Frozen):
     kind: Literal["assumption", "fact"]
     #: The fact or assumption id, so increment B can steer it by reference.
     ref: str
+    #: Present for an assumption: who supplied it. A renderer that needs this
+    #: reads the field, never the text.
+    filed_by: Literal["planner", "user"] | None = None
 
 
 class Asking(_Frozen):
@@ -120,6 +127,12 @@ class CancelControl(_Frozen):
     kind: Literal["cancel"] = "cancel"
 
 
+class NextControl(_Frozen):
+    """Consent to close Stage 1. Drawn only from a `GateMet` outcome."""
+
+    kind: Literal["next"] = "next"
+
+
 Control = Annotated[
     Union[
         ApproveControl,
@@ -128,6 +141,7 @@ Control = Annotated[
         UndoControl,
         BackControl,
         CancelControl,
+        NextControl,
     ],
     Field(discriminator="kind"),
 ]
@@ -140,6 +154,9 @@ class StageCard(_Frozen):
     context: list[ContextItem] = Field(default_factory=list)
     decided: list[DecidedItem] = Field(default_factory=list)
     asking: Asking | None = None
+    #: The gate line, always present on a Stage 1 card: what is still needed,
+    #: or the proposal to close. Rendered from typed fields; nothing reads it.
+    gate: str | None = None
     #: The stage's own text: the skeleton markdown, the rendered candidate,
     #: the commit sentence. Empty on the date card, whose body is its controls.
     body: str = ""
@@ -245,13 +262,6 @@ def commit_basis_notice(snapshot: dict, patch: dict) -> str:
     )
 
 
-#: Which stage a user-owned question belongs to, by the fact it asks for.
-_QUESTION_STAGE: dict[FactKind, int] = {
-    FactKind.DAY_FRAME: 1,
-    FactKind.REQUESTED_ACTIVITY: 2,
-    FactKind.ACTIVITY_READING: 2,
-}
-
 #: Which facts count as "decided" on a card, and how they are labelled.
 #: DAY_FRAME is deliberately absent, and not because it is shown elsewhere --
 #: nothing shows it: the date card shows the date it locked, never the wake
@@ -274,15 +284,53 @@ def _decided(snapshot: PlanningSessionSnapshot) -> list[DecidedItem]:
         for fact in snapshot.facts
         if fact.kind in _FACT_LABELS
     ]
+    facts.extend(
+        DecidedItem(
+            text=f"set aside today: {_suspended_constraint_name(snapshot, fact.value)}",
+            kind="fact",
+            ref=fact.fact_id,
+        )
+        for fact in snapshot.facts
+        if fact.kind is FactKind.SUSPENDED_CONSTRAINT
+    )
+    facts.extend(
+        DecidedItem(
+            text=f"you said: {_elicited_text(fact.value)}",
+            kind="fact",
+            ref=fact.fact_id,
+        )
+        for fact in snapshot.facts
+        if fact.kind is FactKind.ELICITED_STATEMENT
+    )
     assumptions = [
         DecidedItem(
             text=f"{_as_text(assumption.value)} — {assumption.why_needed}",
             kind="assumption",
             ref=assumption.assumption_id,
+            filed_by=assumption.filed_by,
         )
         for assumption in snapshot.assumptions
     ]
     return [*facts, *assumptions]
+
+
+def _suspended_constraint_name(snapshot: PlanningSessionSnapshot, value: object) -> str:
+    """The row's name for a suspended uid, or the uid itself if the rule left
+    the active set. Set membership over a uid this system minted -- never a
+    comparison over what the row or the user said."""
+
+    uid = value.get("uid") if isinstance(value, dict) else None
+    for row in snapshot.applicable_constraints:
+        if isinstance(row, dict) and row.get("uid") == uid:
+            name = row.get("name")
+            if isinstance(name, str) and name:
+                return name
+    return str(uid)
+
+
+def _elicited_text(value: object) -> str:
+    text = value.get("text") if isinstance(value, dict) else None
+    return text if isinstance(text, str) else _as_text(value)
 
 
 def _as_text(value: object) -> str:
@@ -305,6 +353,18 @@ def _nav(*, back: bool) -> list[Control]:
     return controls
 
 
+def _gate_line(gate: Gate) -> str:
+    if not gate.open_cells:
+        return (
+            f"That's what I know to ask about a {gate.day_label}. "
+            "Anything else, or shall I plan?"
+        )
+    needs = ", ".join(
+        f"{row_label(cell.row)}, {criterion_label(cell.criterion)}" for cell in gate.open_cells
+    )
+    return f"Still need: {needs}."
+
+
 def map_outcome(
     outcome: TurnOutcome,
     snapshot: PlanningSessionSnapshot,
@@ -323,8 +383,7 @@ def map_outcome(
     """
 
     if isinstance(outcome, AwaitingUser):
-        blocker = snapshot.pending_blocker
-        index = _QUESTION_STAGE.get(blocker.fact_kind, 2) if blocker else 2
+        index = TimeboxRequirements.stage_of(outcome.requirement_id)
         return StageCard(
             stage=stage(index),
             session_key=session_key,
@@ -336,7 +395,18 @@ def map_outcome(
                 why_needed=outcome.why_needed,
                 options=list(outcome.options),
             ),
+            gate=None if outcome.gate is None else _gate_line(outcome.gate),
             controls=_nav(back=True),
+        )
+
+    if isinstance(outcome, GateMet):
+        return StageCard(
+            stage=stage(1),
+            session_key=session_key,
+            expected_revision=snapshot.revision,
+            decided=_decided(snapshot),
+            gate=_gate_line(outcome.gate),
+            controls=[NextControl(), *_nav(back=True)],
         )
 
     if isinstance(outcome, AwaitingApproval):
@@ -470,6 +540,7 @@ __all__ = [
     "Control",
     "DayTypeControl",
     "DecidedItem",
+    "NextControl",
     "StageCard",
     "StageLine",
     "UndoControl",

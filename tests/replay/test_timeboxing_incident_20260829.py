@@ -29,6 +29,12 @@ meaning made by a pattern, which is the project's central prohibition. The
 structural form also catches more: it fails if the catalog reclassifies gym
 placement as user-owned, which is the actual regression.
 
+**The recording carries the Stage 1 consent turn.** Stage 1 stands between
+the day's facts and the plan (spec 2026-09-04): the turn that used to reach the
+planner now ends on `GateMet`, the kernel offering to close the stage, and the
+planner runs on the consent after it. Every scenario replays that turn, so what
+the incident guards is unchanged and where it happens has moved by one turn.
+
 **The fixture is validated by the production contracts.** Every recorded fact,
 intent and planner result is parsed through the same strict Pydantic models the
 kernel uses, so a fixture that drifts from the contracts fails loudly instead of
@@ -68,6 +74,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     AwaitingUser,
     Committed,
     DayType,
+    GateMet,
     PlanningArtifact,
     PlanningDay,
     PlanningFact,
@@ -537,6 +544,29 @@ async def test_the_advance_ends_on_a_skeleton_not_another_recap() -> None:
     assert isinstance(run.outcomes[-1], AwaitingApproval)
 
 
+async def test_the_captured_day_proposes_to_close_stage_one_before_it_plans() -> None:
+    """The turn Stage 1 interposed, asserted where every scenario now takes it.
+
+    Before the stage existed, the reply that named the day's activities went
+    straight to the planner. It now ends on `GateMet` -- nothing is uncovered,
+    so the card offers Next -- and the harness run happens on the consent. The
+    incident's own assertions all sit after that turn; this is the one that
+    pins the turn itself, so a regression that skipped the consent would fail
+    here rather than quietly restoring the old shape everywhere else.
+    """
+
+    run = await replay_scenario("incident")
+
+    proposal = run.outcomes[1]
+    assert isinstance(proposal, GateMet)
+    assert proposal.gate.open_cells == []
+    assert proposal.gate.day_label == "weekend Saturday"
+    # Nothing was planned by the proposal, and the consent after it planned once.
+    assert run.planner_calls_after_turn[1] == 0
+    assert run.planner_calls_after_turn[2] == 1
+    assert run.snapshot.stage1 == "closed"
+
+
 async def test_nothing_in_the_replay_reaches_a_calendar() -> None:
     """Catches a commit before the approval that is supposed to gate it.
 
@@ -694,7 +724,9 @@ async def test_a_duplicate_slack_delivery_replays_its_outcome_and_plans_once() -
 
     run = await replay_scenario("duplicate_delivery")
 
-    assert run.outcomes[1] == run.outcomes[2]
+    # The redelivered turn is the Stage 1 consent, because that is the turn
+    # that now spends a harness run: the capture before it only proposes.
+    assert run.outcomes[2] == run.outcomes[3]
     assert run.planner.calls == 1
     assert run.revisions["after_first_delivery"] == run.revisions["after_duplicate"]
     assert (

@@ -4,15 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from .session_contracts import (
     ArtifactKind,
+    CellRef,
     FactKind,
     PlanningArtifact,
     PlanningFact,
     PlanningSessionSnapshot,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .elicitation import CoverageMatrix
 
 
 class RequirementOwner(StrEnum):
@@ -42,6 +46,14 @@ class ArtifactRequirement:
     #: requirement_id, and "Please provide skeleton.requested_activity." is a
     #: sentence written for a debugger, shown to the person being asked.
     question: str
+    #: Which of the five stages this requirement's question belongs to. The
+    #: card takes its stage from here, so the ladder is a property of the
+    #: catalog and not of a map from fact kinds (#276).
+    stage: int
+    #: Present only for a Stage 1 coverage cell. Satisfaction of a cell is read
+    #: from the matrix fact, not from the presence of a statement: one answer
+    #: does not satisfy forty questions.
+    cell: CellRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +144,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         why_needed="a skeleton must be planned for a locked day",
         resolution="validate",
         question="Which day are we planning?",
+        stage=1,
     ),
     ArtifactRequirement(
         requirement_id="skeleton.requested_activity",
@@ -142,6 +155,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         why_needed="a skeleton needs at least one intended activity or goal",
         resolution="ask",
         question="What do you want to get out of the day?",
+        stage=2,
     ),
     ArtifactRequirement(
         # Listed after the activity on purpose: first_hard_user_blocker() asks
@@ -160,6 +174,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
             "When are you getting up, and when do you want to be asleep? "
             "Nothing on record says so for this day."
         ),
+        stage=1,
     ),
     ArtifactRequirement(
         # Which names are unreadable is a judgement about what the user meant,
@@ -178,6 +193,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         why_needed="a block title must be a name the planner could read",
         resolution="ask",
         question="I could not read one of those. Which did you mean?",
+        stage=2,
     ),
     ArtifactRequirement(
         requirement_id="skeleton.ordinary_placement",
@@ -188,6 +204,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         why_needed="ordinary activities need a feasible placement in the day",
         resolution="assume",
         question="Where should the flexible blocks go?",
+        stage=2,
     ),
     ArtifactRequirement(
         requirement_id="candidate.approved_skeleton",
@@ -198,6 +215,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         why_needed="a candidate may only refine the exact approved skeleton",
         resolution="validate",
         question="Shall I work from the outline above?",
+        stage=3,
     ),
     ArtifactRequirement(
         requirement_id="candidate.calendar_snapshot",
@@ -208,6 +226,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         why_needed="a candidate must account for the current calendar",
         resolution="fetch",
         question="I could not read the calendar for that day. Try again?",
+        stage=4,
     ),
     ArtifactRequirement(
         requirement_id="candidate.active_constraints",
@@ -218,6 +237,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         why_needed="a candidate must account for active planning constraints",
         resolution="fetch",
         question="I could not read your saved rules. Try again?",
+        stage=4,
     ),
     ArtifactRequirement(
         requirement_id="candidate.concrete_placements",
@@ -228,6 +248,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         why_needed="a candidate needs concrete feasible placements",
         resolution="assume",
         question="Some blocks still need a time. Shall I choose?",
+        stage=4,
     ),
     ArtifactRequirement(
         requirement_id="commit.approved_candidate",
@@ -238,8 +259,37 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         why_needed="a calendar commit requires the exact approved candidate",
         resolution="validate",
         question="Shall I put this on the calendar?",
+        stage=5,
     ),
 )
+
+
+def _cell_requirements() -> tuple[ArtifactRequirement, ...]:
+    """Forty requirements from two fixed lists. Soft, so none is a hard
+    blocker; the elicitor picks which to ask, so catalog order means nothing."""
+    from .elicitation import ALL_CELLS, CRITERION_BY_KEY, ROWS
+
+    return tuple(
+        ArtifactRequirement(
+            requirement_id=cell.id,
+            target_artifact=ArtifactKind.SKELETON,
+            # Not vestigial: `_hold_question` copies this into
+            # `pending_blocker.fact_kind`, and `_typed_facts` reads that to
+            # bind the user's next answer to this cell.
+            satisfied_by=(FactKind.ELICITED_STATEMENT,),
+            owner=RequirementOwner.USER,
+            hard=False,
+            why_needed=ROWS[cell.row].label,
+            resolution="ask",
+            question=CRITERION_BY_KEY[cell.criterion].question,
+            stage=1,
+            cell=cell,
+        )
+        for cell in ALL_CELLS
+    )
+
+
+_CATALOG: tuple[ArtifactRequirement, ...] = (*_REQUIREMENTS, *_cell_requirements())
 
 _DIRECT_DEPENDENTS: dict[ArtifactKind, frozenset[ArtifactKind]] = {
     ArtifactKind.PLANNING_DAY: frozenset({ArtifactKind.DAY_FRAME}),
@@ -262,17 +312,32 @@ class TimeboxRequirements:
     ) -> ReadinessReport:
         """Assess only the requirements relevant to ``target_artifact``."""
 
+        matrix = self._coverage_matrix(snapshot)
         return ReadinessReport(
             target_artifact=target_artifact,
             gaps=tuple(
                 ReadinessGap(
                     requirement=requirement,
-                    satisfied=self._is_satisfied(requirement, snapshot),
+                    satisfied=self._is_satisfied(requirement, snapshot, matrix),
                 )
-                for requirement in _REQUIREMENTS
+                for requirement in _CATALOG
                 if requirement.target_artifact is target_artifact
             ),
         )
+
+    @staticmethod
+    def _coverage_matrix(snapshot: PlanningSessionSnapshot) -> CoverageMatrix | None:
+        """Parse the day's coverage matrix once per ``evaluate`` call.
+
+        Forty cell requirements would otherwise each re-run
+        ``coverage_matrix``, which linear-scans the facts and, on a hit,
+        revalidates all forty keys and rebuilds the unaskable set -- forty
+        times the work for one answer. A malformed fact still raises here,
+        loudly, once.
+        """
+        from .elicitation import coverage_matrix
+
+        return coverage_matrix(snapshot)
 
     @staticmethod
     def target_of(requirement_id: str) -> ArtifactKind | None:
@@ -282,10 +347,21 @@ class TimeboxRequirements:
         that id serves is the one whose disappearance retires the assumption.
         """
 
-        for requirement in _REQUIREMENTS:
+        for requirement in _CATALOG:
             if requirement.requirement_id == requirement_id:
                 return requirement.target_artifact
         return None
+
+    @staticmethod
+    def stage_of(requirement_id: str) -> int:
+        """The stage a requirement's question belongs to. KeyError for an id
+        the catalog does not know: a question with no stage is a defect, not
+        a stage-two question."""
+
+        for requirement in _CATALOG:
+            if requirement.requirement_id == requirement_id:
+                return requirement.stage
+        raise KeyError(requirement_id)
 
     def invalidate_from(
         self, changed_artifact: ArtifactKind
@@ -306,6 +382,7 @@ class TimeboxRequirements:
         self,
         requirement: ArtifactRequirement,
         snapshot: PlanningSessionSnapshot,
+        matrix: CoverageMatrix | None,
     ) -> bool:
         if requirement.requirement_id == "skeleton.locked_day":
             return snapshot.planning_day is not None
@@ -313,6 +390,8 @@ class TimeboxRequirements:
             return self._has_exact_approval(snapshot, ArtifactKind.SKELETON)
         if requirement.requirement_id == "commit.approved_candidate":
             return self._has_exact_approval(snapshot, ArtifactKind.VALIDATED_CANDIDATE)
+        if requirement.cell is not None:
+            return matrix is None or matrix.cells[requirement.requirement_id] != "uncovered"
 
         return all(
             self._has_fact(snapshot.facts, kind)

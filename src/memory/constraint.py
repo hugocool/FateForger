@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -103,6 +104,18 @@ class Applicability(BaseModel):
         return True
 
 
+class AnchorRef(BaseModel):
+    """One anchor a rule attaches to, as the patcher and the card need it.
+
+    Both fields are minted by this system: the uid at `resolve_anchors`, the
+    name by the model that judged the statement. A card groups by `name` and
+    steers by the constraint uid, never by this one.
+    """
+
+    uid: str
+    name: str
+
+
 class ConstraintView(BaseModel):
     """What the timeboxing patcher consumes.
 
@@ -123,6 +136,18 @@ class ConstraintView(BaseModel):
     # identifier this system minted (#212). `frame_slot` above is the dead
     # predecessor of this idea and is not reused.
     requires_block: str | None = None
+    #: Empty for an unanchored rule. Unanchored and unreachable are different
+    #: things; a card renders these in their own group rather than dropping them.
+    anchors: list[AnchorRef] = Field(default_factory=list)
+    #: How close the rule is to fading on the requested day, 0.0 fresh to 1.0
+    #: fading tomorrow; None for a rule that never fades. Computed here so the
+    #: half-life table never leaves the server; a host sorts on it and learns
+    #: nothing about decay.
+    fade: float | None = None
+    #: Whether the rule holds every day, on some days (weekdays or day types),
+    #: or inside a dated window. Three words for a card to tag a row with,
+    #: decided from stored fields; no date or day type leaves the server.
+    applies: Literal["every_day", "some_days", "dated"] = "every_day"
 
 
 class Constraint(BaseModel):

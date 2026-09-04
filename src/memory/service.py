@@ -337,8 +337,13 @@ class MemoryService:
                 for c in self._constraints.durable()
                 if not self._anchors.anchors_for(c.uid)
             }
-        return _read(self._constraints, day, stage, reachable=reachable,
+        return _read(
+            self._constraints,
+            day,
+            stage,
+            reachable=reachable,
             day_type=day_type,
+            anchors=self._anchors,
         )
 
     def get_faded_constraints(

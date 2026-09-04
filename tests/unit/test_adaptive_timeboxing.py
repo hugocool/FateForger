@@ -79,6 +79,8 @@ def _incident_snapshot() -> PlanningSessionSnapshot:
             _fact("gym-1", FactKind.REQUESTED_ACTIVITY, True),
             _fact("frame-1", FactKind.DAY_FRAME, {"wake": "08:00", "sleep": "23:30"}),
         ],
+        # Stage 1 consent is given; this test is about what follows.
+        stage1="closed",
     )
 
 
@@ -813,6 +815,7 @@ _DAY_SHAPE = ArtifactRequirement(
     why_needed="the free afternoon has several materially different shapes",
     resolution="ask",
     question="Which shape should the afternoon take?",
+    stage=2,
 )
 
 
@@ -850,6 +853,16 @@ class _ClosedChoiceRequirements(TimeboxRequirements):
                 ),
             ),
         )
+
+    @staticmethod
+    def stage_of(requirement_id: str) -> int:
+        """The card asks the catalog which stage a question belongs to, so a
+        catalog standing in for the shipped one has to answer for its own
+        requirement as well as evaluate against it."""
+
+        if requirement_id == _DAY_SHAPE.requirement_id:
+            return _DAY_SHAPE.stage
+        return TimeboxRequirements.stage_of(requirement_id)
 
 
 class _ScriptedPlanner(PlannerPort):
@@ -973,6 +986,8 @@ async def test_a_request_with_no_sleep_facts_and_no_bedtime_rule_blocks_at_captu
                 "serious c2f work, some finances, gym for chest",
             )
         ],
+        # Stage 1 consent is given; this test is about what follows.
+        stage1="closed",
     )
     repo = InMemoryPlanningSessionRepository([snapshot])
     planner = RecordedPlanner(_skeleton_result())
@@ -1059,6 +1074,8 @@ async def test_a_frame_the_corpus_already_states_is_not_asked_again() -> None:
         owner_user_id="U1",
         planning_day=_locked_day(),
         facts=[_fact("activity-1", FactKind.REQUESTED_ACTIVITY, "c2f work")],
+        # Stage 1 consent is given; this test is about what follows.
+        stage1="closed",
     )
     repo = InMemoryPlanningSessionRepository([snapshot])
     planner = RecordedPlanner(_skeleton_result())
@@ -1100,6 +1117,8 @@ async def test_a_planner_assumption_about_the_frame_is_refused() -> None:
             _fact("activity-1", FactKind.REQUESTED_ACTIVITY, "c2f work"),
             _fact("frame-1", FactKind.DAY_FRAME, {"wake": "08:30", "sleep": "00:30"}),
         ],
+        # Stage 1 consent is given; this test is about what follows.
+        stage1="closed",
     )
     repo = InMemoryPlanningSessionRepository([snapshot])
     planner = RecordedPlanner(
@@ -1141,6 +1160,8 @@ async def test_an_open_question_still_reaches_the_user_and_is_answerable() -> No
         owner_user_id="U1",
         planning_day=_locked_day(),
         facts=[_fact("frame-1", FactKind.DAY_FRAME, {"wake": "08:00", "sleep": "23:30"})],
+        # Stage 1 consent is given; this test is about what follows.
+        stage1="closed",
     )
     repo = InMemoryPlanningSessionRepository([snapshot])
     # No assumption: with no gym fact the gym placement requirement is already

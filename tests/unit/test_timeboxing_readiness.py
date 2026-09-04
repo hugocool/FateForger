@@ -2,6 +2,7 @@ from datetime import date
 
 import pytest
 
+from fateforger.agents.timeboxing.elicitation import ALL_CELLS, CoverageMatrix
 from fateforger.agents.timeboxing.readiness import (
     RequirementOwner,
     TimeboxRequirements,
@@ -14,6 +15,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningDay,
     PlanningFact,
     PlanningSessionSnapshot,
+    coverage_fact_id,
 )
 
 
@@ -313,3 +315,76 @@ def test_a_chosen_reading_settles_the_name() -> None:
     report = TimeboxRequirements().evaluate(ArtifactKind.SKELETON, snapshot)
 
     assert report.by_id("skeleton.activity_reading").satisfied
+
+
+def test_every_requirement_carries_a_stage_and_the_ladder_is_monotone() -> None:
+    reqs = TimeboxRequirements()
+    assert reqs.stage_of("skeleton.locked_day") == 1
+    assert reqs.stage_of("skeleton.day_frame") == 1
+    assert reqs.stage_of("skeleton.requested_activity") == 2
+    assert reqs.stage_of("skeleton.activity_reading") == 2
+    assert reqs.stage_of("candidate.calendar_snapshot") == 4
+    assert reqs.stage_of("commit.approved_candidate") == 5
+
+
+def test_forty_cells_are_soft_user_owned_stage_one_requirements() -> None:
+    reqs = TimeboxRequirements()
+    report = reqs.evaluate(ArtifactKind.SKELETON, _locked_snapshot())
+    cells = [gap for gap in report.gaps if gap.requirement.cell is not None]
+    assert len(cells) == 40
+    assert all(gap.owner is RequirementOwner.USER and not gap.hard for gap in cells)
+    assert all(reqs.stage_of(gap.requirement_id) == 1 for gap in cells)
+    assert report.first_hard_user_blocker() is not None  # still day_frame / activity
+
+
+def test_a_cell_is_satisfied_unless_the_matrix_says_uncovered() -> None:
+    reqs = TimeboxRequirements()
+    cell = ALL_CELLS[0]
+    matrix = CoverageMatrix(cells={c.id: "not_applicable" for c in ALL_CELLS} | {cell.id: "uncovered"})
+    snapshot = _locked_snapshot(
+        PlanningFact(
+            fact_id=coverage_fact_id(date(2026, 8, 29)),
+            kind=FactKind.COVERAGE_MATRIX,
+            value=matrix.model_dump(mode="json"),
+            source="system",
+        )
+    )
+    report = reqs.evaluate(ArtifactKind.SKELETON, snapshot)
+    assert report.by_id(cell.id).satisfied is False
+    assert report.by_id(ALL_CELLS[1].id).satisfied is True
+    assert reqs.evaluate(ArtifactKind.SKELETON, _locked_snapshot()).by_id(cell.id).satisfied is True
+
+
+def test_an_unknown_requirement_has_no_stage() -> None:
+    import pytest
+
+    with pytest.raises(KeyError):
+        TimeboxRequirements().stage_of("nothing.like.this")
+
+
+def test_the_matrix_is_parsed_once_per_evaluation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Forty cell requirements must not each re-parse and revalidate the matrix."""
+    import fateforger.agents.timeboxing.elicitation as elicitation_module
+
+    matrix = CoverageMatrix(cells={c.id: "not_applicable" for c in ALL_CELLS})
+    snapshot = _locked_snapshot(
+        PlanningFact(
+            fact_id=coverage_fact_id(date(2026, 8, 29)),
+            kind=FactKind.COVERAGE_MATRIX,
+            value=matrix.model_dump(mode="json"),
+            source="system",
+        )
+    )
+
+    real_coverage_matrix = elicitation_module.coverage_matrix
+    calls = []
+
+    def counting_coverage_matrix(snap: PlanningSessionSnapshot) -> CoverageMatrix | None:
+        calls.append(snap)
+        return real_coverage_matrix(snap)
+
+    monkeypatch.setattr(elicitation_module, "coverage_matrix", counting_coverage_matrix)
+
+    TimeboxRequirements().evaluate(ArtifactKind.SKELETON, snapshot)
+
+    assert len(calls) == 1

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from .elicitation import stage1_gate
 from .readiness import (
     ReadinessGap,
     ReadinessReport,
@@ -35,7 +36,11 @@ from .session_contracts import (
     ChooseBlockerOption,
     Committed,
     ConfirmPlanningDay,
+    DenyAssumption,
     FactKind,
+    FileAssumption,
+    Gate,
+    GateMet,
     GoBack,
     HandledInteraction,
     PendingBlocker,
@@ -47,6 +52,7 @@ from .session_contracts import (
     PlanningResult,
     PlanningSessionSnapshot,
     ProvidePlanningFacts,
+    RestoreConstraint,
     ReviseArtifact,
     StartSession,
     TimeboxIntent,
@@ -54,6 +60,7 @@ from .session_contracts import (
     TurnOutcome,
     UserBlockerDraft,
     has_commit_receipt,
+    suspension_fact_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,6 +88,12 @@ class PlanningContext(BaseModel):
     )
     facts: list[PlanningFact] = Field(default_factory=list)
     applicable_constraints: JsonValue = Field(default_factory=dict)
+    #: None is "this resolve did not look", which is not the same answer as
+    #: zero. Only the Stage 1 resolve counts memory-side suspensions; a
+    #: candidate-stage resolve leaving the default here used to overwrite the
+    #: Stage 1 count with 0 on every turn, and the card stopped saying how many
+    #: rules the day type had taken off.
+    suspended_constraint_count: int | None = Field(default=None, ge=0)
     calendar_snapshot: JsonValue = Field(default_factory=dict)
 
 
@@ -556,6 +569,20 @@ class AdaptiveTimeboxing:
             )
 
         snapshot = self._merge_facts(snapshot, resolved.facts)
+        rows = resolved.applicable_constraints
+        if isinstance(rows, list):
+            # Written on every resolve: the read is model-free and the set can
+            # change mid-session. The presence fact stays count-only.
+            snapshot = snapshot.model_copy(update={"applicable_constraints": rows})
+        if resolved.suspended_constraint_count is not None:
+            # Independent of the rows above: a resolve may know the rows and
+            # not the count. Absence keeps whatever the last resolve that did
+            # look wrote, rather than asserting zero on its behalf.
+            snapshot = snapshot.model_copy(
+                update={
+                    "suspended_constraint_count": resolved.suspended_constraint_count
+                }
+            )
         readiness = self._requirements.evaluate(target, snapshot)
         blocker = readiness.first_hard_user_blocker()
         if blocker is not None:
@@ -572,6 +599,15 @@ class AdaptiveTimeboxing:
                     question=blocker.question,
                     why_needed=blocker.why_needed,
                 ),
+            )
+
+        if target is ArtifactKind.SKELETON and snapshot.stage1 != "closed":
+            stage1_snapshot, stage1_outcome = self._stage1_outcome(snapshot, readiness)
+            return await self._save(
+                stage1_snapshot,
+                base_revision=base_revision,
+                request=request,
+                outcome=stage1_outcome,
             )
 
         if readiness.system_owned_gaps():
@@ -653,7 +689,12 @@ class AdaptiveTimeboxing:
         self, snapshot: PlanningSessionSnapshot, request: TurnRequest
     ) -> tuple[PlanningSessionSnapshot, TurnOutcome | None]:
         intent = request.intent
-        if isinstance(intent, (StartSession, Advance)):
+        if isinstance(intent, StartSession):
+            return snapshot, None
+        if isinstance(intent, Advance):
+            if snapshot.stage1 == "proposed":
+                # Consent: the user saw the proposal and said go on.
+                return snapshot.model_copy(update={"stage1": "closed"}), None
             return snapshot, None
         if isinstance(intent, CancelSession):
             return snapshot.model_copy(update={"status": "cancelled"}), None
@@ -679,12 +720,23 @@ class AdaptiveTimeboxing:
                     "planning_day": intent.planning_day,
                     "artifacts": [*updated.artifacts, planning_day_artifact],
                     "approvals": [*updated.approvals, approval],
+                    # A newly confirmed day starts Stage 1 afresh, whatever
+                    # the prior day's stage1 stood at.
+                    "stage1": "open",
                 }
             ), None
         if isinstance(intent, ProvidePlanningFacts):
             merged = self._merge_facts(snapshot, intent.facts)
             if merged.facts == snapshot.facts:
                 return snapshot, None
+            stage1_kinds = {FactKind.ELICITED_STATEMENT, FactKind.SUSPENDED_CONSTRAINT}
+            if any(fact.kind in stage1_kinds for fact in intent.facts):
+                # A Stage 1 fact re-enters the loop: a new fact can uncover a cell.
+                merged = merged.model_copy(update={"stage1": "open"})
+            elif merged.stage1 == "proposed":
+                # Anything else after a proposal is consent, and the message is
+                # handled in Stage 2, so "let's plan, deep work first" is one turn.
+                merged = merged.model_copy(update={"stage1": "closed"})
             return self._reopen(
                 self._invalidate(merged, ArtifactKind.CAPTURED_INPUTS)
             ), None
@@ -785,6 +837,62 @@ class AdaptiveTimeboxing:
             # built on the shape the user has just overruled is not a skeleton
             # of this day any more.
             return self._invalidate(answered, ArtifactKind.CAPTURED_INPUTS), None
+        if isinstance(intent, FileAssumption):
+            if self._requirements.target_of(intent.requirement_id) is None:
+                return snapshot, TurnFailed(
+                    code="unknown_requirement",
+                    message="That question is not one this session asked.",
+                )
+            filed = PlannerAssumption(
+                assumption_id=str(uuid4()),
+                requirement_id=intent.requirement_id,
+                value=intent.value,
+                why_needed=intent.why_needed,
+                filed_by="user",
+            )
+            # Invalidate first, then append: `_without` retires an assumption
+            # whose target artifact is invalidated (it served an artifact
+            # that no longer exists), and this one's target is SKELETON --
+            # the same kind CAPTURED_INPUTS invalidation reaches. Appending
+            # before invalidating let the assumption just filed erase itself.
+            invalidated = self._invalidate(snapshot, ArtifactKind.CAPTURED_INPUTS)
+            pending = invalidated.pending_blocker
+            updated = invalidated.model_copy(
+                update={
+                    "assumptions": [*invalidated.assumptions, filed],
+                    "pending_blocker": None
+                    if pending is not None and pending.requirement_id == intent.requirement_id
+                    else pending,
+                }
+            )
+            # Always fall through. The run loop evaluates readiness fresh,
+            # holds a hard user blocker before it ever reaches Stage 1, and
+            # arrives at `_stage1_outcome` itself once Stage 1 is open --
+            # `stage1_gate` already subtracts any cell this assumption
+            # answers, so the run loop's own gate agrees with this turn
+            # rather than needing this branch to pre-empt it.
+            return updated, None
+        if isinstance(intent, DenyAssumption):
+            kept = [a for a in snapshot.assumptions if a.assumption_id != intent.assumption_id]
+            if len(kept) == len(snapshot.assumptions):
+                return snapshot, TurnFailed(
+                    code="stale_assumption",
+                    message="That assumption is no longer on record.",
+                )
+            # The cell it answered re-opens; a denial is the user asking to be asked.
+            updated = snapshot.model_copy(update={"assumptions": kept, "stage1": "open"})
+            return self._invalidate(updated, ArtifactKind.CAPTURED_INPUTS), None
+        if isinstance(intent, RestoreConstraint):
+            wanted = suspension_fact_id(intent.constraint_uid)
+            kept_facts = [f for f in snapshot.facts if f.fact_id != wanted]
+            if len(kept_facts) == len(snapshot.facts):
+                return snapshot, TurnFailed(
+                    code="stale_restore",
+                    message="That rule is not set aside for this session.",
+                )
+            # A restored rule can uncover a cell, same as a new fact.
+            updated = snapshot.model_copy(update={"facts": kept_facts, "stage1": "open"})
+            return self._invalidate(updated, ArtifactKind.CAPTURED_INPUTS), None
         if isinstance(intent, GoBack):
             return self._go_back(snapshot)
         if isinstance(intent, ReviseArtifact):
@@ -807,6 +915,14 @@ class AdaptiveTimeboxing:
         holding the activity question is the stage-two card; clearing
         `planning_day` makes `_planning_day_gate` show the day it already has.
         Facts are kept throughout -- back is not forget.
+
+        No skeleton yet means Stage 1: there is no rung between the activity
+        question and the day card for it, on purpose. A re-presented Stage 1
+        with nothing newly stated is the same proposal `_stage1_outcome`
+        already made, and a probe already answered is never re-asked -- Back
+        in Stage 1 is the planning-day rung below, which clears the day and
+        resets `stage1` to `"open"`, and a fresh `ConfirmPlanningDay` starts
+        Stage 1 over rather than resuming it.
 
         The first rung is the receipt, not the status: `_reopen` puts a
         committed session back to `open` when the user asks for a revision and
@@ -860,6 +976,9 @@ class AdaptiveTimeboxing:
                 update={
                     "planning_day": None,
                     "pending_blocker": None,
+                    # Clearing the day undoes Stage 1's premise -- a future
+                    # `ConfirmPlanningDay` starts it over, not resumes it.
+                    "stage1": "open",
                     "approvals": [
                         approval
                         for approval in snapshot.approvals
@@ -871,6 +990,31 @@ class AdaptiveTimeboxing:
             code="nothing_to_go_back_to",
             message="This is the first step; there is nothing before it.",
         )
+
+    def _stage1_outcome(
+        self, snapshot: PlanningSessionSnapshot, readiness: ReadinessReport
+    ) -> tuple[PlanningSessionSnapshot, TurnOutcome]:
+        """What Stage 1 shows right now: the top open cell, or a proposal to close.
+
+        The one place `stage1_gate` becomes a `TurnOutcome`, and the run
+        loop -- after resolving context and holding any hard user blocker --
+        is its only caller: `FileAssumption` and `GoBack` fall through to it
+        rather than answering for it, so `GateMet` and the `stage1 ==
+        "proposed"` transition happen exactly once per turn, in one place.
+        `stage1_gate` itself already subtracts any cell a filed assumption
+        answers, so the `Gate` read back here needs no further narrowing.
+        """
+        gate: Gate = stage1_gate(snapshot)
+        if gate.open_cells:
+            top = gate.open_cells[0]
+            gap = readiness.by_id(top.id)
+            return self._hold_question(snapshot, gap, []), AwaitingUser(
+                requirement_id=gap.requirement_id,
+                question=gap.question,
+                why_needed=gap.why_needed,
+                gate=gate,
+            )
+        return snapshot.model_copy(update={"stage1": "proposed"}), GateMet(gate=gate)
 
     async def _planning_day_gate(
         self, snapshot: PlanningSessionSnapshot, request: TurnRequest
@@ -1263,7 +1407,9 @@ class AdaptiveTimeboxing:
                 for artifact in snapshot.artifacts
             ],
             approvals=snapshot.approvals,
-            applicable_constraints=context.applicable_constraints,
+            applicable_constraints=self._unsuspended(
+                snapshot, context.applicable_constraints
+            ),
             calendar_snapshot=context.calendar_snapshot,
             target_artifact=target,
             readiness={
@@ -1282,6 +1428,29 @@ class AdaptiveTimeboxing:
             },
             allowed_outputs={target},
         )
+
+    @staticmethod
+    def _unsuspended(snapshot: PlanningSessionSnapshot, rows: JsonValue) -> JsonValue:
+        """Rows minus the ones a SUSPENDED_CONSTRAINT fact names, by uid.
+
+        Set membership over identifiers this system minted. The snapshot keeps
+        the full list so the card can show a suspended row as suspended; only
+        the planner stops seeing it.
+        """
+        if not isinstance(rows, list):
+            return rows
+        suspended: set[JsonValue] = set()
+        for fact in snapshot.facts:
+            if fact.kind is not FactKind.SUSPENDED_CONSTRAINT:
+                continue
+            if not isinstance(fact.value, dict) or "uid" not in fact.value:
+                # A malformed suspension is not the same as no suspension --
+                # reading it as absent would let the rule it names through.
+                raise ValueError(
+                    f"suspended-constraint fact {fact.fact_id!r} carries no uid"
+                )
+            suspended.add(fact.value["uid"])
+        return [row for row in rows if not (isinstance(row, dict) and row.get("uid") in suspended)]
 
     async def _save(
         self,

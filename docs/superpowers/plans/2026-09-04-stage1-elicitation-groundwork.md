@@ -34,10 +34,10 @@ Two refinements of the spec's wording, decided while planning, so the implemente
 
 | file | responsibility | task |
 | --- | --- | --- |
-| `src/memory/constraint.py` | `AnchorRef`, `ConstraintView.anchors` | 1 |
+| `src/memory/constraint.py` | `AnchorRef`, `ConstraintView.anchors`, `ConstraintView.fade`, `ConstraintView.applies` | 1, 1b, 1c |
 | `src/memory/read_api.py` | `get_active_constraints(..., anchors=)` attaches refs | 1 |
 | `src/memory/service.py` | passes `self._anchors` | 1 |
-| `src/fateforger/agents/timeboxing/kg_constraint_client.py` | opens an `AnchorStore`, row carries `anchors` | 2 |
+| `src/fateforger/agents/timeboxing/kg_constraint_client.py` | opens an `AnchorStore`, row carries `anchors` and `fade`, `count_suspended` | 2 |
 | `src/fateforger/agents/timeboxing/session_contracts.py` | fact kinds, id helpers, `filed_by`, `CellRef`, `Gate`, `GateMet`, `DenyAssumption`, `FileAssumption`, snapshot fields | 3 |
 | `src/fateforger/agents/timeboxing/elicitation.py` (new) | concern-floor, criteria, rows, `ALL_CELLS`, `CoverageMatrix`, `coverage_matrix()`, `stage1_gate()` | 4 |
 | `src/fateforger/agents/timeboxing/readiness.py` | `stage` and `cell` on `ArtifactRequirement`, forty cell requirements, `stage_of`, per-cell satisfaction | 5 |
@@ -261,6 +261,150 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
+### Task 1b: `fade` on the memory view
+
+Requested by the #266 grammar session on 2026-09-04 so the context panel can sort "nearest to fading" first without the host ever learning a half-life. Lands after Task 1's review, before Task 2.
+
+**Files:**
+- Modify: `src/memory/constraint.py` (`ConstraintView`)
+- Modify: `src/memory/read_api.py` (`get_active_constraints`, `_attach_anchors`)
+- Test: `tests/memory/test_view_fade.py` (new)
+
+**Interfaces:**
+- Consumes: `HALF_LIFE_DAYS[decay_class] -> int | None` (`memory.models`), `Constraint.last_observed_at`, `Constraint.decay_class`.
+- Produces: `ConstraintView.fade: float | None = None`; `fade_on(constraint, day) -> float | None` in `read_api`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/memory/test_view_fade.py
+"""How close a rule is to fading, as a number in [0, 1] the server computes.
+
+The half-life table stays inside the memory server; a host that sorted by
+`last_observed_at` would have to know it. `None` means the rule never fades.
+"""
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+
+from memory.constraint import Constraint, Necessity, Scope, Source, Status
+from memory.constraint_store import ConstraintStore
+from memory.models import HALF_LIFE_DAYS, DecayClass, Tier
+from memory.read_api import fade_on, get_active_constraints
+
+DAY = date(2026, 9, 8)
+NOW = datetime(2026, 9, 8, 9, 0, tzinfo=timezone.utc)
+
+
+def _rule(name: str, decay_class: DecayClass, *, observed_days_ago: int) -> Constraint:
+    return Constraint(
+        name=name,
+        description=f"{name} description",
+        necessity=Necessity.SHOULD,
+        scope=Scope.PROFILE,
+        status=Status.PROPOSED,
+        source=Source.USER,
+        tier=Tier.DURABLE,
+        decay_class=decay_class,
+        created_at=NOW - timedelta(days=400),
+        last_observed_at=NOW - timedelta(days=observed_days_ago),
+    )
+
+
+def _a_decaying_class() -> DecayClass:
+    return next(cls for cls, half in HALF_LIFE_DAYS.items() if half is not None)
+
+
+def test_a_permanent_rule_never_fades() -> None:
+    assert fade_on(_rule("Sleep", DecayClass.PERMANENT, observed_days_ago=900), DAY) is None
+
+
+def test_fade_is_elapsed_over_half_life_clipped_to_one() -> None:
+    cls = _a_decaying_class()
+    half = HALF_LIFE_DAYS[cls]
+    fresh = _rule("Fresh", cls, observed_days_ago=0)
+    halfway = _rule("Halfway", cls, observed_days_ago=half // 2)
+    stale = _rule("Stale", cls, observed_days_ago=half * 3)
+    assert fade_on(fresh, DAY) == 0.0
+    assert abs(fade_on(halfway, DAY) - (half // 2) / half) < 1e-9
+    assert fade_on(stale, DAY) == 1.0
+
+
+def test_active_views_carry_fade(tmp_path) -> None:
+    cls = _a_decaying_class()
+    store = ConstraintStore(str(tmp_path / "memory.db"))
+    store.upsert(_rule("Halfway", cls, observed_days_ago=HALF_LIFE_DAYS[cls] // 2))
+    store.upsert(_rule("Sleep", DecayClass.PERMANENT, observed_days_ago=5))
+
+    views = {v.name: v for v in get_active_constraints(store, DAY)}
+
+    assert views["Sleep"].fade is None
+    assert 0.0 < views["Halfway"].fade < 1.0
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/memory/test_view_fade.py -v -p no:cacheprovider`
+Expected: FAIL with `ImportError: cannot import name 'fade_on'`.
+
+- [ ] **Step 3: The field and the arithmetic**
+
+In `ConstraintView`, after `anchors`:
+
+```python
+    #: How close the rule is to fading on the requested day, 0.0 fresh to 1.0
+    #: fading tomorrow; None for a rule that never fades. Computed here so the
+    #: half-life table never leaves the server; a host sorts on it and learns
+    #: nothing about decay.
+    fade: float | None = None
+```
+
+In `read_api.py`, import `HALF_LIFE_DAYS` from `memory.models` and add:
+
+```python
+def fade_on(constraint: Constraint, day: date) -> float | None:
+    """Elapsed days since last observation over the half-life, clipped to [0, 1].
+
+    Arithmetic only, the same as `Constraint.has_faded`, which this mirrors:
+    a rule `has_faded` exactly when this would exceed 1.0.
+    """
+    half_life = HALF_LIFE_DAYS[constraint.decay_class]
+    if half_life is None:
+        return None
+    elapsed = (day - constraint.last_observed_at.date()).days
+    return min(1.0, max(0.0, elapsed / half_life))
+```
+
+In `get_active_constraints`, change the return to attach both:
+
+```python
+    ordered = sorted(applicable, key=_reading_order)
+    return [
+        _attach_anchors(c.to_view(), c.uid, anchors).model_copy(update={"fade": fade_on(c, day)})
+        for c in ordered
+    ]
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/memory/test_view_fade.py tests/memory/test_view_anchors.py tests/memory/test_decay_read.py -v -p no:cacheprovider`
+Expected: all PASS.
+
+- [ ] **Step 5: Mutation check**
+
+Make `fade_on` return `0.0` unconditionally: the second and third tests fail. Restore.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/memory/constraint.py src/memory/read_api.py tests/memory/test_view_fade.py
+git commit -m "feat(memory): the view carries how close a rule is to fading, computed server-side
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 2: The KG client reads anchors too
 
 **Files:**
@@ -269,7 +413,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 1's `get_active_constraints(..., anchors=)`, `AnchorStore(db_path)`.
-- Produces: each row from `query_constraints` carries `"anchors": [{"uid": str, "name": str}, ...]`.
+- Produces: each row from `query_constraints` carries `"anchors": [{"uid": str, "name": str}, ...]` and `"fade": float | None`; `count_suspended(planned_day: str, day_type: str | None) -> int`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -294,6 +438,19 @@ async def test_rows_carry_anchor_uid_and_name(tmp_path) -> None:
     )
 
     assert row["anchors"] == [{"uid": gym.uid, "name": "gym"}]
+    assert "fade" in row
+
+
+async def test_suspended_rules_are_counted_not_listed(tmp_path) -> None:
+    """On a vacation day every working rule is suspended; the panel shows a count."""
+    from memory.constraint import Applicability
+
+    working = _constraint(name="Commute", applicability=Applicability(day_types=["working"]))
+    db = _store_with(tmp_path, working)
+
+    client = KGConstraintMemoryClient(db)
+    assert await client.count_suspended(date(2026, 9, 9).isoformat(), "vacation") == 1
+    assert await client.count_suspended(date(2026, 9, 8).isoformat(), "working") == 0
 
 
 async def test_an_unanchored_rule_has_an_empty_anchor_list(tmp_path) -> None:
@@ -342,10 +499,25 @@ In `query_constraints`, replace the `get_active_constraints(...)` call:
         )
 ```
 
-In `_row_from_view`, add one key after `"frame_slot": view.frame_slot,`:
+Add the count method after `query_constraints`, using the read path's existing suspended read (`read_api.get_suspended_constraints(store, day, day_type=)`; check its exact signature at `src/memory/read_api.py:84` and match it):
+
+```python
+    async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+        """How many rules memory holds back for this day type. A count, not
+        rows: on a vacation day this is every working rule."""
+        from memory.read_api import get_suspended_constraints
+
+        day = _as_date(planned_day) or date.today()
+        return len(get_suspended_constraints(self._store(), day, day_type=day_type))
+```
+
+Check `Applicability(day_types=[...])` is the field name in `memory.constraint`; the test above uses it.
+
+In `_row_from_view`, add two keys after `"frame_slot": view.frame_slot,`:
 
 ```python
         "anchors": [{"uid": ref.uid, "name": ref.name} for ref in view.anchors],
+        "fade": view.fade,
 ```
 
 - [ ] **Step 4: Run the client suite**
@@ -381,8 +553,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   - `CellRef(row: str, criterion: str)` with property `id -> "elicit.{row}.{criterion}"`
   - `Gate(open_cells: list[CellRef], day_label: str, note: str | None = None)`
   - `GateMet(kind="gate_met", gate: Gate)`; `AwaitingUser.gate: Gate | None = None`; `GateMet` in `TurnOutcome`
-  - `DenyAssumption(kind="deny_assumption", assumption_id: str)`, `FileAssumption(kind="file_assumption", requirement_id: str, value: JsonValue, why_needed: str)`; both in `TimeboxIntent`
-  - `PlanningSessionSnapshot.applicable_constraints: list[dict[str, JsonValue]] = []`, `PlanningSessionSnapshot.stage1: Literal["open", "proposed", "closed"] = "open"`
+  - `DenyAssumption(kind="deny_assumption", assumption_id: str)`, `FileAssumption(kind="file_assumption", requirement_id: str, value: JsonValue, why_needed: str)`, `RestoreConstraint(kind="restore_constraint", constraint_uid: str)`; all three in `TimeboxIntent`
+  - `PlanningSessionSnapshot.applicable_constraints: list[dict[str, JsonValue]] = []`, `PlanningSessionSnapshot.suspended_constraint_count: int = 0`, `PlanningSessionSnapshot.stage1: Literal["open", "proposed", "closed"] = "open"`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -398,6 +570,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     Gate,
     GateMet,
     PlannerAssumption,
+    RestoreConstraint,
     coverage_fact_id,
     elicited_fact_id,
     suspension_fact_id,
@@ -432,6 +605,7 @@ def test_an_assumption_is_filed_by_the_planner_unless_said_otherwise() -> None:
 def test_new_intents_are_discriminated_by_kind() -> None:
     assert DenyAssumption(assumption_id="a1").kind == "deny_assumption"
     assert FileAssumption(requirement_id="r", value="v", why_needed="w").kind == "file_assumption"
+    assert RestoreConstraint(constraint_uid="c1").kind == "restore_constraint"
 
 
 def test_a_snapshot_without_the_new_fields_still_loads() -> None:
@@ -443,6 +617,7 @@ def test_a_snapshot_without_the_new_fields_still_loads() -> None:
     )
     assert snapshot.stage1 == "open"
     assert snapshot.applicable_constraints == []
+    assert snapshot.suspended_constraint_count == 0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -576,9 +751,20 @@ class DenyAssumption(_StrictModel):
 
     kind: Literal["deny_assumption"] = "deny_assumption"
     assumption_id: str = Field(min_length=1)
+
+
+class RestoreConstraint(_StrictModel):
+    """Undo a "not today": delete the suspension fact for one rule, by uid.
+
+    Restore is deleting one fact; there is no second copy of the rule to
+    write back, because the rule never left memory.
+    """
+
+    kind: Literal["restore_constraint"] = "restore_constraint"
+    constraint_uid: str = Field(min_length=1)
 ```
 
-Add `FileAssumption,` and `DenyAssumption,` to the `TimeboxIntent` union after `ChooseBlockerOption,`.
+Add `FileAssumption,`, `DenyAssumption,` and `RestoreConstraint,` to the `TimeboxIntent` union after `ChooseBlockerOption,`.
 
 - [ ] **Step 6: Snapshot fields**
 
@@ -590,6 +776,10 @@ In `PlanningSessionSnapshot`, after `pending_blocker`:
     #: planner's order (#202). Rows are the flat dicts the KG client returns;
     #: nothing here reads their prose. The presence fact stays count-only.
     applicable_constraints: list[dict[str, JsonValue]] = Field(default_factory=list)
+    #: How many rules memory holds back for this day type (a vacation day
+    #: suspends every working rule). A count because the rows would flood a
+    #: card; written by the same resolve that writes the rows.
+    suspended_constraint_count: int = Field(default=0, ge=0)
     #: Where Stage 1 stands. `open`: eliciting or not yet evaluated. `proposed`:
     #: the kernel emitted GateMet and is waiting for consent. `closed`: the user
     #: consented, or a Stage 2 fact arrived, and planning may proceed.
@@ -973,6 +1163,165 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
+### Task 1c: `applies` on the memory view, and on the KG row
+
+Requested by the #266 grammar session on 2026-09-04: the card's applicability tag ("every day" / "some days" / "dated") had no source, because the view carries no `Applicability` and the KG row leaves `days_of_week` and `windows` empty on purpose. Same shape as `fade`: computed in the read path from stored fields, nothing about dates or day types leaves the server. Lands after Task 4, before Task 5.
+
+**Files:**
+- Modify: `src/memory/constraint.py` (`ConstraintView`)
+- Modify: `src/memory/read_api.py` (`get_active_constraints`)
+- Modify: `src/fateforger/agents/timeboxing/kg_constraint_client.py` (`_row_from_view`)
+- Test: `tests/memory/test_view_applies.py` (new), `tests/unit/test_kg_constraint_client.py`
+
+**Interfaces:**
+- Consumes: `Applicability(start_date, end_date, days_of_week: list[int], day_types: list[str])` (`src/memory/constraint.py:42`).
+- Produces: `ConstraintView.applies: Literal["every_day", "some_days", "dated"] = "every_day"`; `applies_of(applicability) -> Literal[...]` in `read_api`; KG row key `"applies"`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+# tests/memory/test_view_applies.py
+"""Whether a rule holds every day, on some days, or inside a dated window.
+
+Three words the card can tag a row with, decided arithmetically from the
+stored applicability so no date or day type leaves the server.
+"""
+from __future__ import annotations
+
+from datetime import date, datetime, timezone
+
+from memory.constraint import Applicability, Constraint, Necessity, Scope, Source, Status
+from memory.constraint_store import ConstraintStore
+from memory.models import Tier
+from memory.read_api import applies_of, get_active_constraints
+
+DAY = date(2026, 9, 8)  # a Tuesday
+NOW = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+
+
+def _rule(name: str, applicability: Applicability) -> Constraint:
+    return Constraint(
+        name=name,
+        description=f"{name} description",
+        necessity=Necessity.SHOULD,
+        scope=Scope.PROFILE,
+        status=Status.PROPOSED,
+        source=Source.USER,
+        tier=Tier.DURABLE,
+        applicability=applicability,
+        created_at=NOW,
+        last_observed_at=NOW,
+    )
+
+
+def test_dated_wins_over_weekdays_and_day_types() -> None:
+    assert applies_of(Applicability(start_date=date(2026, 9, 1), days_of_week=[1])) == "dated"
+    assert applies_of(Applicability(end_date=date(2026, 9, 30), day_types=["working"])) == "dated"
+
+
+def test_weekdays_or_day_types_are_some_days() -> None:
+    assert applies_of(Applicability(days_of_week=[1, 3])) == "some_days"
+    assert applies_of(Applicability(day_types=["working"])) == "some_days"
+
+
+def test_nothing_set_is_every_day() -> None:
+    assert applies_of(Applicability()) == "every_day"
+
+
+def test_active_views_carry_applies(tmp_path) -> None:
+    store = ConstraintStore(str(tmp_path / "memory.db"))
+    store.upsert(_rule("Sleep", Applicability()))
+    store.upsert(_rule("Commute", Applicability(day_types=["working"])))
+    store.upsert(_rule("Trip", Applicability(start_date=date(2026, 9, 1), end_date=date(2026, 9, 30))))
+
+    views = {v.name: v.applies for v in get_active_constraints(store, DAY, day_type="working")}
+
+    assert views == {"Sleep": "every_day", "Commute": "some_days", "Trip": "dated"}
+```
+
+Append to `tests/unit/test_kg_constraint_client.py`:
+
+```python
+async def test_rows_carry_how_the_rule_applies(tmp_path) -> None:
+    from memory.constraint import Applicability
+
+    db = _store_with(tmp_path, _constraint(name="Commute", applicability=Applicability(day_types=["working"])))
+
+    [row] = await KGConstraintMemoryClient(db).query_constraints(
+        filters={"planned_day": date(2026, 9, 8).isoformat(), "day_type": "working"}
+    )
+
+    assert row["applies"] == "some_days"
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/memory/test_view_applies.py -v -p no:cacheprovider && .venv/bin/python -m pytest tests/unit/test_kg_constraint_client.py -v -p no:cacheprovider -k applies`
+Expected: FAIL with `ImportError: cannot import name 'applies_of'`, then `KeyError: 'applies'`.
+
+- [ ] **Step 3: The field, the arithmetic, the row key**
+
+In `ConstraintView`, after `fade`:
+
+```python
+    #: Whether the rule holds every day, on some days (weekdays or day types),
+    #: or inside a dated window. Three words for a card to tag a row with,
+    #: decided from stored fields; no date or day type leaves the server.
+    applies: Literal["every_day", "some_days", "dated"] = "every_day"
+```
+
+Add `Literal` to the `typing` import in `constraint.py` if it is not already imported.
+
+In `read_api.py`:
+
+```python
+def applies_of(applicability: Applicability) -> Literal["every_day", "some_days", "dated"]:
+    """Dated beats some-days beats every-day; a rule with a window is dated
+    even when it also names weekdays, because the window is what ends it."""
+    if applicability.start_date is not None or applicability.end_date is not None:
+        return "dated"
+    if applicability.days_of_week or applicability.day_types:
+        return "some_days"
+    return "every_day"
+```
+
+Import `Applicability` from `memory.constraint` and `Literal` from `typing`. In `get_active_constraints`, extend the per-view update:
+
+```python
+    return [
+        _attach_anchors(c.to_view(), c.uid, anchors).model_copy(
+            update={"fade": fade_on(c, day), "applies": applies_of(c.applicability)}
+        )
+        for c in ordered
+    ]
+```
+
+In `kg_constraint_client.py`, `_row_from_view`, after `"fade": view.fade,`:
+
+```python
+        "applies": view.applies,
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/memory -q -p no:cacheprovider && .venv/bin/python -m pytest tests/unit/test_kg_constraint_client.py -q -p no:cacheprovider`
+Expected: all PASS. If `tests/memory/test_read_api.py` or `test_decay_read.py` guard the read path's imports, `memory.constraint` is already on their allowlist; nothing new is imported from outside `memory`.
+
+- [ ] **Step 5: Mutation check**
+
+Make `applies_of` return `"every_day"` unconditionally: the first two tests and the view test fail. Restore.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/memory/constraint.py src/memory/read_api.py src/fateforger/agents/timeboxing/kg_constraint_client.py tests/memory/test_view_applies.py tests/unit/test_kg_constraint_client.py
+git commit -m "feat(memory): the view says whether a rule holds every day, some days, or in a dated window
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 5: Cells as catalog requirements; stage on every requirement
 
 **Files:**
@@ -1142,7 +1491,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `tests/unit/test_adaptive_stage1.py` (new)
 
 **Interfaces:**
-- Consumes: Task 3's `GateMet`, `Gate`, `DenyAssumption`, `FileAssumption`, `PlannerAssumption.filed_by`, snapshot `stage1` and `applicable_constraints`; Task 4's `stage1_gate`; Task 5's `ReadinessReport.by_id`.
+- Consumes: Task 3's `GateMet`, `Gate`, `DenyAssumption`, `FileAssumption`, `RestoreConstraint`, `PlannerAssumption.filed_by`, snapshot `stage1`, `applicable_constraints`, `suspended_constraint_count`; Task 4's `stage1_gate`; Task 5's `ReadinessReport.by_id`.
 - Produces: kernel behaviour, tested below. `_build_brief` drops rows whose `uid` is named by a `SUSPENDED_CONSTRAINT` fact.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1186,6 +1535,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningResult,
     PlanningSessionSnapshot,
     ProvidePlanningFacts,
+    RestoreConstraint,
     coverage_fact_id,
     elicited_fact_id,
     suspension_fact_id,
@@ -1220,7 +1570,7 @@ class _Context:
         raise AssertionError("day is locked in these tests")
 
     async def resolve(self, snapshot, *, target, progress):
-        return PlanningContext(applicable_constraints=ROWS)
+        return PlanningContext(applicable_constraints=ROWS, suspended_constraint_count=3)
 
 
 class _Commit:
@@ -1303,6 +1653,7 @@ def test_a_locked_day_with_no_open_cells_proposes_to_close_and_plans_nothing() -
     current = _load(repository)
     assert current.stage1 == "proposed"
     assert [row["uid"] for row in current.applicable_constraints] == ["c-gym", "c-plan"]
+    assert current.suspended_constraint_count == 3
 
 
 def test_consent_is_the_next_advance_and_then_the_planner_runs() -> None:
@@ -1356,6 +1707,27 @@ def test_a_suspended_rule_reaches_the_card_but_not_the_brief() -> None:
     _turn(kernel, reopened, Advance())
     [brief] = planner.briefs
     assert [row["uid"] for row in brief.applicable_constraints] == ["c-plan"]
+
+
+def test_restore_deletes_the_suspension_and_reopens_the_stage() -> None:
+    suspend = PlanningFact(
+        fact_id=suspension_fact_id("c-gym"), kind=FactKind.SUSPENDED_CONSTRAINT,
+        value={"uid": "c-gym", "reason": "not today"}, source="user",
+    )
+    snapshot = _snapshot(stage1="proposed", facts=[*_snapshot().facts, suspend])
+    kernel, repository, _ = _kernel(snapshot)
+    _turn(kernel, snapshot, RestoreConstraint(constraint_uid="c-gym"))
+    after = _load(repository)
+    assert not any(f.kind is FactKind.SUSPENDED_CONSTRAINT for f in after.facts)
+    assert after.stage1 == "proposed"  # re-evaluated in the same turn; nothing open, proposed again
+
+
+def test_restore_of_a_rule_not_suspended_is_refused() -> None:
+    from fateforger.agents.timeboxing.session_contracts import TurnFailed
+
+    kernel, _, _ = _kernel(_snapshot())
+    outcome = _turn(kernel, _snapshot(), RestoreConstraint(constraint_uid="c-gym"))
+    assert isinstance(outcome, TurnFailed) and outcome.code == "stale_restore"
 
 
 def test_file_assumption_is_recorded_as_the_users_and_closes_the_question() -> None:
@@ -1470,7 +1842,20 @@ Before the `GoBack` branch:
             # The cell it answered re-opens; a denial is the user asking to be asked.
             updated = snapshot.model_copy(update={"assumptions": kept, "stage1": "open"})
             return self._invalidate(updated, ArtifactKind.CAPTURED_INPUTS), None
+        if isinstance(intent, RestoreConstraint):
+            wanted = suspension_fact_id(intent.constraint_uid)
+            kept_facts = [f for f in snapshot.facts if f.fact_id != wanted]
+            if len(kept_facts) == len(snapshot.facts):
+                return snapshot, TurnFailed(
+                    code="stale_restore",
+                    message="That rule is not set aside for this session.",
+                )
+            # A restored rule can uncover a cell, same as a new fact.
+            updated = snapshot.model_copy(update={"facts": kept_facts, "stage1": "open"})
+            return self._invalidate(updated, ArtifactKind.CAPTURED_INPUTS), None
 ```
+
+Import `RestoreConstraint` and `suspension_fact_id` from `.session_contracts`.
 
 - [ ] **Step 4: The gate in the run loop**
 
@@ -1481,8 +1866,15 @@ After `snapshot = self._merge_facts(snapshot, resolved.facts)` and before `readi
         if isinstance(rows, list):
             # Written on every resolve: the read is model-free and the set can
             # change mid-session. The presence fact stays count-only.
-            snapshot = snapshot.model_copy(update={"applicable_constraints": rows})
+            snapshot = snapshot.model_copy(
+                update={
+                    "applicable_constraints": rows,
+                    "suspended_constraint_count": resolved.suspended_constraint_count,
+                }
+            )
 ```
+
+`PlanningContext` (adaptive_timeboxing.py:73-83) gains `suspended_constraint_count: int = Field(default=0, ge=0)` beside `applicable_constraints`.
 
 After the `first_hard_user_blocker` block and before `if readiness.system_owned_gaps():`:
 
@@ -1574,7 +1966,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `HostPlanningContext.resolve(snapshot, target=ArtifactKind.SKELETON, progress=)`, `PlanningContext.applicable_constraints`.
-- Produces: `resolve(SKELETON)` returns `PlanningContext(applicable_constraints=<rows>)` whether or not a frame fact is derived.
+- Produces: `resolve(SKELETON)` returns `PlanningContext(applicable_constraints=<rows>, suspended_constraint_count=<n>)` whether or not a frame fact is derived; the count comes from Task 2's `count_suspended`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1606,6 +1998,9 @@ class _Store:
     async def query_constraints(self, *, filters, limit):
         return ROWS
 
+    async def count_suspended(self, planned_day, day_type):
+        return 7
+
 
 class _Sink:
     async def emit(self, event):
@@ -1632,6 +2027,7 @@ def test_skeleton_context_carries_the_rows_when_the_frame_is_already_stated() ->
     context = asyncio.run(host.resolve(_snapshot(frame), target=ArtifactKind.SKELETON, progress=_Sink()))
 
     assert context.applicable_constraints == ROWS
+    assert context.suspended_constraint_count == 7
     assert context.facts == []
 ```
 
@@ -1660,8 +2056,11 @@ Rewrite `_frame_from_corpus`:
         """
         planning_day = self._locked_day(snapshot)
         constraints = await self._active_constraints(planning_day)
+        suspended = await self._suspended_count(planning_day)
         if any(fact.kind is FactKind.DAY_FRAME for fact in snapshot.facts):
-            return PlanningContext(applicable_constraints=constraints)
+            return PlanningContext(
+                applicable_constraints=constraints, suspended_constraint_count=suspended
+            )
         model_client = getattr(self._runtime, "timeboxing_intent_model_client", None)
         if model_client is None:
             raise AdaptiveDependencyUnavailable("no model client for the frame judgement")
@@ -1676,8 +2075,21 @@ Rewrite `_frame_from_corpus`:
         return PlanningContext(
             facts=[] if frame is None else [frame],
             applicable_constraints=constraints,
+            suspended_constraint_count=suspended,
+        )
+
+    async def _suspended_count(self, planning_day: PlanningDay) -> int:
+        store = getattr(self._runtime, "timeboxing_constraint_store", None)
+        if store is None:
+            raise AdaptiveDependencyUnavailable("constraint memory is unavailable")
+        return int(
+            await store.count_suspended(
+                planning_day.date.isoformat(), planning_day.day_type.value
+            )
         )
 ```
+
+`timeboxing_constraint_store` is the `ClientBackedDurableConstraintStore` wrapping the KG client (`durable_constraint_store.py:799`); if it does not forward `count_suspended` to the client, add a one-line passthrough there with a test beside the adapter's existing tests. `UnavailableConstraintReader` must raise the same `AdaptiveDependencyUnavailable` shape it does for `query_constraints`.
 
 - [ ] **Step 4: Run the host tests**
 
@@ -1703,7 +2115,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 3's `DenyAssumption`, `FileAssumption`, `FactKind.ELICITED_STATEMENT`/`SUSPENDED_CONSTRAINT`, `elicited_fact_id`, `suspension_fact_id`, snapshot `stage1`, `applicable_constraints`; Task 4's `stage1_gate`.
-- Produces: decisions `steer_not_today`, `assume`, `deny` on `InterpretedTimeboxTurn` with `constraint_uid: str | None` and `assumption_id: str | None`; `ElicitedStatementDraft(kind="elicited_statement", value: str)`; `ArtifactActionMeta.decision` gains `"deny_assumption"` and a validator requiring `assumption_id`; `_display_context` offers Stage 1's set and `advance` only when `stage1 == "proposed"`.
+- Produces: decisions `steer_not_today`, `restore`, `assume`, `deny` on `InterpretedTimeboxTurn` with `constraint_uid: str | None` and `assumption_id: str | None`; `restore` is offered only while a suspension fact exists; `ElicitedStatementDraft(kind="elicited_statement", value: str)`; `ArtifactActionMeta.decision` gains `"deny_assumption"` and a validator requiring `assumption_id`; `_display_context` offers Stage 1's set and `advance` only when `stage1 == "proposed"`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1714,7 +2126,9 @@ from fateforger.agents.timeboxing.session_contracts import (
     DenyAssumption,
     FileAssumption,
     PlannerAssumption,
+    PlanningFact,
     ProvidePlanningFacts,
+    RestoreConstraint,
 )
 from fateforger.slack_bot.timeboxing_intents import _display_context
 
@@ -1736,6 +2150,26 @@ def test_stage_one_offers_next_only_after_the_kernel_proposed() -> None:
     for decisions in (open_decisions, proposed_decisions):
         assert {"provide_facts", "steer_not_today", "assume", "deny", "back", "cancel"} <= set(decisions)
         assert "steer_always" not in decisions  # not honourable until its flow lands
+        assert "restore" not in decisions  # nothing is suspended
+
+
+def test_restore_is_offered_only_while_something_is_suspended() -> None:
+    suspend = PlanningFact(
+        fact_id="suspend:c-gym", kind=FactKind.SUSPENDED_CONSTRAINT,
+        value={"uid": "c-gym", "reason": "not today"}, source="user",
+    )
+    _, decisions, _ = _display_context(_stage1_snapshot(facts=[suspend]))
+    assert "restore" in decisions
+
+
+async def test_restore_names_a_suspended_rule() -> None:
+    suspend = PlanningFact(
+        fact_id="suspend:c-gym", kind=FactKind.SUSPENDED_CONSTRAINT,
+        value={"uid": "c-gym", "reason": "not today"}, source="user",
+    )
+    client = _SchemaOutputClient({"decision": "restore", "constraint_uid": "c-gym"})
+    intent = await TimeboxingIntentInterpreter(client).interpret("put the oats rule back", _stage1_snapshot(facts=[suspend]))
+    assert intent == RestoreConstraint(constraint_uid="c-gym")
 
 
 async def test_not_today_names_a_rule_the_snapshot_holds() -> None:
@@ -1820,7 +2254,7 @@ PlanningFactDraft = Annotated[
 ]
 ```
 
-In `InterpretedTimeboxTurn.decision`, add `"steer_not_today", "assume", "deny"` to the `Literal`, and after `day_offset`:
+In `InterpretedTimeboxTurn.decision`, add `"steer_not_today", "restore", "assume", "deny"` to the `Literal`, and after `day_offset`:
 
 ```python
     #: Which rule to set aside for this session, by the uid the card offered.
@@ -1830,11 +2264,13 @@ In `InterpretedTimeboxTurn.decision`, add `"steer_not_today", "assume", "deny"` 
     assumption_id: str | None = None
 ```
 
-In `ArtifactActionMeta.decision`, add `"deny_assumption"`; add `assumption_id: str | None = Field(default=None, min_length=1)`; in the validator add:
+In `ArtifactActionMeta.decision`, add `"deny_assumption"` and `"restore"`; add `assumption_id: str | None = Field(default=None, min_length=1)` and `constraint_uid: str | None = Field(default=None, min_length=1)`; in the validator add:
 
 ```python
         if self.decision == "deny_assumption" and self.assumption_id is None:
             raise ValueError("denying an assumption requires its id")
+        if self.decision == "restore" and self.constraint_uid is None:
+            raise ValueError("restoring a rule requires its uid")
 ```
 
 - [ ] **Step 4: Prompt fragment**
@@ -1844,7 +2280,8 @@ Append to `_TIMEBOX_PROMPT_FRAGMENT`:
 ```
 When the surface offers steer_not_today, the user is setting one rule from
 the card aside for this session; answer with that rule's constraint_uid from
-the card, never a name. When it offers assume, the user is telling you to move
+the card, never a name. When it offers restore, the user is putting a rule
+they set aside back; answer with that rule's constraint_uid. When it offers assume, the user is telling you to move
 on without the answer to the open question; nothing else is needed. When it
 offers deny, the user is withdrawing an assumption shown on the card; answer
 with its assumption_id. A reply to an open elicit.* question, or anything
@@ -1862,9 +2299,14 @@ Replace the `capture` branch:
         # steer_always is absent until its ask-first flow lands: a decision the
         # session cannot honour is one the model can only waste a turn on.
         consent = ("advance",) if snapshot.stage1 == "proposed" else ()
+        restore = (
+            ("restore",)
+            if any(fact.kind is FactKind.SUSPENDED_CONSTRAINT for fact in snapshot.facts)
+            else ()
+        )
         return (
             "capture",
-            ("provide_facts", "steer_not_today", "assume", "deny", *consent, *choose, "back", "cancel"),
+            ("provide_facts", "steer_not_today", *restore, "assume", "deny", *consent, *choose, "back", "cancel"),
             None,
         )
 ```
@@ -1888,6 +2330,15 @@ In `_intent_from_interpreted`, before `if interpreted.decision == "advance":`:
                 )
             ]
         )
+    if interpreted.decision == "restore":
+        suspended = {
+            fact.value["uid"]
+            for fact in snapshot.facts
+            if fact.kind is FactKind.SUSPENDED_CONSTRAINT and isinstance(fact.value, dict)
+        }
+        if interpreted.constraint_uid is None or interpreted.constraint_uid not in suspended:
+            raise ValueError("restore names a rule that is not set aside")
+        return RestoreConstraint(constraint_uid=interpreted.constraint_uid)
     if interpreted.decision == "assume":
         open_question = snapshot.pending_blocker
         if open_question is None:
@@ -1946,6 +2397,8 @@ Update both call sites to `_typed_facts(interpreted, snapshot)`. In `intent_from
 ```python
     elif meta.decision == "deny_assumption":
         intent = DenyAssumption(assumption_id=cast(str, meta.assumption_id))
+    elif meta.decision == "restore":
+        intent = RestoreConstraint(constraint_uid=cast(str, meta.constraint_uid))
 ```
 
 - [ ] **Step 7: Run the interpreter suite**
@@ -1977,7 +2430,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 3's `GateMet`, `Gate`, `AwaitingUser.gate`; Task 4's `row_label`, `criterion_label`; Task 5's `TimeboxRequirements.stage_of`.
-- Produces: `NextControl(kind="next")` in `Control`; `StageCard.gate: str | None = None`; `map_outcome(GateMet)` returns a stage-1 card with `gate` and `[NextControl, BackControl, CancelControl]`; the renderer draws Next as a primary button carrying `decision="advance"`.
+- Produces: `NextControl(kind="next")` in `Control`; `StageCard.gate: str | None = None`; `DecidedItem.filed_by: Literal["planner", "user"] | None = None`; `map_outcome(GateMet)` returns a stage-1 card with `gate` and `[NextControl, BackControl, CancelControl]`; the renderer draws Next as a primary button carrying `decision="advance"`.
 
 **Coordination:** the #266 session extends `StageCard` on top of exactly these two additions (`gate`, `NextControl`), named to it on 2026-09-04. Do not add anchor groups or deny controls here; those are its half.
 
@@ -2117,7 +2570,19 @@ In `map_outcome`, replace the `AwaitingUser` branch's stage lookup and add the g
         )
 ```
 
-In `_decided`, show who filed an assumption: change the assumption text to `f"{_as_text(assumption.value)} — {assumption.why_needed} ({assumption.filed_by})"`.
+In `DecidedItem`, add a typed field so a renderer never reads who filed an assumption out of a label (the #266 session's deny control renders differently for a user-filed assumption):
+
+```python
+class DecidedItem(_Frozen):
+    text: str
+    kind: Literal["assumption", "fact"]
+    ref: str
+    #: Present for an assumption: who supplied it. A renderer that needs this
+    #: reads the field, never the text.
+    filed_by: Literal["planner", "user"] | None = None
+```
+
+In `_decided`, pass it: `DecidedItem(text=f"{_as_text(assumption.value)} — {assumption.why_needed}", kind="assumption", ref=assumption.assumption_id, filed_by=assumption.filed_by)`. The text is unchanged. Add to the stage-card tests: an assumption with `filed_by="user"` maps to a `DecidedItem` whose `filed_by == "user"`.
 
 - [ ] **Step 5: Render**
 
@@ -2596,4 +3061,6 @@ git push origin main
 
 **Placeholders.** None; every step has its code or its exact command. Names the plan relies on were verified against the tree on 2026-09-04: `PlanningDay.date`, `DayType.VACATION`/`WEEKEND`, `InMemoryPlanningSessionRepository([snapshots])`, and the absence of PyYAML (hence `tomllib`).
 
-**Type consistency.** `Gate(open_cells, day_label, note)` is the same in Tasks 3, 4, 6, 9. `CellRef.id` is `elicit.{row}.{criterion}` in 3, 4, 5. `stage1` values are `open | proposed | closed` in 3, 6, 8, 9. `feedback_facts(before, after)` in 10 matches its call. `FileAssumption(requirement_id, value, why_needed)` in 3, 6, 8. The `advance` decision remains the schema name for the spec's `next`; the spec's table is the intent, this plan keeps the existing literal so the button and every handler keep working.
+**Amendments 2026-09-04, from the #266 grammar session:** Task 1b (`fade`), Task 1c (`applies`), `count_suspended` and `suspended_constraint_count` (Tasks 2, 3, 6, 7), `RestoreConstraint` and the `restore` decision (Tasks 3, 6, 8), typed `filed_by` on `DecidedItem` (Task 9).
+
+**Type consistency.** `Gate(open_cells, day_label, note)` is the same in Tasks 3, 4, 6, 9. `RestoreConstraint(constraint_uid)` in 3, 6, 8; `suspended_constraint_count` in 3, 6, 7. `CellRef.id` is `elicit.{row}.{criterion}` in 3, 4, 5. `stage1` values are `open | proposed | closed` in 3, 6, 8, 9. `feedback_facts(before, after)` in 10 matches its call. `FileAssumption(requirement_id, value, why_needed)` in 3, 6, 8. The `advance` decision remains the schema name for the spec's `next`; the spec's table is the intent, this plan keeps the existing literal so the button and every handler keep working.

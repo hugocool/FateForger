@@ -3,8 +3,20 @@ from __future__ import annotations
 
 from datetime import date
 
-from memory.constraint import Constraint, ConstraintView, Necessity
+from memory.anchor_store import AnchorStore
+from memory.constraint import AnchorRef, Applicability, Constraint, ConstraintView, Necessity
 from memory.constraint_store import ConstraintStore
+from memory.models import HALF_LIFE_DAYS
+
+
+def applies_of(applicability: Applicability) -> "str":
+    """Dated beats some-days beats every-day; a rule with a window is dated
+    even when it also names weekdays, because the window is what ends it."""
+    if applicability.start_date is not None or applicability.end_date is not None:
+        return "dated"
+    if applicability.days_of_week or applicability.day_types:
+        return "some_days"
+    return "every_day"
 
 
 def get_active_constraints(
@@ -14,6 +26,7 @@ def get_active_constraints(
     *,
     reachable: set[str] | None = None,
     day_type: str | None = None,
+    anchors: AnchorStore | None = None,
 ) -> list[ConstraintView]:
     """Constraints that apply on `day`, as views for the patcher.
 
@@ -42,6 +55,11 @@ def get_active_constraints(
     than about a thing in it — and dropping those would silently discard every
     rule stored before the graph existed.
 
+    `anchors`, when given, attaches each rule's anchors to its view as
+    `(uid, name)` pairs. It is a lookup over uids this system minted and adds
+    no judgement to the read path. Omitting it returns views with an empty
+    `anchors` list, which is what every caller before 2026-09-04 received.
+
     `stage` is accepted and currently unused; it is part of the agreed call
     shape and will select stage-relevant constraints once stage vocabulary
     exists.
@@ -53,7 +71,13 @@ def get_active_constraints(
         and not c.has_faded(day)
         and (reachable is None or c.uid in reachable)
     ]
-    return [c.to_view() for c in sorted(applicable, key=_reading_order)]
+    ordered = sorted(applicable, key=_reading_order)
+    return [
+        _attach_anchors(c.to_view(), c.uid, anchors).model_copy(
+            update={"fade": fade_on(c, day), "applies": applies_of(c.applicability)}
+        )
+        for c in ordered
+    ]
 
 
 def get_faded_constraints(
@@ -150,6 +174,19 @@ def get_session_constraints(
     return live
 
 
+def fade_on(constraint: Constraint, day: date) -> float | None:
+    """Elapsed days since last observation over the half-life, clipped to [0, 1].
+
+    Arithmetic only, the same as `Constraint.has_faded`, which this mirrors:
+    a rule `has_faded` exactly when this would exceed 1.0.
+    """
+    half_life = HALF_LIFE_DAYS[constraint.decay_class]
+    if half_life is None:
+        return None
+    elapsed = (day - constraint.last_observed_at.date()).days
+    return min(1.0, max(0.0, elapsed / half_life))
+
+
 #: Boundaries before preferences. A rank rather than the enum's own order,
 #: because relying on declaration order makes adding a member silently
 #: reorder every planning prompt.
@@ -173,3 +210,16 @@ def _reading_order(constraint: Constraint) -> tuple[int, float]:
         _NECESSITY_ORDER.get(constraint.necessity, len(_NECESSITY_ORDER)),
         -constraint.last_observed_at.timestamp(),
     )
+
+
+def _attach_anchors(
+    view: ConstraintView, constraint_uid: str, anchors: AnchorStore | None
+) -> ConstraintView:
+    if anchors is None:
+        return view
+    refs: list[AnchorRef] = []
+    for anchor_uid in anchors.anchors_for(constraint_uid):
+        anchor = anchors.get(anchor_uid)
+        if anchor is not None:
+            refs.append(AnchorRef(uid=anchor.uid, name=anchor.name))
+    return view.model_copy(update={"anchors": refs})

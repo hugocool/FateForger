@@ -244,6 +244,9 @@ class DurableConstraintStore(Protocol):
     ) -> list[dict[str, Any]]:
         """Query constraint rows."""
 
+    async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+        """How many rules memory withheld for this day type; a count, not rows."""
+
     async def upsert_constraint(
         self,
         *,
@@ -352,6 +355,9 @@ class ClientBackedDurableConstraintStore:
                 limit=limit,
             )
         return []
+
+    async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+        return await self.client.count_suspended(planned_day, day_type)
 
     async def upsert_constraint(
         self,
