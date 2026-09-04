@@ -61,6 +61,16 @@ rename, a resize and a duplicate in the Google Calendar UI? Decision 4 rests on 
 miss path cannot re-derive and the register becomes the truth, which changes §5 and must be
 re-decided before §5 is built.
 
+**Spike result (2026-09-05, calendar `hugo.evers@gmail.com`, probe event
+`05fh8qg0fj0r9k2kvvj6fhj4dg` on 2030-01-07):** a probe written by tmbx's own adapter with
+`tmbx.uid`, `tmbx.slug=planning` and `tmbx.type=PR` was moved (10:00 → 14:00), renamed and
+resized (30 → 45 min) in one PATCH through a *different* client (the claude.ai Google Calendar
+connector), then read back through the tmbx adapter: **all three keys survived.** Decision 4
+stands for edits made through the API by any client. Still to observe by hand in the Google
+Calendar web UI: a drag, and the "Duplicate" action (whether the copy carries the slug, which the
+watcher must then count rather than resolve). Script:
+`scripts/spikes/private_props_survive_ui_edit.py`.
+
 ## 1. Memory side
 
 ### Registry of enforceable kinds
