@@ -109,7 +109,14 @@ def test_the_read_path_cannot_reach_a_model():
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
 
-    allowed = {"__future__", "datetime", "memory.constraint", "memory.constraint_store"}
+    allowed = {
+        "__future__",
+        "datetime",
+        "memory.anchor_store",
+        "memory.constraint",
+        "memory.constraint_store",
+        "memory.models",
+    }
     assert imported <= allowed, (
         f"read path imports {imported - allowed}; it must reach nothing that "
         f"can call a model. An allow-list is used rather than a deny-list "

@@ -86,7 +86,14 @@ def test_the_read_path_is_still_model_free():
             imported.update(a.name for a in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
-    allowed = {"__future__", "datetime", "memory.constraint", "memory.constraint_store"}
+    allowed = {
+        "__future__",
+        "datetime",
+        "memory.anchor_store",
+        "memory.constraint",
+        "memory.constraint_store",
+        "memory.models",
+    }
     assert imported <= allowed, f"read path imports {imported - allowed}"
     assert not [
         n for n in ast.walk(tree) if isinstance(n, (ast.AsyncFunctionDef, ast.Await))

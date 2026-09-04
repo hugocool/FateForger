@@ -138,6 +138,11 @@ class ConstraintView(BaseModel):
     #: Empty for an unanchored rule. Unanchored and unreachable are different
     #: things; a card renders these in their own group rather than dropping them.
     anchors: list[AnchorRef] = Field(default_factory=list)
+    #: How close the rule is to fading on the requested day, 0.0 fresh to 1.0
+    #: fading tomorrow; None for a rule that never fades. Computed here so the
+    #: half-life table never leaves the server; a host sorts on it and learns
+    #: nothing about decay.
+    fade: float | None = None
 
 
 class Constraint(BaseModel):

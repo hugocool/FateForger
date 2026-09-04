@@ -6,6 +6,7 @@ from datetime import date
 from memory.anchor_store import AnchorStore
 from memory.constraint import AnchorRef, Constraint, ConstraintView, Necessity
 from memory.constraint_store import ConstraintStore
+from memory.models import HALF_LIFE_DAYS
 
 
 def get_active_constraints(
@@ -61,7 +62,10 @@ def get_active_constraints(
         and (reachable is None or c.uid in reachable)
     ]
     ordered = sorted(applicable, key=_reading_order)
-    return [_attach_anchors(c.to_view(), c.uid, anchors) for c in ordered]
+    return [
+        _attach_anchors(c.to_view(), c.uid, anchors).model_copy(update={"fade": fade_on(c, day)})
+        for c in ordered
+    ]
 
 
 def get_faded_constraints(
@@ -156,6 +160,19 @@ def get_session_constraints(
         elif not c.has_faded(day):
             live.append(c.to_view())
     return live
+
+
+def fade_on(constraint: Constraint, day: date) -> float | None:
+    """Elapsed days since last observation over the half-life, clipped to [0, 1].
+
+    Arithmetic only, the same as `Constraint.has_faded`, which this mirrors:
+    a rule `has_faded` exactly when this would exceed 1.0.
+    """
+    half_life = HALF_LIFE_DAYS[constraint.decay_class]
+    if half_life is None:
+        return None
+    elapsed = (day - constraint.last_observed_at.date()).days
+    return min(1.0, max(0.0, elapsed / half_life))
 
 
 #: Boundaries before preferences. A rank rather than the enum's own order,
