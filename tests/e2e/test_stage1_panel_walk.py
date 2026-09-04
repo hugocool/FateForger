@@ -178,6 +178,6 @@ async def test_ten_probes_one_panel_one_steer(monkeypatch) -> None:
     assert len(panel_edits) == 1
     assert "not today" in panel_edits[0]["blocks"][1]["elements"][0]["text"]
 
-    # `SUSPENDED_CONSTRAINT` is not in `stage_cards._FACT_LABELS` on this
-    # branch, so the decided list never names a session suspension -- the
-    # walk does not assert on it here.
+    # The decided list names a session suspension since b1c6c36 ("set aside
+    # today: <rule>"); that is the mapper's contract, tested with it. The walk
+    # asserts on the panel, which is the surface this test exists for.

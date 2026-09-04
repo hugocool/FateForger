@@ -320,9 +320,9 @@ Unit tests opt in to the harness backend as `test_timebox_session_surface.py` do
   one panel, ten probe turns → ten cards and one panel; a modal steer edits the panel
   in place, the panel's second line names the suspension ("Off for this session: …
   (you said: not today)"), and the modal row for that rule renders struck through with
-  Restore. (The mapper's decided list cannot name a suspension --
-  `stage_cards._FACT_LABELS` has no `SUSPENDED_CONSTRAINT` entry -- so the finding is
-  read off the panel and the fold, not the next card. Implementation finding,
+  Restore. (The next card's decided list also names it, "set aside today: <rule>",
+  since Phase 1's b1c6c36; that rendering is the mapper's contract and is tested with
+  it, so the walk asserts on the panel and the fold. Implementation finding,
   2026-09-04.)
 - **No eval tests.** Nothing here asks a model a new question; grouping and ordering
   are arithmetic. Each guard is broken on purpose once before it is trusted.
