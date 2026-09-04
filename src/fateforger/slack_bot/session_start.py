@@ -316,15 +316,18 @@ class SessionStarter:
                 else:
                     live.append(row)
                 continue
-            # Not ours to close. It counts as the user's live work only if it
-            # got past its opening turn or was written in the last few minutes;
-            # otherwise it is neither closed nor read as "the user is planning".
-            if row.revision > UNTOUCHED_REVISION or self._touched_recently(row):
+            # Not ours to close. "open" does not mean "live": a manually
+            # opened session can sit at any revision for hours after the user
+            # walked away, so revision alone can never retire it here. Recency
+            # is the only signal that says the user is at the keyboard now.
+            if self._touched_recently(row):
                 live.append(row)
             else:
                 logger.info(
-                    "session_expire: %s was not opened here and looks idle; leaving it alone",
+                    "session_expire: ignoring stale open session %s (rev %s, last saved %s)",
                     row.session_key,
+                    row.revision,
+                    row.updated_at,
                 )
         return live, closed
 
@@ -450,18 +453,24 @@ class SessionStarter:
             return True
         # `standing`'s recency window is an hour wide. A planning event longer
         # than that, or a restart past it, leaves the session already open for
-        # this day invisible there -- and the day would get a second one.
+        # this day invisible there. But "open" is not "live": Hugo can carry
+        # several manually opened sessions from earlier in the day that
+        # nobody will ever touch again, and those must not block a fresh
+        # start. Only a row this starter itself opened still blocks, at any
+        # age -- that is what stops a double open after a restart during a
+        # long event.
         rows = await self._open_sessions_for_day(user_id=user_id, day=day)
         if rows is None:
             return True
-        if rows:
-            logger.info(
-                "session_start: %s already has %s open for %s; not starting",
-                user_id,
-                rows[0].session_key,
-                day,
-            )
-            return True
+        for row in rows:
+            if await self._auto_opened(row):
+                logger.info(
+                    "session_start: %s already has our own %s open for %s; not starting",
+                    user_id,
+                    row.session_key,
+                    day,
+                )
+                return True
         return False
 
     async def _open_sessions_for_day(

@@ -379,6 +379,25 @@ async def test_expire_never_closes_a_session_the_user_opened_by_hand(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_expire_ignores_a_stale_manual_session_and_hands_back(monkeypatch):
+    # A non-auto row's revision is no longer evidence of "live" -- only
+    # recency is. A manual session saved hours ago is neither closed (not
+    # ours) nor counted as live, so expire falls through to the missed DM
+    # and hands back to the reconciler.
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(rows=[_row("C1:manual", 10, stale_minutes=240)], hand_opened=("C1:manual",))
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == []
+    assert any("Missed" in m.content for m, _ in runtime.sent)
+    assert guardian.reconciled == ["U1"]
+
+
+@pytest.mark.asyncio
 async def test_a_hand_opened_session_touched_minutes_ago_counts_as_live(monkeypatch):
     haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
     ledger = _Ledger(rows=[_row("C1:hand", 1, stale_minutes=2)], hand_opened=("C1:hand",))
@@ -424,18 +443,34 @@ async def test_expire_says_nothing_while_another_session_still_stands(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_a_session_already_open_for_the_day_blocks_the_start(monkeypatch):
+async def test_our_own_open_session_blocks_the_start_at_any_age(monkeypatch):
     # `standing`'s recency window is an hour wide; a planning event longer than
     # that, or a restart past it, leaves the session it already opened invisible
-    # there -- and the day gets a second one.
+    # there -- and the day gets a second one. This is what stops a double open
+    # after a restart during a long event, so it must hold no matter how stale
+    # the row looks.
     haunting = _Haunting()
-    ledger = _Ledger(rows=[_row("C1:already", 1)])
+    ledger = _Ledger(rows=[_row("C1:already", 1, stale_minutes=180)])
     starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
 
     await starter.start(_reminder())
 
     assert turns == [] and haunting.scheduled == []
     assert starter._client.posted == []
+
+
+@pytest.mark.asyncio
+async def test_a_stale_open_session_does_not_block_the_start(monkeypatch):
+    # "open" is not "live": a session nobody but the user touched, hours ago,
+    # is not ours to gate a fresh start on.
+    haunting = _Haunting()
+    ledger = _Ledger(rows=[_row("C1:manual", 2, stale_minutes=180)], hand_opened=("C1:manual",))
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert len(turns) == 1
+    assert haunting.scheduled, "the ladder still arms for a fresh start"
 
 
 @pytest.mark.asyncio
