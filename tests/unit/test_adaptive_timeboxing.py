@@ -854,6 +854,16 @@ class _ClosedChoiceRequirements(TimeboxRequirements):
             ),
         )
 
+    @staticmethod
+    def stage_of(requirement_id: str) -> int:
+        """The card asks the catalog which stage a question belongs to, so a
+        catalog standing in for the shipped one has to answer for its own
+        requirement as well as evaluate against it."""
+
+        if requirement_id == _DAY_SHAPE.requirement_id:
+            return _DAY_SHAPE.stage
+        return TimeboxRequirements.stage_of(requirement_id)
+
 
 class _ScriptedPlanner(PlannerPort):
     def __init__(self, *results: PlanningResult) -> None:

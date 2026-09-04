@@ -13,7 +13,8 @@
       "No calendar event identifiers: the recording never reaches a calendar, so it carries none.",
       "The owner is a placeholder id; the session key is the Slack channel/thread pair the plan prescribes.",
       "Every payload below is parsed by the production contracts, whose extra=\"forbid\" refuses anything that is not a declared field."
-    ]
+    ],
+    "replayed_against": "Stage 1 interposes a proposal turn between the day's facts and the plan (spec 2026-09-04). The recording is the same session; every scenario now carries the consent turn the kernel requires before a planner runs, and the turn that used to reach the planner ends on GateMet instead."
   },
   "session_key": "C0AA6HC1RJL:1787995886.748859",
   "owner_user_id": "U-owner-sanitized",
@@ -80,7 +81,10 @@
       {
         "fact_id": "frame:2026-08-29",
         "kind": "day_frame",
-        "value": {"wake": "08:00", "sleep": "23:30"},
+        "value": {
+          "wake": "08:00",
+          "sleep": "23:30"
+        },
         "source": "user",
         "source_interaction_id": "incident-capture"
       }
@@ -103,7 +107,10 @@
       {
         "fact_id": "frame:2026-08-29",
         "kind": "day_frame",
-        "value": {"wake": "08:00", "sleep": "23:30"},
+        "value": {
+          "wake": "08:00",
+          "sleep": "23:30"
+        },
         "source": "user",
         "source_interaction_id": "conflict-capture"
       }
@@ -254,14 +261,22 @@
           "interaction_id": "incident-capture",
           "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
           "expected_revision": 1,
-          "provides_recorded_facts": "captured_day_inputs",
+          "provides_recorded_facts": "captured_day_inputs"
+        },
+        {
+          "interaction_id": "incident-stage1-consent",
+          "user_action": "pressed Next on the Stage 1 proposal card",
+          "expected_revision": 2,
+          "intent": {
+            "kind": "advance"
+          },
           "planner_result": "skeleton_with_assumptions",
           "record_artifact_as": "skeleton_v1"
         },
         {
           "interaction_id": "incident-advance",
           "user_text": "you plan those things",
-          "expected_revision": 2,
+          "expected_revision": 3,
           "intent": {
             "kind": "advance"
           }
@@ -281,7 +296,15 @@
           "interaction_id": "conflict-answer",
           "user_text": "the planning review, and the gym at some point",
           "expected_revision": 1,
-          "provides_recorded_facts": "one_named_activity",
+          "provides_recorded_facts": "one_named_activity"
+        },
+        {
+          "interaction_id": "conflict-stage1-consent",
+          "user_action": "pressed Next on the Stage 1 proposal card",
+          "expected_revision": 2,
+          "intent": {
+            "kind": "advance"
+          },
           "planner_result": "skeleton_with_assumptions"
         }
       ]
@@ -299,7 +322,15 @@
           "interaction_id": "refused-capture",
           "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
           "expected_revision": 1,
-          "provides_recorded_facts": "captured_day_inputs",
+          "provides_recorded_facts": "captured_day_inputs"
+        },
+        {
+          "interaction_id": "refused-stage1-consent",
+          "user_action": "pressed Next on the Stage 1 proposal card",
+          "expected_revision": 2,
+          "intent": {
+            "kind": "advance"
+          },
           "planner_result": "gym_time_handed_back"
         }
       ]
@@ -317,15 +348,31 @@
           "interaction_id": "relock-capture",
           "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
           "expected_revision": 1,
-          "provides_recorded_facts": "captured_day_inputs",
+          "provides_recorded_facts": "captured_day_inputs"
+        },
+        {
+          "interaction_id": "relock-stage1-consent",
+          "user_action": "pressed Next on the Stage 1 proposal card",
+          "expected_revision": 2,
+          "intent": {
+            "kind": "advance"
+          },
           "planner_result": "skeleton_with_assumptions",
           "record_artifact_as": "skeleton_v1"
         },
         {
           "interaction_id": "relock-monday",
           "user_action": "picked 2026-08-31 on the date card and confirmed it",
-          "expected_revision": 2,
-          "confirms_recorded_day": "relocked_planning_day",
+          "expected_revision": 3,
+          "confirms_recorded_day": "relocked_planning_day"
+        },
+        {
+          "interaction_id": "relock-stage1-consent-again",
+          "user_action": "pressed Next on the Stage 1 proposal card",
+          "expected_revision": 4,
+          "intent": {
+            "kind": "advance"
+          },
           "planner_result": "skeleton_after_relock"
         }
       ]
@@ -343,15 +390,25 @@
           "interaction_id": "duplicate-capture",
           "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
           "expected_revision": 1,
-          "provides_recorded_facts": "captured_day_inputs",
+          "provides_recorded_facts": "captured_day_inputs"
+        },
+        {
+          "interaction_id": "duplicate-stage1-consent",
+          "user_action": "pressed Next on the Stage 1 proposal card",
+          "expected_revision": 2,
+          "intent": {
+            "kind": "advance"
+          },
           "planner_result": "skeleton_with_assumptions",
           "record_revision_as": "after_first_delivery"
         },
         {
-          "interaction_id": "duplicate-capture",
-          "user_action": "the identical event, redelivered",
-          "expected_revision": 1,
-          "provides_recorded_facts": "captured_day_inputs",
+          "interaction_id": "duplicate-stage1-consent",
+          "user_action": "the identical press, redelivered",
+          "expected_revision": 2,
+          "intent": {
+            "kind": "advance"
+          },
           "record_revision_as": "after_duplicate"
         }
       ]
@@ -369,21 +426,29 @@
           "interaction_id": "stale-capture",
           "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
           "expected_revision": 1,
-          "provides_recorded_facts": "captured_day_inputs",
+          "provides_recorded_facts": "captured_day_inputs"
+        },
+        {
+          "interaction_id": "stale-stage1-consent",
+          "user_action": "pressed Next on the Stage 1 proposal card",
+          "expected_revision": 2,
+          "intent": {
+            "kind": "advance"
+          },
           "planner_result": "skeleton_with_assumptions",
           "record_artifact_as": "skeleton_v1"
         },
         {
           "interaction_id": "stale-second-capture",
           "user_text": "laundry too, some time in the afternoon",
-          "expected_revision": 2,
+          "expected_revision": 3,
           "provides_recorded_facts": "one_more_activity",
           "planner_result": "skeleton_revised"
         },
         {
           "interaction_id": "stale-approve",
           "user_action": "pressed Proceed on the superseded skeleton card",
-          "expected_revision": 3,
+          "expected_revision": 4,
           "approves_recorded_artifact": "skeleton_v1"
         }
       ]
@@ -402,7 +467,15 @@
           "interaction_id": "superseded-capture",
           "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
           "expected_revision": 1,
-          "provides_recorded_facts": "captured_day_inputs",
+          "provides_recorded_facts": "captured_day_inputs"
+        },
+        {
+          "interaction_id": "superseded-stage1-consent",
+          "user_action": "pressed Next on the Stage 1 proposal card",
+          "expected_revision": 2,
+          "intent": {
+            "kind": "advance"
+          },
           "planner_result": "skeleton_with_assumptions",
           "record_revision_as": "after_user_turn"
         },
@@ -429,7 +502,15 @@
           "interaction_id": "unavailable-capture",
           "user_text": "supermarket, a deep block and a shallow block, the planning review, gym, dinner at 19:30",
           "expected_revision": 1,
-          "provides_recorded_facts": "captured_day_inputs",
+          "provides_recorded_facts": "captured_day_inputs"
+        },
+        {
+          "interaction_id": "unavailable-stage1-consent",
+          "user_action": "pressed Next on the Stage 1 proposal card",
+          "expected_revision": 2,
+          "intent": {
+            "kind": "advance"
+          },
           "planner_unavailable": true
         }
       ]

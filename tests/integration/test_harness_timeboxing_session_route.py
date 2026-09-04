@@ -40,7 +40,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     ProvidePlanningFacts,
     UserBlockerDraft,
 )
-from fateforger.slack_bot import handlers
+from fateforger.slack_bot import handlers, stage_cards
 from fateforger.slack_bot.handlers import HarnessApproveActionPayload
 from fateforger.slack_bot.timebox_candidate import PendingTimeboxCandidates
 from fateforger.slack_bot.focus import FocusManager
@@ -104,6 +104,10 @@ class EmptyConstraintMemory:
 
     async def query_constraints(self, *, filters: Any, limit: int) -> list[dict]:
         return []
+
+    async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+        # Nothing on record is nothing withheld: an empty corpus suspends none.
+        return 0
 
 
 class ForbiddenModelClient:
@@ -414,6 +418,13 @@ async def test_confirming_the_card_locks_saturday_as_a_weekend_the_host_derived(
         client=client,
     )
 
+    # Stage 1 stands between the facts and the plan: this turn proposed to
+    # close, and nothing was planned until the consent below.
+    assert planner.briefs == []
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
+    )
+
     assert planner.briefs, "the first planner brief was never built"
     assert planner.briefs[0].locked_day == snapshot.planning_day
     assert planner.briefs[0].target_artifact is ArtifactKind.SKELETON
@@ -461,6 +472,9 @@ async def test_a_fresh_repository_rehydrates_the_session_without_the_transcript(
         say=None,
         client=client,
     )
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
+    )
 
     # The process that knew any of this is gone.
     runtime.timeboxing_session_store = SqlAlchemyTimeboxingSessionRepository(
@@ -497,6 +511,39 @@ def _artifact_action_value(blocks: list[dict], action_id: str) -> str:
             if isinstance(element, dict) and element.get("action_id") == action_id:
                 return str(element.get("value") or "")
     raise AssertionError(f"no {action_id} control was rendered")
+
+
+async def _take_the_stage_one_proposal(
+    *,
+    runtime: Runtime,
+    client: Client,
+    channel: str = "C1",
+    interaction_id: str,
+) -> None:
+    """Consent to close Stage 1, which now stands between the day and the plan.
+
+    The turn that supplies the day's facts ends on `GateMet`: the kernel
+    offering to close the stage, with the planner not yet run. Next is the
+    consent, and it is a press rather than a sentence so the interpreter script
+    of every scenario below is left alone. These scenarios were written before
+    the stage existed and are about what follows it.
+    """
+
+    proposal = _blocks_with_actions(client.updates)[-1]
+    # The GateMet gate line: nothing is open, so the card asks to plan.
+    assert "shall I plan?" in json.dumps(proposal["blocks"])
+    await handlers._handle_timebox_artifact_action(
+        runtime=runtime,
+        client=client,
+        logger=handlers.logger,
+        value=_artifact_action_value(
+            proposal["blocks"], handlers.FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID
+        ),
+        channel_id=channel,
+        thread_ts="p1",
+        actor_user_id="U1",
+        interaction_id=interaction_id,
+    )
 
 
 def _candidate_result() -> PlanningResult:
@@ -577,6 +624,10 @@ async def test_a_skeleton_turn_touches_no_calendar_and_stores_no_candidate(
         client=client,
     )
 
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
+    )
+
     assert planner.briefs[-1].target_artifact is ArtifactKind.SKELETON
     assert planner.briefs[-1].allowed_outputs == {ArtifactKind.SKELETON}
     assert handlers.take_pending_approval(session_key) is None
@@ -611,6 +662,9 @@ async def test_only_an_approved_skeleton_unlocks_the_first_validated_candidate(
             self.filters = filters
             return []
 
+        async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+            return 0
+
     monkeypatch.setattr(tmbx_client, "TmbxClient", _RecordingTmbx)
 
     planner = RecordedPlanner([_skeleton_result(), _candidate_result()])
@@ -639,6 +693,10 @@ async def test_only_an_approved_skeleton_unlocks_the_first_validated_candidate(
         bot_user_id=None,
         say=None,
         client=client,
+    )
+
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
     )
 
     skeleton_blocks = _blocks_with_actions(client.updates)[-1]["blocks"]
@@ -700,6 +758,11 @@ async def test_a_failed_turn_says_one_stable_thing_and_leaks_no_payload(
         bot_user_id=None,
         say=None,
         client=client,
+    )
+    # Stage 1 proposes to close first; the planner -- and its failure -- is on
+    # the consent's turn.
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
     )
 
     rendered = " ".join(
@@ -939,6 +1002,14 @@ async def _drive_to_a_failed_turn(
         say=None,
         client=client,
     )
+    # That turn proposed to close Stage 1; the planner is reached by the
+    # consent, and it is the consent's turn that falls over.
+    await _take_the_stage_one_proposal(
+        runtime=runtime,
+        client=client,
+        channel=channel,
+        interaction_id=f"next-{channel}",
+    )
     return meta.session_key
 
 
@@ -1070,9 +1141,13 @@ async def test_retry_and_a_typed_advance_reach_one_executor_with_one_intent(
         client=typed_client,
     )
 
-    # One typed intent, arrived at from a press and from a sentence.
+    # One typed intent, arrived at from a press and from a sentence. Each
+    # session's first Advance is the Stage 1 consent (a Next press, in both);
+    # the second is the retry, pressed in one session and typed in the other.
     assert [pair for pair in intents if isinstance(pair[1], Advance)] == [
         (pressed_key, Advance()),
+        (pressed_key, Advance()),
+        (typed_key, Advance()),
         (typed_key, Advance()),
     ]
     # One executor, entered from both surfaces.
@@ -1166,6 +1241,9 @@ async def test_approving_a_superseded_skeleton_plans_nothing(
         say=None,
         client=client,
     )
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
+    )
     superseded = ArtifactActionMeta.model_validate_json(
         _artifact_action_value(
             _blocks_with_actions(client.updates)[-1]["blocks"],
@@ -1252,6 +1330,9 @@ async def _drive_to_the_validated_candidate(
         say=None,
         client=client,
     )
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-skeleton"
+    )
     await handlers._handle_timebox_artifact_action(
         runtime=runtime,
         client=client,
@@ -1309,6 +1390,9 @@ async def test_approving_the_candidate_commits_it_and_records_the_receipt(
     class _ConstraintStore:
         async def query_constraints(self, *, filters: dict, limit: int) -> list[dict]:
             return []
+
+        async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+            return 0
 
     monkeypatch.setattr(tmbx_client, "TmbxClient", _RecordingTmbx)
 
@@ -1444,6 +1528,9 @@ async def test_every_rendered_control_names_its_session_and_revision(
         async def query_constraints(self, *, filters: dict, limit: int) -> list[dict]:
             return []
 
+        async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+            return 0
+
     monkeypatch.setattr(tmbx_client, "TmbxClient", _RecordingTmbx)
 
     planner = RecordedPlanner([_skeleton_result(), _candidate_result()])
@@ -1502,6 +1589,13 @@ async def test_every_rendered_control_names_its_session_and_revision(
         say=None,
         client=client,
     )
+    # The Stage 1 proposal card is a reviewable surface in its own right, so
+    # it is swept like the rest before its Next is pressed.
+    await _record()
+
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="sweep-next"
+    )
     await _record()
 
     await handlers._handle_timebox_artifact_action(
@@ -1519,7 +1613,7 @@ async def test_every_rendered_control_names_its_session_and_revision(
     )
     await _record()
 
-    assert len(surfaces) == 3
+    assert len(surfaces) == 4
     for surface, revision in zip(surfaces, revisions, strict=True):
         assert surface, "a reviewable surface rendered no control at all"
         assert surface == {(session_key, revision)}
@@ -1688,6 +1782,11 @@ async def _ask_the_shape_question(
         say=None,
         client=client,
     )
+    # Locking the day now ends on the Stage 1 proposal; the planner -- and so
+    # the closed question this helper exists to reach -- is on the consent.
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-shape"
+    )
     return "C1:p1"
 
 
@@ -1703,7 +1802,11 @@ async def test_a_closed_question_arrives_as_buttons_carrying_what_they_answer(
     both against the record it wrote when it asked.
     """
 
-    monkeypatch.setattr(handlers, "TimeboxRequirements", _closed_choice_requirements())
+    # Both the kernel's copy and the card's: `map_outcome` asks the catalog
+    # which stage a question belongs to (#276), and it holds its own import.
+    catalog = _closed_choice_requirements()
+    monkeypatch.setattr(handlers, "TimeboxRequirements", catalog)
+    monkeypatch.setattr(stage_cards, "TimeboxRequirements", catalog)
     planner = ShapePlanner()
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = TimeboxingIntentInterpreter(
@@ -1748,7 +1851,11 @@ async def test_an_option_question_keeps_its_buttons_when_a_press_is_refused(
     of all three, and "that question has already been answered" is it.
     """
 
-    monkeypatch.setattr(handlers, "TimeboxRequirements", _closed_choice_requirements())
+    # Both the kernel's copy and the card's: `map_outcome` asks the catalog
+    # which stage a question belongs to (#276), and it holds its own import.
+    catalog = _closed_choice_requirements()
+    monkeypatch.setattr(handlers, "TimeboxRequirements", catalog)
+    monkeypatch.setattr(stage_cards, "TimeboxRequirements", catalog)
     planner = ShapePlanner()
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = TimeboxingIntentInterpreter(
@@ -1815,6 +1922,9 @@ class _EmptyConstraintStore:
     async def query_constraints(self, *, filters: dict, limit: int) -> list[dict]:
         return []
 
+    async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+        return 0
+
 
 def _shape_runtime(
     repository: SqlAlchemyTimeboxingSessionRepository,
@@ -1872,7 +1982,11 @@ async def test_a_whole_session_can_be_driven_by_chat_and_by_button_alike(
     record it.
     """
 
-    monkeypatch.setattr(handlers, "TimeboxRequirements", _closed_choice_requirements())
+    # Both the kernel's copy and the card's: `map_outcome` asks the catalog
+    # which stage a question belongs to (#276), and it holds its own import.
+    catalog = _closed_choice_requirements()
+    monkeypatch.setattr(handlers, "TimeboxRequirements", catalog)
+    monkeypatch.setattr(stage_cards, "TimeboxRequirements", catalog)
     from fateforger.slack_bot import tmbx_client
 
     monkeypatch.setattr(tmbx_client, "TmbxClient", _RecordingTmbxRead)
