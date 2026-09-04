@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from memory.constraint import Constraint, ConstraintView, Necessity
+from memory.constraint import AnchorRef, Constraint, ConstraintView, Necessity
 from memory.constraint_store import ConstraintStore
 
 
@@ -14,6 +14,7 @@ def get_active_constraints(
     *,
     reachable: set[str] | None = None,
     day_type: str | None = None,
+    anchors: AnchorStore | None = None,
 ) -> list[ConstraintView]:
     """Constraints that apply on `day`, as views for the patcher.
 
@@ -42,6 +43,11 @@ def get_active_constraints(
     than about a thing in it — and dropping those would silently discard every
     rule stored before the graph existed.
 
+    `anchors`, when given, attaches each rule's anchors to its view as
+    `(uid, name)` pairs. It is a lookup over uids this system minted and adds
+    no judgement to the read path. Omitting it returns views with an empty
+    `anchors` list, which is what every caller before 2026-09-04 received.
+
     `stage` is accepted and currently unused; it is part of the agreed call
     shape and will select stage-relevant constraints once stage vocabulary
     exists.
@@ -53,7 +59,8 @@ def get_active_constraints(
         and not c.has_faded(day)
         and (reachable is None or c.uid in reachable)
     ]
-    return [c.to_view() for c in sorted(applicable, key=_reading_order)]
+    ordered = sorted(applicable, key=_reading_order)
+    return [_attach_anchors(c.to_view(), c.uid, anchors) for c in ordered]
 
 
 def get_faded_constraints(
@@ -173,3 +180,16 @@ def _reading_order(constraint: Constraint) -> tuple[int, float]:
         _NECESSITY_ORDER.get(constraint.necessity, len(_NECESSITY_ORDER)),
         -constraint.last_observed_at.timestamp(),
     )
+
+
+def _attach_anchors(
+    view: ConstraintView, constraint_uid: str, anchors: AnchorStore | None
+) -> ConstraintView:
+    if anchors is None:
+        return view
+    refs: list[AnchorRef] = []
+    for anchor_uid in anchors.anchors_for(constraint_uid):
+        anchor = anchors.get(anchor_uid)
+        if anchor is not None:
+            refs.append(AnchorRef(uid=anchor.uid, name=anchor.name))
+    return view.model_copy(update={"anchors": refs})
