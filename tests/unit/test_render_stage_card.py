@@ -241,3 +241,20 @@ def test_a_receipted_candidate_card_cannot_be_committed_again() -> None:
     message = render_stage_card(card.as_receipt("↩️ reopened"))
     assert _action_ids(message) == set()
     assert FF_HARNESS_APPROVE_ACTION_ID not in _buttons(message)
+
+
+def test_next_renders_as_a_primary_button_that_advances() -> None:
+    from fateforger.slack_bot.stage_cards import NextControl, StageCard, stage
+    from fateforger.slack_bot.timeboxing_cards import render_stage_card
+    from fateforger.slack_bot.timeboxing_intents import intent_from_artifact_action
+    from fateforger.agents.timeboxing.session_contracts import Advance
+
+    card = StageCard(stage=stage(1), session_key="C1:1.0", expected_revision=4, gate="ok", controls=[NextControl()])
+    message = render_stage_card(card)
+    [button] = [
+        el for block in message.blocks if block.get("type") == "actions" for el in block["elements"]
+        if el["text"]["text"] == "Next"
+    ]
+    assert button["style"] == "primary"
+    assert intent_from_artifact_action(button["value"]).intent == Advance()
+    assert any("ok" in json.dumps(block) for block in message.blocks)
