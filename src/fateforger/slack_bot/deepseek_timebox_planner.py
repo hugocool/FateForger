@@ -65,6 +65,10 @@ class UnavailableConstraintReader:
         _ = (filters, limit)
         raise DependencyUnavailable("constraint dependency unavailable")
 
+    async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+        _ = (planned_day, day_type)
+        raise DependencyUnavailable("constraint dependency unavailable")
+
 
 class DeepSeekTimeboxPlanner:
     """Enrich a kernel brief and produce one schema-bound planner result."""

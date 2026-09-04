@@ -353,6 +353,9 @@ class ClientBackedDurableConstraintStore:
             )
         return []
 
+    async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+        return await self.client.count_suspended(planned_day, day_type)
+
     async def upsert_constraint(
         self,
         *,
