@@ -1688,6 +1688,22 @@ async def _run_adaptive_timebox_turn(
         receipt_body_text = receipt_body(intent, previous.card)
     else:
         done = None
+
+    # The panel sits above the first card, so it has to post before that
+    # card's own transition; once shown, it stays put and just gets edited.
+    panel_synced_first = (
+        not isinstance(outcome, (TurnFailed, Cancelled))
+        and _stage_cards.panel_shown(session_key) is None
+    )
+    if panel_synced_first:
+        await _stage_cards.sync_panel(
+            client,
+            session_key=session_key,
+            snapshot=current,
+            channel=card_channel,
+            thread_ts=card_thread_ts,
+            logger=logger,
+        )
     await _stage_cards.transition(
         client,
         session_key=session_key,
@@ -1698,6 +1714,15 @@ async def _run_adaptive_timebox_turn(
         ts=progress_ts,
         logger=logger,
     )
+    if not panel_synced_first and not isinstance(outcome, (TurnFailed, Cancelled)):
+        await _stage_cards.sync_panel(
+            client,
+            session_key=session_key,
+            snapshot=current,
+            channel=card_channel,
+            thread_ts=card_thread_ts,
+            logger=logger,
+        )
 
     # A typed day change never relabelled the root; only the button path did
     # (#265). One place now, for both, over the day the kernel accepted.
