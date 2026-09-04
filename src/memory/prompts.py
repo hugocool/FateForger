@@ -17,6 +17,7 @@ from memory.judge import (
     DedupJudgement,
     MetaJudgement,
     NecessityJudgement,
+    RequiresBlockJudgement,
     TierJudgement,
 )
 from memory.models import Observation
@@ -119,6 +120,30 @@ recoverable and which the planner gets to see.
 
 Respond with JSON only:
 {"is_binding": true|false, "rationale": "..."}\
+"""
+
+REQUIRES_BLOCK_PROMPT = """\
+You decide whether a statement says that a block of some kind MUST BE PRESENT
+on the day's plan, and if so which of the listed kinds it means.
+
+The kinds are given as short words. Answer with exactly one of them, or null.
+Never invent a word that is not in the list: if the statement requires a kind
+of block the list does not have, answer null.
+
+"Requires a block" means the rule is about existence: the day is wrong if no
+such block is on it. "Every working day has a planning session" requires one.
+"Reserve 15-20 minutes at the end of the workday to update the board" requires
+one. These do NOT: a rule about how long a block runs ("deep work blocks run
+90-120 minutes"), when it sits relative to another ("oats two hours before
+gym"), how blocks alternate, or a guardrail on what may be scheduled ("no
+meetings before 13:00"). Those describe blocks the day may have; they do not
+say the day must have one.
+
+When unsure, answer null. A block wrongly marked required is placed on every
+matching day and nagged about when absent; a required block wrongly missed is
+visible the first day it is absent and can be stated again.
+
+Respond with JSON only: {"slug": "<one of the listed kinds>"|null, "rationale": "..."}\
 """
 
 META_PROMPT = """\
@@ -325,6 +350,32 @@ class PromptJudge(ABC):
         if "is_binding" not in payload:
             raise ValueError(f"could not parse judge response: {payload!r}")
         return self._build(NecessityJudgement, payload)
+
+    async def requires_block(
+        self, observation: Observation, kinds: list[str]
+    ) -> RequiresBlockJudgement:
+        if not kinds:
+            # Nothing to choose from, so nothing to ask. A model offered an
+            # empty list can only answer null or invent, and inventing is the
+            # failure the verification below exists to catch.
+            return RequiresBlockJudgement()
+        user = (
+            f"Statement:\n{json.dumps(observation.text, ensure_ascii=False)}"
+            f"\n\nRegistered kinds:\n{json.dumps(kinds, ensure_ascii=False)}"
+        )
+        payload = await self._ask(REQUIRES_BLOCK_PROMPT, user)
+        if "slug" not in payload:
+            raise ValueError(f"could not parse judge response: {payload!r}")
+        judgement = self._build(RequiresBlockJudgement, payload)
+        if judgement.slug is not None and judgement.slug not in kinds:
+            # Set membership over identifiers this system minted -- explicitly
+            # outside the no-matching rule, and the one check that keeps an
+            # invented kind out of the store.
+            raise ValueError(
+                f"judge returned kind {judgement.slug!r} which is not among the "
+                f"{len(kinds)} registered kinds offered"
+            )
+        return judgement
 
     async def meta(self, observation: Observation) -> MetaJudgement:
         payload = await self._ask(META_PROMPT, observation.text)

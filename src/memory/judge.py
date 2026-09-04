@@ -106,6 +106,21 @@ class DayJudgement(BaseModel):
     rationale: str = ""
 
 
+class RequiresBlockJudgement(BaseModel):
+    """Which registered kind of block, if any, this statement says must be on
+    the day (#212).
+
+    `slug` is one of the kinds the caller offered or None -- a closed choice
+    over identifiers this system minted, verified by the transport before it
+    is returned. Deciding that "end-of-day closure block" is the `planning`
+    kind is a judgement about meaning and stays with the model; deciding that
+    the answer is *one of the offered words* is set membership and stays here.
+    """
+
+    slug: str | None = None
+    rationale: str = ""
+
+
 @runtime_checkable
 class AnchorLike(Protocol):
     """The shape resolve_anchors needs from an existing anchor.
@@ -135,7 +150,7 @@ class ConstraintLike(Protocol):
 class Judge(Protocol):
     """The only way this package learns what an observation means.
 
-    Five independent questions. Implementations must not answer any of them
+    Six independent questions. Implementations must not answer any of them
     with pattern matching; see CLAUDE.md.
     """
 
@@ -144,6 +159,10 @@ class Judge(Protocol):
     async def tier(self, observation: Observation) -> TierJudgement: ...
 
     async def necessity(self, observation: Observation) -> NecessityJudgement: ...
+
+    async def requires_block(
+        self, observation: Observation, kinds: list[str]
+    ) -> RequiresBlockJudgement: ...
 
     async def resolve_anchors(
         self, names: list[str], candidates: list[AnchorLike]
@@ -196,6 +215,7 @@ class StubJudge:
         bindings: dict[str, bool] | None = None,
         anchor_uids: dict[str, str] | None = None,
         day_type: str = "working",
+        requires_blocks: dict[str, str] | None = None,
     ) -> None:
         self._anchors = anchors or {}
         self._tiers = tiers or {}
@@ -210,6 +230,7 @@ class StubJudge:
         self._bindings = bindings or {}
         self._anchor_uids = anchor_uids or {}
         self._day_type = day_type
+        self._requires_blocks = requires_blocks or {}
         self.calls: list[tuple[str, str]] = []
 
     async def anchors(self, observation: Observation) -> AnchorJudgement:
@@ -234,6 +255,13 @@ class StubJudge:
         return NecessityJudgement(
             is_binding=self._bindings.get(observation.text, False)
         )
+
+    async def requires_block(
+        self, observation: Observation, kinds: list[str]
+    ) -> RequiresBlockJudgement:
+        self.calls.append(("requires_block", observation.uid))
+        slug = self._requires_blocks.get(observation.text)
+        return RequiresBlockJudgement(slug=slug if slug in kinds else None)
 
     async def meta(self, observation: Observation) -> MetaJudgement:
         self.calls.append(("meta", observation.uid))
