@@ -17,6 +17,7 @@ from pydantic import (
     model_validator,
 )
 
+from fateforger.agents.timeboxing.elicitation import ALL_CELLS
 from fateforger.agents.timeboxing.session_contracts import (
     Advance,
     ApproveArtifact,
@@ -273,6 +274,11 @@ def _open_question(snapshot: PlanningSessionSnapshot) -> dict[str, str] | None:
     }
 
 
+#: The forty Stage 1 cell requirement ids, the only blockers `assume` can
+#: answer. Built once at import from the catalog the cells are generated from.
+_CELL_IDS: frozenset[str] = frozenset(cell.id for cell in ALL_CELLS)
+
+
 def _display_context(
     snapshot: PlanningSessionSnapshot,
 ) -> tuple[str, tuple[str, ...], PlanningArtifact | None]:
@@ -316,7 +322,10 @@ def _display_context(
         # session cannot honour is one the model can only waste a turn on --
         # the same reason steer_not_today, assume and deny below are each
         # conditioned on the state their binding actually requires.
-        consent = ("advance",) if snapshot.stage1 == "proposed" else ()
+        # Proposed is the kernel offering to close; closed is consent already
+        # given, and the turn re-drives the planner rather than proposing
+        # again. Only "open" has nothing for Next to mean.
+        consent = ("advance",) if snapshot.stage1 in ("proposed", "closed") else ()
         restore = (
             ("restore",)
             if any(fact.kind is FactKind.SUSPENDED_CONSTRAINT for fact in snapshot.facts)
@@ -325,7 +334,18 @@ def _display_context(
         steer_not_today = (
             ("steer_not_today",) if snapshot.applicable_constraints else ()
         )
-        assume = ("assume",) if snapshot.pending_blocker is not None else ()
+        # Only a Stage 1 cell can be assumed past. `FileAssumption` files a
+        # `PlannerAssumption`, which satisfies a soft requirement and nothing
+        # else, so offering it against a hard user-owned blocker such as
+        # `skeleton.requested_activity` would file an assumption, leave the
+        # blocker standing and ask the same question again forever (#251).
+        # Membership over the forty ids this system minted.
+        assume = (
+            ("assume",)
+            if snapshot.pending_blocker is not None
+            and snapshot.pending_blocker.requirement_id in _CELL_IDS
+            else ()
+        )
         deny = ("deny",) if snapshot.assumptions else ()
         return (
             "capture",
