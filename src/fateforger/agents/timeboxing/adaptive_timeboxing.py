@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from .elicitation import stage1_gate
 from .readiness import (
     ReadinessGap,
     ReadinessReport,
@@ -35,7 +36,11 @@ from .session_contracts import (
     ChooseBlockerOption,
     Committed,
     ConfirmPlanningDay,
+    DenyAssumption,
     FactKind,
+    FileAssumption,
+    Gate,
+    GateMet,
     GoBack,
     HandledInteraction,
     PendingBlocker,
@@ -47,6 +52,7 @@ from .session_contracts import (
     PlanningResult,
     PlanningSessionSnapshot,
     ProvidePlanningFacts,
+    RestoreConstraint,
     ReviseArtifact,
     StartSession,
     TimeboxIntent,
@@ -54,6 +60,7 @@ from .session_contracts import (
     TurnOutcome,
     UserBlockerDraft,
     has_commit_receipt,
+    suspension_fact_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,6 +88,7 @@ class PlanningContext(BaseModel):
     )
     facts: list[PlanningFact] = Field(default_factory=list)
     applicable_constraints: JsonValue = Field(default_factory=dict)
+    suspended_constraint_count: int = Field(default=0, ge=0)
     calendar_snapshot: JsonValue = Field(default_factory=dict)
 
 
@@ -556,6 +564,16 @@ class AdaptiveTimeboxing:
             )
 
         snapshot = self._merge_facts(snapshot, resolved.facts)
+        rows = resolved.applicable_constraints
+        if isinstance(rows, list):
+            # Written on every resolve: the read is model-free and the set can
+            # change mid-session. The presence fact stays count-only.
+            snapshot = snapshot.model_copy(
+                update={
+                    "applicable_constraints": rows,
+                    "suspended_constraint_count": resolved.suspended_constraint_count,
+                }
+            )
         readiness = self._requirements.evaluate(target, snapshot)
         blocker = readiness.first_hard_user_blocker()
         if blocker is not None:
@@ -572,6 +590,29 @@ class AdaptiveTimeboxing:
                     question=blocker.question,
                     why_needed=blocker.why_needed,
                 ),
+            )
+
+        if target is ArtifactKind.SKELETON and snapshot.stage1 != "closed":
+            gate = stage1_gate(snapshot)
+            if gate.open_cells:
+                top = gate.open_cells[0]
+                gap = readiness.by_id(top.id)
+                return await self._save(
+                    self._hold_question(snapshot, gap, []),
+                    base_revision=base_revision,
+                    request=request,
+                    outcome=AwaitingUser(
+                        requirement_id=gap.requirement_id,
+                        question=gap.question,
+                        why_needed=gap.why_needed,
+                        gate=gate,
+                    ),
+                )
+            return await self._save(
+                snapshot.model_copy(update={"stage1": "proposed"}),
+                base_revision=base_revision,
+                request=request,
+                outcome=GateMet(gate=gate),
             )
 
         if readiness.system_owned_gaps():
@@ -653,7 +694,12 @@ class AdaptiveTimeboxing:
         self, snapshot: PlanningSessionSnapshot, request: TurnRequest
     ) -> tuple[PlanningSessionSnapshot, TurnOutcome | None]:
         intent = request.intent
-        if isinstance(intent, (StartSession, Advance)):
+        if isinstance(intent, StartSession):
+            return snapshot, None
+        if isinstance(intent, Advance):
+            if snapshot.stage1 == "proposed":
+                # Consent: the user saw the proposal and said go on.
+                return snapshot.model_copy(update={"stage1": "closed"}), None
             return snapshot, None
         if isinstance(intent, CancelSession):
             return snapshot.model_copy(update={"status": "cancelled"}), None
@@ -685,6 +731,14 @@ class AdaptiveTimeboxing:
             merged = self._merge_facts(snapshot, intent.facts)
             if merged.facts == snapshot.facts:
                 return snapshot, None
+            stage1_kinds = {FactKind.ELICITED_STATEMENT, FactKind.SUSPENDED_CONSTRAINT}
+            if any(fact.kind in stage1_kinds for fact in intent.facts):
+                # A Stage 1 fact re-enters the loop: a new fact can uncover a cell.
+                merged = merged.model_copy(update={"stage1": "open"})
+            elif merged.stage1 == "proposed":
+                # Anything else after a proposal is consent, and the message is
+                # handled in Stage 2, so "let's plan, deep work first" is one turn.
+                merged = merged.model_copy(update={"stage1": "closed"})
             return self._reopen(
                 self._invalidate(merged, ArtifactKind.CAPTURED_INPUTS)
             ), None
@@ -785,6 +839,76 @@ class AdaptiveTimeboxing:
             # built on the shape the user has just overruled is not a skeleton
             # of this day any more.
             return self._invalidate(answered, ArtifactKind.CAPTURED_INPUTS), None
+        if isinstance(intent, FileAssumption):
+            filed = PlannerAssumption(
+                assumption_id=str(uuid4()),
+                requirement_id=intent.requirement_id,
+                value=intent.value,
+                why_needed=intent.why_needed,
+                filed_by="user",
+            )
+            # Invalidate first, then append: `_without` retires an assumption
+            # whose target artifact is invalidated (it served an artifact
+            # that no longer exists), and this one's target is SKELETON --
+            # the same kind CAPTURED_INPUTS invalidation reaches. Appending
+            # before invalidating let the assumption just filed erase itself.
+            invalidated = self._invalidate(snapshot, ArtifactKind.CAPTURED_INPUTS)
+            pending = invalidated.pending_blocker
+            updated = invalidated.model_copy(
+                update={
+                    "assumptions": [*invalidated.assumptions, filed],
+                    "pending_blocker": None
+                    if pending is not None and pending.requirement_id == intent.requirement_id
+                    else pending,
+                }
+            )
+            if updated.planning_day is None:
+                return updated, None
+            # A `None` outcome would fall through to the run loop's own gate
+            # re-check (Step 4), which reads the coverage matrix -- untouched
+            # by this assumption -- and would re-hold the very cell just
+            # forced past. Answer directly instead, with that one cell (and
+            # any other cell already assumed) subtracted from what is open.
+            gate = stage1_gate(updated)
+            assumed_cells = {a.requirement_id for a in updated.assumptions}
+            still_open = [
+                cell for cell in gate.open_cells if cell.id not in assumed_cells
+            ]
+            if still_open:
+                top = still_open[0]
+                gap = self._requirements.evaluate(
+                    ArtifactKind.SKELETON, updated
+                ).by_id(top.id)
+                return self._hold_question(updated, gap, []), AwaitingUser(
+                    requirement_id=gap.requirement_id,
+                    question=gap.question,
+                    why_needed=gap.why_needed,
+                    gate=Gate(open_cells=still_open, day_label=gate.day_label),
+                )
+            return updated, GateMet(
+                gate=Gate(open_cells=[], day_label=gate.day_label)
+            )
+        if isinstance(intent, DenyAssumption):
+            kept = [a for a in snapshot.assumptions if a.assumption_id != intent.assumption_id]
+            if len(kept) == len(snapshot.assumptions):
+                return snapshot, TurnFailed(
+                    code="stale_assumption",
+                    message="That assumption is no longer on record.",
+                )
+            # The cell it answered re-opens; a denial is the user asking to be asked.
+            updated = snapshot.model_copy(update={"assumptions": kept, "stage1": "open"})
+            return self._invalidate(updated, ArtifactKind.CAPTURED_INPUTS), None
+        if isinstance(intent, RestoreConstraint):
+            wanted = suspension_fact_id(intent.constraint_uid)
+            kept_facts = [f for f in snapshot.facts if f.fact_id != wanted]
+            if len(kept_facts) == len(snapshot.facts):
+                return snapshot, TurnFailed(
+                    code="stale_restore",
+                    message="That rule is not set aside for this session.",
+                )
+            # A restored rule can uncover a cell, same as a new fact.
+            updated = snapshot.model_copy(update={"facts": kept_facts, "stage1": "open"})
+            return self._invalidate(updated, ArtifactKind.CAPTURED_INPUTS), None
         if isinstance(intent, GoBack):
             return self._go_back(snapshot)
         if isinstance(intent, ReviseArtifact):
@@ -832,6 +956,40 @@ class AdaptiveTimeboxing:
                 code="session_cancelled",
                 message="This session was cancelled. Start a new one to plan a day.",
             )
+        if (
+            snapshot.planning_day is not None
+            and self._latest_artifact(snapshot, ArtifactKind.SKELETON) is None
+            and snapshot.stage1 == "proposed"
+        ):
+            # Only a live proposal backs out to Stage 1 itself. `closed` means
+            # consent already stands -- Stage 1 is behind the user, and Back
+            # from a stage-two question (no skeleton yet either) still falls
+            # through to the rungs below, same as before Stage 1 existed.
+            #
+            # Unlike the rungs below, nothing later in the run loop would
+            # intercept a fallthrough here: `_pending_approval` only looks at
+            # SKELETON/VALIDATED_CANDIDATE artifacts, and neither exists yet.
+            # A `None` outcome would fall through to the run loop's own gate
+            # re-check (Step 4), which -- finding nothing changed -- would
+            # propose to close again in the same turn, undoing the Back
+            # before it was ever saved. So this rung answers directly, the
+            # same shape as the skeleton rung below it.
+            reverted = snapshot.model_copy(
+                update={"stage1": "open", "pending_blocker": None}
+            )
+            gate = stage1_gate(reverted)
+            if gate.open_cells:
+                top = gate.open_cells[0]
+                gap = self._requirements.evaluate(
+                    ArtifactKind.SKELETON, reverted
+                ).by_id(top.id)
+                return self._hold_question(reverted, gap, []), AwaitingUser(
+                    requirement_id=gap.requirement_id,
+                    question=gap.question,
+                    why_needed=gap.why_needed,
+                    gate=gate,
+                )
+            return reverted, GateMet(gate=gate)
         if self._latest_artifact(snapshot, ArtifactKind.VALIDATED_CANDIDATE):
             reopened = self._invalidate(snapshot, ArtifactKind.SKELETON)
             return reopened.model_copy(update={"pending_blocker": None}), None
@@ -1263,7 +1421,9 @@ class AdaptiveTimeboxing:
                 for artifact in snapshot.artifacts
             ],
             approvals=snapshot.approvals,
-            applicable_constraints=context.applicable_constraints,
+            applicable_constraints=self._unsuspended(
+                snapshot, context.applicable_constraints
+            ),
             calendar_snapshot=context.calendar_snapshot,
             target_artifact=target,
             readiness={
@@ -1282,6 +1442,23 @@ class AdaptiveTimeboxing:
             },
             allowed_outputs={target},
         )
+
+    @staticmethod
+    def _unsuspended(snapshot: PlanningSessionSnapshot, rows: JsonValue) -> JsonValue:
+        """Rows minus the ones a SUSPENDED_CONSTRAINT fact names, by uid.
+
+        Set membership over identifiers this system minted. The snapshot keeps
+        the full list so the card can show a suspended row as suspended; only
+        the planner stops seeing it.
+        """
+        if not isinstance(rows, list):
+            return rows
+        suspended = {
+            fact.value["uid"]
+            for fact in snapshot.facts
+            if fact.kind is FactKind.SUSPENDED_CONSTRAINT and isinstance(fact.value, dict)
+        }
+        return [row for row in rows if not (isinstance(row, dict) and row.get("uid") in suspended)]
 
     async def _save(
         self,
