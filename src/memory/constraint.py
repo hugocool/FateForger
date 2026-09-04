@@ -118,6 +118,11 @@ class ConstraintView(BaseModel):
     status: Status
     source: Source
     frame_slot: str | None = None
+    # The registered kind of block this rule says must be on the day, or None.
+    # A slug from `enforceable_kinds`, so comparing it is equality over an
+    # identifier this system minted (#212). `frame_slot` above is the dead
+    # predecessor of this idea and is not reused.
+    requires_block: str | None = None
 
 
 class Constraint(BaseModel):
@@ -135,7 +140,13 @@ class Constraint(BaseModel):
     scope: Scope
     status: Status
     source: Source
+    #: DEAD FIELD. Never written by anything the KG server minted; kept only so
+    #: legacy rows still parse. Do not read it for anything; see requires_block.
     frame_slot: str | None = None
+    # The registered kind of block this rule says must be on the day, or None.
+    # A slug from `enforceable_kinds`, so comparing it is equality over an
+    # identifier this system minted (#212).
+    requires_block: str | None = None
     tier: Tier = Tier.SESSION
     applicability: Applicability = Field(default_factory=Applicability)
     source_observation_uids: list[str] = Field(default_factory=list)
@@ -173,4 +184,5 @@ class Constraint(BaseModel):
             status=self.status,
             source=self.source,
             frame_slot=self.frame_slot,
+            requires_block=self.requires_block,
         )
