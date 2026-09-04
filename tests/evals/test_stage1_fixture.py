@@ -37,7 +37,17 @@ def test_each_day_yields_rows_and_a_locked_snapshot(store_copy, day) -> None:
 
 
 @pytest.mark.parametrize("day", FIXTURE_DAYS, ids=[d.key for d in FIXTURE_DAYS])
-def test_every_day_has_hand_labels_before_a_spike_may_run(day) -> None:
+def test_every_day_has_hand_labels_before_a_spike_may_run(store_copy, day) -> None:
+    """The labels gate the spike, so this asks the same precondition its sibling does.
+
+    It takes `store_copy` for the skip, not for the copy: without
+    STAGE1_FIXTURE_DB there is no spike to gate and this skips with that
+    reason, so a bare `pytest` is green. Set the variable -- which is what a
+    spike run does -- and an unlabelled day fails here, loudly, before the
+    spike measures itself against nothing.
+    """
+
+    _ = store_copy
     labels = load_labels(LABELS)
     if not labels.get(day.key):
         pytest.fail(f"{day.key} has no hand-labelled gaps; a spike against it measures nothing")
