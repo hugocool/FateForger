@@ -35,6 +35,13 @@ class TierJudgement(BaseModel):
     end_date: date | None = None
     days_of_week: list[int] = Field(default_factory=list)  # 0=Mon .. 6=Sun
 
+    # Which kinds of day the rule is limited to, from the system-minted
+    # vocabulary DayJudgement uses ("working", "weekend", "vacation",
+    # "holiday", "sick"). Empty means every kind. This is the writer
+    # Applicability.day_types never had: its reader shipped first, and until
+    # now the field could only be seeded by hand.
+    day_types: list[str] = Field(default_factory=list)
+
     # Seed vocabulary — see DecayClass. Default PERMANENT because the safe
     # failure is a rule that never fades, not one that vanishes unasked.
     decay_class: DecayClass = DecayClass.PERMANENT
@@ -216,6 +223,7 @@ class StubJudge:
         anchor_uids: dict[str, str] | None = None,
         day_type: str = "working",
         requires_blocks: dict[str, str] | None = None,
+        day_types: dict[str, list[str]] | None = None,
     ) -> None:
         self._anchors = anchors or {}
         self._tiers = tiers or {}
@@ -231,6 +239,7 @@ class StubJudge:
         self._anchor_uids = anchor_uids or {}
         self._day_type = day_type
         self._requires_blocks = requires_blocks or {}
+        self._day_types = day_types or {}
         self.calls: list[tuple[str, str]] = []
 
     async def anchors(self, observation: Observation) -> AnchorJudgement:
@@ -245,6 +254,7 @@ class StubJudge:
             start_date=self._start_dates.get(observation.text),
             end_date=self._end_dates.get(observation.text),
             days_of_week=self._days_of_week.get(observation.text, []),
+            day_types=self._day_types.get(observation.text, []),
             decay_class=self._decay_classes.get(
                 observation.text, DecayClass.PERMANENT
             ),

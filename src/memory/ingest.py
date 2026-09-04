@@ -28,6 +28,7 @@ class IngestResult(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     days_of_week: list[int] = Field(default_factory=list)  # 0=Mon .. 6=Sun
+    day_types: list[str] = Field(default_factory=list)
     # Default PERMANENT: a rule wrongly marked permanent is merely noisy, one
     # wrongly marked short-lived disappears without being asked.
     decay_class: DecayClass = DecayClass.PERMANENT
@@ -139,5 +140,6 @@ async def _ingest(
         start_date=tier_j.start_date,
         end_date=tier_j.end_date,
         days_of_week=tier_j.days_of_week,
+        day_types=tier_j.day_types,
         decay_class=tier_j.decay_class,
     )

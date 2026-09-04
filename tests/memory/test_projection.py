@@ -210,3 +210,13 @@ async def test_channel_maps_to_the_consumers_source_vocabulary(tmp_path):
         )
         c = await project(obs, result, StubJudge(), store)
         assert c.source is expected
+
+
+async def test_projection_writes_day_types_into_applicability(tmp_path):
+    store = ConstraintStore(str(tmp_path / "c.db"))
+    result = IngestResult(
+        stored=True, uid="obs-1", tier=Tier.DURABLE, day_types=["working"]
+    )
+    c = await project(_obs("planning session on working days"), result, StubJudge(), store)
+    assert c.applicability.day_types == ["working"]
+    assert store.get(c.uid).applicability.day_types == ["working"]

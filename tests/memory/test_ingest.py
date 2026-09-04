@@ -129,3 +129,13 @@ async def test_the_four_judgements_are_issued_concurrently(tmp_path):
     await ingest(_obs("eat oats before gym"), SlowJudge(), store)
     elapsed = loop.time() - start
     assert elapsed < 0.15, f"judgements appear sequential: {elapsed:.3f}s"
+
+
+async def test_ingest_carries_the_day_types_the_tier_judgement_scoped(tmp_path):
+    store = ObservationStore(str(tmp_path / "m.db"))
+    judge = StubJudge(
+        tiers={"planning session on working days": Tier.DURABLE},
+        day_types={"planning session on working days": ["working"]},
+    )
+    result = await ingest(_obs("planning session on working days"), judge, store)
+    assert result.day_types == ["working"]

@@ -58,6 +58,11 @@ Also say when the rule applies, if the statement scopes it:
   gets an empty list.
 - start_date / end_date: ISO dates, only when the statement names a period.
   A standing rule gets null for both.
+- day_types: which kinds of day the rule is limited to, from exactly these
+  words: "working", "weekend", "vacation", "holiday", "sick". Only when the
+  statement scopes it -- "on workdays", "when I'm on holiday". A rule that
+  holds on every kind of day gets an empty list. Weekdays are not a stand-in:
+  "Mon-Fri" is days_of_week, "working days" is day_types ["working"].
 
 Do not invent scoping. "Sleep at 23:00" applies every day: empty list, null
 dates. "Go to client on Tuesdays and Thursdays" is [1, 3].
@@ -88,7 +93,7 @@ excuse to guess short-lived.
 
 Respond with JSON only:
 {"tier": "durable"|"session", "label": "...",
- "days_of_week": [...], "start_date": null, "end_date": null,
+ "days_of_week": [...], "day_types": [...], "start_date": null, "end_date": null,
  "decay_class": "permanent"|"seasonal"|"project"|"daily", "rationale": "..."}\
 """
 
