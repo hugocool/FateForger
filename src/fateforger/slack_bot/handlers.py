@@ -1554,6 +1554,19 @@ async def _run_adaptive_timebox_turn(
         thread_ts=card_thread_ts,
     )
 
+    # Any turn is activity on this session: it cancels a pending Admonisher
+    # ladder (the planning session that started itself, #164 increment A).
+    # Best-effort: a haunt failure must never block the turn.
+    haunting_service = getattr(runtime, "haunting_service", None)
+    if haunting_service is not None:
+        try:
+            await haunting_service.record_user_activity(
+                topic_id=session_key, task_id=None, user_id=actor_user_id
+            )
+        except Exception:
+            logger.exception("activity record failed session_key=%s", session_key)
+            record_error(component="session_start", error_type="cancel_failure")
+
     progress_card = HarnessProgressCard(
         client, channel=progress_channel, message_ts=progress_ts
     )
@@ -1587,6 +1600,12 @@ async def _run_adaptive_timebox_turn(
             # Committed or cancelled: the session is over, so the idle timer
             # has nothing left to watch.
             timeboxing_activity.mark_inactive(user_id=actor_user_id)
+            if haunting_service is not None:
+                try:
+                    await haunting_service.cancel_followups(topic_id=session_key)
+                except Exception:
+                    logger.exception("ladder cancel failed session_key=%s", session_key)
+                    record_error(component="session_start", error_type="cancel_failure")
         # What the commit gate actually spends is the pending candidate, not
         # the artifact, so a turn that leaves none on offer has to disarm it.
         # Back off stage 4 drops the `validated_candidate` and receipts the
