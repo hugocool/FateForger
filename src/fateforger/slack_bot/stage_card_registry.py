@@ -183,7 +183,12 @@ class StageCardRegistry:
             )
             return
         if previous is not None:
-            # A different day: the old panel is history, and says so.
+            # A different day: the old panel is history, and says so. Its
+            # record is dropped regardless of whether this receipt succeeds --
+            # once we've attempted it, re-entering this branch on the next
+            # sync would only re-edit the same message. A failed re-post
+            # below then falls through to a plain first-draw post next time,
+            # never a retry of the receipt.
             old = render_context_panel(previous.panel)
             head = old.blocks[0]["text"]["text"].splitlines()[0] + "  —  superseded"
             receipt = [{"type": "section", "text": {"type": "mrkdwn", "text": head}}]
@@ -194,6 +199,7 @@ class StageCardRegistry:
                     "could not receipt the superseded context panel session_key=%s error_type=%s error=%s",
                     session_key, type(exc).__name__, exc,
                 )
+            self._panels.pop(session_key, None)
         panel = context_panel(snapshot, None)
         message = render_context_panel(panel)
         try:
