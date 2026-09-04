@@ -106,3 +106,69 @@ Per-anchor rows are sharper per probe (the (b) probe asked about oats before the
 the calls, but that is not what decides it: **59 open cells is a gate that cannot be
 met**, and 23 is not far behind. The row count is the wrong lever. What brings the number
 down is the criterion fix and the dedupe, and both apply to either shape.
+
+## 6. Practices lifted from memU and memobase (source read, 2026-09-04)
+
+Both were read at source, not from their READMEs. Only what bears on Stage 1 or the
+memory server is kept.
+
+**Into the Stage 1 loop**
+
+- *"A no-op is a perfectly good outcome; do not invent a skill to justify the run."*
+  (memU, every judgement prompt.) The generate step may return no probe for an
+  `uncovered` cell it cannot ground; today the spec assumes uncovered always yields a
+  question. The `alternatives` result above is what happens without this clause.
+- *Read names before bodies.* (memU.) Classify on rule name and necessity; send full
+  descriptions only to the one generate call. Halves the ~17k tokens per draw.
+- *All fallible work before the first write.* (memU commit: "plan, embed, write, never
+  interleaved; a failed commit is a no-op rather than a half-applied one.") The whole
+  classify batch completes before the snapshot is touched.
+- *State advances on durable success, not on intent.* (memU #518.) Observing Stage 1
+  answers into memory runs after the snapshot save succeeds.
+- *Decide from bytes, not from the agent's account of what it did.* (memU manifest.)
+  The gate stays arithmetic over the snapshot when a spike makes "let the model say
+  the gate is met" look cheaper.
+- *Token budget with a ratio and spill-over; preferred topics as a ranking, not a flag.*
+  (memobase `context()`: `max_token_size × profile_event_ratio`, unspent profile budget
+  spills to events, `prefer_topics` ordered by list index.) Input to #266: the card
+  needs a budget split between Context and Asking, and anchor groups ranked, because
+  the constraint payload alone measured 4,492 tokens.
+
+**Into the memory server**
+
+- *"Branching is preferred over spawning near-duplicate skills."* (memU.) Its only
+  anti-erosion pressure, and it belongs in `resolve_anchors`: prefer an existing anchor
+  over minting. memobase does the same by feeding known slot names back into
+  extraction ("consider using the same topic/subtopic if mentioned again").
+- *No delete verb for the model.* (memobase merge: Direct Add / Update / Discard;
+  deletion only through a structural compaction.) Matches the steering design:
+  suspend supersedes, correction is map B, nothing deletes on a model's say-so.
+- *Schema fit is checked before the action.* (memobase merge reasoning gate 1.1/1.2:
+  can the new information be made to fit the slot; if not, discard.) The same order for
+  `steer_always`: does the statement project as a durable rule at all, before asking to
+  promote it.
+- *A counter nobody reads is dead.* memobase writes `update_hits` on every merge and
+  nothing reads it; its `buffer_flush_interval` has no reader either. #140 already bans
+  counter-based promotion; this is the other half: do not add the counter.
+
+**Into the tests**
+
+- Stubs return the raw wire format, junk lines included, and a one-element
+  `side_effect` list makes a second call raise: the call-count contract is enforced
+  structurally. (memobase `test_chat_modal.py`.) Our stubbed-judge tests should assert
+  how many cells were re-classified on fold, not only what the gate decided.
+- The agent step is simulated by writing into the seam. (memU pipeline tests write
+  markdown between `prepare` and `commit`.) For Spike C the harness half is a file
+  the test writes, not a model the test stubs.
+
+**Anti-patterns seen, named so nobody imports them**
+
+- memobase's null-value filter: thirty hardcoded strings ("not mentioned", "n/a") matched
+  with `difflib`, added because the prompt-level "only extract attributes with actual
+  values" was not enough. The typed alternative is a schema in which *nothing* is a
+  legal value (`not_applicable`, an empty list), so the model never has to say nothing
+  in prose.
+- memobase has no retry anywhere and surfaces failures three different ways (propagate,
+  swallow-and-log, and one path where `.data()` raises before `.ok()` is checked).
+  Failure handling must be one policy, stated once.
+- memU fetches the prompts its agent executes from its vendor's server on every run.
