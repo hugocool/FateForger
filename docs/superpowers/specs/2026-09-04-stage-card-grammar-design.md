@@ -7,6 +7,9 @@ acceptance test for this document. **Phase 1 plan it sits on:**
 `docs/superpowers/plans/2026-09-04-stage1-elicitation-groundwork.md` (Task 9 touches
 `StageCard`; this spec builds on those changes, not beside them).
 
+**Status:** implemented on `feat/stage-card-grammar` (Tasks 1–10 of the plan); live walk
+pending a PR rebased on main after Phase 1 merges.
+
 ## Problem
 
 Increment A gave every stage one typed card, one renderer and one control table, and
@@ -266,12 +269,16 @@ option ids. A button and a typed reply land on the same fact id.
 3. Registry: the previous turn card becomes a receipt (increment A's `transition`).
 4. Panel: if `snapshot` row uids ∪ suspension fact ids ≠ the panel's `shown_with`,
    `chat_update` the panel in place. A day change instead receipts it as *superseded*
-   and posts a new one. Best-effort, never fails the turn.
+   and posts a new one. Best-effort, never fails the turn. In a DM there is no thread;
+   the panel is a top-level message.
 5. `map_outcome` → turn card → posted → registry records its ts.
-6. Stage entry (first Stage 1 turn after the day is locked): step 4 posts the panel
-   before step 5 posts the card, so the panel sits above the first probe. `GoBack` into
-   Stage 1 from Stage 2 edits the panel; it does not re-post.
+6. Stage entry: the panel is posted by the first turn whose snapshot carries rows and
+   lands after that turn's card, because the card's message is the processing message
+   posted before the turn starts; later cards follow the panel. Implementation finding,
+   2026-09-04. `GoBack` into Stage 1 from Stage 2 edits the panel; it does not re-post.
 7. Next (`Advance` on `GateMet`): the turn card receipts *✅ confirmed*; the panel stays.
+   On `Committed` and on `Cancelled` the panel is retired: its control is removed and
+   its counts stay, labelled with what happened.
 
 The registry gains one record per session for the panel, `{channel, ts, panel}`, beside
 the turn card's. Host state only; the snapshot never learns a Slack ts.
@@ -369,7 +376,7 @@ counts are the measured ones; the JSON below is the panel exactly as validated.
 
 New: `src/fateforger/slack_bot/stage_context.py` (models, builders, ordering),
 `tests/unit/test_stage_context.py`, `tests/unit/test_render_context_surfaces.py`.
-Changed: `stage_cards.py` (`DenyControl`, `PromoteControl`, decided overflow),
+Changed: `stage_cards.py` (`DenyControl`, decided overflow),
 `timeboxing_cards.py` (`render_context_panel`, `render_context_fold`, decided overflow,
 free-association hint), `timeboxing_intents.py` (the `steer_not_today` decision and its validator),
 `stage_card_registry.py` (panel record), `handlers.py` (`show_rules` → `views_open`;
