@@ -494,8 +494,9 @@ async def test_an_offered_option_can_be_answered_in_words() -> None:
     )
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
-        '"allowed_decisions":["provide_facts","assume","choose_option",'
-        '"back","cancel"]'
+        # No assume: `skeleton.day_shape` is not one of the forty cells, and a
+        # `PlannerAssumption` cannot satisfy it.
+        '"allowed_decisions":["provide_facts","choose_option","back","cancel"]'
     ) in prompt
     # The offer is the context the judgement needs: an id with no label beside
     # it asks the model to choose between two names it has never seen.
@@ -552,7 +553,7 @@ async def test_an_open_question_still_has_nothing_to_choose_from() -> None:
     assert client.calls[0][1] is InterpretedTimeboxTurn
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
-        '"allowed_decisions":["provide_facts","assume","back","cancel"]'
+        '"allowed_decisions":["provide_facts","back","cancel"]'
     ) in prompt
 
 
@@ -1132,9 +1133,14 @@ def _stage1_snapshot(**update) -> PlanningSessionSnapshot:
 def test_stage_one_offers_next_only_after_the_kernel_proposed() -> None:
     _, open_decisions, _ = _display_context(_stage1_snapshot(stage1="open"))
     _, proposed_decisions, _ = _display_context(_stage1_snapshot(stage1="proposed"))
+    # Consent already given: the stage stays on the capture branch until a
+    # skeleton exists, and Next there re-drives the planner rather than asking
+    # for a consent the session already has.
+    _, closed_decisions, _ = _display_context(_stage1_snapshot(stage1="closed"))
     assert "advance" not in open_decisions
     assert "advance" in proposed_decisions
-    for decisions in (open_decisions, proposed_decisions):
+    assert "advance" in closed_decisions
+    for decisions in (open_decisions, proposed_decisions, closed_decisions):
         # _stage1_snapshot always carries one applicable-constraint row, so
         # steer_not_today is offerable; nothing seeds a pending_blocker or an
         # assumption, so assume and deny must not be offered here -- each is
@@ -1144,6 +1150,23 @@ def test_stage_one_offers_next_only_after_the_kernel_proposed() -> None:
         assert "deny" not in decisions
         assert "steer_always" not in decisions  # not honourable until its flow lands
         assert "restore" not in decisions  # nothing is suspended
+
+
+def test_assume_is_not_offered_against_a_blocker_it_could_never_satisfy() -> None:
+    """`assume` files a `PlannerAssumption`, which satisfies a soft cell only.
+
+    Offered against a hard user-owned requirement it would file the assumption,
+    leave the blocker standing, and the kernel would ask the same question on
+    the next turn -- forever (#251). The set is the forty minted cell ids.
+    """
+
+    pending = PendingBlocker(
+        requirement_id="skeleton.requested_activity",
+        fact_kind=FactKind.REQUESTED_ACTIVITY,
+        options=[],
+    )
+    _, decisions, _ = _display_context(_stage1_snapshot(pending_blocker=pending))
+    assert "assume" not in decisions
 
 
 def test_assume_and_deny_are_offered_once_the_state_they_bind_to_exists() -> None:
