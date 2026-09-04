@@ -548,12 +548,22 @@ async def test_reprojection_gives_an_old_rule_its_required_kind(tmp_path):
     assert after.applicability.day_types == ["working"]
 
 
-async def test_reprojection_keeps_hand_seeded_day_types_when_the_judgement_names_none(tmp_path):
+async def test_reprojection_takes_judged_day_types_and_carries_them_only_when_none_are_judged(tmp_path):
+    """The tier judgement is the writer for day_types now; the hand-seeded
+    value is carried only as a fallback when nothing judges any."""
     obs_store, c_store = _stores(tmp_path)
-    obs = _observe(obs_store, "sleep at 23:00")
-    stale = _stale_constraint(
-        c_store, obs, applicability=Applicability(day_types=["working"])
+    obs_a = _observe(obs_store, "planning session on working days")
+    obs_b = _observe(obs_store, "sleep at 23:00")
+    stale_a = _stale_constraint(
+        c_store, obs_a, applicability=Applicability(day_types=["weekend"])
     )
-    judge = StubJudge(tiers={obs.text: Tier.DURABLE})
+    stale_b = _stale_constraint(
+        c_store, obs_b, applicability=Applicability(day_types=["weekend"])
+    )
+    judge = StubJudge(
+        tiers={obs_a.text: Tier.DURABLE, obs_b.text: Tier.DURABLE},
+        day_types={obs_a.text: ["working"]},
+    )
     await reproject(obs_store, c_store, judge, apply=True)
-    assert c_store.get(stale.uid).applicability.day_types == ["working"]
+    assert c_store.get(stale_a.uid).applicability.day_types == ["working"]
+    assert c_store.get(stale_b.uid).applicability.day_types == ["weekend"]
