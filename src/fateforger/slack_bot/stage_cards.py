@@ -284,6 +284,24 @@ def _decided(snapshot: PlanningSessionSnapshot) -> list[DecidedItem]:
         for fact in snapshot.facts
         if fact.kind in _FACT_LABELS
     ]
+    facts.extend(
+        DecidedItem(
+            text=f"set aside today: {_suspended_constraint_name(snapshot, fact.value)}",
+            kind="fact",
+            ref=fact.fact_id,
+        )
+        for fact in snapshot.facts
+        if fact.kind is FactKind.SUSPENDED_CONSTRAINT
+    )
+    facts.extend(
+        DecidedItem(
+            text=f"you said: {_elicited_text(fact.value)}",
+            kind="fact",
+            ref=fact.fact_id,
+        )
+        for fact in snapshot.facts
+        if fact.kind is FactKind.ELICITED_STATEMENT
+    )
     assumptions = [
         DecidedItem(
             text=f"{_as_text(assumption.value)} — {assumption.why_needed}",
@@ -294,6 +312,25 @@ def _decided(snapshot: PlanningSessionSnapshot) -> list[DecidedItem]:
         for assumption in snapshot.assumptions
     ]
     return [*facts, *assumptions]
+
+
+def _suspended_constraint_name(snapshot: PlanningSessionSnapshot, value: object) -> str:
+    """The row's name for a suspended uid, or the uid itself if the rule left
+    the active set. Set membership over a uid this system minted -- never a
+    comparison over what the row or the user said."""
+
+    uid = value.get("uid") if isinstance(value, dict) else None
+    for row in snapshot.applicable_constraints:
+        if isinstance(row, dict) and row.get("uid") == uid:
+            name = row.get("name")
+            if isinstance(name, str) and name:
+                return name
+    return str(uid)
+
+
+def _elicited_text(value: object) -> str:
+    text = value.get("text") if isinstance(value, dict) else None
+    return text if isinstance(text, str) else _as_text(value)
 
 
 def _as_text(value: object) -> str:
