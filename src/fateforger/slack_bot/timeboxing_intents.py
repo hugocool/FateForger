@@ -26,15 +26,20 @@ from fateforger.agents.timeboxing.session_contracts import (
     ChooseBlockerOption,
     ConfirmPlanningDay,
     DayType,
+    DenyAssumption,
     FactKind,
+    FileAssumption,
     GoBack,
     PlanningArtifact,
     PlanningDay,
     PlanningFact,
     PlanningSessionSnapshot,
     ProvidePlanningFacts,
+    RestoreConstraint,
     ReviseArtifact,
     TimeboxIntent,
+    elicited_fact_id,
+    suspension_fact_id,
 )
 from fateforger.slack_bot.surface_intents import (
     Clock,
@@ -68,13 +73,22 @@ class DayFrameFactDraft(_StrictModel):
     value: DayFrameDraft
 
 
+class ElicitedStatementDraft(_StrictModel):
+    """What the user said in Stage 1, in their words. The cell it answers is
+    the open question's, bound by the host, never named by the model."""
+
+    kind: Literal["elicited_statement"]
+    value: str = Field(min_length=1)
+
+
 #: One shape per fact kind the interpreter may extract, discriminated on
 #: ``kind`` so the schema itself tells the model what a day_frame looks like.
 #: With ``value: JsonValue`` the schema said "anything", and on the live model
 #: 8 of 8 draws for "I'll sleep today from 00:30 untill 8:30" answered the
 #: right times as a JSON-encoded *string* -- correct judgement, unusable shape.
 PlanningFactDraft = Annotated[
-    RequestedActivityDraft | DayFrameFactDraft, Field(discriminator="kind")
+    RequestedActivityDraft | DayFrameFactDraft | ElicitedStatementDraft,
+    Field(discriminator="kind"),
 ]
 
 
@@ -87,6 +101,10 @@ class InterpretedTimeboxTurn(_StrictModel):
         "revise",
         "back",
         "cancel",
+        "steer_not_today",
+        "restore",
+        "assume",
+        "deny",
     ]
     facts: list[PlanningFactDraft] = Field(default_factory=list)
     revision_instruction: str | None = Field(default=None, min_length=1)
@@ -109,6 +127,11 @@ class InterpretedTimeboxTurn(_StrictModel):
     #: date is perfectly well formed. The bounds here catch the other failure:
     #: a plausible-looking offset that lands a plan a year away.
     day_offset: int | None = Field(default=None, ge=-7, le=14)
+    #: Which rule to set aside for this session, by the uid the card offered.
+    #: The host checks it is on the card; an id the model invents is refused.
+    constraint_uid: str | None = None
+    #: Which assumption to withdraw, by the id the card offered.
+    assumption_id: str | None = None
 
 
 class ArtifactActionMeta(_StrictModel):
@@ -116,7 +139,14 @@ class ArtifactActionMeta(_StrictModel):
     session_key: str = Field(min_length=1)
     expected_revision: int = Field(ge=0)
     decision: Literal[
-        "advance", "approve", "revise", "back", "cancel", "choose_option"
+        "advance",
+        "approve",
+        "revise",
+        "back",
+        "cancel",
+        "choose_option",
+        "deny_assumption",
+        "restore",
     ]
     artifact_id: str | None = Field(default=None, min_length=1)
     artifact_revision: int | None = Field(default=None, ge=1)
@@ -126,6 +156,8 @@ class ArtifactActionMeta(_StrictModel):
     revision_instruction: str | None = Field(default=None, min_length=1)
     requirement_id: str | None = Field(default=None, min_length=1)
     option_id: str | None = Field(default=None, min_length=1)
+    assumption_id: str | None = Field(default=None, min_length=1)
+    constraint_uid: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def artifact_decisions_have_exact_identity(self) -> ArtifactActionMeta:
@@ -144,6 +176,10 @@ class ArtifactActionMeta(_StrictModel):
             self.requirement_id is None or self.option_id is None
         ):
             raise ValueError("an option press requires its question and its option")
+        if self.decision == "deny_assumption" and self.assumption_id is None:
+            raise ValueError("denying an assumption requires its id")
+        if self.decision == "restore" and self.constraint_uid is None:
+            raise ValueError("restoring a rule requires its uid")
         return self
 
 
@@ -171,6 +207,15 @@ Set day_offset only when the user asks for a different day from the one in
 proposed_day, and give it as a number of days from that day. Leave it out when
 they accept the proposal. Never answer with a date; the host owns the calendar.
 Never invent artifact identifiers, revisions, or digests; the host owns identity.
+When the surface offers steer_not_today, the user is setting one rule from
+the card aside for this session; answer with that rule's constraint_uid from
+the card, never a name. When it offers restore, the user is putting a rule
+they set aside back; answer with that rule's constraint_uid. When it offers assume, the user is telling you to move
+on without the answer to the open question; nothing else is needed. When it
+offers deny, the user is withdrawing an assumption shown on the card; answer
+with its assumption_id. A reply to an open elicit.* question, or anything
+the user states about what holds today that is not a request for the day, is
+an elicited_statement fact in their words.
 """
 
 
@@ -266,9 +311,18 @@ def _display_context(
     # on.
     choose = ("choose_option",) if _offered_options(snapshot) else ()
     if _latest_artifact(snapshot, ArtifactKind.SKELETON) is None:
+        # Stage 1. Next is offered only after the kernel proposed to close, and
+        # steer_always is absent until its ask-first flow lands: a decision the
+        # session cannot honour is one the model can only waste a turn on.
+        consent = ("advance",) if snapshot.stage1 == "proposed" else ()
+        restore = (
+            ("restore",)
+            if any(fact.kind is FactKind.SUSPENDED_CONSTRAINT for fact in snapshot.facts)
+            else ()
+        )
         return (
             "capture",
-            ("provide_facts", "advance", *choose, "back", "cancel"),
+            ("provide_facts", "steer_not_today", *restore, "assume", "deny", *consent, *choose, "back", "cancel"),
             None,
         )
     return (
@@ -387,6 +441,43 @@ def _intent_from_interpreted(
         return ChooseBlockerOption(
             requirement_id=pending_blocker.requirement_id, option_id=option_id
         )
+    if interpreted.decision == "steer_not_today":
+        offered = {row.get("uid") for row in snapshot.applicable_constraints if isinstance(row, dict)}
+        if interpreted.constraint_uid is None or interpreted.constraint_uid not in offered:
+            raise ValueError("steer_not_today names a rule not among the card's rows")
+        return ProvidePlanningFacts(
+            facts=[
+                PlanningFact(
+                    fact_id=suspension_fact_id(interpreted.constraint_uid),
+                    kind=FactKind.SUSPENDED_CONSTRAINT,
+                    value={"uid": interpreted.constraint_uid, "reason": "not today"},
+                    source="user",
+                )
+            ]
+        )
+    if interpreted.decision == "restore":
+        suspended = {
+            fact.value["uid"]
+            for fact in snapshot.facts
+            if fact.kind is FactKind.SUSPENDED_CONSTRAINT and isinstance(fact.value, dict)
+        }
+        if interpreted.constraint_uid is None or interpreted.constraint_uid not in suspended:
+            raise ValueError("restore names a rule that is not set aside")
+        return RestoreConstraint(constraint_uid=interpreted.constraint_uid)
+    if interpreted.decision == "assume":
+        open_question = snapshot.pending_blocker
+        if open_question is None:
+            raise ValueError("assume requires an open question; there is no open question")
+        return FileAssumption(
+            requirement_id=open_question.requirement_id,
+            value="assumed by the user",
+            why_needed="the user chose to move on without answering",
+        )
+    if interpreted.decision == "deny":
+        known = {a.assumption_id for a in snapshot.assumptions}
+        if interpreted.assumption_id is None or interpreted.assumption_id not in known:
+            raise ValueError("deny names an assumption not on record")
+        return DenyAssumption(assumption_id=interpreted.assumption_id)
     if interpreted.decision == "advance":
         return Advance()
     if interpreted.decision == "back":
@@ -397,7 +488,7 @@ def _intent_from_interpreted(
     if interpreted.decision == "provide_facts":
         if not interpreted.facts:
             raise ValueError("provide_facts requires at least one typed fact")
-        return ProvidePlanningFacts(facts=_typed_facts(interpreted))
+        return ProvidePlanningFacts(facts=_typed_facts(interpreted, snapshot))
 
     if pending is None:
         raise ValueError(f"{interpreted.decision} requires a pending artifact")
@@ -418,22 +509,40 @@ def _intent_from_interpreted(
         artifact_revision=pending.revision,
         artifact_digest=pending.digest,
         instruction=interpreted.revision_instruction,
-        facts=_typed_facts(interpreted),
+        facts=_typed_facts(interpreted, snapshot),
     )
 
 
-def _typed_facts(interpreted: InterpretedTimeboxTurn) -> list[PlanningFact]:
-    return [
-        PlanningFact(
-            fact_id=str(uuid4()),
-            kind=FactKind(fact.kind),
-            value=fact.value.as_value()
-            if isinstance(fact.value, DayFrameDraft)
-            else fact.value,
-            source="user",
+def _typed_facts(
+    interpreted: InterpretedTimeboxTurn, snapshot: PlanningSessionSnapshot
+) -> list[PlanningFact]:
+    pending = snapshot.pending_blocker
+    open_cell = (
+        pending.requirement_id
+        if pending is not None and pending.fact_kind is FactKind.ELICITED_STATEMENT
+        else None
+    )
+    facts: list[PlanningFact] = []
+    for fact in interpreted.facts:
+        if isinstance(fact, ElicitedStatementDraft):
+            facts.append(
+                PlanningFact(
+                    fact_id=elicited_fact_id(open_cell),
+                    kind=FactKind.ELICITED_STATEMENT,
+                    value={"cell": open_cell, "text": fact.value},
+                    source="user",
+                )
+            )
+            continue
+        facts.append(
+            PlanningFact(
+                fact_id=str(uuid4()),
+                kind=FactKind(fact.kind),
+                value=fact.value.as_value() if isinstance(fact.value, DayFrameDraft) else fact.value,
+                source="user",
+            )
         )
-        for fact in interpreted.facts
-    ]
+    return facts
 
 
 def intent_from_artifact_action(
@@ -472,6 +581,10 @@ def intent_from_artifact_action(
             requirement_id=cast(str, meta.requirement_id),
             option_id=cast(str, meta.option_id),
         )
+    elif meta.decision == "deny_assumption":
+        intent = DenyAssumption(assumption_id=cast(str, meta.assumption_id))
+    elif meta.decision == "restore":
+        intent = RestoreConstraint(constraint_uid=cast(str, meta.constraint_uid))
     elif meta.decision == "back":
         intent = GoBack()
     else:
@@ -513,6 +626,7 @@ __all__ = [
     "Clock",
     "DayFrameDraft",
     "DayFrameFactDraft",
+    "ElicitedStatementDraft",
     "InterpretedTimeboxTurn",
     "PlanningFactDraft",
     "RequestedActivityDraft",
