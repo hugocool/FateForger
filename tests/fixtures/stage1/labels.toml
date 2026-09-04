@@ -1,0 +1,14 @@
+# Hand-labelled gaps a good coach would ask about, per fixture day (#283).
+# cell: one of elicit.<row>.<criterion>; hard = true means a spike that misses
+# it fails the recall threshold. Hugo fills these before any spike runs.
+
+[working_tuesday]
+gaps = [
+  { cell = "elicit.request.tacit_knowledge", hard = true, note = "the deep-work block has no duration and no start time" },
+]
+
+[vacation_day]
+gaps = []
+
+[sunday]
+gaps = []
