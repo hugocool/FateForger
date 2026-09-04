@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from .elicitation import ALL_CELLS, stage1_gate
+from .elicitation import stage1_gate
 from .readiness import (
     ReadinessGap,
     ReadinessReport,
@@ -64,13 +64,6 @@ from .session_contracts import (
 )
 
 logger = logging.getLogger(__name__)
-
-#: The forty Stage 1 elicitation cell ids, for `FileAssumption` to tell a
-#: cell apart from `skeleton.day_frame`/`skeleton.locked_day` -- both of
-#: which also carry the catalog's `stage=1` (the five-rung card grouping, a
-#: different axis than Stage 1 elicitation entirely). Identifiers this
-#: system minted; membership over them is not a judgement about user text.
-_STAGE1_CELL_IDS: frozenset[str] = frozenset(cell.id for cell in ALL_CELLS)
 
 
 class TurnRequest(BaseModel):
@@ -811,27 +804,13 @@ class AdaptiveTimeboxing:
                     else pending,
                 }
             )
-            is_cell = intent.requirement_id in _STAGE1_CELL_IDS
-            if not is_cell or updated.stage1 == "closed":
-                # Not Stage 1's business: `stage_of` alone cannot tell a
-                # Stage 1 elicitation cell from `skeleton.day_frame` or
-                # `skeleton.locked_day` -- both are also catalog "stage 1",
-                # the five-rung card grouping, a different axis entirely. An
-                # assumption filed against one of those (or against anything
-                # once consent already stands) is not this gate's business;
-                # let the run loop derive whatever comes next.
-                return updated, None
-            if updated.planning_day is None:
-                return updated, None
-            # A `None` outcome would fall through to the run loop's own gate
-            # re-check (Step 4), which -- computed on the same snapshot via
-            # the same `stage1_gate` -- agrees with this answer rather than
-            # duplicating it, now that an assumed cell subtracts itself
-            # inside `stage1_gate`. Answering directly here still matters:
-            # without it the fallthrough would re-derive readiness against a
-            # target that has not been confirmed as SKELETON.
-            readiness = self._requirements.evaluate(ArtifactKind.SKELETON, updated)
-            return self._stage1_outcome(updated, readiness)
+            # Always fall through. The run loop evaluates readiness fresh,
+            # holds a hard user blocker before it ever reaches Stage 1, and
+            # arrives at `_stage1_outcome` itself once Stage 1 is open --
+            # `stage1_gate` already subtracts any cell this assumption
+            # answers, so the run loop's own gate agrees with this turn
+            # rather than needing this branch to pre-empt it.
+            return updated, None
         if isinstance(intent, DenyAssumption):
             kept = [a for a in snapshot.assumptions if a.assumption_id != intent.assumption_id]
             if len(kept) == len(snapshot.assumptions):
@@ -876,6 +855,14 @@ class AdaptiveTimeboxing:
         `planning_day` makes `_planning_day_gate` show the day it already has.
         Facts are kept throughout -- back is not forget.
 
+        No skeleton yet means Stage 1: there is no rung between the activity
+        question and the day card for it, on purpose. A re-presented Stage 1
+        with nothing newly stated is the same proposal `_stage1_outcome`
+        already made, and a probe already answered is never re-asked -- Back
+        in Stage 1 is the planning-day rung below, which clears the day and
+        resets `stage1` to `"open"`, and a fresh `ConfirmPlanningDay` starts
+        Stage 1 over rather than resuming it.
+
         The first rung is the receipt, not the status: `_reopen` puts a
         committed session back to `open` when the user asks for a revision and
         `_invalidate` keeps the receipt, so a status-only guard let Back walk a
@@ -900,29 +887,6 @@ class AdaptiveTimeboxing:
                 code="session_cancelled",
                 message="This session was cancelled. Start a new one to plan a day.",
             )
-        if (
-            snapshot.planning_day is not None
-            and self._latest_artifact(snapshot, ArtifactKind.SKELETON) is None
-            and snapshot.stage1 == "proposed"
-        ):
-            # Only a live proposal backs out to Stage 1 itself. `closed` means
-            # consent already stands -- Stage 1 is behind the user, and Back
-            # from a stage-two question (no skeleton yet either) still falls
-            # through to the rungs below, same as before Stage 1 existed.
-            #
-            # Unlike the rungs below, nothing later in the run loop would
-            # intercept a fallthrough here: `_pending_approval` only looks at
-            # SKELETON/VALIDATED_CANDIDATE artifacts, and neither exists yet.
-            # A `None` outcome would fall through to the run loop's own gate
-            # re-check (Step 4), which -- finding nothing changed -- would
-            # propose to close again in the same turn, undoing the Back
-            # before it was ever saved. So this rung answers directly, the
-            # same shape as the skeleton rung below it.
-            reverted = snapshot.model_copy(
-                update={"stage1": "open", "pending_blocker": None}
-            )
-            readiness = self._requirements.evaluate(ArtifactKind.SKELETON, reverted)
-            return self._stage1_outcome(reverted, readiness)
         if self._latest_artifact(snapshot, ArtifactKind.VALIDATED_CANDIDATE):
             reopened = self._invalidate(snapshot, ArtifactKind.SKELETON)
             return reopened.model_copy(update={"pending_blocker": None}), None
@@ -971,12 +935,13 @@ class AdaptiveTimeboxing:
     ) -> tuple[PlanningSessionSnapshot, TurnOutcome]:
         """What Stage 1 shows right now: the top open cell, or a proposal to close.
 
-        The one place `stage1_gate` becomes a `TurnOutcome`, called by the run
-        loop, `FileAssumption`, and the `GoBack` Stage 1 rung alike -- so the
-        three cannot drift into disagreeing about when `GateMet` is due or
-        when `stage1` becomes `"proposed"`. `stage1_gate` itself already
-        subtracts any cell a filed assumption answers, so the `Gate` read back
-        here needs no further narrowing.
+        The one place `stage1_gate` becomes a `TurnOutcome`, and the run
+        loop -- after resolving context and holding any hard user blocker --
+        is its only caller: `FileAssumption` and `GoBack` fall through to it
+        rather than answering for it, so `GateMet` and the `stage1 ==
+        "proposed"` transition happen exactly once per turn, in one place.
+        `stage1_gate` itself already subtracts any cell a filed assumption
+        answers, so the `Gate` read back here needs no further narrowing.
         """
         gate: Gate = stage1_gate(snapshot)
         if gate.open_cells:
