@@ -223,3 +223,104 @@ async def test_a_receipt_can_carry_a_body_the_card_did_not_have() -> None:
     ]
     assert any("Planning 2026-09-05" in t for t in sections)
     assert not any("2026-09-03" in t for t in sections)
+
+
+from datetime import date
+
+from fateforger.agents.timeboxing.session_contracts import (
+    FactKind,
+    PlanningDay,
+    PlanningFact,
+    PlanningSessionSnapshot,
+    suspension_fact_id,
+)
+
+
+class _PostingClient(_Client):
+    def __init__(self, *, fail: bool = False) -> None:
+        super().__init__(fail=fail)
+        self.posts: list[dict] = []
+
+    async def chat_postMessage(self, **payload):
+        self.posts.append(dict(payload))
+        return {"ok": True, "ts": f"200.{len(self.posts)}"}
+
+
+def _snapshot_with(rows: list[str], *, day: date = date(2026, 9, 8), suspend: list[str] = ()):
+    return PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=4,
+        owner_user_id="U1",
+        planning_day=PlanningDay.lock_default(value=day, timezone="Europe/Amsterdam", lock_revision=1),
+        applicable_constraints=[
+            {"uid": uid, "name": f"rule {uid}", "necessity": "must", "anchors": [], "fade": None} for uid in rows
+        ],
+        facts=[
+            PlanningFact(fact_id=suspension_fact_id(u), kind=FactKind.SUSPENDED_CONSTRAINT,
+                         value={"uid": u, "reason": "not today"}, source="user")
+            for u in suspend
+        ],
+    )
+
+
+async def _sync(registry, client, snapshot):
+    await registry.sync_panel(
+        client, session_key="C1:1.0", snapshot=snapshot, channel="C1", thread_ts="1.0",
+        logger=logging.getLogger(__name__),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_first_sync_posts_the_panel_and_remembers_its_ts() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+    assert [p["thread_ts"] for p in client.posts] == ["1.0"]
+    shown = registry.panel_shown("C1:1.0")
+    assert shown is not None and (shown.ts, shown.thread_ts) == ("200.1", "1.0")
+    assert shown.panel.first_shown_with == frozenset({"c1"})
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_row_set_does_nothing() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+    await _sync(registry, client, _snapshot_with(["c1"]))
+    assert len(client.posts) == 1 and client.updates == []
+
+
+@pytest.mark.asyncio
+async def test_a_suspension_edits_the_panel_in_place_and_keeps_first_shown_with() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1", "c2"]))
+    await _sync(registry, client, _snapshot_with(["c1", "c2"], suspend=["c2"]))
+    assert len(client.posts) == 1
+    assert [u["ts"] for u in client.updates] == ["200.1"]
+    assert registry.panel_shown("C1:1.0").panel.first_shown_with == frozenset({"c1", "c2"})
+
+
+@pytest.mark.asyncio
+async def test_a_day_change_receipts_the_old_panel_and_posts_a_new_one() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+    await _sync(registry, client, _snapshot_with(["c1", "c9"], day=date(2026, 9, 9)))
+    assert [u["ts"] for u in client.updates] == ["200.1"]
+    assert "superseded" in client.updates[0]["blocks"][0]["text"]["text"]
+    assert len(client.posts) == 2
+    assert registry.panel_shown("C1:1.0").panel.first_shown_with == frozenset({"c1", "c9"})
+
+
+@pytest.mark.asyncio
+async def test_a_failed_edit_is_logged_and_the_record_stays() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+    client._fail = True
+    await _sync(registry, client, _snapshot_with(["c1"], suspend=["c1"]))  # no raise
+    assert registry.panel_shown("C1:1.0").ts == "200.1"
+
+
+@pytest.mark.asyncio
+async def test_no_locked_day_means_no_panel() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    snapshot = _snapshot_with(["c1"]).model_copy(update={"planning_day": None})
+    await _sync(registry, client, snapshot)
+    assert client.posts == [] and registry.panel_shown("C1:1.0") is None
