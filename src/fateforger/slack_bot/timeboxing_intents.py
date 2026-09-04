@@ -313,16 +313,33 @@ def _display_context(
     if _latest_artifact(snapshot, ArtifactKind.SKELETON) is None:
         # Stage 1. Next is offered only after the kernel proposed to close, and
         # steer_always is absent until its ask-first flow lands: a decision the
-        # session cannot honour is one the model can only waste a turn on.
+        # session cannot honour is one the model can only waste a turn on --
+        # the same reason steer_not_today, assume and deny below are each
+        # conditioned on the state their binding actually requires.
         consent = ("advance",) if snapshot.stage1 == "proposed" else ()
         restore = (
             ("restore",)
             if any(fact.kind is FactKind.SUSPENDED_CONSTRAINT for fact in snapshot.facts)
             else ()
         )
+        steer_not_today = (
+            ("steer_not_today",) if snapshot.applicable_constraints else ()
+        )
+        assume = ("assume",) if snapshot.pending_blocker is not None else ()
+        deny = ("deny",) if snapshot.assumptions else ()
         return (
             "capture",
-            ("provide_facts", "steer_not_today", *restore, "assume", "deny", *consent, *choose, "back", "cancel"),
+            (
+                "provide_facts",
+                *steer_not_today,
+                *restore,
+                *assume,
+                *deny,
+                *consent,
+                *choose,
+                "back",
+                "cancel",
+            ),
             None,
         )
     return (
@@ -456,11 +473,18 @@ def _intent_from_interpreted(
             ]
         )
     if interpreted.decision == "restore":
-        suspended = {
-            fact.value["uid"]
-            for fact in snapshot.facts
-            if fact.kind is FactKind.SUSPENDED_CONSTRAINT and isinstance(fact.value, dict)
-        }
+        suspended: set[object] = set()
+        for fact in snapshot.facts:
+            if fact.kind is not FactKind.SUSPENDED_CONSTRAINT:
+                continue
+            if not isinstance(fact.value, dict) or "uid" not in fact.value:
+                # A malformed suspension is not the same as no suspension --
+                # reading it as absent would let a restore through that names
+                # nothing real. Mirrors _unsuspended in adaptive_timeboxing.py.
+                raise ValueError(
+                    f"suspended-constraint fact {fact.fact_id!r} carries no uid"
+                )
+            suspended.add(fact.value["uid"])
         if interpreted.constraint_uid is None or interpreted.constraint_uid not in suspended:
             raise ValueError("restore names a rule that is not set aside")
         return RestoreConstraint(constraint_uid=interpreted.constraint_uid)

@@ -494,8 +494,8 @@ async def test_an_offered_option_can_be_answered_in_words() -> None:
     )
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
-        '"allowed_decisions":["provide_facts","steer_not_today","assume",'
-        '"deny","choose_option","back","cancel"]'
+        '"allowed_decisions":["provide_facts","assume","choose_option",'
+        '"back","cancel"]'
     ) in prompt
     # The offer is the context the judgement needs: an id with no label beside
     # it asks the model to choose between two names it has never seen.
@@ -552,8 +552,7 @@ async def test_an_open_question_still_has_nothing_to_choose_from() -> None:
     assert client.calls[0][1] is InterpretedTimeboxTurn
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
-        '"allowed_decisions":["provide_facts","steer_not_today","assume",'
-        '"deny","back","cancel"]'
+        '"allowed_decisions":["provide_facts","assume","back","cancel"]'
     ) in prompt
 
 
@@ -570,8 +569,7 @@ async def test_choosing_is_not_offered_when_no_question_is_open() -> None:
     assert client.calls[0][1] is InterpretedTimeboxTurn
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
-        '"allowed_decisions":["provide_facts","steer_not_today","assume",'
-        '"deny","back","cancel"]'
+        '"allowed_decisions":["provide_facts","back","cancel"]'
     ) in prompt
 
 
@@ -1119,7 +1117,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     ProvidePlanningFacts,
     RestoreConstraint,
 )
-from fateforger.slack_bot.timeboxing_intents import _display_context
+from fateforger.slack_bot.timeboxing_intents import _display_context, _intent_from_interpreted
 
 
 def _stage1_snapshot(**update) -> PlanningSessionSnapshot:
@@ -1137,9 +1135,23 @@ def test_stage_one_offers_next_only_after_the_kernel_proposed() -> None:
     assert "advance" not in open_decisions
     assert "advance" in proposed_decisions
     for decisions in (open_decisions, proposed_decisions):
-        assert {"provide_facts", "steer_not_today", "assume", "deny", "back", "cancel"} <= set(decisions)
+        # _stage1_snapshot always carries one applicable-constraint row, so
+        # steer_not_today is offerable; nothing seeds a pending_blocker or an
+        # assumption, so assume and deny must not be offered here -- each is
+        # only honourable once the binding could actually satisfy it.
+        assert {"provide_facts", "steer_not_today", "back", "cancel"} <= set(decisions)
+        assert "assume" not in decisions
+        assert "deny" not in decisions
         assert "steer_always" not in decisions  # not honourable until its flow lands
         assert "restore" not in decisions  # nothing is suspended
+
+
+def test_assume_and_deny_are_offered_once_the_state_they_bind_to_exists() -> None:
+    pending = PendingBlocker(requirement_id="elicit.body.unclear", fact_kind=FactKind.ELICITED_STATEMENT, options=[])
+    filed = PlannerAssumption(assumption_id="a1", requirement_id="elicit.body.unclear", value="x", why_needed="y", filed_by="user")
+    _, decisions, _ = _display_context(_stage1_snapshot(pending_blocker=pending, assumptions=[filed]))
+    assert "assume" in decisions
+    assert "deny" in decisions
 
 
 def test_restore_is_offered_only_while_something_is_suspended() -> None:
@@ -1184,10 +1196,14 @@ async def test_assume_files_against_the_open_cell() -> None:
     assert isinstance(intent, FileAssumption) and intent.requirement_id == "elicit.body.unclear"
 
 
-async def test_assume_with_nothing_open_is_refused() -> None:
-    client = _SchemaOutputClient({"decision": "assume"})
+def test_assume_with_nothing_open_is_refused() -> None:
+    # assume is not offered when nothing is pending (_display_context), so the
+    # interpreter itself would refuse before the binding ever ran. Calling the
+    # binding directly bypasses the surface's allowed-decisions gate and
+    # exercises its own defence-in-depth refusal.
+    interpreted = InterpretedTimeboxTurn(decision="assume")
     with pytest.raises(ValueError, match="no open"):
-        await TimeboxingIntentInterpreter(client).interpret("just assume", _stage1_snapshot())
+        _intent_from_interpreted(interpreted, snapshot=_stage1_snapshot(), pending=None)
 
 
 async def test_deny_names_an_assumption_on_record() -> None:
@@ -1215,3 +1231,24 @@ def test_a_deny_button_press_binds_to_its_assumption() -> None:
     )
     assert envelope is not None and envelope.intent == DenyAssumption(assumption_id="a1")
     assert intent_from_artifact_action({"session_key": "C1:1.0", "expected_revision": 3, "decision": "deny_assumption"}) is None
+
+
+
+def test_a_restore_button_press_binds_to_its_constraint() -> None:
+    envelope = intent_from_artifact_action(
+        {"session_key": "C1:1.0", "expected_revision": 3, "decision": "restore", "constraint_uid": "c-gym"}
+    )
+    assert envelope is not None and envelope.intent == RestoreConstraint(constraint_uid="c-gym")
+    assert intent_from_artifact_action({"session_key": "C1:1.0", "expected_revision": 3, "decision": "restore"}) is None
+
+
+async def test_a_malformed_suspension_fact_makes_restore_raise_naming_the_fact() -> None:
+    malformed = PlanningFact(
+        fact_id="suspend:broken", kind=FactKind.SUSPENDED_CONSTRAINT,
+        value={"reason": "not today"}, source="user",
+    )
+    client = _SchemaOutputClient({"decision": "restore", "constraint_uid": "c-gym"})
+    with pytest.raises(ValueError, match="suspend:broken"):
+        await TimeboxingIntentInterpreter(client).interpret(
+            "put the oats rule back", _stage1_snapshot(facts=[malformed])
+        )
