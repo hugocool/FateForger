@@ -422,6 +422,8 @@ async def test_actual_kernel_brief_preserves_exact_typed_approvals() -> None:
         ],
         artifacts=[day_frame],
         approvals=[approval],
+        # Stage 1 consent is given; this test is about what follows.
+        stage1="closed",
     )
     runner = _RecordedHarnessRunner()
     planner = DeepSeekTimeboxPlanner(
