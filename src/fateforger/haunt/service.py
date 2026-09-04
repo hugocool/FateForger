@@ -60,6 +60,9 @@ class HauntingService:
         self._pending: dict[str, PendingFollowUp] = {}
         self._topic_index: dict[str, set[str]] = {}
         self._task_index: dict[str, set[str]] = {}
+        # A ladder follows a person, not only a thread: the nudges land in the
+        # DM, and a reply there arrives under a different topic key entirely.
+        self._user_index: dict[str, set[str]] = {}
         self._lock = asyncio.Lock()
         self._on_due: Callable[[FollowUpDue], Awaitable[None]] | None = None
 
@@ -131,6 +134,11 @@ class HauntingService:
                 candidates.update(self._topic_index.get(topic_key, set()))
             if task_id:
                 candidates.update(self._task_index.get(task_id, set()))
+            if user_id:
+                # Whatever surface the user answered on, they answered. Only
+                # ladders that asked to be cancelled on a reply are cancelled,
+                # and only this user's.
+                candidates.update(self._user_index.get(user_id, set()))
 
             cancel_ids = {
                 message_id
@@ -177,6 +185,8 @@ class HauntingService:
             self._topic_index.setdefault(record.topic_id, set()).add(record.message_id)
         if record.task_id:
             self._task_index.setdefault(record.task_id, set()).add(record.message_id)
+        if record.user_id:
+            self._user_index.setdefault(record.user_id, set()).add(record.message_id)
 
     async def _remove_record(self, record: PendingFollowUp) -> None:
         self._pending.pop(record.message_id, None)
@@ -192,6 +202,12 @@ class HauntingService:
                 ids.remove(record.message_id)
                 if not ids:
                     self._task_index.pop(record.task_id, None)
+        if record.user_id:
+            ids = self._user_index.get(record.user_id)
+            if ids and record.message_id in ids:
+                ids.remove(record.message_id)
+                if not ids:
+                    self._user_index.pop(record.user_id, None)
         self._unschedule_job(record.message_id)
 
     def _schedule_job(self, record: PendingFollowUp, run_at: datetime) -> None:

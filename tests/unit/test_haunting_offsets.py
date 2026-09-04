@@ -88,6 +88,45 @@ async def test_activity_on_the_topic_cancels_an_offsets_ladder() -> None:
     assert scheduler.jobs == {}
 
 
+@pytest.mark.asyncio
+async def test_a_reply_anywhere_by_the_same_user_cancels_the_ladder() -> None:
+    # The nudges arrive in the DM, and a reply there routes to a DM-keyed
+    # session -- a different topic than the one the ladder is armed on. The
+    # user is the same, and that is what the ladder was following.
+    now, _ = _clock(datetime(2026, 9, 4, 7, 0, tzinfo=timezone.utc))
+    scheduler = _FakeScheduler()
+    service = HauntingService(scheduler, now=now)
+    service.set_dispatcher(lambda due: None)
+    await service.schedule_followup(
+        message_id="planning_session:C1:1.0", topic_id="C1:1.0", task_id=None,
+        user_id="U1", channel_id="D1", content="open",
+        spec=FollowUpSpec(should_schedule=True, offsets=(timedelta(minutes=2),), cancel_on_user_reply=True),
+    )
+
+    cancelled = await service.record_user_activity(topic_id="D9:dm", task_id=None, user_id="U1")
+
+    assert cancelled == 1
+    assert scheduler.jobs == {}
+
+
+@pytest.mark.asyncio
+async def test_another_users_activity_leaves_the_ladder_armed() -> None:
+    now, _ = _clock(datetime(2026, 9, 4, 7, 0, tzinfo=timezone.utc))
+    scheduler = _FakeScheduler()
+    service = HauntingService(scheduler, now=now)
+    service.set_dispatcher(lambda due: None)
+    await service.schedule_followup(
+        message_id="planning_session:C1:1.0", topic_id="C1:1.0", task_id=None,
+        user_id="U1", channel_id="D1", content="open",
+        spec=FollowUpSpec(should_schedule=True, offsets=(timedelta(minutes=2),), cancel_on_user_reply=True),
+    )
+
+    cancelled = await service.record_user_activity(topic_id="D9:dm", task_id=None, user_id="U2")
+
+    assert cancelled == 0
+    assert len(scheduler.jobs) == 1
+
+
 def test_lines_select_by_attempt_and_clamp_at_the_end() -> None:
     record = PendingFollowUp(
         message_id="m", topic_id="t", task_id=None, user_id="U1", channel_id="D1",
