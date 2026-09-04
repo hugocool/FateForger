@@ -166,6 +166,8 @@ async def test_runtime_interpreter_reuses_owned_client_across_turns(
         planning_day=PlanningDay.lock_default(
             value=date(2026, 8, 29), timezone="Europe/Amsterdam", lock_revision=1
         ),
+        # Stage 1 has proposed to close; this test is about client reuse, not the gate.
+        stage1="proposed",
     )
 
     first = await interpreter.interpret("plan it", snapshot)
