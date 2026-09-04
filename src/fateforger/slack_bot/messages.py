@@ -13,6 +13,9 @@ from typing import Any, List
 SLACK_MAX_TEXT_CHARS = 3900
 SLACK_MAX_BLOCK_TEXT_CHARS = 1600
 SLACK_MAX_BLOCKS = 40
+#: A modal view holds up to 100 blocks (Slack's cap; a message holds 50 and
+#: this project stops at 40). The fold is the one surface that uses it.
+SLACK_MAX_MODAL_BLOCKS = 100
 SLACK_MAX_PAYLOAD_CHARS = 28000
 
 
@@ -31,6 +34,7 @@ class SlackThreadStateMessage:
 __all__ = [
     "SLACK_MAX_BLOCKS",
     "SLACK_MAX_BLOCK_TEXT_CHARS",
+    "SLACK_MAX_MODAL_BLOCKS",
     "SLACK_MAX_PAYLOAD_CHARS",
     "SLACK_MAX_TEXT_CHARS",
     "SlackBlockMessage",
