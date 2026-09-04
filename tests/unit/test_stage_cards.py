@@ -398,6 +398,61 @@ def test_a_candidate_onto_a_populated_day_says_what_it_changes() -> None:
     assert commit_basis_notice(payload["snapshot"], {"ops": []}) == ""
 
 
+def test_a_suspension_for_a_known_uid_names_the_row() -> None:
+    snapshot = _snapshot(
+        applicable_constraints=[{"uid": "c-1", "name": "No calls before 9am"}],
+        facts=[
+            PlanningFact(
+                fact_id="suspend:c-1",
+                kind=FactKind.SUSPENDED_CONSTRAINT,
+                value={"uid": "c-1", "reason": "not today"},
+                source="user",
+            ),
+        ],
+    )
+    card = _map(AwaitingApproval(artifact=_skeleton()), snapshot)
+    assert card is not None
+    [item] = [d for d in card.decided if d.ref == "suspend:c-1"]
+    assert item.kind == "fact"
+    assert item.text == "set aside today: No calls before 9am"
+
+
+def test_a_suspension_for_an_unknown_uid_falls_back_to_the_uid() -> None:
+    snapshot = _snapshot(
+        applicable_constraints=[],
+        facts=[
+            PlanningFact(
+                fact_id="suspend:c-2",
+                kind=FactKind.SUSPENDED_CONSTRAINT,
+                value={"uid": "c-2", "reason": "not today"},
+                source="user",
+            ),
+        ],
+    )
+    card = _map(AwaitingApproval(artifact=_skeleton()), snapshot)
+    assert card is not None
+    [item] = [d for d in card.decided if d.ref == "suspend:c-2"]
+    assert item.text == "set aside today: c-2"
+
+
+def test_an_elicited_statement_is_a_decided_fact() -> None:
+    snapshot = _snapshot(
+        facts=[
+            PlanningFact(
+                fact_id="elicited:body.unclear:1",
+                kind=FactKind.ELICITED_STATEMENT,
+                value={"cell": "body.unclear", "text": "just a normal day"},
+                source="user",
+            ),
+        ],
+    )
+    card = _map(AwaitingApproval(artifact=_skeleton()), snapshot)
+    assert card is not None
+    [item] = [d for d in card.decided if d.ref == "elicited:body.unclear:1"]
+    assert item.kind == "fact"
+    assert item.text.startswith("you said: ")
+
+
 def test_a_user_filed_assumption_is_marked_on_the_decided_item() -> None:
     """The #266 session's deny control renders differently for a user-filed
     assumption, so the renderer needs the field -- never the label text --
