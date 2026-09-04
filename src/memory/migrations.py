@@ -5,7 +5,7 @@ import sqlite3
 
 # The version this build of the code expects. Bump it in the same commit that
 # appends to _MIGRATIONS, never separately.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Version 1 is the shape that shipped before versioning existed. It is
 # reproduced here verbatim rather than being re-derived, because an existing
@@ -90,7 +90,31 @@ CREATE TABLE IF NOT EXISTS observation_suppressions (
 );
 """
 
-_MIGRATIONS: dict[int, str] = {1: _V1, 2: _V2, 3: _V3}
+# Version 4 gives memory a way to say "a block of this kind must be on the
+# day" (#212). `enforceable_kinds` is the registry of kinds a rule may
+# require: a human slug word, the anchor it is about, and the observation that
+# stated the rule when the kind was promoted. It is written only by an
+# explicit promotion -- never by observe -- which is what makes a slug a minted
+# identity rather than a paraphrase (I3).
+#
+# `constraint_required_blocks` carries the derived field. A table rather than a
+# column on `constraints`, for the same reason as _V3: ALTER TABLE ADD COLUMN is
+# not re-runnable, and every migration must be.
+_V4 = """
+CREATE TABLE IF NOT EXISTS enforceable_kinds (
+    slug                 TEXT PRIMARY KEY,
+    anchor_uid           TEXT NOT NULL,
+    rule_observation_uid TEXT NOT NULL,
+    created_at           TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS constraint_required_blocks (
+    constraint_uid TEXT PRIMARY KEY,
+    slug           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_crb_slug ON constraint_required_blocks(slug);
+"""
+
+_MIGRATIONS: dict[int, str] = {1: _V1, 2: _V2, 3: _V3, 4: _V4}
 
 # What each version must end up with. Checked after migrating, so a store whose
 # stamp disagrees with its actual shape fails loudly at connect time instead of
@@ -115,6 +139,10 @@ _EXPECTED_COLUMNS: dict[int, dict[str, set[str]]] = {
     },
     3: {
         "observation_suppressions": {"observation_uid", "reason", "decided_at"},
+    },
+    4: {
+        "enforceable_kinds": {"slug", "anchor_uid", "rule_observation_uid", "created_at"},
+        "constraint_required_blocks": {"constraint_uid", "slug"},
     },
 }
 
