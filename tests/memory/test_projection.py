@@ -234,9 +234,17 @@ async def test_a_session_fact_never_carries_a_required_kind(tmp_path):
     """Durable-only (spec decision 10): 'plan tomorrow's session at 17:00' is a
     fact for the planner, not a standing requirement."""
     store = ConstraintStore(str(tmp_path / "c.db"))
-    result = IngestResult(stored=True, uid="obs-1", tier=Tier.SESSION, requires_block="planning")
-    c = await project(_obs("plan tomorrow's session at 17:00"), result, StubJudge(), store)
-    assert c.requires_block is None
+    obs = _obs("plan tomorrow's session at 17:00")
+    session_result = IngestResult(
+        stored=True, uid="obs-1", tier=Tier.SESSION, requires_block="planning"
+    )
+    durable_result = IngestResult(
+        stored=True, uid="obs-2", tier=Tier.DURABLE, requires_block="planning"
+    )
+    session_c = await project(obs, session_result, StubJudge(), store)
+    durable_c = await project(obs, durable_result, StubJudge(), store)
+    assert session_c.requires_block is None
+    assert durable_c.requires_block == "planning"
 
 
 async def test_a_fold_sets_the_required_kind_once_and_never_unsets_it(tmp_path):
