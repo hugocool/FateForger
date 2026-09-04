@@ -214,11 +214,27 @@ def _derive(
         "created_at": ordered[0].observed_at,
         "last_observed_at": ordered[-1].observed_at,
         # Required once, required after: the newest observation that names a
-        # kind wins, and one that names none does not unset it.
-        "requires_block": next(
-            (judgements[o.uid].requires_block.slug for o in reversed(ordered)
-             if judgements[o.uid].requires_block.slug is not None),
-            None,
+        # kind wins, and one that names none does not unset it -- so the
+        # fallback is the value the constraint already carries, not None. The
+        # same fold projection's branch follows, and for the same reason: a
+        # judgement answering null does not mean "this rule stopped requiring
+        # a block", it means this pass had nothing to say. Rebuilding from it
+        # would unset the requirement silently, and the only symptom is a block
+        # nobody places and nobody nags about.
+        #
+        # Durable-only (spec decision 10): a session-tier statement about
+        # tomorrow's session is a fact for the planner, not a standing
+        # requirement, and projection's session branch never writes the field.
+        # Gating on the *derived* tier rather than the existing one keeps the
+        # two halves of this function agreeing about one constraint.
+        "requires_block": (
+            next(
+                (judgements[o.uid].requires_block.slug for o in reversed(ordered)
+                 if judgements[o.uid].requires_block.slug is not None),
+                existing.requires_block if existing else None,
+            )
+            if tier is Tier.DURABLE
+            else None
         ),
     }
     if len(ordered) == 1:

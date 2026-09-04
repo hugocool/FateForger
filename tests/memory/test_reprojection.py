@@ -567,3 +567,45 @@ async def test_reprojection_takes_judged_day_types_and_carries_them_only_when_no
     await reproject(obs_store, c_store, judge, apply=True)
     assert c_store.get(stale_a.uid).applicability.day_types == ["working"]
     assert c_store.get(stale_b.uid).applicability.day_types == ["weekend"]
+
+
+async def test_reprojection_does_not_unset_a_required_kind_nothing_re_derives(tmp_path):
+    """Required once, required after -- the fold projection already follows.
+
+    The judgement can answer null for reasons that are not "this rule stopped
+    requiring a block": an empty registry when the caller forgot the kinds, a
+    draw that went the other way. Rebuilding the field from that answer silently
+    unsets a requirement, and the only visible consequence is a planning block
+    nobody places and nobody nags about -- the same shape as the day_types drop
+    that unscoped 22 of 33 constraints on the real store.
+    """
+    obs_store, c_store = _stores(tmp_path)
+    obs = _observe(obs_store, "every working day has a planning session")
+    stale = _stale_constraint(c_store, obs, requires_block="planning")
+
+    judge = StubJudge(tiers={obs.text: Tier.DURABLE})  # answers no kind at all
+    await reproject(obs_store, c_store, judge, kinds=["planning"], apply=True)
+
+    assert c_store.get(stale.uid).requires_block == "planning"
+
+
+async def test_a_session_tier_rule_carries_no_required_kind(tmp_path):
+    """requires_block is durable-only (spec decision 10).
+
+    A session-tier statement about tomorrow's session is a fact for the planner,
+    not a standing requirement -- projection's session branch never writes the
+    field, and re-projection must not put it back on the way past.
+    """
+    obs_store, c_store = _stores(tmp_path)
+    obs = _observe(obs_store, "I'll do tomorrow's planning session after dinner")
+    stale = _stale_constraint(c_store, obs, tier=Tier.SESSION, scope=Scope.SESSION)
+
+    judge = StubJudge(
+        tiers={obs.text: Tier.SESSION},
+        requires_blocks={obs.text: "planning"},
+    )
+    await reproject(obs_store, c_store, judge, kinds=["planning"], apply=True)
+
+    after = c_store.get(stale.uid)
+    assert after.tier is Tier.SESSION
+    assert after.requires_block is None
