@@ -220,3 +220,29 @@ def test_a_fitting_fold_is_not_truncated() -> None:
     fold = context_fold(_snapshot(rows), first_shown_with=None)
     assert fold.truncated is None
     assert fold_block_count(fold) == 1 + 41 + 1
+
+
+def test_groups_that_fit_exactly_at_the_cap_are_all_kept() -> None:
+    # 49-row group + 48-row group + 1 footer = 100 blocks exactly: no "+N" needed.
+    rows = [_row(f"a{i}", ("anchor-a", "AAA")) for i in range(49)] + [
+        _row(f"b{i}", ("anchor-b", "BBB")) for i in range(48)
+    ]
+    fold = context_fold(_snapshot(rows), first_shown_with=None)
+    assert fold.truncated is None
+    assert {g.name for g in fold.groups} == {"AAA", "BBB"}
+    assert sum(len(g.rows) for g in fold.groups) == 97
+    assert fold_block_count(fold) <= SLACK_MAX_MODAL_BLOCKS
+    assert fold_block_count(fold) == 100
+
+
+def test_an_oversized_top_group_is_kept_partially_under_the_cap() -> None:
+    # One group of 150 rows dwarfs the whole cap; a second, small group follows it.
+    rows = [_row(f"c{i}", ("anchor-c", "CCC")) for i in range(150)] + [
+        _row(f"d{i}", ("anchor-d", "DDD")) for i in range(2)
+    ]
+    fold = context_fold(_snapshot(rows), first_shown_with=None)
+    assert fold_block_count(fold) <= SLACK_MAX_MODAL_BLOCKS
+    (first_group,) = fold.groups  # the second group is dropped entirely
+    kept_rows = len(first_group.rows)
+    assert kept_rows < 150
+    assert fold.truncated == (150 - kept_rows + 2, 1)

@@ -298,6 +298,49 @@ def _fold_row(row: RankedRow, primary: tuple[str, str] | None) -> FoldRow:
     )
 
 
+def _fit_groups_to_cap(
+    groups: list[FoldGroup],
+) -> tuple[list[FoldGroup], tuple[int, int] | None]:
+    """Keep whole groups, top-ranked first, until the fold fits the modal cap.
+
+    Fits everything when it already does -- reserving a "+N" block
+    unconditionally would drop a group that fit exactly, which is the
+    off-by-one this guards against. Otherwise keeps the longest whole-group
+    prefix that leaves room for the "+N" line. If even the top-ranked group
+    alone is bigger than that budget, it is kept anyway with its tail rows
+    cut by count (never a sliced row of text), so the fold never exceeds
+    the cap no matter how lopsided the input is.
+    """
+
+    footer = _FOLD_FOOTER_BLOCKS
+    cap = SLACK_MAX_MODAL_BLOCKS
+    costs = [1 + len(group.rows) for group in groups]
+    if sum(costs) + footer <= cap:
+        return groups, None
+
+    budget = cap - footer - 1  # one block reserved for the "+N" line
+    prefix_len = 0
+    used = 0
+    for cost in costs:
+        if used + cost > budget:
+            break
+        used += cost
+        prefix_len += 1
+
+    if prefix_len > 0:
+        kept = groups[:prefix_len]
+        dropped = groups[prefix_len:]
+        return kept, (sum(len(g.rows) for g in dropped), len(dropped))
+
+    # The top-ranked group alone exceeds the budget: keep it, partially.
+    first = groups[0]
+    rows_fit = max(budget - 1, 0)  # one block spent on its own heading
+    kept_first = FoldGroup(name=first.name, rows=first.rows[:rows_fit])
+    dropped_rows = len(first.rows) - len(kept_first.rows)
+    dropped_rows += sum(len(g.rows) for g in groups[1:])
+    return [kept_first], (dropped_rows, len(groups) - 1)
+
+
 def context_fold(
     snapshot: PlanningSessionSnapshot, first_shown_with: frozenset[str] | None
 ) -> ContextFold:
@@ -317,22 +360,7 @@ def context_fold(
                 ],
             )
         )
-    # Whole groups from the tail, until the view fits. Never a sliced row.
-    budget = SLACK_MAX_MODAL_BLOCKS - _FOLD_FOOTER_BLOCKS
-    kept: list[FoldGroup] = []
-    used = 0
-    for group in groups:
-        cost = 1 + len(group.rows)
-        if used + cost > budget - 1 and kept:  # leave one block for the "+N" line
-            break
-        kept.append(group)
-        used += cost
-    dropped_groups = groups[len(kept):]
-    truncated = (
-        (sum(len(g.rows) for g in dropped_groups), len(dropped_groups))
-        if dropped_groups
-        else None
-    )
+    kept, truncated = _fit_groups_to_cap(groups)
     return ContextFold(
         session_key=snapshot.session_key,
         expected_revision=snapshot.revision,
