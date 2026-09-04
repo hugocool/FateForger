@@ -138,21 +138,21 @@ of block the list does not have, answer null.
 
 "Requires a block" means the rule is about existence: the day is wrong if no
 such block is on it. "Every working day has a planning session" requires one.
-"Reserve 15-20 minutes at the end of the workday to update the board" requires
-one. These do NOT: a rule about how long a block runs ("deep work blocks run
-90-120 minutes"), when it sits relative to another ("oats two hours before
-gym"), how blocks alternate, or a guardrail on what may be scheduled ("no
-meetings before 13:00"). Those describe blocks the day may have; they do not
-say the day must have one.
+"I start each morning with a check-in where I decide what the day is for"
+requires one. These do NOT: a rule about how long a block runs ("deep work
+blocks run 90-120 minutes"), when it sits relative to another ("oats two hours
+before gym"), how blocks alternate, or a guardrail on what may be scheduled
+("no meetings before 13:00"). Those describe blocks the day may have; they do
+not say the day must have one.
 
 A kind's word is a label for a recurring session, not a string to look for in
 the statement. Match by what the required session is FOR, not by whether the
-statement repeats the kind's word. A short end-of-day routine that closes out
-today and sets up for what comes next -- reviewing progress, updating status,
-carrying work forward -- is the same recurring session as a "planning" block
-even when the statement never says "plan": both exist to make tomorrow
-workable. Reject a kind only when the statement's block serves a genuinely
-different purpose than every kind on the list, not merely a different word.
+statement repeats the kind's word. A weekly review that settles what the next
+week holds is the same recurring session as a "planning" block even though the
+statement never says "plan", and a session named for its hour or its ritual is
+still that kind if deciding how time gets spent is what it is for. Reject a
+kind only when the statement's block serves a genuinely different purpose than
+every kind on the list, not merely a different word.
 
 When unsure, answer null. A block wrongly marked required is placed on every
 matching day and nagged about when absent; a required block wrongly missed is

@@ -7,20 +7,31 @@ green call has not been validated (CLAUDE.md). The ambiguous case is recorded,
 not asserted: its rate in the docstring is what a later prompt change compares
 against.
 
-Measured on google/gemini-3.6-flash at 8 draws when this was written (after one
-discriminator addition to REQUIRES_BLOCK_PROMPT -- see below):
-  positives 8/8, 8/8; negatives 8/8, 8/8, 8/8, 8/8; ambiguous 0/8
+Measured on google/gemini-3.6-flash at 8 draws:
+  positives 8/8 (the promotion's own rule), 0/8 (the end-of-day closure rule);
+  negatives 8/8, 8/8, 8/8, 8/8 and ambiguous 0/8 as measured when this was
+  written, not re-measured since.
 
-The end-of-day closure case was the reason for that addition. The prompt
-originally described only when a block is *required* (existence), with
-nothing telling the model how to pick *which* registered kind an existence
-requirement worded differently from the kind's name should map to. Against
-["planning", "sleep"] the closure statement scored 0/8 -- every draw answered
-null because "closure"/"review" is not the literal word "planning", even
-though spec §1's evals name this exact statement as a `planning` positive.
-Adding one paragraph telling the model to match by what the session is FOR,
-not by whether it repeats the kind's word, took it to 8/8 with no change to
-the other six cases.
+**The closure case is failing on purpose and the number is the finding.**
+
+It scored 8/8 once, and the reason was that REQUIRES_BLOCK_PROMPT contained a
+description of it: a paragraph about "a short end-of-day routine that closes
+out today and sets up for what comes next -- reviewing progress, updating
+status, carrying work forward". That is the eval sentence restated as a rule,
+so the eval was measuring whether the model can recognise a case it had been
+handed, which is not what the case is for. The paragraph was replaced with the
+same instruction carried by differently shaped examples (a weekly review, a
+morning check-in), and the rate went 8/8 -> 0/8. Measured 2026-09-04, both at
+8 draws: with the old paragraph and the new example sentence, 8/8 -- so the
+discriminator was the paraphrase, not the example.
+
+What the model says when it is not handed the answer, consistently across all
+eight draws: an end-of-day block for updating artifact links and board status
+is administrative closure, and its purpose differs from planning, which it
+reads as deciding how time gets spent. That is a defensible reading. Spec §1
+names this statement a `planning` positive; either the spec's expectation or
+the kind's definition has to give, and the threshold is left at 7 so the
+disagreement stays visible instead of being absorbed.
 """
 from __future__ import annotations
 
