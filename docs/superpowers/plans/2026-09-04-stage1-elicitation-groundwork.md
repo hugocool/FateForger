@@ -34,7 +34,7 @@ Two refinements of the spec's wording, decided while planning, so the implemente
 
 | file | responsibility | task |
 | --- | --- | --- |
-| `src/memory/constraint.py` | `AnchorRef`, `ConstraintView.anchors`, `ConstraintView.fade` | 1, 1b |
+| `src/memory/constraint.py` | `AnchorRef`, `ConstraintView.anchors`, `ConstraintView.fade`, `ConstraintView.applies` | 1, 1b, 1c |
 | `src/memory/read_api.py` | `get_active_constraints(..., anchors=)` attaches refs | 1 |
 | `src/memory/service.py` | passes `self._anchors` | 1 |
 | `src/fateforger/agents/timeboxing/kg_constraint_client.py` | opens an `AnchorStore`, row carries `anchors` and `fade`, `count_suspended` | 2 |
@@ -1157,6 +1157,165 @@ Make `ranked_open_cells` return `open_cells` unsorted: the ranking test fails. M
 ```bash
 git add src/fateforger/agents/timeboxing/elicitation.py tests/unit/test_elicitation_gate.py
 git commit -m "feat(timeboxing): the Stage 1 concern-floor, criteria, coverage matrix and arithmetic gate
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 1c: `applies` on the memory view, and on the KG row
+
+Requested by the #266 grammar session on 2026-09-04: the card's applicability tag ("every day" / "some days" / "dated") had no source, because the view carries no `Applicability` and the KG row leaves `days_of_week` and `windows` empty on purpose. Same shape as `fade`: computed in the read path from stored fields, nothing about dates or day types leaves the server. Lands after Task 4, before Task 5.
+
+**Files:**
+- Modify: `src/memory/constraint.py` (`ConstraintView`)
+- Modify: `src/memory/read_api.py` (`get_active_constraints`)
+- Modify: `src/fateforger/agents/timeboxing/kg_constraint_client.py` (`_row_from_view`)
+- Test: `tests/memory/test_view_applies.py` (new), `tests/unit/test_kg_constraint_client.py`
+
+**Interfaces:**
+- Consumes: `Applicability(start_date, end_date, days_of_week: list[int], day_types: list[str])` (`src/memory/constraint.py:42`).
+- Produces: `ConstraintView.applies: Literal["every_day", "some_days", "dated"] = "every_day"`; `applies_of(applicability) -> Literal[...]` in `read_api`; KG row key `"applies"`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+# tests/memory/test_view_applies.py
+"""Whether a rule holds every day, on some days, or inside a dated window.
+
+Three words the card can tag a row with, decided arithmetically from the
+stored applicability so no date or day type leaves the server.
+"""
+from __future__ import annotations
+
+from datetime import date, datetime, timezone
+
+from memory.constraint import Applicability, Constraint, Necessity, Scope, Source, Status
+from memory.constraint_store import ConstraintStore
+from memory.models import Tier
+from memory.read_api import applies_of, get_active_constraints
+
+DAY = date(2026, 9, 8)  # a Tuesday
+NOW = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+
+
+def _rule(name: str, applicability: Applicability) -> Constraint:
+    return Constraint(
+        name=name,
+        description=f"{name} description",
+        necessity=Necessity.SHOULD,
+        scope=Scope.PROFILE,
+        status=Status.PROPOSED,
+        source=Source.USER,
+        tier=Tier.DURABLE,
+        applicability=applicability,
+        created_at=NOW,
+        last_observed_at=NOW,
+    )
+
+
+def test_dated_wins_over_weekdays_and_day_types() -> None:
+    assert applies_of(Applicability(start_date=date(2026, 9, 1), days_of_week=[1])) == "dated"
+    assert applies_of(Applicability(end_date=date(2026, 9, 30), day_types=["working"])) == "dated"
+
+
+def test_weekdays_or_day_types_are_some_days() -> None:
+    assert applies_of(Applicability(days_of_week=[1, 3])) == "some_days"
+    assert applies_of(Applicability(day_types=["working"])) == "some_days"
+
+
+def test_nothing_set_is_every_day() -> None:
+    assert applies_of(Applicability()) == "every_day"
+
+
+def test_active_views_carry_applies(tmp_path) -> None:
+    store = ConstraintStore(str(tmp_path / "memory.db"))
+    store.upsert(_rule("Sleep", Applicability()))
+    store.upsert(_rule("Commute", Applicability(day_types=["working"])))
+    store.upsert(_rule("Trip", Applicability(start_date=date(2026, 9, 1), end_date=date(2026, 9, 30))))
+
+    views = {v.name: v.applies for v in get_active_constraints(store, DAY, day_type="working")}
+
+    assert views == {"Sleep": "every_day", "Commute": "some_days", "Trip": "dated"}
+```
+
+Append to `tests/unit/test_kg_constraint_client.py`:
+
+```python
+async def test_rows_carry_how_the_rule_applies(tmp_path) -> None:
+    from memory.constraint import Applicability
+
+    db = _store_with(tmp_path, _constraint(name="Commute", applicability=Applicability(day_types=["working"])))
+
+    [row] = await KGConstraintMemoryClient(db).query_constraints(
+        filters={"planned_day": date(2026, 9, 8).isoformat(), "day_type": "working"}
+    )
+
+    assert row["applies"] == "some_days"
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/memory/test_view_applies.py -v -p no:cacheprovider && .venv/bin/python -m pytest tests/unit/test_kg_constraint_client.py -v -p no:cacheprovider -k applies`
+Expected: FAIL with `ImportError: cannot import name 'applies_of'`, then `KeyError: 'applies'`.
+
+- [ ] **Step 3: The field, the arithmetic, the row key**
+
+In `ConstraintView`, after `fade`:
+
+```python
+    #: Whether the rule holds every day, on some days (weekdays or day types),
+    #: or inside a dated window. Three words for a card to tag a row with,
+    #: decided from stored fields; no date or day type leaves the server.
+    applies: Literal["every_day", "some_days", "dated"] = "every_day"
+```
+
+Add `Literal` to the `typing` import in `constraint.py` if it is not already imported.
+
+In `read_api.py`:
+
+```python
+def applies_of(applicability: Applicability) -> Literal["every_day", "some_days", "dated"]:
+    """Dated beats some-days beats every-day; a rule with a window is dated
+    even when it also names weekdays, because the window is what ends it."""
+    if applicability.start_date is not None or applicability.end_date is not None:
+        return "dated"
+    if applicability.days_of_week or applicability.day_types:
+        return "some_days"
+    return "every_day"
+```
+
+Import `Applicability` from `memory.constraint` and `Literal` from `typing`. In `get_active_constraints`, extend the per-view update:
+
+```python
+    return [
+        _attach_anchors(c.to_view(), c.uid, anchors).model_copy(
+            update={"fade": fade_on(c, day), "applies": applies_of(c.applicability)}
+        )
+        for c in ordered
+    ]
+```
+
+In `kg_constraint_client.py`, `_row_from_view`, after `"fade": view.fade,`:
+
+```python
+        "applies": view.applies,
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/memory -q -p no:cacheprovider && .venv/bin/python -m pytest tests/unit/test_kg_constraint_client.py -q -p no:cacheprovider`
+Expected: all PASS. If `tests/memory/test_read_api.py` or `test_decay_read.py` guard the read path's imports, `memory.constraint` is already on their allowlist; nothing new is imported from outside `memory`.
+
+- [ ] **Step 5: Mutation check**
+
+Make `applies_of` return `"every_day"` unconditionally: the first two tests and the view test fail. Restore.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/memory/constraint.py src/memory/read_api.py src/fateforger/agents/timeboxing/kg_constraint_client.py tests/memory/test_view_applies.py tests/unit/test_kg_constraint_client.py
+git commit -m "feat(memory): the view says whether a rule holds every day, some days, or in a dated window
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -2902,6 +3061,6 @@ git push origin main
 
 **Placeholders.** None; every step has its code or its exact command. Names the plan relies on were verified against the tree on 2026-09-04: `PlanningDay.date`, `DayType.VACATION`/`WEEKEND`, `InMemoryPlanningSessionRepository([snapshots])`, and the absence of PyYAML (hence `tomllib`).
 
-**Amendments 2026-09-04, from the #266 grammar session:** Task 1b (`fade`), `count_suspended` and `suspended_constraint_count` (Tasks 2, 3, 6, 7), `RestoreConstraint` and the `restore` decision (Tasks 3, 6, 8), typed `filed_by` on `DecidedItem` (Task 9).
+**Amendments 2026-09-04, from the #266 grammar session:** Task 1b (`fade`), Task 1c (`applies`), `count_suspended` and `suspended_constraint_count` (Tasks 2, 3, 6, 7), `RestoreConstraint` and the `restore` decision (Tasks 3, 6, 8), typed `filed_by` on `DecidedItem` (Task 9).
 
 **Type consistency.** `Gate(open_cells, day_label, note)` is the same in Tasks 3, 4, 6, 9. `RestoreConstraint(constraint_uid)` in 3, 6, 8; `suspended_constraint_count` in 3, 6, 7. `CellRef.id` is `elicit.{row}.{criterion}` in 3, 4, 5. `stage1` values are `open | proposed | closed` in 3, 6, 8, 9. `feedback_facts(before, after)` in 10 matches its call. `FileAssumption(requirement_id, value, why_needed)` in 3, 6, 8. The `advance` decision remains the schema name for the spec's `next`; the spec's table is the intent, this plan keeps the existing literal so the button and every handler keep working.
