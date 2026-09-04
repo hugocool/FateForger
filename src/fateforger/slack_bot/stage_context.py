@@ -18,7 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from fateforger.agents.timeboxing.elicitation import ALL_CELLS, coverage_matrix
+from fateforger.agents.timeboxing.elicitation import ALL_CELLS, coverage_matrix, day_label
 from fateforger.agents.timeboxing.session_contracts import (
     FactKind,
     PlanningSessionSnapshot,
@@ -172,4 +172,82 @@ def group_rows(rows: list[RankedRow]) -> list[AnchorGroup]:
     ]
 
 
-__all__ = ["AnchorGroup", "RankedRow", "group_rows", "primary_anchor", "rank_rows"]
+class SuspendedRow(_Frozen):
+    uid: str
+    name: str
+    reason: str
+
+
+class ContextPanel(_Frozen):
+    session_key: str
+    expected_revision: int
+    #: ISO date of the locked day; a different day means a different panel.
+    day: str
+    day_label: str
+    rule_count: int
+    must_count: int
+    #: Rules memory holds that do not apply on this kind of day.
+    off_today_count: int
+    #: The day type, an enum value.
+    off_today_reason: str
+    groups: list[AnchorGroup]
+    suspended: list[SuspendedRow]
+    #: Row uids and suspension fact ids the panel was drawn from. A snapshot
+    #: whose set differs needs the panel edited; equal means nothing to do.
+    shown_with: frozenset[str]
+    #: Row uids at stage entry. Ordering key 1 reads it; kept by the registry.
+    first_shown_with: frozenset[str]
+
+
+def shown_with_of(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
+    uids = {str(raw["uid"]) for raw in snapshot.applicable_constraints}
+    facts = {
+        fact.fact_id
+        for fact in snapshot.facts
+        if fact.kind is FactKind.SUSPENDED_CONSTRAINT
+    }
+    return frozenset(uids | facts)
+
+
+def _row_uids(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
+    return frozenset(str(raw["uid"]) for raw in snapshot.applicable_constraints)
+
+
+def context_panel(
+    snapshot: PlanningSessionSnapshot, first_shown_with: frozenset[str] | None
+) -> ContextPanel:
+    if snapshot.planning_day is None:
+        raise ValueError("a context panel needs a locked planning day")
+    seed = first_shown_with if first_shown_with is not None else _row_uids(snapshot)
+    rows = rank_rows(snapshot, seed if first_shown_with is not None else None)
+    return ContextPanel(
+        session_key=snapshot.session_key,
+        expected_revision=snapshot.revision,
+        day=snapshot.planning_day.date.isoformat(),
+        day_label=day_label(snapshot.planning_day),
+        rule_count=len(rows),
+        must_count=sum(1 for r in rows if r.necessity == "must"),
+        off_today_count=snapshot.suspended_constraint_count,
+        off_today_reason=snapshot.planning_day.day_type.value,
+        groups=group_rows(rows),
+        suspended=[
+            SuspendedRow(uid=r.uid, name=r.name, reason=r.suspended_reason)
+            for r in rows
+            if r.suspended_reason is not None
+        ],
+        shown_with=shown_with_of(snapshot),
+        first_shown_with=seed,
+    )
+
+
+__all__ = [
+    "AnchorGroup",
+    "ContextPanel",
+    "RankedRow",
+    "SuspendedRow",
+    "context_panel",
+    "group_rows",
+    "primary_anchor",
+    "rank_rows",
+    "shown_with_of",
+]
