@@ -34,7 +34,11 @@ review, not for planning.
 memory_reproject re-derives stored constraints from the observations behind
 them. Constraints keep the fields the build that created them produced, so
 this is how an improvement in judgement reaches rules that already exist. It
-samples once per observation; run it deliberately, not in a loop.\
+samples once per observation; run it deliberately, not in a loop.
+
+memory_promote_kind registers a kind of block a rule may require to be present
+(the planning session, sleep). Ask the user before calling it: it is the one
+write here that mints an identity, and observe never does it.\
 """
 
 # Judgements are small JSON objects with a short rationale. Generous enough
@@ -226,6 +230,27 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
             constraint_uid, observation_uids
         )
         return {"original_uid": original, "new_uid": newborn}
+
+    @mcp.tool(name="memory_promote_kind")
+    async def memory_promote_kind(slug: str, anchor_name: str, rule_text: str) -> dict:
+        """Register a kind of block that rules may require to be on the day.
+
+        Ask the user first: this is a promotion, the one irreversible write in
+        this design, and it is never made from an observation. `slug` is the
+        short lowercase word tmbx will write on every block of this kind
+        ("planning", "sleep"); `anchor_name` names what it is about, resolved
+        against the anchors already known; `rule_text` is the rule stated in
+        the user's words, filed as a durable observation so the requirement
+        exists as a rule with provenance. Refuses a slug already registered.
+        Samples: anchor resolution plus the six ingest judgements.
+        """
+        outcome = await service.promote_kind(
+            slug,
+            anchor_name=anchor_name,
+            rule_text=rule_text,
+            observed_at=datetime.now(timezone.utc),
+        )
+        return outcome.model_dump(mode="json")
 
     @mcp.tool(name="memory_get_active_constraints")
     def memory_get_active_constraints(

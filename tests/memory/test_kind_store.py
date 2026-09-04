@@ -59,3 +59,10 @@ def test_valid_slugs_pass_unchanged():
 def test_the_model_validates_its_slug():
     with pytest.raises(ValueError):
         _kind("Not A Slug")
+
+
+def test_remove_compensates_a_failed_promotion(tmp_path):
+    store = EnforceableKindStore(str(tmp_path / "m.db"))
+    store.add(_kind("planning"))
+    store.remove("planning")
+    assert store.slugs() == []

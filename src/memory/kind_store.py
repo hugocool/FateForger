@@ -108,6 +108,13 @@ class EnforceableKindStore:
     def slugs(self) -> list[str]:
         return [k.slug for k in self.all()]
 
+    def remove(self, slug: str) -> None:
+        """Compensation for a promotion whose rule could not be observed. Not a
+        general delete: a kind rules already name is never removed this way."""
+        with self._lock:
+            self._conn.execute("DELETE FROM enforceable_kinds WHERE slug = ?", (slug,))
+            self._conn.commit()
+
     @staticmethod
     def _row(row: sqlite3.Row) -> EnforceableKind:
         return EnforceableKind(
