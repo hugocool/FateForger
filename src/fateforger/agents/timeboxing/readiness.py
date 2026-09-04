@@ -273,6 +273,9 @@ def _cell_requirements() -> tuple[ArtifactRequirement, ...]:
         ArtifactRequirement(
             requirement_id=cell.id,
             target_artifact=ArtifactKind.SKELETON,
+            # Not vestigial: `_hold_question` copies this into
+            # `pending_blocker.fact_kind`, and `_typed_facts` reads that to
+            # bind the user's next answer to this cell.
             satisfied_by=(FactKind.ELICITED_STATEMENT,),
             owner=RequirementOwner.USER,
             hard=False,

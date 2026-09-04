@@ -167,7 +167,11 @@ def ranked_open_cells(
 
     A row with rules or stated facts before one with neither; a row carrying a
     `must` before one carrying only `should`s; then the criterion order above.
-    Unaskable cells are included and ranked after every askable cell.
+
+    A cell is open iff its state is `uncovered` -- the spec's gate is "met when
+    no cell is uncovered", so `unaskable` only ranks a cell last among the ones
+    already open. Unioning the two lists instead held the gate shut on cells a
+    judge had marked covered or not applicable.
 
     `assumed` is a set of cell ids a `PlannerAssumption` already answers --
     the user forced past them, and the matrix (unaware of assumptions) would
@@ -177,8 +181,7 @@ def ranked_open_cells(
     unaskable_set = set(matrix.unaskable)
     open_cells = [
         cell for cell in ALL_CELLS
-        if (matrix.cells[cell.id] == "uncovered" or cell.id in unaskable_set)
-        and cell.id not in assumed
+        if matrix.cells[cell.id] == "uncovered" and cell.id not in assumed
     ]
 
     def key(cell: CellRef) -> tuple[int, int, int, int]:

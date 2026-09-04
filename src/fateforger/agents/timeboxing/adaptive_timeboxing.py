@@ -88,7 +88,12 @@ class PlanningContext(BaseModel):
     )
     facts: list[PlanningFact] = Field(default_factory=list)
     applicable_constraints: JsonValue = Field(default_factory=dict)
-    suspended_constraint_count: int = Field(default=0, ge=0)
+    #: None is "this resolve did not look", which is not the same answer as
+    #: zero. Only the Stage 1 resolve counts memory-side suspensions; a
+    #: candidate-stage resolve leaving the default here used to overwrite the
+    #: Stage 1 count with 0 on every turn, and the card stopped saying how many
+    #: rules the day type had taken off.
+    suspended_constraint_count: int | None = Field(default=None, ge=0)
     calendar_snapshot: JsonValue = Field(default_factory=dict)
 
 
@@ -568,10 +573,14 @@ class AdaptiveTimeboxing:
         if isinstance(rows, list):
             # Written on every resolve: the read is model-free and the set can
             # change mid-session. The presence fact stays count-only.
+            snapshot = snapshot.model_copy(update={"applicable_constraints": rows})
+        if resolved.suspended_constraint_count is not None:
+            # Independent of the rows above: a resolve may know the rows and
+            # not the count. Absence keeps whatever the last resolve that did
+            # look wrote, rather than asserting zero on its behalf.
             snapshot = snapshot.model_copy(
                 update={
-                    "applicable_constraints": rows,
-                    "suspended_constraint_count": resolved.suspended_constraint_count,
+                    "suspended_constraint_count": resolved.suspended_constraint_count
                 }
             )
         readiness = self._requirements.evaluate(target, snapshot)
