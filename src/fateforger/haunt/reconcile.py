@@ -215,10 +215,15 @@ class PlanningSessionRule:
                 anchor_end = _parse_event_dt(anchor.get("end"), tz=anchor_tz)
                 if anchor_start is not None and anchor_end is not None:
                     local_start = anchor_start.astimezone(anchor_tz)
-                    if anchor_end > start:
-                        # Ahead or under way: the event owns the window. Start the
-                        # session at its start (now, if the bot came up mid-window)
-                        # and declare it missed expire_after past its end.
+                    anchor_expiry = anchor_end + self._config.expire_after
+                    if start < anchor_expiry:
+                        # The anchor owns the window until its session expires,
+                        # not until the event ends. Reconciles fire from idle
+                        # timers and messages too, and every one of them deletes
+                        # the scheduled ids this call does not ask for -- so a
+                        # reconcile in the hour between end and expiry used to
+                        # sweep the session_expire job that is the only thing
+                        # left to close the session.
                         window_start = start.date().isoformat()
                         session_run_at = max(anchor_start, start + timedelta(seconds=5))
                         reminder_fields = dict(
@@ -232,21 +237,30 @@ class PlanningSessionRule:
                             # string rather than being handed a lossy "UTC".
                             event_tz=anchor_tz_name,
                         )
-                        jobs = [
-                            DesiredJob(
-                                key=JobKey("rule", self.rule_id, scope, window_start, SESSION_START_KIND),
-                                run_at=session_run_at,
-                                payload=PlanningReminder(kind=SESSION_START_KIND, attempt=1, message="", **reminder_fields),
-                            ),
+                        jobs = []
+                        if anchor_end > start:
+                            # Ahead or under way: start the session at its start
+                            # (now, if the bot came up mid-window). Past the end
+                            # there is nothing left to open.
+                            jobs.append(
+                                DesiredJob(
+                                    key=JobKey("rule", self.rule_id, scope, window_start, SESSION_START_KIND),
+                                    run_at=session_run_at,
+                                    payload=PlanningReminder(kind=SESSION_START_KIND, attempt=1, message="", **reminder_fields),
+                                )
+                            )
+                        jobs.append(
                             DesiredJob(
                                 key=JobKey("rule", self.rule_id, scope, window_start, SESSION_EXPIRE_KIND),
-                                run_at=anchor_end + self._config.expire_after,
+                                run_at=anchor_expiry,
                                 payload=PlanningReminder(kind=SESSION_EXPIRE_KIND, attempt=1, message="", **reminder_fields),
-                            ),
-                        ]
-                        self._log_evaluate_outcome(outcome="anchor_ahead", scope=scope, user_id=user_id, planning_event_id=planning_event_id, start=start, end=end, anchor_found=anchor_found, anchor_in_window=anchor_in_window, stored_hit=stored_hit, list_count=list_count, fallback_hit=fallback_hit, jobs_count=len(jobs))
+                            )
+                        )
+                        outcome = "anchor_ahead" if anchor_end > start else "anchor_expiring"
+                        self._log_evaluate_outcome(outcome=outcome, scope=scope, user_id=user_id, planning_event_id=planning_event_id, start=start, end=end, anchor_found=anchor_found, anchor_in_window=anchor_in_window, stored_hit=stored_hit, list_count=list_count, fallback_hit=fallback_hit, jobs_count=len(jobs))
                         return jobs
-                    # The event has passed. It counts only if the day it
+                    # The event has passed and its session has expired. It
+                    # counts only if the day it
                     # planned is still relevant to this window (today or
                     # later, UTC) *and* was committed. The anchor id is one
                     # stable id reused every day (`planning_event_id_for_user`),

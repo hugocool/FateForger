@@ -248,3 +248,47 @@ async def test_expire_after_is_honoured() -> None:
     jobs = _jobs_by_kind(scheduler)
     event_end = start + timedelta(minutes=30)
     assert jobs[SESSION_EXPIRE_KIND].trigger.run_date == event_end + timedelta(minutes=2)
+
+
+@pytest.mark.asyncio
+async def test_a_reconcile_between_the_end_and_the_expiry_keeps_the_expiry_job() -> None:
+    # The hour between the event's end and its expiry belongs to the anchor:
+    # an idle- or message-triggered reconcile in it must not sweep the
+    # session_expire job that is the only thing left to close the session.
+    scheduler = FakeScheduler()
+    start = datetime(2026, 9, 4, 9, 0, tzinfo=ZoneInfo(AMS))
+    reconciler = _reconciler(scheduler, event=_event(start), ledger=_Ledger())
+    event_end = start + timedelta(minutes=30)
+    expiry = event_end + timedelta(minutes=60)
+
+    await reconciler.reconcile_missing_planning(
+        scope="U1", user_id="U1", channel_id="D1", planning_event_id="ffplanning1",
+        now=(start - timedelta(hours=1)).astimezone(timezone.utc),
+    )
+    assert _jobs_by_kind(scheduler)[SESSION_EXPIRE_KIND].trigger.run_date == expiry
+
+    await reconciler.reconcile_missing_planning(
+        scope="U1", user_id="U1", channel_id="D1", planning_event_id="ffplanning1",
+        now=(event_end + timedelta(minutes=5)).astimezone(timezone.utc),
+    )
+
+    jobs = _jobs_by_kind(scheduler)
+    assert set(jobs) == {SESSION_EXPIRE_KIND}
+    assert jobs[SESSION_EXPIRE_KIND].trigger.run_date == expiry
+
+
+@pytest.mark.asyncio
+async def test_past_the_expiry_an_unplanned_day_is_missing_again() -> None:
+    scheduler = FakeScheduler()
+    start = datetime(2026, 9, 4, 9, 0, tzinfo=ZoneInfo(AMS))
+    reconciler = _reconciler(scheduler, event=_event(start), ledger=_Ledger(committed_key=None))
+    expiry = start + timedelta(minutes=30) + timedelta(minutes=60)
+
+    await reconciler.reconcile_missing_planning(
+        scope="U1", user_id="U1", channel_id="D1", planning_event_id="ffplanning1",
+        now=(expiry + timedelta(minutes=1)).astimezone(timezone.utc),
+    )
+
+    kinds = set(_jobs_by_kind(scheduler))
+    assert SESSION_START_KIND not in kinds and SESSION_EXPIRE_KIND not in kinds
+    assert any(kind.startswith("nudge") for kind in kinds)
