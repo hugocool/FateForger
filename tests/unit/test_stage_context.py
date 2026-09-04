@@ -12,8 +12,11 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningSessionSnapshot,
     suspension_fact_id,
 )
+from fateforger.slack_bot.messages import SLACK_MAX_MODAL_BLOCKS
 from fateforger.slack_bot.stage_context import (
+    context_fold,
     context_panel,
+    fold_block_count,
     group_rows,
     rank_rows,
     shown_with_of,
@@ -183,3 +186,37 @@ def test_first_draw_seeds_first_shown_with_and_later_draws_keep_it() -> None:
     )
     assert later.first_shown_with == frozenset({"c1"})
     assert [g.uids for g in later.groups] == [["c2", "c1"]]
+
+
+def test_the_fold_lists_every_rule_once_with_its_other_anchors() -> None:
+    rows = [_row("c1", GYM, BREAKFAST), _row("c2", GYM), _row("c3", BREAKFAST, DINNER)]
+    fold = context_fold(_snapshot(rows), first_shown_with=None)
+    by_uid = {r.uid: (g.name, r.also) for g in fold.groups for r in g.rows}
+    assert by_uid["c1"] == ("breakfast", ["gym"])
+    assert by_uid["c3"] == ("breakfast", ["dinner"])
+    assert by_uid["c2"] == ("gym", [])
+
+
+def test_verbs_depend_on_whether_the_row_is_suspended() -> None:
+    rows = [_row("c1", GYM), _row("c2", GYM)]
+    fold = context_fold(_snapshot(rows, [_suspend("c2")]), first_shown_with=None)
+    verbs = {r.uid: r.verbs for g in fold.groups for r in g.rows}
+    assert verbs["c1"] == ["steer_not_today", "steer_wrong"]
+    assert verbs["c2"] == ["restore"]
+
+
+def test_the_fold_truncates_whole_groups_past_the_modal_cap() -> None:
+    # 60 groups of 2 rows = 60 headings + 120 rows + 1 footer, far past 100.
+    rows = [_row(f"c{i}", (f"a{i // 2}", f"anchor{i // 2}")) for i in range(120)]
+    fold = context_fold(_snapshot(rows), first_shown_with=None)
+    assert fold_block_count(fold) <= SLACK_MAX_MODAL_BLOCKS
+    kept = sum(len(g.rows) for g in fold.groups)
+    assert fold.truncated == (120 - kept, 60 - len(fold.groups))
+    assert fold.groups[0].rows[0].uid == "c0"  # the top-ranked group survives
+
+
+def test_a_fitting_fold_is_not_truncated() -> None:
+    rows = [_row(f"c{i}", GYM) for i in range(41)]
+    fold = context_fold(_snapshot(rows), first_shown_with=None)
+    assert fold.truncated is None
+    assert fold_block_count(fold) == 1 + 41 + 1

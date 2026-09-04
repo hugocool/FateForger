@@ -24,6 +24,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningSessionSnapshot,
     suspension_fact_id,
 )
+from fateforger.slack_bot.messages import SLACK_MAX_MODAL_BLOCKS
 
 Necessity = Literal["must", "should"]
 Applies = Literal["every_day", "some_days", "dated"]
@@ -240,12 +241,122 @@ def context_panel(
     )
 
 
+SteerVerb = Literal["steer_not_today", "steer_wrong", "restore"]
+
+
+class FoldRow(_Frozen):
+    uid: str
+    name: str
+    necessity: Necessity
+    applies: Applies | None
+    #: The rule's other anchor names, for the "also" tag.
+    also: list[str]
+    suspended_reason: str | None
+    verbs: list[SteerVerb]
+
+
+class FoldGroup(_Frozen):
+    name: str | None
+    rows: list[FoldRow]
+
+
+class ContextFold(_Frozen):
+    session_key: str
+    expected_revision: int
+    day: str
+    day_label: str
+    groups: list[FoldGroup]
+    off_today_count: int
+    off_today_reason: str
+    #: (rules, groups) dropped so the view fits the modal cap; None when it fit.
+    truncated: tuple[int, int] | None = None
+
+
+#: One heading section per group, one section per row, one footer section
+#: for the memory-side suspensions.
+_FOLD_FOOTER_BLOCKS = 1
+
+
+def fold_block_count(fold: ContextFold) -> int:
+    return sum(1 + len(g.rows) for g in fold.groups) + _FOLD_FOOTER_BLOCKS + (
+        1 if fold.truncated else 0
+    )
+
+
+def _fold_row(row: RankedRow, primary: tuple[str, str] | None) -> FoldRow:
+    verbs: list[SteerVerb] = (
+        ["restore"] if row.suspended_reason is not None else ["steer_not_today", "steer_wrong"]
+    )
+    return FoldRow(
+        uid=row.uid,
+        name=row.name,
+        necessity=row.necessity,
+        applies=row.applies,
+        also=[name for uid, name in row.anchors if primary is None or uid != primary[0]],
+        suspended_reason=row.suspended_reason,
+        verbs=verbs,
+    )
+
+
+def context_fold(
+    snapshot: PlanningSessionSnapshot, first_shown_with: frozenset[str] | None
+) -> ContextFold:
+    if snapshot.planning_day is None:
+        raise ValueError("a context fold needs a locked planning day")
+    rows = rank_rows(snapshot, first_shown_with)
+    sizes: Counter[str] = Counter(a_uid for row in rows for a_uid, _ in row.anchors)
+    by_uid = {row.uid: row for row in rows}
+    groups: list[FoldGroup] = []
+    for group in group_rows(rows):
+        groups.append(
+            FoldGroup(
+                name=group.name,
+                rows=[
+                    _fold_row(by_uid[uid], primary_anchor(by_uid[uid], sizes))
+                    for uid in group.uids
+                ],
+            )
+        )
+    # Whole groups from the tail, until the view fits. Never a sliced row.
+    budget = SLACK_MAX_MODAL_BLOCKS - _FOLD_FOOTER_BLOCKS
+    kept: list[FoldGroup] = []
+    used = 0
+    for group in groups:
+        cost = 1 + len(group.rows)
+        if used + cost > budget - 1 and kept:  # leave one block for the "+N" line
+            break
+        kept.append(group)
+        used += cost
+    dropped_groups = groups[len(kept):]
+    truncated = (
+        (sum(len(g.rows) for g in dropped_groups), len(dropped_groups))
+        if dropped_groups
+        else None
+    )
+    return ContextFold(
+        session_key=snapshot.session_key,
+        expected_revision=snapshot.revision,
+        day=snapshot.planning_day.date.isoformat(),
+        day_label=day_label(snapshot.planning_day),
+        groups=kept,
+        off_today_count=snapshot.suspended_constraint_count,
+        off_today_reason=snapshot.planning_day.day_type.value,
+        truncated=truncated,
+    )
+
+
 __all__ = [
     "AnchorGroup",
+    "ContextFold",
     "ContextPanel",
+    "FoldGroup",
+    "FoldRow",
     "RankedRow",
+    "SteerVerb",
     "SuspendedRow",
+    "context_fold",
     "context_panel",
+    "fold_block_count",
     "group_rows",
     "primary_anchor",
     "rank_rows",
