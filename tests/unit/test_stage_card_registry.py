@@ -310,12 +310,66 @@ async def test_a_day_change_receipts_the_old_panel_and_posts_a_new_one() -> None
 
 
 @pytest.mark.asyncio
-async def test_a_failed_edit_is_logged_and_the_record_stays() -> None:
+async def test_a_failed_edit_is_logged_and_the_record_stays(caplog) -> None:
     registry, client = StageCardRegistry(), _PostingClient()
     await _sync(registry, client, _snapshot_with(["c1"]))
     client._fail = True
-    await _sync(registry, client, _snapshot_with(["c1"], suspend=["c1"]))  # no raise
+    with caplog.at_level(logging.WARNING):
+        await _sync(registry, client, _snapshot_with(["c1"], suspend=["c1"]))  # no raise
     assert registry.panel_shown("C1:1.0").ts == "200.1"
+    assert any(
+        record.levelno == logging.WARNING and "C1:1.0" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+class _FlakyPostClient(_PostingClient):
+    """A posting client whose `chat_postMessage` can be told to fail for
+    exactly the next call, then behaves like `_PostingClient` again."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_post = False
+
+    async def chat_postMessage(self, **payload):
+        if self.fail_next_post:
+            self.fail_next_post = False
+            raise RuntimeError("slack is down")
+        return await super().chat_postMessage(**payload)
+
+
+class _NoTsPostClient(_Client):
+    def __init__(self) -> None:
+        super().__init__()
+        self.posts: list[dict] = []
+
+    async def chat_postMessage(self, **payload):
+        self.posts.append(dict(payload))
+        return {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_repost_on_a_day_change_drops_the_record_and_the_next_sync_posts_fresh() -> None:
+    registry, client = StageCardRegistry(), _FlakyPostClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+
+    client.fail_next_post = True
+    await _sync(registry, client, _snapshot_with(["c1", "c9"], day=date(2026, 9, 9)))
+    assert len(client.updates) == 1  # only the superseded receipt
+    assert registry.panel_shown("C1:1.0") is None
+
+    await _sync(registry, client, _snapshot_with(["c1", "c9"], day=date(2026, 9, 9)))
+    assert len(client.updates) == 1  # no retry of the old message
+    shown = registry.panel_shown("C1:1.0")
+    assert shown is not None and shown.panel.day == "2026-09-09"
+
+
+@pytest.mark.asyncio
+async def test_a_post_that_returns_no_ts_records_nothing() -> None:
+    registry, client = StageCardRegistry(), _NoTsPostClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))  # no raise
+    assert len(client.posts) == 1
+    assert registry.panel_shown("C1:1.0") is None
 
 
 @pytest.mark.asyncio
