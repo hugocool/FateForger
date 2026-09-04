@@ -392,6 +392,9 @@ async def test_retiring_the_panel_receipts_it_and_drops_the_record() -> None:
     assert [u["ts"] for u in client.updates] == ["200.1"]
     block = client.updates[0]["blocks"][0]
     assert "🚫 cancelled" in block["text"]["text"]
+    # The retirement keeps the counts the panel exists to show -- it is not
+    # shrunk to a one-line receipt -- and drops only the live control.
+    assert "rules apply" in block["text"]["text"]
     assert "accessory" not in block
     assert registry.panel_shown("C1:1.0") is None
 
@@ -399,3 +402,17 @@ async def test_retiring_the_panel_receipts_it_and_drops_the_record() -> None:
         client, session_key="C1:1.0", done="🚫 cancelled", logger=logging.getLogger(__name__)
     )
     assert [u["ts"] for u in client.updates] == ["200.1"]
+
+
+@pytest.mark.asyncio
+async def test_a_dm_panel_is_posted_without_a_thread() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+
+    await registry.sync_panel(
+        client, session_key="C1:1.0", snapshot=_snapshot_with(["c1"]), channel="C1",
+        thread_ts=None, logger=logging.getLogger(__name__),
+    )
+
+    assert "thread_ts" not in client.posts[0]
+    shown = registry.panel_shown("C1:1.0")
+    assert shown is not None and shown.thread_ts is None
