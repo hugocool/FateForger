@@ -103,6 +103,18 @@ class Applicability(BaseModel):
         return True
 
 
+class AnchorRef(BaseModel):
+    """One anchor a rule attaches to, as the patcher and the card need it.
+
+    Both fields are minted by this system: the uid at `resolve_anchors`, the
+    name by the model that judged the statement. A card groups by `name` and
+    steers by the constraint uid, never by this one.
+    """
+
+    uid: str
+    name: str
+
+
 class ConstraintView(BaseModel):
     """What the timeboxing patcher consumes.
 
@@ -118,6 +130,9 @@ class ConstraintView(BaseModel):
     status: Status
     source: Source
     frame_slot: str | None = None
+    #: Empty for an unanchored rule. Unanchored and unreachable are different
+    #: things; a card renders these in their own group rather than dropping them.
+    anchors: list[AnchorRef] = Field(default_factory=list)
 
 
 class Constraint(BaseModel):
