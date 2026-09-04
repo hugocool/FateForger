@@ -80,6 +80,8 @@ class DecidedItem(_Frozen):
     #: Present for an assumption: who supplied it. A renderer that needs this
     #: reads the field, never the text.
     filed_by: Literal["planner", "user"] | None = None
+    #: What can be done to this item from the card. Drawn as one overflow.
+    controls: list["Control"] = Field(default_factory=list)
 
 
 class Asking(_Frozen):
@@ -133,6 +135,14 @@ class NextControl(_Frozen):
     kind: Literal["next"] = "next"
 
 
+class DenyControl(_Frozen):
+    """Withdraw one assumption, the planner's or the user's. The kernel removes
+    it and re-opens the cell it satisfied (`DenyAssumption`)."""
+
+    kind: Literal["deny_assumption"] = "deny_assumption"
+    assumption_id: str
+
+
 Control = Annotated[
     Union[
         ApproveControl,
@@ -142,9 +152,12 @@ Control = Annotated[
         BackControl,
         CancelControl,
         NextControl,
+        DenyControl,
     ],
     Field(discriminator="kind"),
 ]
+
+DecidedItem.model_rebuild()
 
 
 class StageCard(_Frozen):
@@ -308,6 +321,7 @@ def _decided(snapshot: PlanningSessionSnapshot) -> list[DecidedItem]:
             kind="assumption",
             ref=assumption.assumption_id,
             filed_by=assumption.filed_by,
+            controls=[DenyControl(assumption_id=assumption.assumption_id)],
         )
         for assumption in snapshot.assumptions
     ]
@@ -540,6 +554,7 @@ __all__ = [
     "Control",
     "DayTypeControl",
     "DecidedItem",
+    "DenyControl",
     "NextControl",
     "StageCard",
     "StageLine",

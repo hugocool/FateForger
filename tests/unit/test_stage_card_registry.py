@@ -223,3 +223,215 @@ async def test_a_receipt_can_carry_a_body_the_card_did_not_have() -> None:
     ]
     assert any("Planning 2026-09-05" in t for t in sections)
     assert not any("2026-09-03" in t for t in sections)
+
+
+from datetime import date
+
+from fateforger.agents.timeboxing.session_contracts import (
+    FactKind,
+    PlanningDay,
+    PlanningFact,
+    PlanningSessionSnapshot,
+    suspension_fact_id,
+)
+
+
+class _PostingClient(_Client):
+    def __init__(self, *, fail: bool = False) -> None:
+        super().__init__(fail=fail)
+        self.posts: list[dict] = []
+
+    async def chat_postMessage(self, **payload):
+        self.posts.append(dict(payload))
+        return {"ok": True, "ts": f"200.{len(self.posts)}"}
+
+
+def _snapshot_with(rows: list[str], *, day: date = date(2026, 9, 8), suspend: list[str] = ()):
+    return PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=4,
+        owner_user_id="U1",
+        planning_day=PlanningDay.lock_default(value=day, timezone="Europe/Amsterdam", lock_revision=1),
+        applicable_constraints=[
+            {"uid": uid, "name": f"rule {uid}", "necessity": "must", "anchors": [], "fade": None} for uid in rows
+        ],
+        facts=[
+            PlanningFact(fact_id=suspension_fact_id(u), kind=FactKind.SUSPENDED_CONSTRAINT,
+                         value={"uid": u, "reason": "not today"}, source="user")
+            for u in suspend
+        ],
+    )
+
+
+async def _sync(registry, client, snapshot):
+    await registry.sync_panel(
+        client, session_key="C1:1.0", snapshot=snapshot, channel="C1", thread_ts="1.0",
+        logger=logging.getLogger(__name__),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_first_sync_posts_the_panel_and_remembers_its_ts() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+    assert [p["thread_ts"] for p in client.posts] == ["1.0"]
+    shown = registry.panel_shown("C1:1.0")
+    assert shown is not None and (shown.ts, shown.thread_ts) == ("200.1", "1.0")
+    assert shown.panel.first_shown_with == frozenset({"c1"})
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_row_set_does_nothing() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+    await _sync(registry, client, _snapshot_with(["c1"]))
+    assert len(client.posts) == 1 and client.updates == []
+
+
+@pytest.mark.asyncio
+async def test_a_suspension_edits_the_panel_in_place_and_keeps_first_shown_with() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1", "c2"]))
+    await _sync(registry, client, _snapshot_with(["c1", "c2"], suspend=["c2"]))
+    assert len(client.posts) == 1
+    assert [u["ts"] for u in client.updates] == ["200.1"]
+    assert registry.panel_shown("C1:1.0").panel.first_shown_with == frozenset({"c1", "c2"})
+
+
+@pytest.mark.asyncio
+async def test_a_day_change_receipts_the_old_panel_and_posts_a_new_one() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+    await _sync(registry, client, _snapshot_with(["c1", "c9"], day=date(2026, 9, 9)))
+    assert [u["ts"] for u in client.updates] == ["200.1"]
+    assert "superseded" in client.updates[0]["blocks"][0]["text"]["text"]
+    assert len(client.posts) == 2
+    assert registry.panel_shown("C1:1.0").panel.first_shown_with == frozenset({"c1", "c9"})
+
+
+@pytest.mark.asyncio
+async def test_a_failed_edit_is_logged_and_the_record_stays(caplog) -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+    client._fail = True
+    with caplog.at_level(logging.WARNING):
+        await _sync(registry, client, _snapshot_with(["c1"], suspend=["c1"]))  # no raise
+    assert registry.panel_shown("C1:1.0").ts == "200.1"
+    assert any(
+        record.levelno == logging.WARNING and "C1:1.0" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+class _FlakyPostClient(_PostingClient):
+    """A posting client whose `chat_postMessage` can be told to fail for
+    exactly the next call, then behaves like `_PostingClient` again."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_post = False
+
+    async def chat_postMessage(self, **payload):
+        if self.fail_next_post:
+            self.fail_next_post = False
+            raise RuntimeError("slack is down")
+        return await super().chat_postMessage(**payload)
+
+
+class _NoTsPostClient(_Client):
+    def __init__(self) -> None:
+        super().__init__()
+        self.posts: list[dict] = []
+
+    async def chat_postMessage(self, **payload):
+        self.posts.append(dict(payload))
+        return {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_repost_on_a_day_change_drops_the_record_and_the_next_sync_posts_fresh() -> None:
+    registry, client = StageCardRegistry(), _FlakyPostClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+
+    client.fail_next_post = True
+    await _sync(registry, client, _snapshot_with(["c1", "c9"], day=date(2026, 9, 9)))
+    assert len(client.updates) == 1  # only the superseded receipt
+    assert registry.panel_shown("C1:1.0") is None
+
+    await _sync(registry, client, _snapshot_with(["c1", "c9"], day=date(2026, 9, 9)))
+    assert len(client.updates) == 1  # no retry of the old message
+    shown = registry.panel_shown("C1:1.0")
+    assert shown is not None and shown.panel.day == "2026-09-09"
+
+
+@pytest.mark.asyncio
+async def test_a_post_that_returns_no_ts_records_nothing() -> None:
+    registry, client = StageCardRegistry(), _NoTsPostClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))  # no raise
+    assert len(client.posts) == 1
+    assert registry.panel_shown("C1:1.0") is None
+
+
+@pytest.mark.asyncio
+async def test_no_locked_day_means_no_panel() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    snapshot = _snapshot_with(["c1"]).model_copy(update={"planning_day": None})
+    await _sync(registry, client, snapshot)
+    assert client.posts == [] and registry.panel_shown("C1:1.0") is None
+
+
+@pytest.mark.asyncio
+async def test_retiring_the_panel_receipts_it_and_drops_the_record() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+
+    await registry.retire_panel(
+        client, session_key="C1:1.0", done="🚫 cancelled", logger=logging.getLogger(__name__)
+    )
+
+    assert [u["ts"] for u in client.updates] == ["200.1"]
+    block = client.updates[0]["blocks"][0]
+    assert "🚫 cancelled" in block["text"]["text"]
+    # The retirement keeps the counts the panel exists to show -- it is not
+    # shrunk to a one-line receipt -- and drops only the live control.
+    assert "rules apply" in block["text"]["text"]
+    assert "accessory" not in block
+    assert registry.panel_shown("C1:1.0") is None
+
+    await registry.retire_panel(
+        client, session_key="C1:1.0", done="🚫 cancelled", logger=logging.getLogger(__name__)
+    )
+    assert [u["ts"] for u in client.updates] == ["200.1"]
+
+
+@pytest.mark.asyncio
+async def test_clearing_the_day_retires_the_panel() -> None:
+    """`GoBack` out of Stage 1 clears `planning_day` when Stage 1 has no
+    skeleton yet. A panel record left standing then carries a "Show rules"
+    control that can never open -- `context_fold` raises with no locked day
+    -- so the panel must be retired, not merely skipped (#281 follow-up)."""
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+
+    cleared = _snapshot_with(["c1"]).model_copy(update={"planning_day": None})
+    await _sync(registry, client, cleared)
+
+    assert [u["ts"] for u in client.updates] == ["200.1"]
+    block = client.updates[0]["blocks"][0]
+    assert "day reopened" in block["text"]["text"]
+    assert "accessory" not in block
+    assert registry.panel_shown("C1:1.0") is None
+
+
+@pytest.mark.asyncio
+async def test_a_dm_panel_is_posted_without_a_thread() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+
+    await registry.sync_panel(
+        client, session_key="C1:1.0", snapshot=_snapshot_with(["c1"]), channel="C1",
+        thread_ts=None, logger=logging.getLogger(__name__),
+    )
+
+    assert "thread_ts" not in client.posts[0]
+    shown = registry.panel_shown("C1:1.0")
+    assert shown is not None and shown.thread_ts is None

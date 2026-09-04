@@ -43,6 +43,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     ApproveArtifact,
     ArtifactKind,
     Cancelled,
+    Committed,
     ConfirmPlanningDay,
     DayType,
     PlanningSessionSnapshot,
@@ -101,6 +102,7 @@ from fateforger.slack_bot.progress_events import (
 )
 from fateforger.slack_bot.reply_guard import agent_reply_text
 from fateforger.slack_bot.stage_card_registry import StageCardRegistry, receipt_body, receipt_label
+from fateforger.slack_bot.stage_context import context_fold
 from fateforger.slack_bot.stage_cards import date_stage_card
 from fateforger.slack_bot.task_cards import (
     FF_TASK_DETAILS_ACTION_ID,
@@ -116,13 +118,19 @@ from fateforger.slack_bot.timeboxing_cards import (
     FF_TIMEBOX_ARTIFACT_CANCEL_ACTION_ID,
     FF_TIMEBOX_ARTIFACT_RETRY_ACTION_ID,
     FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID,
+    FF_TIMEBOX_DECIDED_ACTION_ID,
+    FF_TIMEBOX_SHOW_RULES_ACTION_ID,
+    FF_TIMEBOX_STEER_ACTION_ID,
     TIMEBOX_STALE_CHOICE_TEXT,
     TIMEBOX_TURN_FAILED_TEXT,
+    ArtifactActionMeta,
     HarnessApproveActionPayload,
     _undo_outcome_text,
     harness_approve_block,
     harness_undo_block,
     present_outcome,
+    render_context_fold,
+    render_context_fold_closed,
     render_stage_card,
     timebox_failure_message,
 )
@@ -1688,6 +1696,7 @@ async def _run_adaptive_timebox_turn(
         receipt_body_text = receipt_body(intent, previous.card)
     else:
         done = None
+
     await _stage_cards.transition(
         client,
         session_key=session_key,
@@ -1698,6 +1707,39 @@ async def _run_adaptive_timebox_turn(
         ts=progress_ts,
         logger=logger,
     )
+    # `transition` posts nothing of its own -- the card's message is the
+    # processing message every caller already posted before this turn
+    # started, so the panel is chronologically after that card regardless of
+    # call order. It is posted on the first row-carrying turn (below, via
+    # `sync_panel`) and lands right after that turn's card; every later
+    # turn's card is posted after it in the same thread.
+    if isinstance(outcome, Cancelled):
+        # `transition` above only forgets the card (it pops `_shown` when a
+        # cancelled turn draws no new card); the panel is a separate record
+        # and a cancelled session must not leave a pressable "Show rules"
+        # button behind, so it gets its own retirement receipt here.
+        await _stage_cards.retire_panel(
+            client, session_key=session_key, done=done, logger=logger
+        )
+    elif isinstance(outcome, Committed):
+        # Same reasoning as Cancelled: a committed session is also over, and
+        # must not leave a live control behind either.
+        await _stage_cards.retire_panel(
+            client, session_key=session_key, done="✅ committed", logger=logger
+        )
+    elif not isinstance(outcome, TurnFailed):
+        # `card_thread_ts` is the DM route's sentinel for "this session's
+        # thread"; there is no such thread on a DM, and Slack refuses
+        # `chat_postMessage(thread_ts="dm")` outright, so it becomes a
+        # top-level post there instead.
+        await _stage_cards.sync_panel(
+            client,
+            session_key=session_key,
+            snapshot=current,
+            channel=card_channel,
+            thread_ts=None if card_thread_ts == "dm" else card_thread_ts,
+            logger=logger,
+        )
 
     # A typed day change never relabelled the root; only the button path did
     # (#265). One place now, for both, over the day the kernel accepted.
@@ -2087,6 +2129,133 @@ async def _handle_timebox_artifact_action(
         thread_ts=thread_ts,
         action=envelope,
     )
+
+
+async def _fold_view_for(runtime, *, session_key: str, actor_user_id: str, logger) -> dict:
+    """The fold view for this actor: built from what is on record -- the
+    snapshot for its rows, the panel's own seed (if one is showing) for which
+    of them are new -- or the closed view when the actor does not own this
+    session.
+
+    `load_or_create` returns whatever session exists for `session_key`
+    regardless of who asks; a fold built from someone else's snapshot would
+    hand that session's rows to a user who never owned it.
+    """
+
+    snapshot = await runtime.timeboxing_session_store.load_or_create(
+        session_key, owner_user_id=actor_user_id
+    )
+    if snapshot.owner_user_id != actor_user_id:
+        logger.info(
+            "refused the context fold to a non-owner session_key=%s actor=%s",
+            session_key, actor_user_id,
+        )
+        return render_context_fold_closed()
+    shown = _stage_cards.panel_shown(session_key)
+    first = shown.panel.first_shown_with if shown is not None else None
+    return render_context_fold(context_fold(snapshot, first))
+
+
+async def _handle_show_rules(runtime, client, logger, *, body) -> None:
+    """Open the fold. Reads durable state, changes nothing."""
+
+    action = (body.get("actions") or [{}])[0]
+    trigger_id = body.get("trigger_id") or ""
+    actor_user_id = (body.get("user") or {}).get("id") or ""
+    try:
+        meta = ArtifactActionMeta.model_validate_json(action.get("value") or "")
+    except ValueError:
+        logger.warning("show rules press carried unreadable metadata")
+        return
+    if not (trigger_id and actor_user_id):
+        logger.debug("show rules press missing trigger or actor session_key=%s", meta.session_key)
+        return
+    try:
+        view = await _fold_view_for(
+            runtime, session_key=meta.session_key, actor_user_id=actor_user_id, logger=logger
+        )
+        await client.views_open(trigger_id=trigger_id, view=view)
+    except Exception as exc:  # noqa: BLE001 - a modal that did not open is not a failed session
+        logger.warning(
+            "could not open the context fold session_key=%s error_type=%s error=%s",
+            meta.session_key, type(exc).__name__, exc,
+        )
+        channel_id = (body.get("channel") or {}).get("id") or ""
+        if channel_id:
+            try:
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=actor_user_id,
+                    text="Couldn't open the rules just now — press Show rules again.",
+                )
+            except Exception:  # noqa: BLE001 - the ephemeral is itself best-effort
+                logger.warning("could not post the retry ephemeral session_key=%s", meta.session_key)
+
+
+def _pick_value(body) -> str:
+    action = (body.get("actions") or [{}])[0]
+    selected = action.get("selected_option") or {}
+    return str(selected.get("value") or action.get("value") or "")
+
+
+async def _handle_fold_pick(runtime, client, logger, *, body) -> None:
+    """One overflow pick inside the modal: the same path as a card button,
+    then the modal is redrawn so the row shows what just happened."""
+
+    value = _pick_value(body)
+    actor_user_id = (body.get("user") or {}).get("id") or ""
+    try:
+        meta = ArtifactActionMeta.model_validate_json(value)
+    except ValueError:
+        logger.warning("fold pick carried unreadable metadata")
+        return
+    view_id = ((body.get("view") or {}).get("id")) or ((body.get("container") or {}).get("view_id")) or ""
+    shown = _stage_cards.panel_shown(meta.session_key)
+    if shown is None:
+        # `retire_panel` drops the panel record on Cancelled/Committed, but a
+        # modal opened earlier still shows live menus. A view press has no
+        # channel for an ephemeral, so the modal itself is the only place
+        # left to say the session is over.
+        logger.warning("fold pick for a session with no panel session_key=%s", meta.session_key)
+        if view_id:
+            try:
+                await client.views_update(view_id=view_id, view=render_context_fold_closed())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "could not close the context fold session_key=%s error_type=%s error=%s",
+                    meta.session_key, type(exc).__name__, exc,
+                )
+        return
+    if not actor_user_id:
+        logger.debug("fold pick with no actor session_key=%s", meta.session_key)
+        return
+    # A modal press carries no message for `thread_ts` to come from, so the
+    # panel record is the only source. On the DM route `shown.thread_ts` is
+    # None, and every other turn on that route passes the `"dm"` sentinel in
+    # exactly that case -- doing the same here keeps this reply top-level
+    # and re-arms the two `"dm"` guards in `_run_adaptive_timebox_turn`,
+    # rather than threading the turn under the panel message.
+    thread_ts = shown.thread_ts or "dm"
+    action = (body.get("actions") or [{}])[0]
+    await _handle_timebox_artifact_action(
+        runtime=runtime, client=client, logger=logger, value=value,
+        channel_id=shown.channel, thread_ts=thread_ts, actor_user_id=actor_user_id,
+        interaction_id=_card_interaction_id(
+            action, str(action.get("action_id") or ""), shown.thread_ts or shown.ts
+        ),
+    )
+    if not view_id:
+        logger.debug("fold pick carried no view id session_key=%s", meta.session_key)
+        return
+    try:
+        view = await _fold_view_for(
+            runtime, session_key=meta.session_key, actor_user_id=actor_user_id, logger=logger
+        )
+        await client.views_update(view_id=view_id, view=view)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "could not refresh the context fold session_key=%s error_type=%s error=%s",
+            meta.session_key, type(exc).__name__, exc,
+        )
 
 
 async def _handle_dsh_command(*, body, client, logger) -> None:
@@ -4367,7 +4536,7 @@ def register_handlers(
         thread_ts = message.get("thread_ts") or message.get("ts") or ""
         actor_user_id = (body.get("user") or {}).get("id") or ""
         action = (body.get("actions") or [{}])[0]
-        value = action.get("value") or ""
+        value = _pick_value(body)
         if not (channel_id and thread_ts and actor_user_id and value):
             return
         await _handle_timebox_artifact_action(
@@ -4392,6 +4561,21 @@ def register_handlers(
     # second place a stale press could be judged, and the kernel is the only
     # one that knows what question is open.
     app.action(FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID)(_on_timebox_artifact_action)
+    # A Deny pick on a decided item is the same envelope read from an
+    # overflow's `selected_option` instead of a button's `value` --
+    # `_pick_value` already falls back between the two, so this is the same
+    # handler rather than a near-duplicate `_handle_decided_pick`.
+    app.action(FF_TIMEBOX_DECIDED_ACTION_ID)(_on_timebox_artifact_action)
+
+    @app.action(FF_TIMEBOX_SHOW_RULES_ACTION_ID)
+    async def _on_show_rules(ack, body, client, logger):
+        await ack()
+        await _handle_show_rules(runtime, client, logger, body=body)
+
+    @app.action(FF_TIMEBOX_STEER_ACTION_ID)
+    async def _on_fold_pick(ack, body, client, logger):
+        await ack()
+        await _handle_fold_pick(runtime, client, logger, body=body)
 
     @app.action(FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID)
     async def on_timebox_commit_day_select_action(ack, body, client, logger):

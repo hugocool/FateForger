@@ -500,3 +500,15 @@ def test_the_stage_of_a_question_comes_from_the_catalog() -> None:
     frame = PendingBlocker(requirement_id="skeleton.day_frame", fact_kind=FactKind.DAY_FRAME, options=[])
     outcome = AwaitingUser(requirement_id="skeleton.day_frame", question="q", why_needed="w")
     assert _map(outcome, _snapshot(pending_blocker=frame)).stage.index == 1
+
+
+def test_every_decided_assumption_carries_a_deny_control_and_facts_do_not() -> None:
+    from fateforger.slack_bot.stage_cards import DenyControl
+
+    card = _map(
+        AwaitingUser(requirement_id="skeleton.requested_activity", question="q", why_needed="w"),
+        _snapshot(),
+    )
+    by_ref = {item.ref: item for item in card.decided}
+    assert by_ref["a-1"].controls == [DenyControl(assumption_id="a-1")]
+    assert by_ref["activity-1"].controls == []

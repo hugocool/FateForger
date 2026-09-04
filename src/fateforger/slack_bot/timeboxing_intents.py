@@ -136,9 +136,26 @@ class InterpretedTimeboxTurn(_StrictModel):
 
 
 class ArtifactActionMeta(_StrictModel):
+    """Every typed review decision this route draws, bound to its session.
+
+    Aliases below (`sk`, `rev`, `d`, `cu`, `aid`, `n`) exist for one reason:
+    an overflow option's `value` is capped by Slack at 150 chars, and a real
+    session key (a Slack channel and thread timestamp) plus a real constraint
+    uid (32 hex chars) or assumption id (a 36-char uuid) leave no room for
+    this schema's own field names -- `"expected_revision":` alone is 21
+    bytes. `populate_by_name=True` means either spelling decodes, so a
+    button's value (still the full field names -- 2000 chars is no constraint)
+    and an overflow's value (the aliases, via `_option_value` in
+    `timeboxing_cards.py`) both decode through the one path in
+    `intent_from_artifact_action`, which reads attributes and never cares
+    which spelling arrived on the wire.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
     schema_version: Literal[1] = 1
-    session_key: str = Field(min_length=1)
-    expected_revision: int = Field(ge=0)
+    session_key: str = Field(min_length=1, alias="sk")
+    expected_revision: int = Field(ge=0, alias="rev")
     decision: Literal[
         "advance",
         "approve",
@@ -148,7 +165,8 @@ class ArtifactActionMeta(_StrictModel):
         "choose_option",
         "deny_assumption",
         "restore",
-    ]
+        "steer_not_today",
+    ] = Field(alias="d")
     artifact_id: str | None = Field(default=None, min_length=1)
     artifact_revision: int | None = Field(default=None, ge=1)
     artifact_digest: str | None = Field(
@@ -157,8 +175,9 @@ class ArtifactActionMeta(_StrictModel):
     revision_instruction: str | None = Field(default=None, min_length=1)
     requirement_id: str | None = Field(default=None, min_length=1)
     option_id: str | None = Field(default=None, min_length=1)
-    assumption_id: str | None = Field(default=None, min_length=1)
-    constraint_uid: str | None = Field(default=None, min_length=1)
+    assumption_id: str | None = Field(default=None, min_length=1, alias="aid")
+    constraint_uid: str | None = Field(default=None, min_length=1, alias="cu")
+    note: str | None = Field(default=None, min_length=1, alias="n")
 
     @model_validator(mode="after")
     def artifact_decisions_have_exact_identity(self) -> ArtifactActionMeta:
@@ -181,6 +200,8 @@ class ArtifactActionMeta(_StrictModel):
             raise ValueError("denying an assumption requires its id")
         if self.decision == "restore" and self.constraint_uid is None:
             raise ValueError("restoring a rule requires its uid")
+        if self.decision == "steer_not_today" and self.constraint_uid is None:
+            raise ValueError("a steer press names the rule it suspends")
         return self
 
 
@@ -440,6 +461,17 @@ def _proposed_day_context(artifact: PlanningArtifact | None) -> dict[str, str] |
     }
 
 
+def _suspension_fact(uid: str, note: str | None) -> PlanningFact:
+    """One builder for the suspension fact, so a press and a typed sentence
+    file the identical fact at the identical id -- never two shapes drifting."""
+    return PlanningFact(
+        fact_id=suspension_fact_id(uid),
+        kind=FactKind.SUSPENDED_CONSTRAINT,
+        value={"uid": uid, "reason": "not today", "note": note},
+        source="user",
+    )
+
+
 def _intent_from_interpreted(
     interpreted: InterpretedTimeboxTurn,
     *,
@@ -483,14 +515,7 @@ def _intent_from_interpreted(
         if interpreted.constraint_uid is None or interpreted.constraint_uid not in offered:
             raise ValueError("steer_not_today names a rule not among the card's rows")
         return ProvidePlanningFacts(
-            facts=[
-                PlanningFact(
-                    fact_id=suspension_fact_id(interpreted.constraint_uid),
-                    kind=FactKind.SUSPENDED_CONSTRAINT,
-                    value={"uid": interpreted.constraint_uid, "reason": "not today"},
-                    source="user",
-                )
-            ]
+            facts=[_suspension_fact(interpreted.constraint_uid, note=None)]
         )
     if interpreted.decision == "restore":
         suspended: set[object] = set()
@@ -629,6 +654,11 @@ def intent_from_artifact_action(
         intent = DenyAssumption(assumption_id=cast(str, meta.assumption_id))
     elif meta.decision == "restore":
         intent = RestoreConstraint(constraint_uid=cast(str, meta.constraint_uid))
+    elif meta.decision == "steer_not_today":
+        uid = cast(str, meta.constraint_uid)
+        # The same id the typed path files (Phase 1 Task 8), so a press and
+        # a sentence cannot suspend one rule twice.
+        intent = ProvidePlanningFacts(facts=[_suspension_fact(uid, note=meta.note)])
     elif meta.decision == "back":
         intent = GoBack()
     else:

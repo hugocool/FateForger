@@ -35,7 +35,12 @@ from fateforger.slack_bot.timeboxing_cards import (
 
 class _Client:
     def __init__(self) -> None:
+        self.posts: list[dict] = []
         self.updates: list[dict] = []
+
+    async def chat_postMessage(self, **payload):
+        self.posts.append(dict(payload))
+        return {"ok": True, "ts": "9.9"}
 
     async def chat_update(self, **payload):
         self.updates.append(dict(payload))
