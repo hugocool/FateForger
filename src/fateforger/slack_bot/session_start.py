@@ -52,6 +52,10 @@ OPEN_SESSION_UNDER_WAY_HOURS = 1
 #: expiry must leave it alone.
 UNTOUCHED_REVISION = 1
 
+#: The second half of a session key opened in a DM (`f"{channel}:dm"`), where
+#: there is no thread root. A convention this system minted, not user text.
+DM_SESSION_SUFFIX = "dm"
+
 #: The value of `fateforger.core.runtime.USER_CHANNEL_AGENT_TYPE`, repeated
 #: here rather than imported: `core.runtime` imports the session store, whose
 #: importers reach this module, and the cycle would only show up at startup.
@@ -87,6 +91,12 @@ def _event_local(reminder: PlanningReminder) -> datetime:
     if tz_name:
         return parsed.astimezone(ZoneInfo(tz_name))
     return parsed
+
+
+def _day_label(day: date) -> str:
+    """How a planning day is written to the user. One place, one format."""
+
+    return day.strftime("%a %-d %b")
 
 
 def _lock_timezone(reminder: PlanningReminder) -> str:
@@ -177,11 +187,22 @@ class SessionStarter:
         except Exception:
             logger.exception("session_start: opening turn failed for %s", surface.session_key)
             record_error(component="session_start", error_type="open_failure")
-            await self._relabel_root(surface.channel_id, surface.root_ts, state="canceled")
+            await self._relabel_root(
+                surface.channel_id, surface.root_ts, state="canceled", day=day
+            )
             return
 
         permalink = await self._permalink(surface.channel_id, surface.root_ts)
-        day_label = day.strftime("%a %-d %b")
+        day_label = _day_label(day)
+        if not permalink:
+            # Every line of the ladder ends in the link. Without it they end in
+            # a dangling dash -- worth saying out loud, not worth withholding
+            # the nudges over.
+            logger.warning(
+                "session_start: no permalink for %s; nudges will carry no link",
+                surface.session_key,
+            )
+            record_error(component="session_start", error_type="permalink_failure")
         await self._dm(user_id=user_id, content=dm_open_line(day_label=day_label, permalink=permalink))
 
         # The ladder is armed after the turn on purpose: the turn itself records
@@ -192,7 +213,7 @@ class SessionStarter:
             for rung in range(len(LADDER_OFFSETS))
         )
         try:
-            await self._haunting.schedule_followup(
+            armed = await self._haunting.schedule_followup(
                 message_id=f"planning_session:{surface.session_key}",
                 topic_id=surface.session_key,
                 task_id=None,
@@ -207,6 +228,14 @@ class SessionStarter:
                     cancel_on_user_reply=True,
                 ),
             )
+            if armed is None:
+                # Not a failure: the service returns None when this user's
+                # admonishment settings say not to nudge. Silence here reads
+                # exactly like an armed ladder that never fires.
+                logger.info(
+                    "session_start: ladder declined by admonishment settings for %s",
+                    user_id,
+                )
         except Exception:
             logger.exception("session_start: arming the ladder failed for %s", surface.session_key)
             record_error(component="session_start", error_type="arm_failure")
@@ -235,7 +264,7 @@ class SessionStarter:
         if rows is None:
             return
 
-        live, closed_keys = await self._sweep(user_id=user_id, rows=rows)
+        live, closed_keys = await self._sweep(user_id=user_id, rows=rows, day=day)
 
         if live:
             logger.info(
@@ -257,7 +286,7 @@ class SessionStarter:
             )
             return
 
-        await self._dm(user_id=user_id, content=missed_line())
+        await self._dm(user_id=user_id, content=missed_line(day_label=_day_label(day)))
         try:
             await self._guardian.reconcile_user(user_id=user_id)
         except Exception:
@@ -265,7 +294,7 @@ class SessionStarter:
             record_error(component="session_start", error_type="expire_failure")
 
     async def _sweep(
-        self, *, user_id: str, rows: list[OpenSessionRow]
+        self, *, user_id: str, rows: list[OpenSessionRow], day: date
     ) -> tuple[list[OpenSessionRow], set[str]]:
         """Close what this starter opened and nobody answered; say what stands.
 
@@ -282,7 +311,7 @@ class SessionStarter:
         for row in rows:
             if await self._auto_opened(row):
                 if row.revision <= UNTOUCHED_REVISION:
-                    await self._close_untouched(user_id=user_id, row=row)
+                    await self._close_untouched(user_id=user_id, row=row, day=day)
                     closed.add(row.session_key)
                 else:
                     live.append(row)
@@ -336,7 +365,9 @@ class SessionStarter:
             now = now.astimezone(timezone.utc).replace(tzinfo=None)
         return now - updated <= LIVE_RECENCY
 
-    async def _close_untouched(self, *, user_id: str, row: OpenSessionRow) -> None:
+    async def _close_untouched(
+        self, *, user_id: str, row: OpenSessionRow, day: date
+    ) -> None:
         """Shut one session nobody worked in: ladder off, cancelled, relabelled."""
 
         session_key = row.session_key
@@ -366,10 +397,18 @@ class SessionStarter:
         except Exception:
             logger.exception("session_expire: cancel turn failed for %s", session_key)
             record_error(component="session_start", error_type="expire_failure")
-        await self._relabel_root(channel_id, root_ts, state="missed")
+        if root_ts == DM_SESSION_SUFFIX:
+            # A DM session has no thread root: nothing to relabel and nowhere
+            # to post the missed line. The suffix is one this system minted, so
+            # reading it is identity, not interpretation.
+            logger.info(
+                "session_expire: %s is a DM session; no root to relabel", session_key
+            )
+            return
+        await self._relabel_root(channel_id, root_ts, state="missed", day=day)
         try:
             await self._client.chat_postMessage(
-                channel=channel_id, thread_ts=root_ts, text=missed_line()
+                channel=channel_id, thread_ts=root_ts, text=missed_line(day_label=_day_label(day))
             )
         except Exception:
             logger.exception("session_expire: thread line failed for %s", session_key)
@@ -409,6 +448,20 @@ class SessionStarter:
                 day,
             )
             return True
+        # `standing`'s recency window is an hour wide. A planning event longer
+        # than that, or a restart past it, leaves the session already open for
+        # this day invisible there -- and the day would get a second one.
+        rows = await self._open_sessions_for_day(user_id=user_id, day=day)
+        if rows is None:
+            return True
+        if rows:
+            logger.info(
+                "session_start: %s already has %s open for %s; not starting",
+                user_id,
+                rows[0].session_key,
+                day,
+            )
+            return True
         return False
 
     async def _open_sessions_for_day(
@@ -419,7 +472,7 @@ class SessionStarter:
                 owner_user_id=user_id, planning_date=day
             )
         except Exception:
-            logger.exception("session_expire: open-session lookup failed for %s", user_id)
+            logger.exception("session guard: open-session lookup failed for %s", user_id)
             record_error(component="session_start", error_type="guard_failure")
             return None
 
@@ -442,13 +495,18 @@ class SessionStarter:
             logger.exception("session_start: DM failed for %s", user_id)
             record_error(component="session_start", error_type="dm_failure")
 
-    async def _relabel_root(self, channel_id: str, root_ts: str, *, state: str) -> None:
+    async def _relabel_root(
+        self, channel_id: str, root_ts: str, *, state: str, day: date | None = None
+    ) -> None:
+        # The day is what makes one relabelled root tell itself apart from the
+        # next one in the same channel; both paths that relabel know it.
+        title = "Timeboxing session" if day is None else f"Timeboxing session for {_day_label(day)}"
         try:
             await self._client.chat_update(
                 channel=channel_id,
                 ts=root_ts,
                 text=timeboxing_thread_root_text(
-                    title="Timeboxing session", request_excerpt=None, state=state
+                    title=title, request_excerpt=None, state=state
                 ),
             )
         except Exception:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -98,15 +99,22 @@ class _Ledger:
 
 
 class _Haunting:
-    def __init__(self, events=None):
+    def __init__(self, events=None, *, declined=False):
         self.scheduled = []
         self.cancelled = []
         self._events = events
+        # The service returns None when the user's admonishment settings say
+        # not to nudge -- indistinguishable from an armed ladder at the call
+        # site unless it is read.
+        self._declined = declined
 
     async def schedule_followup(self, **kwargs):
         if self._events is not None:
             self._events.append("schedule_followup")
         self.scheduled.append(kwargs)
+        if self._declined:
+            return None
+        return object()
 
     async def cancel_followups(self, **kwargs):
         self.cancelled.append(kwargs)
@@ -129,8 +137,9 @@ class _Guardian:
 
 
 class _Client:
-    def __init__(self):
+    def __init__(self, *, permalink="https://slack/p"):
         self.posted, self.updates = [], []
+        self._permalink = permalink
 
     async def chat_postMessage(self, **p):
         self.posted.append(p)
@@ -141,13 +150,13 @@ class _Client:
         return {"ok": True}
 
     async def chat_getPermalink(self, **_):
-        return {"permalink": "https://slack/p"}
+        return {"permalink": self._permalink}
 
     async def conversations_invite(self, **_):
         return {"ok": True}
 
 
-def _starter(monkeypatch, *, ledger, haunting=None, runtime=None, guardian=None, turns=None, events=None):
+def _starter(monkeypatch, *, ledger, haunting=None, runtime=None, guardian=None, turns=None, events=None, client=None):
     turns = [] if turns is None else turns
 
     async def _deliver(**kwargs):
@@ -157,7 +166,7 @@ def _starter(monkeypatch, *, ledger, haunting=None, runtime=None, guardian=None,
 
     monkeypatch.setattr("fateforger.slack_bot.session_start._deliver_timebox_turn", _deliver)
     return SessionStarter(
-        runtime=runtime or _Runtime(), client=_Client(),
+        runtime=runtime or _Runtime(), client=client or _Client(),
         focus=FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"]),
         guardian=guardian or _Guardian(), ledger=ledger, haunting_service=haunting or _Haunting(),
         target_channel="C1", now=lambda: START.astimezone(timezone.utc),
@@ -412,3 +421,92 @@ async def test_expire_says_nothing_while_another_session_still_stands(monkeypatc
 
     assert turns == [] and haunting.cancelled == []
     assert runtime.sent == [] and guardian.reconciled == []
+
+
+@pytest.mark.asyncio
+async def test_a_session_already_open_for_the_day_blocks_the_start(monkeypatch):
+    # `standing`'s recency window is an hour wide; a planning event longer than
+    # that, or a restart past it, leaves the session it already opened invisible
+    # there -- and the day gets a second one.
+    haunting = _Haunting()
+    ledger = _Ledger(rows=[_row("C1:already", 1)])
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert turns == [] and haunting.scheduled == []
+    assert starter._client.posted == []
+
+
+@pytest.mark.asyncio
+async def test_expire_closes_a_dm_keyed_session_without_a_thread_line(monkeypatch):
+    haunting, runtime = _Haunting(), _Runtime()
+    ledger = _Ledger(rows=[_row("D1:dm", 1)])
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime)
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert haunting.cancelled == [{"topic_id": "D1:dm"}]
+    assert turns[0]["thread_ts"] == "dm" and turns[0]["channel_id"] == "D1"
+    assert starter._client.updates == [], "there is no thread root to relabel in a DM"
+    assert starter._client.posted == [], "and no thread to post the missed line into"
+    assert any("Missed" in m.content for m, _ in runtime.sent)
+
+
+def test_the_agent_type_matches_the_runtime_it_mirrors():
+    # Repeated rather than imported to dodge an import cycle; a copy that
+    # drifts routes the DM at an agent nobody registered.
+    from fateforger.core import runtime as core_runtime
+
+    from fateforger.slack_bot import session_start as slack_session_start
+
+    assert slack_session_start.USER_CHANNEL_AGENT_TYPE == core_runtime.USER_CHANNEL_AGENT_TYPE
+
+
+@pytest.mark.asyncio
+async def test_the_missed_line_names_the_day_that_was_missed(monkeypatch):
+    # An evening event plans tomorrow: "today's planning session" names the
+    # wrong day for every session that does.
+    runtime = _Runtime()
+    ledger = _Ledger(rows=[_row("C1:root.1", 1)])
+    starter, _ = _starter(monkeypatch, ledger=ledger, runtime=runtime)
+    evening = START.replace(hour=18)
+    reminder = PlanningReminder(
+        scope="U1", kind=SESSION_EXPIRE_KIND, attempt=1, message="", user_id="U1", channel_id="D1",
+        event_start=evening.isoformat(), event_end=(evening + timedelta(minutes=30)).isoformat(), event_tz=AMS,
+    )
+
+    await starter.expire(reminder)
+
+    assert any("Sat 5 Sep" in m.content for m, _ in runtime.sent)
+    assert "Sat 5 Sep" in starter._client.posted[-1]["text"]
+    assert "Sat 5 Sep" in starter._client.updates[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_a_ladder_the_settings_declined_says_so(monkeypatch, caplog):
+    haunting = _Haunting(declined=True)
+    starter, _ = _starter(monkeypatch, ledger=_Ledger(), haunting=haunting)
+
+    with caplog.at_level(logging.INFO, logger="fateforger.slack_bot.session_start"):
+        await starter.start(_reminder())
+
+    assert "declined" in caplog.text and "U1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_missing_permalink_is_loud_and_still_arms(monkeypatch):
+    errors = []
+    monkeypatch.setattr(
+        "fateforger.slack_bot.session_start.record_error",
+        lambda **kwargs: errors.append(kwargs),
+    )
+    haunting = _Haunting()
+    starter, _ = _starter(
+        monkeypatch, ledger=_Ledger(), haunting=haunting, client=_Client(permalink="")
+    )
+
+    await starter.start(_reminder())
+
+    assert {"component": "session_start", "error_type": "permalink_failure"} in errors
+    assert haunting.scheduled, "a linkless ladder still beats no ladder"

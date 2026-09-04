@@ -60,7 +60,8 @@ def test_an_attempt_past_the_ladder_uses_the_last_line() -> None:
 def test_open_and_missed_lines() -> None:
     assert "https://x/p" in dm_open_line(day_label="Fri 4 Sep", permalink="https://x/p")
     assert "Fri 4 Sep" in dm_open_line(day_label="Fri 4 Sep", permalink="https://x/p")
-    assert missed_line()
+    # The day it plans, not the day it runs: an evening session plans tomorrow.
+    assert "Sat 5 Sep" in missed_line(day_label="Sat 5 Sep")
 
 
 def test_the_policy_module_never_reads_user_text() -> None:

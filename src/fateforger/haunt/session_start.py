@@ -65,8 +65,14 @@ def dm_open_line(*, day_label: str, permalink: str) -> str:
     return f"Your planning session for {day_label} is open — {permalink}"
 
 
-def missed_line() -> str:
-    return "Missed today's planning session."
+def missed_line(*, day_label: str) -> str:
+    """The line for a session that expired unplanned.
+
+    It names the day the session was for, not the day it ran: an evening
+    session plans tomorrow, and "today's planning session" misnames it.
+    """
+
+    return f"Missed the planning session for {day_label}."
 
 
 __all__ = [
