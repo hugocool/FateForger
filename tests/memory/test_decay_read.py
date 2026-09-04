@@ -89,7 +89,7 @@ def test_the_read_path_is_still_model_free():
     allowed = {
         "__future__",
         "datetime",
-        "memory.anchor_store",
+        "memory.anchor_store",  # SQLite over system-minted uids; no model calls
         "memory.constraint",
         "memory.constraint_store",
         "memory.models",
