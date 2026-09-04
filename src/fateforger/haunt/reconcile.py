@@ -202,7 +202,15 @@ class PlanningSessionRule:
             )
             if anchor_found and anchor_in_window:
                 anchor_tz_name = _event_tz_name(anchor)
-                anchor_tz = ZoneInfo(anchor_tz_name) if anchor_tz_name else timezone.utc
+                # No `timeZone` name means read the offset the event's own
+                # `dateTime` carries (e.g. "+02:00") rather than assuming UTC --
+                # that offset decides which side of the 14:00 cutoff the event
+                # falls on, and forcing UTC silently shifted it.
+                anchor_tz = (
+                    ZoneInfo(anchor_tz_name)
+                    if anchor_tz_name
+                    else (_event_native_tzinfo(anchor) or timezone.utc)
+                )
                 anchor_start = _parse_event_dt(anchor.get("start"), tz=anchor_tz)
                 anchor_end = _parse_event_dt(anchor.get("end"), tz=anchor_tz)
                 if anchor_start is not None and anchor_end is not None:
@@ -219,7 +227,10 @@ class PlanningSessionRule:
                             channel_id=channel_id,
                             event_start=anchor_start.isoformat(),
                             event_end=anchor_end.isoformat(),
-                            event_tz=anchor_tz_name or "UTC",
+                            # None when there is no IANA name: the consumer reads
+                            # the offset already embedded in event_start's ISO
+                            # string rather than being handed a lossy "UTC".
+                            event_tz=anchor_tz_name,
                         )
                         jobs = [
                             DesiredJob(
@@ -235,9 +246,18 @@ class PlanningSessionRule:
                         ]
                         self._log_evaluate_outcome(outcome="anchor_ahead", scope=scope, user_id=user_id, planning_event_id=planning_event_id, start=start, end=end, anchor_found=anchor_found, anchor_in_window=anchor_in_window, stored_hit=stored_hit, list_count=list_count, fallback_hit=fallback_hit, jobs_count=len(jobs))
                         return jobs
-                    # The event has passed. It counts only if the day it planned
-                    # was committed; otherwise the planning session is missing again.
-                    if await self._committed_for(user_id=user_id, day=planning_day_for(local_start), now=start):
+                    # The event has passed. It counts only if the day it
+                    # planned is still relevant to this window (today or
+                    # later, UTC) *and* was committed. The anchor id is one
+                    # stable id reused every day (`planning_event_id_for_user`),
+                    # so a stale event -- get_event still resolves it days
+                    # after the day it named -- must not be read as "today is
+                    # planned" forever; that is indistinguishable from an
+                    # absent anchor and must fall through exactly like one.
+                    day = planning_day_for(local_start)
+                    if day >= start.date() and await self._committed_for(
+                        user_id=user_id, day=day, now=start
+                    ):
                         self._log_evaluate_outcome(outcome="anchor_past_committed", scope=scope, user_id=user_id, planning_event_id=planning_event_id, start=start, end=end, anchor_found=anchor_found, anchor_in_window=anchor_in_window, stored_hit=stored_hit, list_count=list_count, fallback_hit=fallback_hit, jobs_count=0)
                         return []
                     # fall through to the stored/fallback checks and the nudge ladder
@@ -818,6 +838,30 @@ def _event_tz_name(event: dict) -> str | None:
         name = start.get("timeZone")
         return str(name) if name else None
     return None
+
+
+def _event_native_tzinfo(event: dict) -> Any | None:
+    """The offset the event's own ``dateTime`` string carries, if any.
+
+    Distinct from ``_event_tz_name``: a "timeZone" key is an IANA name
+    ("Europe/Amsterdam"); this reads the fixed UTC offset embedded directly
+    in ``dateTime`` (e.g. the ``+02:00`` in ``2026-09-03T15:00:00+02:00``)
+    when no such name is present. Returns ``None`` for a naive value.
+    """
+    start = event.get("start")
+    if isinstance(start, dict):
+        raw = start.get("dateTime")
+    elif isinstance(start, str):
+        raw = start
+    else:
+        return None
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = date_parser.isoparse(raw)
+    except Exception:
+        return None
+    return parsed.tzinfo
 
 
 def _parse_event_dt(raw: Any, *, tz: timezone) -> datetime | None:

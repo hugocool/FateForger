@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -140,3 +140,111 @@ async def test_a_moved_event_moves_its_jobs_under_the_same_keys() -> None:
 
     assert {job.id for job in scheduler.get_jobs()} == first_ids
     assert _jobs_by_kind(scheduler)[SESSION_START_KIND].trigger.run_date == start + timedelta(hours=1)
+
+
+class _DayAwareLedger:
+    """A ledger that is committed for exactly one day, to prove which day
+    `evaluate` actually asked about."""
+
+    def __init__(self, committed_day: date | None):
+        self._committed_day = committed_day
+        self.asked: list[dict] = []
+
+    async def standing_for(self, **kwargs):
+        self.asked.append(kwargs)
+        committed = kwargs["planned_from"] == self._committed_day
+        return TimeboxingStanding(committed_session_key="C1:1.0" if committed else None)
+
+
+@pytest.mark.asyncio
+async def test_a_stale_anchor_with_a_committed_old_day_still_nudges_today() -> None:
+    """A stable per-user anchor id can outlive the day it named.
+
+    `planning_event_id_for_user` mints one id reused every day; `get_event`
+    keeps resolving it long after the day it planned has passed. If that
+    stale day happened to be committed, the reconciler must not read that as
+    "today is planned" -- it must fall through exactly as it would for an
+    absent anchor.
+    """
+    scheduler = FakeScheduler()
+    stale_start = datetime(2026, 9, 1, 9, 0, tzinfo=ZoneInfo(AMS))
+    ledger = _Ledger(committed_key="C1:1.0")
+    reconciler = _reconciler(scheduler, event=_event(stale_start), ledger=ledger)
+    now = datetime(2026, 9, 4, 8, 0, tzinfo=ZoneInfo(AMS)).astimezone(timezone.utc)
+
+    await reconciler.reconcile_missing_planning(
+        scope="U1", user_id="U1", channel_id="D1", planning_event_id="ffplanning1", now=now
+    )
+
+    kinds = set(_jobs_by_kind(scheduler))
+    assert SESSION_START_KIND not in kinds
+    assert SESSION_EXPIRE_KIND not in kinds
+    assert any(kind.startswith("nudge") for kind in kinds)
+    # The stale day's committed-ness was never even worth asking about.
+    assert ledger.asked == []
+
+
+@pytest.mark.asyncio
+async def test_a_tzless_offset_event_uses_its_own_offset_for_the_cutoff() -> None:
+    """No `timeZone` name must not mean "treat it as UTC" -- that silently
+    shifts which side of the 14:00 cutoff the event falls on. 15:00+02:00 is
+    past the cutoff (plans the next day); 13:00 UTC (the same instant,
+    wrongly read in UTC) is not.
+    """
+    scheduler = FakeScheduler()
+    event = {
+        "id": "ffplanning1",
+        "summary": "Daily planning session",
+        "start": {"dateTime": "2026-09-03T15:00:00+02:00"},
+        "end": {"dateTime": "2026-09-03T15:30:00+02:00"},
+    }
+    now = datetime(2026, 9, 4, 20, 0, tzinfo=timezone.utc)
+
+    # The event plans 2026-09-04 (past the 14:00 cutoff at its own offset).
+    # A ledger committed for that correct day silences the reconciler.
+    committed_correct_day = _DayAwareLedger(committed_day=date(2026, 9, 4))
+    reconciler = _reconciler(scheduler, event=event, ledger=committed_correct_day)
+    await reconciler.reconcile_missing_planning(
+        scope="U1", user_id="U1", channel_id="D1", planning_event_id="ffplanning1", now=now
+    )
+    assert committed_correct_day.asked[0]["planned_from"] == date(2026, 9, 4)
+    assert scheduler.get_jobs() == []
+
+    # A ledger committed only for the wrong day (what a UTC-forcing bug would
+    # have asked about) must not silence anything -- the nudge ladder fires.
+    scheduler2 = FakeScheduler()
+    committed_wrong_day = _DayAwareLedger(committed_day=date(2026, 9, 3))
+    reconciler2 = _reconciler(scheduler2, event=event, ledger=committed_wrong_day)
+    await reconciler2.reconcile_missing_planning(
+        scope="U1", user_id="U1", channel_id="D1", planning_event_id="ffplanning1", now=now
+    )
+    assert committed_wrong_day.asked[0]["planned_from"] == date(2026, 9, 4)
+    kinds = set(_jobs_by_kind(scheduler2))
+    assert SESSION_START_KIND not in kinds
+    assert any(kind.startswith("nudge") for kind in kinds)
+
+
+@pytest.mark.asyncio
+async def test_expire_after_is_honoured() -> None:
+    scheduler = FakeScheduler()
+    start = datetime(2026, 9, 4, 9, 0, tzinfo=ZoneInfo(AMS))
+    client = DummyCalendarClient(events=[])
+    client.event_lookup[("primary", "ffplanning1")] = _event(start)
+    rule = PlanningSessionRule(
+        calendar_client=client,
+        config=PlanningRuleConfig(expire_after=timedelta(minutes=2)),
+    )
+
+    async def dispatch(reminder):
+        return None
+
+    reconciler = PlanningReconciler(scheduler, calendar_client=client, dispatcher=dispatch, rule=rule)
+    now = datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc)
+
+    await reconciler.reconcile_missing_planning(
+        scope="U1", user_id="U1", channel_id="D1", planning_event_id="ffplanning1", now=now
+    )
+
+    jobs = _jobs_by_kind(scheduler)
+    event_end = start + timedelta(minutes=30)
+    assert jobs[SESSION_EXPIRE_KIND].trigger.run_date == event_end + timedelta(minutes=2)

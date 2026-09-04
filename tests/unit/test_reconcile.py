@@ -250,7 +250,7 @@ async def test_haunt_calendar_client_logs_mcp_tool_error_payload(caplog) -> None
 
 
 @pytest.mark.asyncio
-async def test_reconcile_uses_anchor_event_id_when_provided():
+async def test_reconcile_schedules_session_jobs_for_an_anchor_event_ahead():
     # An anchor still ahead now schedules its own session_start/session_expire
     # instead of nothing (#see task-3: "anchor in window" used to mean "quiet
     # until the ladder's own horizon logic kicks in" -- it now means the event
@@ -281,7 +281,7 @@ async def test_reconcile_uses_anchor_event_id_when_provided():
 
 
 @pytest.mark.asyncio
-async def test_reconcile_logs_outcome_for_anchor_match(caplog):
+async def test_reconcile_logs_anchor_ahead_outcome_for_an_event_within_the_window(caplog):
     # Same event, but now asserting the outcome label: an anchor still ahead
     # logs "anchor_ahead", not the old "anchor_match" (which meant "found and
     # silenced"); see test_reconcile_uses_anchor_event_id_when_provided above.
