@@ -58,10 +58,15 @@ class KGConstraintMemoryClient:
             raise FileNotFoundError(f"KG constraint store not found at {resolved}")
         self._db_path = str(resolved)
 
-    def _store(self) -> Any:
+    def _stores(self) -> tuple[Any, Any]:
+        """Both stores over the same file, opened per call (see the class note)."""
+        from memory.anchor_store import AnchorStore
         from memory.constraint_store import ConstraintStore
 
-        return ConstraintStore(self._db_path)
+        return ConstraintStore(self._db_path), AnchorStore(self._db_path)
+
+    def _store(self) -> Any:
+        return self._stores()[0]
 
     async def get_store_info(self) -> dict[str, Any]:
         store = self._store()
@@ -107,14 +112,24 @@ class KGConstraintMemoryClient:
             day = date.today()
         stage = filters.get("stage")
 
+        constraints, anchors = self._stores()
         views = get_active_constraints(
-            self._store(),
+            constraints,
             day,
             str(stage) if stage else None,
             day_type=filters.get("day_type"),
+            anchors=anchors,
         )
         rows = [_row_from_view(view) for view in views]
         return rows[: max(0, int(limit))] if limit else rows
+
+    async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+        """How many rules memory holds back for this day type. A count, not
+        rows: on a vacation day this is every working rule."""
+        from memory.read_api import get_suspended_constraints
+
+        day = _as_date(planned_day) or date.today()
+        return len(get_suspended_constraints(self._store(), day, day_type=day_type))
 
     async def upsert_constraint(
         self,
@@ -168,6 +183,8 @@ def _row_from_view(view: Any) -> dict[str, Any]:
         "source": view.source.value,
         "scope": view.scope.value,
         "frame_slot": view.frame_slot,
+        "anchors": [{"uid": ref.uid, "name": ref.name} for ref in view.anchors],
+        "fade": view.fade,
         "topics": [],
         "applies_stages": [],
         "applies_event_types": [],

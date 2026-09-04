@@ -188,3 +188,49 @@ def test_the_rows_survive_the_reconciliation_the_agent_runs(tmp_path):
     assert result.canonical_count == 2
     # The one that matters: they must still be applicable after reconciliation.
     assert result.applicable_count == 2
+
+
+# -- anchors and suspension -------------------------------------------------
+
+
+from memory.anchor import Anchor
+from memory.anchor_store import AnchorStore
+
+
+async def test_rows_carry_anchor_uid_and_name(tmp_path) -> None:
+    """The card groups by anchor name and steers by rule uid, so both travel."""
+    rule = _constraint(name="Oats before gym")
+    db = _store_with(tmp_path, rule)
+    anchors = AnchorStore(db)
+    gym = Anchor(name="gym")
+    anchors.upsert(gym)
+    anchors.replace_constraint_links(rule.uid, [gym.uid])
+
+    [row] = await KGConstraintMemoryClient(db).query_constraints(
+        filters={"planned_day": date(2026, 9, 8).isoformat()}
+    )
+
+    assert row["anchors"] == [{"uid": gym.uid, "name": "gym"}]
+    assert "fade" in row
+
+
+async def test_suspended_rules_are_counted_not_listed(tmp_path) -> None:
+    """On a vacation day every working rule is suspended; the panel shows a count."""
+    from memory.constraint import Applicability
+
+    working = _constraint(name="Commute", applicability=Applicability(day_types=["working"]))
+    db = _store_with(tmp_path, working)
+
+    client = KGConstraintMemoryClient(db)
+    assert await client.count_suspended(date(2026, 9, 9).isoformat(), "vacation") == 1
+    assert await client.count_suspended(date(2026, 9, 8).isoformat(), "working") == 0
+
+
+async def test_an_unanchored_rule_has_an_empty_anchor_list(tmp_path) -> None:
+    db = _store_with(tmp_path, _constraint(name="Plan at 17:00"))
+
+    [row] = await KGConstraintMemoryClient(db).query_constraints(
+        filters={"planned_day": date(2026, 9, 8).isoformat()}
+    )
+
+    assert row["anchors"] == []
