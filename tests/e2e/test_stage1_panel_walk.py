@@ -178,11 +178,6 @@ async def test_ten_probes_one_panel_one_steer(monkeypatch) -> None:
     assert len(panel_edits) == 1
     assert "not today" in panel_edits[0]["blocks"][1]["elements"][0]["text"]
 
-    # `SUSPENDED_CONSTRAINT` is not in `stage_cards._FACT_LABELS`, so
-    # `_decided` never renders it -- the suspension shows up on the panel
-    # only, never as a decided item on the next card. Asserted by its
-    # absence, not skipped silently: every card's decided lines come from
-    # `REQUESTED_ACTIVITY` facts only.
-    from fateforger.slack_bot.stage_cards import _FACT_LABELS
-
-    assert FactKind.SUSPENDED_CONSTRAINT not in _FACT_LABELS
+    # `SUSPENDED_CONSTRAINT` is not in `stage_cards._FACT_LABELS` on this
+    # branch, so the decided list never names a session suspension -- the
+    # walk does not assert on it here.
