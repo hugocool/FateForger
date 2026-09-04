@@ -14,8 +14,11 @@ from fateforger.agents.timeboxing.session_contracts import (
     AwaitingApproval,
     AwaitingUser,
     BlockerOption,
+    CellRef,
     Committed,
     FactKind,
+    Gate,
+    GateMet,
     PendingBlocker,
     PlannerAssumption,
     PlanningArtifact,
@@ -25,6 +28,7 @@ from fateforger.agents.timeboxing.session_contracts import (
 )
 from fateforger.slack_bot.stage_cards import (
     STAGES,
+    NextControl,
     StageCard,
     date_stage_card,
     map_outcome,
@@ -201,12 +205,16 @@ def test_an_activity_question_is_stage_two_showing_what_was_already_said() -> No
     assert [option.option_id for option in card.asking.options] == ["o1"]
 
 
-def test_a_question_with_no_pending_blocker_defaults_to_stage_two() -> None:
-    card = _map(
-        AwaitingUser(requirement_id="x", question="?", why_needed="y"),
-        _snapshot(pending_blocker=None),
-    )
-    assert card is not None and card.stage.index == 2
+def test_a_question_for_a_requirement_id_the_catalog_does_not_know_fails_loudly() -> None:
+    """The stage now comes from the catalog (#276), not from a pending
+    blocker's fact kind -- so a requirement id the catalog has never heard of
+    is a defect in whatever raised the question, not a card that quietly
+    lands on stage two."""
+    with pytest.raises(KeyError):
+        _map(
+            AwaitingUser(requirement_id="x", question="?", why_needed="y"),
+            _snapshot(pending_blocker=None),
+        )
 
 
 def test_the_skeleton_is_stage_three_with_approve_back_cancel() -> None:
@@ -388,3 +396,52 @@ def test_a_candidate_onto_a_populated_day_says_what_it_changes() -> None:
     empty = commit_basis_notice({"event_ids": {}}, {"ops": [{"op": "add"}]})
     assert "*empty*" in empty and "1 blocks added" in empty
     assert commit_basis_notice(payload["snapshot"], {"ops": []}) == ""
+
+
+def test_a_user_filed_assumption_is_marked_on_the_decided_item() -> None:
+    """The #266 session's deny control renders differently for a user-filed
+    assumption, so the renderer needs the field -- never the label text --
+    to tell the two apart."""
+    snapshot = _snapshot(
+        assumptions=[
+            PlannerAssumption(
+                assumption_id="a-2",
+                requirement_id="elicit.body.unclear",
+                value="fine as is",
+                why_needed="user forced past an open cell",
+                invalidated_by=[],
+                filed_by="user",
+            )
+        ]
+    )
+    card = _map(AwaitingApproval(artifact=_skeleton()), snapshot)
+    assert card is not None
+    [item] = [d for d in card.decided if d.ref == "a-2"]
+    assert item.filed_by == "user"
+
+
+def test_gate_met_is_a_stage_one_card_with_next_and_the_closing_line() -> None:
+    card = _map(GateMet(gate=Gate(open_cells=[], day_label="working Tuesday")), _snapshot())
+    assert card.stage.index == 1
+    assert card.gate == "That's what I know to ask about a working Tuesday. Anything else, or shall I plan?"
+    assert [type(c) for c in card.controls][0] is NextControl
+    assert card.asking is None
+
+
+def test_a_probe_card_names_what_is_still_needed_and_offers_no_next() -> None:
+    gate = Gate(open_cells=[CellRef(row="body", criterion="unclear")], day_label="working Tuesday")
+    pending = PendingBlocker(requirement_id="elicit.body.unclear", fact_kind=FactKind.ELICITED_STATEMENT, options=[])
+    outcome = AwaitingUser(requirement_id="elicit.body.unclear", question="q", why_needed="body", gate=gate)
+    card = _map(outcome, _snapshot(pending_blocker=pending))
+    assert card.stage.index == 1
+    assert card.gate == "Still need: body, clarity."
+    assert not any(isinstance(c, NextControl) for c in card.controls)
+
+
+def test_the_stage_of_a_question_comes_from_the_catalog() -> None:
+    pending = PendingBlocker(requirement_id="skeleton.requested_activity", fact_kind=FactKind.REQUESTED_ACTIVITY, options=[])
+    outcome = AwaitingUser(requirement_id="skeleton.requested_activity", question="q", why_needed="w")
+    assert _map(outcome, _snapshot(pending_blocker=pending)).stage.index == 2
+    frame = PendingBlocker(requirement_id="skeleton.day_frame", fact_kind=FactKind.DAY_FRAME, options=[])
+    outcome = AwaitingUser(requirement_id="skeleton.day_frame", question="q", why_needed="w")
+    assert _map(outcome, _snapshot(pending_blocker=frame)).stage.index == 1
