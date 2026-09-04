@@ -196,16 +196,6 @@ class Judge(Protocol):
         self, observation: Observation, recent: list[Observation]
     ) -> DedupJudgement: ...
 
-    async def resolve_anchors(
-        self, names: list[str], candidates: list[AnchorLike]
-    ) -> AnchorResolutions:
-        self.calls.append(("resolve_anchors", ",".join(names)))
-        return AnchorResolutions(
-            resolutions=[
-                AnchorResolution(name=n, anchor_uid=self._anchor_uids.get(n))
-                for n in names
-            ]
-        )
 
     async def canonicalise(
         self, observation: Observation, candidates: list[ConstraintLike]
