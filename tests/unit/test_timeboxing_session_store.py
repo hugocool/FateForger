@@ -280,3 +280,93 @@ async def test_standing_reads_open_and_committed_sessions_from_the_indexed_colum
         assert not stale.under_way and not stale.planned
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_open_sessions_for_day_names_every_open_session_and_how_far_it_got(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#164: expiry asks which sessions stand for one day, not who is busy.
+
+    Four sessions for one user on the locked day: one still at the opening
+    turn's revision, one the user has worked in, one already cancelled, and
+    one planned for a different day. A fifth belongs to someone else. Only
+    the two open ones for that day come back, each carrying the revision that
+    says whether anybody touched it.
+    """
+
+    engine, maker = _migrated_test_database(tmp_path, monkeypatch)
+    try:
+        repo = SqlAlchemyTimeboxingSessionRepository(maker)
+
+        untouched = await repo.load_or_create("C1:auto", owner_user_id="U1")
+        await repo.save(
+            untouched.model_copy(update={"planning_day": _locked_day()}),
+            expected_revision=0,
+            interaction_id="A1",
+            outcome=AwaitingUser(requirement_id="x", question="q", why_needed="w"),
+        )
+
+        worked = await repo.load_or_create("C1:live", owner_user_id="U1")
+        saved = await repo.save(
+            worked.model_copy(update={"planning_day": _locked_day()}),
+            expected_revision=0,
+            interaction_id="B1",
+            outcome=AwaitingUser(requirement_id="x", question="q", why_needed="w"),
+        )
+        await repo.save(
+            saved,
+            expected_revision=1,
+            interaction_id="B2",
+            outcome=AwaitingUser(requirement_id="y", question="q", why_needed="w"),
+        )
+
+        gone = await repo.load_or_create("C1:gone", owner_user_id="U1")
+        await repo.save(
+            gone.model_copy(
+                update={"planning_day": _locked_day(), "status": "cancelled"}
+            ),
+            expected_revision=0,
+            interaction_id="C1",
+            outcome=Cancelled(),
+        )
+
+        other_day = await repo.load_or_create("C1:tomorrow", owner_user_id="U1")
+        await repo.save(
+            other_day.model_copy(
+                update={
+                    "planning_day": _locked_day().model_copy(
+                        update={"date": date(2026, 9, 1), "iso_weekday": 2}
+                    )
+                }
+            ),
+            expected_revision=0,
+            interaction_id="D1",
+            outcome=AwaitingUser(requirement_id="x", question="q", why_needed="w"),
+        )
+
+        stranger = await repo.load_or_create("C2:auto", owner_user_id="U2")
+        await repo.save(
+            stranger.model_copy(update={"planning_day": _locked_day()}),
+            expected_revision=0,
+            interaction_id="E1",
+            outcome=AwaitingUser(requirement_id="x", question="q", why_needed="w"),
+        )
+
+        rows = await repo.open_sessions_for_day(
+            owner_user_id="U1", planning_date=date(2026, 8, 31)
+        )
+
+        assert {row.session_key: row.revision for row in rows} == {
+            "C1:auto": 1,
+            "C1:live": 2,
+        }
+
+        assert (
+            await repo.open_sessions_for_day(
+                owner_user_id="U1", planning_date=date(2026, 9, 2)
+            )
+            == []
+        )
+    finally:
+        await engine.dispose()

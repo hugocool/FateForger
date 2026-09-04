@@ -356,18 +356,23 @@ class PlanningCoordinator:
     def _session_target_channel(self) -> str:
         """The channel a session's surface opens in.
 
-        The same resolution `_channel_for_agent("timeboxing_agent")` and
-        `_plan_sessions_channel_id()` do, written out because they live in
-        `handlers.py`, which imports this module.
+        The same three steps `_channel_for_agent("timeboxing_agent")` and
+        `_plan_sessions_channel_id()` take -- configured id, then the agent's
+        bound channel, then the named one -- written out because they live in
+        `handlers.py`, which imports this module. A session opening anywhere
+        else is a session in a channel nothing else routes to.
         """
 
         configured = (settings.slack_timeboxing_channel_id or "").strip()
         if configured:
             return configured
         directory = WorkspaceRegistry.get_global()
-        if directory:
-            return (directory.channel_for_name("plan-sessions") or "").strip()
-        return ""
+        if not directory:
+            return ""
+        bound = (directory.channel_for_agent("timeboxing_agent") or "").strip()
+        if bound:
+            return bound
+        return (directory.channel_for_name("plan-sessions") or "").strip()
 
     def _ensure_session_starter(self) -> Any | None:
         if self._session_starter is not None:

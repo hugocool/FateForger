@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from autogen_core import AgentId
 from dateutil import parser as date_parser
 
+from fateforger.agents.timeboxing.adaptive_timeboxing import OpenSessionRow
 from fateforger.agents.timeboxing.session_contracts import (
     CancelSession,
     ConfirmPlanningDay,
@@ -31,6 +32,7 @@ from fateforger.haunt.session_start import (
     nudge_line,
     planning_day_for,
 )
+from fateforger.slack_bot.planning import DEFAULT_TIMEZONE
 from fateforger.slack_bot.session_surface import (
     open_session_surface,
     timeboxing_thread_root_text,
@@ -39,8 +41,15 @@ from fateforger.slack_bot.timeboxing_intents import TimeboxActionEnvelope
 
 logger = logging.getLogger(__name__)
 
-#: Mirrors PlanningCoordinator.OPEN_SESSION_UNDER_WAY.
+#: Mirrors PlanningCoordinator.OPEN_SESSION_UNDER_WAY. Used by `start`'s guard
+#: only: `expire` asks which sessions stand for the day, not who is busy.
 OPEN_SESSION_UNDER_WAY_HOURS = 1
+
+#: The revision an auto-opened session sits at while nobody has touched it.
+#: `start` writes exactly one turn -- the ConfirmPlanningDay that takes the
+#: session from 0 to 1 -- so anything above this is the user's own work, and
+#: expiry must leave it alone.
+UNTOUCHED_REVISION = 1
 
 #: The value of `fateforger.core.runtime.USER_CHANNEL_AGENT_TYPE`, repeated
 #: here rather than imported: `core.runtime` imports the session store, whose
@@ -70,9 +79,14 @@ def _event_local(reminder: PlanningReminder) -> datetime:
 
 
 def _lock_timezone(reminder: PlanningReminder) -> str:
-    """The IANA name for the locked planning day; UTC when the event had none."""
+    """The IANA name for the locked planning day.
 
-    return (reminder.event_tz or "").strip() or "UTC"
+    An event without one falls back to the same default the planning card
+    writes its drafts in, not to UTC: the day being locked is Hugo's day, and
+    a UTC label would misdescribe every boundary hanging off it.
+    """
+
+    return (reminder.event_tz or "").strip() or DEFAULT_TIMEZONE
 
 
 class SessionStarter:
@@ -206,50 +220,70 @@ class SessionStarter:
             )
             return
 
-        session_key = standing.open_session_key
-        if session_key is not None:
-            try:
-                await self._haunting.cancel_followups(topic_id=session_key)
-            except Exception:
-                logger.exception("session_expire: cancel failed for %s", session_key)
-                record_error(component="session_start", error_type="cancel_failure")
-            channel_id, root_ts = session_key.split(":", 1)
-            snapshot = await self._load_snapshot(session_key)
-            if snapshot is not None and snapshot.status == "open":
-                try:
-                    await _deliver_timebox_turn(
-                        runtime=self._runtime,
-                        client=self._client,
-                        logger=logger,
-                        session_key=session_key,
-                        actor_user_id=user_id,
-                        interaction_id=f"session_expire:{session_key}",
-                        channel_id=channel_id,
-                        thread_ts=root_ts,
-                        action=TimeboxActionEnvelope(
-                            session_key=session_key,
-                            expected_revision=snapshot.revision,
-                            intent=CancelSession(),
-                        ),
-                        focus=self._focus,
-                    )
-                except Exception:
-                    logger.exception("session_expire: cancel turn failed for %s", session_key)
-                    record_error(component="session_start", error_type="expire_failure")
-            await self._relabel_root(channel_id, root_ts, state="missed")
-            try:
-                await self._client.chat_postMessage(
-                    channel=channel_id, thread_ts=root_ts, text=missed_line()
-                )
-            except Exception:
-                logger.exception("session_expire: thread line failed for %s", session_key)
-                record_error(component="session_start", error_type="expire_failure")
+        rows = await self._open_sessions_for_day(user_id=user_id, day=day)
+        if rows is None:
+            return
+
+        # Two different sessions can stand for the same day: the one this
+        # starter opened and nobody answered, and one the user opened and is
+        # typing in. Only the revision tells them apart, and only the untouched
+        # one may be closed.
+        live = [row for row in rows if row.revision > UNTOUCHED_REVISION]
+        for row in rows:
+            if row.revision <= UNTOUCHED_REVISION:
+                await self._close_untouched(user_id=user_id, row=row)
+
+        if live:
+            logger.info(
+                "session_expire: user is planning in %s; leaving it",
+                live[0].session_key,
+            )
+            return
 
         await self._dm(user_id=user_id, content=missed_line())
         try:
             await self._guardian.reconcile_user(user_id=user_id)
         except Exception:
             logger.exception("session_expire: reconcile_user failed for %s", user_id)
+            record_error(component="session_start", error_type="expire_failure")
+
+    async def _close_untouched(self, *, user_id: str, row: OpenSessionRow) -> None:
+        """Shut one session nobody worked in: ladder off, cancelled, relabelled."""
+
+        session_key = row.session_key
+        try:
+            await self._haunting.cancel_followups(topic_id=session_key)
+        except Exception:
+            logger.exception("session_expire: cancel failed for %s", session_key)
+            record_error(component="session_start", error_type="cancel_failure")
+        channel_id, root_ts = session_key.split(":", 1)
+        try:
+            await _deliver_timebox_turn(
+                runtime=self._runtime,
+                client=self._client,
+                logger=logger,
+                session_key=session_key,
+                actor_user_id=user_id,
+                interaction_id=f"session_expire:{session_key}",
+                channel_id=channel_id,
+                thread_ts=root_ts,
+                action=TimeboxActionEnvelope(
+                    session_key=session_key,
+                    expected_revision=row.revision,
+                    intent=CancelSession(),
+                ),
+                focus=self._focus,
+            )
+        except Exception:
+            logger.exception("session_expire: cancel turn failed for %s", session_key)
+            record_error(component="session_start", error_type="expire_failure")
+        await self._relabel_root(channel_id, root_ts, state="missed")
+        try:
+            await self._client.chat_postMessage(
+                channel=channel_id, thread_ts=root_ts, text=missed_line()
+            )
+        except Exception:
+            logger.exception("session_expire: thread line failed for %s", session_key)
             record_error(component="session_start", error_type="expire_failure")
 
     # -- helpers -------------------------------------------------------------
@@ -288,12 +322,16 @@ class SessionStarter:
             return True
         return False
 
-    async def _load_snapshot(self, session_key: str):
+    async def _open_sessions_for_day(
+        self, *, user_id: str, day: date
+    ) -> list[OpenSessionRow] | None:
         try:
-            return await self._ledger.load(session_key)
+            return await self._ledger.open_sessions_for_day(
+                owner_user_id=user_id, planning_date=day
+            )
         except Exception:
-            logger.exception("session_expire: session load failed for %s", session_key)
-            record_error(component="session_start", error_type="expire_failure")
+            logger.exception("session_expire: open-session lookup failed for %s", user_id)
+            record_error(component="session_start", error_type="guard_failure")
             return None
 
     async def _permalink(self, channel_id: str, ts: str) -> str:

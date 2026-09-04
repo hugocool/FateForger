@@ -191,6 +191,21 @@ class TimeboxingStanding(BaseModel):
         return self.committed_session_key is not None
 
 
+class OpenSessionRow(BaseModel):
+    """One open session, from the indexed columns alone.
+
+    ``revision`` is how a caller tells a session nobody touched from one the
+    user is working in: the turn that opens a session writes revision 1, so
+    anything above it is the user's own doing.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    session_key: str
+    revision: int
+    updated_at: datetime
+
+
 class TimeboxingSessionLedger(Protocol):
     """The reconciler's read of the session store: is this user busy or done?
 
@@ -209,6 +224,25 @@ class TimeboxingSessionLedger(Protocol):
         planned_from: date,
         planned_to: date,
     ) -> TimeboxingStanding: ...
+
+    async def open_sessions_for_day(
+        self, *, owner_user_id: str, planning_date: date
+    ) -> list[OpenSessionRow]:
+        """Every still-open session this user holds for one planned day.
+
+        The expiry of an auto-started session asks this instead of
+        ``standing_for``: it needs *which* sessions stand for the day it is
+        closing and how far each one got, not whether the user is busy
+        somewhere. A recency window cannot answer that -- it hides the
+        untouched session it should close and finds the live one it must not.
+        """
+
+        ...
+
+    async def load(self, session_key: str) -> PlanningSessionSnapshot | None:
+        """The session if one exists, never creating one."""
+
+        ...
 
 
 class StaleSessionRevision(RuntimeError):
@@ -323,6 +357,24 @@ class InMemoryPlanningSessionRepository:
         return TimeboxingStanding(
             open_session_key=open_key, committed_session_key=committed_key
         )
+
+    async def open_sessions_for_day(
+        self, *, owner_user_id: str, planning_date: date
+    ) -> list[OpenSessionRow]:
+        rows = [
+            OpenSessionRow(
+                session_key=key,
+                revision=snapshot.revision,
+                updated_at=self._updated_at[key],
+            )
+            for key, snapshot in self._snapshots.items()
+            if snapshot.owner_user_id == owner_user_id
+            and snapshot.status == "open"
+            and snapshot.planning_day is not None
+            and snapshot.planning_day.date == planning_date
+        ]
+        rows.sort(key=lambda row: row.updated_at, reverse=True)
+        return rows
 
 
 class _BestEffortProgress:
@@ -1502,6 +1554,7 @@ __all__ = [
     "AdaptiveTimeboxing",
     "CommitPort",
     "InMemoryPlanningSessionRepository",
+    "OpenSessionRow",
     "PlannerPort",
     "PlanningContext",
     "PlanningContextPort",
