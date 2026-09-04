@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -143,6 +144,10 @@ class ConstraintView(BaseModel):
     #: half-life table never leaves the server; a host sorts on it and learns
     #: nothing about decay.
     fade: float | None = None
+    #: Whether the rule holds every day, on some days (weekdays or day types),
+    #: or inside a dated window. Three words for a card to tag a row with,
+    #: decided from stored fields; no date or day type leaves the server.
+    applies: Literal["every_day", "some_days", "dated"] = "every_day"
 
 
 class Constraint(BaseModel):

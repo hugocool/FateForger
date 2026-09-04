@@ -4,9 +4,19 @@ from __future__ import annotations
 from datetime import date
 
 from memory.anchor_store import AnchorStore
-from memory.constraint import AnchorRef, Constraint, ConstraintView, Necessity
+from memory.constraint import AnchorRef, Applicability, Constraint, ConstraintView, Necessity
 from memory.constraint_store import ConstraintStore
 from memory.models import HALF_LIFE_DAYS
+
+
+def applies_of(applicability: Applicability) -> "str":
+    """Dated beats some-days beats every-day; a rule with a window is dated
+    even when it also names weekdays, because the window is what ends it."""
+    if applicability.start_date is not None or applicability.end_date is not None:
+        return "dated"
+    if applicability.days_of_week or applicability.day_types:
+        return "some_days"
+    return "every_day"
 
 
 def get_active_constraints(
@@ -63,7 +73,9 @@ def get_active_constraints(
     ]
     ordered = sorted(applicable, key=_reading_order)
     return [
-        _attach_anchors(c.to_view(), c.uid, anchors).model_copy(update={"fade": fade_on(c, day)})
+        _attach_anchors(c.to_view(), c.uid, anchors).model_copy(
+            update={"fade": fade_on(c, day), "applies": applies_of(c.applicability)}
+        )
         for c in ordered
     ]
 

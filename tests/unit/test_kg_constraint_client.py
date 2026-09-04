@@ -234,3 +234,15 @@ async def test_an_unanchored_rule_has_an_empty_anchor_list(tmp_path) -> None:
     )
 
     assert row["anchors"] == []
+
+
+async def test_rows_carry_how_the_rule_applies(tmp_path) -> None:
+    from memory.constraint import Applicability
+
+    db = _store_with(tmp_path, _constraint(name="Commute", applicability=Applicability(day_types=["working"])))
+
+    [row] = await KGConstraintMemoryClient(db).query_constraints(
+        filters={"planned_day": date(2026, 9, 8).isoformat(), "day_type": "working"}
+    )
+
+    assert row["applies"] == "some_days"

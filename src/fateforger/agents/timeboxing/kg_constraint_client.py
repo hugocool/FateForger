@@ -185,6 +185,7 @@ def _row_from_view(view: Any) -> dict[str, Any]:
         "frame_slot": view.frame_slot,
         "anchors": [{"uid": ref.uid, "name": ref.name} for ref in view.anchors],
         "fade": view.fade,
+        "applies": view.applies,
         "topics": [],
         "applies_stages": [],
         "applies_event_types": [],
