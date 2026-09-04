@@ -76,6 +76,12 @@ DenyControl     kind: "deny_assumption", assumption_id: str     # drawn on every
 PromoteControl  kind: "steer_always",   fact_id: str            # drawn on a user-stated fact; asks first
 ```
 
+`PromoteControl` is drawn only once the feedback-observer transport that `memory_observe`
+needs has landed (Phase 1 leaves it as a follow-up and keeps `steer_always` out of the
+offered decisions until then). The first implementation plan for this spec draws
+`DenyControl` alone; a control with no honourable decision behind it is the button that
+lies.
+
 `StageCard.context` keeps its current meaning (the skeleton's reasoning line). The
 Stage 1 contract's *Context* item is satisfied by the panel and the fold, not by the
 card; the Stage 1 spec notes this. `map_outcome(outcome, snapshot) -> StageCard` remains
