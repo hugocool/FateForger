@@ -77,15 +77,31 @@ enforceable_kinds (
 ```
 
 Written only by `MemoryService.promote_kind(slug, anchor_name, rule_text)`, exposed as the MCP
-tool `memory_promote_kind`. The host asks first; the server writes once. The call:
+tool `memory_promote_kind`. The host asks first; the server writes once. The call, **in this
+order**:
 
 - validates `slug` as an identifier (lowercase letters and hyphens) and refuses a slug already
-  registered;
+  registered (`DuplicateKind`);
 - resolves `anchor_name` through `resolve_anchors` so it prefers an existing anchor over a
   near-duplicate (#291), minting one only if the judge says it is new;
-- appends `rule_text` as a durable observation through the ordinary `observe` path, so the
-  requirement exists as a rule with provenance and reaches the planner like any other;
-- records the row.
+- appends `rule_text` as a durable observation through the ordinary `observe` path, under a
+  `write_uid` of `promotion-<slug>`, so the requirement exists as a rule with provenance and
+  reaches the planner like any other. A suppressed rule fails the promotion;
+- **then** records the registry row, with `rule_observation_uid` that same write uid;
+- re-derives that one constraint through `reproject(uid=…, apply=True)` with the new kind now
+  among the offered slugs, and reads it back. If `requires_block` is not the new slug the
+  promotion has failed — nothing would ever require a block of this kind — so the row is
+  removed and the call raises. The rule stays: it is a durable statement the user made and L1
+  is append-only (I2).
+
+The order is the design, not an implementation detail. Registering first opens a window in
+which a kind row exists that no rule states, and two things fall into it: a concurrent
+`observe` is offered a slug this call is about to roll back — and stores a constraint naming a
+kind the registry no longer holds, indistinguishable from one someone removed on purpose — and
+the compensating delete becomes the only thing keeping an unstated kind out of the store.
+Storing the rule first closes it, at the cost of the rule being judged before the kind exists;
+the re-derivation above pays that cost, and the write uid makes the gap between the two writes
+retryable rather than a source of duplicate observations.
 
 The first promotion is `planning`, anchor "planning session", rule "Every working day has a
 planning session in which the next day is timeboxed." Hugo runs it once, by hand, from a Claude
@@ -233,13 +249,17 @@ one calendar list on the next tick.
 
 Named, never swallowed:
 
-| code | where | meaning |
-|---|---|---|
-| `unknown_kind` | promotion, judgement | a slug not in the registry |
-| `duplicate_kind` | promotion | slug already registered |
-| `required_blocks_unreadable` | watcher | memory could not be read; no verdict |
-| `calendar_unreadable` | watcher | fetch or list failed; no verdict |
-| `required_block_missing` | kernel submit | candidate lacks a required slug; names it |
+| code | class | where | meaning |
+|---|---|---|---|
+| `unknown_kind` | `memory.judge.UnknownKind` | promotion, judgement | a slug not in the registry |
+| `duplicate_kind` | `memory.kind_store.DuplicateKind` | promotion | slug already registered |
+| `required_blocks_unreadable` | — | watcher | memory could not be read; no verdict |
+| `calendar_unreadable` | — | watcher | fetch or list failed; no verdict |
+| `required_block_missing` | — | kernel submit | candidate lacks a required slug; names it |
+
+Both classes are `ValueError` subclasses carrying `code` as a class attribute, and both prefix
+their message with it (`"[duplicate_kind] kind 'planning' is already registered"`) because the
+MCP tool surfaces the message as-is.
 
 ## 6. Testing
 
