@@ -517,7 +517,7 @@ async def test_reprojection_preserves_day_types_nothing_can_re_derive(tmp_path):
         last_observed_at=observed_at,
     )
     judge = StubJudge(tiers={observation.text: Tier.DURABLE})
-    judgements = await _judge_all([observation], judge)
+    judgements = await _judge_all([observation], judge, [])
 
     carried = _derive([observation], judgements, existing)
     assert carried["applicability"].day_types == ["working"]
@@ -526,3 +526,34 @@ async def test_reprojection_preserves_day_types_nothing_can_re_derive(tmp_path):
     # carry from, the field is rebuilt from a judgement that cannot express it.
     dropped = _derive([observation], judgements, None)
     assert dropped["applicability"].day_types == []
+
+
+async def test_reprojection_gives_an_old_rule_its_required_kind(tmp_path):
+    """The #212 done-criterion: a judgement improvement reaches rows that already exist."""
+    obs_store, c_store = _stores(tmp_path)
+    obs = _observe(obs_store, "every working day has a planning session")
+    stale = _stale_constraint(c_store, obs)
+    judge = StubJudge(
+        tiers={obs.text: Tier.DURABLE},
+        requires_blocks={obs.text: "planning"},
+        day_types={obs.text: ["working"]},
+    )
+    preview = await reproject(obs_store, c_store, judge, kinds=["planning"])
+    assert preview.applied is False
+    assert set(preview.changed[0].fields) >= {"requires_block", "applicability"}
+    assert c_store.get(stale.uid).requires_block is None, "preview writes nothing"
+    await reproject(obs_store, c_store, judge, kinds=["planning"], apply=True)
+    after = c_store.get(stale.uid)
+    assert after.requires_block == "planning"
+    assert after.applicability.day_types == ["working"]
+
+
+async def test_reprojection_keeps_hand_seeded_day_types_when_the_judgement_names_none(tmp_path):
+    obs_store, c_store = _stores(tmp_path)
+    obs = _observe(obs_store, "sleep at 23:00")
+    stale = _stale_constraint(
+        c_store, obs, applicability=Applicability(day_types=["working"])
+    )
+    judge = StubJudge(tiers={obs.text: Tier.DURABLE})
+    await reproject(obs_store, c_store, judge, apply=True)
+    assert c_store.get(stale.uid).applicability.day_types == ["working"]
