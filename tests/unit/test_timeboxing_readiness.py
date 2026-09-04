@@ -360,3 +360,31 @@ def test_an_unknown_requirement_has_no_stage() -> None:
 
     with pytest.raises(KeyError):
         TimeboxRequirements().stage_of("nothing.like.this")
+
+
+def test_the_matrix_is_parsed_once_per_evaluation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Forty cell requirements must not each re-parse and revalidate the matrix."""
+    import fateforger.agents.timeboxing.elicitation as elicitation_module
+
+    matrix = CoverageMatrix(cells={c.id: "not_applicable" for c in ALL_CELLS})
+    snapshot = _locked_snapshot(
+        PlanningFact(
+            fact_id=coverage_fact_id(date(2026, 8, 29)),
+            kind=FactKind.COVERAGE_MATRIX,
+            value=matrix.model_dump(mode="json"),
+            source="system",
+        )
+    )
+
+    real_coverage_matrix = elicitation_module.coverage_matrix
+    calls = []
+
+    def counting_coverage_matrix(snap: PlanningSessionSnapshot) -> CoverageMatrix | None:
+        calls.append(snap)
+        return real_coverage_matrix(snap)
+
+    monkeypatch.setattr(elicitation_module, "coverage_matrix", counting_coverage_matrix)
+
+    TimeboxRequirements().evaluate(ArtifactKind.SKELETON, snapshot)
+
+    assert len(calls) == 1

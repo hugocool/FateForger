@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from .session_contracts import (
     ArtifactKind,
@@ -14,6 +14,9 @@ from .session_contracts import (
     PlanningFact,
     PlanningSessionSnapshot,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .elicitation import CoverageMatrix
 
 
 class RequirementOwner(StrEnum):
@@ -306,17 +309,32 @@ class TimeboxRequirements:
     ) -> ReadinessReport:
         """Assess only the requirements relevant to ``target_artifact``."""
 
+        matrix = self._coverage_matrix(snapshot)
         return ReadinessReport(
             target_artifact=target_artifact,
             gaps=tuple(
                 ReadinessGap(
                     requirement=requirement,
-                    satisfied=self._is_satisfied(requirement, snapshot),
+                    satisfied=self._is_satisfied(requirement, snapshot, matrix),
                 )
                 for requirement in _CATALOG
                 if requirement.target_artifact is target_artifact
             ),
         )
+
+    @staticmethod
+    def _coverage_matrix(snapshot: PlanningSessionSnapshot) -> CoverageMatrix | None:
+        """Parse the day's coverage matrix once per ``evaluate`` call.
+
+        Forty cell requirements would otherwise each re-run
+        ``coverage_matrix``, which linear-scans the facts and, on a hit,
+        revalidates all forty keys and rebuilds the unaskable set -- forty
+        times the work for one answer. A malformed fact still raises here,
+        loudly, once.
+        """
+        from .elicitation import coverage_matrix
+
+        return coverage_matrix(snapshot)
 
     @staticmethod
     def target_of(requirement_id: str) -> ArtifactKind | None:
@@ -361,6 +379,7 @@ class TimeboxRequirements:
         self,
         requirement: ArtifactRequirement,
         snapshot: PlanningSessionSnapshot,
+        matrix: CoverageMatrix | None,
     ) -> bool:
         if requirement.requirement_id == "skeleton.locked_day":
             return snapshot.planning_day is not None
@@ -369,12 +388,7 @@ class TimeboxRequirements:
         if requirement.requirement_id == "commit.approved_candidate":
             return self._has_exact_approval(snapshot, ArtifactKind.VALIDATED_CANDIDATE)
         if requirement.cell is not None:
-            from .elicitation import coverage_matrix
-
-            matrix = coverage_matrix(snapshot)
-            if matrix is None:
-                return True
-            return matrix.cells.get(requirement.requirement_id) != "uncovered"
+            return matrix is None or matrix.cells[requirement.requirement_id] != "uncovered"
 
         return all(
             self._has_fact(snapshot.facts, kind)
