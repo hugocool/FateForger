@@ -82,10 +82,14 @@ class HauntingService:
         )
         if not effective_spec:
             return None
-        if effective_spec.max_attempts is not None and effective_spec.max_attempts < 1:
-            return None
-        if not effective_spec.after or effective_spec.after.total_seconds() <= 0:
-            return None
+        if effective_spec.offsets:
+            if not effective_spec.offsets:
+                return None
+        else:
+            if effective_spec.max_attempts is not None and effective_spec.max_attempts < 1:
+                return None
+            if not effective_spec.after or effective_spec.after.total_seconds() <= 0:
+                return None
 
         record = PendingFollowUp(
             message_id=message_id,
@@ -104,7 +108,12 @@ class HauntingService:
             if existing:
                 await self._remove_record(existing)
             self._store_record(record)
-            self._schedule_job(record, record.created_at + effective_spec.after)
+            first_at = (
+                record.created_at + effective_spec.offsets[0]
+                if effective_spec.offsets
+                else record.created_at + effective_spec.after
+            )
+            self._schedule_job(record, first_at)
 
         return record
 
@@ -229,10 +238,16 @@ class HauntingService:
                 return
 
             next_attempt = record.attempt + 1
-            max_attempts = record.spec.max_attempts or 1
-            if next_attempt >= max_attempts:
-                await self._remove_record(record)
-                return
+            offsets = record.spec.offsets
+            if offsets:
+                if next_attempt >= len(offsets):
+                    await self._remove_record(record)
+                    return
+            else:
+                max_attempts = record.spec.max_attempts or 1
+                if next_attempt >= max_attempts:
+                    await self._remove_record(record)
+                    return
 
             updated = PendingFollowUp(
                 message_id=record.message_id,
@@ -247,6 +262,9 @@ class HauntingService:
             )
             self._pending[message_id] = updated
 
+            if offsets:
+                self._schedule_job(updated, record.created_at + offsets[next_attempt])
+                return
             if not record.spec.after:
                 await self._remove_record(record)
                 return
@@ -298,7 +316,7 @@ class HauntingService:
         if delay is None and settings:
             delay = timedelta(minutes=settings.default_delay_minutes)
 
-        if delay is None:
+        if delay is None and not spec.offsets:
             return None
 
         max_attempts = spec.max_attempts
@@ -319,6 +337,8 @@ class HauntingService:
             max_attempts=max_attempts,
             escalation=escalation,
             cancel_on_user_reply=cancel_on_user_reply,
+            offsets=spec.offsets,
+            lines=spec.lines,
         )
 
     @staticmethod
