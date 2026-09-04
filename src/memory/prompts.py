@@ -144,6 +144,15 @@ gym"), how blocks alternate, or a guardrail on what may be scheduled ("no
 meetings before 13:00"). Those describe blocks the day may have; they do not
 say the day must have one.
 
+A kind's word is a label for a recurring session, not a string to look for in
+the statement. Match by what the required session is FOR, not by whether the
+statement repeats the kind's word. A short end-of-day routine that closes out
+today and sets up for what comes next -- reviewing progress, updating status,
+carrying work forward -- is the same recurring session as a "planning" block
+even when the statement never says "plan": both exist to make tomorrow
+workable. Reject a kind only when the statement's block serves a genuinely
+different purpose than every kind on the list, not merely a different word.
+
 When unsure, answer null. A block wrongly marked required is placed on every
 matching day and nagged about when absent; a required block wrongly missed is
 visible the first day it is absent and can be stated again.
