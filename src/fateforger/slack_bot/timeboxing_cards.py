@@ -479,6 +479,24 @@ def render_context_fold(fold: ContextFold) -> dict:
     }
 
 
+def render_context_fold_closed() -> dict:
+    """The fold modal, redrawn once the session it belonged to is over.
+
+    A modal opened before the session ended still shows live menus, so a
+    pick reaching this state needs somewhere to land — the same envelope as
+    `render_context_fold`, with every menu gone rather than a picture of
+    controls that no longer do anything.
+    """
+
+    return {
+        "type": "modal",
+        "callback_id": "ff_timebox_context_fold",
+        "title": {"type": "plain_text", "text": "Rules"},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": [_section("This planning session has ended; nothing here can be changed any more.")],
+    }
+
+
 def _decided_option(card: StageCard, control: Control) -> dict:
     if isinstance(control, DenyControl):
         return {

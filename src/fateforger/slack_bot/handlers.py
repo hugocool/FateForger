@@ -102,6 +102,7 @@ from fateforger.slack_bot.progress_events import (
 )
 from fateforger.slack_bot.reply_guard import agent_reply_text
 from fateforger.slack_bot.stage_card_registry import StageCardRegistry, receipt_body, receipt_label
+from fateforger.slack_bot.stage_context import context_fold
 from fateforger.slack_bot.stage_cards import date_stage_card
 from fateforger.slack_bot.task_cards import (
     FF_TASK_DETAILS_ACTION_ID,
@@ -122,11 +123,14 @@ from fateforger.slack_bot.timeboxing_cards import (
     FF_TIMEBOX_STEER_ACTION_ID,
     TIMEBOX_STALE_CHOICE_TEXT,
     TIMEBOX_TURN_FAILED_TEXT,
+    ArtifactActionMeta,
     HarnessApproveActionPayload,
     _undo_outcome_text,
     harness_approve_block,
     harness_undo_block,
     present_outcome,
+    render_context_fold,
+    render_context_fold_closed,
     render_stage_card,
     timebox_failure_message,
 )
@@ -2164,7 +2168,6 @@ async def _handle_timebox_artifact_action(
 async def _fold_for(runtime, *, session_key: str, actor_user_id: str):
     """Build the fold from what is on record: the snapshot for its rows, the
     panel's own seed (if one is showing) for which of them are new."""
-    from .stage_context import context_fold
 
     snapshot = await runtime.timeboxing_session_store.load_or_create(
         session_key, owner_user_id=actor_user_id
@@ -2176,8 +2179,6 @@ async def _fold_for(runtime, *, session_key: str, actor_user_id: str):
 
 async def _handle_show_rules(runtime, client, logger, *, body) -> None:
     """Open the fold. Reads durable state, changes nothing."""
-    from .timeboxing_cards import render_context_fold
-    from .timeboxing_intents import ArtifactActionMeta
 
     action = (body.get("actions") or [{}])[0]
     trigger_id = body.get("trigger_id") or ""
@@ -2188,6 +2189,7 @@ async def _handle_show_rules(runtime, client, logger, *, body) -> None:
         logger.warning("show rules press carried unreadable metadata")
         return
     if not (trigger_id and actor_user_id):
+        logger.debug("show rules press missing trigger or actor session_key=%s", meta.session_key)
         return
     try:
         fold = await _fold_for(runtime, session_key=meta.session_key, actor_user_id=actor_user_id)
@@ -2199,10 +2201,13 @@ async def _handle_show_rules(runtime, client, logger, *, body) -> None:
         )
         channel_id = (body.get("channel") or {}).get("id") or ""
         if channel_id:
-            await client.chat_postEphemeral(
-                channel=channel_id, user=actor_user_id,
-                text="Couldn't open the rules just now — press Show rules again.",
-            )
+            try:
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=actor_user_id,
+                    text="Couldn't open the rules just now — press Show rules again.",
+                )
+            except Exception:  # noqa: BLE001 - the ephemeral is itself best-effort
+                logger.warning("could not post the retry ephemeral session_key=%s", meta.session_key)
 
 
 def _pick_value(body) -> str:
@@ -2214,8 +2219,6 @@ def _pick_value(body) -> str:
 async def _handle_fold_pick(runtime, client, logger, *, body) -> None:
     """One overflow pick inside the modal: the same path as a card button,
     then the modal is redrawn so the row shows what just happened."""
-    from .timeboxing_cards import render_context_fold
-    from .timeboxing_intents import ArtifactActionMeta
 
     value = _pick_value(body)
     actor_user_id = (body.get("user") or {}).get("id") or ""
@@ -2224,26 +2227,43 @@ async def _handle_fold_pick(runtime, client, logger, *, body) -> None:
     except ValueError:
         logger.warning("fold pick carried unreadable metadata")
         return
+    view_id = ((body.get("view") or {}).get("id")) or ((body.get("container") or {}).get("view_id")) or ""
     shown = _stage_cards.panel_shown(meta.session_key)
-    if shown is None or not actor_user_id:
+    if shown is None:
+        # `retire_panel` drops the panel record on Cancelled/Committed, but a
+        # modal opened earlier still shows live menus. A view press has no
+        # channel for an ephemeral, so the modal itself is the only place
+        # left to say the session is over.
         logger.warning("fold pick for a session with no panel session_key=%s", meta.session_key)
+        if view_id:
+            try:
+                await client.views_update(view_id=view_id, view=render_context_fold_closed())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "could not close the context fold session_key=%s error_type=%s error=%s",
+                    meta.session_key, type(exc).__name__, exc,
+                )
+        return
+    if not actor_user_id:
+        logger.debug("fold pick with no actor session_key=%s", meta.session_key)
         return
     # A modal press carries no message for `thread_ts` to come from, so the
     # panel record is the only source. On the DM route `shown.thread_ts` is
-    # None -- there is no thread there -- and a live DM card press reaches
-    # the same absence: its message carries no `thread_ts` field either, and
-    # `_on_timebox_artifact_action` falls back to that message's own `ts`
-    # (`message.get("thread_ts") or message.get("ts")`). The panel is that
-    # message for a fold pick, so its own `ts` is the mirror of that fallback.
-    thread_ts = shown.thread_ts if shown.thread_ts is not None else shown.ts
+    # None, and every other turn on that route passes the `"dm"` sentinel in
+    # exactly that case -- doing the same here keeps this reply top-level
+    # and re-arms the two `"dm"` guards in `_run_adaptive_timebox_turn`,
+    # rather than threading the turn under the panel message.
+    thread_ts = shown.thread_ts or "dm"
     action = (body.get("actions") or [{}])[0]
     await _handle_timebox_artifact_action(
         runtime=runtime, client=client, logger=logger, value=value,
         channel_id=shown.channel, thread_ts=thread_ts, actor_user_id=actor_user_id,
-        interaction_id=_card_interaction_id(action, str(action.get("action_id") or ""), thread_ts),
+        interaction_id=_card_interaction_id(
+            action, str(action.get("action_id") or ""), shown.thread_ts or shown.ts
+        ),
     )
-    view_id = ((body.get("view") or {}).get("id")) or ((body.get("container") or {}).get("view_id")) or ""
     if not view_id:
+        logger.debug("fold pick carried no view id session_key=%s", meta.session_key)
         return
     try:
         fold = await _fold_for(runtime, session_key=meta.session_key, actor_user_id=actor_user_id)
@@ -2253,23 +2273,6 @@ async def _handle_fold_pick(runtime, client, logger, *, body) -> None:
             "could not refresh the context fold session_key=%s error_type=%s error=%s",
             meta.session_key, type(exc).__name__, exc,
         )
-
-
-async def _handle_decided_pick(runtime, client, logger, *, body) -> None:
-    """A Deny pick on a decided item: a card press by another element type."""
-    value = _pick_value(body)
-    channel_id = (body.get("channel") or {}).get("id") or ""
-    message = body.get("message") or {}
-    thread_ts = message.get("thread_ts") or message.get("ts") or ""
-    actor_user_id = (body.get("user") or {}).get("id") or ""
-    if not (channel_id and thread_ts and actor_user_id and value):
-        return
-    action = (body.get("actions") or [{}])[0]
-    await _handle_timebox_artifact_action(
-        runtime=runtime, client=client, logger=logger, value=value,
-        channel_id=channel_id, thread_ts=thread_ts, actor_user_id=actor_user_id,
-        interaction_id=_card_interaction_id(action, str(action.get("action_id") or ""), thread_ts),
-    )
 
 
 async def _handle_dsh_command(*, body, client, logger) -> None:
@@ -4592,7 +4595,7 @@ def register_handlers(
         thread_ts = message.get("thread_ts") or message.get("ts") or ""
         actor_user_id = (body.get("user") or {}).get("id") or ""
         action = (body.get("actions") or [{}])[0]
-        value = action.get("value") or ""
+        value = _pick_value(body)
         if not (channel_id and thread_ts and actor_user_id and value):
             return
         await _handle_timebox_artifact_action(
@@ -4617,6 +4620,11 @@ def register_handlers(
     # second place a stale press could be judged, and the kernel is the only
     # one that knows what question is open.
     app.action(FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID)(_on_timebox_artifact_action)
+    # A Deny pick on a decided item is the same envelope read from an
+    # overflow's `selected_option` instead of a button's `value` --
+    # `_pick_value` already falls back between the two, so this is the same
+    # handler rather than a near-duplicate `_handle_decided_pick`.
+    app.action(FF_TIMEBOX_DECIDED_ACTION_ID)(_on_timebox_artifact_action)
 
     @app.action(FF_TIMEBOX_SHOW_RULES_ACTION_ID)
     async def _on_show_rules(ack, body, client, logger):
@@ -4627,11 +4635,6 @@ def register_handlers(
     async def _on_fold_pick(ack, body, client, logger):
         await ack()
         await _handle_fold_pick(runtime, client, logger, body=body)
-
-    @app.action(FF_TIMEBOX_DECIDED_ACTION_ID)
-    async def _on_decided_pick(ack, body, client, logger):
-        await ack()
-        await _handle_decided_pick(runtime, client, logger, body=body)
 
     @app.action(FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID)
     async def on_timebox_commit_day_select_action(ack, body, client, logger):

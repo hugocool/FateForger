@@ -124,12 +124,11 @@ async def test_a_fold_pick_reaches_the_artifact_action_path_and_refreshes_the_mo
 
 
 @pytest.mark.asyncio
-async def test_a_fold_pick_in_a_dm_session_uses_the_panels_own_ts_as_thread_ts(monkeypatch) -> None:
+async def test_a_fold_pick_in_a_dm_session_delivers_with_the_dm_sentinel(monkeypatch) -> None:
     """`ShownPanel.thread_ts` is None on the DM route (no thread to post
-    into there); the same fallback a live DM card press would take --
-    `message.get("thread_ts") or message.get("ts")` in `_on_timebox_artifact_action`
-    -- lands on the message's own ts, so the panel's own `ts` is what a DM
-    fold pick passes onward as `thread_ts`."""
+    into there); every other turn on that route uses the `"dm"` sentinel for
+    exactly that case, so a fold pick passes it onward too rather than
+    threading the reply under the panel message."""
     client = _Client()
     seen: dict = {}
 
@@ -147,4 +146,30 @@ async def test_a_fold_pick_in_a_dm_session_uses_the_panels_own_ts_as_thread_ts(m
                         "decision": "steer_not_today", "constraint_uid": "c1"})
     await handlers._handle_fold_pick(_runtime(_snapshot()), client, logging.getLogger(__name__),
                                      body=_press_body(value, in_view=True))
-    assert seen["thread_ts"] == "42.0"
+    assert seen["thread_ts"] == "dm"
+
+
+@pytest.mark.asyncio
+async def test_a_fold_pick_after_the_session_ended_redraws_the_modal_closed(monkeypatch) -> None:
+    """`retire_panel` drops the panel record on Cancelled/Committed, but a
+    modal opened earlier still shows live menus. A pick then finds no panel
+    and a view press has no channel for an ephemeral, so the modal itself is
+    redrawn to say the session is over."""
+    client = _Client()
+    called: list[str] = []
+
+    async def fake_handle(*, runtime, client, logger, value, channel_id, thread_ts, actor_user_id, interaction_id):
+        called.append(value)
+
+    monkeypatch.setattr(handlers, "_handle_timebox_artifact_action", fake_handle)
+    monkeypatch.setattr(handlers, "_stage_cards", StageCardRegistry())
+    value = json.dumps({"schema_version": 1, "session_key": "C1:1.0", "expected_revision": 5,
+                        "decision": "steer_not_today", "constraint_uid": "c1"})
+    await handlers._handle_fold_pick(_runtime(_snapshot()), client, logging.getLogger(__name__),
+                                     body=_press_body(value, in_view=True))
+    assert called == []
+    (updated,) = client.updated
+    assert updated["view_id"] == "V1"
+    assert not any(
+        b.get("accessory", {}).get("type") == "overflow" for b in updated["view"]["blocks"]
+    )
