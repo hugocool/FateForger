@@ -1203,7 +1203,7 @@ async def test_not_today_names_a_rule_the_snapshot_holds() -> None:
     [fact] = intent.facts
     assert fact.kind is FactKind.SUSPENDED_CONSTRAINT
     assert fact.fact_id == "suspend:c-gym"
-    assert fact.value == {"uid": "c-gym", "reason": "not today"}
+    assert fact.value == {"uid": "c-gym", "reason": "not today", "note": None}
 
 
 async def test_not_today_for_a_rule_not_on_the_card_is_refused() -> None:

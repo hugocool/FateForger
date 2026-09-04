@@ -148,6 +148,7 @@ class ArtifactActionMeta(_StrictModel):
         "choose_option",
         "deny_assumption",
         "restore",
+        "steer_not_today",
     ]
     artifact_id: str | None = Field(default=None, min_length=1)
     artifact_revision: int | None = Field(default=None, ge=1)
@@ -159,6 +160,7 @@ class ArtifactActionMeta(_StrictModel):
     option_id: str | None = Field(default=None, min_length=1)
     assumption_id: str | None = Field(default=None, min_length=1)
     constraint_uid: str | None = Field(default=None, min_length=1)
+    note: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def artifact_decisions_have_exact_identity(self) -> ArtifactActionMeta:
@@ -181,6 +183,8 @@ class ArtifactActionMeta(_StrictModel):
             raise ValueError("denying an assumption requires its id")
         if self.decision == "restore" and self.constraint_uid is None:
             raise ValueError("restoring a rule requires its uid")
+        if self.decision == "steer_not_today" and self.constraint_uid is None:
+            raise ValueError("a steer press names the rule it suspends")
         return self
 
 
@@ -487,7 +491,11 @@ def _intent_from_interpreted(
                 PlanningFact(
                     fact_id=suspension_fact_id(interpreted.constraint_uid),
                     kind=FactKind.SUSPENDED_CONSTRAINT,
-                    value={"uid": interpreted.constraint_uid, "reason": "not today"},
+                    value={
+                        "uid": interpreted.constraint_uid,
+                        "reason": "not today",
+                        "note": None,
+                    },
                     source="user",
                 )
             ]
@@ -629,6 +637,20 @@ def intent_from_artifact_action(
         intent = DenyAssumption(assumption_id=cast(str, meta.assumption_id))
     elif meta.decision == "restore":
         intent = RestoreConstraint(constraint_uid=cast(str, meta.constraint_uid))
+    elif meta.decision == "steer_not_today":
+        uid = cast(str, meta.constraint_uid)
+        # The same id the typed path files (Phase 1 Task 8), so a press and
+        # a sentence cannot suspend one rule twice.
+        intent = ProvidePlanningFacts(
+            facts=[
+                PlanningFact(
+                    fact_id=suspension_fact_id(uid),
+                    kind=FactKind.SUSPENDED_CONSTRAINT,
+                    value={"uid": uid, "reason": "not today", "note": meta.note},
+                    source="user",
+                )
+            ]
+        )
     elif meta.decision == "back":
         intent = GoBack()
     else:
