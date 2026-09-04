@@ -534,3 +534,43 @@ class _PayloadAnchorStore(_DummyAnchorStore):
 
         self.upserts.append(kwargs)
         return PlanningAnchorPayload(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_revalidation_hands_the_rule_the_ledger_it_needs(monkeypatch):
+    # Without the ledger the rule cannot ask whether the day was committed, so
+    # a passed planning event whose day *is* planned still reads as missing and
+    # the ladder starts over.
+    built: list[dict] = []
+
+    class _SpyRule:
+        def __init__(self, **kwargs):
+            built.append(kwargs)
+
+        async def evaluate(self, **_):
+            return []
+
+    monkeypatch.setattr("fateforger.slack_bot.planning.PlanningSessionRule", _SpyRule)
+    ledger = object()
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "event_draft_store": object(),
+            "planning_guardian": None,
+            "planning_session_store": _DummyPlanningStore(),
+            "planning_reconciler": _DummyReconciler(_DummyCalendarClient(events=[])),
+            "timeboxing_session_store": ledger,
+        },
+    )()
+    coordinator = PlanningCoordinator(runtime=runtime, focus=object(), client=DummyClient())  # type: ignore[arg-type]
+
+    await coordinator._planning_still_missing(
+        reminder=PlanningReminder(
+            scope="U1", kind="nudge1", attempt=1, message="", user_id="U1", channel_id="D1"
+        ),
+        planning_event_id="ffplanning1",
+        calendar_id="primary",
+    )
+
+    assert built and built[0]["timeboxing_ledger"] is ledger

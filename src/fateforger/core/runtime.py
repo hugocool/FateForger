@@ -777,6 +777,7 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
         rule=PlanningSessionRule(
             calendar_client=calendar_client,
             planning_session_store=planning_session_store,
+            timeboxing_ledger=timeboxing_session_store,
             config=PlanningRuleConfig(
                 calendar_id=timeboxing_calendar_id or "primary"
             ),

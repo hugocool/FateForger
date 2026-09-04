@@ -14,6 +14,12 @@ class FollowUpSpec:
     max_attempts: int | None = None
     escalation: FollowUpEscalation | None = None
     cancel_on_user_reply: bool | None = None
+    #: Explicit rungs measured from the arming time. When set, `after` and
+    #: `max_attempts` are ignored and the ladder ends after the last rung.
+    offsets: tuple[timedelta, ...] | None = None
+    #: One line per rung; past the end, the last. When set, replaces the
+    #: prefixed `content`.
+    lines: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)

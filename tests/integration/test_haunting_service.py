@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -14,7 +14,7 @@ async def test_followup_dispatches_once(scheduler):
     async def dispatcher(due):
         dispatched.append(due)
 
-    service = HauntingService(scheduler, now=datetime.now)
+    service = HauntingService(scheduler, now=lambda: datetime.now(timezone.utc))
     service.set_dispatcher(dispatcher)
 
     await service.schedule_followup(
@@ -39,7 +39,7 @@ async def test_followup_dispatches_once(scheduler):
 
 @pytest.mark.asyncio
 async def test_user_activity_cancels_followups(scheduler):
-    service = HauntingService(scheduler, now=datetime.utcnow)
+    service = HauntingService(scheduler, now=lambda: datetime.now(timezone.utc))
 
     await service.schedule_followup(
         message_id="msg-2",

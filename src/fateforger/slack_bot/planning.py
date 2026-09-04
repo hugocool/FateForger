@@ -28,6 +28,7 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import (
     TimeboxingSessionLedger,
     TimeboxingStanding,
 )
+from fateforger.core.config import settings
 from fateforger.core.logging_config import (
     observe_stage_duration,
     record_admonishment_event,
@@ -54,6 +55,7 @@ from fateforger.haunt.reconcile import (
     PlanningRuleConfig,
     PlanningSessionRule,
 )
+from fateforger.haunt.session_start import SESSION_EXPIRE_KIND, SESSION_START_KIND
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
 from fateforger.llm import build_autogen_chat_client
 from fateforger.slack_bot.focus import FocusManager
@@ -155,6 +157,11 @@ class PlanningCoordinator:
             or "primary"
         )
         self._intent_interpreter: SurfaceIntentInterpreter | None = None
+        # The planning event's own start and expiry (#164). Built on first use
+        # rather than here: the workspace registry is filled on the first Slack
+        # event, after this coordinator exists, so a channel resolved now would
+        # be the empty one.
+        self._session_starter: Any | None = None
         if self._guardian:
             timeboxing_activity.set_on_idle(self._handle_timeboxing_idle)
 
@@ -346,9 +353,65 @@ class PlanningCoordinator:
             return True
         return False
 
+    def _session_target_channel(self) -> str:
+        """The channel a session's surface opens in.
+
+        The same three steps `_channel_for_agent("timeboxing_agent")` and
+        `_plan_sessions_channel_id()` take -- configured id, then the agent's
+        bound channel, then the named one -- written out because they live in
+        `handlers.py`, which imports this module. A session opening anywhere
+        else is a session in a channel nothing else routes to.
+        """
+
+        configured = (settings.slack_timeboxing_channel_id or "").strip()
+        if configured:
+            return configured
+        directory = WorkspaceRegistry.get_global()
+        if not directory:
+            return ""
+        bound = (directory.channel_for_agent("timeboxing_agent") or "").strip()
+        if bound:
+            return bound
+        return (directory.channel_for_name("plan-sessions") or "").strip()
+
+    def _ensure_session_starter(self) -> Any | None:
+        if self._session_starter is not None:
+            return self._session_starter
+        target_channel = self._session_target_channel()
+        if not target_channel:
+            logger.error(
+                "session_start: no timeboxing channel configured; cannot open a session"
+            )
+            record_error(component="session_start", error_type="channel_unresolved")
+            return None
+        # Local: session_start reaches handlers, which imports this module.
+        from fateforger.slack_bot.session_start import SessionStarter
+
+        self._session_starter = SessionStarter(
+            runtime=self._runtime,
+            client=self._client,
+            focus=self._focus,
+            guardian=self._guardian,
+            ledger=self._timeboxing_ledger,
+            haunting_service=getattr(self._runtime, "haunting_service", None),
+            target_channel=target_channel,
+        )
+        return self._session_starter
+
     async def dispatch_planning_reminder(self, reminder: PlanningReminder) -> None:
         if not reminder.user_id:
             logger.debug("dispatch_planning_reminder: no user_id, skipping")
+            return
+        # Before the silencer: a session_start has its own guard, and a
+        # session_expire is the one thing that must run while a session is open.
+        if reminder.kind in (SESSION_START_KIND, SESSION_EXPIRE_KIND):
+            starter = self._ensure_session_starter()
+            if starter is None:
+                return
+            if reminder.kind == SESSION_START_KIND:
+                await starter.start(reminder)
+            else:
+                await starter.expire(reminder)
             return
         if await self._timeboxing_silences(user_id=reminder.user_id, at="start"):
             return
@@ -509,6 +572,10 @@ class PlanningCoordinator:
                 calendar_client=self._reconciler.calendar_client,
                 planning_session_store=self._planning_session_store,
                 config=PlanningRuleConfig(calendar_id=calendar_id),
+                # Without it the rule cannot ask whether the day was committed,
+                # so a passed anchor over a planned day reads as missing and
+                # the ladder this call exists to suppress starts over.
+                timeboxing_ledger=self._timeboxing_ledger,
             )
             desired = await rule.evaluate(
                 now=now_utc,

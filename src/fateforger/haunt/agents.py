@@ -74,6 +74,9 @@ class HauntingAgent(RoutedAgent):
 
     @staticmethod
     def _format_followup(record: PendingFollowUp, due: FollowUpDue) -> str:
+        lines = record.spec.lines
+        if lines:
+            return lines[min(max(due.attempt, 0), len(lines) - 1)]
         prefixes = {
             "gentle": "Just checking in",
             "firm": "Reminder",

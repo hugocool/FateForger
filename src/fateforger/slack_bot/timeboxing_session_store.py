@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
+    OpenSessionRow,
     PlanningSessionRepository,
     StaleSessionRevision,
     TimeboxingStanding,
@@ -243,6 +244,38 @@ class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
         return TimeboxingStanding(
             open_session_key=open_key, committed_session_key=committed_key
         )
+
+    async def open_sessions_for_day(
+        self, *, owner_user_id: str, planning_date: date
+    ) -> list[OpenSessionRow]:
+        """Every open session this user holds for one planned day.
+
+        One query over the indexed columns; the snapshot JSON is never read.
+        ``updated_at`` is written naive in UTC by ``save`` and is returned that
+        way, so callers compare it against other rows, not against a clock.
+        """
+
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(
+                    _TimeboxingSessionState.session_key,
+                    _TimeboxingSessionState.revision,
+                    _TimeboxingSessionState.updated_at,
+                )
+                .where(
+                    _TimeboxingSessionState.owner_user_id == owner_user_id,
+                    _TimeboxingSessionState.status == "open",
+                    _TimeboxingSessionState.planning_date == planning_date,
+                )
+                .order_by(_TimeboxingSessionState.updated_at.desc())
+            )
+            rows = result.all()
+        return [
+            OpenSessionRow(
+                session_key=session_key, revision=revision, updated_at=updated_at
+            )
+            for session_key, revision, updated_at in rows
+        ]
 
     @staticmethod
     async def _load_row(

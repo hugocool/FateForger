@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Optional, Protocol
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -51,7 +51,7 @@ class HauntingService:
         self,
         scheduler: AsyncIOScheduler,
         *,
-        now: Callable[[], datetime] = datetime.utcnow,
+        now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         settings_store: AdmonishmentSettingsStore | None = None,
     ) -> None:
         self._scheduler = scheduler
@@ -60,6 +60,9 @@ class HauntingService:
         self._pending: dict[str, PendingFollowUp] = {}
         self._topic_index: dict[str, set[str]] = {}
         self._task_index: dict[str, set[str]] = {}
+        # A ladder follows a person, not only a thread: the nudges land in the
+        # DM, and a reply there arrives under a different topic key entirely.
+        self._user_index: dict[str, set[str]] = {}
         self._lock = asyncio.Lock()
         self._on_due: Callable[[FollowUpDue], Awaitable[None]] | None = None
 
@@ -82,10 +85,14 @@ class HauntingService:
         )
         if not effective_spec:
             return None
-        if effective_spec.max_attempts is not None and effective_spec.max_attempts < 1:
-            return None
-        if not effective_spec.after or effective_spec.after.total_seconds() <= 0:
-            return None
+        if effective_spec.offsets:
+            if not effective_spec.offsets:
+                return None
+        else:
+            if effective_spec.max_attempts is not None and effective_spec.max_attempts < 1:
+                return None
+            if not effective_spec.after or effective_spec.after.total_seconds() <= 0:
+                return None
 
         record = PendingFollowUp(
             message_id=message_id,
@@ -104,7 +111,12 @@ class HauntingService:
             if existing:
                 await self._remove_record(existing)
             self._store_record(record)
-            self._schedule_job(record, record.created_at + effective_spec.after)
+            first_at = (
+                record.created_at + effective_spec.offsets[0]
+                if effective_spec.offsets
+                else record.created_at + effective_spec.after
+            )
+            self._schedule_job(record, first_at)
 
         return record
 
@@ -122,6 +134,11 @@ class HauntingService:
                 candidates.update(self._topic_index.get(topic_key, set()))
             if task_id:
                 candidates.update(self._task_index.get(task_id, set()))
+            if user_id:
+                # Whatever surface the user answered on, they answered. Only
+                # ladders that asked to be cancelled on a reply are cancelled,
+                # and only this user's.
+                candidates.update(self._user_index.get(user_id, set()))
 
             cancel_ids = {
                 message_id
@@ -168,6 +185,8 @@ class HauntingService:
             self._topic_index.setdefault(record.topic_id, set()).add(record.message_id)
         if record.task_id:
             self._task_index.setdefault(record.task_id, set()).add(record.message_id)
+        if record.user_id:
+            self._user_index.setdefault(record.user_id, set()).add(record.message_id)
 
     async def _remove_record(self, record: PendingFollowUp) -> None:
         self._pending.pop(record.message_id, None)
@@ -183,9 +202,21 @@ class HauntingService:
                 ids.remove(record.message_id)
                 if not ids:
                     self._task_index.pop(record.task_id, None)
+        if record.user_id:
+            ids = self._user_index.get(record.user_id)
+            if ids and record.message_id in ids:
+                ids.remove(record.message_id)
+                if not ids:
+                    self._user_index.pop(record.user_id, None)
         self._unschedule_job(record.message_id)
 
     def _schedule_job(self, record: PendingFollowUp, run_at: datetime) -> None:
+        # A caller that injected a naive clock (e.g. datetime.utcnow) meant
+        # UTC, not the scheduler's local zone -- attach that explicitly
+        # rather than letting APScheduler read it as local time, which can
+        # place the run date hours in the past and silently drop the job.
+        if run_at.tzinfo is None:
+            run_at = run_at.replace(tzinfo=timezone.utc)
         self._scheduler.add_job(
             self._dispatch_followup,
             trigger="date",
@@ -193,6 +224,10 @@ class HauntingService:
             id=self._job_id(record.message_id),
             kwargs={"message_id": record.message_id},
             replace_existing=True,
+            # A scheduler loop that wakes a few seconds late must still fire
+            # the rung -- a dropped rung loses the rest of the ladder, since
+            # re-arming happens in _dispatch_followup.
+            misfire_grace_time=60,
         )
 
     def _unschedule_job(self, message_id: str) -> None:
@@ -229,10 +264,16 @@ class HauntingService:
                 return
 
             next_attempt = record.attempt + 1
-            max_attempts = record.spec.max_attempts or 1
-            if next_attempt >= max_attempts:
-                await self._remove_record(record)
-                return
+            offsets = record.spec.offsets
+            if offsets:
+                if next_attempt >= len(offsets):
+                    await self._remove_record(record)
+                    return
+            else:
+                max_attempts = record.spec.max_attempts or 1
+                if next_attempt >= max_attempts:
+                    await self._remove_record(record)
+                    return
 
             updated = PendingFollowUp(
                 message_id=record.message_id,
@@ -247,6 +288,9 @@ class HauntingService:
             )
             self._pending[message_id] = updated
 
+            if offsets:
+                self._schedule_job(updated, record.created_at + offsets[next_attempt])
+                return
             if not record.spec.after:
                 await self._remove_record(record)
                 return
@@ -298,7 +342,7 @@ class HauntingService:
         if delay is None and settings:
             delay = timedelta(minutes=settings.default_delay_minutes)
 
-        if delay is None:
+        if delay is None and not spec.offsets:
             return None
 
         max_attempts = spec.max_attempts
@@ -319,6 +363,8 @@ class HauntingService:
             max_attempts=max_attempts,
             escalation=escalation,
             cancel_on_user_reply=cancel_on_user_reply,
+            offsets=spec.offsets,
+            lines=spec.lines,
         )
 
     @staticmethod
