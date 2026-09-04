@@ -79,7 +79,7 @@ def _open_rows(snapshot: PlanningSessionSnapshot) -> set[str]:
     return {
         cell.row
         for cell in ALL_CELLS
-        if matrix.cells.get(f"elicit.{cell.row}.{cell.criterion}") == "uncovered"
+        if matrix.cells.get(cell.id) == "uncovered"
     }
 
 
@@ -145,7 +145,12 @@ def primary_anchor(row: RankedRow, sizes: Counter[str]) -> tuple[str, str] | Non
 
 
 def group_rows(rows: list[RankedRow]) -> list[AnchorGroup]:
-    """Every rule in exactly one group; groups in the order of their top row."""
+    """Every rule in exactly one group; groups in the order of their top row.
+
+    Groups are keyed by anchor *name*, not uid: the memory server mints one
+    anchor per name, so a name is a safe key here. If that ever changes, key
+    `members` by anchor uid instead and carry the name beside it.
+    """
 
     sizes: Counter[str] = Counter(a_uid for row in rows for a_uid, _ in row.anchors)
     order: list[str | None] = []
