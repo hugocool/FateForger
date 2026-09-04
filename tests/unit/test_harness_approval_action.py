@@ -609,7 +609,13 @@ async def test_top_level_mention_routes_card_and_approval_through_actual_root(
     )
     assert approval.thread_key == "C1:user-root"
     assert carded[-1]["ts"] == "ack-reply"
-    assert client.posts == [], "the kernel route edits its own message"
+    # The card itself is an edit of the ack message; the one new message this
+    # turn posts is the context panel, above the card in the same thread.
+    assert len(client.posts) == 1, client.posts
+    panel_post = client.posts[0]
+    assert panel_post["channel"] == "C1"
+    assert panel_post["thread_ts"] == "user-root"
+    assert panel_post["blocks"][0]["block_id"] == "ff_timebox_context_panel"
 
     app = _App(client)
     register_handlers(
