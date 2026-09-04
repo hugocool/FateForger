@@ -80,6 +80,31 @@ class FactKind(StrEnum):
     #: requirement is satisfied by it; it is carried so the planner rebuilding
     #: the artifact can read what was wrong with the last one.
     REVISION_INSTRUCTION = "revision_instruction"
+    #: The Stage 1 coverage matrix: one state per cell, plus the anchor
+    #: placement it was classified against. Rewritten whole on every fold under
+    #: the stable id `coverage:{day}`, so Back, redo and a restart see one state.
+    COVERAGE_MATRIX = "coverage_matrix"
+    #: What the user said in answer to a probe, or volunteered in Stage 1, as
+    #: ``{"cell": <requirement id or null>, "text": <their words>}``. Never
+    #: reused as a request: a request is what they want, this is what holds.
+    ELICITED_STATEMENT = "elicited_statement"
+    #: A rule the user set aside for this session, ``{"uid": ..., "reason": ...}``
+    #: under the id `suspend:{uid}`, so a second "not today" is a no-op and a
+    #: restore is deleting one fact. The brief drops the rule; the card shows it
+    #: as suspended; memory is untouched.
+    SUSPENDED_CONSTRAINT = "suspended_constraint"
+
+
+def coverage_fact_id(day: date_type) -> str:
+    return f"coverage:{day.isoformat()}"
+
+
+def suspension_fact_id(constraint_uid: str) -> str:
+    return f"suspend:{constraint_uid}"
+
+
+def elicited_fact_id(cell_id: str | None) -> str:
+    return f"elicited:{cell_id or 'free'}:{uuid4()}"
 
 
 class PlanningDay(_StrictModel):
@@ -155,6 +180,10 @@ class PlannerAssumption(_StrictModel):
     value: JsonValue
     why_needed: str = Field(min_length=1)
     invalidated_by: list[str] = Field(default_factory=list)
+    #: Who supplied the assumption. The planner files one when it must place
+    #: something nobody stated; the user files one to force past an open cell.
+    #: Both are visible and deniable; only the label differs.
+    filed_by: Literal["planner", "user"] = "planner"
 
 
 def _canonical_digest(
@@ -299,6 +328,19 @@ class PlanningSessionSnapshot(_StrictModel):
     #: button pointed at a question nobody is holding any more must not answer
     #: the one that replaced it.
     pending_blocker: PendingBlocker | None = None
+    #: The active rules the host resolved for this day, written on every
+    #: resolve, so the card renders the rows the planner receives, in the
+    #: planner's order (#202). Rows are the flat dicts the KG client returns;
+    #: nothing here reads their prose. The presence fact stays count-only.
+    applicable_constraints: list[dict[str, JsonValue]] = Field(default_factory=list)
+    #: How many rules memory holds back for this day type (a vacation day
+    #: suspends every working rule). A count because the rows would flood a
+    #: card; written by the same resolve that writes the rows.
+    suspended_constraint_count: int = Field(default=0, ge=0)
+    #: Where Stage 1 stands. `open`: eliciting or not yet evaluated. `proposed`:
+    #: the kernel emitted GateMet and is waiting for consent. `closed`: the user
+    #: consented, or a Stage 2 fact arrived, and planning may proceed.
+    stage1: Literal["open", "proposed", "closed"] = "open"
     status: Literal["open", "committed", "cancelled"] = "open"
 
     @model_validator(mode="after")
@@ -399,6 +441,39 @@ class ChooseBlockerOption(_StrictModel):
     option_id: str = Field(min_length=1)
 
 
+class FileAssumption(_StrictModel):
+    """The user forcing past an open cell: the missing fact supplied as an
+    assumption, visible in the card's decided list and deniable there."""
+
+    kind: Literal["file_assumption"] = "file_assumption"
+    requirement_id: str = Field(min_length=1)
+    value: JsonValue
+    why_needed: str = Field(min_length=1)
+
+
+class DenyAssumption(_StrictModel):
+    """Withdraw one assumption, the planner's or the user's, by its minted id.
+
+    The kernel removes it and invalidates what was built on it; the cell it
+    answered re-opens. A denial is the user asking to be asked, so re-asking
+    that cell is not a violation of ask-once.
+    """
+
+    kind: Literal["deny_assumption"] = "deny_assumption"
+    assumption_id: str = Field(min_length=1)
+
+
+class RestoreConstraint(_StrictModel):
+    """Undo a "not today": delete the suspension fact for one rule, by uid.
+
+    Restore is deleting one fact; there is no second copy of the rule to
+    write back, because the rule never left memory.
+    """
+
+    kind: Literal["restore_constraint"] = "restore_constraint"
+    constraint_uid: str = Field(min_length=1)
+
+
 class GoBack(_StrictModel):
     kind: Literal["go_back"] = "go_back"
 
@@ -416,11 +491,42 @@ TimeboxIntent = Annotated[
         ReviseArtifact,
         ApproveArtifact,
         ChooseBlockerOption,
+        FileAssumption,
+        DenyAssumption,
+        RestoreConstraint,
         GoBack,
         CancelSession,
     ],
     Field(discriminator="kind"),
 ]
+
+
+class CellRef(_StrictModel):
+    """One cell of the Stage 1 coverage matrix: a row and a criterion.
+
+    Both halves are keys this system minted (`elicitation.ROWS`,
+    `elicitation.CRITERIA`); the id is the requirement the cell is held as.
+    """
+
+    row: str = Field(min_length=1)
+    criterion: str = Field(min_length=1)
+
+    @property
+    def id(self) -> str:
+        return f"elicit.{self.row}.{self.criterion}"
+
+
+class Gate(_StrictModel):
+    """What Stage 1 still needs, typed, so a card renders it without prose.
+
+    `open_cells` is empty exactly when the gate is met. `day_label` is the
+    day type and weekday the card names ("working Tuesday"). `note` is the only
+    prose and may be absent; nothing branches on it.
+    """
+
+    open_cells: list[CellRef] = Field(default_factory=list)
+    day_label: str = Field(min_length=1)
+    note: str | None = None
 
 
 class AwaitingUser(_StrictModel):
@@ -431,6 +537,20 @@ class AwaitingUser(_StrictModel):
     #: Empty means the question is open and takes free text. Non-empty means the
     #: answer set is closed and the renderer may offer it as buttons.
     options: list[BlockerOption] = Field(default_factory=list, max_length=4)
+    #: Present only for a Stage 1 probe: the cells still open, the top one
+    #: being asked. Absent for every other question the catalog puts.
+    gate: Gate | None = None
+
+
+class GateMet(_StrictModel):
+    """Stage 1 proposes to close: nothing is uncovered, and the user decides.
+
+    The renderer offers Next on this outcome and on no other. Consent is the
+    user's next message; silence does nothing.
+    """
+
+    kind: Literal["gate_met"] = "gate_met"
+    gate: Gate
 
 
 class ArtifactReady(_StrictModel):
@@ -495,6 +615,7 @@ TurnOutcome = Annotated[
     Union[
         NeedsAnotherTurn,
         AwaitingUser,
+        GateMet,
         ArtifactReady,
         AwaitingApproval,
         Committed,
