@@ -21,6 +21,25 @@ from memory.models import DecayClass, Observation, Tier
 DAY_TYPES: tuple[str, ...] = ("working", "weekend", "vacation", "holiday", "sick")
 
 
+class UnknownKind(ValueError):
+    """A slug that is not in the registry (spec §5, code `unknown_kind`).
+
+    Raised where a model answers with a kind nobody registered. It is a
+    ValueError so every caller that already handled one is unaffected, and it
+    carries its code in the message because the MCP tool surfaces that message
+    as-is: a host can branch on the code without reading the English.
+
+    Here rather than in kind_store because this port must stay free of any
+    import from the layer that owns the registry -- the same reason
+    applicability rides on TierJudgement as raw fields.
+    """
+
+    code = "unknown_kind"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"[{self.code}] {message}")
+
+
 class AnchorJudgement(BaseModel):
     """The recurring kinds of thing an observation mentions.
 

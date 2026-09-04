@@ -68,8 +68,12 @@ async def test_a_duplicate_promotion_is_refused_and_writes_nothing(tmp_path):
     service = MemoryService(str(tmp_path / "m.db"), _judge())
     await service.promote_kind("planning", anchor_name="planning session", rule_text=RULE, observed_at=T0)
     before = len(service.get_active_constraints(date(2026, 9, 7), day_type="working"))
-    with pytest.raises(DuplicateKind):
+    with pytest.raises(DuplicateKind) as excinfo:
         await service.promote_kind("planning", anchor_name="planning session", rule_text=RULE, observed_at=T0)
+    # Spec §5 names the code; the MCP tool surfaces the message as-is, so it
+    # travels with it rather than only in the class name.
+    assert DuplicateKind.code == "duplicate_kind"
+    assert f"[{DuplicateKind.code}]" in str(excinfo.value)
     assert len(service.get_active_constraints(date(2026, 9, 7), day_type="working")) == before
 
 

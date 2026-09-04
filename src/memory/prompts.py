@@ -20,6 +20,7 @@ from memory.judge import (
     NecessityJudgement,
     RequiresBlockJudgement,
     TierJudgement,
+    UnknownKind,
 )
 from memory.models import Observation
 
@@ -399,7 +400,7 @@ class PromptJudge(ABC):
             # Set membership over identifiers this system minted -- explicitly
             # outside the no-matching rule, and the one check that keeps an
             # invented kind out of the store.
-            raise ValueError(
+            raise UnknownKind(
                 f"judge returned kind {judgement.slug!r} which is not among the "
                 f"{len(kinds)} registered kinds offered"
             )

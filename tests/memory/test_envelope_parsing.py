@@ -117,8 +117,18 @@ def test_requires_block_accepts_a_listed_slug_or_null():
 
 
 def test_requires_block_refuses_a_slug_that_was_not_offered():
-    with pytest.raises(ValueError):
+    """Named, and carrying the code spec §5 gives it.
+
+    The MCP tool surfaces the message as-is, so the code is what a host can key
+    an error path off without reading English -- and UnknownKind is still a
+    ValueError, so every caller that already handled one keeps working.
+    """
+    from memory.judge import UnknownKind
+
+    with pytest.raises(UnknownKind) as excinfo:
         await_sync(_Replies('{"slug": "plan-review"}').requires_block(_obs("x"), ["planning"]))
+    assert UnknownKind.code == "unknown_kind"
+    assert f"[{UnknownKind.code}]" in str(excinfo.value)
 
 
 def test_requires_block_asks_nothing_when_no_kinds_are_registered():

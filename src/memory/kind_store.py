@@ -22,7 +22,18 @@ from memory.models import as_aware_utc
 
 
 class DuplicateKind(ValueError):
-    """The slug is already registered; kinds are never overwritten."""
+    """The slug is already registered; kinds are never overwritten.
+
+    Spec §5 names the code. It travels in the message because the MCP tool
+    surfaces that message as-is, so a host can branch on `duplicate_kind`
+    without reading the English; the class stays a ValueError so callers that
+    already catch one are unaffected.
+    """
+
+    code = "duplicate_kind"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"[{self.code}] {message}")
 
 
 def validate_slug(slug: str) -> str:
