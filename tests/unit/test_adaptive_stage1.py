@@ -10,6 +10,8 @@ import asyncio
 import itertools
 from datetime import date
 
+import pytest
+
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
     AdaptiveTimeboxing,
     InMemoryPlanningSessionRepository,
@@ -238,6 +240,22 @@ def test_restore_of_a_rule_not_suspended_is_refused() -> None:
     assert isinstance(outcome, TurnFailed) and outcome.code == "stale_restore"
 
 
+def test_a_suspension_fact_with_no_uid_is_refused_not_ignored() -> None:
+    """Absence must not read as data: a malformed suspension naming no rule
+    must not silently read as no suspension at all."""
+    bad = PlanningFact(
+        fact_id=suspension_fact_id("c-gym"),
+        kind=FactKind.SUSPENDED_CONSTRAINT,
+        value={"reason": "not today"},
+        source="user",
+    )
+    snapshot = _snapshot(stage1="closed", facts=[*_snapshot().facts, bad])
+    kernel, _, _ = _kernel(snapshot)
+    with pytest.raises(ValueError) as excinfo:
+        _turn(kernel, snapshot, Advance())
+    assert bad.fact_id in str(excinfo.value)
+
+
 def test_file_assumption_is_recorded_as_the_users_and_closes_the_question() -> None:
     cell = ALL_CELLS[0]
     snapshot = _snapshot(facts=[*_snapshot().facts, _matrix_fact(cell.id)])
@@ -269,6 +287,36 @@ def test_file_assumption_is_recorded_as_the_users_and_closes_the_question() -> N
     assert len(planner.briefs) == 1
 
 
+def test_file_assumption_for_a_cell_still_holds_a_missing_hard_blocker() -> None:
+    """`FileAssumption` always falls through now: the run loop holds a hard
+    user blocker before it ever reaches Stage 1, same as any other turn."""
+    cell = ALL_CELLS[0]
+    snapshot = _snapshot(
+        facts=[
+            PlanningFact(
+                fact_id="frame-1",
+                kind=FactKind.DAY_FRAME,
+                value={"wake": "07:00", "sleep": "23:30"},
+                source="user",
+            ),
+            _matrix_fact(cell.id),
+        ]
+    )
+    kernel, repository, planner = _kernel(snapshot)
+    outcome = _turn(
+        kernel, snapshot,
+        FileAssumption(
+            requirement_id=cell.id,
+            value="assume a normal day",
+            why_needed="user forced past",
+        ),
+    )
+    assert isinstance(outcome, AwaitingUser)
+    assert outcome.requirement_id == "skeleton.requested_activity"
+    assert outcome.gate is None
+    assert planner.briefs == []
+
+
 def test_deny_removes_the_assumption_and_reopens_the_stage() -> None:
     cell = ALL_CELLS[0]
     snapshot = _snapshot(facts=[*_snapshot().facts, _matrix_fact(cell.id)])
@@ -288,27 +336,20 @@ def test_deny_of_an_unknown_assumption_is_refused() -> None:
     assert isinstance(outcome, TurnFailed) and outcome.code == "stale_assumption"
 
 
-def test_back_from_a_proposal_re_evaluates_and_proposes_again() -> None:
-    """Nothing changed, so Back lands right back at the same proposal.
+def test_back_from_a_proposal_returns_to_the_day_card() -> None:
+    """Stage 1 has no rung of its own to back out to.
 
-    `_stage1_outcome` is the single place `stage1` becomes `"proposed"`; the
-    `GoBack` rung calls it exactly like the run loop and `FileAssumption` do,
-    so a Back that finds nothing open re-proposes rather than stranding the
-    session at `"open"` with no card able to say so.
+    A re-presented Stage 1 with nothing newly stated is the same proposal
+    `_stage1_outcome` already made, and a probe already answered is never
+    re-asked -- so with no skeleton yet, Back is the planning-day rung: it
+    clears `planning_day` and resets `stage1` to `"open"`, same as backing
+    out of any other stage-two question this early.
     """
     kernel, repository, _ = _kernel(_snapshot(stage1="proposed"))
-    outcome = _turn(kernel, _snapshot(stage1="proposed"), GoBack())
-    assert isinstance(outcome, GateMet)
-    assert _load(repository).stage1 == "proposed"
-
-
-def test_back_then_one_advance_reaches_the_planner() -> None:
-    """One consent after Back is enough -- Back must not cost a second Advance."""
-    kernel, repository, planner = _kernel(_snapshot(stage1="proposed"))
     _turn(kernel, _snapshot(stage1="proposed"), GoBack())
-    _turn(kernel, _load(repository), Advance())
-    assert _load(repository).stage1 == "closed"
-    assert len(planner.briefs) == 1
+    after = _load(repository)
+    assert after.planning_day is None
+    assert after.stage1 == "open"
 
 
 def test_file_assumption_against_a_stage_two_requirement_lets_the_planner_run() -> None:
