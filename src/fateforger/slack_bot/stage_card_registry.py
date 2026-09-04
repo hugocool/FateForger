@@ -76,6 +76,16 @@ def receipt_body(intent: TimeboxIntent, previous: StageCard) -> str:
     return previous.body
 
 
+def _panel_receipt(panel: ContextPanel, done: str) -> tuple[str, list[dict]]:
+    """The one-block receipt a panel becomes once it stops being live --
+    superseded by a day change, or retired outright on cancel. Drawn from the
+    panel's own first line, exactly the same shape either way."""
+
+    rendered = render_context_panel(panel)
+    head = rendered.blocks[0]["text"]["text"].splitlines()[0] + f"  —  {done}"
+    return head, [{"type": "section", "text": {"type": "mrkdwn", "text": head}}]
+
+
 class StageCardRegistry:
     def __init__(self) -> None:
         self._shown: dict[str, ShownCard] = {}
@@ -189,9 +199,7 @@ class StageCardRegistry:
             # sync would only re-edit the same message. A failed re-post
             # below then falls through to a plain first-draw post next time,
             # never a retry of the receipt.
-            old = render_context_panel(previous.panel)
-            head = old.blocks[0]["text"]["text"].splitlines()[0] + "  —  superseded"
-            receipt = [{"type": "section", "text": {"type": "mrkdwn", "text": head}}]
+            head, receipt = _panel_receipt(previous.panel, "superseded")
             try:
                 await client.chat_update(channel=previous.channel, ts=previous.ts, text=head, blocks=receipt)
             except Exception as exc:  # noqa: BLE001
@@ -216,6 +224,25 @@ class StageCardRegistry:
         ts = str(posted.get("ts") or "")
         if ts:
             self._panels[session_key] = ShownPanel(channel=channel, ts=ts, thread_ts=thread_ts, panel=panel)
+
+    async def retire_panel(self, client, *, session_key: str, done: str, logger) -> None:
+        """Receipt the panel as retired -- a cancelled session must not leave
+        a pressable "Show rules" button behind. Best-effort like the rest of
+        this registry's Slack writes: the record is dropped either way, so a
+        failed edit never re-attempts against a message that has moved on."""
+
+        previous = self._panels.get(session_key)
+        if previous is None:
+            return
+        head, receipt = _panel_receipt(previous.panel, done)
+        try:
+            await client.chat_update(channel=previous.channel, ts=previous.ts, text=head, blocks=receipt)
+        except Exception as exc:  # noqa: BLE001 - presentation never owns the turn
+            logger.warning(
+                "could not retire the context panel session_key=%s ts=%s error_type=%s error=%s",
+                session_key, previous.ts, type(exc).__name__, exc,
+            )
+        self._panels.pop(session_key, None)
 
 
 __all__ = ["ShownCard", "ShownPanel", "StageCardRegistry", "receipt_body", "receipt_label"]

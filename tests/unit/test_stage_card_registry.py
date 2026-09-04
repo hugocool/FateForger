@@ -378,3 +378,24 @@ async def test_no_locked_day_means_no_panel() -> None:
     snapshot = _snapshot_with(["c1"]).model_copy(update={"planning_day": None})
     await _sync(registry, client, snapshot)
     assert client.posts == [] and registry.panel_shown("C1:1.0") is None
+
+
+@pytest.mark.asyncio
+async def test_retiring_the_panel_receipts_it_and_drops_the_record() -> None:
+    registry, client = StageCardRegistry(), _PostingClient()
+    await _sync(registry, client, _snapshot_with(["c1"]))
+
+    await registry.retire_panel(
+        client, session_key="C1:1.0", done="🚫 cancelled", logger=logging.getLogger(__name__)
+    )
+
+    assert [u["ts"] for u in client.updates] == ["200.1"]
+    block = client.updates[0]["blocks"][0]
+    assert "🚫 cancelled" in block["text"]["text"]
+    assert "accessory" not in block
+    assert registry.panel_shown("C1:1.0") is None
+
+    await registry.retire_panel(
+        client, session_key="C1:1.0", done="🚫 cancelled", logger=logging.getLogger(__name__)
+    )
+    assert [u["ts"] for u in client.updates] == ["200.1"]

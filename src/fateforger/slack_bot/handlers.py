@@ -1748,7 +1748,15 @@ async def _run_adaptive_timebox_turn(
         ts=progress_ts,
         logger=logger,
     )
-    if not panel_synced_first and not isinstance(outcome, (TurnFailed, Cancelled)):
+    if isinstance(outcome, Cancelled):
+        # `transition` above only forgets the card (it pops `_shown` when a
+        # cancelled turn draws no new card); the panel is a separate record
+        # and a cancelled session must not leave a pressable "Show rules"
+        # button behind, so it gets its own retirement receipt here.
+        await _stage_cards.retire_panel(
+            client, session_key=session_key, done="🚫 cancelled", logger=logger
+        )
+    elif not panel_synced_first and not isinstance(outcome, TurnFailed):
         await _stage_cards.sync_panel(
             client,
             session_key=session_key,
