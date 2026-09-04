@@ -84,6 +84,32 @@ async def test_show_rules_opens_the_fold_from_the_snapshot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_show_rules_for_someone_elses_session_opens_the_closed_view(caplog) -> None:
+    """`load_or_create` returns whatever session exists for a key regardless
+    of who asks. A press from a user who does not own it must not open that
+    session's rules -- it gets the closed view instead."""
+    client = _Client()
+    owned_by_u1 = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=5, owner_user_id="U1",
+        planning_day=PlanningDay.lock_default(value=date(2026, 9, 8), timezone="Europe/Amsterdam", lock_revision=1),
+        applicable_constraints=[{"uid": "c1", "name": "r", "necessity": "must", "anchors": [], "fade": None}],
+    )
+    value = artifact_action_value(session_key="C1:1.0", expected_revision=5, decision="advance", artifact=None)
+    body = {"trigger_id": "T1", "user": {"id": "U2"}, "channel": {"id": "C1"}, "message": {"ts": "1.0"},
+            "actions": [{"action_id": "ff_timebox_show_rules", "value": value}]}
+    with caplog.at_level(logging.INFO):
+        await handlers._handle_show_rules(_runtime(owned_by_u1), client, logging.getLogger(__name__), body=body)
+    (opened,) = client.opened
+    assert not any(
+        b.get("accessory", {}).get("type") == "overflow" for b in opened["view"]["blocks"]
+    )
+    assert any(
+        "C1:1.0" in record.getMessage() and "U2" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_failed_open_tells_the_user_to_press_again() -> None:
     client = _Client()
 

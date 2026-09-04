@@ -2165,16 +2165,29 @@ async def _handle_timebox_artifact_action(
     )
 
 
-async def _fold_for(runtime, *, session_key: str, actor_user_id: str):
-    """Build the fold from what is on record: the snapshot for its rows, the
-    panel's own seed (if one is showing) for which of them are new."""
+async def _fold_view_for(runtime, *, session_key: str, actor_user_id: str, logger) -> dict:
+    """The fold view for this actor: built from what is on record -- the
+    snapshot for its rows, the panel's own seed (if one is showing) for which
+    of them are new -- or the closed view when the actor does not own this
+    session.
+
+    `load_or_create` returns whatever session exists for `session_key`
+    regardless of who asks; a fold built from someone else's snapshot would
+    hand that session's rows to a user who never owned it.
+    """
 
     snapshot = await runtime.timeboxing_session_store.load_or_create(
         session_key, owner_user_id=actor_user_id
     )
+    if snapshot.owner_user_id != actor_user_id:
+        logger.info(
+            "refused the context fold to a non-owner session_key=%s actor=%s",
+            session_key, actor_user_id,
+        )
+        return render_context_fold_closed()
     shown = _stage_cards.panel_shown(session_key)
     first = shown.panel.first_shown_with if shown is not None else None
-    return context_fold(snapshot, first)
+    return render_context_fold(context_fold(snapshot, first))
 
 
 async def _handle_show_rules(runtime, client, logger, *, body) -> None:
@@ -2192,8 +2205,10 @@ async def _handle_show_rules(runtime, client, logger, *, body) -> None:
         logger.debug("show rules press missing trigger or actor session_key=%s", meta.session_key)
         return
     try:
-        fold = await _fold_for(runtime, session_key=meta.session_key, actor_user_id=actor_user_id)
-        await client.views_open(trigger_id=trigger_id, view=render_context_fold(fold))
+        view = await _fold_view_for(
+            runtime, session_key=meta.session_key, actor_user_id=actor_user_id, logger=logger
+        )
+        await client.views_open(trigger_id=trigger_id, view=view)
     except Exception as exc:  # noqa: BLE001 - a modal that did not open is not a failed session
         logger.warning(
             "could not open the context fold session_key=%s error_type=%s error=%s",
@@ -2266,8 +2281,10 @@ async def _handle_fold_pick(runtime, client, logger, *, body) -> None:
         logger.debug("fold pick carried no view id session_key=%s", meta.session_key)
         return
     try:
-        fold = await _fold_for(runtime, session_key=meta.session_key, actor_user_id=actor_user_id)
-        await client.views_update(view_id=view_id, view=render_context_fold(fold))
+        view = await _fold_view_for(
+            runtime, session_key=meta.session_key, actor_user_id=actor_user_id, logger=logger
+        )
+        await client.views_update(view_id=view_id, view=view)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "could not refresh the context fold session_key=%s error_type=%s error=%s",
