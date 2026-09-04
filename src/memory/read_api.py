@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from memory.anchor_store import AnchorStore
 from memory.constraint import AnchorRef, Constraint, ConstraintView, Necessity
 from memory.constraint_store import ConstraintStore
 
