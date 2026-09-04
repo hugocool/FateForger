@@ -140,13 +140,19 @@ values, no registry read, no model. The AST guard on `read_api.py` holds.
 
 ### Evals (real model, eight draws per case, rate asserted)
 
-- **Positive:** the promotion's own rule text; the end-of-day closure rule. Must map to
-  `planning` in ≥ 7 of 8.
+- **Positive:** the promotion's own rule text. Must map to `planning` in ≥ 7 of 8.
 - **Negative:** a duration cap, a timing relation, an alternation rule, a guardrail. Must map to
   `null` in ≥ 7 of 8.
-- **Ambiguous, recorded not asserted:** "I timebox my day by allocating fixed blocks for tasks
-  and activities." Its rate is written into the test's docstring so a later prompt change can
-  see whether it moved.
+- **Recorded, not asserted:** "I timebox my day by allocating fixed blocks for tasks and
+  activities" — it says he timeboxes, not that a session must be on the plan. And the end-of-day
+  closure rule ("reserve 15-20 minutes at the end of the workday to update artifact links and
+  board status"), which this document originally listed as a `planning` positive and which is
+  not one: unhandled, the model answers `null` 8 times out of 8, because updating links and
+  board status is administrative closure rather than deciding how tomorrow's time is spent. It
+  held up as a positive only while the prompt carried a paraphrase of it, which made the eval
+  measure recognition of a handed answer. It is a candidate second kind (see §7), not a question
+  the sixth judgement is failing. Both rates are written into the test's docstring so a later
+  prompt change can see whether they moved.
 - **`day_types`:** "on working days" → `["working"]`; "every day" → `[]`; "when I'm on
   holiday" → `["vacation"]`.
 
@@ -283,6 +289,8 @@ MCP tool surfaces the message as-is.
 - A Slack surface for `promote_kind` (increment B of #266).
 - Retiring `skeleton.gym_placement` into `candidate.required_blocks`.
 - Removing `frame_slot`.
+- A `closure` kind for the end-of-day closure block, promoted separately once `planning` has run
+  for a while.
 
 ## 8. Sequence and tickets
 

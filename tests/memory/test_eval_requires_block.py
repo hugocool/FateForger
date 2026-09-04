@@ -7,31 +7,31 @@ green call has not been validated (CLAUDE.md). The ambiguous case is recorded,
 not asserted: its rate in the docstring is what a later prompt change compares
 against.
 
-Measured on google/gemini-3.6-flash at 8 draws:
-  positives 8/8 (the promotion's own rule), 0/8 (the end-of-day closure rule);
-  negatives 8/8, 8/8, 8/8, 8/8 and ambiguous 0/8 as measured when this was
-  written, not re-measured since.
+Measured on google/gemini-3.6-flash at 8 draws, 2026-09-04:
+  positive 8/8 (the promotion's own rule);
+  negatives 8/8, 8/8, 8/8, 8/8 and ambiguous 0/8 as measured when this file was
+  written, not re-measured since;
+  recorded: the end-of-day closure rule 0/8, the timeboxing sentence 0/8.
 
-**The closure case is failing on purpose and the number is the finding.**
+**The closure rule is recorded, not asserted, and the reason is the finding.**
 
 It scored 8/8 once, and the reason was that REQUIRES_BLOCK_PROMPT contained a
 description of it: a paragraph about "a short end-of-day routine that closes
 out today and sets up for what comes next -- reviewing progress, updating
 status, carrying work forward". That is the eval sentence restated as a rule,
 so the eval was measuring whether the model can recognise a case it had been
-handed, which is not what the case is for. The paragraph was replaced with the
-same instruction carried by differently shaped examples (a weekly review, a
-morning check-in), and the rate went 8/8 -> 0/8. Measured 2026-09-04, both at
-8 draws: with the old paragraph and the new example sentence, 8/8 -- so the
-discriminator was the paraphrase, not the example.
+handed. The paragraph was replaced with the same instruction carried by
+differently shaped examples (a weekly review, a morning check-in), and the rate
+went 8/8 -> 0/8. Measured both ways at 8 draws: with the old paragraph and the
+new example sentence it is 8/8 again, so the paraphrase was the discriminator,
+not the example.
 
-What the model says when it is not handed the answer, consistently across all
-eight draws: an end-of-day block for updating artifact links and board status
-is administrative closure, and its purpose differs from planning, which it
-reads as deciding how time gets spent. That is a defensible reading. Spec §1
-names this statement a `planning` positive; either the spec's expectation or
-the kind's definition has to give, and the threshold is left at 7 so the
-disagreement stays visible instead of being absorbed.
+Unhanded, all eight draws say the same thing: reserving 15-20 minutes to update
+artifact links and board status is administrative closure, and its purpose
+differs from planning, which the model reads as deciding how time gets spent.
+That reading is right, so the case moved here rather than the prompt moving
+back: this is a candidate second kind (`closure`) for a later promotion, not a
+`planning` block the question is failing to see.
 """
 from __future__ import annotations
 
@@ -76,7 +76,6 @@ async def _rate(text: str, slug: str | None) -> tuple[int, list[str]]:
 
 @pytest.mark.parametrize("text", [
     "Every working day has a planning session in which the next day is timeboxed.",
-    "End-of-day closure block: reserve 15-20 minutes at the end of the workday to update artifact links and board status.",
 ])
 async def test_a_rule_that_requires_a_planning_block_names_the_kind(text):
     hits, rationales = await _rate(text, "planning")
@@ -94,19 +93,34 @@ async def test_a_rule_about_blocks_requires_none(text):
     assert hits >= THRESHOLD, f"{hits}/{SAMPLES} answered null for {text!r}; {rationales}"
 
 
-async def test_the_ambiguous_timeboxing_sentence_is_recorded_not_asserted():
-    """'I timebox my day by allocating fixed blocks' says he timeboxes; it does
-    not say a session must be on the plan. Whatever the model answers is data:
-    print it so the run's log carries the rate. The assertion is over the
-    transport's own contract, not the count: every draw's slug must be one of
-    the offered kinds or null (requires_block's own verification already
-    guarantees this -- this test checks it held, not the rate it produced)."""
+@pytest.mark.parametrize("text,why", [
+    (
+        "I timebox my day by allocating fixed blocks for tasks and activities.",
+        "says he timeboxes; it does not say a session must be on the plan",
+    ),
+    (
+        "End-of-day closure block: reserve 15-20 minutes at the end of the workday "
+        "to update artifact links and board status.",
+        "administrative closure, a different purpose from planning -- a candidate "
+        "second kind, not a planning block",
+    ),
+])
+async def test_a_case_the_answer_is_not_settled_for_is_recorded_not_asserted(text, why):
+    """Whatever the model answers is data: print it so the run's log carries the
+    rate a later prompt change compares against.
+
+    The assertion is over the transport's own contract, not the count: every
+    draw's slug must be one of the offered kinds or null (requires_block's own
+    verification already guarantees this -- this checks it held, not the rate it
+    produced). Asserting a rate here would be asserting an answer the design has
+    not decided, and the closure case is exactly how that goes wrong: it was an
+    asserted positive, and holding it up needed the prompt to describe it.
+    """
     async with _judge() as judge:
-        text = "I timebox my day by allocating fixed blocks for tasks and activities."
         results = await asyncio.gather(
             *(judge.requires_block(_obs(text), KINDS) for _ in range(SAMPLES))
         )
     hits = sum(r.slug == "planning" for r in results)
     rationales = [f"{r.slug}: {r.rationale}" for r in results]
-    print(f"ambiguous: {hits}/{SAMPLES} chose planning; {rationales}")
+    print(f"recorded ({why}): {hits}/{SAMPLES} chose planning; {rationales}")
     assert all(r.slug in KINDS or r.slug is None for r in results)
