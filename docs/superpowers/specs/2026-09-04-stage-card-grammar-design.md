@@ -287,7 +287,7 @@ the turn card's. Host state only; the snapshot never learns a Slack ts.
 
 | case | behaviour |
 | --- | --- |
-| stale press from the modal (revision mismatch) | refused inside the modal (`views_update` with the existing stale-press copy); nothing posted to the thread |
+| stale press from the modal (revision mismatch) | routed through the turn like any card press: the kernel refuses it and the failure card posts in the thread, then `_handle_fold_pick` refreshes the modal from the current snapshot. (Implementation finding, 2026-09-04.) |
 | `views_open` fails (expired `trigger_id`, Slack refusal) | ephemeral reply: press again; logged |
 | fold over 100 blocks | count truncation as above; typing still reaches every rule |
 | panel `chat_update` fails | logged; retried on the next turn; the turn card is posted regardless |
@@ -318,7 +318,12 @@ Unit tests opt in to the harness backend as `test_timebox_session_surface.py` do
   and re-posted on a day change; edit failure does not block the card.
 - **E2e** (extends `tests/e2e/test_slack_timebox_command.py` as increment A planned):
   one panel, ten probe turns → ten cards and one panel; a modal steer edits the panel
-  in place and the next card's decided list shows the suspension.
+  in place, the panel's second line names the suspension ("Off for this session: …
+  (you said: not today)"), and the modal row for that rule renders struck through with
+  Restore. (The mapper's decided list cannot name a suspension --
+  `stage_cards._FACT_LABELS` has no `SUSPENDED_CONSTRAINT` entry -- so the finding is
+  read off the panel and the fold, not the next card. Implementation finding,
+  2026-09-04.)
 - **No eval tests.** Nothing here asks a model a new question; grouping and ordering
   are arithmetic. Each guard is broken on purpose once before it is trusted.
 
