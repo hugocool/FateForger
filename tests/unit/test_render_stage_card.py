@@ -269,6 +269,7 @@ def test_next_renders_as_a_primary_button_that_advances() -> None:
 def test_a_decided_assumption_draws_an_overflow_and_a_receipt_does_not() -> None:
     from fateforger.slack_bot.stage_cards import DecidedItem, DenyControl, StageCard, stage
     from fateforger.slack_bot.timeboxing_cards import FF_TIMEBOX_DECIDED_ACTION_ID, render_stage_card
+    from fateforger.slack_bot.timeboxing_intents import ArtifactActionMeta
 
     card = StageCard(
         stage=stage(1),
@@ -285,8 +286,13 @@ def test_a_decided_assumption_draws_an_overflow_and_a_receipt_does_not() -> None
     assert len(overflows) == 1
     assert overflows[0]["accessory"]["action_id"] == FF_TIMEBOX_DECIDED_ACTION_ID
     (option,) = overflows[0]["accessory"]["options"]
-    meta = json.loads(option["value"])
-    assert (meta["decision"], meta["assumption_id"]) == ("deny_assumption", "a-1")
+    # Decoded through the typed model, not a raw dict: the value's wire keys
+    # are `ArtifactActionMeta`'s short aliases (Slack caps an overflow option
+    # at 150 chars), and this is the one path anything drawn here decodes
+    # through -- see `test_every_overflow_option_value_fits_slack_with_real_sized_ids`
+    # in `test_render_context_surfaces.py` for the length and blockkit checks.
+    meta = ArtifactActionMeta.model_validate_json(option["value"])
+    assert (meta.decision, meta.assumption_id) == ("deny_assumption", "a-1")
     receipt = render_stage_card(card.as_receipt("answered")).blocks
     assert not any(b.get("accessory") for b in receipt)
 

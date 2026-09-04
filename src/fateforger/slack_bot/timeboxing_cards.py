@@ -386,6 +386,33 @@ def render_context_panel(panel: ContextPanel) -> SlackBlockMessage:
     return SlackBlockMessage(text=head.splitlines()[0][:SLACK_MAX_TEXT_CHARS], blocks=blocks)
 
 
+#: `note`'s value on the "This is wrong" verb is a minted marker, not
+#: prose -- nothing downstream reads it as a sentence, and a short marker
+#: keeps this option well under Slack's 150-char cap even with real ids.
+_STEER_WRONG_NOTE = "wrong"
+
+
+def _option_value(meta: ArtifactActionMeta) -> str:
+    """The one encoding every overflow option's `value` goes through.
+
+    An overflow option is capped by Slack at 150 chars, unlike a button's
+    2000. Real ids leave far less room than that cap suggests: a live Slack
+    session key alone is ~29 chars, a constraint uid is 32 hex chars, an
+    assumption id is a 36-char uuid -- and even after dropping every unset
+    field (`exclude_none`) and the ever-default `schema_version`
+    (`exclude_defaults`), the plain field names alone (`"expected_revision":`
+    is 21 bytes on their own) push a steer-with-note option to 167 chars.
+    `by_alias` writes `ArtifactActionMeta`'s short wire names (`sk`, `rev`,
+    `d`, `cu`, `aid`, `n`) instead, which is the difference between fitting
+    and not: the same worst case comes in at 122. `populate_by_name=True` on
+    the model means `ArtifactActionMeta.model_validate_json` decodes this
+    exactly the way it decodes a button's full-field-name value -- one decode
+    path, two wire shapes, chosen only by which cap the control is under.
+    """
+
+    return meta.model_dump_json(exclude_none=True, exclude_defaults=True, by_alias=True)
+
+
 def _steer_option(fold: ContextFold, row: FoldRow, verb: str) -> dict:
     label = {"steer_not_today": "Not today", "steer_wrong": "This is wrong", "restore": "Restore"}[verb]
     fields = {
@@ -394,18 +421,14 @@ def _steer_option(fold: ContextFold, row: FoldRow, verb: str) -> dict:
         "constraint_uid": row.uid,
     }
     if verb == "steer_wrong":
-        fields.update(decision="steer_not_today", note="this is wrong")
+        fields.update(decision="steer_not_today", note=_STEER_WRONG_NOTE)
     elif verb == "steer_not_today":
         fields.update(decision="steer_not_today")
     else:
         fields.update(decision="restore")
     return {
         "text": {"type": "plain_text", "text": label},
-        # `exclude_none`: an overflow option's `value` is capped by Slack at
-        # 150 chars, and the null fields this schema carries for every other
-        # decision (artifact_id, option_id, ...) blow well past that on their
-        # own -- `blockkit` catches it here rather than as a 400 in the thread.
-        "value": ArtifactActionMeta.model_validate(fields).model_dump_json(exclude_none=True),
+        "value": _option_value(ArtifactActionMeta.model_validate(fields)),
     }
 
 
@@ -451,14 +474,16 @@ def _decided_option(card: StageCard, control: Control) -> dict:
     if isinstance(control, DenyControl):
         return {
             "text": {"type": "plain_text", "text": "Deny"},
-            "value": ArtifactActionMeta.model_validate(
-                {
-                    "session_key": card.session_key,
-                    "expected_revision": card.expected_revision,
-                    "decision": "deny_assumption",
-                    "assumption_id": control.assumption_id,
-                }
-            ).model_dump_json(),
+            "value": _option_value(
+                ArtifactActionMeta.model_validate(
+                    {
+                        "session_key": card.session_key,
+                        "expected_revision": card.expected_revision,
+                        "decision": "deny_assumption",
+                        "assumption_id": control.assumption_id,
+                    }
+                )
+            ),
         }
     raise ValueError(f"no decided option for {control.kind}")
 

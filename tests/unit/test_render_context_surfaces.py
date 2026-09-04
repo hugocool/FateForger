@@ -137,3 +137,116 @@ def test_the_fold_says_how_many_it_dropped() -> None:
     view = render_context_fold(fold)
     assert len(view["blocks"]) <= SLACK_MAX_MODAL_BLOCKS
     assert view["blocks"][-1]["text"]["text"].startswith("+")
+
+
+def test_every_overflow_option_value_fits_slack_with_real_sized_ids() -> None:
+    """Real ids leave far less headroom than the short test fixtures above:
+    a live Slack session key, a 32-hex constraint uid, a 36-char assumption
+    uuid. Every overflow option drawn against them must still fit Slack's
+    150-char option-value cap, round-trip through `ArtifactActionMeta`, and
+    pass blockkit's own `Overflow`/`Option` validators -- the fold's steer
+    menus and the decided item's deny menu alike."""
+    from fateforger.slack_bot.stage_cards import DecidedItem, DenyControl, StageCard, stage
+    from fateforger.slack_bot.timeboxing_cards import FF_TIMEBOX_DECIDED_ACTION_ID, render_stage_card
+
+    session_key = "C0AA6HC1RJL:1788336557.980289"
+    live_uid = "a" * 32
+    suspended_uid = "b" * 32
+    assumption_id = "11111111-1111-1111-1111-111111111111"
+    assert len(session_key) == 29
+    assert len(live_uid) == 32 and len(suspended_uid) == 32
+    assert len(assumption_id) == 36
+
+    rows = [
+        {
+            "uid": live_uid,
+            "name": "Live rule with a normal length name",
+            "necessity": "must",
+            "anchors": [{"uid": "anchor-1", "name": "anchor one"}],
+            "fade": 0.5,
+        },
+        {
+            "uid": suspended_uid,
+            "name": "Suspended rule with a normal length name",
+            "necessity": "should",
+            "anchors": [{"uid": "anchor-1", "name": "anchor one"}],
+            "fade": 0.3,
+        },
+    ]
+    snapshot = PlanningSessionSnapshot(
+        session_key=session_key,
+        revision=123,
+        owner_user_id="U1",
+        planning_day=_day(),
+        applicable_constraints=rows,
+        suspended_constraint_count=1,
+        facts=[
+            PlanningFact(
+                fact_id=suspension_fact_id(suspended_uid),
+                kind=FactKind.SUSPENDED_CONSTRAINT,
+                value={"uid": suspended_uid, "reason": "not today"},
+                source="user",
+            )
+        ],
+    )
+
+    fold = context_fold(snapshot, first_shown_with=None)
+    view = render_context_fold(fold)
+    steer_rows = [b for b in view["blocks"] if b.get("accessory", {}).get("type") == "overflow"]
+    assert len(steer_rows) == 2  # the live rule and the suspended rule both drew a menu
+
+    card = StageCard(
+        stage=stage(1),
+        session_key=session_key,
+        expected_revision=123,
+        decided=[
+            DecidedItem(
+                text="assumed x",
+                kind="assumption",
+                ref=assumption_id,
+                filed_by="user",
+                controls=[DenyControl(assumption_id=assumption_id)],
+            ),
+        ],
+    )
+    decided_rows = [
+        b for b in render_stage_card(card).blocks if b.get("accessory", {}).get("type") == "overflow"
+    ]
+    assert len(decided_rows) == 1
+    assert decided_rows[0]["accessory"]["action_id"] == FF_TIMEBOX_DECIDED_ACTION_ID
+
+    lengths: list[int] = []
+    for accessory_row in [*steer_rows, *decided_rows]:
+        accessory = accessory_row["accessory"]
+        # blockkit's own Overflow/Option validators run here -- 1-5 options,
+        # each option's value 1-150 chars, exactly what Slack itself enforces.
+        _element(accessory).build()
+        for option in accessory["options"]:
+            value = option["value"]
+            lengths.append(len(value))
+            assert len(value) <= 150
+            meta = ArtifactActionMeta.model_validate_json(value)
+            assert meta.session_key == session_key
+            assert meta.expected_revision == 123
+            label = option["text"]["text"]
+            if label == "Not today":
+                assert meta.decision == "steer_not_today"
+                assert meta.note is None
+                assert meta.constraint_uid == live_uid
+            elif label == "This is wrong":
+                assert meta.decision == "steer_not_today"
+                assert meta.note == "wrong"
+                assert meta.constraint_uid == live_uid
+            elif label == "Restore":
+                assert meta.decision == "restore"
+                assert meta.constraint_uid == suspended_uid
+            elif label == "Deny":
+                assert meta.decision == "deny_assumption"
+                assert meta.assumption_id == assumption_id
+            else:
+                raise AssertionError(f"unexpected option label {label!r}")
+
+    assert lengths, "no overflow options were drawn"
+    assert max(lengths) <= 150
+    # Surfaced for the report: the longest value real ids actually produce.
+    print(f"longest overflow option value: {max(lengths)} chars")
