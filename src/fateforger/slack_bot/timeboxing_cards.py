@@ -27,6 +27,7 @@ from fateforger.agents.timeboxing.session_contracts import (
 
 from .messages import (
     SLACK_MAX_BLOCK_TEXT_CHARS,
+    SLACK_MAX_MODAL_BLOCKS,
     SLACK_MAX_TEXT_CHARS,
     SlackBlockMessage,
 )
@@ -35,12 +36,15 @@ from .stage_cards import (
     BackControl,
     CancelControl,
     CommitControl,
+    Control,
     DayTypeControl,
+    DenyControl,
     NextControl,
     StageCard,
     UndoControl,
     map_outcome,
 )
+from .stage_context import ContextFold, ContextPanel, FoldRow
 from .timebox_candidate import PendingTimeboxCandidates
 from .timeboxing_commit import build_timebox_date_card
 from .timeboxing_intents import ArtifactActionMeta
@@ -157,6 +161,18 @@ FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID = "ff_timebox_artifact_back"
 #: id that spelled out its own answer would be a second place the offer could
 #: drift from the record the kernel checks it against.
 FF_TIMEBOX_BLOCKER_OPTION_ACTION_ID = "ff_timebox_blocker_option"
+
+#: The context panel's one control: opens the fold modal. What it means is
+#: never executed as an `ArtifactActionMeta` decision -- the host opens a
+#: modal instead of calling `intent_from_artifact_action` -- the value only
+#: binds the press to its session.
+FF_TIMEBOX_SHOW_RULES_ACTION_ID = "ff_timebox_show_rules"
+#: One id for every steer menu in the fold, one per row. Which rule and which
+#: verb were picked live in the encoded option, the same reason the blocker
+#: options and the decided overflow share one id each.
+FF_TIMEBOX_STEER_ACTION_ID = "ff_timebox_steer"
+#: One id for every decided item's overflow menu.
+FF_TIMEBOX_DECIDED_ACTION_ID = "ff_timebox_decided"
 
 #: Slack refuses a button label longer than this, and the label is written by a
 #: model rather than by this host, so it is capped where it is drawn.
@@ -303,12 +319,161 @@ def _nav_button(action_id: str, label: str, value: str, *, primary: bool = False
     return button
 
 
+_NECESSITY_LABEL = {"must": "must", "should": "should"}
+_APPLIES_LABEL = {"every_day": "every day", "some_days": "some days", "dated": "dated"}
+
+
+def _row_tags(row: FoldRow) -> str:
+    tags = [_NECESSITY_LABEL[row.necessity]]
+    if row.suspended_reason is not None:
+        tags.append(f"you said: {row.suspended_reason}")
+    elif row.applies is not None:
+        tags.append(_APPLIES_LABEL[row.applies])
+    if row.also:
+        tags.append("also " + ", ".join(row.also))
+    return " · ".join(tags)
+
+
+def _off_today_line(count: int, reason: str) -> str:
+    if count == 0:
+        return ""
+    noun = "rule" if count == 1 else "rules"
+    return f" · {count} {noun} off today because it is a {reason} day"
+
+
+def render_context_panel(panel: ContextPanel) -> SlackBlockMessage:
+    """Two blocks. Counts and group names are the only variable text, so the
+    panel never grows and is safe to edit in place for the whole session."""
+
+    summary = " · ".join(
+        f"*{g.name if g.name is not None else 'no anchor'}* {len(g.uids)}" for g in panel.groups
+    )
+    head = (
+        f"*1/5 · Constraints — what I know about a {panel.day_label}*\n"
+        f"{panel.rule_count} rules apply ({panel.must_count} must, "
+        f"{panel.rule_count - panel.must_count} should)"
+        f"{_off_today_line(panel.off_today_count, panel.off_today_reason)}\n{summary}"
+    )
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "block_id": "ff_timebox_context_panel",
+            "text": {"type": "mrkdwn", "text": head[:SLACK_MAX_BLOCK_TEXT_CHARS]},
+            "accessory": _nav_button(
+                FF_TIMEBOX_SHOW_RULES_ACTION_ID,
+                "Show rules",
+                artifact_action_value(
+                    session_key=panel.session_key,
+                    expected_revision=panel.expected_revision,
+                    decision="advance",  # never sent: show_rules is a host action; the value binds the session
+                    artifact=None,
+                ),
+            ),
+        }
+    ]
+    if panel.suspended:
+        names = ", ".join(f"{s.name} (you said: {s.reason})" for s in panel.suspended)
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"_Off for this session: {names}._"[:SLACK_MAX_BLOCK_TEXT_CHARS]}],
+            }
+        )
+    else:
+        blocks.append(
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": "_Nothing set aside for this session._"}]}
+        )
+    return SlackBlockMessage(text=head.splitlines()[0][:SLACK_MAX_TEXT_CHARS], blocks=blocks)
+
+
+def _steer_option(fold: ContextFold, row: FoldRow, verb: str) -> dict:
+    label = {"steer_not_today": "Not today", "steer_wrong": "This is wrong", "restore": "Restore"}[verb]
+    fields = {
+        "session_key": fold.session_key,
+        "expected_revision": fold.expected_revision,
+        "constraint_uid": row.uid,
+    }
+    if verb == "steer_wrong":
+        fields.update(decision="steer_not_today", note="this is wrong")
+    elif verb == "steer_not_today":
+        fields.update(decision="steer_not_today")
+    else:
+        fields.update(decision="restore")
+    return {
+        "text": {"type": "plain_text", "text": label},
+        # `exclude_none`: an overflow option's `value` is capped by Slack at
+        # 150 chars, and the null fields this schema carries for every other
+        # decision (artifact_id, option_id, ...) blow well past that on their
+        # own -- `blockkit` catches it here rather than as a 400 in the thread.
+        "value": ArtifactActionMeta.model_validate(fields).model_dump_json(exclude_none=True),
+    }
+
+
+def render_context_fold(fold: ContextFold) -> dict:
+    """A modal view: one heading per group, one row per rule with its menu."""
+
+    blocks: list[dict] = []
+    for group in fold.groups:
+        blocks.append(_section(f"*{group.name if group.name is not None else 'no anchor'}*"))
+        for row in group.rows:
+            name = f"~{row.name}~" if row.suspended_reason is not None else row.name
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"{name}  _{_row_tags(row)}_"[:SLACK_MAX_BLOCK_TEXT_CHARS]},
+                    "accessory": {
+                        "type": "overflow",
+                        "action_id": FF_TIMEBOX_STEER_ACTION_ID,
+                        "options": [_steer_option(fold, row, verb) for verb in row.verbs],
+                    },
+                }
+            )
+    blocks.append(_section(f"*what today is not*{_off_today_line(fold.off_today_count, fold.off_today_reason) or ' · nothing is off today'}"))
+    if fold.truncated:
+        # Last, on purpose: the count of what got cut is the one thing a
+        # truncated fold must not let scroll past unnoticed.
+        rules, groups = fold.truncated
+        blocks.append(_section(f"+{rules} rules in {groups} more groups — say the rule's name to steer it"))
+    assert len(blocks) <= SLACK_MAX_MODAL_BLOCKS, len(blocks)
+    return {
+        "type": "modal",
+        "callback_id": "ff_timebox_context_fold",
+        "private_metadata": artifact_action_value(
+            session_key=fold.session_key, expected_revision=fold.expected_revision, decision="advance", artifact=None
+        ),
+        "title": {"type": "plain_text", "text": f"Rules for {fold.day}"[:24]},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": blocks,
+    }
+
+
+def _decided_option(card: StageCard, control: Control) -> dict:
+    if isinstance(control, DenyControl):
+        return {
+            "text": {"type": "plain_text", "text": "Deny"},
+            "value": ArtifactActionMeta.model_validate(
+                {
+                    "session_key": card.session_key,
+                    "expected_revision": card.expected_revision,
+                    "decision": "deny_assumption",
+                    "assumption_id": control.assumption_id,
+                }
+            ).model_dump_json(),
+        }
+    raise ValueError(f"no decided option for {control.kind}")
+
+
 def render_stage_card(card: StageCard) -> SlackBlockMessage:
     """Draw one stage card, live or as a receipt, from its typed value.
 
     The header is the one thing every card and every receipt shares, so the
     thread reads as a ladder. A receipt is the same card with no controls and
     a `done` label -- what the user acted on, kept legible after the fact.
+
+    The decided block count is now `1 + min(len, 8) + 1`, so the turn card's
+    maximum is header 1 + decided 10 + divider 1 + asking 2 + hint 1 +
+    options 1 + gate 1 + nav 1 + typing hint 1 = 19, under `SLACK_MAX_BLOCKS`
+    (40).
     """
 
     header = f"*{card.stage.index}/5 · {card.stage.name}*"
@@ -320,7 +485,20 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
     if card.context:
         blocks.append(_bullets("Context", [item.text for item in card.context]))
     if card.decided:
-        blocks.append(_bullets("Decided", [item.text for item in card.decided]))
+        blocks.append(_section("*Decided*"))
+        shown = card.decided[:STAGE_LIST_CAP]
+        for item in shown:
+            block = _section(f"• {item.text}")
+            if item.controls and card.done is None:
+                block["accessory"] = {
+                    "type": "overflow",
+                    "action_id": FF_TIMEBOX_DECIDED_ACTION_ID,
+                    "options": [_decided_option(card, control) for control in item.controls],
+                }
+            blocks.append(block)
+        rest = len(card.decided) - len(shown)
+        if rest > 0:
+            blocks.append(_section(f"_+{rest} more_"))
     if card.body:
         blocks.append(_section(card.body))
         text_lines.append(card.body)
@@ -329,6 +507,17 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
         asking = card.asking
         blocks.append(_section(f"{asking.question}\n_{asking.why_needed}_"))
         text_lines.append(asking.question)
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "_Or tell me anything else about tomorrow; I will file it where it belongs._",
+                    }
+                ],
+            }
+        )
         if asking.options:
             effects = "\n".join(
                 f"*{option.label}* — {option.effect}" for option in asking.options

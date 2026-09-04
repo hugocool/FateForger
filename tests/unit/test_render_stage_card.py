@@ -194,17 +194,23 @@ def test_the_commit_stage_offers_undo() -> None:
 
 
 def test_long_lists_are_capped_by_count() -> None:
+    # Decided items are drawn one section per item, capped by count, so an
+    # overflow can be attached per item rather than to a single bullet block.
     card = _skeleton_card(
         decided=[
             DecidedItem(text=f"item {i}", kind="fact", ref=f"f-{i}") for i in range(12)
         ]
     )
     message = render_stage_card(card)
-    decided = next(
-        b for b in message.blocks if b.get("text", {}).get("text", "").startswith("*Decided*")
+    decided_items = [
+        b for b in message.blocks
+        if b.get("text", {}).get("text", "").startswith("• item ")
+    ]
+    assert len(decided_items) == 8
+    more = next(
+        b for b in message.blocks if b.get("text", {}).get("text", "") == "_+4 more_"
     )
-    assert decided["text"]["text"].count("•") == 8
-    assert "+4 more" in decided["text"]["text"]
+    assert more is not None
 
 
 def test_a_receipted_commit_card_keeps_its_undo() -> None:
@@ -258,3 +264,39 @@ def test_next_renders_as_a_primary_button_that_advances() -> None:
     assert button["style"] == "primary"
     assert intent_from_artifact_action(button["value"]).intent == Advance()
     assert any("ok" in json.dumps(block) for block in message.blocks)
+
+
+def test_a_decided_assumption_draws_an_overflow_and_a_receipt_does_not() -> None:
+    from fateforger.slack_bot.stage_cards import DecidedItem, DenyControl, StageCard, stage
+    from fateforger.slack_bot.timeboxing_cards import FF_TIMEBOX_DECIDED_ACTION_ID, render_stage_card
+
+    card = StageCard(
+        stage=stage(1),
+        session_key="C1:1.0",
+        expected_revision=4,
+        decided=[
+            DecidedItem(text="assumed x", kind="assumption", ref="a-1", filed_by="user",
+                        controls=[DenyControl(assumption_id="a-1")]),
+            DecidedItem(text="wanted y", kind="fact", ref="f-1"),
+        ],
+    )
+    live = render_stage_card(card).blocks
+    overflows = [b for b in live if b.get("accessory", {}).get("type") == "overflow"]
+    assert len(overflows) == 1
+    assert overflows[0]["accessory"]["action_id"] == FF_TIMEBOX_DECIDED_ACTION_ID
+    (option,) = overflows[0]["accessory"]["options"]
+    meta = json.loads(option["value"])
+    assert (meta["decision"], meta["assumption_id"]) == ("deny_assumption", "a-1")
+    receipt = render_stage_card(card.as_receipt("answered")).blocks
+    assert not any(b.get("accessory") for b in receipt)
+
+
+def test_asking_carries_the_free_association_hint() -> None:
+    from fateforger.slack_bot.stage_cards import Asking, StageCard, stage
+    from fateforger.slack_bot.timeboxing_cards import render_stage_card
+
+    card = StageCard(stage=stage(1), session_key="C1:1.0", expected_revision=4,
+                     asking=Asking(requirement_id="elicit.body.unclear", question="q", why_needed="w"))
+    blocks = render_stage_card(card).blocks
+    hints = [b for b in blocks if b["type"] == "context" and "anything else" in b["elements"][0]["text"]]
+    assert len(hints) == 1
