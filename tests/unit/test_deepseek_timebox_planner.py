@@ -774,3 +774,196 @@ async def test_a_snapshot_of_another_day_or_calendar_is_replaced() -> None:
             _input_brief().model_copy(update={"calendar_snapshot": stale}), _Progress()
         )
         assert tmbx.calls == [("hugo.evers@gmail.com", "2026-08-29")]
+
+
+async def test_the_brief_s_rows_are_the_planner_s_rows_and_it_reads_nothing() -> None:
+    """Catches the suspension binding on the card and nowhere else.
+
+    `AdaptiveTimeboxing._build_brief` subtracts this session's
+    SUSPENDED_CONSTRAINT facts from the rows the host resolved, so a rule the
+    user said "not today" about is already absent from the brief. This planner
+    used to re-read the store and overwrite that list, which put the suspended
+    rule straight back in front of the model -- the one thing the fact exists
+    to prevent. A list is the host's answer: it is used as-is, and no read of
+    this planner's own happens at all.
+    """
+
+    kept = {"uid": "c-plan", "name": "Plan at 17:00"}
+    calendar_payload = {
+        "ok": True,
+        "snapshot": {
+            "calendar_id": "hugo.evers@gmail.com",
+            "day": "2026-08-29",
+            "events": [],
+        },
+    }
+    # The reader would raise if it were consulted, so "no read" is a fact about
+    # this run rather than a claim about an empty call list.
+    constraint_reader = _RecordedConstraintReader(
+        AssertionError("the planner must not read when the brief carries rows")
+    )
+    runner = _RecordedHarnessRunner()
+    planner = DeepSeekTimeboxPlanner(
+        tmbx_client=_RecordedTmbx(calendar_payload),
+        constraint_reader=constraint_reader,
+        calendar_id="hugo.evers@gmail.com",
+        clock=lambda: datetime(2026, 8, 29, 8, 12, 30, tzinfo=UTC),
+        harness_runner=runner,
+    )
+
+    brief = _input_brief().model_copy(update={"applicable_constraints": [kept]})
+    await planner.produce(brief, _Progress())
+
+    assert constraint_reader.calls == []
+    [(complete, _)] = runner.calls
+    assert complete.applicable_constraints == [kept]
+
+
+async def test_an_empty_list_of_rows_is_an_answer_not_an_absence() -> None:
+    """A day with every rule suspended must reach the model with no rules."""
+
+    constraint_reader = _RecordedConstraintReader(
+        [{"uid": "c-gym", "name": "Oats before gym"}]
+    )
+    runner = _RecordedHarnessRunner()
+    planner = DeepSeekTimeboxPlanner(
+        tmbx_client=_RecordedTmbx(
+            {
+                "ok": True,
+                "snapshot": {
+                    "calendar_id": "hugo.evers@gmail.com",
+                    "day": "2026-08-29",
+                    "events": [],
+                },
+            }
+        ),
+        constraint_reader=constraint_reader,
+        calendar_id="hugo.evers@gmail.com",
+        clock=lambda: datetime(2026, 8, 29, 8, 12, 30, tzinfo=UTC),
+        harness_runner=runner,
+    )
+
+    brief = _input_brief().model_copy(update={"applicable_constraints": []})
+    await planner.produce(brief, _Progress())
+
+    assert constraint_reader.calls == []
+    [(complete, _)] = runner.calls
+    assert complete.applicable_constraints == []
+
+
+async def test_a_brief_without_rows_still_gets_the_planner_s_own_read() -> None:
+    """A caller predating the host resolve is not left with no rules at all."""
+
+    constraints = [{"uid": "c-gym", "name": "Oats before gym"}]
+    constraint_reader = _RecordedConstraintReader(constraints)
+    runner = _RecordedHarnessRunner()
+    planner = DeepSeekTimeboxPlanner(
+        tmbx_client=_RecordedTmbx(
+            {
+                "ok": True,
+                "snapshot": {
+                    "calendar_id": "hugo.evers@gmail.com",
+                    "day": "2026-08-29",
+                    "events": [],
+                },
+            }
+        ),
+        constraint_reader=constraint_reader,
+        calendar_id="hugo.evers@gmail.com",
+        clock=lambda: datetime(2026, 8, 29, 8, 12, 30, tzinfo=UTC),
+        harness_runner=runner,
+    )
+
+    # `_input_brief` carries a dict placeholder, which is what a brief built
+    # before the host resolved anything looks like.
+    await planner.produce(_input_brief(), _Progress())
+
+    assert len(constraint_reader.calls) == 1
+    [(complete, _)] = runner.calls
+    assert complete.applicable_constraints == constraints
+
+
+async def test_a_suspended_rule_never_reaches_the_model_through_the_real_planner() -> None:
+    """The whole path: kernel filters, real planner forwards, runner receives.
+
+    Critical 2 of the final review. The suspension was binding on the card and
+    on `_build_brief`, and then this planner re-read the store and put the rule
+    back -- so "not today" changed the display and nothing the model saw. The
+    two component tests above pin the planner's half; this one composes the
+    kernel with the real `DeepSeekTimeboxPlanner` so the seam between them
+    cannot regress silently.
+    """
+
+    gym = {"uid": "c-gym", "name": "Oats before gym"}
+    plan = {"uid": "c-plan", "name": "Plan at 17:00"}
+    snapshot = PlanningSessionSnapshot(
+        session_key="C283:suspension",
+        revision=7,
+        owner_user_id="U283",
+        planning_day=_locked_day(),
+        facts=[
+            PlanningFact(
+                fact_id="activity-1",
+                kind=FactKind.REQUESTED_ACTIVITY,
+                value="Write the proposal",
+                source="user",
+            ),
+            PlanningFact(
+                fact_id="frame-1",
+                kind=FactKind.DAY_FRAME,
+                value={"wake": "08:30", "sleep": "00:30"},
+                source="user",
+            ),
+            PlanningFact(
+                fact_id="suspend:c-gym",
+                kind=FactKind.SUSPENDED_CONSTRAINT,
+                value={"uid": "c-gym", "reason": "not today"},
+                source="user",
+            ),
+        ],
+        # Stage 1 consent is given; this test is about what follows.
+        stage1="closed",
+    )
+
+    class _RowsFromMemory:
+        async def propose_planning_day(self, request: TurnRequest) -> PlanningDay:
+            _ = request
+            return _locked_day()
+
+        async def resolve(self, snapshot, *, target, progress):
+            _ = (snapshot, target, progress)
+            return PlanningContext(applicable_constraints=[gym, plan])
+
+    # Consulted, this reader would hand back the suspended rule -- which is
+    # exactly what the defect did.
+    constraint_reader = _RecordedConstraintReader([gym, plan])
+    runner = _RecordedHarnessRunner()
+    planner = DeepSeekTimeboxPlanner(
+        tmbx_client=_RecordedTmbx({"ok": True, "snapshot": {}}),
+        constraint_reader=constraint_reader,
+        calendar_id="work-calendar@example.com",
+        clock=lambda: datetime(2026, 8, 29, tzinfo=UTC),
+        harness_runner=runner,
+    )
+    kernel = AdaptiveTimeboxing(
+        repository=InMemoryPlanningSessionRepository([snapshot]),
+        requirements=TimeboxRequirements(),
+        planner=planner,
+        context=_RowsFromMemory(),
+        commit=_ForbiddenCommit(),
+    )
+
+    await kernel.turn(
+        TurnRequest(
+            session_key=snapshot.session_key,
+            interaction_id="1777651205.0",
+            actor_user_id=snapshot.owner_user_id,
+            expected_revision=snapshot.revision,
+            intent=Advance(),
+        ),
+        progress=_Progress(),
+    )
+
+    [(complete, _)] = runner.calls
+    assert complete.applicable_constraints == [plan]
+    assert constraint_reader.calls == []
