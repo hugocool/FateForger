@@ -813,6 +813,7 @@ _DAY_SHAPE = ArtifactRequirement(
     why_needed="the free afternoon has several materially different shapes",
     resolution="ask",
     question="Which shape should the afternoon take?",
+    stage=2,
 )
 
 
