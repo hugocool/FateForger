@@ -10,8 +10,6 @@ import asyncio
 import itertools
 from datetime import date
 
-import pytest
-
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
     AdaptiveTimeboxing,
     InMemoryPlanningSessionRepository,
@@ -25,6 +23,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     ArtifactDraft,
     ArtifactKind,
     AwaitingUser,
+    ConfirmPlanningDay,
     DayType,
     DenyAssumption,
     FactKind,
@@ -37,6 +36,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningSessionSnapshot,
     ProvidePlanningFacts,
     RestoreConstraint,
+    TurnFailed,
     coverage_fact_id,
     elicited_fact_id,
     suspension_fact_id,
@@ -233,8 +233,6 @@ def test_restore_deletes_the_suspension_and_reopens_the_stage() -> None:
 
 
 def test_restore_of_a_rule_not_suspended_is_refused() -> None:
-    from fateforger.agents.timeboxing.session_contracts import TurnFailed
-
     kernel, _, _ = _kernel(_snapshot())
     outcome = _turn(kernel, _snapshot(), RestoreConstraint(constraint_uid="c-gym"))
     assert isinstance(outcome, TurnFailed) and outcome.code == "stale_restore"
@@ -243,14 +241,32 @@ def test_restore_of_a_rule_not_suspended_is_refused() -> None:
 def test_file_assumption_is_recorded_as_the_users_and_closes_the_question() -> None:
     cell = ALL_CELLS[0]
     snapshot = _snapshot(facts=[*_snapshot().facts, _matrix_fact(cell.id)])
-    kernel, repository, _ = _kernel(snapshot)
+    kernel, repository, planner = _kernel(snapshot)
     _turn(kernel, snapshot, Advance())
     held = _load(repository)
-    _turn(kernel, held, FileAssumption(requirement_id=cell.id, value="assume a normal day", why_needed="user forced past"))
+    outcome = _turn(
+        kernel, held,
+        FileAssumption(
+            requirement_id=cell.id,
+            value="assume a normal day",
+            why_needed="user forced past",
+        ),
+    )
     after = _load(repository)
     [assumption] = after.assumptions
     assert assumption.filed_by == "user" and assumption.requirement_id == cell.id
     assert after.pending_blocker is None
+
+    # Forced past, not forced past for one turn: the same cell must not come
+    # back on the very next Advance, and the planner must actually run.
+    assert isinstance(outcome, GateMet)
+    consented = _turn(kernel, after, Advance())
+    reasked = (
+        isinstance(consented, AwaitingUser) and consented.requirement_id == cell.id
+    )
+    assert not reasked
+    assert _load(repository).pending_blocker is None
+    assert len(planner.briefs) == 1
 
 
 def test_deny_removes_the_assumption_and_reopens_the_stage() -> None:
@@ -267,14 +283,109 @@ def test_deny_removes_the_assumption_and_reopens_the_stage() -> None:
 
 
 def test_deny_of_an_unknown_assumption_is_refused() -> None:
-    from fateforger.agents.timeboxing.session_contracts import TurnFailed
-
     kernel, _, _ = _kernel(_snapshot())
     outcome = _turn(kernel, _snapshot(), DenyAssumption(assumption_id="nope"))
     assert isinstance(outcome, TurnFailed) and outcome.code == "stale_assumption"
 
 
-def test_back_from_a_proposal_reopens_stage_one() -> None:
+def test_back_from_a_proposal_re_evaluates_and_proposes_again() -> None:
+    """Nothing changed, so Back lands right back at the same proposal.
+
+    `_stage1_outcome` is the single place `stage1` becomes `"proposed"`; the
+    `GoBack` rung calls it exactly like the run loop and `FileAssumption` do,
+    so a Back that finds nothing open re-proposes rather than stranding the
+    session at `"open"` with no card able to say so.
+    """
     kernel, repository, _ = _kernel(_snapshot(stage1="proposed"))
+    outcome = _turn(kernel, _snapshot(stage1="proposed"), GoBack())
+    assert isinstance(outcome, GateMet)
+    assert _load(repository).stage1 == "proposed"
+
+
+def test_back_then_one_advance_reaches_the_planner() -> None:
+    """One consent after Back is enough -- Back must not cost a second Advance."""
+    kernel, repository, planner = _kernel(_snapshot(stage1="proposed"))
     _turn(kernel, _snapshot(stage1="proposed"), GoBack())
-    assert _load(repository).stage1 == "open"
+    _turn(kernel, _load(repository), Advance())
+    assert _load(repository).stage1 == "closed"
+    assert len(planner.briefs) == 1
+
+
+def test_file_assumption_against_a_stage_two_requirement_lets_the_planner_run() -> None:
+    """`skeleton.day_frame` is catalog stage 1 too, but it is not an elicitation
+    cell -- filing against it must never answer with the Stage 1 card, closed
+    or not."""
+    snapshot = _snapshot(stage1="closed")
+    kernel, repository, planner = _kernel(snapshot)
+    outcome = _turn(
+        kernel, snapshot,
+        FileAssumption(
+            requirement_id="skeleton.day_frame",
+            value={"wake": "07:00", "sleep": "23:00"},
+            why_needed="already on record; filed anyway",
+        ),
+    )
+    assert not isinstance(outcome, GateMet)
+    assert len(planner.briefs) == 1
+
+
+def test_a_day_frame_assumption_does_not_skip_the_hard_activity_blocker() -> None:
+    """`stage_of` alone reads `skeleton.day_frame` as "stage 1" too (the
+    five-rung card grouping); membership in the forty cell ids is what tells
+    them apart. Get that wrong and this assumption skips straight past a
+    still-missing hard blocker to a Stage 1 verdict it has no business
+    making."""
+    snapshot = _snapshot(facts=[])
+    kernel, repository, planner = _kernel(snapshot)
+    outcome = _turn(
+        kernel, snapshot,
+        FileAssumption(
+            requirement_id="skeleton.day_frame",
+            value={"wake": "07:00", "sleep": "23:00"},
+            why_needed="filed anyway",
+        ),
+    )
+    assert isinstance(outcome, AwaitingUser)
+    assert outcome.requirement_id == "skeleton.requested_activity"
+    assert outcome.gate is None
+    assert planner.briefs == []
+
+
+def test_file_assumption_against_an_unknown_requirement_is_refused() -> None:
+    kernel, _, _ = _kernel(_snapshot())
+    outcome = _turn(
+        kernel, _snapshot(),
+        FileAssumption(
+            requirement_id="not.a.real.requirement", value="x", why_needed="y"
+        ),
+    )
+    assert isinstance(outcome, TurnFailed) and outcome.code == "unknown_requirement"
+
+
+def test_back_to_the_day_card_and_reconfirm_reopens_stage_one() -> None:
+    """Stage 1 is not permanently skipped just because a day was cleared and
+    re-picked."""
+    snapshot = _snapshot(stage1="closed")
+    kernel, repository, planner = _kernel(snapshot)
+    _turn(kernel, snapshot, GoBack())
+    after_back = _load(repository)
+    assert after_back.planning_day is None
+    assert after_back.stage1 == "open"
+
+    reconfirmed = _turn(
+        kernel, after_back,
+        ConfirmPlanningDay(
+            planning_day=PlanningDay.lock_default(
+                value=DAY,
+                timezone="Europe/Amsterdam",
+                lock_revision=1,
+                day_type=DayType.WORKING,
+            )
+        ),
+    )
+    # Without the fix, stage1 stayed "closed" across the reconfirm and this
+    # turn would have gone straight to the planner instead of re-proposing.
+    assert isinstance(reconfirmed, GateMet)
+    assert planner.briefs == []
+    _turn(kernel, _load(repository), Advance())
+    assert len(planner.briefs) == 1

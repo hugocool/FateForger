@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from .elicitation import stage1_gate
+from .elicitation import ALL_CELLS, stage1_gate
 from .readiness import (
     ReadinessGap,
     ReadinessReport,
@@ -64,6 +64,13 @@ from .session_contracts import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: The forty Stage 1 elicitation cell ids, for `FileAssumption` to tell a
+#: cell apart from `skeleton.day_frame`/`skeleton.locked_day` -- both of
+#: which also carry the catalog's `stage=1` (the five-rung card grouping, a
+#: different axis than Stage 1 elicitation entirely). Identifiers this
+#: system minted; membership over them is not a judgement about user text.
+_STAGE1_CELL_IDS: frozenset[str] = frozenset(cell.id for cell in ALL_CELLS)
 
 
 class TurnRequest(BaseModel):
@@ -593,26 +600,12 @@ class AdaptiveTimeboxing:
             )
 
         if target is ArtifactKind.SKELETON and snapshot.stage1 != "closed":
-            gate = stage1_gate(snapshot)
-            if gate.open_cells:
-                top = gate.open_cells[0]
-                gap = readiness.by_id(top.id)
-                return await self._save(
-                    self._hold_question(snapshot, gap, []),
-                    base_revision=base_revision,
-                    request=request,
-                    outcome=AwaitingUser(
-                        requirement_id=gap.requirement_id,
-                        question=gap.question,
-                        why_needed=gap.why_needed,
-                        gate=gate,
-                    ),
-                )
+            stage1_snapshot, stage1_outcome = self._stage1_outcome(snapshot, readiness)
             return await self._save(
-                snapshot.model_copy(update={"stage1": "proposed"}),
+                stage1_snapshot,
                 base_revision=base_revision,
                 request=request,
-                outcome=GateMet(gate=gate),
+                outcome=stage1_outcome,
             )
 
         if readiness.system_owned_gaps():
@@ -725,6 +718,9 @@ class AdaptiveTimeboxing:
                     "planning_day": intent.planning_day,
                     "artifacts": [*updated.artifacts, planning_day_artifact],
                     "approvals": [*updated.approvals, approval],
+                    # A newly confirmed day starts Stage 1 afresh, whatever
+                    # the prior day's stage1 stood at.
+                    "stage1": "open",
                 }
             ), None
         if isinstance(intent, ProvidePlanningFacts):
@@ -840,6 +836,11 @@ class AdaptiveTimeboxing:
             # of this day any more.
             return self._invalidate(answered, ArtifactKind.CAPTURED_INPUTS), None
         if isinstance(intent, FileAssumption):
+            if self._requirements.target_of(intent.requirement_id) is None:
+                return snapshot, TurnFailed(
+                    code="unknown_requirement",
+                    message="That question is not one this session asked.",
+                )
             filed = PlannerAssumption(
                 assumption_id=str(uuid4()),
                 requirement_id=intent.requirement_id,
@@ -862,32 +863,27 @@ class AdaptiveTimeboxing:
                     else pending,
                 }
             )
+            is_cell = intent.requirement_id in _STAGE1_CELL_IDS
+            if not is_cell or updated.stage1 == "closed":
+                # Not Stage 1's business: `stage_of` alone cannot tell a
+                # Stage 1 elicitation cell from `skeleton.day_frame` or
+                # `skeleton.locked_day` -- both are also catalog "stage 1",
+                # the five-rung card grouping, a different axis entirely. An
+                # assumption filed against one of those (or against anything
+                # once consent already stands) is not this gate's business;
+                # let the run loop derive whatever comes next.
+                return updated, None
             if updated.planning_day is None:
                 return updated, None
             # A `None` outcome would fall through to the run loop's own gate
-            # re-check (Step 4), which reads the coverage matrix -- untouched
-            # by this assumption -- and would re-hold the very cell just
-            # forced past. Answer directly instead, with that one cell (and
-            # any other cell already assumed) subtracted from what is open.
-            gate = stage1_gate(updated)
-            assumed_cells = {a.requirement_id for a in updated.assumptions}
-            still_open = [
-                cell for cell in gate.open_cells if cell.id not in assumed_cells
-            ]
-            if still_open:
-                top = still_open[0]
-                gap = self._requirements.evaluate(
-                    ArtifactKind.SKELETON, updated
-                ).by_id(top.id)
-                return self._hold_question(updated, gap, []), AwaitingUser(
-                    requirement_id=gap.requirement_id,
-                    question=gap.question,
-                    why_needed=gap.why_needed,
-                    gate=Gate(open_cells=still_open, day_label=gate.day_label),
-                )
-            return updated, GateMet(
-                gate=Gate(open_cells=[], day_label=gate.day_label)
-            )
+            # re-check (Step 4), which -- computed on the same snapshot via
+            # the same `stage1_gate` -- agrees with this answer rather than
+            # duplicating it, now that an assumed cell subtracts itself
+            # inside `stage1_gate`. Answering directly here still matters:
+            # without it the fallthrough would re-derive readiness against a
+            # target that has not been confirmed as SKELETON.
+            readiness = self._requirements.evaluate(ArtifactKind.SKELETON, updated)
+            return self._stage1_outcome(updated, readiness)
         if isinstance(intent, DenyAssumption):
             kept = [a for a in snapshot.assumptions if a.assumption_id != intent.assumption_id]
             if len(kept) == len(snapshot.assumptions):
@@ -977,19 +973,8 @@ class AdaptiveTimeboxing:
             reverted = snapshot.model_copy(
                 update={"stage1": "open", "pending_blocker": None}
             )
-            gate = stage1_gate(reverted)
-            if gate.open_cells:
-                top = gate.open_cells[0]
-                gap = self._requirements.evaluate(
-                    ArtifactKind.SKELETON, reverted
-                ).by_id(top.id)
-                return self._hold_question(reverted, gap, []), AwaitingUser(
-                    requirement_id=gap.requirement_id,
-                    question=gap.question,
-                    why_needed=gap.why_needed,
-                    gate=gate,
-                )
-            return reverted, GateMet(gate=gate)
+            readiness = self._requirements.evaluate(ArtifactKind.SKELETON, reverted)
+            return self._stage1_outcome(reverted, readiness)
         if self._latest_artifact(snapshot, ArtifactKind.VALIDATED_CANDIDATE):
             reopened = self._invalidate(snapshot, ArtifactKind.SKELETON)
             return reopened.model_copy(update={"pending_blocker": None}), None
@@ -1018,6 +1003,9 @@ class AdaptiveTimeboxing:
                 update={
                     "planning_day": None,
                     "pending_blocker": None,
+                    # Clearing the day undoes Stage 1's premise -- a future
+                    # `ConfirmPlanningDay` starts it over, not resumes it.
+                    "stage1": "open",
                     "approvals": [
                         approval
                         for approval in snapshot.approvals
@@ -1029,6 +1017,30 @@ class AdaptiveTimeboxing:
             code="nothing_to_go_back_to",
             message="This is the first step; there is nothing before it.",
         )
+
+    def _stage1_outcome(
+        self, snapshot: PlanningSessionSnapshot, readiness: ReadinessReport
+    ) -> tuple[PlanningSessionSnapshot, TurnOutcome]:
+        """What Stage 1 shows right now: the top open cell, or a proposal to close.
+
+        The one place `stage1_gate` becomes a `TurnOutcome`, called by the run
+        loop, `FileAssumption`, and the `GoBack` Stage 1 rung alike -- so the
+        three cannot drift into disagreeing about when `GateMet` is due or
+        when `stage1` becomes `"proposed"`. `stage1_gate` itself already
+        subtracts any cell a filed assumption answers, so the `Gate` read back
+        here needs no further narrowing.
+        """
+        gate: Gate = stage1_gate(snapshot)
+        if gate.open_cells:
+            top = gate.open_cells[0]
+            gap = readiness.by_id(top.id)
+            return self._hold_question(snapshot, gap, []), AwaitingUser(
+                requirement_id=gap.requirement_id,
+                question=gap.question,
+                why_needed=gap.why_needed,
+                gate=gate,
+            )
+        return snapshot.model_copy(update={"stage1": "proposed"}), GateMet(gate=gate)
 
     async def _planning_day_gate(
         self, snapshot: PlanningSessionSnapshot, request: TurnRequest
@@ -1453,11 +1465,17 @@ class AdaptiveTimeboxing:
         """
         if not isinstance(rows, list):
             return rows
-        suspended = {
-            fact.value["uid"]
-            for fact in snapshot.facts
-            if fact.kind is FactKind.SUSPENDED_CONSTRAINT and isinstance(fact.value, dict)
-        }
+        suspended: set[JsonValue] = set()
+        for fact in snapshot.facts:
+            if fact.kind is not FactKind.SUSPENDED_CONSTRAINT:
+                continue
+            if not isinstance(fact.value, dict) or "uid" not in fact.value:
+                # A malformed suspension is not the same as no suspension --
+                # reading it as absent would let the rule it names through.
+                raise ValueError(
+                    f"suspended-constraint fact {fact.fact_id!r} carries no uid"
+                )
+            suspended.add(fact.value["uid"])
         return [row for row in rows if not (isinstance(row, dict) and row.get("uid") in suspended)]
 
     async def _save(

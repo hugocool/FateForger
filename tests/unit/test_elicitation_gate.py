@@ -23,6 +23,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     CellRef,
     DayType,
     FactKind,
+    PlannerAssumption,
     PlanningDay,
     PlanningFact,
     PlanningSessionSnapshot,
@@ -76,6 +77,27 @@ def test_no_matrix_means_nothing_is_open() -> None:
 def test_an_uncovered_cell_holds_the_gate_open() -> None:
     gate = stage1_gate(_snapshot(_matrix(**{"elicit.body.unclear": "uncovered"})))
     assert gate.open_cells == [CellRef(row="body", criterion="unclear")]
+
+
+def test_an_assumption_closes_its_cell() -> None:
+    """Forcing past a cell is forcing past it, not for one turn only."""
+
+    cell_id = "elicit.body.unclear"
+    snapshot = _snapshot(_matrix(**{cell_id: "uncovered"})).model_copy(
+        update={
+            "assumptions": [
+                PlannerAssumption(
+                    assumption_id="a1",
+                    requirement_id=cell_id,
+                    value="assume a normal day",
+                    why_needed="user forced past",
+                    filed_by="user",
+                )
+            ]
+        }
+    )
+    gate = stage1_gate(snapshot)
+    assert gate.open_cells == []
 
 
 def test_covered_and_not_applicable_do_not_hold_it() -> None:

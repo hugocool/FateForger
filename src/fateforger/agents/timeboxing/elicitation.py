@@ -160,18 +160,25 @@ def coverage_matrix(snapshot: PlanningSessionSnapshot) -> CoverageMatrix | None:
     return None
 
 
-def ranked_open_cells(matrix: CoverageMatrix) -> list[CellRef]:
+def ranked_open_cells(
+    matrix: CoverageMatrix, assumed: frozenset[str] = frozenset()
+) -> list[CellRef]:
     """Uncovered cells by expected value, every term a count over minted fields.
 
     A row with rules or stated facts before one with neither; a row carrying a
     `must` before one carrying only `should`s; then the criterion order above.
     Unaskable cells are included and ranked after every askable cell.
+
+    `assumed` is a set of cell ids a `PlannerAssumption` already answers --
+    the user forced past them, and the matrix (unaware of assumptions) would
+    otherwise keep reporting them uncovered forever.
     """
     order = {c.key: i for i, c in enumerate(CRITERIA)}
     unaskable_set = set(matrix.unaskable)
     open_cells = [
         cell for cell in ALL_CELLS
-        if matrix.cells[cell.id] == "uncovered" or cell.id in unaskable_set
+        if (matrix.cells[cell.id] == "uncovered" or cell.id in unaskable_set)
+        and cell.id not in assumed
     ]
 
     def key(cell: CellRef) -> tuple[int, int, int, int]:
@@ -192,11 +199,18 @@ def day_label(planning_day: PlanningDay) -> str:
 
 def stage1_gate(snapshot: PlanningSessionSnapshot) -> Gate:
     """What Stage 1 still needs. Arithmetic over the snapshot; called by the
-    kernel for its outcome and by the interpreter for its decision set."""
+    kernel for its outcome and by the interpreter for its decision set.
+
+    A cell a `PlannerAssumption` already answers is subtracted here, not left
+    to each caller: the matrix itself never changes when the user forces past
+    a cell, so every reader of this function must see the same "closed"
+    verdict or the gate would depend on which call site asked.
+    """
     if snapshot.planning_day is None:
         raise ValueError("stage1_gate needs a locked planning day")
     matrix = coverage_matrix(snapshot)
-    open_cells = [] if matrix is None else ranked_open_cells(matrix)
+    assumed = frozenset(a.requirement_id for a in snapshot.assumptions)
+    open_cells = [] if matrix is None else ranked_open_cells(matrix, assumed)
     return Gate(open_cells=open_cells, day_label=day_label(snapshot.planning_day))
 
 
