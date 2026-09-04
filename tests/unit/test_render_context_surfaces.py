@@ -17,11 +17,14 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningSessionSnapshot,
     suspension_fact_id,
 )
+import pytest
+
 from fateforger.slack_bot.messages import SLACK_MAX_BLOCKS, SLACK_MAX_MODAL_BLOCKS
 from fateforger.slack_bot.stage_context import context_fold, context_panel
 from fateforger.slack_bot.timeboxing_cards import (
     FF_TIMEBOX_SHOW_RULES_ACTION_ID,
     FF_TIMEBOX_STEER_ACTION_ID,
+    _option_value,
     render_context_fold,
     render_context_panel,
 )
@@ -263,3 +266,36 @@ def test_every_overflow_option_value_fits_slack_with_real_sized_ids() -> None:
     assert max(lengths) <= 150
     # Surfaced for the report: the longest value real ids actually produce.
     print(f"longest overflow option value: {max(lengths)} chars")
+
+
+def test_an_overlong_option_value_drops_the_note_then_fails_loudly(caplog) -> None:
+    """`_option_value` is Slack's 150-char cap's one guard. A value that
+    overflows only because of its `note` -- a marker that carries no
+    identity -- is re-serialized without it; a value that still cannot fit
+    fails loudly instead of Slack silently refusing the whole modal."""
+    import logging
+
+    def meta(*, session_key_len: int, constraint_uid_len: int) -> ArtifactActionMeta:
+        return ArtifactActionMeta(
+            session_key="C" + "1" * (session_key_len - 1),
+            expected_revision=5,
+            decision="steer_not_today",
+            constraint_uid="a" * constraint_uid_len,
+            note="wrong",
+        )
+
+    # Padded so the full value (with note) overflows 150 chars but the value
+    # without the note fits.
+    fits_without_note = meta(session_key_len=45, constraint_uid_len=50)
+    with caplog.at_level(logging.WARNING):
+        encoded = _option_value(fits_without_note)
+    assert len(encoded) <= 150
+    decoded = ArtifactActionMeta.model_validate_json(encoded)
+    assert decoded.note is None
+    assert decoded.constraint_uid == fits_without_note.constraint_uid
+    assert any("note" in record.getMessage() for record in caplog.records)
+
+    # Padded further so even the note-less value cannot fit: fails loudly.
+    too_long_even_without_note = meta(session_key_len=55, constraint_uid_len=50)
+    with pytest.raises(ValueError, match=r"\d+ chars"):
+        _option_value(too_long_even_without_note)
