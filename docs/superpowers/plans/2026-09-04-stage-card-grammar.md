@@ -2215,12 +2215,12 @@ Under the section that describes `stage_cards.py`, add:
 Per the project's e2e rule (memory: *E2E means a PR rebased on main*): open the PR,
 run the stock startup scripts, and in the Slack channel `C0AA6HC1RJL` start a session
 for a working day, answer two probes, press *Show rules*, pick *Not today* on one rule,
-confirm: one panel above the first probe card, the panel edited (not re-posted) after
-the pick, the panel's second line naming the suspension ("Off for this session: …
-(you said: not today)"), and the modal row for that rule redrawn struck through with
-Restore. (Not the next card's decided list -- the mapper has no
-`SUSPENDED_CONSTRAINT` fact label, so it cannot name a suspension there.
-Implementation finding, 2026-09-04.) Post the four screenshots on the PR. Post as Hugo
+confirm: one panel, posted right after the first probe card (the card's message predates
+the turn), the panel edited (not re-posted) after the pick, the panel's second line
+naming the suspension ("Off for this session: … (you said: not today)"), the modal row
+for that rule redrawn struck through with Restore, and the next card's decided list
+reading "set aside today: <rule>" (Phase 1's b1c6c36). Post the four screenshots on the
+PR. Post as Hugo
 via `SLACK_USER_TOKEN` (memory: *Driving a live Slack timeboxing session*).
 
 - [ ] **Step 4: Spec status and commit**
