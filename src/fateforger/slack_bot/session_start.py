@@ -27,6 +27,7 @@ from fateforger.haunt.messages import FollowUpSpec, UserFacingMessage
 from fateforger.haunt.reconcile import PlanningReminder
 from fateforger.haunt.session_start import (
     LADDER_OFFSETS,
+    LIVE_RECENCY,
     dm_open_line,
     missed_line,
     nudge_line,
@@ -55,6 +56,16 @@ UNTOUCHED_REVISION = 1
 #: here rather than imported: `core.runtime` imports the session store, whose
 #: importers reach this module, and the cycle would only show up at startup.
 USER_CHANNEL_AGENT_TYPE = "user_channel"
+
+
+def auto_open_interaction_id(session_key: str) -> str:
+    """The id `start` writes its opening turn under.
+
+    Both the replay key and the only durable evidence that a session was
+    opened here rather than by hand -- one function so the two never drift.
+    """
+
+    return f"session_start:{session_key}"
 
 
 def _deliver_timebox_turn(**kwargs):  # pragma: no cover - resolved at call time so tests can patch it
@@ -157,7 +168,7 @@ class SessionStarter:
                 logger=logger,
                 session_key=surface.session_key,
                 actor_user_id=user_id,
-                interaction_id=f"session_start:{surface.session_key}",
+                interaction_id=auto_open_interaction_id(surface.session_key),
                 channel_id=surface.channel_id,
                 thread_ts=surface.root_ts,
                 action=envelope,
@@ -224,14 +235,7 @@ class SessionStarter:
         if rows is None:
             return
 
-        # Two different sessions can stand for the same day: the one this
-        # starter opened and nobody answered, and one the user opened and is
-        # typing in. Only the revision tells them apart, and only the untouched
-        # one may be closed.
-        live = [row for row in rows if row.revision > UNTOUCHED_REVISION]
-        for row in rows:
-            if row.revision <= UNTOUCHED_REVISION:
-                await self._close_untouched(user_id=user_id, row=row)
+        live, _closed = await self._sweep(user_id=user_id, rows=rows)
 
         if live:
             logger.info(
@@ -246,6 +250,78 @@ class SessionStarter:
         except Exception:
             logger.exception("session_expire: reconcile_user failed for %s", user_id)
             record_error(component="session_start", error_type="expire_failure")
+
+    async def _sweep(
+        self, *, user_id: str, rows: list[OpenSessionRow]
+    ) -> tuple[list[OpenSessionRow], set[str]]:
+        """Close what this starter opened and nobody answered; say what stands.
+
+        Two different sessions can stand for the same day: the one this starter
+        opened and nobody answered, and one the user opened and is typing in.
+        The revision alone cannot tell them apart -- a hand-opened session sits
+        at revision 1 until its first turn lands -- so the auto-open interaction
+        id this starter wrote decides which session is even a candidate for
+        closing, and the revision then says whether it was answered.
+        """
+
+        live: list[OpenSessionRow] = []
+        closed: set[str] = set()
+        for row in rows:
+            if await self._auto_opened(row):
+                if row.revision <= UNTOUCHED_REVISION:
+                    await self._close_untouched(user_id=user_id, row=row)
+                    closed.add(row.session_key)
+                else:
+                    live.append(row)
+                continue
+            # Not ours to close. It counts as the user's live work only if it
+            # got past its opening turn or was written in the last few minutes;
+            # otherwise it is neither closed nor read as "the user is planning".
+            if row.revision > UNTOUCHED_REVISION or self._touched_recently(row):
+                live.append(row)
+            else:
+                logger.info(
+                    "session_expire: %s was not opened here and looks idle; leaving it alone",
+                    row.session_key,
+                )
+        return live, closed
+
+    async def _auto_opened(self, row: OpenSessionRow) -> bool:
+        """Whether `start` is the one that opened this session.
+
+        The evidence is the interaction id `start` writes its opening turn
+        under, kept on the snapshot by the kernel's idempotency record. A
+        session that cannot be read is never claimed: closing one this starter
+        did not open is the failure that matters here.
+        """
+
+        wanted = auto_open_interaction_id(row.session_key)
+        try:
+            snapshot = await self._ledger.load(row.session_key)
+        except Exception:
+            logger.exception("session_expire: snapshot load failed for %s", row.session_key)
+            record_error(component="session_start", error_type="guard_failure")
+            return False
+        if snapshot is None:
+            logger.info("session_expire: no snapshot behind %s; not ours to close", row.session_key)
+            return False
+        return any(
+            handled.interaction_id == wanted for handled in snapshot.handled_interactions
+        )
+
+    def _touched_recently(self, row: OpenSessionRow) -> bool:
+        """Was this row written within `LIVE_RECENCY` of now?
+
+        The store writes `updated_at` naive in UTC; the starter's clock is
+        aware. Both are timestamps this system minted, so the comparison is
+        arithmetic, not a judgement.
+        """
+
+        now = self._now()
+        updated = row.updated_at
+        if updated.tzinfo is None:
+            now = now.astimezone(timezone.utc).replace(tzinfo=None)
+        return now - updated <= LIVE_RECENCY
 
     async def _close_untouched(self, *, user_id: str, row: OpenSessionRow) -> None:
         """Shut one session nobody worked in: ladder off, cancelled, relabelled."""

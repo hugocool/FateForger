@@ -28,6 +28,11 @@ LADDER_OFFSETS: tuple[timedelta, ...] = (
     timedelta(minutes=40),
 )
 
+#: How recently a session must have been written to count as one the user is
+#: working in, when its revision alone cannot say. A hand-opened session sits
+#: at revision 1 until its first turn lands, so expiry reads the clock instead.
+LIVE_RECENCY = timedelta(minutes=10)
+
 #: One line per rung, escalating. `{permalink}` is the session thread,
 #: `{start}` the event's start as HH:MM.
 NUDGE_LINES: tuple[str, ...] = (
@@ -67,6 +72,7 @@ def missed_line() -> str:
 __all__ = [
     "DAY_CUTOFF_HOUR",
     "LADDER_OFFSETS",
+    "LIVE_RECENCY",
     "NUDGE_LINES",
     "SESSION_EXPIRE_KIND",
     "SESSION_START_KIND",

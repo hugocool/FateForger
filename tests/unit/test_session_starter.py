@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -11,7 +10,12 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import (
     OpenSessionRow,
     TimeboxingStanding,
 )
-from fateforger.agents.timeboxing.session_contracts import CancelSession, ConfirmPlanningDay
+from fateforger.agents.timeboxing.session_contracts import (
+    CancelSession,
+    ConfirmPlanningDay,
+    HandledInteraction,
+    PlanningSessionSnapshot,
+)
 from fateforger.haunt.reconcile import PlanningReminder
 from fateforger.haunt.session_start import LADDER_OFFSETS, SESSION_EXPIRE_KIND, SESSION_START_KIND
 from fateforger.slack_bot.focus import FocusManager
@@ -29,21 +33,56 @@ def _reminder(kind: str = SESSION_START_KIND) -> PlanningReminder:
     )
 
 
-def _row(session_key: str, revision: int, *, minute: int = 0) -> OpenSessionRow:
+#: The starter's clock, as the store writes `updated_at`: naive UTC.
+NOW_NAIVE = START.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _row(session_key: str, revision: int, *, stale_minutes: int = 60) -> OpenSessionRow:
     return OpenSessionRow(
         session_key=session_key,
         revision=revision,
-        updated_at=datetime(2026, 9, 4, 9, minute),
+        updated_at=NOW_NAIVE - timedelta(minutes=stale_minutes),
+    )
+
+
+def _snapshot(session_key: str, *, auto_opened: bool) -> PlanningSessionSnapshot:
+    """The snapshot behind a row; only `start` writes the auto-open id."""
+
+    snapshot = PlanningSessionSnapshot.new(session_key=session_key, owner_user_id="U1")
+    if not auto_opened:
+        return snapshot
+    return snapshot.model_copy(
+        update={
+            "handled_interactions": [
+                HandledInteraction(
+                    interaction_id=f"session_start:{session_key}",
+                    outcome_kind="applied",
+                    session_revision=1,
+                )
+            ]
+        }
     )
 
 
 class _Ledger:
-    def __init__(self, open_key=None, committed_key=None, *, rows=(), events=None, standing_error=None):
+    def __init__(
+        self,
+        open_key=None,
+        committed_key=None,
+        *,
+        rows=(),
+        events=None,
+        standing_error=None,
+        hand_opened=(),
+    ):
         self.standing = TimeboxingStanding(open_session_key=open_key, committed_session_key=committed_key)
         self.rows = list(rows)
         self.standing_error = standing_error
         self.asked_for_day = []
         self._events = events
+        # Session keys whose snapshot carries no auto-open interaction id: the
+        # user opened these by hand and expiry may never close them.
+        self._hand_opened = set(hand_opened)
 
     async def standing_for(self, **_):
         if self.standing_error is not None:
@@ -55,7 +94,7 @@ class _Ledger:
         return list(self.rows)
 
     async def load(self, key):
-        return SimpleNamespace(revision=3, status="open")
+        return _snapshot(key, auto_opened=key not in self._hand_opened)
 
 
 class _Haunting:
@@ -277,7 +316,7 @@ async def test_expire_leaves_a_session_the_user_is_working_in(monkeypatch):
 @pytest.mark.asyncio
 async def test_expire_closes_only_the_untouched_one_when_both_stand_for_the_day(monkeypatch):
     haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
-    rows = [_row("C1:live", 4, minute=30), _row("C1:root.1", 1)]
+    rows = [_row("C1:live", 4, stale_minutes=30), _row("C1:root.1", 1)]
     starter, turns = _starter(
         monkeypatch, ledger=_Ledger(rows=rows), haunting=haunting, runtime=runtime, guardian=guardian
     )
@@ -314,3 +353,45 @@ async def test_expire_after_a_commit_does_nothing(monkeypatch):
 
     assert turns == [] and haunting.cancelled == [] and guardian.reconciled == []
     assert ledger.asked_for_day == []
+
+
+@pytest.mark.asyncio
+async def test_expire_never_closes_a_session_the_user_opened_by_hand(monkeypatch):
+    # Revision 1 is only evidence of "untouched" for a session this starter
+    # opened: a hand-opened one sits at 1 until its first turn lands, and
+    # closing it would shut the user out of the session they just opened.
+    haunting, guardian = _Haunting(), _Guardian()
+    ledger = _Ledger(rows=[_row("C1:hand", 1)], hand_opened=("C1:hand",))
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting, guardian=guardian)
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == []
+
+
+@pytest.mark.asyncio
+async def test_a_hand_opened_session_touched_minutes_ago_counts_as_live(monkeypatch):
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(rows=[_row("C1:hand", 1, stale_minutes=2)], hand_opened=("C1:hand",))
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == []
+    assert runtime.sent == [] and guardian.reconciled == []
+
+
+@pytest.mark.asyncio
+async def test_an_auto_opened_session_past_the_untouched_revision_is_live(monkeypatch):
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(rows=[_row("C1:root.1", 2)])
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == []
+    assert runtime.sent == [] and guardian.reconciled == []
