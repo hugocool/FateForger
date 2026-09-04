@@ -127,3 +127,30 @@ def test_requires_block_asks_nothing_when_no_kinds_are_registered():
             raise AssertionError("must not call the model with an empty registry")
 
     assert await_sync(_Explodes("").requires_block(_obs("x"), [])).slug is None
+
+
+def test_tier_refuses_a_day_type_outside_the_minted_vocabulary():
+    """The tier judgement's day_types is a closed vocabulary this system minted,
+    and the transport verifies it exactly as requires_block verifies its slug.
+
+    Without this a paraphrase -- "workday" for "working" -- is stored, and the
+    read path filters by equality over these words, so the rule silently applies
+    on no day at all. Set membership over minted words, not a judgement about
+    meaning.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        await_sync(
+            _Replies('{"tier": "durable", "label": "x", "day_types": ["workday"]}').tier(
+                _obs("x")
+            )
+        )
+    assert "workday" in str(excinfo.value)
+
+
+def test_tier_accepts_a_day_type_from_the_vocabulary():
+    judgement = await_sync(
+        _Replies('{"tier": "durable", "label": "x", "day_types": ["working"]}').tier(
+            _obs("x")
+        )
+    )
+    assert judgement.day_types == ["working"]

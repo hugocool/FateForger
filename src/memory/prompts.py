@@ -13,6 +13,7 @@ from memory.judge import (
     AnchorResolutions,
     CanonicaliseJudgement,
     ConstraintLike,
+    DAY_TYPES,
     DayJudgement,
     DedupJudgement,
     MetaJudgement,
@@ -59,7 +60,7 @@ Also say when the rule applies, if the statement scopes it:
 - start_date / end_date: ISO dates, only when the statement names a period.
   A standing rule gets null for both.
 - day_types: which kinds of day the rule is limited to, from exactly these
-  words: "working", "weekend", "vacation", "holiday", "sick". Only when the
+  words: """ + ", ".join(f'"{d}"' for d in DAY_TYPES) + """. Only when the
   statement scopes it -- "on workdays", "when I'm on holiday". A rule that
   holds on every kind of day gets an empty list. Weekdays are not a stand-in:
   "Mon-Fri" is days_of_week, "working days" is day_types ["working"].
@@ -357,7 +358,20 @@ class PromptJudge(ABC):
         for required in ("tier", "label"):
             if required not in payload:
                 raise ValueError(f"could not parse judge response: {payload!r}")
-        return self._build(TierJudgement, payload)
+        judgement = self._build(TierJudgement, payload)
+        unlisted = [d for d in judgement.day_types if d not in DAY_TYPES]
+        if unlisted:
+            # Set membership over words this system minted -- explicitly
+            # outside the no-matching rule, and the same check requires_block
+            # makes on its slug. The read path compares day_types by equality,
+            # so a paraphrase like "workday" is not a near miss: it is a rule
+            # scoped to a kind of day that never occurs, and nothing downstream
+            # could tell it apart from a rule that genuinely never applies.
+            raise ValueError(
+                f"judge returned day_type(s) {unlisted!r} outside the "
+                f"vocabulary {list(DAY_TYPES)}"
+            )
+        return judgement
 
     async def necessity(self, observation: Observation) -> NecessityJudgement:
         payload = await self._ask(NECESSITY_PROMPT, observation.text)

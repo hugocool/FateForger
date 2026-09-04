@@ -8,6 +8,18 @@ from pydantic import BaseModel, Field
 
 from memory.models import DecayClass, Observation, Tier
 
+# The kinds of day a rule can be scoped to. Words this system minted, not words
+# read off anything the user said: `DayJudgement.day_type` answers with exactly
+# one of them and `TierJudgement.day_types` scopes a rule to a subset of them,
+# so the read path can filter by equality over identifiers rather than by a
+# judgement about meaning.
+#
+# One tuple, named in the prompt text and enforced by the transport, so the
+# words the model is told and the words it is allowed to answer cannot drift
+# apart. A paraphrase that got through -- "workday" for "working" -- would be
+# stored and then match no day at all, silently.
+DAY_TYPES: tuple[str, ...] = ("working", "weekend", "vacation", "holiday", "sick")
+
 
 class AnchorJudgement(BaseModel):
     """The recurring kinds of thing an observation mentions.
@@ -35,9 +47,10 @@ class TierJudgement(BaseModel):
     end_date: date | None = None
     days_of_week: list[int] = Field(default_factory=list)  # 0=Mon .. 6=Sun
 
-    # Which kinds of day the rule is limited to, from the system-minted
-    # vocabulary DayJudgement uses ("working", "weekend", "vacation",
-    # "holiday", "sick"). Empty means every kind. This is the writer
+    # Which kinds of day the rule is limited to, from DAY_TYPES -- the
+    # system-minted vocabulary DayJudgement answers from. Empty means every
+    # kind, and a value outside DAY_TYPES is refused by the transport that
+    # parsed it, never stored. This is the writer
     # Applicability.day_types never had: its reader shipped first, and until
     # now the field could only be seeded by hand.
     day_types: list[str] = Field(default_factory=list)
