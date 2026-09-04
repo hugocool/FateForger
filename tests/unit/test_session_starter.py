@@ -395,3 +395,20 @@ async def test_an_auto_opened_session_past_the_untouched_revision_is_live(monkey
 
     assert turns == [] and haunting.cancelled == []
     assert runtime.sent == [] and guardian.reconciled == []
+
+
+@pytest.mark.asyncio
+async def test_expire_says_nothing_while_another_session_still_stands(monkeypatch):
+    # A session with no planning_date yet is invisible to open_sessions_for_day
+    # but stands in `standing`. DMing "Missed" at a user who is mid-session,
+    # with no day locked, is the one message that must not go out.
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(open_key="C1:hand")
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == []
+    assert runtime.sent == [] and guardian.reconciled == []

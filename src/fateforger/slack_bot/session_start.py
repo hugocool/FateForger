@@ -235,12 +235,25 @@ class SessionStarter:
         if rows is None:
             return
 
-        live, _closed = await self._sweep(user_id=user_id, rows=rows)
+        live, closed_keys = await self._sweep(user_id=user_id, rows=rows)
 
         if live:
             logger.info(
                 "session_expire: user is planning in %s; leaving it",
                 live[0].session_key,
+            )
+            return
+        # `standing` sees sessions this day's rows cannot: one still open with
+        # no planning_date on it yet. Telling that user they missed the session
+        # they are sitting in is the one message that must never go out.
+        if (
+            standing.open_session_key is not None
+            and standing.open_session_key not in closed_keys
+        ):
+            logger.info(
+                "session_expire: %s still stands for %s; no missed line",
+                standing.open_session_key,
+                user_id,
             )
             return
 
