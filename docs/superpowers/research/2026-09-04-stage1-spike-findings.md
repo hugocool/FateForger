@@ -59,3 +59,50 @@ judgement the catalog must see is `DayFrameJudge`: it runs **in the host's `reso
 on `runtime.timeboxing_intent_model_client`, and files its answer as a fact. The kernel
 stays arithmetic and the judge is stubbed in eight unit tests
 (`tests/unit/test_day_frame_on_record.py`). The coverage classifier has a home already.
+
+## 5. Cells per concern versus cells per anchor
+
+Same fixture for both: the 41 durable rules active on a working Tuesday (2026-09-08),
+23 anchor groups of which one is the 14 unanchored rules, the stated request *"deep work
+in the morning, gym at 18:00"*, no other session text. Five coverage criteria, one call per
+cell, every cell of a draw in one bounded-concurrency batch, **n = 5** draws each.
+Rerun: `PYTHONPATH=src python scripts/spikes/cell_rows_concern_vs_anchor.py <copy.db> 5`.
+
+| | (a) rows = concerns (+ `unplaced`) | (b) rows = anchors (+ unanchored) |
+| --- | --- | --- |
+| cells per draw | 35 | 115 |
+| tokens per draw | ~17k | ~34k |
+| p50 latency per cell | 1.0 s | 1.0 s |
+| cells unanimous over 5 draws | 28 / 35 (80%) | 88 / 115 (77%) |
+| cells modally `uncovered` | **23** | **59** |
+
+Three findings, in order of consequence.
+
+**The `alternatives` criterion is unconditionally unmet.** It came back `uncovered` on
+every row of both runs, 7/7 and 23/23, always with the same reason: *"no contingency
+discussed."* As worded it can never be `covered` before planning starts, so a gate that
+waits for it never opens. It is the `project`/`permanent` lesson from CLAUDE.md again: the
+prompt names the category without a discriminator. It needs one, e.g. *only when a rule
+here is at risk given what the user said today.*
+
+**One gap is counted many times.** Of (a)'s 23 uncovered cells, 11 say the same thing:
+the deep-work block has no duration and no start time. Of (b)'s 59, roughly half do. The
+gap lives in the **request**, not in any concern, and the floor has no row for the
+session's stated request, so every row that touches the morning reports it. Two
+consequences: the concern-floor needs a row for *what the user asked for today*, and
+after an answer every still-uncovered cell must be re-classified, not only the affected
+concern, or a duplicate stays open after its gap is closed.
+
+**Both find the real conflict; the unanchored row finds the other.** `gym at 18:00`
+against the rule *run at 18:00 when cooking dinner* surfaced in both: 4/5 as
+`dinner/contradictory` in (b), 3/5 as `bounded/contradictory` in (a), weaker because the
+rule sits under `morning ritual`, which placement put under *bounded*. The second
+conflict, morning deep work against *No morning meetings*, came only from the
+unanchored row, 5/5 in both. Whether that one is a real conflict or a misreading of the
+rule is for Hugo's hand labels; it is the precision case.
+
+Per-anchor rows are sharper per probe (the (b) probe asked about oats before the gym; the
+(a) probe about the morning ritual moving to 18:00) at twice the tokens and three times
+the calls, but that is not what decides it: **59 open cells is a gate that cannot be
+met**, and 23 is not far behind. The row count is the wrong lever. What brings the number
+down is the criterion fix and the dedupe, and both apply to either shape.
