@@ -241,8 +241,17 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         ("planning", "sleep"); `anchor_name` names what it is about, resolved
         against the anchors already known; `rule_text` is the rule stated in
         the user's words, filed as a durable observation so the requirement
-        exists as a rule with provenance. Refuses a slug already registered.
-        Samples: anchor resolution plus the six ingest judgements.
+        exists as a rule with provenance.
+
+        Two refusals, both leaving the rule exactly as it was: a slug already
+        registered (`duplicate_kind`), and a rule the judge does not read as
+        requiring a block of this kind -- nothing would ever ask for one, so
+        the kind is not kept. Retrying with the same slug and rule text is
+        safe: the write is identified by the slug, so it adopts the first
+        attempt's observation rather than restating the rule.
+
+        Samples: anchor resolution, the six ingest judgements, and one
+        re-derivation of the rule with the new kind on offer.
         """
         outcome = await service.promote_kind(
             slug,
