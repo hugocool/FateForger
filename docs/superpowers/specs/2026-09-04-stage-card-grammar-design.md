@@ -227,14 +227,16 @@ is a count over `constraint_anchors` links, not a judgement about the rule.
 
 ### Controls and the table
 
-`ArtifactActionMeta.decision` gains three values. Each carries exactly the binding its
-press needs, under a validator like the one `choose_option` has:
+`ArtifactActionMeta.decision` gains three values, two of them in Phase 1 Task 8
+(`deny_assumption`, `restore`, validators and bindings included) and one here
+(`steer_not_today`). Each carries exactly the binding its press needs, under a
+validator like the one `choose_option` has:
 
 | decision | requires | intent |
 | --- | --- | --- |
 | `deny_assumption` (Phase 1 Task 8) | `assumption_id` | `DenyAssumption(assumption_id)` |
 | `steer_not_today` | `constraint_uid`, optional `note` | `ProvidePlanningFacts([SUSPENDED_CONSTRAINT at suspend:{uid}])` |
-| `restore` | `constraint_uid` | `RestoreConstraint(constraint_uid)` (Phase 1 Task 3/6/8): the kernel deletes the fact at `suspend:{uid}`, invalidates captured inputs and sets `stage1` back to `open`, since a restored rule can uncover a cell |
+| `restore` (Phase 1 Task 8) | `constraint_uid` | `RestoreConstraint(constraint_uid)` (Phase 1 Task 3/6): the kernel deletes the fact at `suspend:{uid}`, invalidates captured inputs and sets `stage1` back to `open`, since a restored rule can uncover a cell. This spec draws the control; the decision and its binding are Phase 1's |
 | `steer_always` | `fact_id` | not a kernel intent: the host opens the *promote?* confirmation (a `PendingBlocker` with two options); only the second option calls `memory_observe` |
 
 `show_rules` is not in the table. It is a host action: read the snapshot and the
@@ -337,8 +339,9 @@ counts are the measured ones; the JSON below is the panel exactly as validated.
   (`admonish-1-a2`) has agreed to note that in the contract.
 - Phase 1 (`2026-09-04-stage1-elicitation-groundwork.md`) lands first. Its Task 9 owns
   the `StageCard` changes listed above; this spec's implementation plan adds
-  `DenyControl`, `PromoteControl`, `stage_context.py`, the three table decisions, the
-  modal handler and the panel record, and touches nothing Task 9 changed.
+  `DenyControl`, `PromoteControl`, `stage_context.py`, the `steer_not_today` table
+  decision (Task 8 owns `deny_assumption` and `restore`), the modal handler and the
+  panel record, and touches nothing Task 8 or Task 9 changed.
 - Asked of Phase 1 and agreed on 2026-09-04: `RestoreConstraint(constraint_uid)` in
   Task 3/6 with the `restore` decision bound in Task 8;
   `PlanningSessionSnapshot.suspended_constraint_count: int = 0`, written by the host's
@@ -362,6 +365,6 @@ New: `src/fateforger/slack_bot/stage_context.py` (models, builders, ordering),
 `tests/unit/test_stage_context.py`, `tests/unit/test_render_context_surfaces.py`.
 Changed: `stage_cards.py` (`DenyControl`, `PromoteControl`, decided overflow),
 `timeboxing_cards.py` (`render_context_panel`, `render_context_fold`, decided overflow,
-free-association hint), `timeboxing_intents.py` (three decisions and their validator),
+free-association hint), `timeboxing_intents.py` (the `steer_not_today` decision and its validator),
 `stage_card_registry.py` (panel record), `handlers.py` (`show_rules` → `views_open`;
 modal pick → table → `views_update`), `pyproject.toml` (`blockkit` in the dev group).
