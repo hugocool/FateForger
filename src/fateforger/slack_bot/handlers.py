@@ -30,6 +30,7 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import (
     AdaptiveTimeboxing,
     TurnRequest,
 )
+from fateforger.agents.timeboxing.feedback import feedback_facts
 from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
 from fateforger.agents.timeboxing.preferences import (
     Constraint,
@@ -1636,6 +1637,18 @@ async def _run_adaptive_timebox_turn(
         current = await repository.load_or_create(
             session_key, owner_user_id=actor_user_id
         )
+        observer = getattr(runtime, "timeboxing_feedback_observer", None)
+        if observer is not None:
+            new_feedback = feedback_facts(snapshot, current)
+            if new_feedback:
+                try:
+                    await observer.observe(session_key=session_key, facts=new_feedback)
+                except Exception as exc:  # noqa: BLE001 - feedback must not fail the turn
+                    logger.warning(
+                        "stage1 feedback not recorded error_type=%s count=%d",
+                        type(exc).__name__,
+                        len(new_feedback),
+                    )
         if current.status != "open":
             # Committed or cancelled: the session is over, so the idle timer
             # has nothing left to watch.
