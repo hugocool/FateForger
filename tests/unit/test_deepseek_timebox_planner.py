@@ -540,6 +540,15 @@ async def test_unavailable_constraint_reader_never_becomes_empty_context() -> No
         await reader.query_constraints(filters={"planned_day": "2026-08-29"}, limit=200)
 
 
+async def test_unavailable_constraint_reader_count_suspended_fails_the_same_way() -> None:
+    """A missing suspended count must not read as zero suspended constraints."""
+
+    reader = UnavailableConstraintReader()
+
+    with pytest.raises(DependencyUnavailable):
+        await reader.count_suspended("2026-08-29", "working")
+
+
 async def test_runtime_builds_configured_kg_constraint_store(
     tmp_path, monkeypatch
 ) -> None:

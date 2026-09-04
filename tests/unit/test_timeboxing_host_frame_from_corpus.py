@@ -36,10 +36,15 @@ class _Store:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
         self.queries: list[dict[str, Any]] = []
+        self.suspended_calls: list[tuple[Any, Any]] = []
 
     async def query_constraints(self, *, filters, limit):  # noqa: ANN001
         self.queries.append({"filters": filters, "limit": limit})
         return self.rows
+
+    async def count_suspended(self, planned_day, day_type):  # noqa: ANN001
+        self.suspended_calls.append((planned_day, day_type))
+        return 0
 
 
 class _Runtime:
@@ -118,8 +123,11 @@ async def test_a_corpus_that_says_nothing_about_sleep_leaves_the_question_open()
 
 
 @pytest.mark.asyncio
-async def test_a_frame_the_user_already_stated_asks_neither_memory_nor_a_model() -> None:
-    """The user's word stands; re-deriving it from the corpus could only contradict them."""
+async def test_a_frame_the_user_already_stated_asks_no_model_but_still_hands_back_the_rules() -> None:
+    """The user's word on the frame stands; re-deriving it from the corpus could
+    only contradict them, so no model call is made. The rules themselves are
+    still fetched and returned -- Stage 1 needs them regardless of whether the
+    frame question was already settled (#262)."""
 
     store = _Store([BEDTIME])
     client = _SchemaOutputClient()
@@ -136,7 +144,9 @@ async def test_a_frame_the_user_already_stated_asks_neither_memory_nor_a_model()
     )
 
     assert context.facts == []
-    assert store.queries == []
+    assert context.applicable_constraints == [BEDTIME]
+    assert context.suspended_constraint_count == 0
+    assert len(store.queries) == 1
     assert client.calls == []
 
 

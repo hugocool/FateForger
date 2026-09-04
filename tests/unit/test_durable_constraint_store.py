@@ -196,6 +196,26 @@ async def test_store_adapter_add_reflection_delegates_when_supported() -> None:
     assert base.reflections == [{"summary": "ok"}]
 
 
+class _ClientWithCountSuspended(_ClientWithCoreMethods):
+    def __init__(self) -> None:
+        super().__init__()
+        self.count_suspended_calls: list[tuple[str, str | None]] = []
+
+    async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+        self.count_suspended_calls.append((planned_day, day_type))
+        return 3
+
+
+async def test_store_adapter_forwards_count_suspended_to_the_client() -> None:
+    base = _ClientWithCountSuspended()
+    store = ClientBackedDurableConstraintStore(client=base)
+
+    result = await store.count_suspended("2026-09-08", "working")
+
+    assert result == 3
+    assert base.count_suspended_calls == [("2026-09-08", "working")]
+
+
 async def test_store_adapter_finds_equivalent_constraint_from_semantic_identity() -> None:
     client = _EquivalenceClient()
     store = ClientBackedDurableConstraintStore(client=client)
