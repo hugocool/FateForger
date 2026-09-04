@@ -16,8 +16,8 @@ class _FakeScheduler:
     def __init__(self) -> None:
         self.jobs: dict[str, tuple[datetime, dict]] = {}
 
-    def add_job(self, func, trigger, run_date, id, kwargs, replace_existing, **_):  # noqa: A002
-        self.jobs[id] = (run_date, {"func": func, **kwargs})
+    def add_job(self, func, trigger, run_date, id, kwargs, replace_existing, **extra):  # noqa: A002
+        self.jobs[id] = (run_date, {"func": func, **kwargs, "_extra": extra})
 
     def remove_job(self, job_id):
         self.jobs.pop(job_id, None)
@@ -125,6 +125,72 @@ async def test_another_users_activity_leaves_the_ladder_armed() -> None:
 
     assert cancelled == 0
     assert len(scheduler.jobs) == 1
+
+
+@pytest.mark.asyncio
+async def test_follow_up_run_dates_are_timezone_aware() -> None:
+    scheduler = _FakeScheduler()
+    service = HauntingService(scheduler)
+    offsets = (timedelta(minutes=2),)
+
+    record = await service.schedule_followup(
+        message_id="planning_session:C1:1.0",
+        topic_id="C1:1.0",
+        task_id=None,
+        user_id="U1",
+        channel_id="D1",
+        content="open",
+        spec=FollowUpSpec(should_schedule=True, offsets=offsets, cancel_on_user_reply=True),
+    )
+
+    run_at, _job = next(iter(scheduler.jobs.values()))
+    assert run_at.tzinfo is not None
+    assert run_at.utcoffset() == timedelta(0)
+    assert run_at == record.created_at + offsets[0]
+
+
+@pytest.mark.asyncio
+async def test_a_naive_clock_is_read_as_utc() -> None:
+    scheduler = _FakeScheduler()
+    service = HauntingService(scheduler, now=datetime.utcnow)
+    offsets = (timedelta(minutes=2),)
+
+    record = await service.schedule_followup(
+        message_id="planning_session:C1:1.0",
+        topic_id="C1:1.0",
+        task_id=None,
+        user_id="U1",
+        channel_id="D1",
+        content="open",
+        spec=FollowUpSpec(should_schedule=True, offsets=offsets, cancel_on_user_reply=True),
+    )
+
+    run_at, _job = next(iter(scheduler.jobs.values()))
+    assert run_at.tzinfo is not None
+    expected_naive = record.created_at + offsets[0]
+    assert run_at == expected_naive.replace(tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_follow_up_jobs_carry_a_misfire_grace() -> None:
+    now, _ = _clock(datetime(2026, 9, 4, 7, 0, tzinfo=timezone.utc))
+    scheduler = _FakeScheduler()
+    service = HauntingService(scheduler, now=now)
+
+    await service.schedule_followup(
+        message_id="planning_session:C1:1.0",
+        topic_id="C1:1.0",
+        task_id=None,
+        user_id="U1",
+        channel_id="D1",
+        content="open",
+        spec=FollowUpSpec(
+            should_schedule=True, offsets=(timedelta(minutes=2),), cancel_on_user_reply=True
+        ),
+    )
+
+    _run_at, job = next(iter(scheduler.jobs.values()))
+    assert job["_extra"].get("misfire_grace_time") == 60
 
 
 def test_lines_select_by_attempt_and_clamp_at_the_end() -> None:

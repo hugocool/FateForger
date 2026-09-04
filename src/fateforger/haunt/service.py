@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Optional, Protocol
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -51,7 +51,7 @@ class HauntingService:
         self,
         scheduler: AsyncIOScheduler,
         *,
-        now: Callable[[], datetime] = datetime.utcnow,
+        now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         settings_store: AdmonishmentSettingsStore | None = None,
     ) -> None:
         self._scheduler = scheduler
@@ -211,6 +211,12 @@ class HauntingService:
         self._unschedule_job(record.message_id)
 
     def _schedule_job(self, record: PendingFollowUp, run_at: datetime) -> None:
+        # A caller that injected a naive clock (e.g. datetime.utcnow) meant
+        # UTC, not the scheduler's local zone -- attach that explicitly
+        # rather than letting APScheduler read it as local time, which can
+        # place the run date hours in the past and silently drop the job.
+        if run_at.tzinfo is None:
+            run_at = run_at.replace(tzinfo=timezone.utc)
         self._scheduler.add_job(
             self._dispatch_followup,
             trigger="date",
@@ -218,6 +224,10 @@ class HauntingService:
             id=self._job_id(record.message_id),
             kwargs={"message_id": record.message_id},
             replace_existing=True,
+            # A scheduler loop that wakes a few seconds late must still fire
+            # the rung -- a dropped rung loses the rest of the ladder, since
+            # re-arming happens in _dispatch_followup.
+            misfire_grace_time=60,
         )
 
     def _unschedule_job(self, message_id: str) -> None:
