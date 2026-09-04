@@ -444,6 +444,17 @@ def _proposed_day_context(artifact: PlanningArtifact | None) -> dict[str, str] |
     }
 
 
+def _suspension_fact(uid: str, note: str | None) -> PlanningFact:
+    """One builder for the suspension fact, so a press and a typed sentence
+    file the identical fact at the identical id -- never two shapes drifting."""
+    return PlanningFact(
+        fact_id=suspension_fact_id(uid),
+        kind=FactKind.SUSPENDED_CONSTRAINT,
+        value={"uid": uid, "reason": "not today", "note": note},
+        source="user",
+    )
+
+
 def _intent_from_interpreted(
     interpreted: InterpretedTimeboxTurn,
     *,
@@ -487,18 +498,7 @@ def _intent_from_interpreted(
         if interpreted.constraint_uid is None or interpreted.constraint_uid not in offered:
             raise ValueError("steer_not_today names a rule not among the card's rows")
         return ProvidePlanningFacts(
-            facts=[
-                PlanningFact(
-                    fact_id=suspension_fact_id(interpreted.constraint_uid),
-                    kind=FactKind.SUSPENDED_CONSTRAINT,
-                    value={
-                        "uid": interpreted.constraint_uid,
-                        "reason": "not today",
-                        "note": None,
-                    },
-                    source="user",
-                )
-            ]
+            facts=[_suspension_fact(interpreted.constraint_uid, note=None)]
         )
     if interpreted.decision == "restore":
         suspended: set[object] = set()
@@ -641,16 +641,7 @@ def intent_from_artifact_action(
         uid = cast(str, meta.constraint_uid)
         # The same id the typed path files (Phase 1 Task 8), so a press and
         # a sentence cannot suspend one rule twice.
-        intent = ProvidePlanningFacts(
-            facts=[
-                PlanningFact(
-                    fact_id=suspension_fact_id(uid),
-                    kind=FactKind.SUSPENDED_CONSTRAINT,
-                    value={"uid": uid, "reason": "not today", "note": meta.note},
-                    source="user",
-                )
-            ]
-        )
+        intent = ProvidePlanningFacts(facts=[_suspension_fact(uid, note=meta.note)])
     elif meta.decision == "back":
         intent = GoBack()
     else:
