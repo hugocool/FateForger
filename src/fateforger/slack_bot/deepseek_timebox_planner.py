@@ -40,6 +40,10 @@ class ConstraintReader(Protocol):
         limit: int,
     ) -> list[dict[str, Any]]: ...
 
+    async def count_suspended(self, planned_day: str, day_type: str | None) -> int:
+        """How many rules memory withheld for this day type; a count, not rows."""
+        ...
+
 
 class HarnessRunner(Protocol):
     """Task 8's result-file bridge plugs into this single async call."""
@@ -112,23 +116,27 @@ class DeepSeekTimeboxPlanner:
             if calendar_snapshot.get("ok") is not True:
                 raise DependencyUnavailable("calendar dependency unavailable")
 
-        try:
-            constraints = await self._constraint_reader.query_constraints(
-                filters={
-                    "planned_day": day,
-                    "day_type": locked_day.day_type.value,
-                    "require_active": True,
-                },
-                limit=200,
-            )
-        except DependencyUnavailable:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "adaptive planner constraint read unavailable error_type=%s",
-                type(exc).__name__,
-            )
-            raise DependencyUnavailable("constraint dependency unavailable") from exc
+        constraints = self._brief_rows(brief)
+        if constraints is None:
+            try:
+                constraints = await self._constraint_reader.query_constraints(
+                    filters={
+                        "planned_day": day,
+                        "day_type": locked_day.day_type.value,
+                        "require_active": True,
+                    },
+                    limit=200,
+                )
+            except DependencyUnavailable:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "adaptive planner constraint read unavailable error_type=%s",
+                    type(exc).__name__,
+                )
+                raise DependencyUnavailable(
+                    "constraint dependency unavailable"
+                ) from exc
 
         complete_brief = brief.model_copy(
             update={
@@ -152,6 +160,23 @@ class DeepSeekTimeboxPlanner:
                 type(exc).__name__,
             )
             raise DependencyUnavailable("planner dependency unavailable") from exc
+
+    @staticmethod
+    def _brief_rows(brief: PlanningBrief) -> list[Any] | None:
+        """The rows the brief already carries, or None when it carries none.
+
+        The kernel builds `applicable_constraints` by subtracting this
+        session's SUSPENDED_CONSTRAINT facts from what the host resolved. This
+        planner used to discard that and read again, which put every rule the
+        user had said "not today" about straight back in front of the model --
+        the suspension bound on the card and nowhere else. A list is the host's
+        answer and is final, empty list included. Anything else is a caller
+        that predates the host resolve, and only then does this planner read
+        for itself.
+        """
+
+        rows = brief.applicable_constraints
+        return rows if isinstance(rows, list) else None
 
     def _host_read_of(self, brief: PlanningBrief, day: str) -> dict[str, Any] | None:
         """The calendar read the kernel's context port already made this turn.
