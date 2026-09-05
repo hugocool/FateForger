@@ -29,7 +29,7 @@ from fateforger.agents.tasks.board import (
     page_from_page,
     row_from_page,
 )
-from fateforger.core.config import settings
+from fateforger.core.config import Settings, settings
 
 TASKS_DB = "110baca1-857f-48b1-a8ec-cea325202eef"
 SPRINTS_DB = "0e34a9da-1fe6-4cd2-a2fc-c36c0ae688b0"
@@ -39,6 +39,10 @@ TASK_PAGE_ID = "30828174-6a47-8011-b3d0-000000000001"
 READY_FILTER = {"property": "Ticket Status", "select": {"equals": "Ready"}}
 SPRINT_FILTER = {"property": "Sprint", "relation": {"contains": SPRINT_PAGE_ID}}
 PRIORITY_SORT = [{"property": "Priority", "direction": "descending"}]
+
+# The value core/config.py ships when nobody has configured a token, taken
+# from the field itself so the test cannot drift from what is shipped.
+PLACEHOLDER_TOKEN = Settings.model_fields["mcp_http_auth_token"].default
 
 
 class FakeCallTool:
@@ -315,11 +319,13 @@ async def test_open_scope_excludes_done_and_archived() -> None:
 
 
 async def test_page_size_is_capped_at_the_notion_maximum() -> None:
-    fake = FakeCallTool(listing())
+    fake = FakeCallTool(listing(), listing())
 
     await board(fake).list_tasks("ready", limit=500)
+    await board(fake).list_tasks("ready", limit=0)
 
     assert fake.calls[0][1]["page_size"] == 100
+    assert fake.calls[1][1]["page_size"] == 1, "Notion rejects page_size 0"
 
 
 async def test_unknown_scope_raises_rather_than_listing_everything() -> None:
@@ -490,9 +496,24 @@ async def test_a_non_json_result_raises_rather_than_returning_nothing() -> None:
 
 def test_missing_token_raises_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MCP_HTTP_AUTH_TOKEN", raising=False)
-    monkeypatch.setattr(
-        settings, "mcp_http_auth_token", "change_me_to_a_long_random_secret"
-    )
+    monkeypatch.setattr(settings, "mcp_http_auth_token", PLACEHOLDER_TOKEN)
+
+    with pytest.raises(TaskBoardUnavailable) as excinfo:
+        TaskBoard.from_settings()
+
+    assert "token" in str(excinfo.value)
+
+
+def test_placeholder_token_in_env_raises_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`.env.template` ships the placeholder, so it arrives by environment too.
+
+    Settings are untouched here: the environment wins, and forwarding
+    "change_me..." to Notion buys a 401 that reads like an outage rather than
+    like a host nobody configured.
+    """
+    monkeypatch.setenv("MCP_HTTP_AUTH_TOKEN", PLACEHOLDER_TOKEN)
 
     with pytest.raises(TaskBoardUnavailable) as excinfo:
         TaskBoard.from_settings()

@@ -19,6 +19,7 @@ cause. An empty list here means the board is empty, never that something broke.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
@@ -26,8 +27,8 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from pydantic import BaseModel
 
-from fateforger.core.config import settings
-from fateforger.tools.notion_mcp import get_notion_mcp_headers, get_notion_mcp_url
+from fateforger.core.config import Settings, settings
+from fateforger.tools.notion_mcp import get_notion_mcp_url
 
 # The only two tools this module is ever allowed to call. Both read.
 QUERY_TOOL = "API-post-database-query"
@@ -72,10 +73,6 @@ OPEN_FILTER: dict[str, Any] = {
         {"property": PROP_STATUS, "status": {"does_not_equal": "Archived"}},
     ]
 }
-
-# The value core/config.py ships when nobody has set a token. Treating it as a
-# token would send "change_me..." to Notion and get a 401 nobody can read.
-PLACEHOLDER_AUTH_TOKEN = "change_me_to_a_long_random_secret"
 
 Scope = Literal["current_sprint_ready", "current_sprint", "ready", "open"]
 CallTool = Callable[[str, dict[str, Any]], Awaitable[str]]
@@ -317,17 +314,21 @@ def _results(payload: dict[str, Any]) -> list[Any]:
 def _auth_headers() -> dict[str, str]:
     """Bearer headers for the Notion MCP container, or a loud unavailable.
 
-    ``MCP_HTTP_AUTH_TOKEN`` in the environment wins. Settings are the fallback,
-    and its placeholder default is not a token: sending it produces a 401 that
-    reads like a Notion outage rather than an unconfigured host.
+    ``MCP_HTTP_AUTH_TOKEN`` in the environment wins and settings are the
+    fallback, but the token is checked once, after it is resolved: the
+    placeholder ``.env.template`` ships arrives by environment exactly as
+    readily as by settings default, and forwarding it buys a 401 that reads
+    like a Notion outage rather than like a host nobody configured. The
+    sentinel is read off the field so it cannot drift from what is shipped.
     """
-    headers = get_notion_mcp_headers()
-    if headers is not None:
-        return headers
-    token = (settings.mcp_http_auth_token or "").strip()
-    if not token or token == PLACEHOLDER_AUTH_TOKEN:
+    token = (
+        os.environ.get("MCP_HTTP_AUTH_TOKEN") or settings.mcp_http_auth_token or ""
+    ).strip()
+    placeholder = Settings.model_fields["mcp_http_auth_token"].default
+    if not token or token == placeholder:
         raise TaskBoardUnavailable(
-            "no Notion MCP auth token: set MCP_HTTP_AUTH_TOKEN"
+            "no Notion MCP auth token: set MCP_HTTP_AUTH_TOKEN to the Notion "
+            "MCP container's secret (the shipped placeholder is not a token)"
         )
     return {"Authorization": f"Bearer {token}"}
 
@@ -399,7 +400,9 @@ class TaskBoard:
         payload = await self._query(
             self.tasks_database_id,
             filter_=self._filter_for(scope, sprint),
-            page_size=min(limit, PAGE_SIZE_MAX),
+            # Notion accepts 1..100; a caller asking for 0 wants one page,
+            # not an API error.
+            page_size=max(1, min(limit, PAGE_SIZE_MAX)),
             sorts=PRIORITY_SORT,
             start_cursor=cursor,
         )
