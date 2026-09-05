@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
@@ -16,7 +17,9 @@ from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     Advance,
     ApproveArtifact,
+    ArtifactApproval,
     ArtifactKind,
+    AskQuestion,
     BlockerOption,
     ChooseBlockerOption,
     ConfirmPlanningDay,
@@ -496,7 +499,7 @@ async def test_an_offered_option_can_be_answered_in_words() -> None:
     assert (  # Stage 1 decision set, spec 2026-09-04
         # No assume: `skeleton.day_shape` is not one of the forty cells, and a
         # `PlannerAssumption` cannot satisfy it.
-        '"allowed_decisions":["provide_facts","choose_option","back","cancel"]'
+        '"allowed_decisions":["provide_facts","choose_option","back","cancel","question"]'
     ) in prompt
     # The offer is the context the judgement needs: an id with no label beside
     # it asks the model to choose between two names it has never seen.
@@ -553,7 +556,7 @@ async def test_an_open_question_still_has_nothing_to_choose_from() -> None:
     assert client.calls[0][1] is InterpretedTimeboxTurn
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
-        '"allowed_decisions":["provide_facts","back","cancel"]'
+        '"allowed_decisions":["provide_facts","back","cancel","question"]'
     ) in prompt
 
 
@@ -570,7 +573,7 @@ async def test_choosing_is_not_offered_when_no_question_is_open() -> None:
     assert client.calls[0][1] is InterpretedTimeboxTurn
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
-        '"allowed_decisions":["provide_facts","back","cancel"]'
+        '"allowed_decisions":["provide_facts","back","cancel","question"]'
     ) in prompt
 
 
@@ -878,7 +881,7 @@ async def test_a_committed_session_takes_a_revision_bound_to_its_receipt() -> No
     assert '"display_stage":"committed"' in prompt
     assert '"pending_artifact_kind":"commit_receipt"' in prompt
     allowed = json.loads(client.calls[0][0][1].content)["allowed_decisions"]
-    assert set(allowed) == {"provide_facts", "revise"}
+    assert set(allowed) == {"provide_facts", "revise", "question"}
 
 
 @pytest.mark.asyncio
@@ -1226,7 +1229,12 @@ def test_assume_with_nothing_open_is_refused() -> None:
     # exercises its own defence-in-depth refusal.
     interpreted = InterpretedTimeboxTurn(decision="assume")
     with pytest.raises(ValueError, match="no open"):
-        _intent_from_interpreted(interpreted, snapshot=_stage1_snapshot(), pending=None)
+        _intent_from_interpreted(
+            interpreted,
+            snapshot=_stage1_snapshot(),
+            pending=None,
+            user_text="just move on",
+        )
 
 
 async def test_deny_names_an_assumption_on_record() -> None:
@@ -1275,3 +1283,140 @@ async def test_a_malformed_suspension_fact_makes_restore_raise_naming_the_fact()
         await TimeboxingIntentInterpreter(client).interpret(
             "put the oats rule back", _stage1_snapshot(facts=[malformed])
         )
+
+
+@pytest.mark.asyncio
+async def test_a_question_during_capture_binds_the_users_words_verbatim() -> None:
+    client = _SchemaOutputClient({"decision": "question", "facts": []})
+    interpreter = TimeboxingIntentInterpreter(client)
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=2, owner_user_id="U1",
+        planning_day=_planning_day(), status="open",
+    )
+    intent = await interpreter.interpret("  Is it planned?  ", snapshot)
+    assert isinstance(intent, AskQuestion)
+    assert intent.question == "  Is it planned?  "   # verbatim, not stripped, not paraphrased
+    _, json_output = client.calls[0]
+    assert "question" in get_args(json_output.model_fields["decision"].annotation)
+
+
+@pytest.mark.asyncio
+async def test_a_question_on_a_committed_session_is_offered_and_bound() -> None:
+    client = _SchemaOutputClient({"decision": "question", "facts": []})
+    interpreter = TimeboxingIntentInterpreter(client)
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=9, owner_user_id="U1",
+        planning_day=_planning_day(), status="committed",
+    )
+    intent = await interpreter.interpret("what did we settle on for lunch?", snapshot)
+    assert isinstance(intent, AskQuestion)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_session_still_accepts_no_intent() -> None:
+    client = _SchemaOutputClient({"decision": "question", "facts": []})
+    interpreter = TimeboxingIntentInterpreter(client)
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=4, owner_user_id="U1",
+        planning_day=_planning_day(), status="cancelled",
+    )
+    with pytest.raises(ValueError, match="does not accept another intent"):
+        await interpreter.interpret("Is it planned?", snapshot)
+    assert client.calls == []
+
+
+def _validated_candidate() -> PlanningArtifact:
+    return PlanningArtifact.create(
+        artifact_id="candidate-1",
+        kind=ArtifactKind.VALIDATED_CANDIDATE,
+        revision=1,
+        payload={"events": []},
+        dependency_revisions={"skeleton": 2},
+    )
+
+
+def _approval_of(artifact: PlanningArtifact) -> ArtifactApproval:
+    return ArtifactApproval(
+        artifact_id=artifact.artifact_id,
+        artifact_revision=artifact.revision,
+        artifact_digest=artifact.digest,
+        actor_user_id="U1",
+        session_revision=3,
+    )
+
+
+def _snapshot_awaiting_commit() -> PlanningSessionSnapshot:
+    """A validated candidate on the table and nothing approved yet."""
+    return _capture_snapshot().model_copy(
+        update={"artifacts": [_validated_candidate()]}
+    )
+
+
+def _snapshot_past_the_skeleton() -> PlanningSessionSnapshot:
+    """The skeleton is approved, so nothing is pending and the day is refining."""
+    skeleton = _skeleton()
+    return _capture_snapshot().model_copy(
+        update={"artifacts": [skeleton], "approvals": [_approval_of(skeleton)]}
+    )
+
+
+#: One snapshot per state `_display_context` returns, `cancelled` excepted and
+#: pinned separately below -- all seven of them. The state name is asserted
+#: alongside the decision set because a snapshot that quietly fell through to
+#: `capture` would satisfy a membership check while testing nothing about the
+#: state it was built for, which is exactly what the first version of this
+#: guard did.
+_OPEN_STATES: tuple[tuple[str, PlanningSessionSnapshot], ...] = (
+    (
+        "no_session",
+        PlanningSessionSnapshot(session_key="C1:1.0", revision=0, owner_user_id="U1"),
+    ),
+    ("planning_day", _date_stage_snapshot()),
+    ("capture", _capture_snapshot()),
+    ("skeleton", _snapshot_with_skeleton()),
+    ("review_commit", _snapshot_awaiting_commit()),
+    ("refine", _snapshot_past_the_skeleton()),
+    ("committed", _committed_snapshot()),
+)
+
+
+@pytest.mark.parametrize(("expected_stage", "snapshot"), _OPEN_STATES)
+def test_every_open_state_offers_question(
+    expected_stage: str, snapshot: PlanningSessionSnapshot
+) -> None:
+    """The contract: an agent that owns a workflow exposes `question` in every
+    state its surface allows. One case per state `_display_context` returns
+    today, so a miswired case cannot hide behind another state's answer. An
+    eighth state added later must be added here too; nothing enforces that."""
+    stage, allowed, _ = _display_context(snapshot)
+    assert stage == expected_stage
+    assert "question" in allowed
+
+
+#: Cancelled twice over: mid-session, and before a day was ever proposed. The
+#: second case is only reachable since #318 put `cancel` on offer at zero
+#: artifacts, and it is the one a `no_session` branch placed too early would
+#: reopen -- the thread would take a start, then die on the confirmation with
+#: the generic failure line.
+_CANCELLED_SESSIONS: tuple[tuple[str, PlanningSessionSnapshot], ...] = (
+    ("mid-session", _capture_snapshot().model_copy(update={"status": "cancelled"})),
+    (
+        "before a day",
+        PlanningSessionSnapshot(
+            session_key="C1:1.0",
+            revision=1,
+            owner_user_id="U1",
+            status="cancelled",
+        ),
+    ),
+)
+
+
+@pytest.mark.parametrize(("case", "cancelled"), _CANCELLED_SESSIONS)
+def test_a_cancelled_session_offers_nothing(
+    case: str, cancelled: PlanningSessionSnapshot
+) -> None:
+    """The one state that must not gain `question`: the session is closed."""
+    stage, allowed, _ = _display_context(cancelled)
+    assert stage == "cancelled"
+    assert allowed == ()

@@ -442,22 +442,24 @@ async def derive_timebox_intent(
 ) -> TimeboxIntent:
     """Turn one Slack reply into a typed intent, never by reading the words.
 
-    Until a day has even been proposed there is nothing to decide about, so no
-    model is asked: the session starts and the host puts its own date on screen.
-    From the moment that card exists the reply is interpreted -- including the
-    reply that confirms it. Skipping the interpreter there was what left the
-    date card answerable only by a press, and a session an agent drives by
-    typing could not get past it.
+    Every reply with words in it is interpreted -- including the first one.
+    Before a day is proposed the surface offers start, question and cancel,
+    and the interpreter says which; an unconditional start here was what
+    turned "Is it planned?" into a five-stage session (2026-09-05 03:43).
+    Only an empty opening turn starts without asking: there is nothing to
+    read, and the auto-start and a bare command arrive that way.
 
     The schema-bound interpreter names the decision; the host binds the date,
-    the artifact identity and the question being answered from state it already
-    trusts.
+    the artifact identity, the question being answered and the user's own
+    words from state it already trusts.
     """
-    if snapshot.planning_day is None and not any(
-        artifact.kind is ArtifactKind.PLANNING_DAY for artifact in snapshot.artifacts
-    ):
-        return StartSession()
     if not user_text.strip():
+        fresh = snapshot.planning_day is None and not any(
+            artifact.kind is ArtifactKind.PLANNING_DAY
+            for artifact in snapshot.artifacts
+        )
+        if fresh:
+            return StartSession()
         return Advance()
     interpreter = getattr(runtime, "timeboxing_intent_interpreter", None)
     if interpreter is None:

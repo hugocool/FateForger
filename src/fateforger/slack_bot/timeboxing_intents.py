@@ -22,6 +22,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     Advance,
     ApproveArtifact,
     ArtifactKind,
+    AskQuestion,
     BlockerOption,
     CancelSession,
     ChooseBlockerOption,
@@ -38,6 +39,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     ProvidePlanningFacts,
     RestoreConstraint,
     ReviseArtifact,
+    StartSession,
     TimeboxIntent,
     elicited_fact_id,
     suspension_fact_id,
@@ -106,6 +108,8 @@ class InterpretedTimeboxTurn(_StrictModel):
         "restore",
         "assume",
         "deny",
+        "question",
+        "start",
     ]
     facts: list[PlanningFactDraft] = Field(default_factory=list)
     revision_instruction: str | None = Field(default=None, min_length=1)
@@ -213,7 +217,7 @@ class TimeboxActionEnvelope(_StrictModel):
     intent: TimeboxIntent
 
 
-_TIMEBOX_PROMPT_FRAGMENT = """Extract facts only when the user actually supplies them.
+_TIMEBOX_PROMPT_FRAGMENT_BASE = """Extract facts only when the user actually supplies them.
 Fact kinds you may extract: requested_activity (one per thing the user wants
 the day to hold, value a short description in their words) and day_frame
 (when they get up and when they go to sleep on the planning day, value
@@ -239,6 +243,18 @@ with its assumption_id. A reply to an open elicit.* question, or anything
 the user states about what holds today that is not a request for the day, is
 an elicited_statement fact in their words.
 """
+
+QUESTION_PARAGRAPH = """A reply that asks about the day, the plan, the calendar, or what was
+decided -- "is it planned?", "did you add the gym?", "what did we settle on
+for lunch?", "when is deep work?" -- is question. A reply that supplies a
+fact, a correction, or an instruction against the plan is what it was
+before. A reply that asks and also supplies a fact is that fact: the fact
+changes the day and the question does not. A reply that asks to plan, to
+timebox, or to get going -- "plan tomorrow", "let's do saturday", "start",
+"ok let's go" -- is start, wherever the surface offers it.
+"""
+
+_TIMEBOX_PROMPT_FRAGMENT = _TIMEBOX_PROMPT_FRAGMENT_BASE + QUESTION_PARAGRAPH
 
 
 def _is_approved(
@@ -306,6 +322,16 @@ def _display_context(
     pending = _pending_artifact(snapshot)
     if snapshot.status == "cancelled":
         return "cancelled", (), pending
+    # After the cancelled check, never before it: cancel is on offer below, so
+    # a fresh session can now be cancelled at zero artifacts, and a state that
+    # read "no day yet" first would hand that closed thread a start.
+    if snapshot.planning_day is None and not any(
+        artifact.kind is ArtifactKind.PLANNING_DAY for artifact in snapshot.artifacts
+    ):
+        # Before a day is even proposed there is still something to decide:
+        # start the session, ask about the calendar, or walk away. This used
+        # to be an unconditional StartSession with no model asked (#318).
+        return "no_session", ("start", "question", "cancel"), pending
     if snapshot.status == "committed":
         # The day is on the calendar and the user is still talking, which on
         # 2026-09-02 meant "move the work two hours later, I sleep 00:30-08:30"
@@ -316,22 +342,30 @@ def _display_context(
         # not approve, which has nothing left to approve.
         return (
             "committed",
-            ("provide_facts", "revise"),
+            ("provide_facts", "revise", "question"),
             _latest_artifact(snapshot, ArtifactKind.COMMIT_RECEIPT),
         )
     if snapshot.planning_day is None:
         # Confirming belongs here as much as cancelling does. Without it a
         # session driven by typing cannot get past stage 0 at all, and the two
         # surfaces this project deliberately converged have diverged again.
-        return "planning_day", ("confirm_planning_day", "cancel"), pending
+        return (
+            "planning_day",
+            ("confirm_planning_day", "cancel", "question"),
+            pending,
+        )
     if pending is not None and pending.kind is ArtifactKind.SKELETON:
         return (
             "skeleton",
-            ("provide_facts", "approve", "revise", "back", "cancel"),
+            ("provide_facts", "approve", "revise", "back", "cancel", "question"),
             pending,
         )
     if pending is not None and pending.kind is ArtifactKind.VALIDATED_CANDIDATE:
-        return "review_commit", ("approve", "revise", "back", "cancel"), pending
+        return (
+            "review_commit",
+            ("approve", "revise", "back", "cancel", "question"),
+            pending,
+        )
     # Choosing is offered exactly while a question with options is open. It is
     # absent everywhere else because there would be no question to answer, and a
     # decision the session cannot honour is one the model can only waste a turn
@@ -380,12 +414,13 @@ def _display_context(
                 *choose,
                 "back",
                 "cancel",
+                "question",
             ),
             None,
         )
     return (
         "refine",
-        ("provide_facts", "advance", *choose, "back", "cancel"),
+        ("provide_facts", "advance", *choose, "back", "cancel", "question"),
         None,
     )
 
@@ -430,7 +465,7 @@ class TimeboxingIntentInterpreter:
             ),
         )
         return _intent_from_interpreted(
-            interpreted, snapshot=snapshot, pending=pending
+            interpreted, snapshot=snapshot, pending=pending, user_text=user_text
         )
 
 
@@ -477,8 +512,22 @@ def _intent_from_interpreted(
     *,
     snapshot: PlanningSessionSnapshot,
     pending: PlanningArtifact | None,
+    user_text: str,
 ) -> TimeboxIntent:
     """Bind one schema decision to trusted host state."""
+    if interpreted.decision == "question":
+        # The host's copy of the words, verbatim. The schema carries no text
+        # field for this decision on purpose: a paraphrase is the model's
+        # words reaching the answerer as if the user said them.
+        #
+        # Any `facts` the reading attached are discarded, deliberately. The
+        # prompt says a question that carries a fact is a fact, and the eval
+        # measures that at 8/8, so a `question` arriving with facts is the
+        # model contradicting itself -- and the words the user typed win over
+        # the structure the model wrapped them in.
+        return AskQuestion(question=user_text)
+    if interpreted.decision == "start":
+        return StartSession()
     if interpreted.decision == "confirm_planning_day":
         if pending is None or pending.kind is not ArtifactKind.PLANNING_DAY:
             raise ValueError("confirm_planning_day requires a proposed planning day")

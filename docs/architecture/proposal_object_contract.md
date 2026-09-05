@@ -57,6 +57,18 @@ must converge to the same typed input contract and the same execution path.
   (`component="surface_intent"`); it never becomes "pressed nothing".
 - Surfaces are resolved from durable state (draft store, session store), never from the
   in-memory focus cache. The 2026-09-03 incident is the shape this clause forbids.
+- A thread whose root a surface posted belongs to that surface. User focus — the DM-wide
+  memory of who last answered — never outranks that ownership. A new surface registers its
+  root in the resolver chain (`handlers.route_slack_event`, the ordered resolvers before
+  agent selection) or its threads will be routed by focus. What ships today is the
+  planning-card case (#310, #320): a `timeboxing_agent` that no explicit per-thread binding
+  chose — whether it arrived by focus or as the channel default — is demoted to
+  `receptionist_agent`; an explicit per-thread binding (`/ff-focus`) still wins. The general
+  form — focus never applies inside any bot-posted thread — waits on #302 re-keying DM
+  session threads, where it cannot yet be verified.
+- An agent that owns a workflow exposes `question` in every state its surface allows. Asked
+  is not started, and asked is not revised: a question changes nothing in the session it is
+  asked of (spec: `docs/superpowers/specs/2026-09-05-asked-not-started-design.md`).
 
 ## Current Scan (2026-03-06)
 

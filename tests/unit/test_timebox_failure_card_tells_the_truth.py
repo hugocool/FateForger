@@ -113,7 +113,7 @@ async def test_the_turn_handler_logs_what_the_exception_said(monkeypatch, caplog
             raise ValueError("the planning session does not accept another intent")
 
     class Repo:
-        async def load_or_create(self, key, owner_user_id):
+        async def load(self, key):
             return _snapshot(committed=True)
 
     class Runtime:

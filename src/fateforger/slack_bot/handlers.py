@@ -42,6 +42,8 @@ from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     ApproveArtifact,
     ArtifactKind,
+    Asked,
+    AskQuestion,
     Cancelled,
     Committed,
     ConfirmPlanningDay,
@@ -103,7 +105,11 @@ from fateforger.slack_bot.progress_events import (
 from fateforger.slack_bot.reply_guard import agent_reply_text
 from fateforger.slack_bot.stage_card_registry import StageCardRegistry, receipt_body, receipt_label
 from fateforger.slack_bot.stage_context import context_fold
-from fateforger.slack_bot.stage_cards import date_stage_card
+from fateforger.slack_bot.stage_cards import (
+    StageCard,
+    date_stage_card,
+    describe_session,
+)
 from fateforger.slack_bot.task_cards import (
     FF_TASK_DETAILS_ACTION_ID,
     FF_TASK_EDIT_MODAL_CALLBACK_ID,
@@ -1512,6 +1518,73 @@ def _timeboxing_kernel(
 
 
 
+async def _answer_question(
+    *,
+    runtime,
+    session_key: str,
+    actor_user_id: str,
+    snapshot: PlanningSessionSnapshot,
+    card: StageCard | None,
+    question: str,
+    logger,
+) -> SlackBlockMessage:
+    """Answer an `Asked` outcome through planner_agent, the calendar's answerer.
+
+    The session is described from the card the user is looking at plus the
+    snapshot, and the question travels verbatim after it. One ask; a failure
+    is one failure line and one metered error, never a second ask and never
+    a session start.
+    """
+
+    content = (
+        f"{describe_session(snapshot, card)}\n\n"
+        f"The user's question:\n{question}"
+    )
+    try:
+        result = await runtime.send_message(
+            TextMessage(content=content, source=actor_user_id),
+            recipient=AgentId("planner_agent", key=session_key),
+        )
+    except Exception as exc:  # noqa: BLE001 - one failure shape reaches Slack
+        logger.error(
+            "question answer failed session_key=%s error_type=%s error=%s",
+            session_key,
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        record_error(component="surface_intent", error_type="answer_failure")
+        return timebox_failure_message(snapshot=snapshot)
+    payload = _compact_slack_payload(**_slack_payload_from_result(result))
+    text = payload.get("text", "") or ""
+    return SlackBlockMessage(
+        text=text,
+        blocks=payload.get("blocks") or [
+            {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+        ],
+    )
+
+
+async def _load_or_new(
+    repository, session_key: str, *, owner_user_id: str
+) -> PlanningSessionSnapshot:
+    """The stored session, or an unsaved empty one -- never a written row.
+
+    Creating the row here is how a question became a session: the Admonisher's
+    nudge suppressor reads the session store, so a revision-0 `open` row with
+    `updated_at=now` silences the planning reminder for an hour. The kernel is
+    the only thing that may create a session, and only for an intent that
+    starts one; the host reads.
+    """
+
+    stored = await repository.load(session_key)
+    if stored is not None:
+        return stored
+    return PlanningSessionSnapshot.new(
+        session_key=session_key, owner_user_id=owner_user_id
+    )
+
+
 async def _run_adaptive_timebox_turn(
     *,
     runtime,
@@ -1552,37 +1625,15 @@ async def _run_adaptive_timebox_turn(
         )
         return timebox_failure_message()
 
-    # The activity tracker no longer decides whether the Admonisher nudges --
-    # `dispatch_planning_reminder` reads the session store for that (#256).
-    # What it still owns is the idle timer: ten quiet minutes after the last
-    # turn it asks the guardian to reconcile, which is how an abandoned
-    # session earns its nudge back.
-    timeboxing_activity.mark_active(
-        user_id=actor_user_id,
-        channel_id=card_channel,
-        thread_ts=card_thread_ts,
-    )
-
-    # Any turn is activity on this session: it cancels a pending Admonisher
-    # ladder (the planning session that started itself, #164 increment A).
-    # Best-effort: a haunt failure must never block the turn.
     haunting_service = getattr(runtime, "haunting_service", None)
-    if haunting_service is not None:
-        try:
-            await haunting_service.record_user_activity(
-                topic_id=session_key, task_id=None, user_id=actor_user_id
-            )
-        except Exception:
-            logger.exception("activity record failed session_key=%s", session_key)
-            record_error(component="session_start", error_type="cancel_failure")
 
     progress_card = HarnessProgressCard(
         client, channel=progress_channel, message_ts=progress_ts
     )
     snapshot: PlanningSessionSnapshot | None = None
     try:
-        snapshot = await repository.load_or_create(
-            session_key, owner_user_id=actor_user_id
+        snapshot = await _load_or_new(
+            repository, session_key, owner_user_id=actor_user_id
         )
         if action is not None:
             intent: TimeboxIntent = action.intent
@@ -1592,6 +1643,37 @@ async def _run_adaptive_timebox_turn(
                 runtime, snapshot, user_text=user_text
             )
             expected_revision = snapshot.revision
+        if not isinstance(intent, AskQuestion):
+            # Asked is not started up here either. Both of these say "the user
+            # is planning": the tracker owns the idle timer that earns an
+            # abandoned session its nudge back, and `record_user_activity`
+            # cancels the pending Admonisher ladder (#164 increment A). A
+            # question is the user asking whether they have planned anything,
+            # and silencing the reminder that would answer it is the opposite
+            # of what they asked for. So both wait until the intent is known.
+            # The button path never carries a question, so it is unaffected.
+            #
+            # The activity tracker no longer decides whether the Admonisher
+            # nudges -- `dispatch_planning_reminder` reads the session store
+            # for that (#256).
+            timeboxing_activity.mark_active(
+                user_id=actor_user_id,
+                channel_id=card_channel,
+                thread_ts=card_thread_ts,
+            )
+            # Best-effort: a haunt failure must never block the turn.
+            if haunting_service is not None:
+                try:
+                    await haunting_service.record_user_activity(
+                        topic_id=session_key, task_id=None, user_id=actor_user_id
+                    )
+                except Exception:
+                    logger.exception(
+                        "activity record failed session_key=%s", session_key
+                    )
+                    record_error(
+                        component="session_start", error_type="cancel_failure"
+                    )
         outcome = await kernel.turn(
             TurnRequest(
                 session_key=session_key,
@@ -1602,8 +1684,8 @@ async def _run_adaptive_timebox_turn(
             ),
             progress=KernelProgressSink(progress_card, session_key=session_key),
         )
-        current = await repository.load_or_create(
-            session_key, owner_user_id=actor_user_id
+        current = await _load_or_new(
+            repository, session_key, owner_user_id=actor_user_id
         )
         observer = getattr(runtime, "timeboxing_feedback_observer", None)
         if observer is not None:
@@ -1656,6 +1738,20 @@ async def _run_adaptive_timebox_turn(
         return timebox_failure_message(snapshot=snapshot)
     finally:
         await progress_card.close()
+
+    if isinstance(outcome, Asked):
+        # Asked is not started and not revised: no card transition, no panel
+        # sync, no relabel. The thinking card becomes the answer.
+        shown = _stage_cards.shown(session_key)
+        return await _answer_question(
+            runtime=runtime,
+            session_key=session_key,
+            actor_user_id=actor_user_id,
+            snapshot=current,
+            card=shown.card if shown is not None else None,
+            question=outcome.question,
+            logger=logger,
+        )
 
     try:
         message, card = present_outcome(
@@ -2679,7 +2775,11 @@ async def route_slack_event(
             # An explicit per-thread binding does not lose here -- that one the
             # user asked for by name.
             if binding is None and agent_type == "timeboxing_agent":
-                agent_type = channel_default_agent or default_agent
+                # Not the channel default: when that default is itself
+                # timeboxing_agent the demotion was a no-op (#310's review).
+                # The receptionist is the one agent that refers rather than
+                # starts, which is what a card's thread needs.
+                agent_type = "receptionist_agent"
         elif agent_type != "timeboxing_agent":
             session_store = getattr(runtime, "timeboxing_session_store", None)
             if session_store is not None:

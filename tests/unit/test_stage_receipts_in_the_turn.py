@@ -77,7 +77,7 @@ def _wire(monkeypatch, *, outcome, intent, snapshot: PlanningSessionSnapshot):
             return outcome
 
     class Repo:
-        async def load_or_create(self, key, owner_user_id):
+        async def load(self, key):
             return snapshot
 
     class Runtime:

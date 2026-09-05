@@ -543,6 +543,78 @@ def map_outcome(
     return None
 
 
+def describe_session(
+    snapshot: PlanningSessionSnapshot, card: StageCard | None
+) -> str:
+    """What the user is looking at, in prose, for an agent that cannot see it.
+
+    The same fields the card renders and nothing the card does not show: the
+    prose renderer beside the Block Kit one, over the same `StageCard`. The
+    snapshot supplies what a card does not carry -- the day, the status, the
+    receipt -- so a session with no card on screen (a DM after a restart)
+    still describes itself.
+    """
+
+    lines: list[str] = []
+    day = snapshot.planning_day
+    if day is None:
+        lines.append(
+            "The user is talking to their timeboxing session; no planning day "
+            "has been locked yet (the session has not started)."
+        )
+    else:
+        lines.append(
+            f"The user is talking to their timeboxing session for "
+            f"{day.date.isoformat()} ({day.date.strftime('%A')}, "
+            f"{day.day_type.value} day, {day.timezone})."
+        )
+    lines.append(f"Session status: {snapshot.status}.")
+
+    if card is not None:
+        lines.append(
+            f"Stage {card.stage.index}/5 \u00b7 {card.stage.name}"
+            + (f" \u2014 {card.done}" if card.done else "")
+        )
+        if card.context:
+            lines.append("Context in use: " + "; ".join(
+                f"{item.text} (from {item.source})" for item in card.context
+            ))
+        if card.decided:
+            lines.append("Decided so far: " + "; ".join(
+                f"{item.text} ({item.kind}"
+                + (f", filed by {item.filed_by}" if item.filed_by else "")
+                + ")"
+                for item in card.decided
+            ))
+        if card.asking is not None:
+            lines.append(f"Open question to the user: {card.asking.question}")
+            lines.append(f"Why it is needed: {card.asking.why_needed}")
+            if card.asking.options:
+                # The buttons the user is looking at, and what each would do.
+                # Without them an agent asked "what are my choices?" answers
+                # from a description of the question alone.
+                lines.append("Offered answers: " + "; ".join(
+                    f"{option.label} ({option.effect})"
+                    for option in card.asking.options
+                ))
+        if card.gate:
+            lines.append(f"Gate: {card.gate}")
+        if card.body:
+            lines.append("The card's body:\n" + card.body)
+
+    receipt = next(
+        (a for a in reversed(snapshot.artifacts) if a.kind is ArtifactKind.COMMIT_RECEIPT),
+        None,
+    )
+    if receipt is not None:
+        payload = receipt.payload if isinstance(receipt.payload, dict) else {}
+        lines.append(
+            "Commit receipt: "
+            + ", ".join(f"{k}={v}" for k, v in payload.items() if v is not None)
+        )
+    return "\n".join(lines)
+
+
 __all__ = [
     "STAGES",
     "ApproveControl",
@@ -561,6 +633,7 @@ __all__ = [
     "UndoControl",
     "date_stage_card",
     "commit_basis_notice",
+    "describe_session",
     "map_outcome",
     "stage",
 ]
