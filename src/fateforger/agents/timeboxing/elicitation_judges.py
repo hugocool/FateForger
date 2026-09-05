@@ -166,8 +166,11 @@ class _CoverageJudgement(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     status: CellState
-    #: Kept for the eval report; never rendered.
-    why: str = Field(max_length=200)
+    #: Kept for the eval report; never rendered, so it carries no cap. A wrong
+    #: `status` corrupts the gate and stays strict; a long `why` corrupts
+    #: nothing, and a length bound would fail a whole batch of cells over
+    #: cosmetic text.
+    why: str
 
 
 _COVERAGE_PROMPT = """You audit an elicitation conversation for a personal day
