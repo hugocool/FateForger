@@ -50,6 +50,7 @@ def test_a_candidate_missing_a_required_kind_is_refused_by_name(turn) -> None:
     _captured(turn, [{"op": "add", "h": "DW1", "slug": None}])
     with pytest.raises(PlanningResultRefused) as caught:
         _submit()
+    assert str(caught.value).startswith("[required_block_missing] ")
     assert "planning" in str(caught.value)
     assert "slug" in str(caught.value)
 
@@ -84,3 +85,28 @@ def test_a_skeleton_is_never_checked_for_required_kinds(turn) -> None:
         target_artifact="skeleton", artifact={"markdown": "# Day", "reasoning": "r"},
         assumptions=[], blockers=[],
     )
+
+
+def test_a_capture_that_says_nothing_about_the_candidate_is_not_a_missing_block(turn) -> None:
+    """An empty capture file is a broken capture, not a candidate without the
+    kind, and naming the wrong cause sends the planner to re-patch a plan that
+    already has the block. The unapplied guard owns that failure -- it is
+    satisfied here by the file existing, so nothing refuses and the wrong
+    refusal is the only thing this test can catch."""
+    _require(turn, ["planning"])
+    (turn / "candidate.json").write_text("", encoding="utf-8")
+    _submit()
+
+
+def test_a_capture_with_no_patch_and_no_rows_refuses_nothing(turn) -> None:
+    """Same reason: a capture carrying neither is evidence of nothing, and
+    subtracting an empty set from the requirement would refuse every candidate."""
+    _require(turn, ["planning"])
+    (turn / "candidate.json").write_text('{"version": 1}', encoding="utf-8")
+    _submit()
+
+
+def test_an_unparseable_capture_refuses_nothing(turn) -> None:
+    _require(turn, ["planning"])
+    (turn / "candidate.json").write_text("{not json", encoding="utf-8")
+    _submit()

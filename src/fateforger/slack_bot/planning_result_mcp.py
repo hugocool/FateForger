@@ -314,7 +314,15 @@ def _refuse_missing_required_block(*, target_artifact: str, artifact: Any) -> No
 
     Fails open when the host publishes nothing, like the open-requirements
     guard: the kernel repeats this check when it accepts the draft, so the only
-    loss is the early correction. It never fails open when slugs are published.
+    loss is the early correction.
+
+    It also stays quiet on a capture that says nothing about the candidate --
+    missing, empty, unparseable, or carrying neither a patch nor rows. Absence
+    of evidence is not a missing block, and refusing there would name the wrong
+    cause: it sends the planner to add a block the plan may already have, while
+    the real failure (nothing was applied, or the capture broke) goes unsaid.
+    `CandidateNotApplied` and the unapplied guard above own that failure and
+    name it. Once a real capture is in hand, this never fails open.
     """
     if target_artifact != ArtifactKind.VALIDATED_CANDIDATE.value or artifact is None:
         return
@@ -329,15 +337,22 @@ def _refuse_missing_required_block(*, target_artifact: str, artifact: Any) -> No
     if not required:
         return
     captured = os.environ.get(CANDIDATE_OUTPUT_FILE_ENV, "").strip()
+    if not captured:
+        return
     try:
-        payload = json.loads(Path(captured).read_text(encoding="utf-8")) if captured else {}
+        payload = json.loads(Path(captured).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        payload = {}
+        return
+    if not isinstance(payload, dict):
+        return
+    if payload.get("patch") is None and payload.get("rows") is None:
+        return
     missing = required - slugs_on_candidate(payload)
     if not missing:
         return
     raise PlanningResultRefused(
-        "this candidate has no block of a kind the day requires: "
+        "[required_block_missing] this candidate has no block of a kind the "
+        "day requires: "
         + ", ".join(sorted(missing))
         + ". Add one with `plan_apply` and `slug` set to exactly that word, "
         "then submit again. The requirement is candidate.required_blocks; "
