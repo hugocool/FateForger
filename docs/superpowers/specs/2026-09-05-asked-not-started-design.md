@@ -170,8 +170,17 @@ The empty-text case (`Advance()`) is unchanged.
   *"when is deep work?"*. Facts: *"I sleep 00:30–08:30"*. Revise: *"move the work two hours
   later"*.
 - Break-it check, as the seam eval does: strip the prompt fragment's question paragraph and
-  confirm the question cases fall below threshold. A discriminator that passes without its
-  discriminating sentence is not one.
+  confirm the discrimination collapses. **Measured 2026-09-05 (#319), the case is a question
+  that carries a fact, not a plain interrogative:** stripping the paragraph does not move a
+  pure question at all — *"is it planned?"* and *"what did we settle on for lunch?"* still
+  answer `question` at 7/8 and 8/8 without it, because the `question` label in
+  `allowed_decisions` already carries them, so asserting on those tested the label. The
+  paragraph is load-bearing on the mixed case: *"did you move lunch? I sleep 00:30–08:30"*
+  answers `ProvidePlanningFacts` 8/8 with the paragraph and 1/8 then 2/8 without it on two
+  separate draws of eight (*"is deep work still at 9? also I get up at 07:00"*: 8/8 against
+  0/8). A discriminator that passes without its
+  discriminating sentence is not one — and it has to be aimed at a case that needs
+  discriminating.
 
 Each case is sampled 8 times concurrently and asserted on the count. A prompt fix validated by
 one passing call has not been validated (CLAUDE.md).
