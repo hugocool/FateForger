@@ -46,7 +46,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningResult,
 )
 
-from .planning_result_mcp import OPEN_REQUIREMENTS_FILE_ENV
+from .planning_result_mcp import OPEN_REQUIREMENTS_FILE_ENV, REQUIRED_BLOCKS_FILE_ENV
 from .dsh_progress_hook import COMMIT_FILE_ENV, PROGRESS_FILE_ENV, ProgressEvent
 from .schedule_render import candidate_display_text
 from .mrkdwn import to_mrkdwn
@@ -732,6 +732,15 @@ def ask(
                 json.dumps(_planner_owned_open(planning_brief)), encoding="utf-8"
             )
             child_env[OPEN_REQUIREMENTS_FILE_ENV] = str(open_requirements)
+            # The slugs the day's rules require, so the submit tool can refuse a
+            # candidate that lacks one while the planner can still add it. From
+            # the brief's own facts, so the server and the kernel cannot
+            # disagree about what was required (#214).
+            required_blocks = Path(workspace) / "required-blocks.json"
+            required_blocks.write_text(
+                json.dumps(sorted(required_slugs(planning_brief.facts))), encoding="utf-8"
+            )
+            child_env[REQUIRED_BLOCKS_FILE_ENV] = str(required_blocks)
         stop = threading.Event()
         tail: threading.Thread | None = None
         collected: list[int] = []
