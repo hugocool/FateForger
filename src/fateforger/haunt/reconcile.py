@@ -696,6 +696,7 @@ class PlanningReconciler:
         planning_session_store: PlanningSessionStore | None = None,
         dispatcher: Callable[[PlanningReminder], Awaitable[None]] | None = None,
         rule: PlanningSessionRule | None = None,
+        required_block_rule: Any | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._calendar_client = calendar_client
@@ -704,6 +705,7 @@ class PlanningReconciler:
             calendar_client=calendar_client,
             planning_session_store=planning_session_store,
         )
+        self._required_block_rule = required_block_rule
 
     @property
     def calendar_client(self) -> CalendarClient:
@@ -733,19 +735,31 @@ class PlanningReconciler:
         now: datetime | None = None,
     ) -> list[DesiredJob]:
         now_dt = now or datetime.now(timezone.utc)
-        desired = await self._rule.evaluate(
-            now=now_dt,
-            scope=scope,
-            user_id=user_id,
-            channel_id=channel_id,
-            planning_event_id=planning_event_id,
-            first_nudge_offset=first_nudge_offset,
+        desired = list(
+            await self._rule.evaluate(
+                now=now_dt, scope=scope, user_id=user_id, channel_id=channel_id,
+                planning_event_id=planning_event_id, first_nudge_offset=first_nudge_offset,
+            )
         )
-        prefix = f"rule:{self._rule.rule_id}:{scope}:"
+        prefixes = {f"rule:{self._rule.rule_id}:{scope}:"}
+        if self._required_block_rule is not None:
+            prefixes.add(f"rule:{self._required_block_rule.rule_id}:{scope}:")
+            try:
+                desired.extend(
+                    await self._required_block_rule.evaluate(
+                        now=now_dt, scope=scope, user_id=user_id, channel_id=channel_id,
+                        first_nudge_offset=first_nudge_offset,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - one rule's failure is not the other's
+                logger.exception(
+                    "required_blocks rule failed for %s error_type=%s error=%s",
+                    scope, type(exc).__name__, exc,
+                )
         scheduled = {
             job.id: getattr(getattr(job, "trigger", None), "run_date", None)
             for job in self._scheduler.get_jobs()
-            if job.id.startswith(prefix)
+            if any(job.id.startswith(prefix) for prefix in prefixes)
         }
         current_ids = set(scheduled)
         desired_ids = {job.key.as_id() for job in desired}
