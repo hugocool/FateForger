@@ -1,0 +1,116 @@
+"""The three Stage 1 judges and the orchestrator, with the model stubbed.
+
+Every assertion is on what was sent and what the answer became -- never on
+the model's words. The judges follow `DayFrameJudge`; the stub client is the
+one `tests/unit/test_day_frame_on_record.py` uses.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import date
+from types import SimpleNamespace
+
+import pytest
+
+from fateforger.agents.timeboxing.elicitation import ALL_CELLS, CONCERNS, ROWS, CoverageMatrix
+from fateforger.agents.timeboxing.elicitation_judges import (
+    PLACEMENT_TARGETS,
+    PlacementJudge,
+    anchors_in,
+    unanchored_in,
+)
+from fateforger.agents.timeboxing.session_contracts import (
+    DayType,
+    FactKind,
+    PlanningDay,
+    PlanningFact,
+    PlanningSessionSnapshot,
+)
+
+DAY = date(2026, 9, 8)
+
+
+class _SchemaOutputClient:
+    def __init__(self, *responses: dict[str, object]) -> None:
+        self._responses = list(responses)
+        self.calls: list[tuple[object, object]] = []
+
+    async def create(self, messages, *, json_output):  # noqa: ANN001
+        self.calls.append((messages, json_output))
+        return SimpleNamespace(content=json.dumps(self._responses.pop(0)))
+
+
+GYM = {"uid": "a-gym", "name": "gym"}
+DINNER = {"uid": "a-din", "name": "dinner"}
+ROWS_FIXTURE = [
+    {"uid": "c-oats", "name": "Oats before gym", "description": "Eat oats two hours before the gym.", "necessity": "must", "anchors": [GYM]},
+    {"uid": "c-run", "name": "Run at 18:00", "description": "Run at 18:00 when cooking dinner.", "necessity": "should", "anchors": [GYM, DINNER]},
+    {"uid": "c-exit", "name": "Block exit criteria", "description": "Every block ends with a written exit criterion.", "necessity": "must", "anchors": []},
+]
+
+
+def test_placement_targets_are_the_concerns_plus_unplaced() -> None:
+    assert PLACEMENT_TARGETS == (*(c.key for c in CONCERNS), "unplaced")
+    assert "request" not in PLACEMENT_TARGETS
+
+
+def test_anchors_in_groups_rows_by_anchor_with_two_example_names() -> None:
+    anchors = anchors_in(ROWS_FIXTURE)
+    by_uid = {a["uid"]: a for a in anchors}
+    assert set(by_uid) == {"a-gym", "a-din"}
+    assert by_uid["a-gym"]["name"] == "gym"
+    assert by_uid["a-gym"]["example_rules"] == ["Oats before gym", "Run at 18:00"]
+    assert by_uid["a-din"]["example_rules"] == ["Run at 18:00"]
+
+
+def test_unanchored_in_returns_the_rules_with_no_anchor() -> None:
+    assert [r["uid"] for r in unanchored_in(ROWS_FIXTURE)] == ["c-exit"]
+    assert unanchored_in(ROWS_FIXTURE)[0]["description"].startswith("Every block")
+
+
+@pytest.mark.asyncio
+async def test_placement_maps_every_offered_uid_to_a_row() -> None:
+    client = _SchemaOutputClient(
+        {
+            "anchors": [{"uid": "a-gym", "row": "body"}, {"uid": "a-din", "row": "fixed"}],
+            "rules": [{"uid": "c-exit", "row": "method"}],
+        }
+    )
+    placement = await PlacementJudge(client).place(
+        anchors=anchors_in(ROWS_FIXTURE), unanchored_rules=unanchored_in(ROWS_FIXTURE), session_key="C1:1.0"
+    )
+    assert placement.anchors == {"a-gym": "body", "a-din": "fixed"}
+    assert placement.rules == {"c-exit": "method"}
+    sent = json.loads(client.calls[0][0][1].content)
+    assert [a["uid"] for a in sent["anchors"]] == ["a-gym", "a-din"]
+    assert [r["uid"] for r in sent["rules"]] == ["c-exit"]
+    assert [c["key"] for c in sent["rows"]] == list(PLACEMENT_TARGETS)
+
+
+@pytest.mark.asyncio
+async def test_placement_refuses_a_uid_it_did_not_offer() -> None:
+    client = _SchemaOutputClient(
+        {"anchors": [{"uid": "a-gym", "row": "body"}, {"uid": "a-din", "row": "fixed"}, {"uid": "a-ghost", "row": "body"}], "rules": [{"uid": "c-exit", "row": "method"}]}
+    )
+    with pytest.raises(ValueError, match="a-ghost"):
+        await PlacementJudge(client).place(
+            anchors=anchors_in(ROWS_FIXTURE), unanchored_rules=unanchored_in(ROWS_FIXTURE), session_key="C1:1.0"
+        )
+
+
+@pytest.mark.asyncio
+async def test_placement_refuses_to_leave_an_offered_uid_unplaced() -> None:
+    client = _SchemaOutputClient({"anchors": [{"uid": "a-gym", "row": "body"}], "rules": []})
+    with pytest.raises(ValueError, match="a-din"):
+        await PlacementJudge(client).place(
+            anchors=anchors_in(ROWS_FIXTURE), unanchored_rules=unanchored_in(ROWS_FIXTURE), session_key="C1:1.0"
+        )
+
+
+@pytest.mark.asyncio
+async def test_placement_with_nothing_to_place_makes_no_call() -> None:
+    client = _SchemaOutputClient()
+    placement = await PlacementJudge(client).place(anchors=[], unanchored_rules=[], session_key="C1:1.0")
+    assert placement.anchors == {} and placement.rules == {}
+    assert client.calls == []
