@@ -255,3 +255,25 @@ def test_stage1_gate_raises_for_snapshot_with_no_planning_day() -> None:
     )
     with pytest.raises(ValueError, match="locked planning day"):
         stage1_gate(snapshot)
+
+
+def test_the_matrix_carries_rule_placement_and_what_it_was_placed_against() -> None:
+    matrix = _matrix()
+    matrix = matrix.model_copy(
+        update={
+            "placement": {"a-gym": "body"},
+            "rule_placement": {"c-exit": "method"},
+            "placed_against": ["a-gym", "c-exit"],
+        }
+    )
+    again = CoverageMatrix.model_validate(matrix.model_dump(mode="json"))
+    assert again.rule_placement == {"c-exit": "method"}
+    assert again.placed_against == ["a-gym", "c-exit"]
+
+
+def test_a_matrix_without_the_new_fields_still_validates() -> None:
+    """A matrix written before this build has neither field; it must still parse."""
+    value = _matrix().model_dump(mode="json")
+    value.pop("rule_placement")
+    value.pop("placed_against")
+    assert CoverageMatrix.model_validate(value).placed_against == []

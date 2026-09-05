@@ -116,6 +116,12 @@ class CoverageMatrix(BaseModel):
     cells: dict[str, CellState]
     #: anchor uid -> row key, the placement these cells were classified against
     placement: dict[str, str] = Field(default_factory=dict)
+    #: unanchored rule uid -> row key; the rules placement put under a concern
+    #: by name because no anchor could carry them there
+    rule_placement: dict[str, str] = Field(default_factory=dict)
+    #: the sorted anchor and rule uids the placement was made against; the
+    #: orchestrator reuses the placement iff the day's set is the same
+    placed_against: list[str] = Field(default_factory=list)
     rows: dict[str, RowStats] = Field(default_factory=dict)
     #: still open, ranked after every askable cell, so the gate line shows it and
     #: the kernel asks it only when nothing askable remains
