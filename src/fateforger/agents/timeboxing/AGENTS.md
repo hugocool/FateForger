@@ -68,7 +68,7 @@ For file index, architecture, and status, see `README.md` in this folder.
 - Uses AutoGen `AssistantAgent` with **schema-in-system-prompt** pattern.
 - `TBPatch.model_json_schema()` is injected into the system prompt; the LLM returns raw JSON text.
 - `_extract_patch()` strips markdown fences and parses the JSON.
-- `output_content_type=TBPatch` is intentionally **NOT** used because `oneOf` from Pydantic discriminated unions breaks both OpenAI `response_format` and OpenRouter/Gemini structured output.
+- `output_content_type=TBPatch` is intentionally **NOT** used because `oneOf` from Pydantic discriminated unions breaks both OpenAI `response_format` and OpenRouter structured output on the hosts this was measured on.
 - **No trustcall** in the patching path.
 - Patcher takes current `TBPlan` + user message + constraints -> returns `TBPatch`.
 - `apply_tb_ops()` applies the patch deterministically.

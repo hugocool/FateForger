@@ -57,7 +57,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 
 | File | Responsibility |
 |------|---------------|
-| `patching.py` | `TimeboxPatcher`: sends `TBPlan` + user feedback to Gemini via `AssistantAgent`. Injects `TBPatch` JSON schema into system prompt (not `output_content_type`, which breaks on `oneOf`). `_extract_patch()` strips markdown fences. |
+| `patching.py` | `TimeboxPatcher`: sends `TBPlan` + user feedback to the pinned pro model (`OPENROUTER_DEFAULT_MODEL_PRO`, DeepSeek V4 Pro `:nitro`) via `AssistantAgent`. Injects `TBPatch` JSON schema into system prompt (not `output_content_type`, which breaks on `oneOf`). `_extract_patch()` strips markdown fences. |
 
 ### Prompt Engineering
 
@@ -160,7 +160,7 @@ Conversion:      timebox_to_tb_plan() / tb_plan_to_timebox()
 
 ### Patching (Schema-in-Prompt)
 
-`output_content_type=TBPatch` is intentionally NOT used because OpenAI `response_format` rejects `oneOf` from Pydantic discriminated unions and OpenRouter/Gemini hangs with structured output on complex schemas. Instead: inject `TBPatch.model_json_schema()` into the system prompt and parse the raw JSON text response.
+`output_content_type=TBPatch` is intentionally NOT used because OpenAI `response_format` rejects `oneOf` from Pydantic discriminated unions and OpenRouter structured output hung on complex schemas on the hosts this was measured on. Instead: inject `TBPatch.model_json_schema()` into the system prompt and parse the raw JSON text response.
 
 Runtime guard: `TimeboxPatcher.apply_patch(...)` is Refine-only (`stage='Refine'`) and rejects any non-Refine invocation.
 
