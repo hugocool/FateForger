@@ -61,7 +61,8 @@ must converge to the same typed input contract and the same execution path.
   memory of who last answered — never outranks that ownership. A new surface registers its
   root in the resolver chain (`handlers.route_slack_event`, the ordered resolvers before
   agent selection) or its threads will be routed by focus. What ships today is the
-  planning-card case (#310, #320): a `timeboxing_agent` that arrived by focus is demoted to
+  planning-card case (#310, #320): a `timeboxing_agent` that no explicit per-thread binding
+  chose — whether it arrived by focus or as the channel default — is demoted to
   `receptionist_agent`; an explicit per-thread binding (`/ff-focus`) still wins. The general
   form — focus never applies inside any bot-posted thread — waits on #302 re-keying DM
   session threads, where it cannot yet be verified.
