@@ -162,4 +162,68 @@ class PlacementJudge:
         return Placement(anchors=placed_anchors, rules=placed_rules)
 
 
-__all__ = ["PLACEMENT_TARGETS", "Placement", "PlacementJudge", "anchors_in", "unanchored_in"]
+class _CoverageJudgement(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    status: CellState
+    #: Kept for the eval report; never rendered.
+    why: str = Field(max_length=200)
+
+
+_COVERAGE_PROMPT = """You audit an elicitation conversation for a personal day
+planner, before the day is planned. Decide, for ONE criterion about ONE row of
+concern, whether the conversation so far settles it. Base the decision only on
+the rules on record for this row and on what the user said this session; do
+not invent concerns never raised.
+
+status "covered": settled for this day. status "uncovered": a good coach would
+ask about this before planning. status "not_applicable": there is nothing in
+this row to have this criterion about. For the "alternatives" criterion,
+answer "uncovered" only where a rule in this row is at risk given what the
+user said today; a contingency nobody needs is not a gap. Give "why" in at
+most fifteen words. Return only the requested schema.
+"""
+
+
+class CoverageJudge:
+    def __init__(self, model_client: ChatCompletionClient) -> None:
+        self.model_client = model_client
+
+    async def classify(
+        self,
+        *,
+        cell: CellRef,
+        rules: list[dict[str, Any]],
+        stated: list[str],
+        request: str | None,
+        session_key: str,
+    ) -> tuple[CellState, str]:
+        row: Concern = ROWS[cell.row]
+        criterion = CRITERION_BY_KEY[cell.criterion]
+        prompt = json.dumps(
+            {
+                "row": {"key": row.key, "label": row.label, "description": row.description},
+                "criterion": {"key": criterion.key, "question": criterion.question},
+                # Names and necessity only: full descriptions go to the one
+                # generate call, which halves the tokens of the batch.
+                "rules": [{"name": str(r["name"]), "necessity": str(r["necessity"])} for r in rules],
+                "stated": stated,
+                "request": request,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=False,
+        )
+        with llm_attribution(agent="timeboxing_agent", call_label=f"stage1_classify:{cell.id}", key=session_key):
+            result = await self.model_client.create(
+                [SystemMessage(content=_COVERAGE_PROMPT), UserMessage(content=prompt, source="user")],
+                json_output=_CoverageJudgement,
+            )
+        content = getattr(result, "content", None)
+        if not isinstance(content, str):
+            raise ValueError(f"coverage judgement for {cell.id} returned no schema-bound JSON content")
+        judgement = _CoverageJudgement.model_validate_json(content)
+        return judgement.status, judgement.why
+
+
+__all__ = ["PLACEMENT_TARGETS", "CoverageJudge", "Placement", "PlacementJudge", "anchors_in", "unanchored_in"]

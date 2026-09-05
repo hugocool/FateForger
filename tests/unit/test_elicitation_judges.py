@@ -16,11 +16,13 @@ import pytest
 from fateforger.agents.timeboxing.elicitation import ALL_CELLS, CONCERNS, ROWS, CoverageMatrix
 from fateforger.agents.timeboxing.elicitation_judges import (
     PLACEMENT_TARGETS,
+    CoverageJudge,
     PlacementJudge,
     anchors_in,
     unanchored_in,
 )
 from fateforger.agents.timeboxing.session_contracts import (
+    CellRef,
     DayType,
     FactKind,
     PlanningDay,
@@ -114,3 +116,33 @@ async def test_placement_with_nothing_to_place_makes_no_call() -> None:
     placement = await PlacementJudge(client).place(anchors=[], unanchored_rules=[], session_key="C1:1.0")
     assert placement.anchors == {} and placement.rules == {}
     assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_classify_sends_the_row_the_criterion_and_names_only() -> None:
+    client = _SchemaOutputClient({"status": "uncovered", "why": "no duration"})
+    cell = CellRef(row="body", criterion="tacit_knowledge")
+    state, why = await CoverageJudge(client).classify(
+        cell=cell,
+        rules=[{"name": "Oats before gym", "necessity": "must", "description": "SHOULD NOT BE SENT"}],
+        stated=["gym at 18:00"],
+        request="deep work in the morning, gym at 18:00",
+        session_key="C1:1.0",
+    )
+    assert state == "uncovered"
+    assert why == "no duration"
+    sent = json.loads(client.calls[0][0][1].content)
+    assert sent["row"]["key"] == "body"
+    assert sent["criterion"]["key"] == "tacit_knowledge"
+    assert sent["rules"] == [{"name": "Oats before gym", "necessity": "must"}]
+    assert sent["stated"] == ["gym at 18:00"]
+    assert sent["request"] == "deep work in the morning, gym at 18:00"
+
+
+@pytest.mark.asyncio
+async def test_classify_refuses_a_status_outside_the_schema() -> None:
+    client = _SchemaOutputClient({"status": "maybe", "why": ""})
+    with pytest.raises(ValueError):
+        await CoverageJudge(client).classify(
+            cell=CellRef(row="body", criterion="unclear"), rules=[], stated=[], request=None, session_key="C1:1.0"
+        )
