@@ -1,0 +1,197 @@
+"""The watcher (spec §4): present in bounds → nothing; gone or out of bounds →
+the nudge ladder; unreadable → no verdict. Presence is equality over the slug
+tmbx wrote, never a title."""
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+
+import pytest
+
+from fateforger.haunt.reconcile import PlanningRuleConfig
+from fateforger.haunt.required_block_rule import (
+    REASON_MISSING,
+    REASON_MOVED_OUT,
+    REQUIRED_BLOCK_KIND,
+    RequiredBlockConfig,
+    RequiredBlockRule,
+    slug_of,
+    within_bounds,
+)
+
+AMS = "Europe/Amsterdam"
+DAY = date(2026, 9, 7)  # a Monday: working day by arithmetic
+NOW = datetime(2026, 9, 7, 9, 0, tzinfo=timezone.utc)
+
+
+def _event(eid: str, start: str, end: str, *, slug: str | None = None, day: date = DAY) -> dict:
+    ev = {
+        "id": eid, "summary": "whatever the user typed",
+        "start": {"dateTime": f"{day.isoformat()}T{start}:00+02:00", "timeZone": AMS},
+        "end": {"dateTime": f"{day.isoformat()}T{end}:00+02:00", "timeZone": AMS},
+    }
+    if slug is not None:
+        ev["extendedProperties"] = {"private": {"tmbx.slug": slug, "tmbx.uid": "u1"}}
+    return ev
+
+
+class _Calendar:
+    def __init__(self, *, day_events=None, by_id=None, fail_list=False, fail_get=False):
+        self.day_events = list(day_events or [])
+        self.by_id = dict(by_id or {})
+        self.fail_list, self.fail_get = fail_list, fail_get
+        self.list_calls, self.get_calls = 0, 0
+
+    async def list_day(self, *, calendar_id, day, tz):
+        self.list_calls += 1
+        return None if self.fail_list else list(self.day_events)
+
+    async def get_event(self, *, calendar_id, event_id):
+        self.get_calls += 1
+        if self.fail_get:
+            raise RuntimeError("calendar unreachable")
+        return self.by_id.get(event_id)
+
+    async def list_events(self, **_):  # protocol completeness; unused here
+        return list(self.day_events)
+
+
+class _Store:
+    def __init__(self, slugs: list[str]):
+        self._slugs, self.filters = slugs, []
+
+    async def query_constraints(self, *, filters, limit):
+        self.filters.append(filters)
+        return [{"uid": f"c-{s}", "name": f"rule {s}", "requires_block": s} for s in self._slugs]
+
+
+class _Ledger:
+    def __init__(self, sleep: str | None = "23:00"):
+        self._sleep = sleep
+
+    async def day_frame_for(self, *, owner_user_id, planning_date):
+        return None if self._sleep is None else {"wake": "07:00", "sleep": self._sleep}
+
+
+def _rule(calendar, store, ledger=None) -> RequiredBlockRule:
+    return RequiredBlockRule(
+        calendar_client=calendar, constraint_store=store, ledger=ledger or _Ledger(),
+        config=RequiredBlockConfig(calendar_id="primary", tz=AMS, ladder=PlanningRuleConfig()),
+    )
+
+
+async def _jobs(rule):
+    return await rule.evaluate(now=NOW, scope="U1", user_id="U1", channel_id="D1")
+
+
+def test_slug_of_reads_the_minted_property_and_nothing_else():
+    assert slug_of(_event("e", "10:00", "10:30", slug="planning")) == "planning"
+    assert slug_of({"id": "e", "summary": "planning session"}) is None
+    assert slug_of({"extendedProperties": {"private": {"tmbx.slug": ""}}}) is None
+
+
+def test_within_bounds_is_the_day_and_the_sleep_boundary():
+    assert within_bounds(_event("e", "17:00", "17:20", slug="planning"), day=DAY, tz=AMS, sleep="23:00")
+    assert not within_bounds(_event("e", "22:50", "23:10", slug="planning"), day=DAY, tz=AMS, sleep="23:00")
+    assert not within_bounds(_event("e", "17:00", "17:20", slug="planning", day=date(2026, 9, 8)), day=DAY, tz=AMS, sleep="23:00")
+    # a sleep time after midnight lands on the next day
+    assert within_bounds(_event("e", "23:30", "23:50", slug="planning"), day=DAY, tz=AMS, sleep="00:30")
+    # no frame: end of day
+    assert within_bounds(_event("e", "23:30", "23:50", slug="planning"), day=DAY, tz=AMS, sleep=None)
+
+
+@pytest.mark.asyncio
+async def test_a_present_block_schedules_nothing_and_is_cached():
+    cal = _Calendar(day_events=[_event("e1", "17:00", "17:20", slug="planning")])
+    rule = _rule(cal, _Store(["planning"]))
+    assert await _jobs(rule) == []
+    assert rule.cached(user_id="U1", day=DAY, slug="planning") == "e1"
+    assert cal.list_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_the_cache_is_the_fast_path_and_a_hit_never_lists():
+    ev = _event("e1", "17:00", "17:20", slug="planning")
+    cal = _Calendar(day_events=[ev], by_id={"e1": ev})
+    rule = _rule(cal, _Store(["planning"]))
+    rule.remember(user_id="U1", day=DAY, slug="planning", event_id="e1")
+    assert await _jobs(rule) == []
+    assert (cal.get_calls, cal.list_calls) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_missing_block_starts_the_ladder_naming_the_kind():
+    cal = _Calendar(day_events=[_event("x", "10:00", "11:00")])  # a block with no slug
+    rule = _rule(cal, _Store(["planning"]))
+    jobs = await _jobs(rule)
+    assert len(jobs) == PlanningRuleConfig().nudge_max_attempts
+    first = jobs[0]
+    assert first.key.as_id() == f"rule:required_blocks:U1:{DAY.isoformat()}:planning:nudge1"
+    assert first.run_at == NOW + timedelta(minutes=10)
+    assert first.payload.kind == REQUIRED_BLOCK_KIND
+    assert (first.payload.slug, first.payload.reason) == ("planning", REASON_MISSING)
+    assert first.payload.user_id == "U1" and first.payload.channel_id == "D1"
+
+
+@pytest.mark.asyncio
+async def test_a_block_moved_past_the_sleep_boundary_haunts_as_moved_out():
+    cal = _Calendar(day_events=[_event("e1", "23:10", "23:30", slug="planning")])
+    rule = _rule(cal, _Store(["planning"]), _Ledger(sleep="23:00"))
+    jobs = await _jobs(rule)
+    assert jobs and jobs[0].payload.reason == REASON_MOVED_OUT
+
+
+@pytest.mark.asyncio
+async def test_a_stale_cache_entry_is_rederived_from_the_mark():
+    """The registered id is gone (deleted and re-created by hand or by a rebuilt
+    patch); the day still carries a block with the slug: re-register, no haunt."""
+    ev = _event("e2", "17:00", "17:20", slug="planning")
+    cal = _Calendar(day_events=[ev], by_id={"e2": ev})
+    rule = _rule(cal, _Store(["planning"]))
+    rule.remember(user_id="U1", day=DAY, slug="planning", event_id="e1-gone")
+    assert await _jobs(rule) == []
+    assert rule.cached(user_id="U1", day=DAY, slug="planning") == "e2"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_listing_gives_no_verdict_and_keeps_the_cache():
+    cal = _Calendar(fail_list=True)
+    rule = _rule(cal, _Store(["planning"]))
+    rule.remember(user_id="U1", day=DAY, slug="planning", event_id="e1")
+    assert await _jobs(rule) == []
+    assert rule.cached(user_id="U1", day=DAY, slug="planning") == "e1"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_fetch_of_the_registered_id_gives_no_verdict():
+    cal = _Calendar(fail_get=True)
+    rule = _rule(cal, _Store(["planning"]))
+    rule.remember(user_id="U1", day=DAY, slug="planning", event_id="e1")
+    assert await _jobs(rule) == []
+    assert cal.list_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_the_planning_kind_also_accepts_the_events_own_planning_mark():
+    """A session the nudge itself booked carries an `ffplanning…` id and no slug."""
+    ev = {"id": "ffplanningU1", "summary": "x",
+          "start": {"dateTime": f"{DAY.isoformat()}T17:00:00+02:00", "timeZone": AMS},
+          "end": {"dateTime": f"{DAY.isoformat()}T17:20:00+02:00", "timeZone": AMS}}
+    rule = _rule(_Calendar(day_events=[ev]), _Store(["planning"]))
+    assert await _jobs(rule) == []
+
+
+@pytest.mark.asyncio
+async def test_no_required_kind_means_nothing_to_watch():
+    cal = _Calendar()
+    rule = _rule(cal, _Store([]))
+    assert await _jobs(rule) == []
+    assert cal.list_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_the_store_is_asked_for_the_local_day_and_its_arithmetic_day_type():
+    store = _Store(["planning"])
+    await _jobs(_rule(_Calendar(day_events=[_event("e1", "17:00", "17:20", slug="planning")]), store))
+    assert store.filters[0]["planned_day"] == DAY.isoformat()
+    assert store.filters[0]["day_type"] == "working"
+    assert store.filters[0]["require_active"] is True
