@@ -374,7 +374,7 @@ def test_file_assumption_against_a_stage_two_requirement_lets_the_planner_run() 
 
 def test_a_day_frame_assumption_does_not_skip_the_hard_activity_blocker() -> None:
     """`stage_of` alone reads `skeleton.day_frame` as "stage 1" too (the
-    five-rung card grouping); membership in the forty cell ids is what tells
+    five-rung card grouping); membership in the cell ids is what tells
     them apart. Get that wrong and this assumption skips straight past a
     still-missing hard blocker to a Stage 1 verdict it has no business
     making."""

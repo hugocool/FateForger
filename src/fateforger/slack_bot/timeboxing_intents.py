@@ -295,7 +295,7 @@ def _open_question(snapshot: PlanningSessionSnapshot) -> dict[str, str] | None:
     }
 
 
-#: The forty Stage 1 cell requirement ids, the only blockers `assume` can
+#: The forty-five Stage 1 cell requirement ids, the only blockers `assume` can
 #: answer. Built once at import from the catalog the cells are generated from.
 _CELL_IDS: frozenset[str] = frozenset(cell.id for cell in ALL_CELLS)
 
@@ -360,7 +360,7 @@ def _display_context(
         # else, so offering it against a hard user-owned blocker such as
         # `skeleton.requested_activity` would file an assumption, leave the
         # blocker standing and ask the same question again forever (#251).
-        # Membership over the forty ids this system minted.
+        # Membership over the forty-five ids this system minted.
         assume = (
             ("assume",)
             if snapshot.pending_blocker is not None

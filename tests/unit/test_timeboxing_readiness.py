@@ -327,11 +327,11 @@ def test_every_requirement_carries_a_stage_and_the_ladder_is_monotone() -> None:
     assert reqs.stage_of("commit.approved_candidate") == 5
 
 
-def test_forty_cells_are_soft_user_owned_stage_one_requirements() -> None:
+def test_forty_five_cells_are_soft_user_owned_stage_one_requirements() -> None:
     reqs = TimeboxRequirements()
     report = reqs.evaluate(ArtifactKind.SKELETON, _locked_snapshot())
     cells = [gap for gap in report.gaps if gap.requirement.cell is not None]
-    assert len(cells) == 40
+    assert len(cells) == 45
     assert all(gap.owner is RequirementOwner.USER and not gap.hard for gap in cells)
     assert all(reqs.stage_of(gap.requirement_id) == 1 for gap in cells)
     assert report.first_hard_user_blocker() is not None  # still day_frame / activity
@@ -363,7 +363,7 @@ def test_an_unknown_requirement_has_no_stage() -> None:
 
 
 def test_the_matrix_is_parsed_once_per_evaluation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Forty cell requirements must not each re-parse and revalidate the matrix."""
+    """Forty-five cell requirements must not each re-parse and revalidate the matrix."""
     import fateforger.agents.timeboxing.elicitation as elicitation_module
 
     matrix = CoverageMatrix(cells={c.id: "not_applicable" for c in ALL_CELLS})

@@ -53,7 +53,7 @@ class ArtifactRequirement:
     stage: int
     #: Present only for a Stage 1 coverage cell. Satisfaction of a cell is read
     #: from the matrix fact, not from the presence of a statement: one answer
-    #: does not satisfy forty questions.
+    #: does not satisfy forty-five questions.
     cell: CellRef | None = None
 
 
@@ -277,7 +277,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
 
 
 def _cell_requirements() -> tuple[ArtifactRequirement, ...]:
-    """Forty requirements from two fixed lists. Soft, so none is a hard
+    """Forty-five requirements from two fixed lists. Soft, so none is a hard
     blocker; the elicitor picks which to ask, so catalog order means nothing."""
     from .elicitation import ALL_CELLS, CRITERION_BY_KEY, ROWS
 
@@ -341,9 +341,9 @@ class TimeboxRequirements:
     def _coverage_matrix(snapshot: PlanningSessionSnapshot) -> CoverageMatrix | None:
         """Parse the day's coverage matrix once per ``evaluate`` call.
 
-        Forty cell requirements would otherwise each re-run
+        Forty-five cell requirements would otherwise each re-run
         ``coverage_matrix``, which linear-scans the facts and, on a hit,
-        revalidates all forty keys and rebuilds the unaskable set -- forty
+        revalidates all forty-five keys and rebuilds the unaskable set -- forty-five
         times the work for one answer. A malformed fact still raises here,
         loudly, once.
         """

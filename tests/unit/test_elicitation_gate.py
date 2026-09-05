@@ -11,6 +11,7 @@ from datetime import date
 
 from fateforger.agents.timeboxing.elicitation import (
     ALL_CELLS,
+    CONCERNS,
     CRITERIA,
     ROWS,
     CoverageMatrix,
@@ -61,11 +62,13 @@ def _matrix(**states: str) -> CoverageMatrix:
     return CoverageMatrix(cells=cells)
 
 
-def test_the_floor_has_eight_rows_and_forty_cells() -> None:
-    assert len(ROWS) == 8
+def test_the_floor_has_nine_rows_and_forty_five_cells() -> None:
+    assert len(ROWS) == 9
     assert len(CRITERIA) == 5
-    assert len(ALL_CELLS) == 40
+    assert len(ALL_CELLS) == 45
     assert "unplaced" in ROWS and "request" in ROWS
+    assert ROWS["method"].label == "how the day gets planned"
+    assert [c.key for c in CONCERNS][-1] == "method"
 
 
 def test_no_matrix_means_nothing_is_open() -> None:

@@ -494,7 +494,7 @@ async def test_an_offered_option_can_be_answered_in_words() -> None:
     )
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
-        # No assume: `skeleton.day_shape` is not one of the forty cells, and a
+        # No assume: `skeleton.day_shape` is not one of the forty-five cells, and a
         # `PlannerAssumption` cannot satisfy it.
         '"allowed_decisions":["provide_facts","choose_option","back","cancel"]'
     ) in prompt
@@ -1157,7 +1157,7 @@ def test_assume_is_not_offered_against_a_blocker_it_could_never_satisfy() -> Non
 
     Offered against a hard user-owned requirement it would file the assumption,
     leave the blocker standing, and the kernel would ask the same question on
-    the next turn -- forever (#251). The set is the forty minted cell ids.
+    the next turn -- forever (#251). The set is the forty-five minted cell ids.
     """
 
     pending = PendingBlocker(

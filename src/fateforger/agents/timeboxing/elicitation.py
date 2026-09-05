@@ -1,7 +1,7 @@
 """The spec Stage 1 reasons against, and the arithmetic gate over it.
 
 Two layers meet here. The concern-floor below is the only authored list in the
-Stage 1 design: six concerns at the level of what a day has to have settled,
+Stage 1 design: seven concerns at the level of what a day has to have settled,
 plus two rows that are not concerns but places a gap can live. Anchors, the
 second layer, are minted by the memory server from the user's own words and
 never appear here; a judge places them under rows and records the placement in
@@ -47,8 +47,10 @@ class Criterion:
     question: str
 
 
-#: Layer 1. Hugo corrects this before any spike runs (#283); the six
-#: planning-meta rules that fit no concern are the known open input.
+#: Layer 1. Six concerns drafted from the anchor clusters, and a seventh Hugo
+#: added on 2026-09-05: the rules about the planning itself (block exit
+#: criteria, scheduling gates, duration caps) fit no concern about a thing in
+#: the day and carry no anchor, so placement routes them here by rule name.
 CONCERNS: tuple[Concern, ...] = (
     Concern("bounded", "how the day is bounded", "when it starts and ends, what frames it"),
     Concern("fixed", "what is fixed", "events, appointments, arrivals that do not move"),
@@ -56,6 +58,7 @@ CONCERNS: tuple[Concern, ...] = (
     Concern("body", "body", "food, sleep, energy, exercise; the physical constraints on attention"),
     Concern("fragile", "fragile intentions", "the things that only happen if protected"),
     Concern("not_today", "what today is not", "rules that usually hold and do not today"),
+    Concern("method", "how the day gets planned", "rules about the planning itself: gates, caps, orderings; not about a thing in the day"),
 )
 
 #: Not concerns: places a gap can live that no concern covers. `unplaced` holds
@@ -120,7 +123,7 @@ class CoverageMatrix(BaseModel):
 
     @model_validator(mode="after")
     def validate_cells_are_complete(self) -> CoverageMatrix:
-        """Ensure cells dict contains exactly the forty ALL_CELLS, no more, no fewer."""
+        """Ensure cells dict contains exactly every ALL_CELLS id, no more, no fewer."""
         expected = {cell.id for cell in ALL_CELLS}
         actual = set(self.cells.keys())
         if actual != expected:
