@@ -5,17 +5,36 @@ Unit tests stub the model and prove the plumbing; this proves the prompt.
 Every case resamples -- one draw tests the model's luck -- and the rate is the
 assertion. No temperature pin.
 
-The break-it check strips `QUESTION_PARAGRAPH` and expects the discrimination
-to collapse. It is aimed at a question that *carries a fact*, not at a plain
-interrogative, because measurement said so: with the paragraph gone, "is it
-planned?" and "what did we settle on for lunch?" still answer `question` at
-7/8 and 8/8 -- the label in `allowed_decisions` carries those on its own, so
-asserting on them tested the label. "did you move lunch? I sleep 00:30-08:30"
-answers with the fact 8/8 with the paragraph and 1/8 without. That is the
-clause doing the work, so that is what the check strips.
+Run it with `-s`; that is what makes the per-case counts visible:
 
-A draw that raises reached no decision and is retried once; the retry count is
-reported, never asserted (#325).
+    set -a; source .env; set +a
+    PYTHONPATH=src ../../.venv/bin/python -m pytest \
+        tests/integration/test_eval_timebox_question.py -m slow -q -s \
+        -p no:cacheprovider
+
+Two break-it families strip `QUESTION_PARAGRAPH`, because the paragraph does
+two separable jobs and a plain interrogative exercises neither. With the
+paragraph gone, "is it planned?" and "what did we settle on for lunch?" still
+answer `question` at 7/8 and 8/8 -- `question` is already in
+`allowed_decisions` and `GENERIC_PREAMBLE` says to choose from that list, so
+asserting on those measured the label. What does move, measured 2026-09-05:
+
+* on a fresh session, "what's on my calendar tomorrow?" answers `start` at
+  6/8, 6/8 and 7/8 across three stripped runs, against `question` 8/8 with
+  the paragraph and `start` never once -- asked becomes started, which is the
+  regression this branch is named for;
+* on a committed session, "did you move lunch? I sleep 00:30-08:30" answers
+  with the fact 8/8 with the paragraph and 1/8 without -- the clause about a
+  reply that asks *and* supplies one.
+
+Both assert the *flip* -- the wrong decision outnumbering the right one --
+and not the absence of the right one. An absence-based bar is cleared by two
+lost calls, which is how the first version of this check "passed" while the
+paragraph was doing nothing at all.
+
+A draw whose exception carries a transport cause reached no decision and is
+retried once; the retry count is reported, never asserted (#325). A draw that
+reached a *wrong* decision is never retried -- see `_is_transport`.
 """
 
 from __future__ import annotations
@@ -90,17 +109,50 @@ def _committed():
     )
 
 
+def _is_transport(exc: BaseException) -> bool:
+    """Whether a raise means "the endpoint gave us nothing", not "wrong answer".
+
+    Exactly one raise site on the interpreter's path wraps a cause --
+    `surface_intents.py`'s ``except Exception as exc: raise SurfaceIntentError(
+    ...) from exc``, which is the transport and JSON-parse layer. Every other
+    raise is a judgement the model actually made and lost, and none of them
+    sets ``__cause__``:
+
+    * `SurfaceIntentError` for a decision outside `allowed_decisions`
+      (`surface_intents.py:205`), raised after the call returned;
+    * `ValidationError` for output that does not fit the narrowed schema
+      (`surface_intents.py:193`), re-raised as itself;
+    * `SurfaceIntentError` for a response carrying no string content
+      (`surface_intents.py:191`);
+    * the binder's own `ValueError`s -- `provide_facts` with no facts,
+      `revise` with no instruction, a `steer_not_today` naming a row that is
+      not on the card (`timeboxing_intents.py:559,602,606,615`).
+
+    Retrying any of those would be the eval re-rolling until the run agreed
+    with it. The first is the exact degenerate answer a stripped paragraph is
+    *supposed* to produce, so swallowing it would hide the break-it result
+    this file exists to measure.
+    """
+
+    from fateforger.slack_bot.surface_intents import SurfaceIntentError
+
+    return isinstance(exc, SurfaceIntentError) and exc.__cause__ is not None
+
+
 async def _intents(text: str, snapshot) -> tuple[list, int]:
     """`SAMPLES` concurrent draws, and how many of them had to be retried.
 
-    A draw that raises is a draw that reached *no* decision, never a draw that
-    reached the wrong one: the interpreter returns a typed intent for every
-    reading the model produces, and only raises when the endpoint gave it
-    nothing to read. Folding that into the rate reads a broken call as a
-    misjudged one -- which is exactly how this eval's first run made a working
-    paragraph look like a prompt bug. So each draw is retried once, and the
-    retry count travels back with the results to be reported. It is not
-    asserted on: the endpoint's error rate is #325's problem, not this eval's.
+    A draw lost to the transport reached *no* decision, and folding that into
+    the rate reads a broken call as a misjudged one -- which is exactly how
+    this eval's first run made a working paragraph look like a prompt bug. So
+    a draw that failed in transport is redrawn once, and the retry count
+    travels back with the results to be reported. It is not asserted on: the
+    endpoint's error rate is #325's problem, not this eval's.
+
+    A draw that reached a wrong decision is *not* redrawn. `_is_transport`
+    draws that line, and it is drawn narrowly on purpose: a blind
+    ``except Exception`` here would retry a disallowed decision, which is the
+    one outcome the break-it families are trying to observe.
     """
 
     from fateforger.llm.factory import build_autogen_chat_client
@@ -119,7 +171,11 @@ async def _intents(text: str, snapshot) -> tuple[list, int]:
         nonlocal retries
         try:
             return await interpreter.interpret(text, snapshot)
-        except Exception:  # noqa: BLE001 -- any exception is "no decision"
+        except Exception as exc:
+            if not _is_transport(exc):
+                # A decision was reached and it was the wrong one. That is the
+                # measurement, not an error to paper over.
+                raise
             retries += 1
             # Exactly once. A second failure is the run's answer, and it
             # reaches `_count` as the miss it is rather than being retried
@@ -168,12 +224,34 @@ def _count(results: list, kind: type, case: str = "", retries: int = 0) -> int:
     return count
 
 
-# "did you put the gym in?", not the paragraph's own "did you add the gym?":
-# a case whose exact words are in the prompt measures recall of the prompt.
-QUESTIONS_FRESH = ["Is it planned?", "did you put the gym in?", "what's on my calendar tomorrow?", "is there a planning session today?"]
-STARTS = ["plan tomorrow", "let's timebox saturday", "start", "ok let's go"]
+# Not one of these texts appears inside `QUESTION_PARAGRAPH`. A case whose
+# exact words are quoted in the prompt measures recall of the prompt rather
+# than the judgement the prompt is meant to produce, so every text the
+# paragraph quotes -- "is it planned?", "did you add the gym?", "what did we
+# settle on for lunch?", "when is deep work?", "plan tomorrow", "start", "ok
+# let's go" -- is reworded here to the same intent in different words.
+
+#: Named once because the fresh-session break-it family strips the paragraph
+#: from this exact text, and the two halves have to be provably the same one.
+CALENDAR_QUESTION = "what's on my calendar tomorrow?"
+
+QUESTIONS_FRESH = [
+    "has it been scheduled?",
+    "did you put the gym in?",
+    CALENDAR_QUESTION,
+    "is there a planning session today?",
+]
+STARTS = [
+    "plan my day tomorrow",
+    "let's timebox saturday",
+    "kick it off",
+    "right, let's begin",
+]
 CANCELS = ["cancel this", "never mind, not today"]
-QUESTIONS_COMMITTED = ["what did we settle on for lunch?", "when is deep work?"]
+QUESTIONS_COMMITTED = [
+    "what did we decide about lunch?",
+    "when's the deep-work block?",
+]
 # A reply that asks *and* supplies a fact is the fact -- the clause the plain
 # interrogatives never exercise, and the one the paragraph actually carries.
 # These two are the positive half of the break-it check below; the same texts
@@ -184,6 +262,9 @@ MIXED_COMMITTED = [
 ]
 FACTS_COMMITTED = ["I sleep 00:30–08:30", *MIXED_COMMITTED]
 REVISIONS_COMMITTED = ["move the work two hours later"]
+#: The fresh-session half of the break-it check. One text, and it is the same
+#: object `QUESTIONS_FRESH` asserts the positive on.
+BREAK_IT_FRESH = [CALENDAR_QUESTION]
 
 
 @pytest.mark.parametrize("text", QUESTIONS_FRESH)
@@ -234,6 +315,43 @@ async def test_a_revision_after_commit_is_still_a_revision(text):
     assert _count(results, ReviseArtifact, text, retries) >= THRESHOLD, _report(results, retries)
 
 
+@pytest.mark.parametrize("text", BREAK_IT_FRESH)
+async def test_break_it_without_the_question_paragraph_a_question_starts_a_session(
+    text, monkeypatch
+):
+    """Strip the paragraph and a question about the day *starts* the day.
+
+    This is the regression the branch is named for, reproduced on demand.
+    "what's on my calendar tomorrow?" names a day, and with nothing in the
+    prompt to say that asking about a day is not asking for one, the model
+    reads it as `start`: 6/8, 6/8 and 7/8 to `StartSession` across three
+    stripped runs on 2026-09-05, against `AskQuestion` 8/8 with the paragraph
+    and `StartSession` not once in any unstripped run. In production that is a
+    planning session opened by somebody who only wanted to know what was on.
+
+    Asserted as a flip rather than a bar. `StartSession >= THRESHOLD` would
+    have failed two of those three runs at 6/8 while the paragraph was plainly
+    doing its job; and the mirror-image bar, `AskQuestion < THRESHOLD` alone,
+    is cleared by two lost calls with the paragraph doing nothing. Only the
+    two together say the decision moved: a transport failure subtracts from
+    both counts and can never manufacture `started > asked`.
+    """
+    import fateforger.slack_bot.timeboxing_intents as intents
+    from fateforger.agents.timeboxing.session_contracts import (
+        AskQuestion,
+        StartSession,
+    )
+
+    monkeypatch.setattr(
+        intents, "_TIMEBOX_PROMPT_FRAGMENT", intents._TIMEBOX_PROMPT_FRAGMENT_BASE
+    )
+    results, retries = await _intents(text, _fresh())
+    asked = _count(results, AskQuestion, text, retries)
+    started = _count(results, StartSession, text, retries)
+    assert asked < THRESHOLD, _report(results, retries)
+    assert started > asked, _report(results, retries)
+
+
 @pytest.mark.parametrize("text", MIXED_COMMITTED)
 async def test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question(
     text, monkeypatch
@@ -255,14 +373,22 @@ async def test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_q
     which is the silent-wrong-answer shape the whole ban exists to stop. The
     same two texts assert the positive above, in
     `test_a_fact_after_commit_is_still_a_fact`.
+
+    The flip, not the absence, for the reason given on the fresh-session check:
+    `ProvidePlanningFacts < THRESHOLD` on its own is satisfied by two lost
+    draws. `asked > kept` is not.
     """
     import fateforger.slack_bot.timeboxing_intents as intents
-    from fateforger.agents.timeboxing.session_contracts import ProvidePlanningFacts
+    from fateforger.agents.timeboxing.session_contracts import (
+        AskQuestion,
+        ProvidePlanningFacts,
+    )
 
     monkeypatch.setattr(
         intents, "_TIMEBOX_PROMPT_FRAGMENT", intents._TIMEBOX_PROMPT_FRAGMENT_BASE
     )
     results, retries = await _intents(text, _committed())
-    assert _count(results, ProvidePlanningFacts, text, retries) < THRESHOLD, _report(
-        results, retries
-    )
+    kept = _count(results, ProvidePlanningFacts, text, retries)
+    asked = _count(results, AskQuestion, text, retries)
+    assert kept < THRESHOLD, _report(results, retries)
+    assert asked > kept, _report(results, retries)
