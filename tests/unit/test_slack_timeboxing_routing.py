@@ -513,6 +513,42 @@ async def test_a_planning_thread_in_a_dm_is_never_claimed_by_a_live_session():
 
 
 @pytest.mark.asyncio
+async def test_a_planning_thread_survives_a_sticky_dm_focus_on_timeboxing():
+    # Every DM turn pins `set_user_focus`, so one timeboxing session leaves the
+    # whole DM pointed at that agent until the TTL lapses. The planning card's
+    # own thread is not the session's, and asking the ordered resolvers only
+    # when timeboxing has not already won makes planning the last resolver
+    # rather than the first: on 2026-09-05 03:43 "Is it planned?" under a
+    # planning card opened a fresh 5-stage session instead of being answered.
+    focus = FocusManager(
+        ttl_seconds=60, allowed_agents=["receptionist_agent", "timeboxing_agent"]
+    )
+    focus.set_user_focus("U1", "timeboxing_agent")
+    runtime = _FakeRuntime([_FakeResult(TextMessage(content="answer", source="bot"))])
+    runtime.timeboxing_session_store = _SessionStore(
+        {"D1:dm": SimpleNamespace(status="open")}
+    )
+    client = _FakeClient()
+    planning = _PlanningReplyHandler(
+        ThreadReply(ThreadReplyOutcome.NO_PRESS, context="CARD CONTEXT"), owns=True
+    )
+
+    await _route(
+        runtime=runtime,
+        focus=focus,
+        client=client,
+        planning=planning,
+        event=_dm_reply_event("Is it planned?"),
+    )
+
+    assert planning.ownership_calls == [("D1", "root")]
+    assert runtime.timeboxing_session_store.asked == []
+    assert len(runtime.calls) == 1
+    assert runtime.calls[0][1].type == "receptionist_agent"
+    assert "CARD CONTEXT" in runtime.calls[0][0].content
+
+
+@pytest.mark.asyncio
 async def test_a_focus_manager_that_refuses_the_agent_also_refuses_the_claim():
     # The claim and the focus binding are one decision. Assigning the agent
     # anyway left the route pointed at an agent the focus manager rejected.
