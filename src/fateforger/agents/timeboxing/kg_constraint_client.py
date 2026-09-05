@@ -183,6 +183,7 @@ def _row_from_view(view: Any) -> dict[str, Any]:
         "source": view.source.value,
         "scope": view.scope.value,
         "frame_slot": view.frame_slot,
+        "requires_block": getattr(view, "requires_block", None),
         "anchors": [{"uid": ref.uid, "name": ref.name} for ref in view.anchors],
         "fade": view.fade,
         "applies": view.applies,
