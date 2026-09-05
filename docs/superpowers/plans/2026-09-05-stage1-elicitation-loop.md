@@ -2653,8 +2653,13 @@ def _fixed_morning_meeting(rows, request, golden):
 
 
 def _drop_dinner_rows(rows, request, golden):
-    kept = [r for r in rows if not any(a.get("name") == "dinner" for a in (r.get("anchors") or []))]
+    # Membership over anchor uids the memory server minted (filled in Step 2),
+    # never a comparison over the anchor's name.
+    kept = [r for r in rows if not any(a.get("uid") in _DINNER_UIDS for a in (r.get("anchors") or []))]
     return kept, request, []
+
+
+_DINNER_UIDS: set[str] = set()
 
 
 def _deep_work_row(matrix: CoverageMatrix) -> str:
@@ -2715,9 +2720,9 @@ def test_removing_every_dinner_rule_makes_the_dinner_row_not_applicable(store_co
         return CoverageMatrix.model_validate(result.matrix_fact.value)
 
     matrices = asyncio.run(asyncio.gather(*(one() for _ in range(N))))
-    dinner_uids = {a["uid"] for r in full for a in (r.get("anchors") or []) if a.get("name") == "dinner"}
+    assert _DINNER_UIDS, "fill _DINNER_UIDS from the frozen store (Step 2)"
     for matrix in matrices:
-        assert not (dinner_uids & set(matrix.placement)), "a dinner anchor was placed with no dinner rule present"
+        assert not (_DINNER_UIDS & set(matrix.placement)), "a dinner anchor was placed with no dinner rule present"
 ```
 
 Note on `_DEEP_WORK_UIDS`: the "drop the deep-work duration" ablation from the spec depends on the deep-work anchor's uid in the frozen store. Fill the set in Step 3 from the store, then add the case:
@@ -2733,10 +2738,10 @@ ABLATIONS.append(Ablation("no_deep_work_duration", "deep work block duration", _
 - [ ] **Step 2: Fill the deep-work uid**
 
 ```bash
-sqlite3 /Users/hugoevers/VScode-projects/admonish-1/data/fixtures/stage1-$(date +%Y%m%d).db "select uid, name from anchors where name like 'deep work%'"
+sqlite3 /Users/hugoevers/VScode-projects/admonish-1/data/fixtures/stage1-$(date +%Y%m%d).db "select uid, name from anchors order by name"
 ```
 
-Paste the uid(s) into `_DEEP_WORK_UIDS` (identifiers the memory server minted; the LIKE is over a system-minted anchor name for the operator's convenience, not a judgement about user content).
+Read the list and paste the uid(s) of the deep-work anchor(s) into `_DEEP_WORK_UIDS` and of the dinner anchor(s) into `_DINNER_UIDS`. The operator picks by eye from the printed names; the test then compares uids only.
 
 - [ ] **Step 3: Confirm the suite still skips cleanly without the env**
 
