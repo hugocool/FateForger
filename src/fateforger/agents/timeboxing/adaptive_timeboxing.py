@@ -27,6 +27,8 @@ from .session_contracts import (
     ArtifactApproval,
     ArtifactKind,
     ArtifactSnapshot,
+    Asked,
+    AskQuestion,
     AwaitingApproval,
     AwaitingUser,
     BlockerOption,
@@ -537,6 +539,13 @@ class AdaptiveTimeboxing:
                     "change and I will revise it."
                 ),
             )
+
+        if isinstance(request.intent, AskQuestion):
+            # Asked is not started and not revised. Nothing is applied and
+            # nothing is saved: the revision the next load sees is the one
+            # this turn loaded. The host answers from the snapshot and the
+            # calendar; the kernel's whole job here is to say so.
+            return Asked(question=request.intent.question)
 
         base_revision = snapshot.revision
         progress_sink = _BestEffortProgress(progress)

@@ -491,6 +491,19 @@ class CancelSession(_StrictModel):
     kind: Literal["cancel_session"] = "cancel_session"
 
 
+class AskQuestion(_StrictModel):
+    """A question about the day, the plan or the calendar.
+
+    The one intent that changes nothing: the kernel returns `Asked` before it
+    applies or saves anything. `question` is the user's words as the host
+    received them -- never a model's paraphrase, so nothing the model wrote
+    reaches the answerer as if the user said it.
+    """
+
+    kind: Literal["ask_question"] = "ask_question"
+    question: str = Field(min_length=1)
+
+
 TimeboxIntent = Annotated[
     Union[
         StartSession,
@@ -505,6 +518,7 @@ TimeboxIntent = Annotated[
         RestoreConstraint,
         GoBack,
         CancelSession,
+        AskQuestion,
     ],
     Field(discriminator="kind"),
 ]
@@ -581,6 +595,13 @@ class Cancelled(_StrictModel):
     kind: Literal["cancelled"] = "cancelled"
 
 
+class Asked(_StrictModel):
+    """The turn was a question. Nothing in the session moved; the host answers."""
+
+    kind: Literal["asked"] = "asked"
+    question: str = Field(min_length=1)
+
+
 class PlannerContinuation(_StrictModel):
     """The planner saying it needs another turn, and why.
 
@@ -629,6 +650,7 @@ TurnOutcome = Annotated[
         AwaitingApproval,
         Committed,
         Cancelled,
+        Asked,
         TurnFailed,
     ],
     Field(discriminator="kind"),
@@ -731,6 +753,8 @@ __all__ = [
     "ArtifactKind",
     "ArtifactReady",
     "ArtifactSnapshot",
+    "Asked",
+    "AskQuestion",
     "AwaitingApproval",
     "AwaitingUser",
     "BlockerOption",

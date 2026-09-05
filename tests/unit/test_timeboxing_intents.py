@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
@@ -17,6 +18,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     Advance,
     ApproveArtifact,
     ArtifactKind,
+    AskQuestion,
     BlockerOption,
     ChooseBlockerOption,
     ConfirmPlanningDay,
@@ -496,7 +498,7 @@ async def test_an_offered_option_can_be_answered_in_words() -> None:
     assert (  # Stage 1 decision set, spec 2026-09-04
         # No assume: `skeleton.day_shape` is not one of the forty cells, and a
         # `PlannerAssumption` cannot satisfy it.
-        '"allowed_decisions":["provide_facts","choose_option","back","cancel"]'
+        '"allowed_decisions":["provide_facts","choose_option","back","cancel","question"]'
     ) in prompt
     # The offer is the context the judgement needs: an id with no label beside
     # it asks the model to choose between two names it has never seen.
@@ -553,7 +555,7 @@ async def test_an_open_question_still_has_nothing_to_choose_from() -> None:
     assert client.calls[0][1] is InterpretedTimeboxTurn
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
-        '"allowed_decisions":["provide_facts","back","cancel"]'
+        '"allowed_decisions":["provide_facts","back","cancel","question"]'
     ) in prompt
 
 
@@ -570,7 +572,7 @@ async def test_choosing_is_not_offered_when_no_question_is_open() -> None:
     assert client.calls[0][1] is InterpretedTimeboxTurn
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
-        '"allowed_decisions":["provide_facts","back","cancel"]'
+        '"allowed_decisions":["provide_facts","back","cancel","question"]'
     ) in prompt
 
 
@@ -878,7 +880,7 @@ async def test_a_committed_session_takes_a_revision_bound_to_its_receipt() -> No
     assert '"display_stage":"committed"' in prompt
     assert '"pending_artifact_kind":"commit_receipt"' in prompt
     allowed = json.loads(client.calls[0][0][1].content)["allowed_decisions"]
-    assert set(allowed) == {"provide_facts", "revise"}
+    assert set(allowed) == {"provide_facts", "revise", "question"}
 
 
 @pytest.mark.asyncio
@@ -1226,7 +1228,12 @@ def test_assume_with_nothing_open_is_refused() -> None:
     # exercises its own defence-in-depth refusal.
     interpreted = InterpretedTimeboxTurn(decision="assume")
     with pytest.raises(ValueError, match="no open"):
-        _intent_from_interpreted(interpreted, snapshot=_stage1_snapshot(), pending=None)
+        _intent_from_interpreted(
+            interpreted,
+            snapshot=_stage1_snapshot(),
+            pending=None,
+            user_text="just move on",
+        )
 
 
 async def test_deny_names_an_assumption_on_record() -> None:
@@ -1275,3 +1282,57 @@ async def test_a_malformed_suspension_fact_makes_restore_raise_naming_the_fact()
         await TimeboxingIntentInterpreter(client).interpret(
             "put the oats rule back", _stage1_snapshot(facts=[malformed])
         )
+
+
+@pytest.mark.asyncio
+async def test_a_question_during_capture_binds_the_users_words_verbatim() -> None:
+    client = _SchemaOutputClient({"decision": "question", "facts": []})
+    interpreter = TimeboxingIntentInterpreter(client)
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=2, owner_user_id="U1",
+        planning_day=_planning_day(), status="open",
+    )
+    intent = await interpreter.interpret("  Is it planned?  ", snapshot)
+    assert isinstance(intent, AskQuestion)
+    assert intent.question == "  Is it planned?  "   # verbatim, not stripped, not paraphrased
+    _, json_output = client.calls[0]
+    assert "question" in get_args(json_output.model_fields["decision"].annotation)
+
+
+@pytest.mark.asyncio
+async def test_a_question_on_a_committed_session_is_offered_and_bound() -> None:
+    client = _SchemaOutputClient({"decision": "question", "facts": []})
+    interpreter = TimeboxingIntentInterpreter(client)
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=9, owner_user_id="U1",
+        planning_day=_planning_day(), status="committed",
+    )
+    intent = await interpreter.interpret("what did we settle on for lunch?", snapshot)
+    assert isinstance(intent, AskQuestion)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_session_still_accepts_no_intent() -> None:
+    client = _SchemaOutputClient({"decision": "question", "facts": []})
+    interpreter = TimeboxingIntentInterpreter(client)
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=4, owner_user_id="U1",
+        planning_day=_planning_day(), status="cancelled",
+    )
+    with pytest.raises(ValueError, match="does not accept another intent"):
+        await interpreter.interpret("Is it planned?", snapshot)
+    assert client.calls == []
+
+
+def test_every_open_state_offers_question() -> None:
+    """The contract: an agent that owns a workflow exposes `question` in every
+    state its surface allows. Pinned per state so a new state cannot forget."""
+    from fateforger.slack_bot.timeboxing_intents import _display_context
+    open_snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=2, owner_user_id="U1",
+        planning_day=_planning_day(), status="open",
+    )
+    committed = open_snapshot.model_copy(update={"status": "committed", "revision": 9})
+    for snapshot in (open_snapshot, committed):
+        _, allowed, _ = _display_context(snapshot)
+        assert "question" in allowed, snapshot.status

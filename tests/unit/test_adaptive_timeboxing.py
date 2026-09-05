@@ -30,6 +30,8 @@ from fateforger.agents.timeboxing.session_contracts import (
     ArtifactApproval,
     ArtifactDraft,
     ArtifactKind,
+    Asked,
+    AskQuestion,
     AwaitingApproval,
     AwaitingUser,
     BlockerOption,
@@ -2475,3 +2477,62 @@ async def test_a_required_kind_already_on_the_day_satisfies_it_through_the_rows(
         request, progress=RecordingProgressSink()
     )
     assert isinstance(outcome, AwaitingApproval), outcome
+
+
+class _ForbiddenDependency:
+    def __getattr__(self, name: str):
+        raise AssertionError(f"kernel dependency must not be used: {name}")
+
+
+@pytest.mark.asyncio
+async def test_a_question_is_asked_and_changes_nothing() -> None:
+    """Asked is not started and not revised: the snapshot the next load sees
+    is the one this turn loaded, field for field."""
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=3, owner_user_id="U1",
+        planning_day=_locked_day(), status="open",
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    kernel = AdaptiveTimeboxing(
+        repository=repo, requirements=TimeboxRequirements(),
+        planner=_ForbiddenDependency(), context=_ForbiddenDependency(),
+        commit=_ForbiddenDependency(),
+    )
+    before = (await repo.load_or_create("C1:1.0", owner_user_id="U1")).model_dump()
+
+    outcome = await kernel.turn(
+        TurnRequest(
+            session_key="C1:1.0", interaction_id="q1", actor_user_id="U1",
+            expected_revision=3, intent=AskQuestion(question="Is it planned?"),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, Asked)
+    assert outcome.question == "Is it planned?"
+    after = (await repo.load_or_create("C1:1.0", owner_user_id="U1")).model_dump()
+    assert after == before
+    assert after["revision"] == 3
+
+
+@pytest.mark.asyncio
+async def test_a_question_to_a_committed_session_is_still_just_asked() -> None:
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0", revision=9, owner_user_id="U1",
+        planning_day=_locked_day(), status="committed",
+    )
+    repo = InMemoryPlanningSessionRepository([snapshot])
+    kernel = AdaptiveTimeboxing(
+        repository=repo, requirements=TimeboxRequirements(),
+        planner=_ForbiddenDependency(), context=_ForbiddenDependency(),
+        commit=_ForbiddenDependency(),
+    )
+    outcome = await kernel.turn(
+        TurnRequest(
+            session_key="C1:1.0", interaction_id="q2", actor_user_id="U1",
+            expected_revision=9, intent=AskQuestion(question="when is deep work?"),
+        ),
+        progress=RecordingProgressSink(),
+    )
+    assert isinstance(outcome, Asked)
+    assert (await repo.load_or_create("C1:1.0", owner_user_id="U1")).revision == 9
