@@ -35,6 +35,8 @@ from fateforger.agents.timeboxing.session_contracts import (
     AwaitingApproval,
     AwaitingUser,
     BlockerOption,
+    Cancelled,
+    CancelSession,
     ChooseBlockerOption,
     Committed,
     ConfirmPlanningDay,
@@ -47,6 +49,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningResult,
     PlanningSessionSnapshot,
     ProvidePlanningFacts,
+    StartSession,
     TurnFailed,
     UserBlockerDraft,
 )
@@ -2536,3 +2539,133 @@ async def test_a_question_to_a_committed_session_is_still_just_asked() -> None:
     )
     assert isinstance(outcome, Asked)
     assert (await repo.load_or_create("C1:1.0", owner_user_id="U1")).revision == 9
+
+
+# --- a session row is created only by an intent that starts one (#318) ------
+#
+# `cancel` at revision 0 used to brick a DM in one message: the first thing a
+# user typed ("never mind, not today") wrote `cancelled` on the thread-blind
+# `{channel}:dm` key, and every later turn hit a cancelled session. Asking used
+# to leave a revision-0 `open` row behind, which the host reads as a session
+# under way. Neither intent may reach the store now.
+
+
+def _fresh_kernel(
+    repo: InMemoryPlanningSessionRepository,
+    *,
+    context: PlanningContextPort | None = None,
+) -> AdaptiveTimeboxing:
+    return AdaptiveTimeboxing(
+        repository=repo,
+        requirements=TimeboxRequirements(),
+        planner=_ForbiddenDependency(),
+        context=context or _ForbiddenDependency(),
+        commit=_ForbiddenDependency(),
+    )
+
+
+def _fresh_request(intent: object, *, interaction_id: str) -> TurnRequest:
+    return TurnRequest(
+        session_key="D1:dm",
+        interaction_id=interaction_id,
+        actor_user_id="U1",
+        expected_revision=0,
+        intent=intent,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_question_to_a_session_that_does_not_exist_creates_no_row() -> None:
+    repo = InMemoryPlanningSessionRepository()
+
+    outcome = await _fresh_kernel(repo).turn(
+        _fresh_request(AskQuestion(question="is tomorrow planned?"), interaction_id="q1"),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, Asked)
+    assert outcome.question == "is tomorrow planned?"
+    assert await repo.load("D1:dm") is None
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_session_that_does_not_exist_is_refused_and_writes_nothing() -> None:
+    repo = InMemoryPlanningSessionRepository()
+
+    outcome = await _fresh_kernel(repo).turn(
+        _fresh_request(CancelSession(), interaction_id="c1"),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "nothing_to_cancel"
+    assert await repo.load("D1:dm") is None
+
+
+@pytest.mark.asyncio
+async def test_cancelling_an_empty_revision_zero_row_is_refused_and_leaves_it_open() -> None:
+    """A row an earlier code path left behind is still nothing to cancel."""
+
+    repo = InMemoryPlanningSessionRepository(
+        [PlanningSessionSnapshot.new(session_key="D1:dm", owner_user_id="U1")]
+    )
+
+    outcome = await _fresh_kernel(repo).turn(
+        _fresh_request(CancelSession(), interaction_id="c2"),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, TurnFailed)
+    assert outcome.code == "nothing_to_cancel"
+    stored = await repo.load("D1:dm")
+    assert stored is not None
+    assert stored.status == "open"
+    assert stored.revision == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_session_that_locked_a_day_still_cancels() -> None:
+    """The refusal is about having nothing to cancel, not about cancelling."""
+
+    repo = InMemoryPlanningSessionRepository(
+        [
+            PlanningSessionSnapshot(
+                session_key="C1:1.0",
+                revision=3,
+                owner_user_id="U1",
+                planning_day=_locked_day(),
+                status="open",
+            )
+        ]
+    )
+
+    outcome = await _fresh_kernel(repo).turn(
+        TurnRequest(
+            session_key="C1:1.0",
+            interaction_id="c3",
+            actor_user_id="U1",
+            expected_revision=3,
+            intent=CancelSession(),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, Cancelled)
+    stored = await repo.load("C1:1.0")
+    assert stored is not None
+    assert stored.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_starting_a_session_is_the_intent_that_creates_the_row() -> None:
+    repo = InMemoryPlanningSessionRepository()
+    context = RecordedContextPort()
+
+    await _fresh_kernel(repo, context=context).turn(
+        _fresh_request(StartSession(), interaction_id="s1"),
+        progress=RecordingProgressSink(),
+    )
+
+    stored = await repo.load("D1:dm")
+    assert stored is not None
+    assert stored.owner_user_id == "U1"

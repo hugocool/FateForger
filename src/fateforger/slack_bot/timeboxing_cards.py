@@ -227,6 +227,7 @@ TIMEBOX_FAILURE_TEXTS = {
         "This is the first step of the session, so there is nothing to go "
         "back to. Pick the day, or cancel."
     ),
+    "nothing_to_cancel": "There is no planning session to cancel yet.",
 }
 
 

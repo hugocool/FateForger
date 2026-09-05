@@ -503,9 +503,28 @@ class AdaptiveTimeboxing:
     ) -> TurnOutcome:
         """Execute after acquiring the repository's session exclusion seam."""
 
-        snapshot = await self._repository.load_or_create(
-            request.session_key, owner_user_id=request.actor_user_id
-        )
+        snapshot = await self._repository.load(request.session_key)
+        if snapshot is None:
+            # No session exists. Only an intent that starts one may create the
+            # row: a question is answered over an in-memory snapshot and a
+            # cancel has nothing to cancel. Asked is not started, one layer
+            # down. A row written here would be a session as far as the host
+            # is concerned -- the nudge suppressor reads the store -- so the
+            # first word typed into a DM must not mint one.
+            if isinstance(request.intent, AskQuestion):
+                snapshot = PlanningSessionSnapshot.new(
+                    session_key=request.session_key,
+                    owner_user_id=request.actor_user_id,
+                )
+            elif isinstance(request.intent, CancelSession):
+                return TurnFailed(
+                    code="nothing_to_cancel",
+                    message="There is no planning session to cancel yet.",
+                )
+            else:
+                snapshot = await self._repository.load_or_create(
+                    request.session_key, owner_user_id=request.actor_user_id
+                )
         if request.actor_user_id != snapshot.owner_user_id:
             return TurnFailed(
                 code="session_owner_mismatch",
@@ -538,6 +557,21 @@ class AdaptiveTimeboxing:
                     "This day is already on the calendar. Tell me what to "
                     "change and I will revise it."
                 ),
+            )
+
+        if (
+            isinstance(request.intent, CancelSession)
+            and snapshot.planning_day is None
+            and not snapshot.artifacts
+        ):
+            # A row exists but nothing was ever decided in it -- an envelope an
+            # earlier code path left behind, or a session that proposed a day
+            # and never locked one (#299). Writing `cancelled` over it closes a
+            # session that never opened, and the key it closes is the one the
+            # user's next message would arrive on.
+            return TurnFailed(
+                code="nothing_to_cancel",
+                message="There is no planning session to cancel yet.",
             )
 
         if isinstance(request.intent, AskQuestion):
