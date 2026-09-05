@@ -519,6 +519,12 @@ def _intent_from_interpreted(
         # The host's copy of the words, verbatim. The schema carries no text
         # field for this decision on purpose: a paraphrase is the model's
         # words reaching the answerer as if the user said them.
+        #
+        # Any `facts` the reading attached are discarded, deliberately. The
+        # prompt says a question that carries a fact is a fact, and the eval
+        # measures that at 8/8, so a `question` arriving with facts is the
+        # model contradicting itself -- and the words the user typed win over
+        # the structure the model wrapped them in.
         return AskQuestion(question=user_text)
     if interpreted.decision == "start":
         return StartSession()
