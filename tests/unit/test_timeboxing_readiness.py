@@ -388,3 +388,57 @@ def test_the_matrix_is_parsed_once_per_evaluation(monkeypatch: pytest.MonkeyPatc
     TimeboxRequirements().evaluate(ArtifactKind.SKELETON, snapshot)
 
     assert len(calls) == 1
+
+
+def _candidate_ready_snapshot(*extra: PlanningFact) -> PlanningSessionSnapshot:
+    skeleton = PlanningArtifact.create(
+        artifact_id="skeleton-1", kind=ArtifactKind.SKELETON, revision=1,
+        payload={"markdown": "- Gym at 17:00"}, dependency_revisions={"planning_day": 1},
+    )
+    snapshot = _locked_snapshot(
+        _fact(fact_id="cal", kind=FactKind.CALENDAR_SNAPSHOT, value={"fetched": True, "blocks": 0}),
+        _fact(fact_id="con", kind=FactKind.ACTIVE_CONSTRAINTS, value={"fetched": True, "count": 1}),
+        *extra,
+    )
+    return snapshot.model_copy(update={
+        "artifacts": [skeleton],
+        "approvals": [ArtifactApproval(
+            artifact_id=skeleton.artifact_id, artifact_revision=skeleton.revision,
+            artifact_digest=skeleton.digest, actor_user_id="U1", session_revision=1,
+        )],
+    })
+
+
+def test_a_required_kind_opens_one_planner_owned_gap_that_is_never_a_question() -> None:
+    """#214: the planner places a required block; it may not ask about it."""
+    snapshot = _candidate_ready_snapshot(
+        _fact(fact_id="req", kind=FactKind.REQUIRED_BLOCKS,
+              value={"slugs": ["planning"], "by_rule": {"planning": {"uid": "c1", "name": "Daily planning"}}}),
+    )
+    report = TimeboxRequirements().evaluate(ArtifactKind.VALIDATED_CANDIDATE, snapshot)
+    gap = report.by_id("candidate.required_blocks")
+    assert gap.owner is RequirementOwner.PLANNER
+    assert gap.resolution == "assume"
+    assert gap.hard
+    assert not gap.satisfied
+    assert "candidate.required_blocks" in {g.requirement_id for g in report.planner_owned_gaps()}
+    assert report.first_hard_user_blocker() is None
+
+
+def test_no_required_kind_leaves_the_requirement_satisfied() -> None:
+    report = TimeboxRequirements().evaluate(ArtifactKind.VALIDATED_CANDIDATE, _candidate_ready_snapshot())
+    assert report.by_id("candidate.required_blocks").satisfied
+
+
+def test_the_catalog_has_exactly_one_required_blocks_entry_however_many_kinds() -> None:
+    """The count of entries does not grow with the number of tracked kinds."""
+    from fateforger.agents.timeboxing.readiness import _REQUIREMENTS
+
+    ids = [r.requirement_id for r in _REQUIREMENTS]
+    assert ids.count("candidate.required_blocks") == 1
+    two_kinds = _candidate_ready_snapshot(
+        _fact(fact_id="req", kind=FactKind.REQUIRED_BLOCKS,
+              value={"slugs": ["planning", "sleep"], "by_rule": {}}),
+    )
+    report = TimeboxRequirements().evaluate(ArtifactKind.VALIDATED_CANDIDATE, two_kinds)
+    assert [g.requirement_id for g in report.gaps].count("candidate.required_blocks") == 1
