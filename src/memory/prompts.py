@@ -16,6 +16,7 @@ from memory.judge import (
     DAY_TYPES,
     DayJudgement,
     DedupJudgement,
+    EditJudgement,
     MetaJudgement,
     NecessityJudgement,
     RequiresBlockJudgement,
@@ -97,6 +98,39 @@ Respond with JSON only:
 {"tier": "durable"|"session", "label": "...",
  "days_of_week": [...], "day_types": [...], "start_date": null, "end_date": null,
  "decay_class": "permanent"|"seasonal"|"project"|"daily", "rationale": "..."}\
+"""
+
+EDIT_PROMPT = """\
+You decide whether a statement is an instruction to change a plan that has
+already been produced, rather than something about how the person's days go.
+
+The test is what the sentence would mean with no plan on the screen.
+
+"edit" — it only means something against a specific plan that already exists.
+It changes, moves, resizes, adds or removes part of that plan, and if you
+deleted the plan the sentence would have nothing to point at. "Make the
+finances block 30 minutes instead of 45, everything else stays" is an edit:
+"instead of 45" names a value that exists only in the plan in front of them,
+and "everything else stays" scopes a change to that plan.
+
+"not an edit" — it describes how the person lives or how their days should
+generally be built, and would still be true tomorrow with nothing on the
+screen. "Deep Work blocks are usually 2 hours long" is not an edit: it is a
+rule about the shape of any day. "I go to the gym at 18:00" is not an edit.
+Rules about how long blocks should be, how many, how they alternate, which to
+always include, and caps or guardrails on kinds of work are all NOT edits —
+they are the standing rules the planner works from.
+
+Both kinds can sound like commands, and both can name a duration, so the
+imperative mood is not the signal. A person says "make deep work two hours"
+meaning a standing rule and "make it two hours" meaning today's block. Ask
+what the sentence needs in order to mean anything: a plan, or a person.
+
+A statement about one named day is not an edit either — "no meetings this
+Thursday" is about a day, not about an artifact. It gets dated and stored.
+
+Respond with JSON only:
+{"is_edit": true|false, "rationale": "..."}\
 """
 
 NECESSITY_PROMPT = """\
@@ -411,6 +445,12 @@ class PromptJudge(ABC):
         if "is_meta" not in payload:
             raise ValueError(f"could not parse judge response: {payload!r}")
         return self._build(MetaJudgement, payload)
+
+    async def edit(self, observation: Observation) -> EditJudgement:
+        payload = await self._ask(EDIT_PROMPT, observation.text)
+        if "is_edit" not in payload:
+            raise ValueError(f"could not parse judge response: {payload!r}")
+        return self._build(EditJudgement, payload)
 
     async def dedup(
         self, observation: Observation, recent: list[Observation]

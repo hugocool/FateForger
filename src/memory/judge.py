@@ -118,6 +118,23 @@ class MetaJudgement(BaseModel):
     rationale: str = ""
 
 
+class EditJudgement(BaseModel):
+    """Whether this changes a plan already on the table, rather than stating
+    how the person's days go.
+
+    Its own judgement rather than a field on the tier or meta call. The meta
+    prompt draws its line in the wrong place for this: it says rules about
+    "how long blocks should be" are about the schedule and so NOT meta, which
+    is right for a standing rule and wrong for an instruction to shorten one
+    block of one afternoon. And a prompt that names a category without giving
+    the model something to key off produces a near coin flip (CLAUDE.md), so
+    this asks its own question with its own discriminator.
+    """
+
+    is_edit: bool = False
+    rationale: str = ""
+
+
 class DedupJudgement(BaseModel):
     """Which earlier observation, if any, this one restates."""
 
@@ -211,6 +228,8 @@ class Judge(Protocol):
 
     async def meta(self, observation: Observation) -> MetaJudgement: ...
 
+    async def edit(self, observation: Observation) -> EditJudgement: ...
+
     async def dedup(
         self, observation: Observation, recent: list[Observation]
     ) -> DedupJudgement: ...
@@ -246,6 +265,7 @@ class StubJudge:
         day_type: str = "working",
         requires_blocks: dict[str, str] | None = None,
         day_types: dict[str, list[str]] | None = None,
+        edits: dict[str, bool] | None = None,
     ) -> None:
         self._anchors = anchors or {}
         self._tiers = tiers or {}
@@ -262,11 +282,16 @@ class StubJudge:
         self._day_type = day_type
         self._requires_blocks = requires_blocks or {}
         self._day_types = day_types or {}
+        self._edits = edits or {}
         self.calls: list[tuple[str, str]] = []
 
     async def anchors(self, observation: Observation) -> AnchorJudgement:
         self.calls.append(("anchors", observation.uid))
         return AnchorJudgement(anchors=self._anchors.get(observation.text, []))
+
+    async def edit(self, observation: Observation) -> EditJudgement:
+        self.calls.append(("edit", observation.uid))
+        return EditJudgement(is_edit=self._edits.get(observation.text, False))
 
     async def tier(self, observation: Observation) -> TierJudgement:
         self.calls.append(("tier", observation.uid))
