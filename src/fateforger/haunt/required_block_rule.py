@@ -46,8 +46,10 @@ REASON_MISSING = "missing"
 REASON_MOVED_OUT = "moved_out"
 
 #: The registry kind the planning ladder already books. Its events may carry
-#: the `ffplanning…` mark instead of a slug, and count.
-_PLANNING_SLUG = "planning"
+#: the `ffplanning…` mark instead of a slug, and count. Exported so the one
+#: place that must tell this kind from the others compares against the constant
+#: rather than re-typing the word.
+PLANNING_SLUG = "planning"
 _SLUG_PROPERTY = "tmbx.slug"
 #: A sleep time earlier than this is after midnight and belongs to the next day.
 _AFTER_MIDNIGHT_CUTOFF = time(4, 0)
@@ -96,7 +98,7 @@ def within_bounds(event: dict, *, day: date, tz: str, sleep: str | None) -> bool
 def _is_kind(event: dict, slug: str) -> bool:
     if slug_of(event) == slug:
         return True
-    return slug == _PLANNING_SLUG and _carries_planning_mark(event, None)
+    return slug == PLANNING_SLUG and _carries_planning_mark(event, None)
 
 
 class RequiredBlockRule:
@@ -186,6 +188,16 @@ class RequiredBlockRule:
                 continue
             if verdict == "present":
                 continue
+            if slug == PLANNING_SLUG and verdict == REASON_MISSING:
+                # R2: the two ladders are disjoint for `planning`. Whether the
+                # session is on the calendar at all is `PlanningSessionRule`'s
+                # business -- it nudges, books the card and starts the session.
+                # A second ladder here would nudge for the same absence twice,
+                # from two schedules neither of which knows about the other.
+                # `moved_out` is the half only the watcher can see: the block
+                # exists, so the planning ladder is satisfied, and nothing else
+                # notices it drifted off the day.
+                continue
             jobs.extend(self._ladder(start=start, scope=scope, user_id=user_id,
                                      channel_id=channel_id, day=day, slug=slug,
                                      reason=verdict, first_nudge_offset=first_nudge_offset))
@@ -238,5 +250,5 @@ def _line(slug: str, reason: str, attempt: int) -> str:
     return f"Your `{slug}` block {what}. Put it back, or say when."
 
 
-__all__ = ["REASON_MISSING", "REASON_MOVED_OUT", "REQUIRED_BLOCK_KIND",
+__all__ = ["PLANNING_SLUG", "REASON_MISSING", "REASON_MOVED_OUT", "REQUIRED_BLOCK_KIND",
            "RequiredBlockConfig", "RequiredBlockRule", "slug_of", "within_bounds"]

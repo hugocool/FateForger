@@ -147,3 +147,21 @@ async def test_a_rule_that_raises_prunes_nothing_of_its_own(caplog):
     reconciler._required_block_rule = _Explodes("required_blocks", [])
     await reconciler.reconcile_missing_planning(scope="U1", user_id="U1", now=NOW)
     assert {job.id for job in scheduler.get_jobs()} == {haunt_id}
+
+
+@pytest.mark.asyncio
+async def test_an_absent_planning_block_nudges_once_from_the_planning_ladder_only():
+    """R2: the two ladders are disjoint for `planning`. With the real watcher
+    judging the block absent on the same tick the planning rule nudges, the
+    scheduled ids are the planning ladder's and nothing else."""
+    from .test_required_block_rule import _Calendar, _Store, _rule as _required_block_rule
+
+    scheduler = FakeScheduler()
+    watcher = _required_block_rule(_Calendar(day_events=[]), _Store(["planning"]))
+    reconciler = PlanningReconciler(scheduler, calendar_client=DummyCalendarClient([]), dispatcher=_noop,
+                                    rule=_Rule("next_planning_session", ["nudge1", "expire"]),
+                                    required_block_rule=watcher)
+    await reconciler.reconcile_missing_planning(scope="U1", user_id="U1", now=NOW)
+    ids = {job.id for job in scheduler.get_jobs()}
+    assert ids == {"rule:next_planning_session:U1:2026-09-07:nudge1",
+                   "rule:next_planning_session:U1:2026-09-07:expire"}

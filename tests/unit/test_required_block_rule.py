@@ -131,15 +131,17 @@ async def test_the_cache_is_the_fast_path_and_a_hit_never_lists():
 
 @pytest.mark.asyncio
 async def test_a_missing_block_starts_the_ladder_naming_the_kind():
+    # `closure`, not `planning`: an absent planning session is the planning
+    # ladder's nudge and never the watcher's (R2).
     cal = _Calendar(day_events=[_event("x", "10:00", "11:00")])  # a block with no slug
-    rule = _rule(cal, _Store(["planning"]))
+    rule = _rule(cal, _Store(["closure"]))
     jobs = await _jobs(rule)
     assert len(jobs) == PlanningRuleConfig().nudge_max_attempts
     first = jobs[0]
-    assert first.key.as_id() == f"rule:required_blocks:U1:{DAY.isoformat()}:planning:nudge1"
+    assert first.key.as_id() == f"rule:required_blocks:U1:{DAY.isoformat()}:closure:nudge1"
     assert first.run_at == NOW + timedelta(minutes=10)
     assert first.payload.kind == REQUIRED_BLOCK_KIND
-    assert (first.payload.slug, first.payload.reason) == ("planning", REASON_MISSING)
+    assert (first.payload.slug, first.payload.reason) == ("closure", REASON_MISSING)
     assert first.payload.user_id == "U1" and first.payload.channel_id == "D1"
 
 
@@ -234,3 +236,40 @@ async def test_the_store_is_asked_for_the_local_day_and_its_arithmetic_day_type(
     assert store.filters[0]["planned_day"] == DAY.isoformat()
     assert store.filters[0]["day_type"] == "working"
     assert store.filters[0]["require_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_planning_kind_is_never_haunted_for_being_missing():
+    """R2: presence of the planning session is the planning ladder's business.
+    An absent planning block is its nudge, not a second one from the watcher."""
+    rule = _rule(_Calendar(day_events=[]), _Store(["planning"]))
+    outcome = await _outcome(rule)
+    assert outcome.jobs == []
+    assert outcome.undecided == []
+
+
+@pytest.mark.asyncio
+async def test_the_planning_kind_is_haunted_when_it_has_left_its_bounds():
+    """`moved_out` is the half the planning ladder cannot see: the block exists,
+    so the ladder is satisfied, and only the watcher knows it drifted."""
+    cal = _Calendar(day_events=[_event("e1", "17:00", "17:20", slug="planning", day=date(2026, 9, 8))])
+    rule = _rule(cal, _Store(["planning"]))
+    jobs = await _jobs(rule)
+    assert jobs and jobs[0].payload.reason == REASON_MOVED_OUT
+    assert jobs[0].payload.slug == "planning"
+
+
+@pytest.mark.asyncio
+async def test_every_other_kind_is_haunted_for_being_missing():
+    """Only `planning` has a second ladder; nothing else does."""
+    rule = _rule(_Calendar(day_events=[]), _Store(["closure"]))
+    jobs = await _jobs(rule)
+    assert jobs and jobs[0].payload.reason == REASON_MISSING
+    assert jobs[0].payload.slug == "closure"
+
+
+@pytest.mark.asyncio
+async def test_a_missing_planning_block_does_not_hide_another_kinds_ladder():
+    rule = _rule(_Calendar(day_events=[]), _Store(["closure", "planning"]))
+    jobs = await _jobs(rule)
+    assert {job.payload.slug for job in jobs} == {"closure"}
