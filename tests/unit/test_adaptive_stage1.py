@@ -582,3 +582,70 @@ def test_a_planning_context_carries_probe_drafts_and_they_never_reach_the_snapsh
     context = PlanningContext(probes=[probe])
     assert context.probes[0].cell_id == "elicit.body.unclear"
     assert "probes" not in PlanningSessionSnapshot.model_fields
+
+
+class _ProbingContext(_Context):
+    """The host that resolved a probe for a cell this turn."""
+
+    def __init__(self, matrix_fact, probes) -> None:
+        self._fact = matrix_fact
+        self._probes = probes
+
+    async def resolve(self, snapshot, *, target, progress):
+        return PlanningContext(
+            facts=[self._fact],
+            applicable_constraints=ROWS,
+            suspended_constraint_count=3,
+            probes=self._probes,
+        )
+
+
+def _probing_kernel(snapshot, matrix_fact, probes):
+    repository = InMemoryPlanningSessionRepository([snapshot])
+    planner = _Planner()
+    kernel = AdaptiveTimeboxing(
+        repository=repository,
+        requirements=TimeboxRequirements(),
+        planner=planner,
+        context=_ProbingContext(matrix_fact, probes),
+        commit=_Commit(),
+    )
+    return kernel, repository, planner
+
+
+def test_the_resolved_probe_is_asked_instead_of_the_catalog_text() -> None:
+    from fateforger.agents.timeboxing.session_contracts import BlockerOption, ProbeDraft
+
+    cell = ALL_CELLS[0]
+    probe = ProbeDraft(
+        cell_id=cell.id,
+        question="Still up at 07:00 on Tuesday?",
+        why_needed="to bound the morning",
+        options=[BlockerOption(option_id=f"{cell.id}:1", label="yes", effect="yes")],
+    )
+    kernel, repository, _ = _probing_kernel(_snapshot(), _matrix_fact(cell.id), [probe])
+    outcome = _turn(kernel, _snapshot(), Advance())
+    assert isinstance(outcome, AwaitingUser)
+    assert outcome.requirement_id == cell.id
+    assert outcome.question == "Still up at 07:00 on Tuesday?"
+    assert outcome.why_needed == "to bound the morning"
+    assert [o.option_id for o in outcome.options] == [f"{cell.id}:1"]
+    held = _load(repository).pending_blocker
+    assert held.requirement_id == cell.id and [o.option_id for o in held.options] == [f"{cell.id}:1"]
+    assert all(
+        f.kind is not FactKind.COVERAGE_MATRIX or "probes" not in str(f.value)
+        for f in _load(repository).facts
+    )
+
+
+def test_a_probe_for_another_cell_falls_back_to_the_catalog_text() -> None:
+    from fateforger.agents.timeboxing.session_contracts import ProbeDraft
+
+    cell = ALL_CELLS[0]
+    other = ProbeDraft(cell_id=ALL_CELLS[1].id, question="other?", why_needed="w")
+    kernel, _, _ = _probing_kernel(_snapshot(), _matrix_fact(cell.id), [other])
+    outcome = _turn(kernel, _snapshot(), Advance())
+    assert isinstance(outcome, AwaitingUser)
+    assert outcome.requirement_id == cell.id
+    assert outcome.question != "other?"
+    assert outcome.options == []

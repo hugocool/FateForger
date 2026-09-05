@@ -672,7 +672,9 @@ class AdaptiveTimeboxing:
             )
 
         if target is ArtifactKind.SKELETON and snapshot.stage1 != "closed":
-            stage1_snapshot, stage1_outcome = self._stage1_outcome(snapshot, readiness)
+            stage1_snapshot, stage1_outcome = self._stage1_outcome(
+                snapshot, readiness, list(resolved.probes)
+            )
             return await self._save(
                 stage1_snapshot,
                 base_revision=base_revision,
@@ -1062,7 +1064,10 @@ class AdaptiveTimeboxing:
         )
 
     def _stage1_outcome(
-        self, snapshot: PlanningSessionSnapshot, readiness: ReadinessReport
+        self,
+        snapshot: PlanningSessionSnapshot,
+        readiness: ReadinessReport,
+        probes: list[ProbeDraft],
     ) -> tuple[PlanningSessionSnapshot, TurnOutcome]:
         """What Stage 1 shows right now: the top open cell, or a proposal to close.
 
@@ -1073,15 +1078,23 @@ class AdaptiveTimeboxing:
         "proposed"` transition happen exactly once per turn, in one place.
         `stage1_gate` itself already subtracts any cell a filed assumption
         answers, so the `Gate` read back here needs no further narrowing.
+
+        `probes` are what the host's judges phrased this turn. The one whose
+        cell is the top open cell is asked; otherwise the catalog's criterion
+        text is, so a turn whose top cell could not be grounded still puts a
+        question and the gate line says what is open.
         """
         gate: Gate = stage1_gate(snapshot)
         if gate.open_cells:
             top = gate.open_cells[0]
             gap = readiness.by_id(top.id)
-            return self._hold_question(snapshot, gap, []), AwaitingUser(
+            probe = next((p for p in probes if p.cell_id == top.id), None)
+            options = list(probe.options) if probe is not None else []
+            return self._hold_question(snapshot, gap, options), AwaitingUser(
                 requirement_id=gap.requirement_id,
-                question=gap.question,
-                why_needed=gap.why_needed,
+                question=probe.question if probe is not None else gap.question,
+                why_needed=probe.why_needed if probe is not None else gap.why_needed,
+                options=options,
                 gate=gate,
             )
         return snapshot.model_copy(update={"stage1": "proposed"}), GateMet(gate=gate)
