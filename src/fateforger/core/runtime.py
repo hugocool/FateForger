@@ -893,6 +893,9 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     setattr(runtime, "event_draft_store", event_draft_store)
     setattr(runtime, "timeboxing_session_store", timeboxing_session_store)
     setattr(runtime, "timeboxing_constraint_store", timeboxing_constraint_store)
+    # The dispatcher revalidates every required-block rung against this rule
+    # before posting it (R3); without it here, those reminders are dropped.
+    setattr(runtime, "required_block_rule", required_block_rule)
     setattr(runtime, "timeboxing_planner", timeboxing_planner)
     setattr(runtime, "timeboxing_calendar_id", timeboxing_calendar_id)
     setattr(

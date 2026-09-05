@@ -203,6 +203,25 @@ class RequiredBlockRule:
                                      reason=verdict, first_nudge_offset=first_nudge_offset))
         return RequiredBlockOutcome(jobs=jobs, undecided=undecided)
 
+    async def recheck(self, *, user_id: str, slug: str, now: datetime) -> str | None:
+        """The verdict for one kind, right now: 'present', REASON_MISSING,
+        REASON_MOVED_OUT, or None for no verdict.
+
+        The dispatcher asks this before it posts a rung. A scheduled reminder
+        is a claim about the calendar as it was minutes or hours ago; the block
+        may be back, or may have drifted since, and either way the line the
+        rung carries would be wrong. Same predicates, same cache, same
+        no-verdict rule as the tick -- one check, asked twice.
+        """
+        day = now.astimezone(ZoneInfo(self._config.tz)).date()
+        try:
+            sleep = await self._sleep(user_id, day)
+        except Exception as exc:  # noqa: BLE001 - named, and no verdict
+            logger.warning("required_blocks_unreadable user=%s day=%s error_type=%s error=%s (recheck day_frame)",
+                           user_id, day, type(exc).__name__, exc)
+            return None
+        return await self._check(user_id=user_id, day=day, slug=slug, sleep=sleep)
+
     async def _check(self, *, user_id: str, day: date, slug: str, sleep: str | None) -> str | None:
         """'present', REASON_MISSING, REASON_MOVED_OUT, or None for no verdict."""
         tz = self._config.tz
