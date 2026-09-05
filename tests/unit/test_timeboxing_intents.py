@@ -17,6 +17,7 @@ from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     Advance,
     ApproveArtifact,
+    ArtifactApproval,
     ArtifactKind,
     AskQuestion,
     BlockerOption,
@@ -1324,15 +1325,73 @@ async def test_a_cancelled_session_still_accepts_no_intent() -> None:
     assert client.calls == []
 
 
-def test_every_open_state_offers_question() -> None:
-    """The contract: an agent that owns a workflow exposes `question` in every
-    state its surface allows. Pinned per state so a new state cannot forget."""
-    from fateforger.slack_bot.timeboxing_intents import _display_context
-    open_snapshot = PlanningSessionSnapshot(
-        session_key="C1:1.0", revision=2, owner_user_id="U1",
-        planning_day=_planning_day(), status="open",
+def _validated_candidate() -> PlanningArtifact:
+    return PlanningArtifact.create(
+        artifact_id="candidate-1",
+        kind=ArtifactKind.VALIDATED_CANDIDATE,
+        revision=1,
+        payload={"events": []},
+        dependency_revisions={"skeleton": 2},
     )
-    committed = open_snapshot.model_copy(update={"status": "committed", "revision": 9})
-    for snapshot in (open_snapshot, committed):
-        _, allowed, _ = _display_context(snapshot)
-        assert "question" in allowed, snapshot.status
+
+
+def _approval_of(artifact: PlanningArtifact) -> ArtifactApproval:
+    return ArtifactApproval(
+        artifact_id=artifact.artifact_id,
+        artifact_revision=artifact.revision,
+        artifact_digest=artifact.digest,
+        actor_user_id="U1",
+        session_revision=3,
+    )
+
+
+def _snapshot_awaiting_commit() -> PlanningSessionSnapshot:
+    """A validated candidate on the table and nothing approved yet."""
+    return _capture_snapshot().model_copy(
+        update={"artifacts": [_validated_candidate()]}
+    )
+
+
+def _snapshot_past_the_skeleton() -> PlanningSessionSnapshot:
+    """The skeleton is approved, so nothing is pending and the day is refining."""
+    skeleton = _skeleton()
+    return _capture_snapshot().model_copy(
+        update={"artifacts": [skeleton], "approvals": [_approval_of(skeleton)]}
+    )
+
+
+#: One snapshot per state `_display_context` returns, `cancelled` excepted and
+#: pinned separately below -- all six of them. The state name is asserted
+#: alongside the decision set because a snapshot that quietly fell through to
+#: `capture` would satisfy a membership check while testing nothing about the
+#: state it was built for, which is exactly what the first version of this
+#: guard did.
+_OPEN_STATES: tuple[tuple[str, PlanningSessionSnapshot], ...] = (
+    ("planning_day", _date_stage_snapshot()),
+    ("capture", _capture_snapshot()),
+    ("skeleton", _snapshot_with_skeleton()),
+    ("review_commit", _snapshot_awaiting_commit()),
+    ("refine", _snapshot_past_the_skeleton()),
+    ("committed", _committed_snapshot()),
+)
+
+
+@pytest.mark.parametrize(("expected_stage", "snapshot"), _OPEN_STATES)
+def test_every_open_state_offers_question(
+    expected_stage: str, snapshot: PlanningSessionSnapshot
+) -> None:
+    """The contract: an agent that owns a workflow exposes `question` in every
+    state its surface allows. One case per state `_display_context` returns
+    today, so a miswired case cannot hide behind another state's answer. A
+    seventh state added later must be added here too; nothing enforces that."""
+    stage, allowed, _ = _display_context(snapshot)
+    assert stage == expected_stage
+    assert "question" in allowed
+
+
+def test_a_cancelled_session_offers_nothing() -> None:
+    """The one state that must not gain `question`: the session is closed."""
+    cancelled = _capture_snapshot().model_copy(update={"status": "cancelled"})
+    stage, allowed, _ = _display_context(cancelled)
+    assert stage == "cancelled"
+    assert allowed == ()
