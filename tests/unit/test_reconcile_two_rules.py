@@ -165,3 +165,33 @@ async def test_an_absent_planning_block_nudges_once_from_the_planning_ladder_onl
     ids = {job.id for job in scheduler.get_jobs()}
     assert ids == {"rule:next_planning_session:U1:2026-09-07:nudge1",
                    "rule:next_planning_session:U1:2026-09-07:expire"}
+
+
+def test_the_watcher_is_off_when_the_constraint_store_is_the_unavailable_one():
+    """`_build_timeboxing_constraint_store` never returns None -- every failure
+    path hands back `UnavailableConstraintReader`. A `is not None` test was
+    therefore true on every startup, so the log claimed the watcher was on with
+    memory unreachable and the rule asked a reader that could only raise."""
+    from fateforger.core.runtime import _required_block_rule_for
+    from fateforger.slack_bot.deepseek_timebox_planner import UnavailableConstraintReader
+
+    assert _required_block_rule_for(
+        calendar_client=object(), constraint_store=UnavailableConstraintReader(),
+        ledger=object(), calendar_id="hugo@example.com",
+    ) is None
+
+
+def test_a_readable_store_gets_the_watcher_on_the_sessions_own_calendar(monkeypatch):
+    from fateforger.core import runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "planning_timezone", lambda: "Europe/Amsterdam")
+    store = object()
+    rule = runtime_module._required_block_rule_for(
+        calendar_client=object(), constraint_store=store,  # type: ignore[arg-type]
+        ledger=object(), calendar_id="hugo@example.com",
+    )
+    assert rule is not None
+    assert rule.rule_id == "required_blocks"
+    # Not `primary`: the session writes the block to its own calendar (#256).
+    assert rule._config.calendar_id == "hugo@example.com"
+    assert rule._config.tz == "Europe/Amsterdam"

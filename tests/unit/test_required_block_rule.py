@@ -56,12 +56,15 @@ class _Calendar:
 
 
 class _Store:
-    def __init__(self, slugs: list[str]):
-        self._slugs, self.filters = slugs, []
+    def __init__(self, slugs: list[str], *, pad_to: int = 0):
+        self._slugs, self._pad_to, self.filters = slugs, pad_to, []
 
     async def query_constraints(self, *, filters, limit):
         self.filters.append(filters)
-        return [{"uid": f"c-{s}", "name": f"rule {s}", "requires_block": s} for s in self._slugs]
+        rows = [{"uid": f"c-{s}", "name": f"rule {s}", "requires_block": s} for s in self._slugs]
+        # Rows carrying no `requires_block` still count against the limit.
+        rows += [{"uid": f"p-{i}", "name": "other rule"} for i in range(self._pad_to - len(rows))]
+        return rows
 
 
 class _UnreadableStore:
@@ -380,3 +383,37 @@ async def test_an_unparseable_event_gives_no_verdict_for_that_slug(caplog):
     assert outcome.jobs == []
     assert outcome.undecided == [f"rule:required_blocks:U1:{DAY.isoformat()}:closure:"]
     assert any("calendar_unreadable" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_full_page_of_rules_says_so(caplog):
+    """The read is capped at 200 rows and takes no cursor, so a user with more
+    active rules than that silently loses the ones past the cap -- including,
+    possibly, the only rule that requires a block."""
+    rule = _rule(_Calendar(day_events=[]), _Store(["closure"], pad_to=200))
+    with caplog.at_level("WARNING"):
+        await _outcome(rule)
+    assert any("required_blocks_truncated" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_page_under_the_cap_is_quiet(caplog):
+    rule = _rule(_Calendar(day_events=[]), _Store(["closure"]))
+    with caplog.at_level("WARNING"):
+        await _outcome(rule)
+    assert not any("required_blocks_truncated" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_yesterdays_cache_entries_are_dropped():
+    """The cache is keyed by day and the process runs for weeks. Nothing ever
+    asks for a past day again, so those entries are held for the life of the
+    process and never read."""
+    rule = _rule(_Calendar(day_events=[_event("e1", "17:00", "17:20", slug="closure")]), _Store(["closure"]))
+    yesterday = DAY - timedelta(days=1)
+    rule.remember(user_id="U1", day=yesterday, slug="closure", event_id="old")
+    rule.remember(user_id="U2", day=yesterday, slug="closure", event_id="old-too")
+    await _outcome(rule)
+    assert rule.cached(user_id="U1", day=yesterday, slug="closure") is None
+    assert rule.cached(user_id="U2", day=yesterday, slug="closure") is None
+    assert rule.cached(user_id="U1", day=DAY, slug="closure") == "e1"

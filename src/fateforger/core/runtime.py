@@ -6,7 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from autogen_core import (
@@ -768,25 +768,11 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
             recipient=AgentId(USER_CHANNEL_AGENT_TYPE, key=reminder.scope),
         )
 
-    # The reconciler looks for the planning event on the same calendar the
-    # timeboxing session writes to. Left at the rule's "primary" default it
-    # evaluated a calendar the session never touched (#256).
-    required_block_rule = (
-        RequiredBlockRule(
-            calendar_client=calendar_client,
-            constraint_store=timeboxing_constraint_store,
-            ledger=timeboxing_session_store,
-            config=RequiredBlockConfig(
-                calendar_id=timeboxing_calendar_id or "primary",
-                tz=planning_timezone(),
-            ),
-        )
-        if timeboxing_constraint_store is not None
-        else None
-    )
-    logger.info(
-        "required_blocks watcher: %s",
-        "on" if required_block_rule else "off (no constraint store)",
+    required_block_rule = _required_block_rule_for(
+        calendar_client=calendar_client,
+        constraint_store=timeboxing_constraint_store,
+        ledger=timeboxing_session_store,
+        calendar_id=timeboxing_calendar_id,
     )
     reconciler = PlanningReconciler(
         scheduler,
@@ -926,6 +912,41 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
 
     setattr(runtime, "planning_guardian", planning_guardian)
     return runtime
+
+
+def _required_block_rule_for(
+    *,
+    calendar_client: Any,
+    constraint_store: ConstraintReader,
+    ledger: Any,
+    calendar_id: str | None,
+) -> RequiredBlockRule | None:
+    """The watcher, or None when there is no memory to ask.
+
+    `_build_timeboxing_constraint_store` never returns None -- every failure
+    path hands back `UnavailableConstraintReader`, whose every method raises.
+    So `store is not None` was true on every startup: the log said the watcher
+    was on when memory was unreachable, and the rule spent every tick asking a
+    reader that could only raise. The class is what says "off", so that is what
+    is checked.
+
+    The calendar id is the timeboxing session's, not `primary`: the rule must
+    look for the block on the calendar the session actually writes to (#256).
+    """
+
+    if isinstance(constraint_store, UnavailableConstraintReader):
+        logger.info("required_blocks watcher: off (constraint store unavailable)")
+        return None
+    logger.info("required_blocks watcher: on (calendar=%s)", calendar_id or "primary")
+    return RequiredBlockRule(
+        calendar_client=calendar_client,
+        constraint_store=constraint_store,
+        ledger=ledger,
+        config=RequiredBlockConfig(
+            calendar_id=calendar_id or "primary",
+            tz=planning_timezone(),
+        ),
+    )
 
 
 def _reconcile_interval_minutes() -> int:

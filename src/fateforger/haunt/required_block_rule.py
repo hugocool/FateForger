@@ -53,6 +53,10 @@ PLANNING_SLUG = "planning"
 _SLUG_PROPERTY = "tmbx.slug"
 #: A sleep time earlier than this is after midnight and belongs to the next day.
 _AFTER_MIDNIGHT_CUTOFF = time(4, 0)
+#: How many of the day's active rules the watcher reads. The read takes no
+#: cursor, so a full page means rules were dropped -- possibly the only one
+#: requiring a block.
+_CONSTRAINT_PAGE = 200
 
 
 @dataclass(frozen=True)
@@ -125,6 +129,19 @@ class RequiredBlockRule:
     def remember(self, *, user_id: str, day: date, slug: str, event_id: str) -> None:
         self._cache[(user_id, day.isoformat(), slug)] = event_id
 
+    def _evict_other_days(self, day: date) -> None:
+        """Drop every entry not about `day`.
+
+        The process runs for weeks and the key carries the day, so without this
+        every day the watcher ever looked at stays in the dict -- entries
+        nothing will ask for again, since a tick only ever asks about today.
+        Comparing two ISO dates this system wrote decides nothing about the
+        user.
+        """
+        today = day.isoformat()
+        for key in [k for k in self._cache if k[1] != today]:
+            del self._cache[key]
+
     # -- inputs ---------------------------------------------------------------------
     async def _day_type(self, user_id: str, day: date) -> str:
         """The day's classification: the session's locked one, else the weekday.
@@ -148,8 +165,14 @@ class RequiredBlockRule:
                 "day_type": await self._day_type(user_id, day),
                 "require_active": True,
             },
-            limit=200,
+            limit=_CONSTRAINT_PAGE,
         )
+        if isinstance(rows, list) and len(rows) == _CONSTRAINT_PAGE:
+            # A full page and no cursor: whatever the store had past the cap is
+            # not in `rows`, and a required kind sitting there is one the
+            # watcher will never look for.
+            logger.warning("required_blocks_truncated user=%s day=%s limit=%d",
+                           user_id, day, _CONSTRAINT_PAGE)
         return list(required_blocks_value(rows).get("slugs") or [])
 
     async def _sleep(self, user_id: str, day: date) -> str | None:
@@ -180,6 +203,7 @@ class RequiredBlockRule:
             return RequiredBlockOutcome()
         start = now.astimezone(timezone.utc)
         day = now.astimezone(ZoneInfo(self._config.tz)).date()
+        self._evict_other_days(day)
         try:
             required = await self._required(user_id=user_id, day=day)
         except Exception as exc:  # noqa: BLE001 - named, and no verdict
