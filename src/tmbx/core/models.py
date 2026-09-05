@@ -55,6 +55,19 @@ def is_valid_handle(value: str) -> bool:
     return all("0" <= ch <= "9" for ch in digits)
 
 
+def is_valid_slug(value: str) -> bool:
+    """True if ``value`` is a slug the calendar may carry: lowercase ASCII
+    letters and single hyphens, no leading, trailing or doubled hyphen.
+
+    Plain string predicates, like ``is_valid_handle`` -- the ban on ``re`` is
+    absolute across ``src/tmbx``. This is the SHAPE of an identifier; whether
+    the word is a registered kind is the host's question, not tmbx's.
+    """
+    if not value or value[0] == "-" or value[-1] == "-" or "--" in value:
+        return False
+    return all(("a" <= ch <= "z") or ch == "-" for ch in value)
+
+
 class ET(str, Enum):
     """Event type."""
 
@@ -568,4 +581,5 @@ __all__ = [
     "ViolationBlock",
     "ViolationKind",
     "is_valid_handle",
+    "is_valid_slug",
 ]

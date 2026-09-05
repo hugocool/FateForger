@@ -1468,3 +1468,31 @@ def test_durations_are_journaled_in_one_canonical_spelling():
     patch = Patch(ops=[AddBlock(after=None, h="WK1", n="Wake", t=ET.M, p=FixedStart(st=time(7, 0), dur="PT0M"))])
     assert '"dur":"PT0S"' in patch.model_dump_json()
     assert "PT0M" not in patch.model_dump_json()
+
+
+def test_a_malformed_slug_on_an_add_or_update_is_refused_by_shape():
+    """Membership in the registry is the kernel's check; tmbx only knows the
+    shape of an identifier it will write into the calendar."""
+    from datetime import date
+    from tmbx.core.models import ET, Block, FixedStart, Plan, is_valid_slug
+    from tmbx.core.ops import Patch, validate_patch
+
+    assert is_valid_slug("planning") and is_valid_slug("morning-routine")
+    for bad in ("", "Planning", "plan ning", "-planning", "planning-", "plan--ning", "plan_ning"):
+        assert not is_valid_slug(bad), bad
+
+    plan = Plan(date=date(2026, 9, 7), blocks=[
+        Block(uid="u1", h="DW1", n="Deep work", t=ET.DW,
+              p=FixedStart(st="09:30:00", dur="PT1H"), anchor_source="user"),
+    ])
+    add = Patch.model_validate({"ops": [
+        {"op": "add", "h": "PLN1", "n": "Plan", "t": "PR", "after": "END",
+         "p": {"a": "ap", "dur": "PT20M"}, "slug": "Planning Session"},
+    ]})
+    errors = validate_patch(plan, add)
+    assert any("slug" in e and "PLN1" in e for e in errors), errors
+    update = Patch.model_validate({"ops": [{"op": "update", "h": "DW1", "slug": "deep_work"}]})
+    errors = validate_patch(plan, update)
+    assert any("slug" in e and "DW1" in e for e in errors), errors
+    ok = Patch.model_validate({"ops": [{"op": "update", "h": "DW1", "slug": "deep-work"}]})
+    assert not [e for e in validate_patch(plan, ok) if "slug" in e]
