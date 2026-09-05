@@ -112,7 +112,9 @@ def main() -> None:
     # It is a compromise and should stay one: #150 removed the model so the
     # host's would govern quality. The case for taking it now is not
     # convenience -- every quality number this package has is measured against
-    # google/gemini-3.6-flash, so this is the better-*measured* option, and
+    # the pinned flash-tier model (OPENROUTER_DEFAULT_MODEL_FLASH, gpt-oss-120b
+    # on Cerebras since 2026-09-05; gemini-3.6-flash before), so this is the
+    # better-*measured* option, and
     # host sampling is the right architecture with quality nobody has looked at.
     #
     # Chosen at boot, never per call, and never inferred from a key merely

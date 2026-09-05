@@ -51,18 +51,39 @@ Only chain calls when a later prompt genuinely needs an earlier answer. Say whic
 
 `.env` has OpenRouter configured — `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, and model pins.
 
-**Extraction runs on `google/gemini-3.6-flash` with `"reasoning": {"effort": "minimal"}`.**
-Extraction is term typing, not deliberation — reasoning tokens buy nothing and cost latency on a
-call that sits in the write path.
+**The `.env` pins are the decision record. Two models, two roles, decided on measurement
+2026-08-24 (`scripts/bench/`, recorded in `infra/dsh/profile/cordis.patch.yml`):**
 
-Do not send `{"enabled": false}`: the endpoint rejects it with *"Reasoning is mandatory for this
-endpoint and cannot be disabled"*, and every request 400s before any judgement is parsed.
-Verified against the live API 2026-08-16. `minimal` is the floor.
+| pin | model | role |
+|---|---|---|
+| `OPENROUTER_DEFAULT_MODEL_FLASH` | `openai/gpt-oss-120b:nitro` | the loop and every judgement: extraction, routing, reads, stage prose, the memory judge |
+| `OPENROUTER_DEFAULT_MODEL_PRO` | `deepseek/deepseek-v4-pro-0813:nitro` | planning and patching; the non-contender judge in evals |
 
-1M context. A `google/gemini-3.6-flash:batch` variant exists and is the right choice for one-off
-passes over the whole corpus.
+Against gemini-3.6-flash, gpt-oss-120b on Cerebras measured half the time to first token, three
+times the throughput, and a twenty-first of the monthly cost. It was not close. **Gemini is not
+used anywhere in this project any more**; a `google/` id in code, `.env`, or a doc is a
+regression, not a choice, and the last one cost weeks of the memory server judging on the wrong
+model because `OpenRouterJudge` carried its own default and nothing read the pin.
 
-Escalate to a pro-tier model only for judgements that are genuinely hard, and say why.
+**An agent never changes a model pin.** Not "when convenient", not to a newer version, not to
+match a doc. A pin changes with a bench result in `scripts/bench/` and Hugo's word, and the
+change lands in `.env`, the code defaults, and this file together.
+
+**The `:nitro` suffix is load-bearing.** OpenRouter's default routing sorts by price; `:nitro`
+sorts by throughput, and the throughput hosts (Cerebras, Sail Research) enforce structured
+outputs, which a typed judgement needs. Naming the model without the suffix gets a different
+host and a different answer. The host can still move: on 2026-09-05 the deepseek pin was
+served by Fireworks, not Sail Research. Read the `provider` field back when it matters.
+
+**Extraction runs at `"reasoning": {"effort": "minimal"}`.** Extraction is term typing, not
+deliberation — reasoning tokens buy nothing and cost latency on a call in the write path.
+Verified on both pins 2026-09-05 with the judge's exact request shape: `minimal`, `low` and an
+omitted field all answer; omitting it quadruples gpt-oss-120b's reasoning tokens. Do not send
+`{"enabled": false}`; gemini's endpoint rejected it outright and nothing here has re-measured
+it. Contexts are 131k (gpt-oss-120b, Cerebras caps completions) and 163k (deepseek-v4-pro), not
+1M: a whole-corpus pass is chunked, not sent at once.
+
+Escalate to the pro pin only for judgements that are genuinely hard, and say why.
 
 So "we can't test it without a model" is not a reason to write a pattern. Two kinds of test,
 both required:
@@ -109,11 +130,11 @@ The corollary: a test that passes the first time you run it has not yet earned t
 on purpose and confirm it fails. Several tests in `tests/memory/` were written this way and one
 of them was found vacuous.
 
-> `OPENROUTER_DEFAULT_MODEL_FLASH` in `.env` currently pins the older
-> `google/gemini-3-flash-preview`. This file is authoritative; update the pin when convenient.
-> `OpenRouterJudge` defaults to `google/gemini-3.6-flash` in code and does not read that
-> variable, so the evals run on the right model regardless — but anything that does read it
-> will not.
+> `OpenRouterJudge` reads `OPENROUTER_DEFAULT_MODEL_FLASH` and falls back to the same model
+> in code (`DEFAULT_JUDGE_MODEL`), so the evals run on the pin. Every number in
+> `tests/memory/test_eval_*.py` and `docs/superpowers/research/` dated before 2026-09-05 was
+> taken on gemini-3.6-flash; the edit-suppression and necessity evals were re-run on the pin
+> that day and hold. Re-run an eval before quoting its number for the current model.
 
 ### Why
 

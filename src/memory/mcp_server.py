@@ -419,7 +419,9 @@ def build_bridged_server(db_path: str, *, api_key: str, base_url: str) -> FastMC
     tools-only — and without it the write path does not run at all. The case
     for taking it now rather than waiting for upstream sampling is not
     convenience: every quality number this package has is measured against
-    `google/gemini-3.6-flash`, so this is the better-*measured* option. Host
+    the pinned flash-tier model (`OPENROUTER_DEFAULT_MODEL_FLASH`, gpt-oss-120b
+    on Cerebras since 2026-09-05; gemini-3.6-flash before), so this is the
+    better-*measured* option. Host
     sampling is the right architecture with quality nobody has looked at.
     Re-run the evals against whatever model answers before trusting either.
 

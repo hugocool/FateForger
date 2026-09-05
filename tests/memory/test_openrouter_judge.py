@@ -8,7 +8,7 @@ import httpx
 
 from memory.judge import Judge
 from memory.models import Channel, Observation, Provenance, Tier
-from memory.openrouter_judge import OpenRouterJudge
+from memory.openrouter_judge import DEFAULT_JUDGE_MODEL, OpenRouterJudge
 
 T0 = datetime(2026, 3, 9, 9, 0, tzinfo=timezone.utc)
 
@@ -114,7 +114,7 @@ async def test_request_carries_the_pinned_model_and_minimal_reasoning():
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
     await judge.anchors(_obs("anything"))
-    assert captured["model"] == "google/gemini-3.6-flash"
+    assert captured["model"] == DEFAULT_JUDGE_MODEL
     # "enabled": False is rejected by this endpoint; "minimal" is the floor.
     assert captured.get("reasoning", {}).get("effort") == "minimal"
 

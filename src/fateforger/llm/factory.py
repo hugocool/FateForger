@@ -113,8 +113,8 @@ def _model_for_agent(agent_type: str) -> str:
 
     # Provider-specific defaults; override via `LLM_MODEL_*` env vars.
     openai_default = _clean(settings.openai_model) or "gpt-4o-mini"
-    openrouter_flash = _clean(getattr(settings, "openrouter_default_model_flash", "")) or "google/gemini-3-flash-preview"
-    openrouter_pro = _clean(getattr(settings, "openrouter_default_model_pro", "")) or "google/gemini-3-flash-preview"
+    openrouter_flash = _clean(getattr(settings, "openrouter_default_model_flash", "")) or "openai/gpt-oss-120b:nitro"
+    openrouter_pro = _clean(getattr(settings, "openrouter_default_model_pro", "")) or "deepseek/deepseek-v4-pro-0813:nitro"
 
     def pick(override: str, *, openai: str, openrouter: str) -> str:
         override = _clean(override)
@@ -274,7 +274,7 @@ def build_autogen_chat_client(
     if provider_name == "openrouter" and reasoning_effort:
         kwargs["extra_body"] = {"reasoning": {"effort": reasoning_effort}}
     if provider_name == "openrouter":
-        # OpenRouter model IDs (e.g. `google/gemini-...`) are not valid OpenAI model names,
+        # OpenRouter model IDs (e.g. `openai/gpt-oss-120b:nitro`) are not valid OpenAI model names,
         # so autogen-ext requires an explicit ModelInfo.
         kwargs["model_info"] = {
             "family": ModelFamily.ANY,

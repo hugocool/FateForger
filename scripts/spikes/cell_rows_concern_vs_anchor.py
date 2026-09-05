@@ -4,7 +4,7 @@ Reports: cells, calls, p50 latency, tokens, uncovered cells with cross-draw agre
 and one generated probe per approach for its top uncovered cell.
 Reads a throwaway copy of the store. Nothing is written anywhere.
 """
-import asyncio, json, statistics, sys, time
+import asyncio, json, os, statistics, sys, time
 from collections import Counter, defaultdict
 from datetime import date
 import httpx
@@ -19,7 +19,7 @@ for line in open(".env"):
     if line and not line.startswith("#") and "=" in line:
         k, v = line.split("=", 1); env[k] = v.strip().strip('"').strip("'")
 KEY, BASE = env["OPENROUTER_API_KEY"], env["OPENROUTER_BASE_URL"].rstrip("/")
-MODEL = "google/gemini-3.6-flash"
+MODEL = os.environ.get("OPENROUTER_DEFAULT_MODEL_FLASH") or "openai/gpt-oss-120b:nitro"
 DAY = date(2026, 9, 8)  # a working Tuesday
 SAID = 'The user said this session: "deep work in the morning, gym at 18:00."'
 

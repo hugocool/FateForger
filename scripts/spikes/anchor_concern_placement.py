@@ -14,7 +14,7 @@ for line in open(".env"):
     if line and not line.startswith("#") and "=" in line:
         k, v = line.split("=", 1); env[k] = v.strip().strip('"').strip("'")
 KEY, BASE = env["OPENROUTER_API_KEY"], env["OPENROUTER_BASE_URL"].rstrip("/")
-MODEL = "google/gemini-3.6-flash"
+MODEL = os.environ.get("OPENROUTER_DEFAULT_MODEL_FLASH") or "openai/gpt-oss-120b:nitro"
 
 CONCERNS = {
     "bounded": "How the day is bounded — when it starts and ends, what frames it.",
