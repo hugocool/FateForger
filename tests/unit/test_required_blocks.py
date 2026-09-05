@@ -30,10 +30,13 @@ def test_the_fact_value_lists_each_required_slug_once_with_its_rule():
     }
 
 
-def test_no_rule_requiring_a_kind_means_no_fact():
-    assert required_blocks_value(_rows(("c2", "Work start", None))) is None
-    assert required_blocks_value([]) is None
-    assert required_blocks_value(None) is None
+def test_no_rule_requiring_a_kind_means_an_empty_value():
+    """Empty, not None: the fact is filed on every resolve so that it can clear
+    a previous turn's requirement, and `_merge_facts` only ever overwrites."""
+    empty = {"slugs": [], "by_rule": {}}
+    assert required_blocks_value(_rows(("c2", "Work start", None))) == empty
+    assert required_blocks_value([]) == empty
+    assert required_blocks_value(None) == empty
 
 
 def test_required_slugs_reads_only_the_required_blocks_fact():

@@ -14,16 +14,22 @@ from typing import Any, Iterable
 from fateforger.agents.timeboxing.session_contracts import FactKind, PlanningFact
 
 
-def required_blocks_value(constraints: Any) -> dict[str, Any] | None:
-    """The fact value for a day's rules, or None when no rule requires a kind.
+def required_blocks_value(constraints: Any) -> dict[str, Any]:
+    """The fact value for a day's rules -- empty when no rule requires a kind.
+
+    Empty rather than absent, because the fact is filed on every candidate
+    resolve and `_merge_facts` merges by fact_id and never deletes. A host that
+    filed this only when something was required would leave the previous turn's
+    slugs standing: suspend the rule mid-session and every later candidate is
+    still refused for a block nothing asks for any more. The empty value under
+    the same id is the only thing that clears it, and it is satisfied by any
+    candidate.
 
     `by_rule` keeps the first rule that named each slug, so the brief can say
     "(from memory: <rule name>)" without a second join.
     """
-    if not isinstance(constraints, list):
-        return None
     by_rule: dict[str, dict[str, str]] = {}
-    for row in constraints:
+    for row in constraints if isinstance(constraints, list) else []:
         if not isinstance(row, dict):
             continue
         slug = row.get("requires_block")
@@ -32,8 +38,6 @@ def required_blocks_value(constraints: Any) -> dict[str, Any] | None:
         by_rule.setdefault(
             slug, {"uid": str(row.get("uid") or ""), "name": str(row.get("name") or "")}
         )
-    if not by_rule:
-        return None
     return {"slugs": sorted(by_rule), "by_rule": by_rule}
 
 

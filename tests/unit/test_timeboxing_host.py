@@ -81,7 +81,14 @@ def test_a_rule_requiring_a_kind_files_the_required_blocks_fact():
     assert required[0].value["by_rule"]["planning"] == {"uid": "c1", "name": "Daily planning"}
 
 
-def test_no_required_kind_files_no_required_blocks_fact():
+def test_no_required_kind_files_an_empty_required_blocks_fact():
+    """The fact is filed on every resolve, empty when nothing is required.
+
+    `_merge_facts` merges by fact_id and never deletes, so a fact that is
+    simply absent leaves the previous turn's requirement standing. A day whose
+    rule was suspended mid-session would keep demanding the block it no longer
+    requires, and only an empty fact under the same id clears it.
+    """
     from fateforger.agents.timeboxing.session_contracts import FactKind
     from fateforger.slack_bot.timeboxing_host import planning_facts
 
@@ -89,7 +96,10 @@ def test_no_required_kind_files_no_required_blocks_fact():
         day="2026-09-07", calendar_snapshot={"ok": True, "blocks": 3},
         constraints=[{"uid": "c2", "name": "Work start", "requires_block": None}],
     )
-    assert not [f for f in facts if f.kind is FactKind.REQUIRED_BLOCKS]
+    required = [f for f in facts if f.kind is FactKind.REQUIRED_BLOCKS]
+    assert len(required) == 1
+    assert required[0].fact_id == "required-blocks:2026-09-07"
+    assert required[0].value == {"slugs": [], "by_rule": {}}
 
 
 def test_the_memory_row_carries_requires_block():

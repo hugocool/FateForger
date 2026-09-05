@@ -85,7 +85,9 @@ class FactKind(StrEnum):
     #: Filed by the host at candidate time from memory's ``requires_block``
     #: values; read by readiness (open while it lists any slug), by the brief
     #: (which names each one with its rule) and by the submit and acceptance
-    #: checks. Never filed when no rule requires a kind.
+    #: checks. Filed on every successful resolve, with an empty slug list when
+    #: no rule requires a kind: facts merge by id and are never deleted, so the
+    #: empty value is the only thing that clears a requirement the day dropped.
     REQUIRED_BLOCKS = "required_blocks"
     #: The Stage 1 coverage matrix: one state per cell, plus the anchor
     #: placement it was classified against. Rewritten whole on every fold under

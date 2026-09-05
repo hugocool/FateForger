@@ -324,7 +324,12 @@ def planning_facts(
     the shape stays the one place the data lives.
 
     The third fact, `REQUIRED_BLOCKS`, is the one exception to "presence only":
-    readiness reads its slugs, so it is filed only when a rule requires a kind.
+    readiness, the brief and both missing-block checks read its slugs. It is
+    filed on every successful resolve, carrying an empty slug list when no rule
+    requires a kind -- `_merge_facts` merges by fact_id and never deletes, so
+    only an empty value under the same id clears a requirement the day no
+    longer has. Filing it conditionally would leave a suspended rule refusing
+    every later candidate for a block nothing asks for any more.
     """
 
     facts: list[PlanningFact] = []
@@ -354,16 +359,14 @@ def planning_facts(
             source="constraint_memory",
         ),
     ]
-    required = required_blocks_value(constraints)
-    if required is not None:
-        facts.append(
-            PlanningFact(
-                fact_id=f"required-blocks:{day}",
-                kind=FactKind.REQUIRED_BLOCKS,
-                value=required,
-                source="constraint_memory",
-            )
+    facts.append(
+        PlanningFact(
+            fact_id=f"required-blocks:{day}",
+            kind=FactKind.REQUIRED_BLOCKS,
+            value=required_blocks_value(constraints),
+            source="constraint_memory",
         )
+    )
     return facts
 
 

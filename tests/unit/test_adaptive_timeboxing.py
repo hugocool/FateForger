@@ -2405,6 +2405,64 @@ async def test_a_candidate_carrying_the_required_kind_on_an_op_is_accepted() -> 
     assert outcome.artifact.kind is ArtifactKind.VALIDATED_CANDIDATE
 
 
+class _ChangingContextPort(RecordedContextPort):
+    """A context port whose facts differ per resolve, as a real day's do.
+
+    The rules a day carries are re-read on every candidate turn, and a rule can
+    be suspended between two of them. One port answering the same facts forever
+    cannot show what happens then.
+    """
+
+    def __init__(self, *, per_call: list[tuple[PlanningFact, ...]]) -> None:
+        super().__init__(facts=per_call[0])
+        self._per_call = per_call
+
+    async def resolve(self, snapshot, *, target, progress):
+        self.facts = self._per_call[min(self.resolve_calls, len(self._per_call) - 1)]
+        return await super().resolve(snapshot, target=target, progress=progress)
+
+
+@pytest.mark.asyncio
+async def test_a_requirement_dropped_between_turns_stops_refusing() -> None:
+    """#214: the empty fact under the same id is what clears a stale requirement.
+
+    `_merge_facts` merges by fact_id and never deletes, so a host that files
+    REQUIRED_BLOCKS only when something is required leaves the previous turn's
+    slugs standing forever -- and a rule suspended mid-session would keep
+    refusing every candidate for the rest of the day.
+    """
+    repo, request = _advance_from_approved_skeleton()
+    base = (
+        _fact("cal-1", FactKind.CALENDAR_SNAPSHOT, {"fetched": True, "blocks": 0}),
+        _fact("con-1", FactKind.ACTIVE_CONSTRAINTS, {"fetched": True, "count": 1}),
+    )
+    context = _ChangingContextPort(
+        per_call=[base + (_required(["planning"]),), base + (_required([]),)]
+    )
+    without_planning = _candidate_result_with(
+        [{"op": "add", "h": "DW1", "n": "Deep work", "t": "DW", "p": {"a": "ap", "dur": "PT1H"}}]
+    )
+
+    kernel = _kernel(repo, RecordedPlanner(without_planning), context=context)
+    first = await kernel.turn(request, progress=RecordingProgressSink())
+    assert isinstance(first, TurnFailed), first
+    assert first.code == "required_block_missing"
+
+    stored = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    second = await _kernel(
+        repo, RecordedPlanner(without_planning), context=context
+    ).turn(
+        TurnRequest(
+            session_key="C1:1.0", interaction_id="adv-2", actor_user_id="U1",
+            expected_revision=stored.revision, intent=Advance(),
+        ),
+        progress=RecordingProgressSink(),
+    )
+    assert isinstance(second, AwaitingApproval), second
+    assert second.artifact.kind is ArtifactKind.VALIDATED_CANDIDATE
+    assert context.resolve_calls == 2
+
+
 @pytest.mark.asyncio
 async def test_a_required_kind_already_on_the_day_satisfies_it_through_the_rows() -> None:
     """The block was on the calendar before the patch; tmbx's rows carry its slug."""
