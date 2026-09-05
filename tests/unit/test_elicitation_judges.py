@@ -13,22 +13,34 @@ from types import SimpleNamespace
 
 import pytest
 
-from fateforger.agents.timeboxing.elicitation import ALL_CELLS, CONCERNS, ROWS, CoverageMatrix
+from fateforger.agents.timeboxing.elicitation import (
+    ALL_CELLS,
+    CONCERNS,
+    ROWS,
+    CoverageMatrix,
+    ranked_open_cells,
+)
 from fateforger.agents.timeboxing.elicitation_judges import (
     PLACEMENT_TARGETS,
     CoverageJudge,
+    ElicitationResult,
+    Judges,
     PlacementJudge,
     ProbeJudge,
     anchors_in,
+    elicit,
     unanchored_in,
 )
 from fateforger.agents.timeboxing.session_contracts import (
     CellRef,
     DayType,
     FactKind,
+    PlannerAssumption,
     PlanningDay,
     PlanningFact,
     PlanningSessionSnapshot,
+    coverage_fact_id,
+    elicited_fact_id,
 )
 
 DAY = date(2026, 9, 8)
@@ -197,3 +209,205 @@ async def test_generate_refuses_more_than_four_options() -> None:
         await ProbeJudge(client).generate(
             cell=CellRef(row="body", criterion="unclear"), rules_full=[], conversation=[], request=None, session_key="C1:1.0"
         )
+
+
+class _StubPlacement:
+    def __init__(self, placement: dict[str, str], rules: dict[str, str] | None = None) -> None:
+        self._placement = placement
+        self._rules = rules or {}
+        self.calls = 0
+
+    async def place(self, *, anchors, unanchored_rules, session_key):  # noqa: ANN001
+        from fateforger.agents.timeboxing.elicitation_judges import Placement
+
+        self.calls += 1
+        return Placement(anchors=self._placement, rules=self._rules)
+
+
+class _StubCoverage:
+    """`table` maps cell id -> state; anything else answers `covered`."""
+
+    def __init__(self, table: dict[str, str]) -> None:
+        self.table = table
+        self.asked: list[str] = []
+
+    async def classify(self, *, cell, rules, stated, request, session_key):  # noqa: ANN001
+        self.asked.append(cell.id)
+        return self.table.get(cell.id, "covered"), "stub"
+
+
+class _StubProbe:
+    """`grounded` is the set of cell ids that get a draft."""
+
+    def __init__(self, grounded: set[str]) -> None:
+        self.grounded = grounded
+        self.asked: list[str] = []
+
+    async def generate(self, *, cell, rules_full, conversation, request, session_key):  # noqa: ANN001
+        from fateforger.agents.timeboxing.session_contracts import ProbeDraft
+
+        self.asked.append(cell.id)
+        if cell.id not in self.grounded:
+            return None
+        return ProbeDraft(cell_id=cell.id, question=f"about {cell.id}?", why_needed="stub")
+
+
+def _snapshot(*facts: PlanningFact, assumptions: list[PlannerAssumption] | None = None) -> PlanningSessionSnapshot:
+    return PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=1,
+        owner_user_id="U1",
+        planning_day=PlanningDay.lock_default(value=DAY, timezone="Europe/Amsterdam", lock_revision=1, day_type=DayType.WORKING),
+        facts=[
+            PlanningFact(fact_id="request-1", kind=FactKind.REQUESTED_ACTIVITY, value="deep work in the morning, gym at 18:00", source="user"),
+            *facts,
+        ],
+        assumptions=list(assumptions or []),
+    )
+
+
+PLACED = {"a-gym": "body", "a-din": "fixed"}
+
+
+def _judges(coverage: dict[str, str], grounded: set[str] | None = None, placement: dict[str, str] = PLACED):
+    return Judges(
+        placement=_StubPlacement(placement, {"c-exit": "method"}),
+        coverage=_StubCoverage(coverage),
+        probe=_StubProbe(grounded if grounded is not None else set()),
+    )
+
+
+def _run(snapshot, judges, rows=ROWS_FIXTURE) -> ElicitationResult:
+    return asyncio.run(elicit(snapshot, rows, judges, session_key="C1:1.0"))
+
+
+def test_rows_with_no_rules_and_nothing_stated_are_not_applicable_without_a_call() -> None:
+    judges = _judges({})
+    result = _run(_snapshot(), judges)
+    matrix = CoverageMatrix.model_validate(result.matrix_fact.value)
+    # movement, fragile, not_today, unplaced: no rules placed, nothing stated
+    for row in ("movement", "fragile", "not_today", "unplaced"):
+        for criterion in ("tacit_assumptions", "alternatives", "unclear", "contradictory", "tacit_knowledge"):
+            assert matrix.cells[f"elicit.{row}.{criterion}"] == "not_applicable"
+    assert not any(cell.startswith("elicit.movement.") for cell in judges.coverage.asked)
+    # body (gym rules), fixed (dinner), method (exit criteria), request (stated): classified
+    assert any(cell.startswith("elicit.body.") for cell in judges.coverage.asked)
+    assert any(cell.startswith("elicit.method.") for cell in judges.coverage.asked)
+    assert any(cell.startswith("elicit.request.") for cell in judges.coverage.asked)
+
+
+def test_the_matrix_fact_is_written_whole_at_the_stable_id_with_placement() -> None:
+    result = _run(_snapshot(), _judges({}))
+    assert result.matrix_fact.fact_id == coverage_fact_id(DAY)
+    assert result.matrix_fact.kind is FactKind.COVERAGE_MATRIX
+    assert result.matrix_fact.source == "system"
+    matrix = CoverageMatrix.model_validate(result.matrix_fact.value)
+    assert set(matrix.cells) == {c.id for c in ALL_CELLS}
+    assert matrix.placement == PLACED
+    assert matrix.rule_placement == {"c-exit": "method"}
+    assert matrix.placed_against == ["a-din", "a-gym", "c-exit"]
+    assert matrix.rows["body"].rule_count == 2 and matrix.rows["body"].must_count == 1
+    assert matrix.rows["method"].rule_count == 1
+    assert matrix.rows["request"].stated == 1
+
+
+def test_placement_is_reused_when_the_uid_set_is_unchanged_and_redone_when_it_moves() -> None:
+    judges = _judges({})
+    first = _run(_snapshot(), judges)
+    assert judges.placement.calls == 1
+    again = _run(_snapshot(first.matrix_fact), judges)
+    assert judges.placement.calls == 1
+    matrix = CoverageMatrix.model_validate(again.matrix_fact.value)
+    assert matrix.placement == PLACED
+    fewer = [row for row in ROWS_FIXTURE if row["uid"] != "c-exit"]
+    asyncio.run(elicit(_snapshot(first.matrix_fact), fewer, judges, session_key="C1:1.0"))
+    assert judges.placement.calls == 2
+
+
+def test_a_cell_already_covered_is_not_classified_again() -> None:
+    judges = _judges({"elicit.body.unclear": "uncovered"})
+    first = _run(_snapshot(), judges)
+    asked_first = set(judges.coverage.asked)
+    assert "elicit.body.tacit_knowledge" in asked_first
+    judges.coverage.asked.clear()
+    _run(_snapshot(first.matrix_fact), judges)
+    assert "elicit.body.tacit_knowledge" not in judges.coverage.asked  # was covered
+    assert "elicit.body.unclear" in judges.coverage.asked  # still open, re-asked
+
+
+def test_probes_come_from_the_top_three_ranked_cells_and_ungroundable_ones_stay_uncovered() -> None:
+    open_cells = {
+        "elicit.body.unclear": "uncovered",
+        "elicit.body.tacit_knowledge": "uncovered",
+        "elicit.fixed.unclear": "uncovered",
+        "elicit.request.unclear": "uncovered",
+    }
+    judges = _judges(open_cells, grounded={"elicit.body.tacit_knowledge", "elicit.fixed.unclear"})
+    result = _run(_snapshot(), judges)
+    matrix = CoverageMatrix.model_validate(result.matrix_fact.value)
+    # Rank as the orchestrator did before it learned which cells ground:
+    # the final matrix already sorts the ungroundable cell last.
+    ranked = ranked_open_cells(matrix.model_copy(update={"unaskable": []}))
+    assert judges.probe.asked == [c.id for c in ranked[:3]]
+    assert [p.cell_id for p in result.probes] == [c.id for c in ranked[:3] if c.id in judges.probe.grounded]
+    ungrounded = [c.id for c in ranked[:3] if c.id not in judges.probe.grounded]
+    assert ungrounded and set(ungrounded) <= set(matrix.unaskable)
+    for cell in ungrounded:
+        assert matrix.cells[cell] == "uncovered"
+
+
+def test_a_cell_the_user_assumed_past_is_not_generated_for() -> None:
+    assumed = PlannerAssumption(assumption_id="as-1", requirement_id="elicit.body.unclear", value="fine", why_needed="w", filed_by="user")
+    judges = _judges({"elicit.body.unclear": "uncovered"}, grounded={"elicit.body.unclear"})
+    result = _run(_snapshot(assumptions=[assumed]), judges)
+    assert judges.probe.asked == []
+    assert result.probes == []
+
+
+def test_stated_facts_reach_the_classifier_and_the_generator() -> None:
+    frame = PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:30"}, source="user")
+    said = PlanningFact(fact_id=elicited_fact_id("elicit.body.unclear"), kind=FactKind.ELICITED_STATEMENT, value={"cell": "elicit.body.unclear", "text": "gym is 75 minutes"}, source="user")
+
+    class _Recording(_StubCoverage):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.stated: list[list[str]] = []
+
+        async def classify(self, *, cell, rules, stated, request, session_key):  # noqa: ANN001
+            self.stated.append(list(stated))
+            return await super().classify(cell=cell, rules=rules, stated=stated, request=request, session_key=session_key)
+
+    coverage = _Recording()
+    judges = Judges(placement=_StubPlacement(PLACED, {"c-exit": "method"}), coverage=coverage, probe=_StubProbe(set()))
+    result = _run(_snapshot(frame, said), judges)
+    assert coverage.stated and all("gym is 75 minutes" in s for s in coverage.stated)
+    assert all(any("07:00" in line for line in s) for s in coverage.stated)
+    matrix = CoverageMatrix.model_validate(result.matrix_fact.value)
+    assert matrix.rows["body"].stated == 1
+    assert matrix.rows["bounded"].stated == 1
+
+
+def test_a_suspended_rule_is_not_placed_or_counted() -> None:
+    suspended = PlanningFact(fact_id="suspend:c-run", kind=FactKind.SUSPENDED_CONSTRAINT, value={"uid": "c-run", "reason": "not today"}, source="user")
+    result = _run(_snapshot(suspended), _judges({}))
+    matrix = CoverageMatrix.model_validate(result.matrix_fact.value)
+    assert matrix.rows["body"].rule_count == 1
+    assert "a-din" not in matrix.placed_against
+
+
+def test_one_failing_classify_fails_the_turn_and_writes_nothing() -> None:
+    class _Broken(_StubCoverage):
+        async def classify(self, *, cell, rules, stated, request, session_key):  # noqa: ANN001
+            if cell.id == "elicit.body.unclear":
+                raise ValueError("model returned garbage")
+            return "covered", "stub"
+
+    judges = Judges(placement=_StubPlacement(PLACED, {"c-exit": "method"}), coverage=_Broken({}), probe=_StubProbe(set()))
+    with pytest.raises(ValueError, match="garbage"):
+        _run(_snapshot(), judges)
+
+
+def test_elicit_needs_a_locked_day() -> None:
+    bare = _snapshot().model_copy(update={"planning_day": None})
+    with pytest.raises(ValueError, match="locked"):
+        _run(bare, _judges({}))

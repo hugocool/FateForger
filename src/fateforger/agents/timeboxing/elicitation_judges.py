@@ -306,7 +306,7 @@ class ProbeJudge:
         if not judgement.grounded:
             return None
         if not judgement.question or not judgement.why_needed:
-            raise ValueError(f"probe judgement for {cell.id} said grounded and gave no question")
+            raise ValueError(f"probe judgement for {cell.id} said grounded and gave no question or reason")
         # Slack renders at most four buttons, and `ProbeDraft.options` caps at
         # four as well; this is the loud failure the schema can no longer carry.
         if len(judgement.options) > 4:
@@ -323,4 +323,242 @@ class ProbeJudge:
         )
 
 
-__all__ = ["PLACEMENT_TARGETS", "CoverageJudge", "Placement", "PlacementJudge", "ProbeJudge", "anchors_in", "unanchored_in"]
+@dataclass(frozen=True, slots=True)
+class Judges:
+    placement: PlacementJudge
+    coverage: CoverageJudge
+    probe: ProbeJudge
+
+
+def build_judges(model_client: ChatCompletionClient) -> Judges:
+    """The three judges on one client. The host imports this by name so a test
+    can replace it with stubs without reaching into the host."""
+    return Judges(
+        placement=PlacementJudge(model_client),
+        coverage=CoverageJudge(model_client),
+        probe=ProbeJudge(model_client),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ElicitationResult:
+    matrix_fact: PlanningFact
+    probes: list[ProbeDraft]
+
+
+def _suspended_uids(snapshot: PlanningSessionSnapshot) -> set[str]:
+    found: set[str] = set()
+    for fact in snapshot.facts:
+        if fact.kind is not FactKind.SUSPENDED_CONSTRAINT:
+            continue
+        if not isinstance(fact.value, dict) or "uid" not in fact.value:
+            raise ValueError(f"suspended-constraint fact {fact.fact_id!r} carries no uid")
+        found.add(str(fact.value["uid"]))
+    return found
+
+
+def _request(snapshot: PlanningSessionSnapshot) -> str | None:
+    for fact in snapshot.facts:
+        if fact.kind is FactKind.REQUESTED_ACTIVITY and isinstance(fact.value, str):
+            return fact.value
+    return None
+
+
+def _frame_line(snapshot: PlanningSessionSnapshot) -> str | None:
+    for fact in snapshot.facts:
+        if fact.kind is FactKind.DAY_FRAME and isinstance(fact.value, dict):
+            wake = fact.value.get("wake")
+            sleep = fact.value.get("sleep")
+            return f"up at {wake or '?'}, asleep by {sleep or '?'}"
+    return None
+
+
+def _statements(snapshot: PlanningSessionSnapshot) -> list[tuple[str | None, str]]:
+    """(cell id or None, text) for every elicited statement, in fact order."""
+    out: list[tuple[str | None, str]] = []
+    for fact in snapshot.facts:
+        if fact.kind is FactKind.ELICITED_STATEMENT and isinstance(fact.value, dict):
+            cell = fact.value.get("cell")
+            out.append((str(cell) if isinstance(cell, str) else None, str(fact.value.get("text") or "")))
+    return out
+
+
+def _stated_lines(snapshot: PlanningSessionSnapshot) -> list[str]:
+    lines = [text for _, text in _statements(snapshot)]
+    frame = _frame_line(snapshot)
+    return ([frame] if frame else []) + lines
+
+
+def _row_of_statement(cell_id: str | None) -> str | None:
+    """The row key a statement was filed against, from its cell id: a string
+    this system minted as `elicit.{row}.{criterion}`."""
+    if cell_id is None:
+        return None
+    for cell in ALL_CELLS:
+        if cell.id == cell_id:
+            return cell.row
+    return None
+
+
+def _row_stats(
+    placement: Placement, rows: list[dict[str, Any]], snapshot: PlanningSessionSnapshot
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, RowStats]]:
+    """Rules per row and the counts ranking reads; every term a count over
+    minted fields. A rule with anchors under several rows lands in each."""
+    by_row: dict[str, list[dict[str, Any]]] = {key: [] for key in ROWS}
+    for row in rows:
+        targets: set[str] = set()
+        for anchor in row.get("anchors") or []:
+            target = placement.anchors.get(str(anchor["uid"]))
+            if target is not None:
+                targets.add(target)
+        if not (row.get("anchors") or []):
+            targets.add(placement.rules.get(str(row["uid"]), "unplaced"))
+        for target in targets:
+            by_row[target].append(row)
+    stated: dict[str, int] = {key: 0 for key in ROWS}
+    for cell_id, _ in _statements(snapshot):
+        row_key = _row_of_statement(cell_id)
+        if row_key is not None:
+            stated[row_key] += 1
+    if _frame_line(snapshot) is not None:
+        stated["bounded"] += 1
+    if _request(snapshot) is not None:
+        stated["request"] += 1
+    stats = {
+        key: RowStats(
+            rule_count=len(by_row[key]),
+            must_count=sum(1 for r in by_row[key] if str(r.get("necessity")) == "must"),
+            stated=stated[key],
+        )
+        for key in ROWS
+    }
+    return by_row, stats
+
+
+async def elicit(
+    snapshot: PlanningSessionSnapshot,
+    rows: list[dict[str, Any]],
+    judges: Judges,
+    *,
+    session_key: str,
+    concurrency: int = 16,
+    generate_for: int = 3,
+) -> ElicitationResult:
+    """One iteration of the Stage 1 loop: place, classify, rank, generate.
+
+    Everything fallible completes before anything is assembled; a turn is
+    atomic. The matrix is rewritten whole at the day's stable id. Cells whose
+    probe could not be grounded are recorded in `unaskable` and stay
+    `uncovered`: the gate is "nothing uncovered", and `unaskable` only sorts
+    a cell last.
+    """
+    if snapshot.planning_day is None:
+        raise ValueError("elicit needs a locked planning day")
+    day = snapshot.planning_day.date
+    suspended = _suspended_uids(snapshot)
+    live_rows = [row for row in rows if str(row.get("uid")) not in suspended]
+
+    # 1. Place, reusing the cached placement iff the uid set is unchanged.
+    anchors = anchors_in(live_rows)
+    unanchored = unanchored_in(live_rows)
+    against = sorted({a["uid"] for a in anchors} | {r["uid"] for r in unanchored})
+    previous = coverage_matrix(snapshot)
+    if previous is not None and previous.placed_against == against:
+        placement = Placement(anchors=dict(previous.placement), rules=dict(previous.rule_placement))
+    else:
+        placement = await judges.placement.place(anchors=anchors, unanchored_rules=unanchored, session_key=session_key)
+
+    # 2. Applicability, arithmetic.
+    by_row, stats = _row_stats(placement, live_rows, snapshot)
+    request = _request(snapshot)
+    stated_lines = _stated_lines(snapshot)
+    cells: dict[str, CellState] = {}
+    to_classify: list[CellRef] = []
+    for cell in ALL_CELLS:
+        if previous is not None and previous.cells.get(cell.id) == "covered":
+            cells[cell.id] = "covered"
+            continue
+        row_stats = stats[cell.row]
+        if row_stats.rule_count == 0 and row_stats.stated == 0:
+            cells[cell.id] = "not_applicable"
+            continue
+        to_classify.append(cell)
+
+    # 3. Classify: one bounded-concurrency batch; any failure propagates.
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _one(cell: CellRef) -> tuple[str, CellState]:
+        async with semaphore:
+            state, _why = await judges.coverage.classify(
+                cell=cell,
+                rules=by_row[cell.row],
+                stated=stated_lines,
+                request=request,
+                session_key=session_key,
+            )
+            return cell.id, state
+
+    for cell_id, state in await asyncio.gather(*(_one(cell) for cell in to_classify)):
+        cells[cell_id] = state
+
+    still_open = {cell_id for cell_id, state in cells.items() if state == "uncovered"}
+    unaskable = [cell_id for cell_id in (previous.unaskable if previous else []) if cell_id in still_open]
+    matrix = CoverageMatrix(
+        cells=cells,
+        placement=placement.anchors,
+        rule_placement=placement.rules,
+        placed_against=against,
+        rows=stats,
+        unaskable=unaskable,
+    )
+
+    # 4. Rank.
+    assumed = frozenset(a.requirement_id for a in snapshot.assumptions)
+    ranked = ranked_open_cells(matrix, assumed)
+
+    # 5. Generate for the top cells, in parallel.
+    conversation = ([request] if request else []) + stated_lines
+    targets = ranked[:generate_for]
+    drafts = await asyncio.gather(
+        *(
+            judges.probe.generate(
+                cell=cell, rules_full=by_row[cell.row], conversation=conversation, request=request, session_key=session_key
+            )
+            for cell in targets
+        )
+    )
+    probes: list[ProbeDraft] = []
+    for cell, draft in zip(targets, drafts, strict=True):
+        if draft is None:
+            if cell.id not in unaskable:
+                unaskable.append(cell.id)
+        else:
+            if cell.id in unaskable:
+                unaskable.remove(cell.id)
+            probes.append(draft)
+    matrix = matrix.model_copy(update={"unaskable": unaskable})
+
+    # 6. Return; the fact is rewritten whole.
+    fact = PlanningFact(
+        fact_id=coverage_fact_id(day),
+        kind=FactKind.COVERAGE_MATRIX,
+        value=matrix.model_dump(mode="json"),
+        source="system",
+    )
+    return ElicitationResult(matrix_fact=fact, probes=probes)
+
+
+__all__ = [
+    "PLACEMENT_TARGETS",
+    "CoverageJudge",
+    "ElicitationResult",
+    "Judges",
+    "Placement",
+    "PlacementJudge",
+    "ProbeJudge",
+    "anchors_in",
+    "build_judges",
+    "elicit",
+    "unanchored_in",
+]
