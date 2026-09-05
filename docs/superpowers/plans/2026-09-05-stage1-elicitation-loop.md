@@ -23,6 +23,7 @@
 - **Work happens in `.claude/worktrees/stage1-elicitation` on `feat/stage1-elicitation-loop`.** Run everything with `PYTHONPATH=src` and the parent's venv: `/Users/hugoevers/VScode-projects/admonish-1/.venv/bin/python`. There is no `.env` in the worktree; the eval and relink steps say how to load the parent's.
 - **The live store `data/memory.db` is Hugo's real corpus.** Every write to it is preceded by a dated `cp` backup. Never commit any copy of it.
 - **Commit after every task.** Commit messages end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+- **The gate before every commit is the package suite, not the unit directory:** `$PY -m pytest tests -q -m "not slow" -p no:randomly` (integration and e2e included). Task 9 ran `tests/unit` only and ten integration tests broke unseen for two tasks (2026-09-05).
 
 Shell alias used throughout (set once per shell):
 
