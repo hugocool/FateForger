@@ -42,9 +42,9 @@ async def test_the_live_turn_marks_the_user_active(monkeypatch) -> None:
             return TurnFailed(code="x", message="x")
 
     class Repo:
-        async def load_or_create(self, key, owner_user_id):
+        async def load(self, key):
             return PlanningSessionSnapshot(
-                session_key=key, revision=1, owner_user_id=owner_user_id
+                session_key=key, revision=1, owner_user_id="U1"
             )
 
     class Runtime:
@@ -114,9 +114,9 @@ async def test_a_finished_session_stops_suppressing(monkeypatch) -> None:
             return TurnFailed(code="x", message="x")
 
     class Repo:
-        async def load_or_create(self, key, owner_user_id):
+        async def load(self, key):
             return PlanningSessionSnapshot(
-                session_key=key, revision=1, owner_user_id=owner_user_id,
+                session_key=key, revision=1, owner_user_id="U1",
                 status="committed",
             )
 

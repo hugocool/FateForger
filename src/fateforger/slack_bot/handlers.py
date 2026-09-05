@@ -43,6 +43,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     ApproveArtifact,
     ArtifactKind,
     Asked,
+    AskQuestion,
     Cancelled,
     Committed,
     ConfirmPlanningDay,
@@ -1564,6 +1565,26 @@ async def _answer_question(
     )
 
 
+async def _load_or_new(
+    repository, session_key: str, *, owner_user_id: str
+) -> PlanningSessionSnapshot:
+    """The stored session, or an unsaved empty one -- never a written row.
+
+    Creating the row here is how a question became a session: the Admonisher's
+    nudge suppressor reads the session store, so a revision-0 `open` row with
+    `updated_at=now` silences the planning reminder for an hour. The kernel is
+    the only thing that may create a session, and only for an intent that
+    starts one; the host reads.
+    """
+
+    stored = await repository.load(session_key)
+    if stored is not None:
+        return stored
+    return PlanningSessionSnapshot.new(
+        session_key=session_key, owner_user_id=owner_user_id
+    )
+
+
 async def _run_adaptive_timebox_turn(
     *,
     runtime,
@@ -1604,37 +1625,15 @@ async def _run_adaptive_timebox_turn(
         )
         return timebox_failure_message()
 
-    # The activity tracker no longer decides whether the Admonisher nudges --
-    # `dispatch_planning_reminder` reads the session store for that (#256).
-    # What it still owns is the idle timer: ten quiet minutes after the last
-    # turn it asks the guardian to reconcile, which is how an abandoned
-    # session earns its nudge back.
-    timeboxing_activity.mark_active(
-        user_id=actor_user_id,
-        channel_id=card_channel,
-        thread_ts=card_thread_ts,
-    )
-
-    # Any turn is activity on this session: it cancels a pending Admonisher
-    # ladder (the planning session that started itself, #164 increment A).
-    # Best-effort: a haunt failure must never block the turn.
     haunting_service = getattr(runtime, "haunting_service", None)
-    if haunting_service is not None:
-        try:
-            await haunting_service.record_user_activity(
-                topic_id=session_key, task_id=None, user_id=actor_user_id
-            )
-        except Exception:
-            logger.exception("activity record failed session_key=%s", session_key)
-            record_error(component="session_start", error_type="cancel_failure")
 
     progress_card = HarnessProgressCard(
         client, channel=progress_channel, message_ts=progress_ts
     )
     snapshot: PlanningSessionSnapshot | None = None
     try:
-        snapshot = await repository.load_or_create(
-            session_key, owner_user_id=actor_user_id
+        snapshot = await _load_or_new(
+            repository, session_key, owner_user_id=actor_user_id
         )
         if action is not None:
             intent: TimeboxIntent = action.intent
@@ -1644,6 +1643,37 @@ async def _run_adaptive_timebox_turn(
                 runtime, snapshot, user_text=user_text
             )
             expected_revision = snapshot.revision
+        if not isinstance(intent, AskQuestion):
+            # Asked is not started up here either. Both of these say "the user
+            # is planning": the tracker owns the idle timer that earns an
+            # abandoned session its nudge back, and `record_user_activity`
+            # cancels the pending Admonisher ladder (#164 increment A). A
+            # question is the user asking whether they have planned anything,
+            # and silencing the reminder that would answer it is the opposite
+            # of what they asked for. So both wait until the intent is known.
+            # The button path never carries a question, so it is unaffected.
+            #
+            # The activity tracker no longer decides whether the Admonisher
+            # nudges -- `dispatch_planning_reminder` reads the session store
+            # for that (#256).
+            timeboxing_activity.mark_active(
+                user_id=actor_user_id,
+                channel_id=card_channel,
+                thread_ts=card_thread_ts,
+            )
+            # Best-effort: a haunt failure must never block the turn.
+            if haunting_service is not None:
+                try:
+                    await haunting_service.record_user_activity(
+                        topic_id=session_key, task_id=None, user_id=actor_user_id
+                    )
+                except Exception:
+                    logger.exception(
+                        "activity record failed session_key=%s", session_key
+                    )
+                    record_error(
+                        component="session_start", error_type="cancel_failure"
+                    )
         outcome = await kernel.turn(
             TurnRequest(
                 session_key=session_key,
@@ -1654,8 +1684,8 @@ async def _run_adaptive_timebox_turn(
             ),
             progress=KernelProgressSink(progress_card, session_key=session_key),
         )
-        current = await repository.load_or_create(
-            session_key, owner_user_id=actor_user_id
+        current = await _load_or_new(
+            repository, session_key, owner_user_id=actor_user_id
         )
         observer = getattr(runtime, "timeboxing_feedback_observer", None)
         if observer is not None:
