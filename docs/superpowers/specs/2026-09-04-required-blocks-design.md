@@ -284,10 +284,12 @@ next day.
 **Evaluation.**
 
 1. Fetch the registered event by id. Still of the kind and within bounds → satisfied, no list.
-   Still of the kind and **out** of bounds → haunt, reason `moved_out`, and no list: the id
-   resolves, so the block was dragged to another day or pushed past sleep, and nothing on this
-   day's list can change that. Listing here would find an empty day and call it `missing` —
-   the wrong reason and the wrong line.
+   Still of the kind and **out** of bounds → the id resolves, so the block was dragged to
+   another day or pushed past sleep — but the user may instead have fixed the day by booking a
+   NEW block of the kind rather than dragging the old one back, so the day is listed once for a
+   replacement. An in-bounds block of the kind → re-register its id, satisfied. None found →
+   haunt, reason `moved_out`, cache left as is (a bare "no list" here would leave the haunt
+   sticky against exactly that repair).
 2. Miss — the id is gone, or the event it resolves no longer carries the kind → list the day
    once. Found in bounds → re-register silently, satisfied. Found out of bounds → haunt, reason
    `moved_out`. Not found → haunt, reason `missing`.

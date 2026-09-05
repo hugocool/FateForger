@@ -15,6 +15,7 @@ from fateforger.haunt.required_block_rule import (
     RequiredBlockConfig,
     RequiredBlockRule,
     _line,
+    bounds_of,
     slug_of,
     within_bounds,
 )
@@ -289,28 +290,45 @@ async def test_a_missing_planning_block_does_not_hide_another_kinds_ladder():
 
 
 @pytest.mark.asyncio
-async def test_the_cached_id_dragged_to_another_day_is_moved_out_without_listing():
+async def test_the_cached_id_dragged_to_another_day_is_moved_out_after_one_listing():
     """R4: the id resolves, the kind matches, it is simply not on this day any
-    more -- that is the drag the spec's end-to-end case names. Nothing about
-    the day's other events can change it, so the list is not worth a call."""
+    more -- that is the drag the spec's end-to-end case names. The day is
+    listed once, for a replacement the user may have booked instead of
+    dragging the old block back; none is found, so the verdict stands."""
     ev = _event("e1", "17:00", "17:20", slug="planning", day=date(2026, 9, 8))
     cal = _Calendar(day_events=[], by_id={"e1": ev})
     rule = _rule(cal, _Store(["planning"]))
     rule.remember(user_id="U1", day=DAY, slug="planning", event_id="e1")
     jobs = await _jobs(rule)
     assert jobs and jobs[0].payload.reason == REASON_MOVED_OUT
-    assert cal.list_calls == 0
+    assert cal.list_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_the_cached_id_pushed_past_sleep_is_moved_out_without_listing():
+async def test_the_cached_id_pushed_past_sleep_is_moved_out_after_one_listing():
     ev = _event("e1", "23:10", "23:40", slug="planning")
     cal = _Calendar(day_events=[ev], by_id={"e1": ev})
     rule = _rule(cal, _Store(["planning"]), _Ledger(sleep="23:00"))
     rule.remember(user_id="U1", day=DAY, slug="planning", event_id="e1")
     jobs = await _jobs(rule)
     assert jobs and jobs[0].payload.reason == REASON_MOVED_OUT
-    assert cal.list_calls == 0
+    assert cal.list_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_rebooked_block_ends_a_moved_out_haunt():
+    """The user did not drag the old block back; they booked a NEW one of the
+    same kind, in bounds, today. The cached id still points at the moved
+    event, but the listing this branch now does finds the replacement, so the
+    verdict is `present` and the cache moves on to the new id."""
+    moved = _event("e1", "17:00", "17:20", slug="planning", day=date(2026, 9, 8))
+    replacement = _event("e2", "18:00", "18:20", slug="planning")
+    cal = _Calendar(day_events=[replacement], by_id={"e1": moved})
+    rule = _rule(cal, _Store(["planning"]))
+    rule.remember(user_id="U1", day=DAY, slug="planning", event_id="e1")
+    assert await _jobs(rule) == []
+    assert cal.list_calls == 1
+    assert rule.cached(user_id="U1", day=DAY, slug="planning") == "e2"
 
 
 @pytest.mark.asyncio
@@ -384,6 +402,49 @@ async def test_an_unparseable_event_gives_no_verdict_for_that_slug(caplog):
     assert outcome.jobs == []
     assert outcome.undecided == [f"rule:required_blocks:U1:{DAY.isoformat()}:closure:"]
     assert any("calendar_unreadable" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_cached_event_start_gives_no_verdict_and_keeps_the_cache(caplog):
+    """A malformed ISO string does not raise -- `_parse_event_dt` returns None
+    for it -- so unguarded bounds arithmetic would read it as out of bounds
+    and haunt as `moved_out`. It must instead be undecided, same as any other
+    unreadable event, and the cache must not be touched or reset."""
+    ev = _event("e1", "17:00", "17:20", slug="closure")
+    ev["start"] = "not-a-real-timestamp"
+    cal = _Calendar(day_events=[ev], by_id={"e1": ev})
+    rule = _rule(cal, _Store(["closure"]))
+    rule.remember(user_id="U1", day=DAY, slug="closure", event_id="e1")
+    with caplog.at_level("WARNING"):
+        outcome = await _outcome(rule)
+    assert outcome.jobs == []
+    assert outcome.undecided == [f"rule:required_blocks:U1:{DAY.isoformat()}:closure:"]
+    assert rule.cached(user_id="U1", day=DAY, slug="closure") == "e1"
+    assert cal.list_calls == 0
+    assert any("required_block_event_unparseable" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_event_in_the_listing_gives_no_verdict(caplog):
+    """Same defect, the cache-miss path: one event of the kind has a start
+    that will not parse. That slug is undecided, not judged by whatever else
+    is on the day."""
+    broken = _event("e1", "17:00", "17:20", slug="closure")
+    broken["start"] = "not-a-real-timestamp"
+    cal = _Calendar(day_events=[broken])
+    rule = _rule(cal, _Store(["closure"]))
+    with caplog.at_level("WARNING"):
+        outcome = await _outcome(rule)
+    assert outcome.jobs == []
+    assert outcome.undecided == [f"rule:required_blocks:U1:{DAY.isoformat()}:closure:"]
+    assert any("required_block_event_unparseable" in record.message for record in caplog.records)
+
+
+def test_bounds_of_is_none_for_an_unparseable_timestamp_and_within_bounds_wraps_it():
+    ev = _event("e", "17:00", "17:20", slug="closure")
+    ev["start"] = "not-a-real-timestamp"
+    assert bounds_of(ev, day=DAY, tz=AMS, sleep="23:00") is None
+    assert within_bounds(ev, day=DAY, tz=AMS, sleep="23:00") is False
 
 
 @pytest.mark.asyncio

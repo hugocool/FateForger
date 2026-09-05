@@ -87,16 +87,27 @@ def _sleep_boundary(day: date, tz: str, sleep: str | None) -> datetime:
     return datetime.combine(on, at, tzinfo=zone)
 
 
-def within_bounds(event: dict, *, day: date, tz: str, sleep: str | None) -> bool:
-    """Starts on `day` in `tz` and ends no later than the sleep boundary."""
+def bounds_of(event: dict, *, day: date, tz: str, sleep: str | None) -> bool | None:
+    """Starts on `day` in `tz` and ends no later than the sleep boundary.
+
+    None when the start or end will not parse -- a malformed timestamp is not
+    evidence the block left its bounds, and `_parse_event_dt` returns None for
+    one rather than raising, so an unguarded boolean read would silently score
+    it out of bounds (#213).
+    """
     zone = ZoneInfo(tz)
     start = _parse_event_dt(event.get("start"), tz=zone)
     end = _parse_event_dt(event.get("end"), tz=zone)
     if start is None or end is None:
-        return False
+        return None
     if start.astimezone(zone).date() != day:
         return False
     return end <= _sleep_boundary(day, tz, sleep)
+
+
+def within_bounds(event: dict, *, day: date, tz: str, sleep: str | None) -> bool:
+    """Starts on `day` in `tz` and ends no later than the sleep boundary."""
+    return bounds_of(event, day=day, tz=tz, sleep=sleep) is True
 
 
 def _is_kind(event: dict, slug: str) -> bool:
@@ -270,29 +281,15 @@ class RequiredBlockRule:
             return None
         return await self._check(user_id=user_id, day=day, slug=slug, sleep=sleep)
 
-    async def _check(self, *, user_id: str, day: date, slug: str, sleep: str | None) -> str | None:
-        """'present', REASON_MISSING, REASON_MOVED_OUT, or None for no verdict."""
-        tz = self._config.tz
-        remembered = self.cached(user_id=user_id, day=day, slug=slug)
-        if remembered:
-            try:
-                event = await self._calendar.get_event(calendar_id=self._config.calendar_id, event_id=remembered)
-                of_kind = event is not None and _is_kind(event, slug)
-                in_bounds = of_kind and within_bounds(event, day=day, tz=tz, sleep=sleep)
-            except Exception as exc:  # noqa: BLE001 - the fetch or the parse; either way, no verdict
-                logger.warning("calendar_unreadable user=%s slug=%s error_type=%s error=%s",
-                               user_id, slug, type(exc).__name__, exc)
-                return None
-            if of_kind:
-                if in_bounds:
-                    return "present"
-                # R4: the id resolves and the kind still matches -- the block
-                # was dragged to another day or pushed past sleep. That is
-                # `moved_out`, and nothing on this day's list can change it, so
-                # the list is not worth a call. Listing here also read as
-                # `missing` whenever the drag left the day empty, which is the
-                # wrong reason and the wrong line.
-                return REASON_MOVED_OUT
+    async def _list_kind(self, *, user_id: str, slug: str, day: date, tz: str,
+                          sleep: str | None) -> tuple[list[dict], list[dict]] | None:
+        """The day's events of `slug`'s kind, split into `(carrying, inside)`.
+
+        None on a failed read, or on any event of the kind whose start or end
+        will not parse -- a day with an unreadable event of the kind it is
+        being asked about is an unread day for that kind, not a day the
+        watcher may judge from whatever else parsed.
+        """
         try:
             events = await self._calendar.list_day(calendar_id=self._config.calendar_id, day=day, tz=tz)
         except Exception as exc:  # noqa: BLE001 - named, and no verdict
@@ -304,15 +301,62 @@ class RequiredBlockRule:
             return None
         try:
             carrying = [e for e in events if isinstance(e, dict) and _is_kind(e, slug)]
-            inside = [e for e in carrying if within_bounds(e, day=day, tz=tz, sleep=sleep)]
+            decisions = [(e, bounds_of(e, day=day, tz=tz, sleep=sleep)) for e in carrying]
         except Exception as exc:  # noqa: BLE001 - named, and no verdict
             # A day whose events cannot be read is an unread day. Judging on
             # the ones that did parse would haunt for a block that is there.
             logger.warning("calendar_unreadable user=%s slug=%s day=%s error_type=%s error=%s (parse)",
                            user_id, slug, day, type(exc).__name__, exc)
             return None
+        for event, bounds in decisions:
+            if bounds is None:
+                logger.warning("required_block_event_unparseable user=%s slug=%s day=%s event_id=%s",
+                               user_id, slug, day, event.get("id"))
+                return None
         if len(carrying) > 1:
             logger.info("required_block_duplicates user=%s slug=%s count=%d", user_id, slug, len(carrying))
+        inside = [event for event, bounds in decisions if bounds]
+        return carrying, inside
+
+    async def _check(self, *, user_id: str, day: date, slug: str, sleep: str | None) -> str | None:
+        """'present', REASON_MISSING, REASON_MOVED_OUT, or None for no verdict."""
+        tz = self._config.tz
+        remembered = self.cached(user_id=user_id, day=day, slug=slug)
+        if remembered:
+            try:
+                event = await self._calendar.get_event(calendar_id=self._config.calendar_id, event_id=remembered)
+                of_kind = event is not None and _is_kind(event, slug)
+                bounds = bounds_of(event, day=day, tz=tz, sleep=sleep) if of_kind else None
+            except Exception as exc:  # noqa: BLE001 - the fetch or the parse; either way, no verdict
+                logger.warning("calendar_unreadable user=%s slug=%s error_type=%s error=%s",
+                               user_id, slug, type(exc).__name__, exc)
+                return None
+            if of_kind:
+                if bounds is None:
+                    logger.warning("required_block_event_unparseable user=%s slug=%s event_id=%s",
+                                   user_id, slug, remembered)
+                    return None
+                if bounds:
+                    return "present"
+                # R4: the id resolves and the kind still matches -- the block
+                # was dragged to another day or pushed past sleep. List the
+                # day once for a replacement: the user may have booked a NEW
+                # block of the kind instead of dragging the old one back, and
+                # the cache would otherwise keep confirming `moved_out` until
+                # the day rolls over. No in-bounds replacement -> the verdict
+                # is still `moved_out`, cache left as is.
+                listed = await self._list_kind(user_id=user_id, slug=slug, day=day, tz=tz, sleep=sleep)
+                if listed is None:
+                    return None
+                _carrying, inside = listed
+                if inside:
+                    self.remember(user_id=user_id, day=day, slug=slug, event_id=str(inside[0].get("id") or ""))
+                    return "present"
+                return REASON_MOVED_OUT
+        listed = await self._list_kind(user_id=user_id, slug=slug, day=day, tz=tz, sleep=sleep)
+        if listed is None:
+            return None
+        carrying, inside = listed
         if inside:
             self.remember(user_id=user_id, day=day, slug=slug, event_id=str(inside[0].get("id") or ""))
             return "present"
@@ -360,4 +404,4 @@ def _line(slug: str, reason: str, attempt: int) -> str:
 
 
 __all__ = ["PLANNING_SLUG", "REASON_MISSING", "REASON_MOVED_OUT", "REQUIRED_BLOCK_KIND",
-           "RequiredBlockConfig", "RequiredBlockRule", "slug_of", "within_bounds"]
+           "RequiredBlockConfig", "RequiredBlockRule", "bounds_of", "slug_of", "within_bounds"]
