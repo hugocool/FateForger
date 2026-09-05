@@ -39,6 +39,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningResult,
     ProvidePlanningFacts,
     UserBlockerDraft,
+    coverage_fact_id,
 )
 from fateforger.slack_bot import handlers, stage_cards
 from fateforger.slack_bot.handlers import HarnessApproveActionPayload
@@ -57,6 +58,22 @@ from fateforger.slack_bot.timeboxing_commit import (
 from fateforger.slack_bot.timeboxing_session_store import (
     SqlAlchemyTimeboxingSessionRepository,
 )
+from tests.fixtures.stage1.elicit_stub import install_stub_elicit
+
+
+@pytest.fixture(autouse=True)
+def stub_elicit(monkeypatch):
+    """Stage 1's three judgements are not what this file measures.
+
+    `resolve(SKELETON)` runs them (#262), and the coverage judge asks about the
+    `request` row whenever a REQUESTED_ACTIVITY fact is present -- which is a
+    real call, not a defect, so `ForbiddenModelClient` would trip on it and say
+    the wrong thing about why. Its premise still holds for the judgement it was
+    written about: the frame judge makes no call on an empty corpus, and the
+    stub does not touch that path.
+    """
+    return install_stub_elicit(monkeypatch)
+
 
 TZ = "Europe/Amsterdam"
 SATURDAY = date(2026, 8, 29)
@@ -501,7 +518,15 @@ async def test_a_fresh_repository_rehydrates_the_session_without_the_transcript(
     restarted = planner.briefs[1]
     assert restarted.locked_day.date == SATURDAY
     assert restarted.locked_day.day_type is DayType.WEEKEND
-    assert {fact.fact_id for fact in restarted.facts} == {"a1", "a1-frame", "a2"}
+    # The coverage matrix joins them since #262: Stage 1's judgement of what the
+    # day still needs is stored state like any other fact, so it has to survive
+    # the same restart the frame does.
+    assert {fact.fact_id for fact in restarted.facts} == {
+        "a1",
+        "a1-frame",
+        "a2",
+        coverage_fact_id(SATURDAY),
+    }
     assert restarted.session_key == session_key
 
 

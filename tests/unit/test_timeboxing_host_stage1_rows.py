@@ -9,8 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from fateforger.agents.timeboxing.elicitation import CoverageMatrix
-from fateforger.agents.timeboxing.elicitation_judges import ElicitationResult, Judges
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactKind,
     DayType,
@@ -18,36 +16,14 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningDay,
     PlanningFact,
     PlanningSessionSnapshot,
-    ProbeDraft,
-    coverage_fact_id,
 )
 from fateforger.slack_bot.timeboxing_host import HostPlanningContext
-
-
-class _StubJudges:
-    """`elicit` is replaced wholesale: the host's job is to call it with the
-    rows it fetched and the snapshot it was given, and to carry the result."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[PlanningSessionSnapshot, list[dict]]] = []
-
-    async def __call__(self, snapshot, rows, judges, *, session_key, **_):  # noqa: ANN001
-        self.calls.append((snapshot, rows))
-        from fateforger.agents.timeboxing.elicitation import ALL_CELLS
-
-        matrix = CoverageMatrix(cells={c.id: "not_applicable" for c in ALL_CELLS})
-        fact = PlanningFact(fact_id=coverage_fact_id(snapshot.planning_day.date), kind=FactKind.COVERAGE_MATRIX, value=matrix.model_dump(mode="json"), source="system")
-        return ElicitationResult(matrix_fact=fact, probes=[ProbeDraft(cell_id="elicit.body.unclear", question="q?", why_needed="w")])
+from tests.fixtures.stage1.elicit_stub import install_stub_elicit
 
 
 @pytest.fixture(autouse=True)
 def stub_elicit(monkeypatch):
-    import fateforger.slack_bot.timeboxing_host as host_module
-
-    stub = _StubJudges()
-    monkeypatch.setattr(host_module, "elicit", stub)
-    monkeypatch.setattr(host_module, "build_judges", lambda client: Judges(placement=None, coverage=None, probe=None))
-    return stub
+    return install_stub_elicit(monkeypatch)
 
 
 ROWS = [{"uid": "c1", "name": "Oats before gym", "necessity": "must", "anchors": []}]
