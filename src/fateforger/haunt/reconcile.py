@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone, tzinfo
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, time, timedelta, timezone, tzinfo
 from typing import Any, Awaitable, Callable, Iterable, Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -30,6 +30,10 @@ class CalendarClient(Protocol):
     ) -> list[dict]: ...
 
     async def get_event(self, *, calendar_id: str, event_id: str) -> dict | None: ...
+
+    async def list_day(
+        self, *, calendar_id: str, day: date, tz: str
+    ) -> list[dict] | None: ...
 
 
 class PlanningSessionStore(Protocol):
@@ -88,6 +92,10 @@ class PlanningReminder:
     event_start: str | None = None
     event_end: str | None = None
     event_tz: str | None = None
+    #: For a required-block reminder: which registered kind, and why the haunt
+    #: started -- "missing" or "moved_out". None on the planning ladder.
+    slug: str | None = None
+    reason: str | None = None
 
 
 @dataclass
@@ -99,6 +107,25 @@ class DesiredJob:
     misfire_grace_time_s: int = 300
     max_instances: int = 1
     coalesce: bool = True
+
+
+@dataclass
+class RequiredBlockOutcome:
+    """What the required-block watcher decided on one tick.
+
+    `jobs` is the ladder it wants scheduled. `undecided` is the job-id prefixes
+    it could not judge -- a calendar it could not read, a frame it could not
+    fetch, a store that raised. A failed read is not an absent block (#226), so
+    the reconciler schedules `jobs` and prunes everything under this rule's
+    prefix *except* what an undecided prefix covers: no verdict never prunes.
+
+    Prefixes are ids this system minted (`rule:<rule_id>:<scope>:<day>:<slug>:`,
+    or the whole `rule:<rule_id>:<scope>:` when even the required set is
+    unknown), so comparing them decides nothing about what the user meant.
+    """
+
+    jobs: list[DesiredJob] = field(default_factory=list)
+    undecided: list[str] = field(default_factory=list)
 
 
 class McpCalendarClient:
@@ -143,8 +170,83 @@ class McpCalendarClient:
             return []
         return _normalize_events(payload)
 
+    async def list_day(
+        self, *, calendar_id: str, day: date, tz: str
+    ) -> list[dict] | None:
+        """Every event on `day` in `tz`, or None when the read failed.
+
+        `list_events` returns [] for a tool error and always has; the planning
+        ladder inherited that and nudges on an unreadable calendar. The
+        required-block watcher must not (#226), so this is the one call whose
+        failure is distinguishable from an empty day.
+        """
+        zone = ZoneInfo(tz)
+        start = datetime.combine(day, time.min, tzinfo=zone)
+        end = start + timedelta(days=1)
+        args = {
+            "calendarId": calendar_id,
+            "timeMin": _format_mcp_datetime(start),
+            "timeMax": _format_mcp_datetime(end),
+            "singleEvents": True,
+            "orderBy": "startTime",
+        }
+        try:
+            result = await self._workbench.call_tool("list-events", arguments=args)
+        except Exception as exc:  # noqa: BLE001 - a failed read is a named outcome
+            logger.warning(
+                "calendar list_day failed error_type=%s error=%s", type(exc).__name__, exc
+            )
+            return None
+        payload = _extract_tool_payload(result)
+        if isinstance(payload, str) and payload.strip().lower().startswith("mcp error"):
+            logger.warning("calendar list_day returned a tool error: %s", payload.strip())
+            return None
+        return _normalize_events(payload)
+
     async def close(self) -> None:
         await self._workbench.stop()
+
+
+def nudge_offsets(
+    config: PlanningRuleConfig, *, first_nudge_offset: timedelta | None
+) -> list[timedelta]:
+    """The nudge ladder: explicit offsets, or exponential backoff from `base`
+    capped at `cap`, `max_attempts` rungs, all inside `horizon`. Shared by the
+    planning ladder and the required-block watcher so the two cannot drift."""
+    if config.nudge_offsets is not None:
+        offsets = list(config.nudge_offsets)
+        if first_nudge_offset is not None and offsets:
+            offsets[0] = first_nudge_offset
+        return [o for o in offsets if o < config.horizon]
+
+    base = config.nudge_backoff_base
+    cap = config.nudge_backoff_cap
+    max_attempts = max(int(config.nudge_max_attempts or 0), 1)
+
+    offsets: list[timedelta] = []
+    if first_nudge_offset is not None:
+        offsets.append(first_nudge_offset)
+    else:
+        offsets.append(base)
+
+    # Fill remaining attempts with an exponential series using `base`.
+    # Ensure monotonic growth even if first_nudge_offset is 0 or custom.
+    exponent = 0
+    while len(offsets) < max_attempts:
+        candidate = base * (2**exponent)
+        if candidate > cap:
+            candidate = cap
+        if candidate <= offsets[-1]:
+            exponent += 1
+            if candidate == cap:
+                break
+            continue
+        if candidate >= config.horizon:
+            break
+        offsets.append(candidate)
+        exponent += 1
+
+    return offsets
 
 
 class PlanningSessionRule:
@@ -173,7 +275,7 @@ class PlanningSessionRule:
         planning_event_id: str | None = None,
         first_nudge_offset: timedelta | None = None,
     ) -> list[DesiredJob]:
-        start = now.astimezone(timezone.utc)
+        start = now.astimezone(UTC)
         end = start + self._config.horizon
         anchor_found = False
         anchor_before_horizon = False
@@ -384,16 +486,14 @@ class PlanningSessionRule:
             )
             return []
 
-        nudge_offsets = self._resolve_nudge_offsets(
-            first_nudge_offset=first_nudge_offset
-        )
-        if not nudge_offsets:
+        offsets = self._resolve_nudge_offsets(first_nudge_offset=first_nudge_offset)
+        if not offsets:
             # Safety: always schedule at least one nudge, otherwise the reconcile can't work.
-            nudge_offsets = [timedelta(minutes=10)]
+            offsets = [timedelta(minutes=10)]
 
         window_start = start.date().isoformat()
         jobs: list[DesiredJob] = []
-        for idx, offset in enumerate(nudge_offsets, start=1):
+        for idx, offset in enumerate(offsets, start=1):
             jobs.append(
                 DesiredJob(
                     key=JobKey(
@@ -422,7 +522,7 @@ class PlanningSessionRule:
                 payload=PlanningReminder(
                     scope=scope,
                     kind="expire",
-                    attempt=len(nudge_offsets) + 1,
+                    attempt=len(offsets) + 1,
                     message="Still no planning session on the calendar. Want me to block time?",
                     user_id=user_id,
                     channel_id=channel_id,
@@ -480,40 +580,7 @@ class PlanningSessionRule:
     def _resolve_nudge_offsets(
         self, *, first_nudge_offset: timedelta | None
     ) -> list[timedelta]:
-        if self._config.nudge_offsets is not None:
-            offsets = list(self._config.nudge_offsets)
-            if first_nudge_offset is not None and offsets:
-                offsets[0] = first_nudge_offset
-            return [o for o in offsets if o < self._config.horizon]
-
-        base = self._config.nudge_backoff_base
-        cap = self._config.nudge_backoff_cap
-        max_attempts = max(int(self._config.nudge_max_attempts or 0), 1)
-
-        offsets: list[timedelta] = []
-        if first_nudge_offset is not None:
-            offsets.append(first_nudge_offset)
-        else:
-            offsets.append(base)
-
-        # Fill remaining attempts with an exponential series using `base`.
-        # Ensure monotonic growth even if first_nudge_offset is 0 or custom.
-        exponent = 0
-        while len(offsets) < max_attempts:
-            candidate = base * (2**exponent)
-            if candidate > cap:
-                candidate = cap
-            if candidate <= offsets[-1]:
-                exponent += 1
-                if candidate == cap:
-                    break
-                continue
-            if candidate >= self._config.horizon:
-                break
-            offsets.append(candidate)
-            exponent += 1
-
-        return offsets
+        return nudge_offsets(self._config, first_nudge_offset=first_nudge_offset)
 
     async def _resolve_planning_from_stored_sessions(
         self, *, user_id: str | None, start: datetime, end: datetime
@@ -572,11 +639,11 @@ class PlanningSessionRule:
         if not isinstance(updated_at, datetime):
             return False
         updated_utc = (
-            updated_at.replace(tzinfo=timezone.utc)
+            updated_at.replace(tzinfo=UTC)
             if updated_at.tzinfo is None
-            else updated_at.astimezone(timezone.utc)
+            else updated_at.astimezone(UTC)
         )
-        delta = now.astimezone(timezone.utc) - updated_utc
+        delta = now.astimezone(UTC) - updated_utc
         if delta < timedelta(0):
             delta = timedelta(0)
         return delta <= self._config.stored_session_consistency_grace
@@ -632,7 +699,7 @@ class PlanningSessionRule:
         if not event_id:
             return
         parsed_start = _parse_event_dt(
-            event.get("start"), tz=start.tzinfo or timezone.utc
+            event.get("start"), tz=start.tzinfo or UTC
         )
         if not parsed_start:
             return
@@ -699,6 +766,7 @@ class PlanningReconciler:
         planning_session_store: PlanningSessionStore | None = None,
         dispatcher: Callable[[PlanningReminder], Awaitable[None]] | None = None,
         rule: PlanningSessionRule | None = None,
+        required_block_rule: Any | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._calendar_client = calendar_client
@@ -707,6 +775,7 @@ class PlanningReconciler:
             calendar_client=calendar_client,
             planning_session_store=planning_session_store,
         )
+        self._required_block_rule = required_block_rule
 
     @property
     def calendar_client(self) -> CalendarClient:
@@ -735,25 +804,47 @@ class PlanningReconciler:
         first_nudge_offset: timedelta | None = None,
         now: datetime | None = None,
     ) -> list[DesiredJob]:
-        now_dt = now or datetime.now(timezone.utc)
-        desired = await self._rule.evaluate(
-            now=now_dt,
-            scope=scope,
-            user_id=user_id,
-            channel_id=channel_id,
-            planning_event_id=planning_event_id,
-            first_nudge_offset=first_nudge_offset,
+        now_dt = now or datetime.now(UTC)
+        desired = list(
+            await self._rule.evaluate(
+                now=now_dt, scope=scope, user_id=user_id, channel_id=channel_id,
+                planning_event_id=planning_event_id, first_nudge_offset=first_nudge_offset,
+            )
         )
-        prefix = f"rule:{self._rule.rule_id}:{scope}:"
+        prefixes = {f"rule:{self._rule.rule_id}:{scope}:"}
+        #: Job-id prefixes this tick could not judge. Nothing under one of them
+        #: is removed, however stale it looks: no verdict never prunes (#226).
+        undecided: list[str] = []
+        if self._required_block_rule is not None:
+            required_prefix = f"rule:{self._required_block_rule.rule_id}:{scope}:"
+            prefixes.add(required_prefix)
+            try:
+                outcome = await self._required_block_rule.evaluate(
+                    now=now_dt, scope=scope, user_id=user_id, channel_id=channel_id,
+                    first_nudge_offset=first_nudge_offset,
+                )
+            except Exception as exc:  # noqa: BLE001 - one rule's failure is not the other's
+                logger.exception(
+                    "required_blocks rule failed for %s error_type=%s error=%s",
+                    scope, type(exc).__name__, exc,
+                )
+                # An exception is a failed read by another name: this rule said
+                # nothing this tick, so its whole scope keeps what it has.
+                undecided.append(required_prefix)
+            else:
+                desired.extend(outcome.jobs)
+                undecided.extend(outcome.undecided)
         scheduled = {
             job.id: getattr(getattr(job, "trigger", None), "run_date", None)
             for job in self._scheduler.get_jobs()
-            if job.id.startswith(prefix)
+            if any(job.id.startswith(prefix) for prefix in prefixes)
         }
         current_ids = set(scheduled)
         desired_ids = {job.key.as_id() for job in desired}
 
         for job_id in current_ids - desired_ids:
+            if any(job_id.startswith(prefix) for prefix in undecided):
+                continue
             self._scheduler.remove_job(job_id)
 
         # A caller supplying `first_nudge_offset` is deliberately re-timing the
@@ -954,7 +1045,7 @@ def _format_mcp_datetime(dt: datetime) -> str:
 
 
 def _event_within_window(event: dict, start: datetime, end: datetime) -> bool:
-    tz = start.tzinfo or timezone.utc
+    tz = start.tzinfo or UTC
     start_dt = _parse_event_dt(event.get("start"), tz=tz)
     end_dt = _parse_event_dt(event.get("end"), tz=tz)
     if start_dt is None and end_dt is None:
@@ -973,8 +1064,10 @@ __all__ = [
     "DesiredJob",
     "JobKey",
     "McpCalendarClient",
+    "nudge_offsets",
     "PlanningReconciler",
     "PlanningReminder",
     "PlanningRuleConfig",
     "PlanningSessionRule",
+    "RequiredBlockOutcome",
 ]

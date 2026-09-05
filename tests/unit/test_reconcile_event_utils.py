@@ -217,3 +217,23 @@ class TestExtractToolPayload:
         class _Empty:
             pass
         assert self._call(_Empty()) == {}
+
+def test_nudge_offsets_is_the_ladder_both_rules_share():
+    from datetime import timedelta
+    from fateforger.haunt.reconcile import PlanningRuleConfig, PlanningSessionRule, nudge_offsets
+
+    config = PlanningRuleConfig()
+    shared = nudge_offsets(config, first_nudge_offset=None)
+    rule = PlanningSessionRule(calendar_client=object(), config=config)
+    assert shared == rule._resolve_nudge_offsets(first_nudge_offset=None)
+    assert shared[0] == timedelta(minutes=10) and len(shared) == config.nudge_max_attempts
+    assert nudge_offsets(config, first_nudge_offset=timedelta(0))[0] == timedelta(0)
+
+
+def test_a_reminder_can_name_a_required_kind_and_a_reason():
+    from fateforger.haunt.reconcile import PlanningReminder
+
+    reminder = PlanningReminder(scope="U1", kind="required_block", attempt=1, message="m",
+                                slug="planning", reason="moved_out")
+    assert (reminder.slug, reminder.reason) == ("planning", "moved_out")
+    assert PlanningReminder(scope="U1", kind="nudge1", attempt=1, message="m").slug is None

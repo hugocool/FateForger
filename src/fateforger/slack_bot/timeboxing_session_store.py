@@ -21,6 +21,7 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import (
     TimeboxingStanding,
 )
 from fateforger.agents.timeboxing.session_contracts import (
+    FactKind,
     HandledInteraction,
     PlanningSessionSnapshot,
     TurnOutcome,
@@ -282,6 +283,57 @@ class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
             for session_key, revision, updated_at, planning_date in rows
         ]
 
+    async def _snapshots_for_day(
+        self, *, owner_user_id: str, planning_date: date
+    ) -> list[PlanningSessionSnapshot]:
+        """The user's `open` and `committed` sessions for one planned day,
+        newest first. One indexed query; the callers below read the snapshot
+        JSON, which is the one exception to `standing_for`'s indexed-columns
+        rule because neither the frame nor the locked day has a column.
+        """
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(_TimeboxingSessionState.snapshot_json)
+                .where(
+                    _TimeboxingSessionState.owner_user_id == owner_user_id,
+                    _TimeboxingSessionState.planning_date == planning_date,
+                    _TimeboxingSessionState.status.in_(("open", "committed")),
+                )
+                .order_by(_TimeboxingSessionState.updated_at.desc())
+            )
+            rows = result.all()
+        return [self._parse_envelope(payload).snapshot for (payload,) in rows]
+
+    async def day_frame_for(
+        self, *, owner_user_id: str, planning_date: date
+    ) -> dict | None:
+        """The user's day frame for one planned day, from the newest session
+        that holds one. No model call.
+        """
+        for snapshot in await self._snapshots_for_day(
+            owner_user_id=owner_user_id, planning_date=planning_date
+        ):
+            frame = _day_frame(snapshot)
+            if frame is not None:
+                return frame
+        return None
+
+    async def day_type_for(
+        self, *, owner_user_id: str, planning_date: date
+    ) -> str | None:
+        """The locked `day_type` of the newest session for one planned day.
+
+        Weekday arithmetic knows only working and weekend; the locked day is
+        where `vacation`, `holiday` and `sick` are recorded, and asking memory
+        under the wrong day type returns the wrong day's rules.
+        """
+        for snapshot in await self._snapshots_for_day(
+            owner_user_id=owner_user_id, planning_date=planning_date
+        ):
+            if snapshot.planning_day is not None:
+                return snapshot.planning_day.day_type.value
+        return None
+
     @staticmethod
     async def _load_row(
         session: AsyncSession, session_key: str
@@ -306,6 +358,15 @@ class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
         """Serialize one validated envelope for its atomic SQL write."""
 
         return envelope.model_dump_json()
+
+
+def _day_frame(snapshot: PlanningSessionSnapshot) -> dict | None:
+    """The newest `DAY_FRAME` fact's value, or `None` when the session has none."""
+
+    for fact in reversed(snapshot.facts):
+        if fact.kind is FactKind.DAY_FRAME and isinstance(fact.value, dict):
+            return dict(fact.value)
+    return None
 
 
 __all__ = ["SqlAlchemyTimeboxingSessionRepository"]

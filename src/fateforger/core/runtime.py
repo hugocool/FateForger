@@ -6,7 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from autogen_core import (
@@ -59,6 +59,7 @@ from fateforger.haunt.reconcile import (
     PlanningRuleConfig,
     PlanningSessionRule,
 )
+from fateforger.haunt.required_block_rule import RequiredBlockConfig, RequiredBlockRule
 from fateforger.haunt.service import HauntingService
 from fateforger.haunt.settings_store import (
     SqlAlchemyAdmonishmentSettingsStore,
@@ -72,13 +73,14 @@ from fateforger.slack_bot.deepseek_timebox_planner import (
     HarnessBridgeRunner,
     UnavailableConstraintReader,
 )
+from fateforger.slack_bot.timeboxing_host import planning_timezone
 from fateforger.slack_bot.timeboxing_intents import TimeboxingIntentInterpreter
-from fateforger.slack_bot.tmbx_client import TmbxClient
-from tmbx.build_identity import BuildIdentity, current_build_identity
-from tmbx.build_identity import describe as describe_build
 from fateforger.slack_bot.timeboxing_session_store import (
     SqlAlchemyTimeboxingSessionRepository,
 )
+from fateforger.slack_bot.tmbx_client import TmbxClient
+from tmbx.build_identity import BuildIdentity, current_build_identity
+from tmbx.build_identity import describe as describe_build
 
 USER_CHANNEL_AGENT_TYPE = "user_channel"
 HAUNTING_AGENT_TYPE = "haunting_agent"
@@ -766,9 +768,12 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
             recipient=AgentId(USER_CHANNEL_AGENT_TYPE, key=reminder.scope),
         )
 
-    # The reconciler looks for the planning event on the same calendar the
-    # timeboxing session writes to. Left at the rule's "primary" default it
-    # evaluated a calendar the session never touched (#256).
+    required_block_rule = _required_block_rule_for(
+        calendar_client=calendar_client,
+        constraint_store=timeboxing_constraint_store,
+        ledger=timeboxing_session_store,
+        calendar_id=timeboxing_calendar_id,
+    )
     reconciler = PlanningReconciler(
         scheduler,
         calendar_client=calendar_client,
@@ -782,6 +787,7 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
                 calendar_id=timeboxing_calendar_id or "primary"
             ),
         ),
+        required_block_rule=required_block_rule,
     )
 
     await PlannerAgent.register(
@@ -873,6 +879,9 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     setattr(runtime, "event_draft_store", event_draft_store)
     setattr(runtime, "timeboxing_session_store", timeboxing_session_store)
     setattr(runtime, "timeboxing_constraint_store", timeboxing_constraint_store)
+    # The dispatcher revalidates every required-block rung against this rule
+    # before posting it (R3); without it here, those reminders are dropped.
+    setattr(runtime, "required_block_rule", required_block_rule)
     setattr(runtime, "timeboxing_planner", timeboxing_planner)
     setattr(runtime, "timeboxing_calendar_id", timeboxing_calendar_id)
     setattr(
@@ -891,6 +900,9 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
         reconciler=reconciler,
     )
     planning_guardian.schedule_daily()
+    # The watcher notices a block leaving the plan only on a tick; once a day
+    # is not noticing (R5).
+    planning_guardian.schedule_interval(minutes=_reconcile_interval_minutes())
     # Kick off reconcile on startup so nudges are scheduled immediately.
     # This is critical since we use in-memory scheduler (jobs lost on restart).
     await _run_initial_planning_reconcile(
@@ -900,6 +912,62 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
 
     setattr(runtime, "planning_guardian", planning_guardian)
     return runtime
+
+
+def _required_block_rule_for(
+    *,
+    calendar_client: Any,
+    constraint_store: ConstraintReader,
+    ledger: Any,
+    calendar_id: str | None,
+) -> RequiredBlockRule | None:
+    """The watcher, or None when there is no memory to ask.
+
+    `_build_timeboxing_constraint_store` never returns None -- every failure
+    path hands back `UnavailableConstraintReader`, whose every method raises.
+    So `store is not None` was true on every startup: the log said the watcher
+    was on when memory was unreachable, and the rule spent every tick asking a
+    reader that could only raise. The class is what says "off", so that is what
+    is checked.
+
+    The calendar id is the timeboxing session's, not `primary`: the rule must
+    look for the block on the calendar the session actually writes to (#256).
+    """
+
+    if isinstance(constraint_store, UnavailableConstraintReader):
+        logger.info("required_blocks watcher: off (constraint store unavailable)")
+        return None
+    logger.info("required_blocks watcher: on (calendar=%s)", calendar_id or "primary")
+    return RequiredBlockRule(
+        calendar_client=calendar_client,
+        constraint_store=constraint_store,
+        ledger=ledger,
+        config=RequiredBlockConfig(
+            calendar_id=calendar_id or "primary",
+            tz=planning_timezone(),
+        ),
+    )
+
+
+def _reconcile_interval_minutes() -> int:
+    """How often the planning guardian reconciles, from the environment.
+
+    `FF_RECONCILE_INTERVAL_MINUTES`, default 15, `0` to disable. A value that
+    is not a whole number raises rather than falling back: a typo that silently
+    returned the watcher to a once-a-day cadence would look exactly like the
+    calendar never changing.
+    """
+
+    raw = (os.environ.get("FF_RECONCILE_INTERVAL_MINUTES") or "").strip()
+    if not raw:
+        return PlanningGuardian.DEFAULT_INTERVAL_MINUTES
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            "FF_RECONCILE_INTERVAL_MINUTES must be a whole number of minutes "
+            f"(0 disables); got {raw!r}"
+        ) from exc
 
 
 def _coerce_async_database_url(database_url: str) -> str:

@@ -7,7 +7,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from time import perf_counter
 from typing import Any
@@ -55,6 +55,7 @@ from fateforger.haunt.reconcile import (
     PlanningRuleConfig,
     PlanningSessionRule,
 )
+from fateforger.haunt.required_block_rule import REQUIRED_BLOCK_KIND
 from fateforger.haunt.session_start import SESSION_EXPIRE_KIND, SESSION_START_KIND
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
 from fateforger.llm import build_autogen_chat_client
@@ -333,7 +334,7 @@ class PlanningCoordinator:
 
     async def _timeboxing_silences(self, *, user_id: str, at: str) -> bool:
         standing = await self._timeboxing_standing(
-            user_id=user_id, now=datetime.now(timezone.utc)
+            user_id=user_id, now=datetime.now(UTC)
         )
         if standing.under_way:
             logger.info(
@@ -415,6 +416,50 @@ class PlanningCoordinator:
             return
         if await self._timeboxing_silences(user_id=reminder.user_id, at="start"):
             return
+        if reminder.kind == REQUIRED_BLOCK_KIND:
+            await self._dispatch_required_block(reminder)
+            return
+        await self._dispatch_planning_card(reminder)
+
+    async def _dispatch_required_block(self, reminder: PlanningReminder) -> None:
+        """One DM line for a required kind whose reason still holds (R3).
+
+        Revalidated against the watcher's own check first: the rung was
+        scheduled when the tick judged the block gone, and by the time it fires
+        the block may be back or may have drifted the other way. Posting a
+        stale line is how a nudge becomes something to ignore.
+
+        Never the planning card, for any kind. The card books a planning block;
+        a `moved_out` planning block already exists, so booking a second is the
+        one answer that is certainly wrong.
+        """
+        rule = getattr(self._runtime, "required_block_rule", None)
+        if rule is None:
+            logger.warning(
+                "required_block reminder for %s dropped: the runtime has no "
+                "required_block_rule to revalidate it against",
+                reminder.user_id,
+            )
+            return
+        verdict = await rule.recheck(
+            user_id=reminder.user_id, slug=reminder.slug, now=datetime.now(UTC)
+        )
+        if verdict != reminder.reason:
+            logger.info(
+                "required_block reminder for %s slug=%s dropped: scheduled as %s, now %s",
+                reminder.user_id, reminder.slug, reminder.reason, verdict,
+            )
+            return
+        dm_channel = await self._resolve_dm_channel(user_id=reminder.user_id)
+        if not dm_channel:
+            logger.warning(
+                "required_block reminder: could not resolve DM channel for %s",
+                reminder.user_id,
+            )
+            return
+        await self._client.chat_postMessage(channel=dm_channel, text=reminder.message)
+
+    async def _dispatch_planning_card(self, reminder: PlanningReminder) -> None:
         if not self._draft_store:
             logger.warning("event_draft_store not configured; skipping planning card")
             return
@@ -466,7 +511,7 @@ class PlanningCoordinator:
             start_utc = (
                 suggested.start_utc
                 if suggested
-                else (datetime.now(timezone.utc) + timedelta(minutes=30))
+                else (datetime.now(UTC) + timedelta(minutes=30))
             )
             end_utc = (
                 suggested.end_utc
@@ -566,7 +611,7 @@ class PlanningCoordinator:
         if not self._reconciler:
             return True
 
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
         try:
             rule = PlanningSessionRule(
                 calendar_client=self._reconciler.calendar_client,
@@ -779,7 +824,7 @@ class PlanningCoordinator:
     ) -> EventDraftPayload | None:
         if not self._draft_store:
             return None
-        start = datetime.fromtimestamp(int(selected_date_time), tz=timezone.utc)
+        start = datetime.fromtimestamp(int(selected_date_time), tz=UTC)
         return await self._draft_store.update_time(
             channel_id=channel_id,
             message_ts=message_ts,
@@ -821,7 +866,7 @@ class PlanningCoordinator:
         return await self._draft_store.update_time(
             channel_id=channel_id,
             message_ts=message_ts,
-            start_at_utc=new_local.astimezone(timezone.utc).isoformat(),
+            start_at_utc=new_local.astimezone(UTC).isoformat(),
         )
 
     async def handle_start_time_changed(
@@ -855,7 +900,7 @@ class PlanningCoordinator:
         return await self._draft_store.update_time(
             channel_id=channel_id,
             message_ts=message_ts,
-            start_at_utc=new_local.astimezone(timezone.utc).isoformat(),
+            start_at_utc=new_local.astimezone(UTC).isoformat(),
         )
 
     async def handle_duration_changed(
@@ -1147,7 +1192,7 @@ class PlanningCoordinator:
         except Exception:
             tz = ZoneInfo(DEFAULT_TIMEZONE)
 
-        start_utc = date_parser.isoparse(draft.start_at_utc).astimezone(timezone.utc)
+        start_utc = date_parser.isoparse(draft.start_at_utc).astimezone(UTC)
         end_utc = start_utc + timedelta(minutes=int(draft.duration_min))
         start_local = start_utc.astimezone(tz).replace(tzinfo=None, microsecond=0)
         end_local = end_utc.astimezone(tz).replace(tzinfo=None, microsecond=0)
@@ -1387,9 +1432,9 @@ class PlanningCoordinator:
         ):
             return SlotSuggestion(
                 start_utc=date_parser.isoparse(result.start_utc).astimezone(
-                    timezone.utc
+                    UTC
                 ),
-                end_utc=date_parser.isoparse(result.end_utc).astimezone(timezone.utc),
+                end_utc=date_parser.isoparse(result.end_utc).astimezone(UTC),
                 tz=result.time_zone or tz_name,
             )
         return None

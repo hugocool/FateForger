@@ -699,3 +699,26 @@ async def test_reconcile_does_not_trust_stale_local_stored_session_without_calen
 
     assert len(jobs) == 6
     assert scheduler.get_jobs()
+
+
+@pytest.mark.asyncio
+async def test_list_day_returns_none_on_a_tool_error_not_an_empty_day(monkeypatch):
+    """#226 for the watcher: an unreadable calendar must not read as an empty one."""
+    from datetime import date
+    from fateforger.haunt import reconcile as r
+
+    class _Workbench:
+        def __init__(self, payload): self._payload = payload
+        async def call_tool(self, name, arguments): return type("R", (), {"result": self._payload})()
+
+    client = r.McpCalendarClient.__new__(r.McpCalendarClient)
+    client._workbench = _Workbench("MCP error -32603: calendar unreachable")
+    assert await client.list_day(calendar_id="primary", day=date(2026, 9, 7), tz="Europe/Amsterdam") is None
+
+    class _Raises:
+        async def call_tool(self, name, arguments): raise RuntimeError("boom")
+    client._workbench = _Raises()
+    assert await client.list_day(calendar_id="primary", day=date(2026, 9, 7), tz="Europe/Amsterdam") is None
+
+    client._workbench = _Workbench({"items": [{"id": "e1", "summary": "x"}]})
+    assert await client.list_day(calendar_id="primary", day=date(2026, 9, 7), tz="Europe/Amsterdam") == [{"id": "e1", "summary": "x"}]
