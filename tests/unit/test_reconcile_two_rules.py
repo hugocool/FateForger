@@ -72,3 +72,10 @@ async def test_without_a_required_block_rule_nothing_changes():
                                     rule=_Rule("next_planning_session", ["nudge1"]))
     await reconciler.reconcile_missing_planning(scope="U1", user_id="U1", now=NOW)
     assert {job.id for job in scheduler.get_jobs()} == {"rule:next_planning_session:U1:2026-09-07:nudge1"}
+
+
+def test_the_runtime_wiring_constructs_the_rule_with_the_calendar_and_timezone():
+    from fateforger.haunt.required_block_rule import RequiredBlockConfig, RequiredBlockRule
+    rule = RequiredBlockRule(calendar_client=object(), constraint_store=object(), ledger=object(),
+                             config=RequiredBlockConfig(calendar_id="hugo@example.com", tz="Europe/Amsterdam"))
+    assert rule.rule_id == "required_blocks"

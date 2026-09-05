@@ -59,6 +59,7 @@ from fateforger.haunt.reconcile import (
     PlanningRuleConfig,
     PlanningSessionRule,
 )
+from fateforger.haunt.required_block_rule import RequiredBlockConfig, RequiredBlockRule
 from fateforger.haunt.service import HauntingService
 from fateforger.haunt.settings_store import (
     SqlAlchemyAdmonishmentSettingsStore,
@@ -72,6 +73,7 @@ from fateforger.slack_bot.deepseek_timebox_planner import (
     HarnessBridgeRunner,
     UnavailableConstraintReader,
 )
+from fateforger.slack_bot.timeboxing_host import planning_timezone
 from fateforger.slack_bot.timeboxing_intents import TimeboxingIntentInterpreter
 from fateforger.slack_bot.tmbx_client import TmbxClient
 from tmbx.build_identity import BuildIdentity, current_build_identity
@@ -769,6 +771,23 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     # The reconciler looks for the planning event on the same calendar the
     # timeboxing session writes to. Left at the rule's "primary" default it
     # evaluated a calendar the session never touched (#256).
+    required_block_rule = (
+        RequiredBlockRule(
+            calendar_client=calendar_client,
+            constraint_store=timeboxing_constraint_store,
+            ledger=timeboxing_session_store,
+            config=RequiredBlockConfig(
+                calendar_id=timeboxing_calendar_id or "primary",
+                tz=planning_timezone(),
+            ),
+        )
+        if timeboxing_constraint_store is not None
+        else None
+    )
+    logger.info(
+        "required_blocks watcher: %s",
+        "on" if required_block_rule else "off (no constraint store)",
+    )
     reconciler = PlanningReconciler(
         scheduler,
         calendar_client=calendar_client,
@@ -782,6 +801,7 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
                 calendar_id=timeboxing_calendar_id or "primary"
             ),
         ),
+        required_block_rule=required_block_rule,
     )
 
     await PlannerAgent.register(
