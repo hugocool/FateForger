@@ -1938,15 +1938,29 @@ def _run(snapshot, judges):
     return asyncio.run(elicit(snapshot, ROWS, judges, session_key=snapshot.session_key))
 
 
-def test_swap_one_the_gate_decides_the_same_with_the_words_stubbed() -> None:
-    table = {"elicit.body.unclear": "uncovered", "elicit.method.contradictory": "uncovered"}
+def test_swap_one_the_open_set_is_the_same_with_the_words_stubbed() -> None:
+    # Four open cells, more than generate_for: the two-cell version hid the
+    # ordering coupling below because both open cells went unaskable.
+    table = {
+        "elicit.body.unclear": "uncovered",
+        "elicit.body.tacit_assumptions": "uncovered",
+        "elicit.method.contradictory": "uncovered",
+        "elicit.method.tacit_knowledge": "uncovered",
+    }
     for day in FIXTURE_DAYS:
         snapshot = snapshot_for(day, ROWS)
         with_words = _run(snapshot, Judges(placement=_Placement(), coverage=_Coverage(table), probe=_FixedWords()))
         without = _run(snapshot, Judges(placement=_Placement(), coverage=_Coverage(table), probe=_NoWords()))
         gate_a = stage1_gate(_with_matrix(snapshot, with_words.matrix_fact))
         gate_b = stage1_gate(_with_matrix(snapshot, without.matrix_fact))
-        assert [c.id for c in gate_a.open_cells] == [c.id for c in gate_b.open_cells]
+        # The open *set* is independent of the words. The *order* is not, by
+        # design: a cell whose probe could not be grounded is recorded in
+        # `unaskable` and `ranked_open_cells` sorts it last, so the gate line
+        # shows askable cells first (#286 finding, 2026-09-05).
+        assert {c.id for c in gate_a.open_cells} == {c.id for c in gate_b.open_cells}
+        matrix_b = CoverageMatrix.model_validate(without.matrix_fact.value)
+        assert len(matrix_b.unaskable) == 3
+        assert {c.id for c in gate_b.open_cells[-3:]} == set(matrix_b.unaskable)
         assert gate_a.open_cells, day.key
         closed = _run(snapshot, Judges(placement=_Placement(), coverage=_Coverage({}), probe=_NoWords()))
         assert stage1_gate(_with_matrix(snapshot, closed.matrix_fact)).open_cells == []
