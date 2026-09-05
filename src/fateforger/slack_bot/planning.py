@@ -55,6 +55,7 @@ from fateforger.haunt.reconcile import (
     PlanningRuleConfig,
     PlanningSessionRule,
 )
+from fateforger.haunt.required_block_rule import REQUIRED_BLOCK_KIND
 from fateforger.haunt.session_start import SESSION_EXPIRE_KIND, SESSION_START_KIND
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
 from fateforger.llm import build_autogen_chat_client
@@ -415,6 +416,21 @@ class PlanningCoordinator:
             return
         if await self._timeboxing_silences(user_id=reminder.user_id, at="start"):
             return
+        if reminder.kind == REQUIRED_BLOCK_KIND and reminder.slug != "planning":
+            # A required kind the planning card cannot book. One line, the
+            # user's own words for the kind, no card (#213).
+            dm_channel = await self._resolve_dm_channel(user_id=reminder.user_id)
+            if not dm_channel:
+                logger.warning(
+                    "required_block reminder: could not resolve DM channel for %s",
+                    reminder.user_id,
+                )
+                return
+            await self._client.chat_postMessage(channel=dm_channel, text=reminder.message)
+            return
+        await self._dispatch_planning_card(reminder)
+
+    async def _dispatch_planning_card(self, reminder: PlanningReminder) -> None:
         if not self._draft_store:
             logger.warning("event_draft_store not configured; skipping planning card")
             return
