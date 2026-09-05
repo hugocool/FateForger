@@ -367,6 +367,18 @@ def test_a_cell_the_user_assumed_past_is_not_generated_for() -> None:
     assert result.probes == []
 
 
+def test_a_cell_already_answered_is_not_generated_for_again() -> None:
+    cell = "elicit.body.unclear"
+    answered = PlanningFact(
+        fact_id=elicited_fact_id(cell), kind=FactKind.ELICITED_STATEMENT,
+        value={"cell": cell, "text": "the gym is 75 minutes"}, source="user",
+    )
+    judges = _judges({cell: "uncovered"}, grounded={cell})
+    result = _run(_snapshot(answered), judges)
+    assert judges.probe.asked == []
+    assert result.probes == []
+
+
 def test_stated_facts_reach_the_classifier_and_the_generator() -> None:
     frame = PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:30"}, source="user")
     said = PlanningFact(fact_id=elicited_fact_id("elicit.body.unclear"), kind=FactKind.ELICITED_STATEMENT, value={"cell": "elicit.body.unclear", "text": "gym is 75 minutes"}, source="user")
@@ -380,15 +392,19 @@ def test_stated_facts_reach_the_classifier_and_the_generator() -> None:
             self.stated.append(list(stated))
             return await super().classify(cell=cell, rules=rules, stated=stated, request=request, session_key=session_key)
 
-    coverage = _Recording({"elicit.body.unclear": "uncovered"})
-    probe = _StubProbe({"elicit.body.unclear"})
+    # `said` answers `elicit.body.unclear`, which closes it; the open cell the
+    # generator gets is a different one on the same row, so the statement still
+    # reaches the classifier and the conversation without being re-asked.
+    coverage = _Recording({"elicit.body.tacit_knowledge": "uncovered"})
+    probe = _StubProbe({"elicit.body.tacit_knowledge"})
     judges = Judges(placement=_StubPlacement(PLACED, {"c-exit": "method"}), coverage=coverage, probe=probe)
     result = _run(_snapshot(frame, said), judges)
     assert coverage.stated and all("gym is 75 minutes" in s for s in coverage.stated)
     assert all(any("07:00" in line for line in s) for s in coverage.stated)
     assert probe.seen, "the generator was never called"
+    assert "elicit.body.unclear" not in probe.asked  # answered, so never re-asked
     cell_id, conversation, rule_uids = probe.seen[0]
-    assert cell_id == "elicit.body.unclear"
+    assert cell_id == "elicit.body.tacit_knowledge"
     assert "deep work in the morning, gym at 18:00" in conversation  # the request leads
     assert "gym is 75 minutes" in conversation  # the elicited statement
     assert any("07:00" in line for line in conversation)  # the frame line

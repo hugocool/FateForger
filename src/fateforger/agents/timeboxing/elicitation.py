@@ -209,20 +209,44 @@ def day_label(planning_day: PlanningDay) -> str:
     return f"{planning_day.day_type.value} {weekday_name}"
 
 
+def closed_cells(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
+    """Cell ids Stage 1 will not ask again. Arithmetic over minted ids.
+
+    Two sources. A `PlannerAssumption` names the cell the user forced past. An
+    `ELICITED_STATEMENT` carries the cell its answer was bound to, so a cell
+    whose probe was answered is closed even while the classifier still calls it
+    uncovered -- the design's never-re-ask rule. Without it the loop re-asks one
+    cell to the turn cap: measured 2026-09-05, 12 probes per draw and 13
+    `already_said` replies over five draws, with `GateMet` never reached.
+
+    A statement carrying no cell answered no question and closes nothing. A
+    denial removes the assumption, so that cell re-opens by itself.
+    """
+
+    closed = {assumption.requirement_id for assumption in snapshot.assumptions}
+    for fact in snapshot.facts:
+        if fact.kind is not FactKind.ELICITED_STATEMENT or not isinstance(fact.value, dict):
+            continue
+        cell = fact.value.get("cell")
+        if isinstance(cell, str) and cell:
+            closed.add(cell)
+    return frozenset(closed)
+
+
 def stage1_gate(snapshot: PlanningSessionSnapshot) -> Gate:
     """What Stage 1 still needs. Arithmetic over the snapshot; called by the
     kernel for its outcome and by the interpreter for its decision set.
 
-    A cell a `PlannerAssumption` already answers is subtracted here, not left
-    to each caller: the matrix itself never changes when the user forces past
-    a cell, so every reader of this function must see the same "closed"
+    A cell the user has already answered, or that a `PlannerAssumption`
+    answers, is subtracted here via `closed_cells`, not left to each caller:
+    the matrix itself never changes when the user answers a probe or forces
+    past a cell, so every reader of this function must see the same "closed"
     verdict or the gate would depend on which call site asked.
     """
     if snapshot.planning_day is None:
         raise ValueError("stage1_gate needs a locked planning day")
     matrix = coverage_matrix(snapshot)
-    assumed = frozenset(a.requirement_id for a in snapshot.assumptions)
-    open_cells = [] if matrix is None else ranked_open_cells(matrix, assumed)
+    open_cells = [] if matrix is None else ranked_open_cells(matrix, closed_cells(snapshot))
     return Gate(open_cells=open_cells, day_label=day_label(snapshot.planning_day))
 
 

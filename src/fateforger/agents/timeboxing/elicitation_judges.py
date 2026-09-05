@@ -31,6 +31,7 @@ from .elicitation import (
     Concern,
     CoverageMatrix,
     RowStats,
+    closed_cells,
     coverage_matrix,
     ranked_open_cells,
 )
@@ -514,8 +515,9 @@ async def elicit(
     )
 
     # 4. Rank.
-    assumed = frozenset(a.requirement_id for a in snapshot.assumptions)
-    ranked = ranked_open_cells(matrix, assumed)
+    # The same subtraction the gate makes, from the same function: a cell the
+    # user answered or forced past is neither asked again nor held open.
+    ranked = ranked_open_cells(matrix, closed_cells(snapshot))
 
     # 5. Generate for the top cells, in parallel.
     conversation = ([request] if request else []) + stated_lines

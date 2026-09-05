@@ -16,6 +16,7 @@ from fateforger.agents.timeboxing.elicitation import (
     ROWS,
     CoverageMatrix,
     RowStats,
+    closed_cells,
     coverage_matrix,
     ranked_open_cells,
     stage1_gate,
@@ -29,6 +30,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningFact,
     PlanningSessionSnapshot,
     coverage_fact_id,
+    elicited_fact_id,
 )
 
 DAY = date(2026, 9, 8)  # a Tuesday
@@ -277,3 +279,46 @@ def test_a_matrix_without_the_new_fields_still_validates() -> None:
     value.pop("rule_placement")
     value.pop("placed_against")
     assert CoverageMatrix.model_validate(value).placed_against == []
+
+
+def _answer(cell_id: str, text: str = "75 minutes") -> PlanningFact:
+    return PlanningFact(
+        fact_id=elicited_fact_id(cell_id),
+        kind=FactKind.ELICITED_STATEMENT,
+        value={"cell": cell_id, "text": text},
+        source="user",
+    )
+
+
+def test_a_cell_whose_probe_was_answered_is_closed() -> None:
+    cell = "elicit.body.unclear"
+    snapshot = _snapshot(_matrix(**{cell: "uncovered"}))
+    snapshot = snapshot.model_copy(update={"facts": [*snapshot.facts, _answer(cell)]})
+    assert cell in closed_cells(snapshot)
+    assert [c.id for c in stage1_gate(snapshot).open_cells] == []
+
+
+def test_a_free_text_statement_closes_no_cell() -> None:
+    """`elicited_fact_id(None)` carries `cell: None`: the user volunteered it,
+    it answers no question, and it must not close one."""
+    cell = "elicit.body.unclear"
+    snapshot = _snapshot(_matrix(**{cell: "uncovered"}))
+    volunteered = PlanningFact(
+        fact_id=elicited_fact_id(None),
+        kind=FactKind.ELICITED_STATEMENT,
+        value={"cell": None, "text": "dentist at 15:00"},
+        source="user",
+    )
+    snapshot = snapshot.model_copy(update={"facts": [*snapshot.facts, volunteered]})
+    assert closed_cells(snapshot) == frozenset()
+    assert [c.id for c in stage1_gate(snapshot).open_cells] == [cell]
+
+
+def test_an_assumption_still_closes_a_cell() -> None:
+    cell = "elicit.body.unclear"
+    snapshot = _snapshot(_matrix(**{cell: "uncovered"}))
+    snapshot = snapshot.model_copy(
+        update={"assumptions": [PlannerAssumption(assumption_id="as-1", requirement_id=cell, value="v", why_needed="w", filed_by="user")]}
+    )
+    assert closed_cells(snapshot) == frozenset({cell})
+    assert stage1_gate(snapshot).open_cells == []
