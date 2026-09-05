@@ -2326,3 +2326,94 @@ async def test_a_revision_carrying_facts_files_them_before_the_redraft() -> None
     assert any(f.fact_id == "frame-2" for f in stored.facts)
     assert any(f.kind is FactKind.REVISION_INSTRUCTION for f in stored.facts)
     assert any(f.fact_id == "frame-2" for f in planner.briefs[0].facts)
+
+
+def _required(slugs: list[str]) -> PlanningFact:
+    return _fact("req-1", FactKind.REQUIRED_BLOCKS, {"slugs": slugs, "by_rule": {}})
+
+
+def _candidate_result_with(ops: list[dict], rows: list[dict] = ()) -> PlanningResult:
+    return PlanningResult(
+        artifact_updates=[
+            ArtifactDraft(
+                kind=ArtifactKind.VALIDATED_CANDIDATE,
+                payload={
+                    "digest": "d" * 64,
+                    "snapshot": {"event_ids": {}},
+                    "patch": {"ops": ops},
+                    "rows": list(rows),
+                },
+                dependency_revisions={"skeleton": 1},
+            )
+        ]
+    )
+
+
+def _candidate_context() -> RecordedContextPort:
+    return RecordedContextPort(
+        facts=(
+            _fact("cal-1", FactKind.CALENDAR_SNAPSHOT, {"fetched": True, "blocks": 0}),
+            _fact("con-1", FactKind.ACTIVE_CONSTRAINTS, {"fetched": True, "count": 1}),
+            _required(["planning"]),
+        )
+    )
+
+
+def _advance_from_approved_skeleton() -> tuple[InMemoryPlanningSessionRepository, TurnRequest]:
+    skeleton = _skeleton()
+    snapshot = _with(
+        _incident_snapshot(),
+        artifacts=[_planning_day_artifact(), skeleton],
+        approvals=[_approval(_planning_day_artifact()), _approval(skeleton)],
+    )
+    request = TurnRequest(
+        session_key="C1:1.0", interaction_id="adv-1", actor_user_id="U1",
+        expected_revision=3, intent=Advance(),
+    )
+    return InMemoryPlanningSessionRepository([snapshot]), request
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_without_the_required_kind_is_refused_by_name() -> None:
+    """#214: a candidate that forgot the planning block must not be shown for
+    approval; the refusal names the kind so the planner can fix it."""
+    repo, request = _advance_from_approved_skeleton()
+    planner = RecordedPlanner(_candidate_result_with(
+        [{"op": "add", "h": "DW1", "n": "Deep work", "t": "DW", "p": {"a": "ap", "dur": "PT1H"}}]
+    ))
+    outcome = await _kernel(repo, planner, context=_candidate_context()).turn(
+        request, progress=RecordingProgressSink()
+    )
+    assert isinstance(outcome, TurnFailed), outcome
+    assert outcome.code == "required_block_missing"
+    assert "planning" in outcome.message
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert ArtifactKind.VALIDATED_CANDIDATE not in [a.kind for a in saved.artifacts]
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_carrying_the_required_kind_on_an_op_is_accepted() -> None:
+    repo, request = _advance_from_approved_skeleton()
+    planner = RecordedPlanner(_candidate_result_with(
+        [{"op": "add", "h": "PLN1", "n": "Plan tomorrow", "t": "PR",
+          "p": {"a": "ap", "dur": "PT20M"}, "slug": "planning"}]
+    ))
+    outcome = await _kernel(repo, planner, context=_candidate_context()).turn(
+        request, progress=RecordingProgressSink()
+    )
+    assert isinstance(outcome, AwaitingApproval), outcome
+    assert outcome.artifact.kind is ArtifactKind.VALIDATED_CANDIDATE
+
+
+@pytest.mark.asyncio
+async def test_a_required_kind_already_on_the_day_satisfies_it_through_the_rows() -> None:
+    """The block was on the calendar before the patch; tmbx's rows carry its slug."""
+    repo, request = _advance_from_approved_skeleton()
+    planner = RecordedPlanner(_candidate_result_with(
+        [{"op": "add", "h": "DW1", "n": "Deep work", "t": "DW", "p": {"a": "ap", "dur": "PT1H"}}],
+        rows=[{"h": "PLN1", "slug": "planning"}],
+    ))
+    outcome = await _kernel(repo, planner, context=_candidate_context()).turn(
+        request, progress=RecordingProgressSink()
+    )
+    assert isinstance(outcome, AwaitingApproval), outcome
