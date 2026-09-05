@@ -119,3 +119,24 @@ def test_no_model_client_is_a_dependency_failure_even_with_a_frame_stated() -> N
     frame = PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:00"}, source="user")
     with pytest.raises(AdaptiveDependencyUnavailable):
         asyncio.run(host.resolve(_snapshot(frame), target=ArtifactKind.SKELETON, progress=_Sink()))
+
+
+def test_a_closed_stage_one_resolves_without_running_the_judgements(stub_elicit) -> None:
+    """After consent the matrix nobody reads is not worth three fan-outs.
+
+    `resolve(SKELETON)` runs on every skeleton turn -- the planner's, and any
+    revise after it -- and Stage 1 is over by then. The rules and the count
+    still come back; the judgements do not run.
+    """
+    runtime = SimpleNamespace(timeboxing_constraint_store=_Store(), timeboxing_intent_model_client=object())
+    host = HostPlanningContext(runtime, now=lambda: datetime.now(timezone.utc))
+    frame = PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:00"}, source="user")
+    snapshot = _snapshot(frame).model_copy(update={"stage1": "closed"})
+
+    context = asyncio.run(host.resolve(snapshot, target=ArtifactKind.SKELETON, progress=_Sink()))
+
+    assert stub_elicit.calls == []
+    assert context.facts == []
+    assert context.probes == []
+    assert context.applicable_constraints == ROWS
+    assert context.suspended_constraint_count == 7

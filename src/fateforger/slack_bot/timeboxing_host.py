@@ -211,6 +211,8 @@ class HostPlanningContext:
         with the frame just judged merged in, so the `bounded` row sees it --
         and returns the matrix fact and the probes. A host that cannot judge
         fails the turn rather than proposing to close a stage it never opened.
+        Once the stage is closed the judgements are skipped: the rules and the
+        count still come back, the matrix does not.
         """
         planning_day = self._locked_day(snapshot)
         constraints = await self._active_constraints(planning_day)
@@ -230,6 +232,18 @@ class HostPlanningContext:
                 constraints=constraints,
                 session_key=snapshot.session_key,
             )
+        if snapshot.stage1 == "closed":
+            # Every skeleton turn after consent -- the planner's, and any
+            # revise after that -- resolves here too, and Stage 1 is over by
+            # then: the three judge fan-outs would rewrite a matrix nobody
+            # reads any more. `stage1` is a field the kernel minted, so this
+            # is arithmetic on state, not a judgement about anything said.
+            return PlanningContext(
+                facts=[frame] if frame is not None else [],
+                applicable_constraints=constraints,
+                suspended_constraint_count=suspended,
+            )
+
         seen = (
             snapshot
             if frame is None
