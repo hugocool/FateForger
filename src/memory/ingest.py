@@ -106,10 +106,10 @@ async def _ingest(
     kinds: list[str],
 ) -> IngestResult:
     """The judged span. Callers hold the session lock around this."""
-    # return_exceptions=True so a failing judgement cannot orphan its five
+    # return_exceptions=True so a failing judgement cannot orphan its six
     # siblings: with the default, gather propagates the first exception but
     # leaves the others running, discarding their results and errors. We
-    # await all six, then re-raise the first failure to preserve the
+    # await all seven, then re-raise the first failure to preserve the
     # ValueError contract callers rely on.
     results = await asyncio.gather(
         judge.anchors(observation),
@@ -118,15 +118,26 @@ async def _ingest(
         judge.dedup(observation, recent),
         judge.necessity(observation),
         judge.requires_block(observation, list(kinds)),
+        judge.edit(observation),
         return_exceptions=True,
     )
     for result in results:
         if isinstance(result, BaseException):
             raise result
-    anchor_j, tier_j, meta_j, dedup_j, necessity_j, requires_j = results
+    anchor_j, tier_j, meta_j, dedup_j, necessity_j, requires_j, edit_j = results
 
     if meta_j.is_meta:
         return IngestResult(stored=False, suppressed_as="meta")
+    if edit_j.is_edit:
+        # An instruction to change the plan already on the table. Suppressed
+        # rather than stored at session tier: the kernel already carries it as
+        # FactKind.REVISION_INSTRUCTION where the planner reads it, and a copy
+        # here is a row that looks like a rule. Two of seven planning-thread
+        # messages on 2026-09-03 became standing profile rules this way, one
+        # of them a MUST that would have capped every future finances block
+        # (#287). Suppressing also keeps it out of the dedup candidate list,
+        # so a second similar edit cannot restate it into recurrence.
+        return IngestResult(stored=False, suppressed_as="edit")
     if dedup_j.duplicate_of is not None:
         # The id came from the model. Verify it names an observation we
         # actually minted before discarding user data on its say-so: this
