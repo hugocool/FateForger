@@ -34,15 +34,74 @@ from memory.openrouter_judge import OpenRouterJudge
 from memory.store import ObservationStore
 
 
+# How many times one name may be re-asked when the judge answers with a uid
+# that names no anchor. Measured on this corpus: the judge resolves `lunch` to
+# the right anchor but mistypes one hex character of its uid in roughly three
+# draws of four, so a single draw loses a link that is plainly correct. Three
+# draws is the ceiling for a one-off pass; the underlying transcription bug is
+# ticketed against the memory server, and the guard itself stays as strict as
+# it was — an invented uid is never accepted, only re-asked.
+MAX_UID_ATTEMPTS = 3
+
+# The unknown-uid guard's own words (`anchoring.resolve_anchors`). This is not
+# a judgement about user content: it is this system's error text deciding which
+# of two failures we are looking at — a uid this system minted was mistyped
+# (retryable), or the judge says the name is new (deterministic, not retried).
+# The would-mint refusal is a decision, not a transcription slip, so re-asking
+# it would only spend calls to hear the same answer.
+_UNKNOWN_UID = "unknown anchor_uid"
+
+
+@dataclass
+class NameOutcome:
+    """What became of one anchor name."""
+
+    name: str
+    uid: str | None = None
+    attempts: int = 0
+    error: str = ""
+
+
 @dataclass
 class RelinkReport:
     uid: str
     name: str
     names: list[str] = field(default_factory=list)
     resolved: list[str] = field(default_factory=list)
-    #: "linked" (or "would link" on a dry run), "no names" for a rule whose
-    #: observations name no anchor, "unresolved" when the judge would mint
+    unresolved_names: list[str] = field(default_factory=list)
+    outcomes: list[NameOutcome] = field(default_factory=list)
+    #: "linked" (or "would link" on a dry run) when at least one name resolved,
+    #: "no names" for a rule whose observations name no anchor, "unresolved"
+    #: when every name failed
     action: str = ""
+
+
+async def _resolve_one(name: str, anchor_store: AnchorStore, judge: Judge) -> NameOutcome:
+    """Resolve a single name, re-asking only a mistyped uid.
+
+    One name per call, because `resolve_anchors` is all-or-nothing: over a list,
+    the first name the judge calls new forfeits every name in it that a real
+    anchor already covers. On this corpus that cost *Evening Ritual* its
+    `dinner`, `shower` and `evening shutdown ritual` links for the sake of three
+    names nothing has minted.
+    """
+    outcome = NameOutcome(name=name)
+    for attempt in range(1, MAX_UID_ATTEMPTS + 1):
+        outcome.attempts = attempt
+        try:
+            uids = await resolve_anchors([name], anchor_store, judge, max_new=0)
+        except ValueError as exc:
+            outcome.error = str(exc)
+            if _UNKNOWN_UID in outcome.error:
+                continue
+            return outcome
+        if uids:
+            outcome.uid = uids[0]
+            outcome.error = ""
+            return outcome
+        outcome.error = "judge returned no anchor for the name"
+        return outcome
+    return outcome
 
 
 async def relink(db_path: str, judge: Judge, *, apply: bool) -> list[RelinkReport]:
@@ -64,10 +123,30 @@ async def relink(db_path: str, judge: Judge, *, apply: bool) -> list[RelinkRepor
             report.action = "no names"
             reports.append(report)
             continue
-        try:
-            report.resolved = await resolve_anchors(report.names, anchors, judge, max_new=0)
-        except ValueError as exc:
-            report.action = f"unresolved: {exc}"
+        # One rule's names are independent judgements, so they go out together.
+        # `resolve_anchors` serialises on its per-store lock, which is what
+        # keeps two names from each minting the same anchor; the gather is
+        # still the right shape and it is what the lock is there to make safe.
+        results = await asyncio.gather(
+            *(_resolve_one(name, anchors, judge) for name in report.names),
+            return_exceptions=True,
+        )
+        resolved: list[str] = []
+        for result in results:
+            # Only ValueError is a per-name verdict; anything else is transport
+            # or programmer error and must stay loud rather than be filed as
+            # "this name did not resolve".
+            if isinstance(result, BaseException):
+                raise result
+            report.outcomes.append(result)
+            if result.uid is None:
+                report.unresolved_names.append(result.name)
+            else:
+                resolved.append(result.uid)
+        # Two names can be one anchor; the link table takes each uid once.
+        report.resolved = list(dict.fromkeys(resolved))
+        if not report.resolved:
+            report.action = "unresolved"
             reports.append(report)
             continue
         if apply:
@@ -109,10 +188,18 @@ def main() -> None:
         if report.names:
             print(f"          names: {report.names}")
             print(f"          anchors: {report.resolved}")
+        for outcome in report.outcomes:
+            if outcome.uid is None:
+                print(f"          unresolved: {outcome.name!r} after {outcome.attempts} "
+                      f"attempt(s): {outcome.error}")
     linked = sum(1 for r in reports if r.action in ("linked", "would link"))
     print(f"\n{len(reports)} unanchored durable rules: {linked} {'linked' if args.apply else 'would link'}, "
           f"{sum(1 for r in reports if r.action == 'no names')} with no names, "
-          f"{sum(1 for r in reports if r.action.startswith('unresolved'))} unresolved")
+          f"{sum(1 for r in reports if r.action == 'unresolved')} unresolved")
+    partial = [r for r in reports if r.resolved and r.unresolved_names]
+    print(f"{sum(len(r.unresolved_names) for r in reports)} names did not resolve, "
+          f"across {len(partial)} partially linked rule(s) and "
+          f"{sum(1 for r in reports if r.action == 'unresolved')} fully unresolved")
 
 
 if __name__ == "__main__":
