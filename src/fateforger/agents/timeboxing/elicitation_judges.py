@@ -229,4 +229,90 @@ class CoverageJudge:
         return judgement.status, judgement.why
 
 
-__all__ = ["PLACEMENT_TARGETS", "CoverageJudge", "Placement", "PlacementJudge", "anchors_in", "unanchored_in"]
+class _ProbeJudgement(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    #: False means nothing the user said grounds a question about this cell.
+    grounded: bool
+    question: str | None
+    why_needed: str | None
+    #: Offered only when the answer set is closed. At most four.
+    options: list[str] = Field(default_factory=list, max_length=4)
+
+
+_PROBE_PROMPT = """You are a coach helping someone plan one day, asking one
+follow-up question before planning starts. You are given one open concern
+(the row), one criterion it fails, the rules on record for that row with
+their full descriptions, and everything the user has said this session.
+
+Write one question, based only on what the user has said and what is on
+record. It must be: specific to this person and this day, not generic; short;
+plain words, no jargon and nothing technical; appropriate to the person; a
+question about what holds, never a request for a solution; about one kind of
+thing at a time; open to only one reading; and concrete enough to be
+answerable. Give "why_needed" as a few words on what the answer lets the
+planner place. Offer "options" only when the sensible answers form a closed
+set of at most four; otherwise leave it empty.
+
+If nothing the user has said grounds a question about this cell, set grounded
+to false and leave the rest null: a no-op is a perfectly good outcome; do not
+invent a question to justify the run. Return only the requested schema.
+"""
+
+
+class ProbeJudge:
+    def __init__(self, model_client: ChatCompletionClient) -> None:
+        self.model_client = model_client
+
+    async def generate(
+        self,
+        *,
+        cell: CellRef,
+        rules_full: list[dict[str, Any]],
+        conversation: list[str],
+        request: str | None,
+        session_key: str,
+    ) -> ProbeDraft | None:
+        row: Concern = ROWS[cell.row]
+        criterion = CRITERION_BY_KEY[cell.criterion]
+        prompt = json.dumps(
+            {
+                "row": {"key": row.key, "label": row.label, "description": row.description},
+                "criterion": {"key": criterion.key, "question": criterion.question},
+                "rules": [
+                    {"name": str(r["name"]), "necessity": str(r["necessity"]), "description": str(r.get("description") or "")}
+                    for r in rules_full
+                ],
+                "conversation": conversation,
+                "request": request,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=False,
+        )
+        with llm_attribution(agent="timeboxing_agent", call_label=f"stage1_probe:{cell.id}", key=session_key):
+            result = await self.model_client.create(
+                [SystemMessage(content=_PROBE_PROMPT), UserMessage(content=prompt, source="user")],
+                json_output=_ProbeJudgement,
+            )
+        content = getattr(result, "content", None)
+        if not isinstance(content, str):
+            raise ValueError(f"probe judgement for {cell.id} returned no schema-bound JSON content")
+        judgement = _ProbeJudgement.model_validate_json(content)
+        if not judgement.grounded:
+            return None
+        if not judgement.question or not judgement.why_needed:
+            raise ValueError(f"probe judgement for {cell.id} said grounded and gave no question")
+        return ProbeDraft(
+            cell_id=cell.id,
+            question=judgement.question,
+            why_needed=judgement.why_needed,
+            # Option ids are minted here from the cell id, never by the model.
+            options=[
+                BlockerOption(option_id=f"{cell.id}:{index}", label=label, effect=label)
+                for index, label in enumerate(judgement.options, start=1)
+            ],
+        )
+
+
+__all__ = ["PLACEMENT_TARGETS", "CoverageJudge", "Placement", "PlacementJudge", "ProbeJudge", "anchors_in", "unanchored_in"]

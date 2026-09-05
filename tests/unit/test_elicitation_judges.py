@@ -18,6 +18,7 @@ from fateforger.agents.timeboxing.elicitation_judges import (
     PLACEMENT_TARGETS,
     CoverageJudge,
     PlacementJudge,
+    ProbeJudge,
     anchors_in,
     unanchored_in,
 )
@@ -145,4 +146,53 @@ async def test_classify_refuses_a_status_outside_the_schema() -> None:
     with pytest.raises(ValueError):
         await CoverageJudge(client).classify(
             cell=CellRef(row="body", criterion="unclear"), rules=[], stated=[], request=None, session_key="C1:1.0"
+        )
+
+
+@pytest.mark.asyncio
+async def test_generate_returns_a_draft_with_host_minted_option_ids() -> None:
+    client = _SchemaOutputClient(
+        {"grounded": True, "question": "How long is the gym?", "why_needed": "to place it", "options": ["60 min", "90 min"]}
+    )
+    cell = CellRef(row="body", criterion="tacit_knowledge")
+    draft = await ProbeJudge(client).generate(
+        cell=cell,
+        rules_full=[{"name": "Oats before gym", "necessity": "must", "description": "Eat oats two hours before the gym."}],
+        conversation=["deep work in the morning, gym at 18:00"],
+        request="deep work in the morning, gym at 18:00",
+        session_key="C1:1.0",
+    )
+    assert draft is not None
+    assert draft.cell_id == cell.id
+    assert draft.question == "How long is the gym?"
+    assert [o.option_id for o in draft.options] == ["elicit.body.tacit_knowledge:1", "elicit.body.tacit_knowledge:2"]
+    assert [o.label for o in draft.options] == ["60 min", "90 min"]
+    sent = json.loads(client.calls[0][0][1].content)
+    assert sent["rules"][0]["description"].startswith("Eat oats")
+
+
+@pytest.mark.asyncio
+async def test_generate_may_return_nothing() -> None:
+    client = _SchemaOutputClient({"grounded": False, "question": None, "why_needed": None, "options": []})
+    draft = await ProbeJudge(client).generate(
+        cell=CellRef(row="movement", criterion="unclear"), rules_full=[], conversation=[], request=None, session_key="C1:1.0"
+    )
+    assert draft is None
+
+
+@pytest.mark.asyncio
+async def test_generate_refuses_grounded_without_a_question() -> None:
+    client = _SchemaOutputClient({"grounded": True, "question": None, "why_needed": None, "options": []})
+    with pytest.raises(ValueError, match="grounded"):
+        await ProbeJudge(client).generate(
+            cell=CellRef(row="movement", criterion="unclear"), rules_full=[], conversation=[], request=None, session_key="C1:1.0"
+        )
+
+
+@pytest.mark.asyncio
+async def test_generate_refuses_more_than_four_options() -> None:
+    client = _SchemaOutputClient({"grounded": True, "question": "Which?", "why_needed": "w", "options": ["a", "b", "c", "d", "e"]})
+    with pytest.raises(ValueError):
+        await ProbeJudge(client).generate(
+            cell=CellRef(row="body", criterion="unclear"), rules_full=[], conversation=[], request=None, session_key="C1:1.0"
         )
