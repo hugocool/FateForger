@@ -66,7 +66,12 @@ def _thread_session() -> Any:
         from memory.service import MemoryService
         from memory.thread_session import ThreadSession
 
-        db_path = os.environ.get("MEMORY_DB_PATH", "data/memory.db")
+        from memory.mcp_server import resolve_db_path
+
+        # No default. This is the path that wrote a placeholder observation
+        # into the production corpus on 2026-09-03 (#288): a headless run
+        # inherited `data/memory.db` from a default nobody chose.
+        db_path = resolve_db_path()
         owner = os.environ.get("MEMORY_OWNER_SLACK_USER_ID") or None
         service = MemoryService(db_path, openrouter_judge_from_env())
         _SESSION = ThreadSession(
