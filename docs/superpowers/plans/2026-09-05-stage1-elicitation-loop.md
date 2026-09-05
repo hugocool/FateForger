@@ -2838,6 +2838,29 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
+### Tasks 16b–16e (inserted 2026-09-05): what the first eval run found
+
+The evals ran end to end against the frozen store on the production judge client (`openai/gpt-oss-120b:nitro` at `minimal`) with a `deepseek/deepseek-v4-pro-0813:nitro` simulated user. Round-trips per probe passed at a p50 of 2. Everything else failed, and each failure named a defect rather than a bad wording:
+
+| measure | first run | threshold |
+| --- | --- | --- |
+| `GateMet`, Tuesday and Sunday | 0/5 | ≥ 4/5 |
+| probes per draw | 12 (the cap) | ≤ 4 at p50 |
+| `already_said` | 13 | 0 |
+| round-trips per probe | 2 | ≤ 2 ✅ |
+| ablation noticed: gym time, deep-work duration | 5/5, 5/5 | ≥ 4/5 ✅ |
+| ablation noticed: work-start contradiction | 0/5 | ≥ 4/5 |
+
+**16b — never re-ask.** The design's rule (`2026-09-04-…-design.md:246`) was never implemented: `stage1_gate` subtracted assumptions only, so an answered cell stayed open and was asked again. One cell was asked six turns running. `closed_cells(snapshot)` now subtracts answered and assumed alike, in one function both the gate and `elicit` read. Brief: `task-16b-brief.md`.
+
+**16c — the content criteria see the rules' text.** Classify sent name and necessity only, so `contradictory` was asked to find a clash against content it did not have; the judge's trace read *"any contradictions? Not apparent."* `Criterion` gains `needs_rule_text`, true for `unclear` and `contradictory` alone. Brief: `task-16c-brief.md`.
+
+**16d — placement picks an index.** The vacation day died on a uid the model mistyped by one character, the same defect as #330. The prompt now offers a 1-based index and the code maps it back. Brief: `task-16d-brief.md`.
+
+**16e — the criterion discriminators, written against a re-measured baseline.** 318 of 336 classifications came back `uncovered` even after answers: the `alternatives` pathology of the 2026-09-04 spike, repeating on `tacit_assumptions`. The wording needs the same treatment the `alternatives` criterion got, validated by resampling at n ≥ 8. It is deliberately last: tuning a prompt against a live-locked loop measures the live-lock.
+
+**The ablation's second assertion changes** (Hugo, 2026-09-05). Asserting that the probe for one cell addresses one deleted fact measured probe *selection*, not probe quality: a cell holds several gaps, one probe is generated, and for the gym case the generator saw `rules: []` and asked a good question about deep-work duration 5/5. It becomes loop-level recall — run the loop and let the non-contender judge say whether the deleted fact was elicited anywhere in the trace before the cap.
+
 ### Task 17: Record the numbers
 
 **Files:**
