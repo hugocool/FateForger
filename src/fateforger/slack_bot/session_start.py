@@ -28,6 +28,7 @@ from fateforger.haunt.reconcile import PlanningReminder
 from fateforger.haunt.session_start import (
     LADDER_OFFSETS,
     LIVE_RECENCY,
+    SAME_DAY_LIVENESS,
     dm_open_line,
     missed_line,
     nudge_line,
@@ -346,10 +347,22 @@ class SessionStarter:
                 )
                 continue
             if auto:
+                if row.planning_date is None:
+                    # Never got past the opening turn, so no day was ever
+                    # locked in: there was nothing to miss. The identical
+                    # shape `_recover_half_open` closes -- root reads
+                    # `canceled`, thread hears nothing -- not `missed`, which
+                    # would stamp today's date on a root that stood for no
+                    # day and post "Missed" into a thread that never
+                    # promised anything.
+                    if await self._close_untouched(
+                        user_id=user_id, row=row, day=day, state=CANCELED_STATE
+                    ):
+                        closed.add(row.session_key)
                 # A day-less row of ours never got past the opening turn, so
                 # its revision says nothing about the user having engaged:
                 # whatever it counted, it counted before any day was agreed.
-                if row.planning_date is None or row.revision <= UNTOUCHED_REVISION:
+                elif row.revision <= UNTOUCHED_REVISION:
                     if await self._close_untouched(user_id=user_id, row=row, day=day):
                         closed.add(row.session_key)
                 else:
@@ -377,20 +390,23 @@ class SessionStarter:
 
         `_sweep` already closed what it could and named what is live from the
         day's rows; this looks at `rows` in full -- every session the user
-        still has open, any day, the same read `_sweep` was handed.
+        still has open, any day, not the filtered list `_sweep` was handed.
 
         For a row that was this expiry's business (`day` or day-less, the
-        same filter `_sweep` was fed), two things can be left over and both
-        still count: a close of ours that did not land, and one this starter
-        cannot prove is not its own. Either leaves the session standing in
-        fact, however stale it looks, so it silences the missed line. A row
-        `_sweep` already ruled somebody else's stale manual session does not
-        -- that verdict is exactly what tells expiry the message is safe to
-        send. For a row standing for some other day entirely, staleness is
-        the only signal available (the auto-open check says nothing about
-        whether *today's* user is busy in it), so only one saved within
-        `LIVE_RECENCY` counts -- otherwise a forgotten session for another
-        day would silence every day's missed line forever.
+        same filter `_sweep` was fed), three things can be left over and all
+        three count: a close of ours that did not land, one this starter
+        cannot prove is not its own, and -- for a row carrying `day` itself,
+        not a day-less one -- a not-ours row saved within `SAME_DAY_LIVENESS`
+        of now, which stands for this day whether or not it is ours to close.
+        All three leave the session standing in fact, however stale the last
+        one looks, so each silences the missed line. A row `_sweep` already
+        ruled somebody else's stale manual session does not -- that verdict
+        is exactly what tells expiry the message is safe to send. For a row
+        standing for some other day entirely, staleness is the only signal
+        available (the auto-open check says nothing about whether *today's*
+        user is busy in it), so only one saved within `LIVE_RECENCY` counts
+        -- otherwise a forgotten session for another day would silence every
+        day's missed line forever.
         """
 
         for row in rows:
@@ -399,6 +415,8 @@ class SessionStarter:
             if row.planning_date is None or row.planning_date == day:
                 auto = await self._auto_opened(row)
                 if auto is None or auto:
+                    return row.session_key
+                if row.planning_date == day and self._touched_within(row, SAME_DAY_LIVENESS):
                     return row.session_key
             elif self._touched_recently(row):
                 return row.session_key
@@ -434,8 +452,8 @@ class SessionStarter:
             handled.interaction_id == wanted for handled in snapshot.handled_interactions
         )
 
-    def _touched_recently(self, row: OpenSessionRow) -> bool:
-        """Was this row written within `LIVE_RECENCY` of now?
+    def _touched_within(self, row: OpenSessionRow, window: timedelta) -> bool:
+        """Was this row written within `window` of now?
 
         The store writes `updated_at` naive in UTC; the starter's clock is
         aware. Both are timestamps this system minted, so the comparison is
@@ -446,7 +464,17 @@ class SessionStarter:
         updated = row.updated_at
         if updated.tzinfo is None:
             now = now.astimezone(timezone.utc).replace(tzinfo=None)
-        return now - updated <= LIVE_RECENCY
+        return now - updated <= window
+
+    def _touched_recently(self, row: OpenSessionRow) -> bool:
+        """Was this row written within `LIVE_RECENCY` of now?
+
+        The window for a row carrying no day, or a day other than the one in
+        question -- for a row carrying *this* day, `SAME_DAY_LIVENESS` is the
+        one that applies.
+        """
+
+        return self._touched_within(row, LIVE_RECENCY)
 
     async def _close_untouched(
         self,
@@ -586,12 +614,20 @@ class SessionStarter:
         """Is there already a session this start would duplicate?
 
         Three ways there is, and only three: the day is committed; a session
-        of ours already stands for it, however old; or somebody was writing in
-        some session within `LIVE_RECENCY`. `standing.open_session_key` is not
-        one of them any more -- its window is an hour wide and answers "was
-        anything saved lately", which a session abandoned mid-way answers yes
-        to for an hour after the user walked away (#299). "Open" is not
-        "live", and a session that never locked a day has not started.
+        of ours already stands for it, however old; or a row -- ours or not
+        -- was saved recently enough to say somebody is in it now.
+        `standing.open_session_key` is not one of these any more -- its
+        window is an hour wide and answers "was anything saved lately",
+        which a session abandoned mid-way answers yes to for an hour after
+        the user walked away (#299). "Open" is not "live", and a session
+        that never locked a day has not started.
+
+        "Recently enough" is not one window: a row carrying *this* day could
+        genuinely be today's session, ours or not, so it gets the hour
+        (`SAME_DAY_LIVENESS`) that `standing`'s own clause always used. A
+        row carrying no day, or some other day, gets the narrower
+        `LIVE_RECENCY` -- that gap is where #299's harm actually was, and
+        narrowing it further would only reopen it.
         """
 
         standing = await self._standing(user_id=user_id, day=day)
@@ -612,22 +648,24 @@ class SessionStarter:
         if rows is None:
             return True
         for row in rows:
-            # Somebody saved this session minutes ago -- whether or not it has
-            # a day, whether or not it is ours, they are in it now, and a
-            # second session on top of that is the double open this guard is
-            # for.
-            if self._touched_recently(row):
-                logger.info(
-                    "session_start: %s was saved at %s; somebody is in it, not starting",
-                    row.session_key,
-                    row.updated_at,
-                )
-                return True
             if row.planning_date != day:
-                # Cold, and standing for another day or for none: Hugo carries
-                # several of these from manual sessions nobody will touch
-                # again, and they are not this day's business.
+                # Cold or not, standing for another day or for none: whether
+                # somebody is in it now is the only question left, and
+                # `LIVE_RECENCY` is the answer for a row this expiry's own
+                # day cannot claim as its own.
+                if self._touched_recently(row):
+                    logger.info(
+                        "session_start: %s was saved at %s; somebody is in it, not starting",
+                        row.session_key,
+                        row.updated_at,
+                    )
+                    return True
                 continue
+            # Carries this very day. Ownership decides first: ours blocks at
+            # any age (a restart during an event longer than an hour must
+            # still find it), and unreadable fails closed the same way. Only
+            # once it is neither does recency -- the wider, day-scoped
+            # window -- get the final say.
             auto = await self._auto_opened(row)
             if auto is None:
                 # Unreadable, not "not ours": the guard fails closed here,
@@ -648,6 +686,18 @@ class SessionStarter:
                     user_id,
                     row.session_key,
                     day,
+                )
+                return True
+            if self._touched_within(row, SAME_DAY_LIVENESS):
+                # Not ours, but saved within the hour and carrying this very
+                # day: it could genuinely be today's session -- Hugo opened
+                # one by hand, engaged, and stepped away -- and a second one
+                # beside it is the double open this guard exists to stop.
+                logger.info(
+                    "session_start: %s carries %s and was saved at %s; not starting",
+                    row.session_key,
+                    day,
+                    row.updated_at,
                 )
                 return True
         return False

@@ -281,6 +281,41 @@ async def test_reconcile_schedules_session_jobs_for_an_anchor_event_ahead():
 
 
 @pytest.mark.asyncio
+async def test_a_malformed_anchor_timezone_still_evaluates_and_schedules(caplog):
+    # `ZoneInfo(anchor_tz_name)` used to run unguarded for every anchor found,
+    # horizon or not: a `timeZone` string the zoneinfo database does not
+    # recognise raised `ZoneInfoNotFoundError` straight out of `evaluate`,
+    # instead of falling back the same way a missing `timeZone` already does
+    # -- to the offset the event's own `dateTime` carries.
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    client.event_lookup[("primary", "ff-planning-u1")] = {
+        "id": "ff-planning-u1",
+        "start": {"dateTime": "2025-01-01T10:00:00+00:00", "timeZone": "Not/AZone"},
+        "end": {"dateTime": "2025-01-01T10:30:00+00:00", "timeZone": "Not/AZone"},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="fateforger.haunt.reconcile"):
+        jobs = await reconciler.reconcile_missing_planning(
+            scope="U1",
+            user_id="U1",
+            channel_id="C1",
+            planning_event_id="ff-planning-u1",
+            now=now,
+        )
+
+    kinds = {job.key.kind for job in jobs}
+    assert kinds == {SESSION_START_KIND, SESSION_EXPIRE_KIND}
+    scheduled_kinds = {job.kwargs["reminder"].kind for job in scheduler.get_jobs()}
+    assert scheduled_kinds == {SESSION_START_KIND, SESSION_EXPIRE_KIND}
+    assert "outcome=anchor_tz_unreadable" in caplog.text
+    assert "timeZone='Not/AZone'" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_reconcile_logs_anchor_ahead_outcome_for_an_event_within_the_window(caplog):
     # Same event, but now asserting the outcome label: an anchor still ahead
     # logs "anchor_ahead", not the old "anchor_match" (which meant "found and

@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import Any, Awaitable, Callable, Iterable, Protocol
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser as date_parser
@@ -191,16 +191,26 @@ class PlanningSessionRule:
             # No `timeZone` name means read the offset the event's own
             # `dateTime` carries (e.g. "+02:00") rather than assuming UTC --
             # that offset decides which side of the 14:00 cutoff the event
-            # falls on, and forcing UTC silently shifted it.
-            anchor_tz: tzinfo = (
-                (
-                    ZoneInfo(anchor_tz_name)
-                    if anchor_tz_name
-                    else (_event_native_tzinfo(anchor) or timezone.utc)
-                )
-                if anchor
-                else timezone.utc
-            )
+            # falls on, and forcing UTC silently shifted it. A `timeZone`
+            # name the zoneinfo database does not recognise is the same
+            # "cannot read it" case as no name at all -- it must fall back,
+            # not raise `ZoneInfoNotFoundError` out of `evaluate` for every
+            # anchor found from here on, horizon or not.
+            anchor_tz: tzinfo = timezone.utc
+            if anchor:
+                anchor_tz = _event_native_tzinfo(anchor) or timezone.utc
+                if anchor_tz_name:
+                    try:
+                        anchor_tz = ZoneInfo(anchor_tz_name)
+                    except ZoneInfoNotFoundError:
+                        logger.warning(
+                            "planning_reconcile evaluate outcome=anchor_tz_unreadable scope=%s user_id=%s planning_event_id=%s event_id=%s timeZone=%r",
+                            scope,
+                            user_id,
+                            planning_event_id,
+                            anchor.get("id"),
+                            anchor_tz_name,
+                        )
             # Parsed once, with the resolved zone, and reused below for both
             # the horizon probe and the decisive branch -- it used to be
             # parsed a second time here with the same inputs.

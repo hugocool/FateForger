@@ -568,6 +568,13 @@ async def test_expire_closes_our_own_day_less_session(monkeypatch):
     # so nothing ever closed it. Its revision says nothing about the user
     # having engaged -- the day it stands for was never agreed -- so it is
     # closed however far it got.
+    #
+    # And it is closed the way the recovery closes the identical shape: the
+    # root reads `canceled` and the thread hears nothing. A row left over
+    # from some other day never stood for *this* one, so a root stamped with
+    # today's date and a "Missed" line posted into that unrelated thread
+    # would both be untrue. The DM is a different claim and stays: the day
+    # really did go unplanned.
     haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
     ledger = _Ledger(rows=[_row("C1:root.1", 3, planning_date=None)])
     starter, turns = _starter(
@@ -578,6 +585,10 @@ async def test_expire_closes_our_own_day_less_session(monkeypatch):
 
     assert haunting.cancelled == [{"topic_id": "C1:root.1"}]
     assert isinstance(turns[0]["action"].intent, CancelSession)
+    relabel = starter._client.updates[-1]
+    assert relabel["ts"] == "root.1" and "canceled" in relabel["text"]
+    assert "missed" not in relabel["text"]
+    assert starter._client.posted == [], "nothing was missed in a thread that stood for no day"
     assert any("Missed" in m.content for m, _ in runtime.sent)
     assert guardian.reconciled == ["U1"]
 
@@ -800,3 +811,104 @@ async def test_a_missing_permalink_is_loud_and_still_arms(monkeypatch):
 
     assert {"component": "session_start", "error_type": "permalink_failure"} in errors
     assert haunting.scheduled, "a linkless ladder still beats no ladder"
+
+
+@pytest.mark.asyncio
+async def test_a_session_carrying_this_day_saved_inside_the_hour_blocks_the_start(monkeypatch):
+    # The concrete case: Hugo opened a session by hand at 08:50, engaged with
+    # it (revision 5) and stepped away. At 09:00 the auto-start must not open
+    # a second one. `LIVE_RECENCY` alone would have let this through eleven
+    # minutes after his last save -- but a row carrying *this* day could
+    # genuinely be this day's session, ours or not, so the hour `standing`
+    # always used is the window that governs it.
+    haunting = _Haunting()
+    ledger = _Ledger(
+        rows=[_row("C1:byhand", 5, stale_minutes=11)],
+        hand_opened=("C1:byhand",),
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert turns == [] and haunting.scheduled == [] and haunting.cancelled == []
+    assert starter._client.posted == [], "no second session beside one that stands for the day"
+
+
+@pytest.mark.asyncio
+async def test_a_session_carrying_this_day_saved_past_the_hour_does_not_block(monkeypatch):
+    # The far side of the same window. Past the hour the row is cold, and a
+    # cold session somebody else opened is not this day's session in fact --
+    # it is a leftover, and the day still needs planning.
+    haunting = _Haunting()
+    ledger = _Ledger(
+        rows=[_row("C1:byhand", 5, stale_minutes=70)],
+        hand_opened=("C1:byhand",),
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert len(turns) == 1 and isinstance(turns[0]["action"].intent, ConfirmPlanningDay)
+    assert haunting.scheduled, "the ladder still arms for a fresh start"
+
+
+@pytest.mark.asyncio
+async def test_a_day_less_session_is_judged_on_recency_not_on_the_hour(monkeypatch):
+    # The hour is for rows that carry this day. A row that locked no day
+    # stands for nothing, so eleven minutes after its last save -- past
+    # `LIVE_RECENCY` -- nobody is in it, and it may not swallow the day's
+    # auto-start. This is #299's harm, and it stays fixed.
+    haunting = _Haunting()
+    ledger = _Ledger(
+        rows=[_row("C1:halfopen", 5, stale_minutes=11, planning_date=None)],
+        hand_opened=("C1:halfopen",),
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert len(turns) == 1 and isinstance(turns[0]["action"].intent, ConfirmPlanningDay)
+    assert haunting.cancelled == [], "a session that is not ours is never closed"
+    assert haunting.scheduled
+
+
+@pytest.mark.asyncio
+async def test_expire_says_nothing_over_a_session_that_stood_for_the_day(monkeypatch):
+    # Half an hour ago the user was in a session for this very day. It is not
+    # ours to close and it is too cold to count as live, but it did stand for
+    # the day -- and "Missed the planning session" at somebody who was
+    # planning thirty minutes ago is the message that must not go out.
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(
+        rows=[_row("C1:byhand", 5, stale_minutes=30)],
+        hand_opened=("C1:byhand",),
+    )
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == []
+    assert runtime.sent == [], "no missed DM over a session that stood for the day"
+    assert guardian.reconciled == []
+
+
+@pytest.mark.asyncio
+async def test_expire_says_nothing_while_another_day_is_being_planned(monkeypatch):
+    # The other side of the other-day fallback: a row locked to tomorrow is
+    # not this expiry's business, but somebody saved it two minutes ago, so
+    # they are planning right now. Telling them they missed today's session
+    # while they are typing is exactly the interruption the silence is for.
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(
+        rows=[_row("C1:tomorrow", 4, stale_minutes=2, planning_date=date(2026, 9, 5))]
+    )
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == [], "another day's session is not ours to close"
+    assert runtime.sent == [] and guardian.reconciled == []
