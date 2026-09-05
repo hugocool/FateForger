@@ -573,3 +573,12 @@ def test_a_resolve_that_did_not_count_leaves_the_last_count_alone() -> None:
     after = _load(repository)
     assert [row["uid"] for row in after.applicable_constraints] == ["c-gym", "c-plan"]
     assert after.suspended_constraint_count == 7
+
+
+def test_a_planning_context_carries_probe_drafts_and_they_never_reach_the_snapshot() -> None:
+    from fateforger.agents.timeboxing.session_contracts import ProbeDraft
+
+    probe = ProbeDraft(cell_id="elicit.body.unclear", question="How long is the gym?", why_needed="body")
+    context = PlanningContext(probes=[probe])
+    assert context.probes[0].cell_id == "elicit.body.unclear"
+    assert "probes" not in PlanningSessionSnapshot.model_fields

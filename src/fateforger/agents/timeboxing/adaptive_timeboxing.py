@@ -52,6 +52,7 @@ from .session_contracts import (
     PlanningFact,
     PlanningResult,
     PlanningSessionSnapshot,
+    ProbeDraft,
     ProvidePlanningFacts,
     RestoreConstraint,
     ReviseArtifact,
@@ -96,6 +97,9 @@ class PlanningContext(BaseModel):
     #: rules the day type had taken off.
     suspended_constraint_count: int | None = Field(default=None, ge=0)
     calendar_snapshot: JsonValue = Field(default_factory=dict)
+    #: Probes the host's judges phrased for the top open Stage 1 cells, in
+    #: rank order. Read by `_stage1_outcome` and nowhere else.
+    probes: list[ProbeDraft] = Field(default_factory=list)
 
 
 class ProgressSink(Protocol):

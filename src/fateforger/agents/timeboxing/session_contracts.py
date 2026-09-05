@@ -538,6 +538,21 @@ class Gate(_StrictModel):
     note: str | None = None
 
 
+class ProbeDraft(_StrictModel):
+    """One question a judge phrased for one open cell, resolved by the host.
+
+    Carried on `PlanningContext`, never on the snapshot: the surfaces build
+    from the snapshot alone, and a probe is one turn's phrasing of a cell the
+    matrix already holds. `options` is non-empty only when the answer set is
+    closed; every option id is minted by the host from the cell id.
+    """
+
+    cell_id: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    why_needed: str = Field(min_length=1)
+    options: list[BlockerOption] = Field(default_factory=list, max_length=4)
+
+
 class AwaitingUser(_StrictModel):
     kind: Literal["awaiting_user"] = "awaiting_user"
     requirement_id: str = Field(min_length=1)
