@@ -40,12 +40,14 @@ class _FakeRuntime:
         engine: _FakeEngine,
         planning_reconciler: "_FakePlanningReconciler",
         intent_model_client: "_FakeIntentModelClient | None" = None,
+        judge_model_client: "_FakeIntentModelClient | None" = None,
         lifecycle: list[str] | None = None,
     ) -> None:
         self.haunting_service = service
         self.haunting_settings_engine = engine
         self.planning_reconciler = planning_reconciler
         self.timeboxing_intent_model_client = intent_model_client
+        self.timeboxing_judge_model_client = judge_model_client
         self.lifecycle = lifecycle if lifecycle is not None else []
         self.stop_calls = 0
         self.close_calls = 0
@@ -60,9 +62,10 @@ class _FakeRuntime:
 
 
 class _FakeIntentModelClient:
-    def __init__(self, lifecycle: list[str] | None = None) -> None:
+    def __init__(self, lifecycle: list[str] | None = None, name: str = "intent_client") -> None:
         self.close_calls = 0
         self.create_calls = 0
+        self.name = name
         self.lifecycle = lifecycle if lifecycle is not None else []
 
     async def create(self, _messages, *, json_output):  # noqa: ANN001
@@ -73,7 +76,7 @@ class _FakeIntentModelClient:
 
     async def close(self) -> None:
         self.close_calls += 1
-        self.lifecycle.append("intent_client.close")
+        self.lifecycle.append(f"{self.name}.close")
 
 
 class _FakeCalendarClient:
@@ -185,11 +188,13 @@ async def test_shutdown_closes_shared_intent_client_once_after_runtime_stop() ->
     lifecycle: list[str] = []
     scheduler = _FakeScheduler()
     intent_client = _FakeIntentModelClient(lifecycle)
+    judge_client = _FakeIntentModelClient(lifecycle, name="judge_client")
     fake_runtime = _FakeRuntime(
         _FakeHauntingService(scheduler),
         _FakeEngine(),
         _FakePlanningReconciler(_FakeCalendarClient()),
         intent_model_client=intent_client,
+        judge_model_client=judge_client,
         lifecycle=lifecycle,
     )
     original_runtime = runtime_module._runtime
@@ -201,8 +206,10 @@ async def test_shutdown_closes_shared_intent_client_once_after_runtime_stop() ->
         runtime_module._runtime = original_runtime
 
     assert intent_client.close_calls == 1
+    assert judge_client.close_calls == 1
     assert lifecycle == [
         "runtime.stop",
         "runtime.close",
         "intent_client.close",
+        "judge_client.close",
     ]

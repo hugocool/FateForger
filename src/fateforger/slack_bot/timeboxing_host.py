@@ -217,7 +217,10 @@ class HostPlanningContext:
         planning_day = self._locked_day(snapshot)
         constraints = await self._active_constraints(planning_day)
         suspended = await self._suspended_count(planning_day)
-        model_client = getattr(self._runtime, "timeboxing_intent_model_client", None)
+        # The judgements read the judge client and nothing else: no fallback to
+        # the planner's intent client, because a silent fallback would put a
+        # 45-cell classify batch back on the pro pin at high effort.
+        model_client = getattr(self._runtime, "timeboxing_judge_model_client", None)
         if model_client is None:
             raise AdaptiveDependencyUnavailable(
                 "no model client for the Stage 1 judgements"

@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     llm_model_timeboxing_draft: str = Field(
         default=""
     )
+    llm_model_timeboxing_judge: str = Field(
+        default=""
+    )
     llm_model_timebox_patcher: str = Field(
         default=""
     )
@@ -102,6 +105,9 @@ class Settings(BaseSettings):
         default=""
     )
     llm_reasoning_effort_timeboxing_draft: str = Field(
+        default=""
+    )
+    llm_reasoning_effort_timeboxing_judge: str = Field(
         default=""
     )
     llm_reasoning_effort_revisor: str = Field(

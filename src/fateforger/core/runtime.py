@@ -868,6 +868,9 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     timeboxing_intent_interpreter, timeboxing_intent_model_client = (
         _build_timeboxing_intent_interpreter()
     )
+    # The Stage 1 judgements get their own client: the flash pin at minimal,
+    # not the planner's pro pin at high effort (CLAUDE.md's role table).
+    timeboxing_judge_model_client = build_autogen_chat_client("timeboxing_judge")
     runtime.start()
     setattr(runtime, "haunt_orchestrator", haunt)
     setattr(runtime, "haunting_service", haunting_service)
@@ -893,6 +896,11 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
         runtime,
         "timeboxing_intent_model_client",
         timeboxing_intent_model_client,
+    )
+    setattr(
+        runtime,
+        "timeboxing_judge_model_client",
+        timeboxing_judge_model_client,
     )
     planning_guardian = PlanningGuardian(
         scheduler,
@@ -1008,6 +1016,12 @@ async def shutdown_runtime() -> None:
     )
     if timeboxing_intent_model_client is not None:
         await timeboxing_intent_model_client.close()
+
+    timeboxing_judge_model_client = getattr(
+        runtime, "timeboxing_judge_model_client", None
+    )
+    if timeboxing_judge_model_client is not None:
+        await timeboxing_judge_model_client.close()
 
     scheduler = getattr(getattr(runtime, "haunting_service", None), "_scheduler", None)
     scheduler.shutdown(wait=False)

@@ -6,6 +6,7 @@ from autogen_core.models import UserMessage
 
 from fateforger.core.config import settings
 from fateforger.llm import build_autogen_chat_client
+from fateforger.llm.factory import _model_for_agent, _reasoning_effort_for_agent
 
 
 @pytest.mark.asyncio
@@ -320,3 +321,55 @@ def test_openrouter_keeps_parallel_tool_calls_override(monkeypatch):
     )
 
     assert captured.get("parallel_tool_calls") is False
+
+
+def test_stage1_judges_default_to_the_flash_pin_at_minimal(monkeypatch):
+    """The judgements are term typing, not deliberation (CLAUDE.md's role table).
+
+    With no per-role override the judge client derives from the `.env` flash
+    pin, never the planner's pro pin, and asks for `minimal` reasoning.
+    """
+    monkeypatch.setattr(settings, "llm_provider", "openrouter", raising=False)
+    monkeypatch.setattr(
+        settings, "openrouter_default_model_flash", "flash/pin", raising=False
+    )
+    monkeypatch.setattr(
+        settings, "openrouter_default_model_pro", "pro/pin", raising=False
+    )
+    monkeypatch.setattr(settings, "llm_model_timeboxing_judge", "", raising=False)
+    monkeypatch.setattr(
+        settings, "llm_reasoning_effort_timeboxing_judge", "", raising=False
+    )
+
+    assert _model_for_agent("timeboxing_judge") == "flash/pin"
+    assert _reasoning_effort_for_agent("timeboxing_judge") == "minimal"
+
+
+def test_stage1_judge_role_honours_its_own_env_override(monkeypatch):
+    """Escalation is by procedure, per role -- not by hardcoding a model id."""
+    monkeypatch.setattr(settings, "llm_provider", "openrouter", raising=False)
+    monkeypatch.setattr(
+        settings, "openrouter_default_model_flash", "flash/pin", raising=False
+    )
+    monkeypatch.setattr(settings, "llm_model_timeboxing_judge", "x/y", raising=False)
+    monkeypatch.setattr(
+        settings, "llm_reasoning_effort_timeboxing_judge", "high", raising=False
+    )
+
+    assert _model_for_agent("timeboxing_judge") == "x/y"
+    assert _reasoning_effort_for_agent("timeboxing_judge") == "high"
+
+
+def test_the_planner_role_is_untouched_by_the_new_judge_role(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "openrouter", raising=False)
+    monkeypatch.setattr(
+        settings, "llm_model_timeboxing", "planner/pin", raising=False
+    )
+    monkeypatch.setattr(settings, "llm_reasoning_effort_timeboxing", "", raising=False)
+    monkeypatch.setattr(settings, "llm_model_timeboxing_judge", "x/y", raising=False)
+    monkeypatch.setattr(
+        settings, "llm_reasoning_effort_timeboxing_judge", "minimal", raising=False
+    )
+
+    assert _model_for_agent("timeboxing_agent") == "planner/pin"
+    assert _reasoning_effort_for_agent("timeboxing_agent") == "high"

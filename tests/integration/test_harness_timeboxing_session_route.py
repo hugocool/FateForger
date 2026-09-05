@@ -147,6 +147,7 @@ class Runtime:
         self.timeboxing_planner = planner
         self.timeboxing_constraint_store = EmptyConstraintMemory()
         self.timeboxing_intent_model_client = ForbiddenModelClient()
+        self.timeboxing_judge_model_client = ForbiddenModelClient()
 
     async def send_message(self, message: Any, recipient: Any) -> Any:
         raise AssertionError("the kernel route must not reach the AutoGen runtime")

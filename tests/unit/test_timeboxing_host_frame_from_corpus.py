@@ -63,7 +63,9 @@ class _Runtime:
         if store is not None:
             self.timeboxing_constraint_store = store
         if client is not None:
-            self.timeboxing_intent_model_client = client
+            # The frame judgement is a Stage 1 judgement: it reads the judge
+            # client, never the planner's intent client.
+            self.timeboxing_judge_model_client = client
 
 
 class _Progress:
@@ -177,6 +179,18 @@ async def test_missing_constraint_memory_is_loud_at_capture_too() -> None:
     host = HostPlanningContext(
         _Runtime(store=None, client=_SchemaOutputClient()), now=_now
     )
+
+    with pytest.raises(AdaptiveDependencyUnavailable):
+        await host.resolve(_snapshot(), target=ArtifactKind.SKELETON, progress=_Progress())
+
+
+@pytest.mark.asyncio
+async def test_the_frame_judge_does_not_fall_back_to_the_planners_client() -> None:
+    """A runtime with the planner's client but no judge client fails loudly."""
+
+    runtime = _Runtime(store=_Store([BEDTIME]), client=None)
+    runtime.timeboxing_intent_model_client = _SchemaOutputClient()
+    host = HostPlanningContext(runtime, now=_now)
 
     with pytest.raises(AdaptiveDependencyUnavailable):
         await host.resolve(_snapshot(), target=ArtifactKind.SKELETON, progress=_Progress())

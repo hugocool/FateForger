@@ -138,6 +138,10 @@ def _model_for_agent(agent_type: str) -> str:
         return pick(
             settings.llm_model_timeboxing_draft, openai="gpt-4o", openrouter=openrouter_pro
         )
+    if agent_type == "timeboxing_judge":
+        # The Stage 1 judgements (placement, coverage, probe) and the day-frame
+        # judgement: every one is term typing on the flash pin, per CLAUDE.md.
+        return pick(settings.llm_model_timeboxing_judge, openai=openai_default, openrouter=openrouter_flash)
     if agent_type == "revisor_agent":
         return pick(settings.llm_model_revisor, openai="gpt-4o", openrouter=openrouter_pro)
     if agent_type == "tasks_agent":
@@ -181,6 +185,8 @@ def _reasoning_effort_for_agent(agent_type: str) -> ReasoningEffort | None:
         return normalize(settings.llm_reasoning_effort_timeboxing) or "high"
     if agent_type == "timeboxing_draft":
         return normalize(settings.llm_reasoning_effort_timeboxing_draft) or "high"
+    if agent_type == "timeboxing_judge":
+        return normalize(settings.llm_reasoning_effort_timeboxing_judge) or "minimal"
     if agent_type == "revisor_agent":
         return normalize(settings.llm_reasoning_effort_revisor) or "medium"
     if agent_type == "tasks_agent":

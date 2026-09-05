@@ -55,7 +55,11 @@ def _snapshot(*facts) -> PlanningSessionSnapshot:
 
 
 def test_skeleton_context_carries_the_rows_when_the_frame_is_already_stated(stub_elicit) -> None:
-    runtime = SimpleNamespace(timeboxing_constraint_store=_Store(), timeboxing_intent_model_client=object())
+    runtime = SimpleNamespace(
+        timeboxing_constraint_store=_Store(),
+        timeboxing_intent_model_client=object(),
+        timeboxing_judge_model_client=object(),
+    )
     host = HostPlanningContext(runtime, now=lambda: datetime.now(timezone.utc))
     frame = PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:00"}, source="user")
 
@@ -77,7 +81,11 @@ def test_a_frame_the_judge_states_is_in_the_snapshot_elicit_sees(stub_elicit, mo
             return PlanningFact(fact_id=f"frame:{day.date.isoformat()}", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:00", "basis": ["c1"]}, source="constraint_memory")
 
     monkeypatch.setattr("fateforger.agents.timeboxing.day_frame.DayFrameJudge", _Frame)
-    runtime = SimpleNamespace(timeboxing_constraint_store=_Store(), timeboxing_intent_model_client=object())
+    runtime = SimpleNamespace(
+        timeboxing_constraint_store=_Store(),
+        timeboxing_intent_model_client=object(),
+        timeboxing_judge_model_client=object(),
+    )
     host = HostPlanningContext(runtime, now=lambda: datetime.now(timezone.utc))
 
     context = asyncio.run(host.resolve(_snapshot(), target=ArtifactKind.SKELETON, progress=_Sink()))
@@ -90,7 +98,11 @@ def test_a_frame_the_judge_states_is_in_the_snapshot_elicit_sees(stub_elicit, mo
 def test_no_model_client_is_a_dependency_failure_even_with_a_frame_stated() -> None:
     from fateforger.slack_bot.timeboxing_host import AdaptiveDependencyUnavailable
 
-    runtime = SimpleNamespace(timeboxing_constraint_store=_Store(), timeboxing_intent_model_client=None)
+    runtime = SimpleNamespace(
+        timeboxing_constraint_store=_Store(),
+        timeboxing_intent_model_client=None,
+        timeboxing_judge_model_client=None,
+    )
     host = HostPlanningContext(runtime, now=lambda: datetime.now(timezone.utc))
     frame = PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:00"}, source="user")
     with pytest.raises(AdaptiveDependencyUnavailable):
@@ -104,7 +116,11 @@ def test_a_closed_stage_one_resolves_without_running_the_judgements(stub_elicit)
     revise after it -- and Stage 1 is over by then. The rules and the count
     still come back; the judgements do not run.
     """
-    runtime = SimpleNamespace(timeboxing_constraint_store=_Store(), timeboxing_intent_model_client=object())
+    runtime = SimpleNamespace(
+        timeboxing_constraint_store=_Store(),
+        timeboxing_intent_model_client=object(),
+        timeboxing_judge_model_client=object(),
+    )
     host = HostPlanningContext(runtime, now=lambda: datetime.now(timezone.utc))
     frame = PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:00"}, source="user")
     snapshot = _snapshot(frame).model_copy(update={"stage1": "closed"})
@@ -116,3 +132,25 @@ def test_a_closed_stage_one_resolves_without_running_the_judgements(stub_elicit)
     assert context.probes == []
     assert context.applicable_constraints == ROWS
     assert context.suspended_constraint_count == 7
+
+
+def test_the_judges_never_fall_back_to_the_planners_client() -> None:
+    """The Stage 1 judgements run on their own client or not at all.
+
+    A runtime carrying the planner's intent client but no judge client is a
+    misconfiguration, and the loud failure is what surfaces it. Falling back
+    would silently put a 45-cell classify batch on the pro pin at high effort
+    -- the cost, the latency and the shared lineage this role exists to end.
+    """
+    from fateforger.slack_bot.timeboxing_host import AdaptiveDependencyUnavailable
+
+    runtime = SimpleNamespace(
+        timeboxing_constraint_store=_Store(),
+        timeboxing_intent_model_client=object(),
+        timeboxing_judge_model_client=None,
+    )
+    host = HostPlanningContext(runtime, now=lambda: datetime.now(timezone.utc))
+    frame = PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:00"}, source="user")
+
+    with pytest.raises(AdaptiveDependencyUnavailable):
+        asyncio.run(host.resolve(_snapshot(frame), target=ArtifactKind.SKELETON, progress=_Sink()))
