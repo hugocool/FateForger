@@ -11,26 +11,26 @@
 
 [working_tuesday]
 facts = [
-  "Up at 07:00, morning ritual until 08:00; in bed by 23:00 after 30 minutes of sci-fi reading.",
+  "In bed at 22:30, 30 minutes of sci-fi reading in bed, asleep at 23:00, up at 07:00; the morning ritual runs 07:00 to 08:00.",
   "Tuesday is a client day: leave at 09:00, 30 minutes of commute, work starts on arrival at 09:30.",
   "Deep work is two 90-minute blocks, 09:45 to 11:15 and 13:30 to 15:00, each ending on a named artifact.",
   "Lunch at 12:30 for 45 minutes, in the client's canteen.",
   "One fixed call at 15:00 for 30 minutes that cannot move.",
-  "C2F framing gets one 15-minute block, ending with a single success sentence.",
-  "Oats at 16:00, exactly two hours before the gym; work stops at 18:00 when the gym starts.",
-  "Gym at 18:00 for 60 minutes with 15-minute buffers either side; dinner at home at 19:30, from food prepped the evening before.",
+  "C2F framing gets one 15-minute block at 15:30, ending with a single success sentence.",
+  "Oats at 16:00 at the client, exactly two hours before the gym; work stops at 17:00 and the 30-minute commute home runs 17:00 to 17:30.",
+  "Pre-gym buffer 17:45 to 18:00, gym 18:00 to 19:00, post-gym buffer to 19:15; dinner at home at 19:30, from food prepped the evening before.",
 ]
 
 [vacation_day]
 facts = [
-  "Up at 07:00 and in bed by 23:00 as on any day; the morning ritual still takes an hour, and there is no work and no commute.",
+  "Asleep at 23:00 and up at 07:00 as on any day, with 30 minutes of sci-fi reading in bed from 22:30; the morning ritual still takes an hour, and there is no work and no commute.",
   "Deep work in the morning is one 90-minute block of personal writing, not client work; the afternoon is a two-hour visit to the nature reserve.",
-  "Oats at 16:00, gym at 18:00 for 60 minutes with 15-minute buffers either side, dinner at home at 19:30.",
+  "Oats at 16:00, pre-gym buffer 17:45 to 18:00, gym 18:00 to 19:00, post-gym buffer to 19:15, dinner at home at 19:30.",
 ]
 
 [sunday]
 facts = [
-  "Up at 07:00 and in bed by 23:00, same as a working day; the morning ritual runs to 08:00.",
+  "In bed at 22:30, 30 minutes of sci-fi reading in bed, asleep at 23:00, up at 07:00, same as a working day; the morning ritual runs 07:00 to 08:00.",
   "Deep work in the morning is 90 minutes of reading, not screen work; the market run is an hour and has to be finished before 16:00.",
-  "Oats at 16:00, gym at 18:00 for 60 minutes with 15-minute buffers, dinner at home at 19:30 with cleanup after.",
+  "Oats at 16:00, pre-gym buffer 17:45 to 18:00, gym 18:00 to 19:00, post-gym buffer to 19:15, dinner at home at 19:30 with cleanup after.",
 ]

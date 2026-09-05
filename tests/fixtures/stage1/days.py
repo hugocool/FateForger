@@ -94,7 +94,15 @@ def load_golden(path: Path = GOLDEN) -> dict[str, list[str]]:
     with no golden facts fails loudly: a simulated user with nothing to say
     would make every probe a nuisance and the measure meaningless."""
     raw = tomllib.loads(path.read_text())
-    golden = {key: [str(line) for line in section.get("facts", [])] for key, section in raw.items()}
+    golden: dict[str, list[str]] = {}
+    for day in FIXTURE_DAYS:
+        if day.key not in raw:
+            continue
+        section = raw[day.key]
+        facts = section.get("facts", []) if isinstance(section, dict) else None
+        if not isinstance(facts, list) or not all(isinstance(line, str) for line in facts):
+            raise ValueError(f"{day.key} in {path} is not a table of facts")
+        golden[day.key] = facts
     for day in FIXTURE_DAYS:
         if not golden.get(day.key):
             raise ValueError(f"{day.key} has no golden facts in {path}")
