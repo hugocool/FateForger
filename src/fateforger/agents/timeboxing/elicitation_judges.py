@@ -86,7 +86,11 @@ def unanchored_in(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 class _Placed(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    uid: str
+    #: The 1-based index of the anchor or rule as it was offered. An index,
+    #: not a uid: asked to echo a 32-character id the model mistyped one
+    #: character and the guard failed the whole turn (2026-09-05; the same
+    #: defect as #330 in the memory server).
+    index: int
     row: _PlacementTarget
 
 
@@ -112,10 +116,26 @@ Each ANCHOR is a thing the user has stated rules about; each RULE under
 exactly one ROW by its key, or under "unplaced" when no row fits. Decide
 from what the anchor or rule is, using the example rule names only as
 context. A rule about how the day is planned -- a gate, a cap, an ordering --
-belongs under "method", not under the thing it mentions. Echo every uid you
-were given exactly once and never invent one. Return only the requested
-schema.
+belongs under "method", not under the thing it mentions. Answer with the
+`index` of each anchor and each rule exactly once, and never an index you
+were not given. Return only the requested schema.
 """
+
+
+def _placed_by_uid(placed: list[_Placed], by_index: dict[int, str], label: str) -> dict[str, str]:
+    """Index -> uid, refusing an index that was never offered. The model
+    chooses among what it was shown; the identity stays in this process."""
+
+    mapped: dict[str, str] = {}
+    for entry in placed:
+        uid = by_index.get(entry.index)
+        if uid is None:
+            raise ValueError(
+                f"placement named {label} index {entry.index}, which was not offered "
+                f"(1..{len(by_index)})"
+            )
+        mapped[uid] = entry.row
+    return mapped
 
 
 class PlacementJudge:
@@ -133,8 +153,20 @@ class PlacementJudge:
         offered_rules = {str(r["uid"]) for r in unanchored_rules}
         if not offered_anchors and not offered_rules:
             return Placement()
+        anchor_by_index = {i: str(a["uid"]) for i, a in enumerate(anchors, start=1)}
+        rule_by_index = {i: str(r["uid"]) for i, r in enumerate(unanchored_rules, start=1)}
         prompt = json.dumps(
-            {"rows": _rows_for_prompt(), "anchors": anchors, "rules": unanchored_rules},
+            {
+                "rows": _rows_for_prompt(),
+                "anchors": [
+                    {"index": i, "name": a["name"], "example_rules": a["example_rules"]}
+                    for i, a in enumerate(anchors, start=1)
+                ],
+                "rules": [
+                    {"index": i, "name": r["name"], "description": r["description"]}
+                    for i, r in enumerate(unanchored_rules, start=1)
+                ],
+            },
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=False,
@@ -148,11 +180,14 @@ class PlacementJudge:
         if not isinstance(content, str):
             raise ValueError("placement judgement returned no schema-bound JSON content")
         judgement = _PlacementJudgement.model_validate_json(content)
-        placed_anchors = {p.uid: p.row for p in judgement.anchors}
-        placed_rules = {p.uid: p.row for p in judgement.rules}
+        placed_anchors = _placed_by_uid(judgement.anchors, anchor_by_index, "anchors")
+        placed_rules = _placed_by_uid(judgement.rules, rule_by_index, "rules")
         # Set arithmetic over uids this system minted: nothing invented, nothing
         # dropped. An anchor left out would silently make its rules unreachable
-        # by the ranking; an invented one would place nothing.
+        # by the ranking; an invented one would place nothing. Since the mapping
+        # above already refuses an index that was never offered, `unknown` is
+        # now unreachable through it and stands as the backstop; `missing` is
+        # still the first line of defence against an entry left unplaced.
         for label, offered, placed in (("anchors", offered_anchors, placed_anchors), ("rules", offered_rules, placed_rules)):
             unknown = sorted(set(placed) - offered)
             if unknown:

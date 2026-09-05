@@ -85,12 +85,10 @@ def test_unanchored_in_returns_the_rules_with_no_anchor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_placement_maps_every_offered_uid_to_a_row() -> None:
+async def test_placement_offers_indices_and_maps_them_back_to_uids() -> None:
     client = _SchemaOutputClient(
-        {
-            "anchors": [{"uid": "a-gym", "row": "body"}, {"uid": "a-din", "row": "fixed"}],
-            "rules": [{"uid": "c-exit", "row": "method"}],
-        }
+        {"anchors": [{"index": 1, "row": "body"}, {"index": 2, "row": "fixed"}],
+         "rules": [{"index": 1, "row": "method"}]}
     )
     placement = await PlacementJudge(client).place(
         anchors=anchors_in(ROWS_FIXTURE), unanchored_rules=unanchored_in(ROWS_FIXTURE), session_key="C1:1.0"
@@ -98,17 +96,21 @@ async def test_placement_maps_every_offered_uid_to_a_row() -> None:
     assert placement.anchors == {"a-gym": "body", "a-din": "fixed"}
     assert placement.rules == {"c-exit": "method"}
     sent = json.loads(client.calls[0][0][1].content)
-    assert [a["uid"] for a in sent["anchors"]] == ["a-gym", "a-din"]
-    assert [r["uid"] for r in sent["rules"]] == ["c-exit"]
+    assert [a["index"] for a in sent["anchors"]] == [1, 2]
+    assert [a["name"] for a in sent["anchors"]] == ["gym", "dinner"]
+    assert [r["index"] for r in sent["rules"]] == [1]
+    # The uid never travels: a model cannot mistype what it was not given.
+    assert "uid" not in json.dumps(sent["anchors"]) and "uid" not in json.dumps(sent["rules"])
     assert [c["key"] for c in sent["rows"]] == list(PLACEMENT_TARGETS)
 
 
 @pytest.mark.asyncio
-async def test_placement_refuses_a_uid_it_did_not_offer() -> None:
+async def test_placement_refuses_an_index_it_did_not_offer() -> None:
     client = _SchemaOutputClient(
-        {"anchors": [{"uid": "a-gym", "row": "body"}, {"uid": "a-din", "row": "fixed"}, {"uid": "a-ghost", "row": "body"}], "rules": [{"uid": "c-exit", "row": "method"}]}
+        {"anchors": [{"index": 1, "row": "body"}, {"index": 2, "row": "fixed"}, {"index": 9, "row": "body"}],
+         "rules": [{"index": 1, "row": "method"}]}
     )
-    with pytest.raises(ValueError, match="a-ghost"):
+    with pytest.raises(ValueError, match="9"):
         await PlacementJudge(client).place(
             anchors=anchors_in(ROWS_FIXTURE), unanchored_rules=unanchored_in(ROWS_FIXTURE), session_key="C1:1.0"
         )
@@ -116,7 +118,7 @@ async def test_placement_refuses_a_uid_it_did_not_offer() -> None:
 
 @pytest.mark.asyncio
 async def test_placement_refuses_to_leave_an_offered_uid_unplaced() -> None:
-    client = _SchemaOutputClient({"anchors": [{"uid": "a-gym", "row": "body"}], "rules": []})
+    client = _SchemaOutputClient({"anchors": [{"index": 1, "row": "body"}], "rules": []})
     with pytest.raises(ValueError, match="a-din"):
         await PlacementJudge(client).place(
             anchors=anchors_in(ROWS_FIXTURE), unanchored_rules=unanchored_in(ROWS_FIXTURE), session_key="C1:1.0"
