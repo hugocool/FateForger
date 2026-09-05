@@ -57,9 +57,9 @@ async def test_a_turn_records_activity_on_the_session_topic(monkeypatch) -> None
             return TurnFailed(code="x", message="x")
 
     class Repo:
-        async def load_or_create(self, key, owner_user_id):
+        async def load(self, key):
             return PlanningSessionSnapshot(
-                session_key=key, revision=1, owner_user_id=owner_user_id
+                session_key=key, revision=1, owner_user_id="U1"
             )
 
     class Runtime:
@@ -92,9 +92,9 @@ async def test_a_turn_that_ends_the_session_cancels_the_ladder(monkeypatch) -> N
             return TurnFailed(code="x", message="x")
 
     class Repo:
-        async def load_or_create(self, key, owner_user_id):
+        async def load(self, key):
             return PlanningSessionSnapshot(
-                session_key=key, revision=1, owner_user_id=owner_user_id,
+                session_key=key, revision=1, owner_user_id="U1",
                 status="committed",
             )
 
