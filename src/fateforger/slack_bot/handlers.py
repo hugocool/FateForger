@@ -42,6 +42,7 @@ from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     ApproveArtifact,
     ArtifactKind,
+    Asked,
     Cancelled,
     Committed,
     ConfirmPlanningDay,
@@ -103,7 +104,11 @@ from fateforger.slack_bot.progress_events import (
 from fateforger.slack_bot.reply_guard import agent_reply_text
 from fateforger.slack_bot.stage_card_registry import StageCardRegistry, receipt_body, receipt_label
 from fateforger.slack_bot.stage_context import context_fold
-from fateforger.slack_bot.stage_cards import date_stage_card
+from fateforger.slack_bot.stage_cards import (
+    StageCard,
+    date_stage_card,
+    describe_session,
+)
 from fateforger.slack_bot.task_cards import (
     FF_TASK_DETAILS_ACTION_ID,
     FF_TASK_EDIT_MODAL_CALLBACK_ID,
@@ -1512,6 +1517,53 @@ def _timeboxing_kernel(
 
 
 
+async def _answer_question(
+    *,
+    runtime,
+    session_key: str,
+    actor_user_id: str,
+    snapshot: PlanningSessionSnapshot,
+    card: StageCard | None,
+    question: str,
+    logger,
+) -> SlackBlockMessage:
+    """Answer an `Asked` outcome through planner_agent, the calendar's answerer.
+
+    The session is described from the card the user is looking at plus the
+    snapshot, and the question travels verbatim after it. One ask; a failure
+    is one failure line and one metered error, never a second ask and never
+    a session start.
+    """
+
+    content = (
+        f"{describe_session(snapshot, card)}\n\n"
+        f"The user's question:\n{question}"
+    )
+    try:
+        result = await runtime.send_message(
+            TextMessage(content=content, source=actor_user_id),
+            recipient=AgentId("planner_agent", key=session_key),
+        )
+    except Exception as exc:  # noqa: BLE001 - one failure shape reaches Slack
+        logger.error(
+            "question answer failed session_key=%s error_type=%s error=%s",
+            session_key,
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        record_error(component="surface_intent", error_type="answer_failure")
+        return timebox_failure_message(snapshot=snapshot)
+    payload = _compact_slack_payload(**_slack_payload_from_result(result))
+    text = payload.get("text", "") or ""
+    return SlackBlockMessage(
+        text=text,
+        blocks=payload.get("blocks") or [
+            {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+        ],
+    )
+
+
 async def _run_adaptive_timebox_turn(
     *,
     runtime,
@@ -1656,6 +1708,20 @@ async def _run_adaptive_timebox_turn(
         return timebox_failure_message(snapshot=snapshot)
     finally:
         await progress_card.close()
+
+    if isinstance(outcome, Asked):
+        # Asked is not started and not revised: no card transition, no panel
+        # sync, no relabel. The thinking card becomes the answer.
+        shown = _stage_cards.shown(session_key)
+        return await _answer_question(
+            runtime=runtime,
+            session_key=session_key,
+            actor_user_id=actor_user_id,
+            snapshot=current,
+            card=shown.card if shown is not None else None,
+            question=outcome.question,
+            logger=logger,
+        )
 
     try:
         message, card = present_outcome(
