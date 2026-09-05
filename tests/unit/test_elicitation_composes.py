@@ -1,9 +1,9 @@
 """The seam between the coverage spec and the probe voice (#286).
 
-Three swaps, each leaving the other half untouched. If the gate still decides
-with the words stubbed, and the words still render with the spec stubbed, the
-loop composes: the concern-floor and the phrasing can change on different
-schedules, which is what makes a growing anchor layer safe.
+Three swaps, each leaving the other half untouched. If which cells are open is
+the same with the words stubbed, and the words still render with the spec
+stubbed, the loop composes: the concern-floor and the phrasing can change on
+different schedules, which is what makes a growing anchor layer safe.
 """
 from __future__ import annotations
 
@@ -58,16 +58,31 @@ def _run(snapshot, judges):
     return asyncio.run(elicit(snapshot, ROWS, judges, session_key=snapshot.session_key))
 
 
-def test_swap_one_the_gate_decides_the_same_with_the_words_stubbed() -> None:
-    table = {"elicit.body.unclear": "uncovered", "elicit.method.contradictory": "uncovered"}
+def test_swap_one_the_open_set_is_the_same_with_the_words_stubbed() -> None:
+    # Four uncovered cells, one more than `elicit`'s `generate_for` default of
+    # three, so the two runs differ in how many cells went unaskable.
+    table = {
+        "elicit.body.unclear": "uncovered",
+        "elicit.body.tacit_assumptions": "uncovered",
+        "elicit.method.contradictory": "uncovered",
+        "elicit.method.tacit_knowledge": "uncovered",
+    }
     for day in FIXTURE_DAYS:
         snapshot = snapshot_for(day, ROWS)
         with_words = _run(snapshot, Judges(placement=_Placement(), coverage=_Coverage(table), probe=_FixedWords()))
         without = _run(snapshot, Judges(placement=_Placement(), coverage=_Coverage(table), probe=_NoWords()))
         gate_a = stage1_gate(_with_matrix(snapshot, with_words.matrix_fact))
         gate_b = stage1_gate(_with_matrix(snapshot, without.matrix_fact))
-        assert [c.id for c in gate_a.open_cells] == [c.id for c in gate_b.open_cells]
+        # The open *set* is independent of the words. The *order* is not, by
+        # design: a cell whose probe could not be grounded is recorded in
+        # `unaskable` and `ranked_open_cells` sorts it last, so the gate line
+        # shows askable cells first. The two-cell version of this test hid that
+        # coupling because both open cells went unaskable.
+        assert {c.id for c in gate_a.open_cells} == {c.id for c in gate_b.open_cells}
         assert gate_a.open_cells, day.key
+        matrix_b = CoverageMatrix.model_validate(without.matrix_fact.value)
+        assert len(matrix_b.unaskable) == 3  # the three the generator was asked and refused
+        assert {c.id for c in gate_b.open_cells[-3:]} == set(matrix_b.unaskable)
         closed = _run(snapshot, Judges(placement=_Placement(), coverage=_Coverage({}), probe=_NoWords()))
         assert stage1_gate(_with_matrix(snapshot, closed.matrix_fact)).open_cells == []
 
