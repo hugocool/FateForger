@@ -7,7 +7,7 @@ deterministically via ``apply_tb_ops()``.
 
 Note: ``output_content_type=TBPatch`` is intentionally NOT used because
 OpenAI's ``response_format`` rejects ``oneOf`` from Pydantic discriminated
-unions and OpenRouter/Gemini hangs with structured output on complex schemas.
+unions and OpenRouter structured output hung on complex schemas on the hosts measured.
 
 The legacy interface (``Timebox`` in / out) is preserved via conversion
 helpers so existing nodes can transition incrementally.
