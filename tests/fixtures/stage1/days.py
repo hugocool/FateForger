@@ -1,17 +1,16 @@
 """The shared Stage 1 fixture (#283): three locked days, one request.
 
-Every spike runs exactly this. The store is never the live one: `rows_for`
-takes a path the caller copied into a temp dir. Hand labels live in
-labels.toml beside this file; a day with no labels fails loudly, because a
-spike measured against no ground truth measures the model's opinion of itself.
+Every spike runs exactly this. The store is frozen: FIXTURE_STORE_SHA256 pins
+its bytes and rows_for refuses any other, so an eval never silently measures
+against a moved corpus. Ground truth is constructed by ablation
+(tests/evals/test_stage1_elicitation.py), not hand-labelled.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-
-import tomllib
 
 from fateforger.agents.timeboxing.session_contracts import (
     DayType,
@@ -20,6 +19,21 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningFact,
     PlanningSessionSnapshot,
 )
+
+#: sha256 of data/fixtures/stage1-20260905.db, the post-relink copy frozen on
+#: 2026-09-05. Re-freezing is deliberate: bump this and re-run the evals.
+#: These are the bytes before and after a KGConstraintMemoryClient open -- the
+#: schema ladder is a no-op on this store, measured on the frozen copy.
+FIXTURE_STORE_SHA256 = "e99dc318b1d73925be8f059a1e296c1f58c9fa84fe3f27279eb60a5870728699"
+
+
+def verify_store(db_path: str) -> None:
+    digest = hashlib.sha256(Path(db_path).read_bytes()).hexdigest()
+    if digest != FIXTURE_STORE_SHA256:
+        raise RuntimeError(
+            f"fixture store sha256 {digest[:12]}… does not match the pinned "
+            f"{FIXTURE_STORE_SHA256[:12]}…; the evals measure against one frozen store"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +72,8 @@ def snapshot_for(day: FixtureDay, rows: list[dict]) -> PlanningSessionSnapshot:
 
 def rows_for(db_path: str, day: FixtureDay) -> list[dict]:
     """The rows the KG client would hand the host for this day, from a copy."""
+    verify_store(db_path)
+
     from fateforger.agents.timeboxing.kg_constraint_client import KGConstraintMemoryClient
     import asyncio
 
@@ -67,21 +83,3 @@ def rows_for(db_path: str, day: FixtureDay) -> list[dict]:
             filters={"planned_day": day.date.isoformat(), "day_type": day.day_type.value}, limit=200
         )
     )
-
-
-@dataclass(frozen=True, slots=True)
-class LabelledGap:
-    cell: str
-    hard: bool
-    note: str
-
-
-def load_labels(path: Path) -> dict[str, list[LabelledGap]]:
-    raw = tomllib.loads(path.read_text())
-    labels: dict[str, list[LabelledGap]] = {}
-    for day_key, section in raw.items():
-        labels[day_key] = [
-            LabelledGap(cell=str(g["cell"]), hard=bool(g.get("hard", False)), note=str(g.get("note", "")))
-            for g in section.get("gaps", [])
-        ]
-    return labels

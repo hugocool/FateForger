@@ -1,13 +1,8 @@
-"""The fixture is three locked days, one request, and a label file whose cells
-name real cells. Everything a spike reads is asserted here offline."""
+"""The fixture is three locked days and one request, and its store is pinned by
+hash. Everything a spike reads is asserted here offline."""
 from __future__ import annotations
 
-from pathlib import Path
-
-from fateforger.agents.timeboxing.elicitation import ALL_CELLS
-from tests.fixtures.stage1.days import FIXTURE_DAYS, load_labels, snapshot_for
-
-LABELS = Path(__file__).resolve().parents[1] / "fixtures" / "stage1" / "labels.toml"
+from tests.fixtures.stage1.days import FIXTURE_DAYS, FIXTURE_STORE_SHA256, snapshot_for
 
 
 def test_three_days_with_the_same_request() -> None:
@@ -24,10 +19,7 @@ def test_a_fixture_snapshot_is_locked_and_carries_its_rows() -> None:
     assert snapshot.stage1 == "open"
 
 
-def test_labels_name_real_cells_and_every_day() -> None:
-    labels = load_labels(LABELS)
-    assert set(labels) == {d.key for d in FIXTURE_DAYS}
-    valid = {cell.id for cell in ALL_CELLS}
-    for day, gaps in labels.items():
-        for gap in gaps:
-            assert gap.cell in valid, (day, gap.cell)
+def test_the_pinned_store_hash_is_a_full_sha256() -> None:
+    """A truncated or placeholder pin would make verify_store refuse everything."""
+    assert len(FIXTURE_STORE_SHA256) == 64
+    assert bytes.fromhex(FIXTURE_STORE_SHA256)

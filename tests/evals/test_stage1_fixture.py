@@ -11,11 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.stage1.days import FIXTURE_DAYS, load_labels, rows_for, snapshot_for
+from tests.fixtures.stage1.days import FIXTURE_DAYS, rows_for, snapshot_for
 
 pytestmark = pytest.mark.slow
-
-LABELS = Path(__file__).resolve().parents[1] / "fixtures" / "stage1" / "labels.toml"
 
 
 @pytest.fixture
@@ -36,18 +34,14 @@ def test_each_day_yields_rows_and_a_locked_snapshot(store_copy, day) -> None:
     assert all("anchors" in row for row in rows)
 
 
-@pytest.mark.parametrize("day", FIXTURE_DAYS, ids=[d.key for d in FIXTURE_DAYS])
-def test_every_day_has_hand_labels_before_a_spike_may_run(store_copy, day) -> None:
-    """The labels gate the spike, so this asks the same precondition its sibling does.
+def test_a_store_whose_bytes_moved_is_refused(store_copy, tmp_path) -> None:
+    """The evals measure against one frozen store. A copy that differs -- a
+    relink, a migration, a new rule -- silently changes every matrix, so the
+    hash is pinned and a mismatch fails here, not in a number nobody trusts."""
+    from tests.fixtures.stage1.days import verify_store
 
-    It takes `store_copy` for the skip, not for the copy: without
-    STAGE1_FIXTURE_DB there is no spike to gate and this skips with that
-    reason, so a bare `pytest` is green. Set the variable -- which is what a
-    spike run does -- and an unlabelled day fails here, loudly, before the
-    spike measures itself against nothing.
-    """
-
-    _ = store_copy
-    labels = load_labels(LABELS)
-    if not labels.get(day.key):
-        pytest.fail(f"{day.key} has no hand-labelled gaps; a spike against it measures nothing")
+    verify_store(store_copy)
+    drifted = tmp_path / "drifted.db"
+    drifted.write_bytes(Path(store_copy).read_bytes() + b"\x00")
+    with pytest.raises(RuntimeError, match="sha256"):
+        verify_store(str(drifted))
