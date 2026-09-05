@@ -84,7 +84,7 @@ async def test_openrouter_parses_a_match():
     judge = OpenRouterJudge(
         api_key="k",
         base_url="https://example.invalid",
-        client=_mock({"constraint_uid": existing.uid, "rationale": "same rule"}),
+        client=_mock({"choice": 1, "rationale": "same rule"}),
     )
     result = await judge.canonicalise(_obs("eat oats 2h before gym"), [existing])
     assert result.constraint_uid == existing.uid

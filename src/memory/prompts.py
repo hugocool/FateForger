@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from memory.judge import (
     AnchorJudgement,
     AnchorLike,
+    AnchorResolution,
     AnchorResolutions,
     CanonicaliseJudgement,
     ConstraintLike,
@@ -62,10 +63,16 @@ Also say when the rule applies, if the statement scopes it:
 - start_date / end_date: ISO dates, only when the statement names a period.
   A standing rule gets null for both.
 - day_types: which kinds of day the rule is limited to, from exactly these
-  words: """ + ", ".join(f'"{d}"' for d in DAY_TYPES) + """. Only when the
-  statement scopes it -- "on workdays", "when I'm on holiday". A rule that
+  words: """ + ", ".join(f'"{d}"' for d in DAY_TYPES) + """, where "vacation"
+  is the person's own time off (being on holiday, on leave, away on a trip)
+  and "holiday" is a public holiday. Only when the
+  statement scopes it -- "on workdays", "when I'm away". A rule that
   holds on every kind of day gets an empty list. Weekdays are not a stand-in:
   "Mon-Fri" is days_of_week, "working days" is day_types ["working"].
+  Two of the words are easy to swap: "vacation" is the person's own time off
+  -- being on holiday, on leave, away on a trip -- and "holiday" is a public
+  holiday, a day the world is off. Someone describing their own time away is
+  scoping to "vacation" whatever word they use for it.
 
 Do not invent scoping. "Sleep at 23:00" applies every day: empty list, null
 dates. "Go to client on Tuesdays and Thursdays" is [1, 3].
@@ -82,8 +89,10 @@ Also say how long the rule stays true if nobody mentions it again:
 
 "project" rarely says "temporary" outright — it signals through what the rule
 governs, not through its wording. A rule about sleep, meals, or a recurring
-commute holds regardless of what the person is working on, so it is
-"permanent". A cap, gate, or limit that only makes sense while a specific
+commute holds regardless of what the person is working on, so it is never
+"project": it is "permanent", or "seasonal" where a life event would reset it
+-- moving house changes the commute, a new client changes which days they
+meet. A cap, gate, or limit that only makes sense while a specific
 named initiative or workstream is active — even one referred to by a short
 internal name ("C2F framing", "the migration") rather than an explicit
 deadline — is "project": it governs a piece of work, not the person's life.
@@ -203,7 +212,10 @@ is meta.
 
 Meta: about the tool or the conversation with it — wanting to start or run
 the session, what format or methodology the assistant should use, how the
-tool itself should behave.
+tool itself should behave. Naming a planning method or format the assistant
+should follow — timeboxing, a template, a style of plan — is meta even when
+it is phrased as a preference about scheduling: it says how to plan, not
+what the day contains.
 
 NOT meta — the person's life: activities, meals, sleep, appointments. It is
 not meta merely because it mentions a session: "gym session at 18:00" is
@@ -221,11 +233,12 @@ Respond with JSON only: {"is_meta": true|false, "rationale": "..."}\
 DEDUP_PROMPT = """\
 You decide whether a new statement says the same thing as an earlier one.
 
-Return the id of the earlier statement it duplicates, or null if it says
-something new. Rewording, reordering, or adding detail to the same underlying
-point counts as a duplicate. A different rule about the same topic does not.
+Earlier statements are listed with a number. Return the number of the one it
+duplicates, or null if it says something new. Rewording, reordering, or adding
+detail to the same underlying point counts as a duplicate. A different rule
+about the same topic does not.
 
-Respond with JSON only: {"duplicate_of": "<id>"|null, "rationale": "..."}\
+Respond with JSON only: {"duplicate_of": <number>|null, "rationale": "..."}\
 """
 
 RESOLVE_ANCHORS_PROMPT = """\
@@ -244,19 +257,28 @@ even if sport is in the list; they are different anchors and the relationship
 between them is recorded elsewhere. Merge only when the two names denote the
 same thing.
 
-Answer with the uid exactly as given. Never invent a uid: if no known anchor
-is the same thing, answer null and it will be created.
+Sharing a word is not sameness. Ask what a rule about each name would
+constrain: a name that says when something may happen (a window, a slot, a
+cut-off) and a name that says how long or how much (a duration, a count, a
+cap) constrain different things, and a rule about one says nothing about the
+other, so they are different anchors even when they share most of their
+words. The test is whether a rule about the first would necessarily govern
+the second. If it would not, answer null.
+
+Known anchors are listed with a number. Answer with that number. Never invent
+a number: if no known anchor is the same thing, answer null and it will be
+created.
 
 Respond with JSON only:
-{"resolutions": [{"name": "...", "anchor_uid": "..."|null}, ...]}\
+{"resolutions": [{"name": "...", "choice": <number>|null}, ...]}\
 """
 
 CANONICALISE_PROMPT = """\
 You decide whether a new statement expresses a rule the system already knows.
 
-You are given a new statement and a list of existing rules, each with an id.
-Return the id of the rule the statement expresses, or null if it expresses a
-rule that is genuinely new.
+You are given a new statement and a list of existing rules, each with a
+number. Return the number of the rule the statement expresses, or null if it
+expresses a rule that is genuinely new.
 
 The same rule restated, reworded, or given in more detail is the SAME rule.
 A different rule about the same topic is NOT — "oats before gym" and "protein
@@ -278,7 +300,7 @@ Merge only when the two statements assert the same thing about the same thing.
 If one would still be true while the other was false, they are two rules.
 
 Respond with JSON only:
-{"constraint_uid": "<id>"|null, "rationale": "..."}\
+{"choice": <number>|null, "rationale": "..."}\
 """
 
 
@@ -336,6 +358,30 @@ def _first_json_object(content: str) -> dict[str, Any] | None:
         # its absence.
         return payload
     return None
+
+
+def _chosen(value: Any, ids: list[str], key: str) -> str | None:
+    """Map the model's answer, a position in a list this system offered, to the
+    id at that position.
+
+    The judgement -- which candidate is the same thing -- was the model's. What
+    it answers with is a number, and turning a number into an id is arithmetic
+    over identifiers this system minted. The model used to echo the 32-hex id
+    itself and, on a list of thirty, got it one character wrong in three draws
+    of four (#330). Anything that is not null or a position in the list is
+    refused loudly: a silently ignored answer would look like "new".
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(f"judge answered {key}={value!r}; expected a position 1..{len(ids)} or null")
+    if isinstance(value, str):
+        if not value.strip().isdigit():
+            raise ValueError(f"judge answered {key}={value!r}; expected a position 1..{len(ids)} or null")
+        value = int(value.strip())
+    if not 1 <= value <= len(ids):
+        raise ValueError(f"judge answered {key}={value!r}; expected a position 1..{len(ids)} or null")
+    return ids[value - 1]
 
 
 class PromptJudge(ABC):
@@ -457,8 +503,9 @@ class PromptJudge(ABC):
     ) -> DedupJudgement:
         if not recent:
             return DedupJudgement()
+        ids = [o.uid for o in recent]
         candidates = json.dumps(
-            [{"uid": o.uid, "text": o.text} for o in recent], ensure_ascii=False
+            [{"n": n, "text": o.text} for n, o in enumerate(recent, 1)], ensure_ascii=False
         )
         user = (
             f"New statement:\n{json.dumps(observation.text, ensure_ascii=False)}"
@@ -467,7 +514,10 @@ class PromptJudge(ABC):
         payload = await self._ask(DEDUP_PROMPT, user)
         if "duplicate_of" not in payload:
             raise ValueError(f"could not parse judge response: {payload!r}")
-        return self._build(DedupJudgement, payload)
+        return DedupJudgement(
+            duplicate_of=_chosen(payload["duplicate_of"], ids, "duplicate_of"),
+            rationale=str(payload.get("rationale", "")),
+        )
 
     async def classify_day(self, events: list[str]) -> DayJudgement:
         if not events:
@@ -487,14 +537,25 @@ class PromptJudge(ABC):
     ) -> AnchorResolutions:
         if not names:
             return AnchorResolutions()
-        known = "\n".join(f"{c.uid}: {c.name}" for c in candidates) or "(none yet)"
+        ids = [c.uid for c in candidates]
+        known = "\n".join(f"{n}: {c.name}" for n, c in enumerate(candidates, 1)) or "(none yet)"
         payload = await self._ask(
             RESOLVE_ANCHORS_PROMPT,
             f"Names:\n" + "\n".join(names) + f"\n\nKnown anchors:\n{known}",
         )
-        if "resolutions" not in payload:
+        if "resolutions" not in payload or not isinstance(payload["resolutions"], list):
             raise ValueError(f"could not parse judge response: {payload!r}")
-        return self._build(AnchorResolutions, payload)
+        resolutions = []
+        for item in payload["resolutions"]:
+            if not isinstance(item, dict) or "name" not in item or "choice" not in item:
+                raise ValueError(
+                    f"judge resolution lacks a choice: {item!r}; the contract is a "
+                    "position in the offered list, never an id"
+                )
+            resolutions.append(
+                AnchorResolution(name=item["name"], anchor_uid=_chosen(item["choice"], ids, "choice"))
+            )
+        return AnchorResolutions(resolutions=resolutions)
 
     async def canonicalise(
         self, observation: Observation, candidates: list[ConstraintLike]
@@ -503,10 +564,11 @@ class PromptJudge(ABC):
             # Nothing to match against; "new" is the only possible answer and
             # asking would waste a call. This is a shortcut, not a fallback.
             return CanonicaliseJudgement()
+        ids = [c.uid for c in candidates]
         listing = json.dumps(
             [
-                {"uid": c.uid, "name": c.name, "description": c.description}
-                for c in candidates
+                {"n": n, "name": c.name, "description": c.description}
+                for n, c in enumerate(candidates, 1)
             ],
             ensure_ascii=False,
         )
@@ -515,6 +577,9 @@ class PromptJudge(ABC):
             f"\n\nExisting rules:\n{listing}"
         )
         payload = await self._ask(CANONICALISE_PROMPT, user)
-        if "constraint_uid" not in payload:
+        if "choice" not in payload:
             raise ValueError(f"could not parse judge response: {payload!r}")
-        return self._build(CanonicaliseJudgement, payload)
+        return CanonicaliseJudgement(
+            constraint_uid=_chosen(payload["choice"], ids, "choice"),
+            rationale=str(payload.get("rationale", "")),
+        )
