@@ -45,6 +45,13 @@ class Criterion:
     key: str
     label: str
     question: str
+    #: Whether classifying this criterion needs the rules' full text. A
+    #: contradiction or an ambiguity lives in what a rule *says*; an unstated
+    #: assumption, a missing alternative and a missing duration do not.
+    #: Measured 2026-09-05: with names only, "deep work runs 08:00 to 09:30"
+    #: against `Work start time` (a 09:30 must) was called not-contradictory
+    #: 5/5, the judge's trace reading "any contradictions? Not apparent."
+    needs_rule_text: bool = False
 
 
 #: Layer 1. Six concerns drafted from the anchor clusters, and a seventh Hugo
@@ -79,8 +86,8 @@ ROWS: dict[str, Concern] = {c.key: c for c in (*CONCERNS, *EXTRA_ROWS)}
 CRITERIA: tuple[Criterion, ...] = (
     Criterion("tacit_assumptions", "assumptions", "Are the assumptions behind what is on record justified for this day, or unstated?"),
     Criterion("alternatives", "alternatives", "Where a rule here is at risk given what the user said today, has an alternative been considered?"),
-    Criterion("unclear", "clarity", "Is anything here ambiguous or underspecified for placing it on today's timeline?"),
-    Criterion("contradictory", "contradictions", "Do any statements or rules here contradict each other, or the user's request?"),
+    Criterion("unclear", "clarity", "Is anything here ambiguous or underspecified for placing it on today's timeline?", needs_rule_text=True),
+    Criterion("contradictory", "contradictions", "Do any statements or rules here contradict each other, or the user's request?", needs_rule_text=True),
     Criterion("tacit_knowledge", "unstated knowledge", "Is there knowledge only the user has, such as durations or arrivals, that is unstated and needed?"),
 )
 

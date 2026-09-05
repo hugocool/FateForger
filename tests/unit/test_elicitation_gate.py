@@ -73,6 +73,11 @@ def test_the_floor_has_nine_rows_and_forty_five_cells() -> None:
     assert [c.key for c in CONCERNS][-1] == "method"
 
 
+def test_only_the_content_criteria_ask_for_the_rules_text() -> None:
+    needs = {c.key for c in CRITERIA if c.needs_rule_text}
+    assert needs == {"unclear", "contradictory"}
+
+
 def test_no_matrix_means_nothing_is_open() -> None:
     gate = stage1_gate(_snapshot(None))
     assert gate.open_cells == []

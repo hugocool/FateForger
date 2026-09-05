@@ -189,6 +189,18 @@ most fifteen words. Return only the requested schema.
 """
 
 
+def _rule_for_classify(row: dict[str, Any], *, with_text: bool) -> dict[str, str]:
+    """Name and necessity always; the description only where the criterion
+    needs it. Sending every description on all 45 cells is the token cost the
+    design avoided; sending none of them is why `contradictory` could not see
+    a clash (2026-09-05)."""
+
+    payload = {"name": str(row["name"]), "necessity": str(row["necessity"])}
+    if with_text:
+        payload["description"] = str(row.get("description") or "")
+    return payload
+
+
 class CoverageJudge:
     def __init__(self, model_client: ChatCompletionClient) -> None:
         self.model_client = model_client
@@ -208,9 +220,12 @@ class CoverageJudge:
             {
                 "row": {"key": row.key, "label": row.label, "description": row.description},
                 "criterion": {"key": criterion.key, "question": criterion.question},
-                # Names and necessity only: full descriptions go to the one
-                # generate call, which halves the tokens of the batch.
-                "rules": [{"name": str(r["name"]), "necessity": str(r["necessity"])} for r in rules],
+                # Name and necessity always; the description travels only for
+                # the criteria that need it, which keeps the batch cheap on the
+                # other three.
+                "rules": [
+                    _rule_for_classify(r, with_text=criterion.needs_rule_text) for r in rules
+                ],
                 "stated": stated,
                 "request": request,
             },

@@ -132,7 +132,7 @@ async def test_placement_with_nothing_to_place_makes_no_call() -> None:
 
 
 @pytest.mark.asyncio
-async def test_classify_sends_the_row_the_criterion_and_names_only() -> None:
+async def test_classify_sends_names_only_for_a_criterion_that_does_not_need_the_text() -> None:
     client = _SchemaOutputClient({"status": "uncovered", "why": "no duration"})
     cell = CellRef(row="body", criterion="tacit_knowledge")
     state, why = await CoverageJudge(client).classify(
@@ -150,6 +150,26 @@ async def test_classify_sends_the_row_the_criterion_and_names_only() -> None:
     assert sent["rules"] == [{"name": "Oats before gym", "necessity": "must"}]
     assert sent["stated"] == ["gym at 18:00"]
     assert sent["request"] == "deep work in the morning, gym at 18:00"
+
+
+@pytest.mark.asyncio
+async def test_classify_sends_the_rule_text_for_a_contradiction_or_an_ambiguity() -> None:
+    """A contradiction lives in what a rule says. Asked with names only, the
+    judge called "work from 08:00" against a 09:30 `must` not-contradictory
+    5/5 (2026-09-05)."""
+    for criterion in ("contradictory", "unclear"):
+        client = _SchemaOutputClient({"status": "uncovered", "why": "clashes"})
+        await CoverageJudge(client).classify(
+            cell=CellRef(row="fixed", criterion=criterion),
+            rules=[{"name": "Work start time", "necessity": "must", "description": "Work starts at 09:30 on arrival."}],
+            stated=["deep work runs 08:00 to 09:30 today"],
+            request=None,
+            session_key="C1:1.0",
+        )
+        sent = json.loads(client.calls[0][0][1].content)
+        assert sent["rules"] == [
+            {"name": "Work start time", "necessity": "must", "description": "Work starts at 09:30 on arrival."}
+        ], criterion
 
 
 @pytest.mark.asyncio
