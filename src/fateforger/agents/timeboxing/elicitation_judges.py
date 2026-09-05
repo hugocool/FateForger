@@ -123,8 +123,11 @@ were not given. Return only the requested schema.
 
 
 def _placed_by_uid(placed: list[_Placed], by_index: dict[int, str], label: str) -> dict[str, str]:
-    """Index -> uid, refusing an index that was never offered. The model
-    chooses among what it was shown; the identity stays in this process."""
+    """Index -> uid, refusing an index that was never offered or offered twice.
+    The model chooses among what it was shown; the identity stays in this
+    process. Both halves of "exactly once" are enforced here: a repeated index
+    would otherwise collapse last-wins and still satisfy the completeness check
+    below, so a rule placed under two rows would silently become one."""
 
     mapped: dict[str, str] = {}
     for entry in placed:
@@ -134,6 +137,8 @@ def _placed_by_uid(placed: list[_Placed], by_index: dict[int, str], label: str) 
                 f"placement named {label} index {entry.index}, which was not offered "
                 f"(1..{len(by_index)})"
             )
+        if uid in mapped:
+            raise ValueError(f"placement named {label} index {entry.index} more than once")
         mapped[uid] = entry.row
     return mapped
 

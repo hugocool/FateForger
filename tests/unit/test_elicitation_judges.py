@@ -110,7 +110,19 @@ async def test_placement_refuses_an_index_it_did_not_offer() -> None:
         {"anchors": [{"index": 1, "row": "body"}, {"index": 2, "row": "fixed"}, {"index": 9, "row": "body"}],
          "rules": [{"index": 1, "row": "method"}]}
     )
-    with pytest.raises(ValueError, match="9"):
+    with pytest.raises(ValueError, match="was not offered"):
+        await PlacementJudge(client).place(
+            anchors=anchors_in(ROWS_FIXTURE), unanchored_rules=unanchored_in(ROWS_FIXTURE), session_key="C1:1.0"
+        )
+
+
+@pytest.mark.asyncio
+async def test_placement_refuses_the_same_index_twice() -> None:
+    client = _SchemaOutputClient(
+        {"anchors": [{"index": 1, "row": "body"}, {"index": 1, "row": "fixed"}, {"index": 2, "row": "body"}],
+         "rules": [{"index": 1, "row": "method"}]}
+    )
+    with pytest.raises(ValueError, match="more than once"):
         await PlacementJudge(client).place(
             anchors=anchors_in(ROWS_FIXTURE), unanchored_rules=unanchored_in(ROWS_FIXTURE), session_key="C1:1.0"
         )
