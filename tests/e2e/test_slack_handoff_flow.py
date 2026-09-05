@@ -79,9 +79,8 @@ async def test_slack_handoff_sets_focus_and_forwards():
 
     assert runtime.calls == ["receptionist_agent", "planner_agent"]
     assert client.posted[0]["text"] == ":hourglass_flowing_sand: *receptionist_agent* is thinking..."
-    assert any(
-        p.get("text") == "*planner_agent*\nPlanner response" for p in client.posted
-    )
+    assert any("Planner response" in (p.get("text") or "") for p in client.posted)
+    assert not any("*planner_agent*\n" in (p.get("text") or "") for p in client.posted)
     assert any("Handed off to *planner_agent*" in (u.get("text") or "") for u in client.updates)
 
     key = FocusManager.thread_key("C1", None, "1")
