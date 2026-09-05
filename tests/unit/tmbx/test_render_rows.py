@@ -41,7 +41,7 @@ def test_rows_carry_the_same_facts_as_the_table():
     assert [r["h"] for r in rows] == ["DW1", "EVT1"]
     assert rows[0] == {
         "h": "DW1", "own": "tmbx", "type": "DW", "summary": "Serious C2F work",
-        "start": "09:30", "end": "11:00", "mode": "fs", "dur": "PT1H30M",
+        "start": "09:30", "end": "11:00", "mode": "fs", "dur": "PT1H30M", "slug": "",
     }
     assert rows[1]["own"] == "foreign"
     assert rows[1]["summary"] == "Kapper"
@@ -58,3 +58,31 @@ def test_rows_and_table_agree_on_order_and_ownership():
 
 def test_an_empty_plan_has_no_rows():
     assert plan_rows(Plan(date=DAY, blocks=[])) == []
+
+
+def test_rows_carry_the_slug_and_the_table_renders_it_last():
+    """#211: `Block.slug` was written to the calendar on every commit and shown to
+    nobody, so a planner could not see a day already carried a `planning` block
+    and would add a second. The slug is the kind a rule requires; it has to be
+    visible where the planner patches."""
+    from datetime import date
+    from tmbx.core.models import ET, Block, FixedStart, Plan
+    from tmbx.core.render import COLUMNS, plan_rows, render_plan
+
+    plan = Plan(
+        date=date(2026, 9, 7),
+        blocks=[
+            Block(uid="u-pl", h="PLN1", n="Plan tomorrow", t=ET.PR,
+                  p=FixedStart(st="17:30:00", dur="PT20M"), anchor_source="constraint",
+                  slug="planning"),
+            Block(uid="u-dw", h="DW1", n="Deep work", t=ET.DW,
+                  p=FixedStart(st="09:30:00", dur="PT1H30M"), anchor_source="user"),
+        ],
+    )
+    rows = plan_rows(plan)
+    assert COLUMNS[-1] == "slug"
+    assert [r["slug"] for r in rows] == ["planning", ""]
+    table = render_plan(plan).splitlines()
+    assert table[0] == "blocks[2]{H,own,type,summary,ST,ET,mode,dur,slug}:"
+    assert table[1].endswith(",planning")
+    assert table[2].endswith(",")

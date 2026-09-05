@@ -333,6 +333,10 @@ def build_server(
         {"a":"bn","dur":...}, {"a":"fs","st":<HH:MM:SS>,"dur":...},
         {"a":"fw","st":...,"et":...}. Full schema, including the handle
         format: tmbx://schema/ops.
+        `slug` names the recurring KIND of block -- `planning`, `sleep` -- and is
+        rendered as the last column of plan_read. Set it verbatim to the kind the
+        brief says is required; leave it out for everything else. It is a
+        lowercase word with hyphens; anything else is refused.
 
         Every fs/fw add requires anchor_source: "user" when the user stated
         the time, "constraint" when a standing rule pins it, or "calendar"
