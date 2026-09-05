@@ -1361,12 +1361,16 @@ def _snapshot_past_the_skeleton() -> PlanningSessionSnapshot:
 
 
 #: One snapshot per state `_display_context` returns, `cancelled` excepted and
-#: pinned separately below -- all six of them. The state name is asserted
+#: pinned separately below -- all seven of them. The state name is asserted
 #: alongside the decision set because a snapshot that quietly fell through to
 #: `capture` would satisfy a membership check while testing nothing about the
 #: state it was built for, which is exactly what the first version of this
 #: guard did.
 _OPEN_STATES: tuple[tuple[str, PlanningSessionSnapshot], ...] = (
+    (
+        "no_session",
+        PlanningSessionSnapshot(session_key="C1:1.0", revision=0, owner_user_id="U1"),
+    ),
     ("planning_day", _date_stage_snapshot()),
     ("capture", _capture_snapshot()),
     ("skeleton", _snapshot_with_skeleton()),
@@ -1382,8 +1386,8 @@ def test_every_open_state_offers_question(
 ) -> None:
     """The contract: an agent that owns a workflow exposes `question` in every
     state its surface allows. One case per state `_display_context` returns
-    today, so a miswired case cannot hide behind another state's answer. A
-    seventh state added later must be added here too; nothing enforces that."""
+    today, so a miswired case cannot hide behind another state's answer. An
+    eighth state added later must be added here too; nothing enforces that."""
     stage, allowed, _ = _display_context(snapshot)
     assert stage == expected_stage
     assert "question" in allowed

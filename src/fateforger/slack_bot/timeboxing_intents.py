@@ -39,6 +39,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     ProvidePlanningFacts,
     RestoreConstraint,
     ReviseArtifact,
+    StartSession,
     TimeboxIntent,
     elicited_fact_id,
     suspension_fact_id,
@@ -108,6 +109,7 @@ class InterpretedTimeboxTurn(_StrictModel):
         "assume",
         "deny",
         "question",
+        "start",
     ]
     facts: list[PlanningFactDraft] = Field(default_factory=list)
     revision_instruction: str | None = Field(default=None, min_length=1)
@@ -316,6 +318,13 @@ def _display_context(
     snapshot: PlanningSessionSnapshot,
 ) -> tuple[str, tuple[str, ...], PlanningArtifact | None]:
     pending = _pending_artifact(snapshot)
+    if snapshot.planning_day is None and not any(
+        artifact.kind is ArtifactKind.PLANNING_DAY for artifact in snapshot.artifacts
+    ):
+        # Before a day is even proposed there is still something to decide:
+        # start the session, ask about the calendar, or walk away. This used
+        # to be an unconditional StartSession with no model asked (#318).
+        return "no_session", ("start", "question", "cancel"), pending
     if snapshot.status == "cancelled":
         return "cancelled", (), pending
     if snapshot.status == "committed":
@@ -506,6 +515,8 @@ def _intent_from_interpreted(
         # field for this decision on purpose: a paraphrase is the model's
         # words reaching the answerer as if the user said them.
         return AskQuestion(question=user_text)
+    if interpreted.decision == "start":
+        return StartSession()
     if interpreted.decision == "confirm_planning_day":
         if pending is None or pending.kind is not ArtifactKind.PLANNING_DAY:
             raise ValueError("confirm_planning_day requires a proposed planning day")
