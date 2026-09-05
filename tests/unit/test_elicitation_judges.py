@@ -412,17 +412,18 @@ def test_stated_facts_reach_the_classifier_and_the_generator() -> None:
             self.stated.append(list(stated))
             return await super().classify(cell=cell, rules=rules, stated=stated, request=request, session_key=session_key)
 
-    # `said` answers `elicit.body.unclear`, which closes it; the open cell the
-    # generator gets is a different one on the same row, so the statement still
-    # reaches the classifier and the conversation without being re-asked.
-    coverage = _Recording({"elicit.body.tacit_knowledge": "uncovered"})
+    # `said` answers `elicit.body.unclear`. The classifier still calls that cell
+    # uncovered -- it is in the table below -- and it is still not asked, because
+    # the answer closed it. The generator gets the other open cell on the row, so
+    # the statement reaches the classifier and the conversation either way.
+    coverage = _Recording({"elicit.body.unclear": "uncovered", "elicit.body.tacit_knowledge": "uncovered"})
     probe = _StubProbe({"elicit.body.tacit_knowledge"})
     judges = Judges(placement=_StubPlacement(PLACED, {"c-exit": "method"}), coverage=coverage, probe=probe)
     result = _run(_snapshot(frame, said), judges)
     assert coverage.stated and all("gym is 75 minutes" in s for s in coverage.stated)
     assert all(any("07:00" in line for line in s) for s in coverage.stated)
     assert probe.seen, "the generator was never called"
-    assert "elicit.body.unclear" not in probe.asked  # answered, so never re-asked
+    assert "elicit.body.unclear" not in probe.asked  # uncovered, answered, so not re-asked
     cell_id, conversation, rule_uids = probe.seen[0]
     assert cell_id == "elicit.body.tacit_knowledge"
     assert "deep work in the morning, gym at 18:00" in conversation  # the request leads

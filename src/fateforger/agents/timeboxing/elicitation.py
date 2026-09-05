@@ -177,7 +177,7 @@ def coverage_matrix(snapshot: PlanningSessionSnapshot) -> CoverageMatrix | None:
 
 
 def ranked_open_cells(
-    matrix: CoverageMatrix, assumed: frozenset[str] = frozenset()
+    matrix: CoverageMatrix, closed: frozenset[str] = frozenset()
 ) -> list[CellRef]:
     """Uncovered cells by expected value, every term a count over minted fields.
 
@@ -189,15 +189,15 @@ def ranked_open_cells(
     already open. Unioning the two lists instead held the gate shut on cells a
     judge had marked covered or not applicable.
 
-    `assumed` is a set of cell ids a `PlannerAssumption` already answers --
-    the user forced past them, and the matrix (unaware of assumptions) would
-    otherwise keep reporting them uncovered forever.
+    `closed` is `closed_cells`: the cells this session will not ask again,
+    answered or assumed -- the matrix knows of neither and would otherwise keep
+    reporting them uncovered forever.
     """
     order = {c.key: i for i, c in enumerate(CRITERIA)}
     unaskable_set = set(matrix.unaskable)
     open_cells = [
         cell for cell in ALL_CELLS
-        if matrix.cells[cell.id] == "uncovered" and cell.id not in assumed
+        if matrix.cells[cell.id] == "uncovered" and cell.id not in closed
     ]
 
     def key(cell: CellRef) -> tuple[int, int, int, int]:
