@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Protocol
 from zoneinfo import ZoneInfo
@@ -107,6 +107,25 @@ class DesiredJob:
     misfire_grace_time_s: int = 300
     max_instances: int = 1
     coalesce: bool = True
+
+
+@dataclass
+class RequiredBlockOutcome:
+    """What the required-block watcher decided on one tick.
+
+    `jobs` is the ladder it wants scheduled. `undecided` is the job-id prefixes
+    it could not judge -- a calendar it could not read, a frame it could not
+    fetch, a store that raised. A failed read is not an absent block (#226), so
+    the reconciler schedules `jobs` and prunes everything under this rule's
+    prefix *except* what an undecided prefix covers: no verdict never prunes.
+
+    Prefixes are ids this system minted (`rule:<rule_id>:<scope>:<day>:<slug>:`,
+    or the whole `rule:<rule_id>:<scope>:` when even the required set is
+    unknown), so comparing them decides nothing about what the user meant.
+    """
+
+    jobs: list[DesiredJob] = field(default_factory=list)
+    undecided: list[str] = field(default_factory=list)
 
 
 class McpCalendarClient:
@@ -742,20 +761,28 @@ class PlanningReconciler:
             )
         )
         prefixes = {f"rule:{self._rule.rule_id}:{scope}:"}
+        #: Job-id prefixes this tick could not judge. Nothing under one of them
+        #: is removed, however stale it looks: no verdict never prunes (#226).
+        undecided: list[str] = []
         if self._required_block_rule is not None:
-            prefixes.add(f"rule:{self._required_block_rule.rule_id}:{scope}:")
+            required_prefix = f"rule:{self._required_block_rule.rule_id}:{scope}:"
+            prefixes.add(required_prefix)
             try:
-                desired.extend(
-                    await self._required_block_rule.evaluate(
-                        now=now_dt, scope=scope, user_id=user_id, channel_id=channel_id,
-                        first_nudge_offset=first_nudge_offset,
-                    )
+                outcome = await self._required_block_rule.evaluate(
+                    now=now_dt, scope=scope, user_id=user_id, channel_id=channel_id,
+                    first_nudge_offset=first_nudge_offset,
                 )
             except Exception as exc:  # noqa: BLE001 - one rule's failure is not the other's
                 logger.exception(
                     "required_blocks rule failed for %s error_type=%s error=%s",
                     scope, type(exc).__name__, exc,
                 )
+                # An exception is a failed read by another name: this rule said
+                # nothing this tick, so its whole scope keeps what it has.
+                undecided.append(required_prefix)
+            else:
+                desired.extend(outcome.jobs)
+                undecided.extend(outcome.undecided)
         scheduled = {
             job.id: getattr(getattr(job, "trigger", None), "run_date", None)
             for job in self._scheduler.get_jobs()
@@ -765,6 +792,8 @@ class PlanningReconciler:
         desired_ids = {job.key.as_id() for job in desired}
 
         for job_id in current_ids - desired_ids:
+            if any(job_id.startswith(prefix) for prefix in undecided):
+                continue
             self._scheduler.remove_job(job_id)
 
         # A caller supplying `first_nudge_offset` is deliberately re-timing the
@@ -989,4 +1018,5 @@ __all__ = [
     "PlanningReminder",
     "PlanningRuleConfig",
     "PlanningSessionRule",
+    "RequiredBlockOutcome",
 ]

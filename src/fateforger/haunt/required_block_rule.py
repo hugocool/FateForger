@@ -33,6 +33,7 @@ from .reconcile import (
     JobKey,
     PlanningReminder,
     PlanningRuleConfig,
+    RequiredBlockOutcome,
     _carries_planning_mark,
     _parse_event_dt,
     nudge_offsets,
@@ -123,7 +124,7 @@ class RequiredBlockRule:
         self._cache[(user_id, day.isoformat(), slug)] = event_id
 
     # -- inputs ---------------------------------------------------------------------
-    async def _required(self, day: date) -> list[str]:
+    async def _required(self, *, user_id: str, day: date) -> list[str]:
         planning_day = PlanningDay.lock_default(value=day, timezone=self._config.tz, lock_revision=1)
         rows = await self._store.query_constraints(
             filters={
@@ -140,6 +141,15 @@ class RequiredBlockRule:
         sleep = frame.get("sleep") if isinstance(frame, dict) else None
         return sleep if isinstance(sleep, str) and sleep else None
 
+    # -- job-id prefixes, all minted by this system -----------------------------------
+    def scope_prefix(self, scope: str) -> str:
+        """Every job this rule owns for `scope`."""
+        return f"rule:{self.rule_id}:{scope}:"
+
+    def slug_prefix(self, scope: str, day: date, slug: str) -> str:
+        """One slug's ladder for one day."""
+        return f"{self.scope_prefix(scope)}{day.isoformat()}:{slug}:"
+
     # -- evaluation -----------------------------------------------------------------
     async def evaluate(
         self,
@@ -149,32 +159,37 @@ class RequiredBlockRule:
         user_id: str | None = None,
         channel_id: str | None = None,
         first_nudge_offset: timedelta | None = None,
-    ) -> list[DesiredJob]:
+    ) -> RequiredBlockOutcome:
         if not user_id:
-            return []
+            return RequiredBlockOutcome()
         start = now.astimezone(timezone.utc)
         day = now.astimezone(ZoneInfo(self._config.tz)).date()
         try:
-            required = await self._required(day)
+            required = await self._required(user_id=user_id, day=day)
         except Exception as exc:  # noqa: BLE001 - named, and no verdict
             logger.warning("required_blocks_unreadable user=%s day=%s error_type=%s error=%s",
                            user_id, day, type(exc).__name__, exc)
-            return []
+            # Which kinds the day requires is unknown, so no ladder under this
+            # rule can be judged stale. Keep the whole scope.
+            return RequiredBlockOutcome(undecided=[self.scope_prefix(scope)])
         if not required:
-            return []
+            return RequiredBlockOutcome()
         sleep = await self._sleep(user_id, day)
 
         jobs: list[DesiredJob] = []
+        undecided: list[str] = []
         for slug in required:
             verdict = await self._check(user_id=user_id, day=day, slug=slug, sleep=sleep)
             if verdict is None:
-                continue  # no verdict: unreadable, leave everything as it is
+                # No verdict: unreadable. Leave this slug's ladder exactly as it is.
+                undecided.append(self.slug_prefix(scope, day, slug))
+                continue
             if verdict == "present":
                 continue
             jobs.extend(self._ladder(start=start, scope=scope, user_id=user_id,
                                      channel_id=channel_id, day=day, slug=slug,
                                      reason=verdict, first_nudge_offset=first_nudge_offset))
-        return jobs
+        return RequiredBlockOutcome(jobs=jobs, undecided=undecided)
 
     async def _check(self, *, user_id: str, day: date, slug: str, sleep: str | None) -> str | None:
         """'present', REASON_MISSING, REASON_MOVED_OUT, or None for no verdict."""

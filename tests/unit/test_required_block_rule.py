@@ -64,6 +64,13 @@ class _Store:
         return [{"uid": f"c-{s}", "name": f"rule {s}", "requires_block": s} for s in self._slugs]
 
 
+class _UnreadableStore:
+    """The store the runtime wires when memory is not reachable: it raises."""
+
+    async def query_constraints(self, *, filters, limit):
+        raise RuntimeError("constraint dependency unavailable")
+
+
 class _Ledger:
     def __init__(self, sleep: str | None = "23:00"):
         self._sleep = sleep
@@ -79,8 +86,12 @@ def _rule(calendar, store, ledger=None) -> RequiredBlockRule:
     )
 
 
-async def _jobs(rule):
+async def _outcome(rule):
     return await rule.evaluate(now=NOW, scope="U1", user_id="U1", channel_id="D1")
+
+
+async def _jobs(rule):
+    return (await _outcome(rule)).jobs
 
 
 def test_slug_of_reads_the_minted_property_and_nothing_else():
@@ -162,12 +173,40 @@ async def test_a_failed_listing_gives_no_verdict_and_keeps_the_cache():
 
 
 @pytest.mark.asyncio
+async def test_a_failed_listing_names_the_slug_whose_jobs_must_survive():
+    """No verdict never prunes (R1): the tick hands back the job-id prefix of
+    the slug it could not judge, and the reconciler keeps what is under it."""
+    rule = _rule(_Calendar(fail_list=True), _Store(["planning"]))
+    outcome = await _outcome(rule)
+    assert outcome.jobs == []
+    assert outcome.undecided == [f"rule:required_blocks:U1:{DAY.isoformat()}:planning:"]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_store_leaves_the_whole_scope_undecided():
+    """Nothing is known about which kinds the day requires, so nothing under
+    this rule's prefix may be pruned -- not one slug's ladder, all of them."""
+    rule = _rule(_Calendar(), _UnreadableStore())
+    outcome = await _outcome(rule)
+    assert outcome.jobs == []
+    assert outcome.undecided == ["rule:required_blocks:U1:"]
+
+
+@pytest.mark.asyncio
 async def test_a_failed_fetch_of_the_registered_id_gives_no_verdict():
     cal = _Calendar(fail_get=True)
     rule = _rule(cal, _Store(["planning"]))
     rule.remember(user_id="U1", day=DAY, slug="planning", event_id="e1")
-    assert await _jobs(rule) == []
+    outcome = await _outcome(rule)
+    assert outcome.jobs == []
     assert cal.list_calls == 0
+    assert outcome.undecided == [f"rule:required_blocks:U1:{DAY.isoformat()}:planning:"]
+
+
+@pytest.mark.asyncio
+async def test_a_decided_tick_leaves_nothing_undecided():
+    rule = _rule(_Calendar(day_events=[_event("e1", "17:00", "17:20", slug="planning")]), _Store(["planning"]))
+    assert (await _outcome(rule)).undecided == []
 
 
 @pytest.mark.asyncio
