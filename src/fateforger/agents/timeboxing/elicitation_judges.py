@@ -236,8 +236,12 @@ class _ProbeJudgement(BaseModel):
     grounded: bool
     question: str | None
     why_needed: str | None
-    #: Offered only when the answer set is closed. At most four.
-    options: list[str] = Field(default_factory=list, max_length=4)
+    #: Offered only when the answer set is closed. The cap of four is enforced
+    #: after parsing, not as `max_length`: that emits `maxItems` into the
+    #: structured-output schema, which is outside the strict-mode keyword
+    #: subset the `:nitro` hosts enforce, and the request 400s before any
+    #: judgement is parsed. A stubbed suite cannot see that.
+    options: list[str] = Field(default_factory=list)
 
 
 _PROBE_PROMPT = """You are a coach helping someone plan one day, asking one
@@ -303,6 +307,10 @@ class ProbeJudge:
             return None
         if not judgement.question or not judgement.why_needed:
             raise ValueError(f"probe judgement for {cell.id} said grounded and gave no question")
+        # Slack renders at most four buttons, and `ProbeDraft.options` caps at
+        # four as well; this is the loud failure the schema can no longer carry.
+        if len(judgement.options) > 4:
+            raise ValueError(f"probe judgement for {cell.id} offered {len(judgement.options)} options; at most four")
         return ProbeDraft(
             cell_id=cell.id,
             question=judgement.question,

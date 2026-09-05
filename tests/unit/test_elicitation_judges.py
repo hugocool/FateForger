@@ -165,6 +165,7 @@ async def test_generate_returns_a_draft_with_host_minted_option_ids() -> None:
     assert draft is not None
     assert draft.cell_id == cell.id
     assert draft.question == "How long is the gym?"
+    assert draft.why_needed == "to place it"
     assert [o.option_id for o in draft.options] == ["elicit.body.tacit_knowledge:1", "elicit.body.tacit_knowledge:2"]
     assert [o.label for o in draft.options] == ["60 min", "90 min"]
     sent = json.loads(client.calls[0][0][1].content)
@@ -192,7 +193,7 @@ async def test_generate_refuses_grounded_without_a_question() -> None:
 @pytest.mark.asyncio
 async def test_generate_refuses_more_than_four_options() -> None:
     client = _SchemaOutputClient({"grounded": True, "question": "Which?", "why_needed": "w", "options": ["a", "b", "c", "d", "e"]})
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="at most four"):
         await ProbeJudge(client).generate(
             cell=CellRef(row="body", criterion="unclear"), rules_full=[], conversation=[], request=None, session_key="C1:1.0"
         )
