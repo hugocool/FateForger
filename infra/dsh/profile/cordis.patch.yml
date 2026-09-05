@@ -371,18 +371,24 @@
     #     queries, over a facade that can call `API-post-database-query` and
     #     `API-retrieve-a-page` and nothing else. There is no write to gate.
     #
-    #     No Notion settings in this row, deliberately. The board talks to the
-    #     bot's own Notion MCP container -- the official server in REST mode on
-    #     http://localhost:3001/mcp, behind MCP_HTTP_AUTH_TOKEN -- and a stdio
-    #     child inherits the bridge's process env, so the URL and the token
-    #     arrive without being written down twice. Two places to set one token
-    #     is how one of them goes stale.
+    #     No Notion settings *values* in this row, deliberately: the board
+    #     talks to the bot's own Notion MCP container -- the official server in
+    #     REST mode on http://localhost:3001/mcp, behind MCP_HTTP_AUTH_TOKEN --
+    #     and both are configured once, for the bridge. But the two variables
+    #     are forwarded by name, as both sibling stdio rows forward theirs: the
+    #     MCP client composes the child's env rather than handing it the
+    #     parent's, so a variable nobody named may not arrive. An empty string
+    #     means "not set" -- get_notion_mcp_url() falls through to its default,
+    #     and an empty token raises TaskBoardUnavailable naming itself.
     #
     #     60s and not the 5s above: those two children validate and rename a
     #     local file, this one waits on a Notion round trip through a
-    #     container. failOnStartupError stays, though -- when the row IS
-    #     enabled, a turn that cannot reach the board should fail at boot
-    #     rather than hand the child a tool that dies on first use.
+    #     container. failOnStartupError stays, though -- it proves the Python
+    #     process launched. It does NOT prove the board is reachable: the board
+    #     is built lazily on the first tool call, so a missing token or an
+    #     unreachable container shows up there, as a failed tool call carrying
+    #     the cause, and not at boot. Lazy on purpose -- an import that needs a
+    #     token is one that cannot be tested.
     #
     #     The quotes around the `disabled` expression are load-bearing and not
     #     a style choice: `!` is a YAML tag indicator, so a plain scalar cannot
@@ -402,6 +408,8 @@
         cwd: !!js process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1'
         env:
           PYTHONPATH: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/src'
+          MCP_HTTP_AUTH_TOKEN: !!js process.env.MCP_HTTP_AUTH_TOKEN || ''
+          NOTION_MCP_URL: !!js process.env.NOTION_MCP_URL || ''
         toolCallTimeoutMs: 60000
         failOnStartupError: true
 

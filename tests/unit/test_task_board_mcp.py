@@ -10,6 +10,8 @@ call rather than as prose it would read as success.
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -241,3 +243,29 @@ def test_server_module_imports_no_autogen() -> None:
     assert "autogen_agentchat" not in roots
     assert "autogen_core" not in roots
     assert "re" not in roots
+
+
+def test_importing_the_server_loads_no_autogen_module() -> None:
+    """The AST test reads one file; this one watches what the import actually pulls.
+
+    A transitive autogen import costs the stdio child the whole runtime at
+    startup, and no source line in this module would show it.
+    """
+    root = Path(__file__).resolve().parents[2]
+    probe = (
+        "import sys; import fateforger.slack_bot.task_board_mcp; "
+        "print(sorted(n for n in sys.modules "
+        "if n.split('.')[0].startswith('autogen')))"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=root,
+        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(root / "src")},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]", result.stdout

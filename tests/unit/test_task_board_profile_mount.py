@@ -93,3 +93,16 @@ def test_the_task_board_row_follows_the_planning_result_row():
     """Placement is the file's own filing system; the row belongs with 3c."""
     ids = [row.get("id") for row in _mount_rows()]
     assert ids.index("mcp-task-board") == ids.index("mcp-planning-result") + 1, ids
+
+
+def test_the_mount_forwards_the_notion_variables():
+    """The client composes the child's env; anything not named may be scrubbed.
+
+    Both sibling stdio rows pass their own variables explicitly, and without
+    the token the board raises on the first tool call rather than at boot.
+    """
+    env = _row_named("task_board")["config"]["env"]
+
+    assert "MCP_HTTP_AUTH_TOKEN" in env, env
+    assert "NOTION_MCP_URL" in env, env
+

@@ -36,9 +36,16 @@ mcp = FastMCP(
     ),
 )
 
-#: Built on first use and kept for the life of the process. One stdio server is
-#: one child process serving one turn's tool calls, so a module global is the
-#: whole of the lifetime -- no lock, and nothing to invalidate.
+#: Built on first use and kept for the life of the process. That process is not
+#: one turn's: dsh-mcp-client starts this child when the plugin activates,
+#: supervises it with reconnect, and disposes it with the plugin, so the child
+#: outlives any single turn and is respawned on a lost connection. The cache is
+#: still safe, because nothing mutable is in it -- two database ids and a
+#: function reference. The token and the URL are read afresh inside
+#: ``notion_call_tool`` on every call, so rotating either reaches the next tool
+#: call without a restart. And ``_CACHED_BOARD`` is assigned only after
+#: ``from_settings()`` returns, so a boot with no token retries on the next call
+#: rather than caching the failure.
 _CACHED_BOARD: TaskBoard | None = None
 
 
