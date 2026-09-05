@@ -23,6 +23,7 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import (
     PlanningContext,
     TurnRequest,
 )
+from fateforger.agents.timeboxing.elicitation_judges import build_judges, elicit
 from fateforger.agents.timeboxing.required_blocks import required_blocks_value
 from fateforger.agents.timeboxing.session_contracts import (
     Advance,
@@ -202,38 +203,47 @@ class HostPlanningContext:
     async def _frame_from_corpus(
         self, snapshot: PlanningSessionSnapshot
     ) -> PlanningContext:
-        """What memory says about the day: the active rules, and the sleep
-        window as a fact when the user has not stated one.
+        """What memory says about the day, and what Stage 1 still needs to ask.
 
-        The rules are returned in every case. Until 2026-09-04 they were
-        fetched here only to feed the frame judgement and handed to nobody, so
-        Stage 1 had nothing to show (#262). The frame judgement is unchanged:
-        skipped when the user typed a frame this session, a model call
-        otherwise, and a host that cannot judge fails the turn rather than
-        asking the user every day forever.
+        The rules are returned in every case (#262). The frame judgement is
+        skipped when the user typed a frame this session. Then `elicit` runs
+        the three Stage 1 judgements against the rules and the snapshot --
+        with the frame just judged merged in, so the `bounded` row sees it --
+        and returns the matrix fact and the probes. A host that cannot judge
+        fails the turn rather than proposing to close a stage it never opened.
         """
         planning_day = self._locked_day(snapshot)
         constraints = await self._active_constraints(planning_day)
         suspended = await self._suspended_count(planning_day)
-        if any(fact.kind is FactKind.DAY_FRAME for fact in snapshot.facts):
-            return PlanningContext(
-                applicable_constraints=constraints, suspended_constraint_count=suspended
-            )
         model_client = getattr(self._runtime, "timeboxing_intent_model_client", None)
         if model_client is None:
-            raise AdaptiveDependencyUnavailable("no model client for the frame judgement")
+            raise AdaptiveDependencyUnavailable(
+                "no model client for the Stage 1 judgements"
+            )
 
-        from fateforger.agents.timeboxing.day_frame import DayFrameJudge
+        frame: PlanningFact | None = None
+        if not any(fact.kind is FactKind.DAY_FRAME for fact in snapshot.facts):
+            from fateforger.agents.timeboxing.day_frame import DayFrameJudge
 
-        frame = await DayFrameJudge(model_client).frame_on_record(
-            day=planning_day,
-            constraints=constraints,
-            session_key=snapshot.session_key,
+            frame = await DayFrameJudge(model_client).frame_on_record(
+                day=planning_day,
+                constraints=constraints,
+                session_key=snapshot.session_key,
+            )
+        seen = (
+            snapshot
+            if frame is None
+            else snapshot.model_copy(update={"facts": [*snapshot.facts, frame]})
+        )
+        rows = constraints if isinstance(constraints, list) else []
+        result = await elicit(
+            seen, rows, build_judges(model_client), session_key=snapshot.session_key
         )
         return PlanningContext(
-            facts=[] if frame is None else [frame],
+            facts=([frame] if frame is not None else []) + [result.matrix_fact],
             applicable_constraints=constraints,
             suspended_constraint_count=suspended,
+            probes=result.probes,
         )
 
     async def _suspended_count(self, planning_day: PlanningDay) -> int:

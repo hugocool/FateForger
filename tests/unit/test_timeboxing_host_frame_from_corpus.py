@@ -9,17 +9,47 @@ from typing import Any
 
 import pytest
 
+from fateforger.agents.timeboxing.elicitation import CoverageMatrix
+from fateforger.agents.timeboxing.elicitation_judges import ElicitationResult, Judges
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactKind,
     FactKind,
     PlanningDay,
     PlanningFact,
     PlanningSessionSnapshot,
+    ProbeDraft,
+    coverage_fact_id,
 )
 from fateforger.slack_bot.timeboxing_host import (
     AdaptiveDependencyUnavailable,
     HostPlanningContext,
 )
+
+
+class _StubJudges:
+    """`elicit` is replaced wholesale: this file is about the frame judgement,
+    and Stage 1's own judgements have their own tests."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[PlanningSessionSnapshot, list[dict]]] = []
+
+    async def __call__(self, snapshot, rows, judges, *, session_key, **_):  # noqa: ANN001
+        self.calls.append((snapshot, rows))
+        from fateforger.agents.timeboxing.elicitation import ALL_CELLS
+
+        matrix = CoverageMatrix(cells={c.id: "not_applicable" for c in ALL_CELLS})
+        fact = PlanningFact(fact_id=coverage_fact_id(snapshot.planning_day.date), kind=FactKind.COVERAGE_MATRIX, value=matrix.model_dump(mode="json"), source="system")
+        return ElicitationResult(matrix_fact=fact, probes=[ProbeDraft(cell_id="elicit.body.unclear", question="q?", why_needed="w")])
+
+
+@pytest.fixture(autouse=True)
+def stub_elicit(monkeypatch):
+    import fateforger.slack_bot.timeboxing_host as host_module
+
+    stub = _StubJudges()
+    monkeypatch.setattr(host_module, "elicit", stub)
+    monkeypatch.setattr(host_module, "build_judges", lambda client: Judges(placement=None, coverage=None, probe=None))
+    return stub
 
 
 class _SchemaOutputClient:
@@ -93,7 +123,10 @@ async def test_a_bedtime_rule_on_record_arrives_as_a_frame_fact_at_capture() -> 
         _snapshot(), target=ArtifactKind.SKELETON, progress=_Progress()
     )
 
-    assert [fact.kind for fact in context.facts] == [FactKind.DAY_FRAME]
+    assert [fact.kind for fact in context.facts] == [
+        FactKind.DAY_FRAME,
+        FactKind.COVERAGE_MATRIX,
+    ]
     assert context.facts[0].source == "constraint_memory"
     assert store.queries == [
         {
@@ -119,7 +152,7 @@ async def test_a_corpus_that_says_nothing_about_sleep_leaves_the_question_open()
         _snapshot(), target=ArtifactKind.SKELETON, progress=_Progress()
     )
 
-    assert context.facts == []
+    assert [fact.kind for fact in context.facts] == [FactKind.COVERAGE_MATRIX]
 
 
 @pytest.mark.asyncio
@@ -143,7 +176,7 @@ async def test_a_frame_the_user_already_stated_asks_no_model_but_still_hands_bac
         _snapshot(stated), target=ArtifactKind.SKELETON, progress=_Progress()
     )
 
-    assert context.facts == []
+    assert [fact.kind for fact in context.facts] == [FactKind.COVERAGE_MATRIX]
     assert context.applicable_constraints == [BEDTIME]
     assert context.suspended_constraint_count == 0
     assert len(store.queries) == 1

@@ -7,6 +7,10 @@ import asyncio
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
+from fateforger.agents.timeboxing.elicitation import CoverageMatrix
+from fateforger.agents.timeboxing.elicitation_judges import ElicitationResult, Judges
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactKind,
     DayType,
@@ -14,8 +18,37 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningDay,
     PlanningFact,
     PlanningSessionSnapshot,
+    ProbeDraft,
+    coverage_fact_id,
 )
 from fateforger.slack_bot.timeboxing_host import HostPlanningContext
+
+
+class _StubJudges:
+    """`elicit` is replaced wholesale: the host's job is to call it with the
+    rows it fetched and the snapshot it was given, and to carry the result."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[PlanningSessionSnapshot, list[dict]]] = []
+
+    async def __call__(self, snapshot, rows, judges, *, session_key, **_):  # noqa: ANN001
+        self.calls.append((snapshot, rows))
+        from fateforger.agents.timeboxing.elicitation import ALL_CELLS
+
+        matrix = CoverageMatrix(cells={c.id: "not_applicable" for c in ALL_CELLS})
+        fact = PlanningFact(fact_id=coverage_fact_id(snapshot.planning_day.date), kind=FactKind.COVERAGE_MATRIX, value=matrix.model_dump(mode="json"), source="system")
+        return ElicitationResult(matrix_fact=fact, probes=[ProbeDraft(cell_id="elicit.body.unclear", question="q?", why_needed="w")])
+
+
+@pytest.fixture(autouse=True)
+def stub_elicit(monkeypatch):
+    import fateforger.slack_bot.timeboxing_host as host_module
+
+    stub = _StubJudges()
+    monkeypatch.setattr(host_module, "elicit", stub)
+    monkeypatch.setattr(host_module, "build_judges", lambda client: Judges(placement=None, coverage=None, probe=None))
+    return stub
+
 
 ROWS = [{"uid": "c1", "name": "Oats before gym", "necessity": "must", "anchors": []}]
 
@@ -45,7 +78,7 @@ def _snapshot(*facts) -> PlanningSessionSnapshot:
     )
 
 
-def test_skeleton_context_carries_the_rows_when_the_frame_is_already_stated() -> None:
+def test_skeleton_context_carries_the_rows_when_the_frame_is_already_stated(stub_elicit) -> None:
     runtime = SimpleNamespace(timeboxing_constraint_store=_Store(), timeboxing_intent_model_client=object())
     host = HostPlanningContext(runtime, now=lambda: datetime.now(timezone.utc))
     frame = PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:00"}, source="user")
@@ -54,4 +87,35 @@ def test_skeleton_context_carries_the_rows_when_the_frame_is_already_stated() ->
 
     assert context.applicable_constraints == ROWS
     assert context.suspended_constraint_count == 7
-    assert context.facts == []
+    assert [f.kind for f in context.facts] == [FactKind.COVERAGE_MATRIX]
+    assert [p.cell_id for p in context.probes] == ["elicit.body.unclear"]
+    assert stub_elicit.calls[0][1] == ROWS
+
+
+def test_a_frame_the_judge_states_is_in_the_snapshot_elicit_sees(stub_elicit, monkeypatch) -> None:
+    class _Frame:
+        def __init__(self, client) -> None:
+            pass
+
+        async def frame_on_record(self, *, day, constraints, session_key):
+            return PlanningFact(fact_id=f"frame:{day.date.isoformat()}", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:00", "basis": ["c1"]}, source="constraint_memory")
+
+    monkeypatch.setattr("fateforger.agents.timeboxing.day_frame.DayFrameJudge", _Frame)
+    runtime = SimpleNamespace(timeboxing_constraint_store=_Store(), timeboxing_intent_model_client=object())
+    host = HostPlanningContext(runtime, now=lambda: datetime.now(timezone.utc))
+
+    context = asyncio.run(host.resolve(_snapshot(), target=ArtifactKind.SKELETON, progress=_Sink()))
+
+    assert [f.kind for f in context.facts] == [FactKind.DAY_FRAME, FactKind.COVERAGE_MATRIX]
+    seen_snapshot, _ = stub_elicit.calls[0]
+    assert any(f.kind is FactKind.DAY_FRAME for f in seen_snapshot.facts)
+
+
+def test_no_model_client_is_a_dependency_failure_even_with_a_frame_stated() -> None:
+    from fateforger.slack_bot.timeboxing_host import AdaptiveDependencyUnavailable
+
+    runtime = SimpleNamespace(timeboxing_constraint_store=_Store(), timeboxing_intent_model_client=None)
+    host = HostPlanningContext(runtime, now=lambda: datetime.now(timezone.utc))
+    frame = PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:00"}, source="user")
+    with pytest.raises(AdaptiveDependencyUnavailable):
+        asyncio.run(host.resolve(_snapshot(frame), target=ArtifactKind.SKELETON, progress=_Sink()))
