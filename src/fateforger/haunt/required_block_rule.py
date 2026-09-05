@@ -233,8 +233,16 @@ class RequiredBlockRule:
                 logger.warning("calendar_unreadable user=%s slug=%s error_type=%s error=%s",
                                user_id, slug, type(exc).__name__, exc)
                 return None
-            if event is not None and _is_kind(event, slug) and within_bounds(event, day=day, tz=tz, sleep=sleep):
-                return "present"
+            if event is not None and _is_kind(event, slug):
+                if within_bounds(event, day=day, tz=tz, sleep=sleep):
+                    return "present"
+                # R4: the id resolves and the kind still matches -- the block
+                # was dragged to another day or pushed past sleep. That is
+                # `moved_out`, and nothing on this day's list can change it, so
+                # the list is not worth a call. Listing here also read as
+                # `missing` whenever the drag left the day empty, which is the
+                # wrong reason and the wrong line.
+                return REASON_MOVED_OUT
         events = await self._calendar.list_day(calendar_id=self._config.calendar_id, day=day, tz=tz)
         if events is None:
             logger.warning("calendar_unreadable user=%s slug=%s day=%s (list_day)", user_id, slug, day)

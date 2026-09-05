@@ -273,3 +273,42 @@ async def test_a_missing_planning_block_does_not_hide_another_kinds_ladder():
     rule = _rule(_Calendar(day_events=[]), _Store(["closure", "planning"]))
     jobs = await _jobs(rule)
     assert {job.payload.slug for job in jobs} == {"closure"}
+
+
+@pytest.mark.asyncio
+async def test_the_cached_id_dragged_to_another_day_is_moved_out_without_listing():
+    """R4: the id resolves, the kind matches, it is simply not on this day any
+    more -- that is the drag the spec's end-to-end case names. Nothing about
+    the day's other events can change it, so the list is not worth a call."""
+    ev = _event("e1", "17:00", "17:20", slug="planning", day=date(2026, 9, 8))
+    cal = _Calendar(day_events=[], by_id={"e1": ev})
+    rule = _rule(cal, _Store(["planning"]))
+    rule.remember(user_id="U1", day=DAY, slug="planning", event_id="e1")
+    jobs = await _jobs(rule)
+    assert jobs and jobs[0].payload.reason == REASON_MOVED_OUT
+    assert cal.list_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_the_cached_id_pushed_past_sleep_is_moved_out_without_listing():
+    ev = _event("e1", "23:10", "23:40", slug="planning")
+    cal = _Calendar(day_events=[ev], by_id={"e1": ev})
+    rule = _rule(cal, _Store(["planning"]), _Ledger(sleep="23:00"))
+    rule.remember(user_id="U1", day=DAY, slug="planning", event_id="e1")
+    jobs = await _jobs(rule)
+    assert jobs and jobs[0].payload.reason == REASON_MOVED_OUT
+    assert cal.list_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_cached_id_that_is_no_longer_of_the_kind_still_lists():
+    """The slug was stripped off the event the cache points at: the day may
+    hold another block carrying it, so this one is re-derived, not judged."""
+    was = _event("e1", "17:00", "17:20")  # no slug any more
+    now_has = _event("e2", "18:00", "18:20", slug="closure")
+    cal = _Calendar(day_events=[was, now_has], by_id={"e1": was, "e2": now_has})
+    rule = _rule(cal, _Store(["closure"]))
+    rule.remember(user_id="U1", day=DAY, slug="closure", event_id="e1")
+    assert await _jobs(rule) == []
+    assert cal.list_calls == 1
+    assert rule.cached(user_id="U1", day=DAY, slug="closure") == "e2"
