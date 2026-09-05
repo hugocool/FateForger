@@ -914,6 +914,9 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
         reconciler=reconciler,
     )
     planning_guardian.schedule_daily()
+    # The watcher notices a block leaving the plan only on a tick; once a day
+    # is not noticing (R5).
+    planning_guardian.schedule_interval(minutes=_reconcile_interval_minutes())
     # Kick off reconcile on startup so nudges are scheduled immediately.
     # This is critical since we use in-memory scheduler (jobs lost on restart).
     await _run_initial_planning_reconcile(
@@ -923,6 +926,27 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
 
     setattr(runtime, "planning_guardian", planning_guardian)
     return runtime
+
+
+def _reconcile_interval_minutes() -> int:
+    """How often the planning guardian reconciles, from the environment.
+
+    `FF_RECONCILE_INTERVAL_MINUTES`, default 15, `0` to disable. A value that
+    is not a whole number raises rather than falling back: a typo that silently
+    returned the watcher to a once-a-day cadence would look exactly like the
+    calendar never changing.
+    """
+
+    raw = (os.environ.get("FF_RECONCILE_INTERVAL_MINUTES") or "").strip()
+    if not raw:
+        return PlanningGuardian.DEFAULT_INTERVAL_MINUTES
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            "FF_RECONCILE_INTERVAL_MINUTES must be a whole number of minutes "
+            f"(0 disables); got {raw!r}"
+        ) from exc
 
 
 def _coerce_async_database_url(database_url: str) -> str:
