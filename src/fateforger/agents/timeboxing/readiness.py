@@ -317,6 +317,11 @@ _DIRECT_DEPENDENTS: dict[ArtifactKind, frozenset[ArtifactKind]] = {
 class TimeboxRequirements:
     """Evaluate typed requirements and downstream artifact invalidation."""
 
+    def __init__(self, catalog: tuple[ArtifactRequirement, ...] | None = None) -> None:
+        #: The module catalog unless a caller hands another; the kernel and
+        #: the card must read the same one (#294).
+        self._catalog = _CATALOG if catalog is None else catalog
+
     def evaluate(
         self,
         target_artifact: ArtifactKind,
@@ -332,7 +337,7 @@ class TimeboxRequirements:
                     requirement=requirement,
                     satisfied=self._is_satisfied(requirement, snapshot, matrix),
                 )
-                for requirement in _CATALOG
+                for requirement in self._catalog
                 if requirement.target_artifact is target_artifact
             ),
         )
@@ -351,26 +356,24 @@ class TimeboxRequirements:
 
         return coverage_matrix(snapshot)
 
-    @staticmethod
-    def target_of(requirement_id: str) -> ArtifactKind | None:
+    def target_of(self, requirement_id: str) -> ArtifactKind | None:
         """Which artifact a requirement exists to produce; None if unknown.
 
         An assumption is recorded against a requirement id, and the artifact
         that id serves is the one whose disappearance retires the assumption.
         """
 
-        for requirement in _CATALOG:
+        for requirement in self._catalog:
             if requirement.requirement_id == requirement_id:
                 return requirement.target_artifact
         return None
 
-    @staticmethod
-    def stage_of(requirement_id: str) -> int:
+    def stage_of(self, requirement_id: str) -> int:
         """The stage a requirement's question belongs to. KeyError for an id
         the catalog does not know: a question with no stage is a defect, not
         a stage-two question."""
 
-        for requirement in _CATALOG:
+        for requirement in self._catalog:
             if requirement.requirement_id == requirement_id:
                 return requirement.stage
         raise KeyError(requirement_id)

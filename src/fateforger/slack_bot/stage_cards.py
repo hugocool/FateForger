@@ -388,6 +388,7 @@ def map_outcome(
     session_key: str,
     channel_id: str,
     thread_ts: str,
+    requirements: TimeboxRequirements | None = None,
 ) -> StageCard | None:
     """One outcome to one card, or None for the outcomes that are not stages.
 
@@ -397,7 +398,7 @@ def map_outcome(
     """
 
     if isinstance(outcome, AwaitingUser):
-        index = TimeboxRequirements.stage_of(outcome.requirement_id)
+        index = (requirements or TimeboxRequirements()).stage_of(outcome.requirement_id)
         return StageCard(
             stage=stage(index),
             session_key=session_key,

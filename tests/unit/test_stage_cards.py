@@ -512,3 +512,23 @@ def test_every_decided_assumption_carries_a_deny_control_and_facts_do_not() -> N
     by_ref = {item.ref: item for item in card.decided}
     assert by_ref["a-1"].controls == [DenyControl(assumption_id="a-1")]
     assert by_ref["activity-1"].controls == []
+
+
+def test_map_outcome_reads_the_stage_from_the_requirements_it_is_given() -> None:
+    from dataclasses import replace
+
+    from fateforger.agents.timeboxing.readiness import TimeboxRequirements, _CATALOG
+    from fateforger.agents.timeboxing.session_contracts import AwaitingUser
+    from fateforger.slack_bot.stage_cards import map_outcome
+    # PendingTimeboxCandidates and _snapshot are already imported/defined at the top of this file.
+
+    # A catalog where the activity question is filed under stage 4 -- a
+    # different instance than the module default; the card must follow it.
+    moved = tuple(replace(r, stage=4) if r.requirement_id == "skeleton.requested_activity" else r for r in _CATALOG)
+    requirements = TimeboxRequirements(catalog=moved)
+    outcome = AwaitingUser(requirement_id="skeleton.requested_activity", question="What?", why_needed="w")
+    card = map_outcome(
+        outcome, _snapshot(), pending=PendingTimeboxCandidates(), actor_user_id="U1",
+        session_key="C1:1.0", channel_id="C1", thread_ts="1.0", requirements=requirements,
+    )
+    assert card is not None and card.stage.index == 4
