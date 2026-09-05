@@ -2149,6 +2149,13 @@ if __name__ == "__main__":
 
 Create `scripts/memory/__init__.py` as an empty file.
 
+**Amendments (executed 2026-09-05; the committed script is the record, this is why it differs from the block above):**
+- `_judge()` passes `model=os.environ["OPENROUTER_DEFAULT_MODEL_FLASH"]` and exits if unset — `OpenRouterJudge`'s constructor default names gemini.
+- Names resolve **one per call** (a gather over `_resolve_one`, serialised by `anchoring.py`'s per-store lock): `resolve_anchors` over a whole list is all-or-nothing, and *Evening Ritual* forfeited three real anchors because three other names would mint. `RelinkReport` gains `unresolved_names` and per-name `outcomes`; a rule links what resolved.
+- A name whose call raises the guard's own `unknown anchor_uid` error is re-asked up to 3 times: the judge transcribes 32-hex uids and mistyped one character 3 times in 4 (#330, taken by `admonish-1-4a`; re-run the pass after it merges).
+- A dry run first reads `PRAGMA user_version` read-only and refuses to open a store the code would migrate (every store constructor runs the ladder on open); `_judge()` runs before the backup so a missing pin leaves no stray `.bak`.
+- **Actual numbers**: the store had moved since the 09-04 findings. Dry run: 5 would link, 8 no names, 1 unresolved (not 8/6). Live apply: 5 linked (Max Deep Work blocks, Deep-work entry criteria gate, Sci-fi reading breaks, Lunch break, Evening Ritual→dinner+shower+evening shutdown ritual+evening relaxation); unanchored durable 14 → 9; *Revenue/outreach cap* names `outreach`, which has no anchor and needs a #140-gated mint. Backup `data/memory.db.bak-2026-09-05-pre-relink`. The 8 no-name rules are not all method rules (Timeboxing daily schedule, Nature reserve ×2, Standup Matrix exception), which is why placement judges unanchored rules by name rather than assuming `method`.
+
 - [ ] **Step 2: Dry run on a copy**
 
 The worktree has no `.env`; the parent does. Run:
