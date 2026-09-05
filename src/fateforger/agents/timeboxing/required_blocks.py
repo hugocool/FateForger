@@ -25,8 +25,11 @@ def required_blocks_value(constraints: Any) -> dict[str, Any]:
     the same id is the only thing that clears it, and it is satisfied by any
     candidate.
 
-    `by_rule` keeps the first rule that named each slug, so the brief can say
-    "(from memory: <rule name>)" without a second join.
+    `by_rule` names the rule behind each slug, so the brief can say "(from
+    memory: <rule name>)" without a second join. Two rules can require one
+    kind, and memory promises no order over the rows it returns; the lowest uid
+    wins, so the brief attributes the same kind to the same rule on every turn
+    rather than telling the user a different rule was asking each time.
     """
     by_rule: dict[str, dict[str, str]] = {}
     for row in constraints if isinstance(constraints, list) else []:
@@ -35,9 +38,10 @@ def required_blocks_value(constraints: Any) -> dict[str, Any]:
         slug = row.get("requires_block")
         if not isinstance(slug, str) or not slug:
             continue
-        by_rule.setdefault(
-            slug, {"uid": str(row.get("uid") or ""), "name": str(row.get("name") or "")}
-        )
+        rule = {"uid": str(row.get("uid") or ""), "name": str(row.get("name") or "")}
+        held = by_rule.get(slug)
+        if held is None or rule["uid"] < held["uid"]:
+            by_rule[slug] = rule
     return {"slugs": sorted(by_rule), "by_rule": by_rule}
 
 

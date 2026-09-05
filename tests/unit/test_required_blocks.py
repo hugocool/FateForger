@@ -81,3 +81,15 @@ def test_the_rows_carry_the_slug_when_no_op_touched_the_block():
         "rows": [{"h": "PLN1", "slug": "planning"}, {"h": "DW1"}],
     }
     assert slugs_on_candidate(payload) == {"planning"}
+
+
+def test_two_rules_requiring_one_kind_attribute_it_to_the_same_rule_either_way():
+    """The brief names the rule behind each required kind, and memory does not
+    promise an order. First-seen made that attribution a coin flip: the same
+    day, read twice, told the user a different rule was asking. The lowest uid
+    is arbitrary but stable, which is what the brief needs."""
+    pair = (("c9", "End of day planning", "planning"), ("c1", "Daily planning", "planning"))
+    one = required_blocks_value(_rows(*pair))
+    other = required_blocks_value(_rows(*reversed(pair)))
+    assert one == other
+    assert one["by_rule"]["planning"] == {"uid": "c1", "name": "Daily planning"}
