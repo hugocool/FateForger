@@ -2649,28 +2649,40 @@ async def route_slack_event(
     # remembers. Focus is an in-memory TTL cache and the bot restarted twice on
     # 2026-09-03; the session store is where the thread's ownership actually
     # lives. Asked, never created (Task 1's `load`).
-    if thread_ts and agent_type != "timeboxing_agent":
-        session_store = getattr(runtime, "timeboxing_session_store", None)
-        if session_store is not None:
-            # Ordered resolvers, planning first. The DM session key names the
-            # whole DM, not this thread, so a live session would otherwise
-            # claim the planning card's own thread and pin focus onto it.
-            claimed_by_planning = False
-            if planning is not None:
-                try:
-                    claimed_by_planning = await planning.owns_thread(
-                        channel_id=channel, thread_ts=thread_ts
-                    )
-                except Exception:
-                    logger.exception(
-                        "planning thread ownership lookup failed for %s:%s",
-                        channel,
-                        thread_ts,
-                    )
-                    record_error(
-                        component="surface_intent", error_type="resolver_failure"
-                    )
-            if not claimed_by_planning:
+    #
+    # Ordered resolvers, and planning genuinely first. Asking it only when
+    # focus did not already say `timeboxing_agent` made planning the *last*
+    # resolver, so one DM's sticky `user_focus` swallowed the planning card's
+    # own thread: on 2026-09-05 03:43 "Is it planned?" under a planning card
+    # opened a fresh 5-stage session instead of being answered.
+    if thread_ts:
+        # The DM session key names the whole DM, not this thread, so a live
+        # session would otherwise claim the planning card's own thread.
+        claimed_by_planning = False
+        if planning is not None:
+            try:
+                claimed_by_planning = await planning.owns_thread(
+                    channel_id=channel, thread_ts=thread_ts
+                )
+            except Exception:
+                logger.exception(
+                    "planning thread ownership lookup failed for %s:%s",
+                    channel,
+                    thread_ts,
+                )
+                record_error(
+                    component="surface_intent", error_type="resolver_failure"
+                )
+        if claimed_by_planning:
+            # `user_focus` is a DM-wide guess at what the user is doing; this
+            # thread hanging off a planning card is a fact, and the fact wins.
+            # An explicit per-thread binding does not lose here -- that one the
+            # user asked for by name.
+            if binding is None and agent_type == "timeboxing_agent":
+                agent_type = channel_default_agent or default_agent
+        elif agent_type != "timeboxing_agent":
+            session_store = getattr(runtime, "timeboxing_session_store", None)
+            if session_store is not None:
                 session_key = f"{channel}:dm" if is_dm else f"{channel}:{thread_ts}"
                 try:
                     session = await session_store.load(session_key)

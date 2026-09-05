@@ -85,10 +85,7 @@ class HauntingService:
         )
         if not effective_spec:
             return None
-        if effective_spec.offsets:
-            if not effective_spec.offsets:
-                return None
-        else:
+        if not effective_spec.offsets:
             if effective_spec.max_attempts is not None and effective_spec.max_attempts < 1:
                 return None
             if not effective_spec.after or effective_spec.after.total_seconds() <= 0:
@@ -137,7 +134,12 @@ class HauntingService:
             if user_id:
                 # Whatever surface the user answered on, they answered. Only
                 # ladders that asked to be cancelled on a reply are cancelled,
-                # and only this user's.
+                # and only this user's -- but every pending record of theirs,
+                # not only the one this reply was about: a reply about task A
+                # silences a ladder chasing task B too. That is the intended
+                # "stop nudging once they've spoken" reading; a reader who
+                # wants a reply to cancel only its own ladder needs a second
+                # index scoped by record kind, not this one.
                 candidates.update(self._user_index.get(user_id, set()))
 
             cancel_ids = {
@@ -338,17 +340,6 @@ class HauntingService:
         if settings and not settings.enabled:
             return None
 
-        delay = spec.after
-        if delay is None and settings:
-            delay = timedelta(minutes=settings.default_delay_minutes)
-
-        if delay is None and not spec.offsets:
-            return None
-
-        max_attempts = spec.max_attempts
-        if max_attempts is None:
-            max_attempts = settings.max_attempts if settings else 2
-
         escalation = spec.escalation
         if escalation is None:
             escalation = settings.escalation if settings else "gentle"
@@ -356,6 +347,34 @@ class HauntingService:
         cancel_on_user_reply = spec.cancel_on_user_reply
         if cancel_on_user_reply is None:
             cancel_on_user_reply = settings.cancel_on_user_reply if settings else True
+
+        if spec.offsets:
+            # An offsets ladder times each rung from its own list; `after` and
+            # `max_attempts` belong to the single-delay spec below it, and
+            # every consumer branches on `offsets` first, so neither field is
+            # ever read here. Filling `after` from the settings default
+            # anyway is a landmine for the next caller that doesn't branch
+            # first -- leave both exactly as the caller gave them.
+            return FollowUpSpec(
+                should_schedule=True,
+                after=spec.after,
+                max_attempts=spec.max_attempts,
+                escalation=escalation,
+                cancel_on_user_reply=cancel_on_user_reply,
+                offsets=spec.offsets,
+                lines=spec.lines,
+            )
+
+        delay = spec.after
+        if delay is None and settings:
+            delay = timedelta(minutes=settings.default_delay_minutes)
+
+        if delay is None:
+            return None
+
+        max_attempts = spec.max_attempts
+        if max_attempts is None:
+            max_attempts = settings.max_attempts if settings else 2
 
         return FollowUpSpec(
             should_schedule=True,

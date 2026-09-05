@@ -30,7 +30,7 @@ async def test_load_returns_a_copy_of_an_existing_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_open_sessions_for_day_answers_with_the_revision_that_tells_them_apart() -> None:
+async def test_open_sessions_answers_with_the_revision_and_day_that_tell_them_apart() -> None:
     """The in-memory ledger answers expiry's question the same way SQL does."""
 
     from datetime import date
@@ -67,17 +67,23 @@ async def test_open_sessions_for_day_answers_with_the_revision_that_tells_them_a
     await _turn("C2:auto", owner="U2", expected=0, day_lock=day)
     await repo.load_or_create("C1:dayless", owner_user_id="U1")
 
-    rows = await repo.open_sessions_for_day(
-        owner_user_id="U1", planning_date=date(2026, 9, 4)
-    )
+    rows = await repo.open_sessions(owner_user_id="U1")
 
+    # Every open row of this user's, whether or not a day was ever locked: the
+    # session that locked none is the one nothing could see before, and the
+    # caller filters on the day it carries.
     assert {row.session_key: row.revision for row in rows} == {
         "C1:auto": 1,
         "C1:live": 2,
+        "C1:dayless": 0,
     }
-    assert (
-        await repo.open_sessions_for_day(
-            owner_user_id="U1", planning_date=date(2026, 9, 5)
-        )
-        == []
+    assert {row.session_key: row.planning_date for row in rows} == {
+        "C1:auto": date(2026, 9, 4),
+        "C1:live": date(2026, 9, 4),
+        "C1:dayless": None,
+    }
+    # Newest save first, so a caller reading one row reads the freshest.
+    assert [row.updated_at for row in rows] == sorted(
+        (row.updated_at for row in rows), reverse=True
     )
+    assert await repo.open_sessions(owner_user_id="U3") == []

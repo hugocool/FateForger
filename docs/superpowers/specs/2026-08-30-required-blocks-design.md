@@ -47,7 +47,7 @@ runtime and running daily.
   `status` of planned/in_progress/completed/cancelled, plus `title`, `event_url`,
   `source`, `channel_id`, `thread_ts`.
 - **`PlanningSessionRule.evaluate`** (`src/fateforger/haunt/reconcile.py:157`) resolves
-  presence in three descending tiers, logging `anchor_found` / `anchor_in_window` /
+  presence in three descending tiers, logging `anchor_found` / `anchor_before_horizon` /
   `stored_hit` / `fallback_hit` on every pass:
   1. `get-event` on the anchor's `event_id`, checked against a 24h window;
   2. the stored `planning_session_refs` rows for the day, each re-fetched from the

@@ -193,6 +193,66 @@ async def test_follow_up_jobs_carry_a_misfire_grace() -> None:
     assert job["_extra"].get("misfire_grace_time") == 60
 
 
+class _FakeSettingsStore:
+    """A settings store the schedule call always finds enabled."""
+
+    def __init__(self, *, default_delay_minutes: int = 30) -> None:
+        from fateforger.haunt.settings_store import AdmonishmentSettingsPayload
+
+        self._payload = AdmonishmentSettingsPayload(
+            user_id="U1", enabled=True, default_delay_minutes=default_delay_minutes
+        )
+
+    async def get_settings(self, *, user_id, channel_id=None):
+        return self._payload
+
+    async def upsert_settings(self, *, user_id, channel_id=None, patch):
+        raise NotImplementedError
+
+
+@pytest.mark.asyncio
+async def test_an_offsets_spec_ignores_the_settings_delay_default() -> None:
+    # `after` is a single-delay spec's field; an offsets ladder times itself
+    # from its own list, and nothing downstream reads `after` once `offsets`
+    # is set. Filling it from the settings default anyway is a landmine.
+    scheduler = _FakeScheduler()
+    service = HauntingService(scheduler, settings_store=_FakeSettingsStore())
+    offsets = (timedelta(minutes=2), timedelta(minutes=5))
+
+    record = await service.schedule_followup(
+        message_id="planning_session:C1:1.0",
+        topic_id="C1:1.0",
+        task_id=None,
+        user_id="U1",
+        channel_id="D1",
+        content="open",
+        spec=FollowUpSpec(should_schedule=True, offsets=offsets, cancel_on_user_reply=True),
+    )
+
+    assert record is not None
+    assert record.spec.after is None
+    assert record.spec.offsets == offsets
+
+
+@pytest.mark.asyncio
+async def test_a_single_delay_spec_still_gets_the_settings_default() -> None:
+    scheduler = _FakeScheduler()
+    service = HauntingService(scheduler, settings_store=_FakeSettingsStore(default_delay_minutes=30))
+
+    record = await service.schedule_followup(
+        message_id="planning_session:C1:1.0",
+        topic_id="C1:1.0",
+        task_id=None,
+        user_id="U1",
+        channel_id="D1",
+        content="open",
+        spec=FollowUpSpec(should_schedule=True, cancel_on_user_reply=True),
+    )
+
+    assert record is not None
+    assert record.spec.after == timedelta(minutes=30)
+
+
 def test_lines_select_by_attempt_and_clamp_at_the_end() -> None:
     record = PendingFollowUp(
         message_id="m", topic_id="t", task_id=None, user_id="U1", channel_id="D1",
