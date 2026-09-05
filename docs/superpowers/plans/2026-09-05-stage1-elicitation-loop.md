@@ -1024,11 +1024,14 @@ class _StubProbe:
     def __init__(self, grounded: set[str]) -> None:
         self.grounded = grounded
         self.asked: list[str] = []
+        #: (cell id, conversation, rule uids) per call: what elicit handed the generator
+        self.seen: list[tuple[str, list[str], list[str]]] = []
 
     async def generate(self, *, cell, rules_full, conversation, request, session_key):  # noqa: ANN001
         from fateforger.agents.timeboxing.session_contracts import ProbeDraft
 
         self.asked.append(cell.id)
+        self.seen.append((cell.id, list(conversation), [str(r["uid"]) for r in rules_full]))
         if cell.id not in self.grounded:
             return None
         return ProbeDraft(cell_id=cell.id, question=f"about {cell.id}?", why_needed="stub")
@@ -1151,22 +1154,31 @@ def test_stated_facts_reach_the_classifier_and_the_generator() -> None:
     said = PlanningFact(fact_id=elicited_fact_id("elicit.body.unclear"), kind=FactKind.ELICITED_STATEMENT, value={"cell": "elicit.body.unclear", "text": "gym is 75 minutes"}, source="user")
 
     class _Recording(_StubCoverage):
-        def __init__(self) -> None:
-            super().__init__({})
+        def __init__(self, table: dict[str, str] | None = None) -> None:
+            super().__init__(table or {})
             self.stated: list[list[str]] = []
 
         async def classify(self, *, cell, rules, stated, request, session_key):  # noqa: ANN001
             self.stated.append(list(stated))
             return await super().classify(cell=cell, rules=rules, stated=stated, request=request, session_key=session_key)
 
-    coverage = _Recording()
-    judges = Judges(placement=_StubPlacement(PLACED, {"c-exit": "method"}), coverage=coverage, probe=_StubProbe(set()))
+    coverage = _Recording({"elicit.body.unclear": "uncovered"})
+    probe = _StubProbe({"elicit.body.unclear"})
+    judges = Judges(placement=_StubPlacement(PLACED, {"c-exit": "method"}), coverage=coverage, probe=probe)
     result = _run(_snapshot(frame, said), judges)
     assert coverage.stated and all("gym is 75 minutes" in s for s in coverage.stated)
     assert all(any("07:00" in line for line in s) for s in coverage.stated)
     matrix = CoverageMatrix.model_validate(result.matrix_fact.value)
     assert matrix.rows["body"].stated == 1
     assert matrix.rows["bounded"].stated == 1
+    # The generator half: what elicit handed it for the one open cell.
+    assert probe.seen, "the generator was never called"
+    cell_id, conversation, rule_uids = probe.seen[0]
+    assert cell_id == "elicit.body.unclear"
+    assert "deep work in the morning, gym at 18:00" in conversation
+    assert "gym is 75 minutes" in conversation
+    assert any("07:00" in line for line in conversation)
+    assert set(rule_uids) == {"c-oats", "c-run"}
 
 
 def test_a_suspended_rule_is_not_placed_or_counted() -> None:
