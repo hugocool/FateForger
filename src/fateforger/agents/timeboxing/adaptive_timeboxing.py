@@ -191,6 +191,20 @@ class PlanningSessionRepository(Protocol):
 
         ...
 
+    async def day_type_for(
+        self, *, owner_user_id: str, planning_date: date
+    ) -> str | None:
+        """The locked `day_type` of the newest `open` or `committed` session
+        for one planned day, or `None` when the user has no session for it.
+
+        The classification the host and the user settled on, read back. Weekday
+        arithmetic can only say working or weekend, so a Tuesday of annual
+        leave reads as a working day and every rule scoped to `vacation` is
+        asked for under the wrong day type.
+        """
+
+        ...
+
 
 class TimeboxingStanding(BaseModel):
     """What the session store says about one user's planning, for the nudger.
@@ -402,20 +416,32 @@ class InMemoryPlanningSessionRepository:
         rows.sort(key=lambda row: row.updated_at, reverse=True)
         return rows
 
-    async def day_frame_for(
-        self, *, owner_user_id: str, planning_date: date
-    ) -> dict | None:
-        candidates = sorted(
+    def _sessions_for_day(
+        self, owner_user_id: str, planning_date: date
+    ) -> list[PlanningSessionSnapshot]:
+        return sorted(
             (s for s in self._snapshots.values()
              if s.owner_user_id == owner_user_id and s.status in ("open", "committed")
              and s.planning_day is not None and s.planning_day.date == planning_date),
             key=lambda s: self._updated_at.get(s.session_key, self._clock()),
             reverse=True,
         )
-        for snapshot in candidates:
+
+    async def day_frame_for(
+        self, *, owner_user_id: str, planning_date: date
+    ) -> dict | None:
+        for snapshot in self._sessions_for_day(owner_user_id, planning_date):
             for fact in reversed(snapshot.facts):
                 if fact.kind is FactKind.DAY_FRAME and isinstance(fact.value, dict):
                     return dict(fact.value)
+        return None
+
+    async def day_type_for(
+        self, *, owner_user_id: str, planning_date: date
+    ) -> str | None:
+        for snapshot in self._sessions_for_day(owner_user_id, planning_date):
+            if snapshot.planning_day is not None:
+                return snapshot.planning_day.day_type.value
         return None
 
 

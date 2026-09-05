@@ -72,11 +72,14 @@ class _UnreadableStore:
 
 
 class _Ledger:
-    def __init__(self, sleep: str | None = "23:00"):
-        self._sleep = sleep
+    def __init__(self, sleep: str | None = "23:00", day_type: str | None = None):
+        self._sleep, self._day_type = sleep, day_type
 
     async def day_frame_for(self, *, owner_user_id, planning_date):
         return None if self._sleep is None else {"wake": "07:00", "sleep": self._sleep}
+
+    async def day_type_for(self, *, owner_user_id, planning_date):
+        return self._day_type
 
 
 def _rule(calendar, store, ledger=None) -> RequiredBlockRule:
@@ -312,3 +315,20 @@ async def test_a_cached_id_that_is_no_longer_of_the_kind_still_lists():
     assert await _jobs(rule) == []
     assert cal.list_calls == 1
     assert rule.cached(user_id="U1", day=DAY, slug="closure") == "e2"
+
+
+@pytest.mark.asyncio
+async def test_the_day_type_comes_from_the_session_when_it_has_one():
+    """R6: a Tuesday of annual leave is a `vacation` day, and the rules that
+    apply to it are not the working day's. Weekday arithmetic cannot know."""
+    store = _Store(["planning"])
+    rule = _rule(_Calendar(day_events=[]), store, _Ledger(day_type="vacation"))
+    await _outcome(rule)
+    assert store.filters[0]["day_type"] == "vacation"
+
+
+@pytest.mark.asyncio
+async def test_a_day_with_no_session_falls_back_to_the_weekday():
+    store = _Store(["planning"])
+    await _outcome(_rule(_Calendar(day_events=[]), store, _Ledger(day_type=None)))
+    assert store.filters[0]["day_type"] == "working"

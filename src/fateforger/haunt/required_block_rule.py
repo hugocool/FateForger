@@ -126,12 +126,26 @@ class RequiredBlockRule:
         self._cache[(user_id, day.isoformat(), slug)] = event_id
 
     # -- inputs ---------------------------------------------------------------------
+    async def _day_type(self, user_id: str, day: date) -> str:
+        """The day's classification: the session's locked one, else the weekday.
+
+        The locked day is what the host and the user settled on, and it is the
+        only place `vacation`, `holiday` and `sick` are recorded. Falling
+        straight to weekday arithmetic asks memory for a working day's rules on
+        a Tuesday of annual leave -- the wrong day's rules, silently (R6).
+        """
+        locked = await self._ledger.day_type_for(owner_user_id=user_id, planning_date=day)
+        if isinstance(locked, str) and locked:
+            return locked
+        return PlanningDay.lock_default(
+            value=day, timezone=self._config.tz, lock_revision=1
+        ).day_type.value
+
     async def _required(self, *, user_id: str, day: date) -> list[str]:
-        planning_day = PlanningDay.lock_default(value=day, timezone=self._config.tz, lock_revision=1)
         rows = await self._store.query_constraints(
             filters={
                 "planned_day": day.isoformat(),
-                "day_type": planning_day.day_type.value,
+                "day_type": await self._day_type(user_id, day),
                 "require_active": True,
             },
             limit=200,
