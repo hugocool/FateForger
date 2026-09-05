@@ -588,6 +588,15 @@ def describe_session(
             ))
         if card.asking is not None:
             lines.append(f"Open question to the user: {card.asking.question}")
+            lines.append(f"Why it is needed: {card.asking.why_needed}")
+            if card.asking.options:
+                # The buttons the user is looking at, and what each would do.
+                # Without them an agent asked "what are my choices?" answers
+                # from a description of the question alone.
+                lines.append("Offered answers: " + "; ".join(
+                    f"{option.label} ({option.effect})"
+                    for option in card.asking.options
+                ))
         if card.gate:
             lines.append(f"Gate: {card.gate}")
         if card.body:
