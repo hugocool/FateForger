@@ -8,6 +8,7 @@ against a moved corpus. Ground truth is constructed by ablation
 from __future__ import annotations
 
 import hashlib
+import tomllib
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -83,3 +84,18 @@ def rows_for(db_path: str, day: FixtureDay) -> list[dict]:
             filters={"planned_day": day.date.isoformat(), "day_type": day.day_type.value}, limit=200
         )
     )
+
+
+GOLDEN = Path(__file__).resolve().parent / "golden.toml"
+
+
+def load_golden(path: Path = GOLDEN) -> dict[str, list[str]]:
+    """Per fixture day, the facts the simulated user may answer from. A day
+    with no golden facts fails loudly: a simulated user with nothing to say
+    would make every probe a nuisance and the measure meaningless."""
+    raw = tomllib.loads(path.read_text())
+    golden = {key: [str(line) for line in section.get("facts", [])] for key, section in raw.items()}
+    for day in FIXTURE_DAYS:
+        if not golden.get(day.key):
+            raise ValueError(f"{day.key} has no golden facts in {path}")
+    return golden

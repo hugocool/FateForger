@@ -1,7 +1,8 @@
 """Builds the shared fixture against a copy of a real store. Marked slow.
 
-Set STAGE1_FIXTURE_DB to a memory.db to copy; without it the tests skip with
-that reason. The live data/memory.db is never opened in place.
+Set STAGE1_FIXTURE_DB to the frozen copy under data/fixtures/; without it the
+tests skip with that reason, and pointing it at the live data/memory.db now
+fails the pin. The live store is never opened in place.
 """
 from __future__ import annotations
 

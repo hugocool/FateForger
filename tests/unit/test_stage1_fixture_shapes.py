@@ -23,3 +23,11 @@ def test_the_pinned_store_hash_is_a_full_sha256() -> None:
     """A truncated or placeholder pin would make verify_store refuse everything."""
     assert len(FIXTURE_STORE_SHA256) == 64
     assert bytes.fromhex(FIXTURE_STORE_SHA256)
+
+
+def test_every_fixture_day_has_golden_facts() -> None:
+    from tests.fixtures.stage1.days import FIXTURE_DAYS, load_golden
+
+    golden = load_golden()
+    assert set(golden) == {d.key for d in FIXTURE_DAYS}
+    assert len(golden["working_tuesday"]) >= 6
