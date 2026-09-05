@@ -9,12 +9,16 @@ the framing judge run on a model that is not the contender
 (`NON_CONTENDER_MODEL`): if they shared the judges' lineage, turns-to-gate
 would measure two copies of one judgement agreeing.
 
-The ablation does not assert that the cell is asked *first*. Ranking orders
-`tacit_assumptions` ahead of `contradictory` and `tacit_knowledge`, so on the
-first turn of a fresh day a target cell of either kind can never be
-`ranked[0]`; measured 0/5 on every case. What the ablation is for is recall --
-the gap is seen, and a question about it can be phrased -- so the second
-instrument asks the contender's `ProbeJudge` for that cell directly.
+Both halves of the ablation are about recall, and neither is about the order
+the loop happens to ask in. Asserting the cell is asked *first* measured the
+ranking: `tacit_assumptions` sorts ahead of `contradictory` and
+`tacit_knowledge`, so on turn one a target of either kind can never be
+`ranked[0]` (0/5 on every case). Asserting that one generated probe for that
+cell supplies the deleted fact measured probe *selection*: a cell holds
+several gaps, and on the gym case the generator asked a good question about
+deep-work duration in 5 of 5 draws. So the second instrument runs the whole
+loop on the ablated day and asks the non-contender whether **any** question
+the session put would have supplied the fact.
 
 n = 5 draws per case, in parallel; every assertion is on a rate.
 
@@ -46,22 +50,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict
 
 from fateforger.agents.timeboxing.elicitation import CoverageMatrix, stage1_gate
-from fateforger.agents.timeboxing.elicitation_judges import (
-    Judges,
-    Placement,
-    build_judges,
-    elicit,
-)
-
-# Private helpers of `elicit`, imported so the direct probe call below builds
-# its `rules_full` and `conversation` exactly as the loop does. Copying the
-# three lines instead would let the eval's idea of "the rules for this row"
-# drift from the loop's, and the drift would be invisible.
-from fateforger.agents.timeboxing.elicitation_judges import (  # noqa: PLC2701
-    _request,
-    _row_stats,
-    _stated_lines,
-)
+from fateforger.agents.timeboxing.elicitation_judges import Judges, build_judges, elicit
 from fateforger.agents.timeboxing.session_contracts import (
     CellRef,
     FactKind,
@@ -219,21 +208,30 @@ class _Framing(BaseModel):
 
 
 class FramingJudge:
-    """Does the probe ask about the fact that was removed? Non-contender."""
+    """Did the session ask for the fact that was removed? Non-contender.
+
+    The question is put over the whole trace, not one probe. Asking whether a
+    single generated probe supplies one deleted fact measured probe
+    *selection*: a cell holds several gaps, and on the gym case the generator
+    saw `rules: []` and asked a perfectly good question about deep-work
+    duration in 5 of 5 draws. Recall is a property of the conversation.
+    """
 
     def __init__(self, model_client) -> None:
         self.model_client = model_client
 
-    async def addresses(self, probe: ProbeDraft, removed: str) -> bool:
+    async def asked_for(self, questions: list[str], removed: str) -> bool:
         prompt = json.dumps(
-            {"question": probe.question, "removed_fact": removed}, ensure_ascii=False
+            {"questions": questions, "removed_fact": removed}, ensure_ascii=False
         )
         result = await self.model_client.create(
             [
                 SystemMessage(
                     content=(
-                        "Would answering this question supply the removed fact, or the "
-                        "part of it that is missing? Answer only the schema."
+                        "Here are the questions a day-planning coach asked in one "
+                        "session, and a fact the person never stated. Would answering "
+                        "any one of these questions supply that fact, or the part of it "
+                        "that is missing? Answer only the schema."
                     )
                 ),
                 UserMessage(content=prompt, source="user"),
@@ -261,10 +259,19 @@ class Trace:
     turns: list[Turn] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)  # judge call labels, in order
     gate_met: bool = False
+    #: the matrix of the first turn -- what an ablation's expected cell is read
+    #: off, before any answer has changed it
+    first_matrix: CoverageMatrix | None = None
+    #: cell ids `stage1_gate` still reported open on the last turn
+    open_at_end: list[str] = field(default_factory=list)
 
     @property
     def probes(self) -> int:
         return sum(1 for t in self.turns if t.reply != "assumed")
+
+    @property
+    def questions(self) -> list[str]:
+        return [turn.question for turn in self.turns if turn.question]
 
 
 class _Counting:
@@ -318,6 +325,7 @@ async def run_stage1(
     golden: list[str],
     *,
     cap: int = CAP,
+    extra_facts: tuple[PlanningFact, ...] = (),
 ) -> Trace:
     trace = Trace()
     counted = Judges(
@@ -326,12 +334,17 @@ async def run_stage1(
         probe=_Counting(judges.probe, "generate", trace.calls),
     )
     snapshot = snapshot_for(day, rows)
+    if extra_facts:
+        snapshot = snapshot.model_copy(update={"facts": [*snapshot.facts, *extra_facts]})
     said: list[str] = []
     for _ in range(cap):
         before = len(trace.calls)
         result = await elicit(snapshot, rows, counted, session_key=snapshot.session_key)
         snapshot = _merge(snapshot, result.matrix_fact)
+        if trace.first_matrix is None:
+            trace.first_matrix = CoverageMatrix.model_validate(result.matrix_fact.value)
         gate = stage1_gate(snapshot)
+        trace.open_at_end = [cell.id for cell in gate.open_cells]
         if not gate.open_cells:
             trace.gate_met = True
             break
@@ -378,21 +391,46 @@ async def run_stage1(
 # ---------------------------------------------------------------- measures
 
 
-def _traces(day: FixtureDay, store_copy: str, golden: dict[str, list[str]]) -> list[Trace]:
+def _traces(
+    day: FixtureDay, store_copy: str, golden: dict[str, list[str]]
+) -> list[tuple[Trace, _RecordingCoverage]]:
+    """N draws of the loop, each with its own recorder so a draw that never
+    reaches the gate can be read: which cells stayed uncovered and why."""
     rows = rows_for(store_copy, day)
     contender = _contender()
     _refuse_shared_lineage(contender)
     user = SimulatedUser(_non_contender())
 
-    async def all_draws():
-        return await asyncio.gather(
-            *(
-                run_stage1(day, rows, build_judges(contender), user, golden[day.key])
-                for _ in range(N)
-            )
+    async def one() -> tuple[Trace, _RecordingCoverage]:
+        judges = build_judges(contender)
+        recorder = _RecordingCoverage(judges.coverage)
+        trace = await run_stage1(
+            day,
+            rows,
+            Judges(placement=judges.placement, coverage=recorder, probe=judges.probe),
+            user,
+            golden[day.key],
         )
+        return trace, recorder
+
+    async def all_draws():
+        return await asyncio.gather(*(one() for _ in range(N)))
 
     return asyncio.run(all_draws())
+
+
+def _report_stuck(traces: list[tuple[Trace, _RecordingCoverage]], label: str) -> None:
+    """For every draw that never met the gate, the turns it took and the last
+    `(state, why)` the classifier gave each cell it left open."""
+    for index, (trace, recorder) in enumerate(traces, start=1):
+        if trace.gate_met:
+            continue
+        print(f"  {label} draw {index}: {trace.probes} probes, gate not met")
+        print(f"    turns: {[(turn.cell, turn.reply) for turn in trace.turns]}")
+        print(f"    still open ({len(trace.open_at_end)}): {trace.open_at_end[:15]}")
+        for cell_id in trace.open_at_end[:15]:
+            state, why = recorder.records.get(cell_id, ("?", "(never classified this turn)"))
+            print(f"      {cell_id}: {state} -- {why}")
 
 
 @pytest.mark.parametrize("day", FIXTURE_DAYS, ids=[d.key for d in FIXTURE_DAYS])
@@ -400,18 +438,20 @@ def test_the_gate_is_reached_and_the_tuesday_takes_at_most_four_probes_at_p50(
     day, store_copy
 ) -> None:
     traces = _traces(day, store_copy, load_golden())
-    reached = sum(1 for t in traces if t.gate_met)
-    print(f"\n{day.key}: gate met {reached}/{N}; probes per draw {[t.probes for t in traces]}")
-    for t in traces:
-        print("  ", [(turn.cell, turn.reply) for turn in t.turns])
+    reached = sum(1 for trace, _ in traces if trace.gate_met)
+    probes = [trace.probes for trace, _ in traces]
+    print(f"\n{day.key}: gate met {reached}/{N}; probes per draw {probes}; p50 {statistics.median(probes)}")
+    for trace, _ in traces:
+        print("  ", [(turn.cell, turn.reply) for turn in trace.turns])
+    _report_stuck(traces, day.key)
     assert reached >= 4, f"{day.key}: gate met in only {reached}/{N} draws within {CAP} turns"
     if day.key == "working_tuesday":
-        assert statistics.median(t.probes for t in traces) <= TURNS_P50_TUESDAY
+        assert statistics.median(probes) <= TURNS_P50_TUESDAY
 
 
 def test_nuisance_and_re_ask_rates_on_the_tuesday(store_copy) -> None:
     traces = _traces(FIXTURE_DAYS[0], store_copy, load_golden())
-    turns = [turn for t in traces for turn in t.turns if turn.reply != "assumed"]
+    turns = [turn for trace, _ in traces for turn in trace.turns if turn.reply != "assumed"]
     nuisance = sum(1 for turn in turns if turn.reply == "not_relevant")
     re_asked = sum(1 for turn in turns if turn.reply == "already_said")
     print(f"\nprobes {len(turns)}; not_relevant {nuisance}; already_said {re_asked}")
@@ -421,8 +461,8 @@ def test_nuisance_and_re_ask_rates_on_the_tuesday(store_copy) -> None:
 
 def test_at_most_two_round_trips_per_probe_at_p50(store_copy) -> None:
     traces = _traces(FIXTURE_DAYS[0], store_copy, load_golden())
-    trips = [turn.round_trips for t in traces for turn in t.turns]
-    print(f"\nround trips per turn {trips}")
+    trips = [turn.round_trips for trace, _ in traces for turn in trace.turns]
+    print(f"\nround trips per turn {trips}; p50 {statistics.median(trips)}")
     assert statistics.median(trips) <= 2
 
 
@@ -538,52 +578,42 @@ def test_a_removed_or_conflicting_fact_opens_its_cell_and_a_probe_asks_for_it(
     case, store_copy
 ) -> None:
     day = FIXTURE_DAYS[0]
-    rows, request, extra = case.apply(
-        rows_for(store_copy, day), day.request, load_golden()[day.key]
-    )
-    base = snapshot_for(FixtureDay(day.key, day.date, day.day_type, request), rows)
-    snapshot = base.model_copy(update={"facts": [*base.facts, *extra]})
+    golden = load_golden()[day.key]
+    rows, request, extra = case.apply(rows_for(store_copy, day), day.request, golden)
+    ablated_day = FixtureDay(day.key, day.date, day.day_type, request)
     contender = _contender()
     _refuse_shared_lineage(contender)
+    user = SimulatedUser(_non_contender())
     framing = FramingJudge(_non_contender())
 
     async def one():
         judges = build_judges(contender)
         recorder = _RecordingCoverage(judges.coverage)
-        result = await elicit(
-            snapshot,
+        trace = await run_stage1(
+            ablated_day,
             rows,
             Judges(placement=judges.placement, coverage=recorder, probe=judges.probe),
-            session_key=snapshot.session_key,
+            user,
+            golden,
+            extra_facts=tuple(extra),
         )
-        matrix = CoverageMatrix.model_validate(result.matrix_fact.value)
+        matrix = trace.first_matrix
+        assert matrix is not None, "the loop ran no turn"
         cell: CellRef = case.expected(matrix) if callable(case.expected) else case.expected
 
-        # Ask for a probe on the ablated cell directly. `elicit` only phrases
-        # the top three ranked cells, and the target of an ablation is a
-        # `contradictory` or `tacit_knowledge` cell, which ranking puts behind
-        # every open `tacit_assumptions` cell; waiting for it to surface would
-        # measure the ranking, not recall. `rules_full` and `conversation` are
-        # built by `elicit`'s own helpers so they cannot drift from the loop.
-        by_row, _stats = _row_stats(
-            Placement(anchors=matrix.placement, rules=matrix.rule_placement), rows, snapshot
+        # Recall is a property of the session, not of one generated probe. The
+        # non-contender reads every question the loop asked and says whether
+        # any of them would have supplied the removed fact.
+        recalled = (
+            await framing.asked_for(trace.questions, case.removed) if trace.questions else False
         )
-        request_line = _request(snapshot)
-        stated = _stated_lines(snapshot)
-        draft = await judges.probe.generate(
-            cell=cell,
-            rules_full=by_row[cell.row],
-            conversation=([request_line] if request_line else []) + stated,
-            request=request_line,
-            session_key=snapshot.session_key,
-        )
-        addressed = await framing.addresses(draft, case.removed) if draft else False
         return {
             "cell": cell.id,
             "state": matrix.cells.get(cell.id),
             "why": recorder.records.get(cell.id, (None, None))[1],
-            "question": draft.question if draft else None,
-            "addressed": addressed,
+            "questions": trace.questions,
+            "recalled": recalled,
+            "gate_met": trace.gate_met,
         }
 
     async def all_draws():
@@ -591,14 +621,18 @@ def test_a_removed_or_conflicting_fact_opens_its_cell_and_a_probe_asks_for_it(
 
     draws = asyncio.run(all_draws())
     uncovered = sum(1 for d in draws if d["state"] == "uncovered")
-    addressed = sum(1 for d in draws if d["addressed"])
-    print(f"\n{case.key}: uncovered {uncovered}/{N}; addressed {addressed}/{N}")
+    recalled = sum(1 for d in draws if d["recalled"])
+    print(f"\n{case.key} (removed: {case.removed!r}): uncovered {uncovered}/{N}; recalled {recalled}/{N}")
     for index, d in enumerate(draws, start=1):
-        print(f"  draw {index}: cell={d['cell']} state={d['state']} addressed={d['addressed']}")
+        print(
+            f"  draw {index}: cell={d['cell']} state={d['state']} "
+            f"recalled={d['recalled']} gate_met={d['gate_met']}"
+        )
         print(f"    why: {d['why']}")
-        print(f"    probe: {d['question']}")
+        for question in d["questions"]:
+            print(f"    asked: {question}")
     assert uncovered >= 4
-    assert addressed >= 4
+    assert recalled >= 4
 
 
 def test_removing_every_dinner_rule_makes_the_dinner_row_not_applicable(store_copy) -> None:
