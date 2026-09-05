@@ -826,6 +826,7 @@ async def test_generate_returns_a_draft_with_host_minted_option_ids() -> None:
     assert draft is not None
     assert draft.cell_id == cell.id
     assert draft.question == "How long is the gym?"
+    assert draft.why_needed == "to place it"
     assert [o.option_id for o in draft.options] == ["elicit.body.tacit_knowledge:1", "elicit.body.tacit_knowledge:2"]
     assert [o.label for o in draft.options] == ["60 min", "90 min"]
     sent = json.loads(client.calls[0][0][1].content)
@@ -853,7 +854,7 @@ async def test_generate_refuses_grounded_without_a_question() -> None:
 @pytest.mark.asyncio
 async def test_generate_refuses_more_than_four_options() -> None:
     client = _SchemaOutputClient({"grounded": True, "question": "Which?", "why_needed": "w", "options": ["a", "b", "c", "d", "e"]})
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="at most four"):
         await ProbeJudge(client).generate(
             cell=CellRef(row="body", criterion="unclear"), rules_full=[], conversation=[], request=None, session_key="C1:1.0"
         )
@@ -876,8 +877,12 @@ class _ProbeJudgement(BaseModel):
     grounded: bool
     question: str | None
     why_needed: str | None
-    #: Offered only when the answer set is closed. At most four.
-    options: list[str] = Field(default_factory=list, max_length=4)
+    #: Offered only when the answer set is closed. At most four -- enforced
+    #: after parsing, not as a schema keyword: `maxItems` falls outside the
+    #: strict structured-output subset the `:nitro` hosts enforce (Task 7
+    #: review, 2026-09-05). Slack renders at most four buttons and
+    #: `ProbeDraft.options` caps at the same number.
+    options: list[str] = Field(default_factory=list)
 
 
 _PROBE_PROMPT = """You are a coach helping someone plan one day, asking one
@@ -942,7 +947,9 @@ class ProbeJudge:
         if not judgement.grounded:
             return None
         if not judgement.question or not judgement.why_needed:
-            raise ValueError(f"probe judgement for {cell.id} said grounded and gave no question")
+            raise ValueError(f"probe judgement for {cell.id} said grounded and gave no question or reason")
+        if len(judgement.options) > 4:
+            raise ValueError(f"probe judgement for {cell.id} offered {len(judgement.options)} options; at most four")
         return ProbeDraft(
             cell_id=cell.id,
             question=judgement.question,
