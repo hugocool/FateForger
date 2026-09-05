@@ -63,3 +63,21 @@ def test_slugs_on_a_candidate_come_from_ops_and_rows():
     assert slugs_on_candidate(payload) == {"planning", "deep-work", "sleep"}
     assert slugs_on_candidate({}) == set()
     assert slugs_on_candidate(None) == set()
+
+
+def test_an_op_carries_the_slug_when_the_capture_has_no_rows():
+    """A capture written before tmbx resolved the patch has ops and nothing
+    else; reading rows alone would report the block absent and refuse a
+    candidate that places it."""
+    payload = {"patch": {"ops": [{"op": "add", "h": "PLN1", "slug": "planning"}]}, "rows": []}
+    assert slugs_on_candidate(payload) == {"planning"}
+
+
+def test_the_rows_carry_the_slug_when_no_op_touched_the_block():
+    """The ordinary case for a block already on the day: the patch never names
+    it, and only the post-patch rows say it is there."""
+    payload = {
+        "patch": {"ops": [{"op": "add", "h": "DW1", "n": "Deep work"}]},
+        "rows": [{"h": "PLN1", "slug": "planning"}, {"h": "DW1"}],
+    }
+    assert slugs_on_candidate(payload) == {"planning"}

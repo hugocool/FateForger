@@ -54,7 +54,14 @@ def required_slugs(facts: Iterable[PlanningFact]) -> set[str]:
 
 def slugs_on_candidate(payload: Any) -> set[str]:
     """Slugs a candidate carries: on its add/update ops, and on the rows tmbx
-    resolved for it. Both come from the captured `plan_apply`, never from prose."""
+    resolved for it. Both come from the captured `plan_apply`, never from prose.
+
+    The rows are the post-patch resolution -- the day as it will stand -- so
+    they are the authoritative record when the capture has them, and they are
+    the only place a block already on the calendar shows up, since no op names
+    it. The ops are the fallback for a capture without rows. The union takes
+    either, so a capture carrying only one of the two still counts.
+    """
     if not isinstance(payload, dict):
         return set()
     out: set[str] = set()
