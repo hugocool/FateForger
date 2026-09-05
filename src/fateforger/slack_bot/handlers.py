@@ -2785,7 +2785,11 @@ async def route_slack_event(
             # An explicit per-thread binding does not lose here -- that one the
             # user asked for by name.
             if binding is None and agent_type == "timeboxing_agent":
-                agent_type = channel_default_agent or default_agent
+                # Not the channel default: when that default is itself
+                # timeboxing_agent the demotion was a no-op (#310's review).
+                # The receptionist is the one agent that refers rather than
+                # starts, which is what a card's thread needs.
+                agent_type = "receptionist_agent"
         else:
             # Asked whatever `agent_type` already says. It used to be asked only
             # when `agent_type` was not already `timeboxing_agent`, which in the

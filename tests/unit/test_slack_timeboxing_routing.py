@@ -549,6 +549,73 @@ async def test_a_planning_thread_survives_a_sticky_dm_focus_on_timeboxing():
 
 
 @pytest.mark.asyncio
+async def test_a_planning_thread_in_a_timeboxing_channel_is_demoted_to_the_receptionist(monkeypatch):
+    # #310 demoted to the channel default, which is a no-op when that default
+    # is itself timeboxing_agent. The planning card's thread goes to the
+    # receptionist, whatever the channel is for.
+    import fateforger.slack_bot.handlers as handlers
+
+    monkeypatch.setattr(handlers, "_agent_for_channel", lambda channel_id: "timeboxing_agent")
+    focus = FocusManager(
+        ttl_seconds=60, allowed_agents=["receptionist_agent", "timeboxing_agent"]
+    )
+    runtime = _FakeRuntime([_FakeResult(TextMessage(content="answer", source="bot"))])
+    runtime.timeboxing_session_store = _SessionStore({})
+    client = _FakeClient()
+    planning = _PlanningReplyHandler(
+        ThreadReply(ThreadReplyOutcome.NO_PRESS, context="CARD CONTEXT"), owns=True
+    )
+
+    await route_slack_event(
+        runtime=runtime,
+        focus=focus,
+        default_agent="receptionist_agent",
+        event={
+            "channel": "C9",
+            "user": "U1",
+            "text": "Is it planned?",
+            "thread_ts": "root",
+            "ts": "777",
+        },
+        bot_user_id=None,
+        say=_unused_say,
+        client=client,
+        planning=planning,
+    )
+
+    assert planning.ownership_calls == [("C9", "root")]
+    assert len(runtime.calls) == 1
+    assert runtime.calls[0][1].type == "receptionist_agent"
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_thread_binding_beats_planning_ownership():
+    # /ff-focus on this very thread is the one thing the user asked for by
+    # name; ownership does not take it away. #310 traced this and never pinned it.
+    focus = FocusManager(
+        ttl_seconds=60, allowed_agents=["receptionist_agent", "timeboxing_agent"]
+    )
+    focus.set_focus("D1:root", "timeboxing_agent", by_user="U1", note="ff-focus")
+    runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
+    runtime.timeboxing_session_store = _SessionStore({})
+    client = _FakeClient()
+    planning = _PlanningReplyHandler(
+        ThreadReply(ThreadReplyOutcome.NO_PRESS, context="CARD CONTEXT"), owns=True
+    )
+
+    await _route(
+        runtime=runtime,
+        focus=focus,
+        client=client,
+        planning=planning,
+        event=_dm_reply_event("Is it planned?"),
+    )
+
+    assert len(runtime.calls) == 1
+    assert runtime.calls[0][1].type == "timeboxing_agent"
+
+
+@pytest.mark.asyncio
 async def test_a_focus_manager_that_refuses_the_agent_also_refuses_the_claim():
     # The claim and the focus binding are one decision. Assigning the agent
     # anyway left the route pointed at an agent the focus manager rejected.
