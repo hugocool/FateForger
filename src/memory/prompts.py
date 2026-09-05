@@ -63,10 +63,16 @@ Also say when the rule applies, if the statement scopes it:
 - start_date / end_date: ISO dates, only when the statement names a period.
   A standing rule gets null for both.
 - day_types: which kinds of day the rule is limited to, from exactly these
-  words: """ + ", ".join(f'"{d}"' for d in DAY_TYPES) + """. Only when the
-  statement scopes it -- "on workdays", "when I'm on holiday". A rule that
+  words: """ + ", ".join(f'"{d}"' for d in DAY_TYPES) + """, where "vacation"
+  is the person's own time off (being on holiday, on leave, away on a trip)
+  and "holiday" is a public holiday. Only when the
+  statement scopes it -- "on workdays", "when I'm away". A rule that
   holds on every kind of day gets an empty list. Weekdays are not a stand-in:
   "Mon-Fri" is days_of_week, "working days" is day_types ["working"].
+  Two of the words are easy to swap: "vacation" is the person's own time off
+  -- being on holiday, on leave, away on a trip -- and "holiday" is a public
+  holiday, a day the world is off. Someone describing their own time away is
+  scoping to "vacation" whatever word they use for it.
 
 Do not invent scoping. "Sleep at 23:00" applies every day: empty list, null
 dates. "Go to client on Tuesdays and Thursdays" is [1, 3].
@@ -83,8 +89,10 @@ Also say how long the rule stays true if nobody mentions it again:
 
 "project" rarely says "temporary" outright — it signals through what the rule
 governs, not through its wording. A rule about sleep, meals, or a recurring
-commute holds regardless of what the person is working on, so it is
-"permanent". A cap, gate, or limit that only makes sense while a specific
+commute holds regardless of what the person is working on, so it is never
+"project": it is "permanent", or "seasonal" where a life event would reset it
+-- moving house changes the commute, a new client changes which days they
+meet. A cap, gate, or limit that only makes sense while a specific
 named initiative or workstream is active — even one referred to by a short
 internal name ("C2F framing", "the migration") rather than an explicit
 deadline — is "project": it governs a piece of work, not the person's life.
@@ -204,7 +212,10 @@ is meta.
 
 Meta: about the tool or the conversation with it — wanting to start or run
 the session, what format or methodology the assistant should use, how the
-tool itself should behave.
+tool itself should behave. Naming a planning method or format the assistant
+should follow — timeboxing, a template, a style of plan — is meta even when
+it is phrased as a preference about scheduling: it says how to plan, not
+what the day contains.
 
 NOT meta — the person's life: activities, meals, sleep, appointments. It is
 not meta merely because it mentions a session: "gym session at 18:00" is
