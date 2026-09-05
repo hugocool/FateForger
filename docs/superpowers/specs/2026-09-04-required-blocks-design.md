@@ -258,9 +258,22 @@ other rules and attribute the time as assumed." Existence is `(from memory: …)
 `RequiredBlockRule`, beside `PlanningSessionRule` in `haunt/reconcile.py`, evaluated on the
 same tick per user.
 
-**Inputs.** The day's required slugs from memory's read path with `day_type`. The register
-`planning_session_refs`, re-keyed to `(user, date, slug) → event_id`. Bounds: the day, and the
-sleep time from the same frame rule the session uses.
+**Inputs.** The day's required slugs from memory's read path with `day_type` — the locked
+`day_type` of the user's newest open or committed session for that day (`day_type_for`), else
+the weekday-derived one. Weekday arithmetic knows only working and weekend, so a Tuesday of
+annual leave would otherwise be asked for under the wrong day type and every `vacation`-scoped
+rule would go unseen. The read is capped at 200 rows and takes no cursor; a full page is logged
+as `required_blocks_truncated`, because a required kind sitting past the cap is one the watcher
+will never look for.
+
+The register is an in-process cache on the rule, `(user, day, slug) → event_id`, rebuilt from
+the calendar on any miss and lost on restart; a persistent register would need a migration and
+buys nothing the miss path does not (one list per rebuild). Entries for days other than the one
+being evaluated are dropped at the start of each tick.
+
+Bounds: the day, and the `sleep` of the user's session's `DAY_FRAME` fact for that day
+(`day_frame_for`), else end of day; a sleep time before 04:00 is after midnight and lands on the
+next day.
 
 **Predicates**, over the slugged blocks of the day, so more can be added:
 
@@ -270,20 +283,51 @@ sleep time from the same frame rule the session uses.
 
 **Evaluation.**
 
-1. Fetch the registered event by id. Present and within bounds → satisfied, no list.
-2. Miss → list the day once. Found in bounds → re-register silently, satisfied. Found out of
-   bounds → haunt, reason `moved_out`. Not found → haunt, reason `missing`.
-3. **Either read fails → no verdict.** Logged with the error type and message; the current
-   haunt state is left exactly as it was; nothing new fires and nothing clears. Absence of a
-   read is not absence of a block (#226).
+1. Fetch the registered event by id. Still of the kind and within bounds → satisfied, no list.
+   Still of the kind and **out** of bounds → haunt, reason `moved_out`, and no list: the id
+   resolves, so the block was dragged to another day or pushed past sleep, and nothing on this
+   day's list can change that. Listing here would find an empty day and call it `missing` —
+   the wrong reason and the wrong line.
+2. Miss — the id is gone, or the event it resolves no longer carries the kind → list the day
+   once. Found in bounds → re-register silently, satisfied. Found out of bounds → haunt, reason
+   `moved_out`. Not found → haunt, reason `missing`.
+3. **Any read fails → no verdict.** The listing, the fetch, the day frame, the day type, or an
+   event in a shape that will not parse. Logged with the error type and message
+   (`calendar_unreadable`, `required_blocks_unreadable`); the current haunt state is left
+   exactly as it was; nothing new fires and **nothing is pruned**. Absence of a read is not
+   absence of a block (#226). `evaluate` returns `RequiredBlockOutcome(jobs, undecided)`, where
+   `undecided` names the job-id prefixes the reconciler must leave alone —
+   `rule:required_blocks:<scope>:<day>:<slug>:` for one slug it could not judge, and the whole
+   `rule:required_blocks:<scope>:` when even the required set could not be read.
 
-**Haunting is the existing machinery.** Nudge schedule, backoff and the planning card are
-unchanged; the rule decides when they fire and names the reason. No haunting while a session
-is open for that user, which the reconciler already honours via `standing_for`.
+**The `planning` kind is haunted only for `moved_out`.** Whether the planning session is on the
+calendar at all is `PlanningSessionRule`'s business — it already nudges, books the card and
+starts the session — so a `missing` verdict for `planning` schedules nothing. The two ladders
+are disjoint by construction rather than by a check, and double-nudging is impossible. Every
+other slug haunts on both reasons. `moved_out` is the half only the watcher can see: the block
+exists, so the planning ladder is satisfied, and nothing else notices it drifted.
 
-**Cache write.** After a commit whose ops include a slugged block, the host registers the
-event id from the commit result under `(user, date, slug)`. Best-effort: a missed write costs
-one calendar list on the next tick.
+**Haunting is the existing machinery.** Nudge schedule and backoff are unchanged; the rule
+decides when they fire and names the reason. No haunting while a session is open for that user,
+which the reconciler already honours via `standing_for`. A required-block reminder is **one DM
+line** for every kind, `planning` included — never the planning card, which books a planning
+block, and a `moved_out` one already exists. Three escalating lines per reason; past the third
+rung the last repeats.
+
+**Reminders are revalidated before they post.** A scheduled rung is a claim about the calendar
+as it stood when the tick ran, up to eight hours earlier on the last rung of the backoff. The
+dispatcher calls `rule.recheck(user_id, slug, now)` — the same predicates over the same cache —
+and drops the reminder unless the verdict still equals the reason it was scheduled for. No
+verdict is not a confirmation, so that drops too. The rule reaches the dispatcher as
+`runtime.required_block_rule`; a runtime without it drops required-block reminders and logs it.
+
+**Cadence.** `PlanningGuardian.schedule_interval` reconciles every 15 minutes
+(`planning_guardian:interval_reconcile`, coalescing, `max_instances=1`), configurable by
+`FF_RECONCILE_INTERVAL_MINUTES` (0 disables), beside the daily job. The watcher sees a block
+leave the plan only on a tick, so this is the upper bound on how long the drag goes unnoticed.
+
+**No cache write on commit.** The commit does not register the event id; the first tick after a
+commit lists once and registers what it finds.
 
 ## 5. Errors
 
@@ -313,8 +357,10 @@ planner sees one name for the condition at both refusal sites.
 - **Eval, real model, eight draws:** §1 evals.
 - **Spike, first:** #210 against Hugo's calendar, result recorded in this document's
   "Increments" section before §4 is built.
-- **End to end:** commit a plan with a `planning` block, drag it to the next day in Google
-  Calendar, see the haunt fire on the next tick with reason `moved_out`.
+- **End to end:** commit a plan with a `planning` block, then in Google Calendar drag it to
+  tomorrow → the haunt fires with reason `moved_out` within 15 minutes; delete it → the
+  *planning ladder's* nudge, not the watcher's, because a `planning` block that is simply gone
+  is `PlanningSessionRule`'s to notice.
 
 ## 7. Out of scope, deliberately
 
