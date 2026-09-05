@@ -115,3 +115,6 @@ async def test_a_turn_that_ends_the_session_cancels_the_ladder(monkeypatch) -> N
     )
 
     assert haunting.cancelled == [{"topic_id": "C1:2.0"}]
+    assert haunting.activity == [
+        {"topic_id": "C1:2.0", "task_id": None, "user_id": "U2"}
+    ]

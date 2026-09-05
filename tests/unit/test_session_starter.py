@@ -627,24 +627,35 @@ async def test_expire_leaves_a_day_less_session_the_user_opened_alone(monkeypatc
 @pytest.mark.asyncio
 async def test_expire_ignores_a_session_locked_to_another_day(monkeypatch):
     # The day filter moved into Python when the query stopped carrying it;
-    # a session standing for tomorrow is not this expiry's to close.
-    haunting, guardian = _Haunting(), _Guardian()
+    # a session standing for tomorrow is not this expiry's to close. Nor does
+    # it stand forever in the way of today's missed line: it is stale (the
+    # default), so today's expiry is not "another session still stands", it
+    # is "a leftover from a day this expiry has no business with".
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
     ledger = _Ledger(rows=[_row("C1:tomorrow", 1, planning_date=date(2026, 9, 5))])
-    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting, guardian=guardian)
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
 
     await starter.expire(_reminder(SESSION_EXPIRE_KIND))
 
     assert turns == [] and haunting.cancelled == []
+    assert any("Missed" in m.content for m, _ in runtime.sent)
+    assert guardian.reconciled == ["U1"]
 
 
 @pytest.mark.asyncio
-async def test_expire_says_nothing_while_another_session_still_stands(monkeypatch):
-    # `standing` and the row list are two reads of one store: a session saved
-    # between them stands in the first and is missing from the second. DMing
-    # "Missed" at a user who is mid-session is the one message that must not
-    # go out, so the row list not having seen it is not permission to.
+async def test_expire_says_nothing_over_a_row_it_cannot_prove_is_not_its_own(monkeypatch):
+    # A row whose snapshot cannot be read is not provably somebody else's --
+    # closing it would be the mistake `_sweep` already refuses to make, and
+    # DMing "Missed" over it is the same mistake from the other side: the
+    # user could be mid-session in exactly this row. Uncertainty silences the
+    # line, the same way it blocks a fresh start.
     haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
-    ledger = _Ledger(open_key="C1:hand")
+    ledger = _Ledger(
+        rows=[_row("C1:mystery", 1)],
+        unreadable=("C1:mystery",),
+    )
     starter, turns = _starter(
         monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
     )

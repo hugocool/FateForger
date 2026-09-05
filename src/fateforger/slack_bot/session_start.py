@@ -260,14 +260,13 @@ class SessionStarter:
             logger.warning("session_expire reminder without user or event start: %r", reminder)
             return
         day = planning_day_for(_event_local(reminder))
-        standing = await self._standing(user_id=user_id, day=day)
-        if standing is None:
+        committed = await self._committed_for_day(user_id=user_id, day=day)
+        if committed is None:
             return
-        if standing.committed_session_key is not None:
+        if committed:
             logger.info(
-                "session_expire: %s committed %s for %s; nothing to close",
+                "session_expire: %s already committed a session for %s; nothing to close",
                 user_id,
-                standing.committed_session_key,
                 day,
             )
             return
@@ -295,19 +294,20 @@ class SessionStarter:
                 live[0].session_key,
             )
             return
-        # `standing` and the rows are two reads of one store: a session saved
-        # between them stands in the first and is missing from the second, and
-        # a close that did not land leaves its key out of `closed_keys`.
-        # Telling a user they missed the session they are sitting in is the one
-        # message that must never go out, so a session standing here and swept
-        # by neither verdict still silences it.
-        if (
-            standing.open_session_key is not None
-            and standing.open_session_key not in closed_keys
-        ):
+        # `_sweep` already named what it closed and what is live; this asks
+        # about everything else it saw. A row can be left over two ways: a
+        # close of ours that did not land, or one this starter cannot prove
+        # is not its own -- both leave the session standing in fact, however
+        # stale it looks, so either counts. A row that is provably somebody
+        # else's manual session does not: `_sweep` already ruled it stale and
+        # irrelevant, and telling the user they missed the session they are
+        # sitting in is the one message that must never go out, not a reason
+        # to silence every other message too.
+        remaining = await self._remaining_open(rows=rows, closed_keys=closed_keys, day=day)
+        if remaining is not None:
             logger.info(
                 "session_expire: %s still stands for %s; no missed line",
-                standing.open_session_key,
+                remaining,
                 user_id,
             )
             return
@@ -369,6 +369,40 @@ class SessionStarter:
                     row.updated_at,
                 )
         return live, closed
+
+    async def _remaining_open(
+        self, *, rows: list[OpenSessionRow], closed_keys: set[str], day: date
+    ) -> str | None:
+        """Is any of this user's own open sessions still unaccounted for?
+
+        `_sweep` already closed what it could and named what is live from the
+        day's rows; this looks at `rows` in full -- every session the user
+        still has open, any day, the same read `_sweep` was handed.
+
+        For a row that was this expiry's business (`day` or day-less, the
+        same filter `_sweep` was fed), two things can be left over and both
+        still count: a close of ours that did not land, and one this starter
+        cannot prove is not its own. Either leaves the session standing in
+        fact, however stale it looks, so it silences the missed line. A row
+        `_sweep` already ruled somebody else's stale manual session does not
+        -- that verdict is exactly what tells expiry the message is safe to
+        send. For a row standing for some other day entirely, staleness is
+        the only signal available (the auto-open check says nothing about
+        whether *today's* user is busy in it), so only one saved within
+        `LIVE_RECENCY` counts -- otherwise a forgotten session for another
+        day would silence every day's missed line forever.
+        """
+
+        for row in rows:
+            if row.session_key in closed_keys:
+                continue
+            if row.planning_date is None or row.planning_date == day:
+                auto = await self._auto_opened(row)
+                if auto is None or auto:
+                    return row.session_key
+            elif self._touched_recently(row):
+                return row.session_key
+        return None
 
     async def _auto_opened(self, row: OpenSessionRow) -> bool | None:
         """Whether `start` is the one that opened this session.
@@ -534,6 +568,20 @@ class SessionStarter:
             record_error(component="session_start", error_type="guard_failure")
             return None
 
+    async def _committed_for_day(self, *, user_id: str, day: date) -> bool | None:
+        """Has this user already committed a session for `day`?
+
+        `expire`'s one use of `_standing`: the guard below still wants the
+        full three-way read, but expiry only ever asked this one field of it.
+        `None` means the lookup failed and `expire` keeps standing down on
+        that, the same fail-safe `_standing` already gives every caller.
+        """
+
+        standing = await self._standing(user_id=user_id, day=day)
+        if standing is None:
+            return None
+        return standing.committed_session_key is not None
+
     async def _blocked(self, *, user_id: str, day: date) -> bool:
         """Is there already a session this start would duplicate?
 
@@ -693,11 +741,12 @@ class SessionStarter:
             record_error(component="session_start", error_type="dm_failure")
 
     async def _relabel_root(
-        self, channel_id: str, root_ts: str, *, state: str, day: date | None = None
+        self, channel_id: str, root_ts: str, *, state: str, day: date
     ) -> None:
         # The day is what makes one relabelled root tell itself apart from the
-        # next one in the same channel; both paths that relabel know it.
-        title = "Timeboxing session" if day is None else f"Timeboxing session for {_day_label(day)}"
+        # next one in the same channel; both paths that relabel it always have
+        # one, so there is no day-less title to fall back to.
+        title = f"Timeboxing session for {_day_label(day)}"
         try:
             await self._client.chat_update(
                 channel=channel_id,
