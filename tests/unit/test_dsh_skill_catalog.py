@@ -19,12 +19,19 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / ".dsh" / "skills"
 TMBX_SERVER = ROOT / "src" / "tmbx" / "server.py"
+PROFILE = ROOT / "infra" / "dsh" / "profile" / "cordis.patch.yml"
 MEMORY_LAUNCHER = ROOT / "infra" / "dsh" / "profile" / "memory-allowlisted-server.py"
 HOOKS = ROOT / "infra" / "dsh" / "hooks.json"
+
+#: The one gate expression this profile uses to keep a mount off by default.
+#: Reading it is identification of an expression this repo wrote, not a
+#: judgement about anything a person said.
+GATED_OFF = "!process.env.FF_TASK_TOOLS"
 
 #: What each skill tells the model to call. Declared rather than extracted:
 #: the point is to pin the dependency, and a list scraped out of prose would
@@ -78,6 +85,57 @@ def _published_tmbx_tools() -> set[str]:
                 if kw.arg == "name" and isinstance(kw.value, ast.Constant):
                     names.add(kw.value.value)
     return names
+
+
+class _Js(str):
+    """A `!!js` scalar kept as its source text so we can inspect the expression."""
+
+
+def _js_constructor(loader, node):
+    return _Js(loader.construct_scalar(node))
+
+
+def _mounts() -> dict[str, dict]:
+    """Every MCP mount in the profile, by `serverName`.
+
+    Parsed rather than scraped. The previous version of this read `serverName:`
+    lines out of the text, which cannot see a row's `disabled` flag -- so a
+    mount that no ordinary turn can call counted as a connected backend. Same
+    row-parsing approach as `test_task_board_profile_mount.py`.
+    """
+    loader = yaml.SafeLoader
+    loader.add_constructor("!!js", _js_constructor)
+    # PyYAML resolves `!!js` to the full tag name; register both spellings.
+    loader.add_constructor("tag:yaml.org,2002:js", _js_constructor)
+    tree = yaml.load(PROFILE.read_text(encoding="utf-8"), Loader=loader)
+
+    found: dict[str, dict] = {}
+    for entry in tree:
+        rows = entry.get("insert") if isinstance(entry, dict) else None
+        for row in rows or []:
+            config = row.get("config") if isinstance(row, dict) else None
+            if isinstance(config, dict) and "serverName" in config:
+                found[config["serverName"]] = row
+    return found
+
+
+def _default_state(row: dict) -> str:
+    """`"on"`, `"off"` or `"unknown"` for a mount, evaluating no JavaScript.
+
+    A row with no `disabled` key boots. A row gated on `FF_TASK_TOOLS` does not,
+    because nothing in an ordinary turn sets that variable. Any other gate is
+    `"unknown"` on purpose: whoever adds one has to come here and say which way
+    it defaults, rather than have this test guess and guess wrong in the
+    direction that hides a live backend.
+    """
+    disabled = row.get("disabled")
+    if disabled is None or disabled is False:
+        return "on"
+    if disabled is True:
+        return "off"
+    if isinstance(disabled, _Js) and disabled.strip() == GATED_OFF:
+        return "off"
+    return "unknown"
 
 
 def _allow_listed_memory_tools() -> set[str]:
@@ -219,17 +277,38 @@ def test_the_catalog_holds_no_skill_for_a_backend_that_is_not_connected() -> Non
     AutoGen path; `infra/dsh/profile/cordis.patch.yml` mounts tmbx and memory
     and nothing else. A `tasks` skill would be a fourth dead end, and one whose
     failure is a fabricated backlog rather than a missing answer.
+
+    A mount that is present and DISABLED is not a connected backend. `#241`
+    added `task_board`, gated on `FF_TASK_TOOLS`, which only a turn spawning
+    the `find_material` child sets -- so the admonisher's "not connected"
+    sentence stays true on every ordinary turn, and counting that row would
+    have failed this test over a backend nobody can reach. The day it becomes
+    enabled by default, the assertion below must fail, because that is the day
+    the admonisher's routing has to be revisited rather than quietly left
+    telling the model his tasks are absent while the model can read them.
     """
-    profile = (ROOT / "infra" / "dsh" / "profile" / "cordis.patch.yml").read_text(
-        encoding="utf-8"
+    mounts = _mounts()
+    states = {name: _default_state(row) for name, row in mounts.items()}
+
+    ungoverned = sorted(name for name, state in states.items() if state == "unknown")
+    assert not ungoverned, (
+        f"{ungoverned} carry a `disabled` gate this test cannot read; say which "
+        "way it defaults here before shipping it"
     )
-    servers = re.findall(
-        r"^\s*serverName:\s*(\S+)\s*$", profile, re.MULTILINE
+
+    connected = {name for name, state in states.items() if state == "on"}
+    assert connected == {"tmbx", "memory", "progress", "planning_result"}, (
+        f"the enabled mount changed to {sorted(connected)}; if a task backend "
+        "is now connected, a tasks skill can exist and the admonisher should "
+        "route to it"
     )
-    assert set(servers) == {"tmbx", "memory", "progress", "planning_result"}, (
-        f"the mount changed to {sorted(set(servers))}; if a task backend is now "
-        f"connected, a tasks skill can exist and the admonisher should route to it"
+
+    assert states.get("task_board") == "off", (
+        "task_board must stay gated behind FF_TASK_TOOLS; enabled by default it "
+        "reaches the root planner, and the admonisher would be denying a "
+        f"backlog the model can read (state: {states.get('task_board')!r})"
     )
+
     assert not (SKILLS / "tasks").exists()
     _, admonisher = _body(SKILLS / "admonisher")
     assert "not connected" in admonisher, (
