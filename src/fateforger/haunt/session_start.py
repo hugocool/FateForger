@@ -31,7 +31,16 @@ LADDER_OFFSETS: tuple[timedelta, ...] = (
 #: How recently a session must have been written to count as one the user is
 #: working in, when its revision alone cannot say. A hand-opened session sits
 #: at revision 1 until its first turn lands, so expiry reads the clock instead.
+#: Governs a row carrying no day, or a day other than the one in question --
+#: for those, staleness is the only signal there is.
 LIVE_RECENCY = timedelta(minutes=10)
+
+#: How long a row carrying *this* day counts as standing for it, regardless
+#: of who saved it last. A session locked to today's day could genuinely be
+#: today's session, ours or not -- `LIVE_RECENCY` alone let a start through
+#: eleven minutes after the user's own last save (#299's fix overshot into
+#: this). This is the window `standing`'s open clause always used before.
+SAME_DAY_LIVENESS = timedelta(hours=1)
 
 #: One line per rung, escalating. `{permalink}` is the session thread,
 #: `{start}` the event's start as HH:MM.
@@ -80,6 +89,7 @@ __all__ = [
     "LADDER_OFFSETS",
     "LIVE_RECENCY",
     "NUDGE_LINES",
+    "SAME_DAY_LIVENESS",
     "SESSION_EXPIRE_KIND",
     "SESSION_START_KIND",
     "dm_open_line",

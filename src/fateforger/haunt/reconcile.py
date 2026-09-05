@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import Any, Awaitable, Callable, Iterable, Protocol
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser as date_parser
@@ -176,7 +176,7 @@ class PlanningSessionRule:
         start = now.astimezone(timezone.utc)
         end = start + self._config.horizon
         anchor_found = False
-        anchor_in_window = False
+        anchor_before_horizon = False
         stored_hit = False
         fallback_hit = False
         list_count = 0
@@ -187,33 +187,63 @@ class PlanningSessionRule:
                 event_id=planning_event_id,
             )
             anchor_found = anchor is not None
+            anchor_tz_name = _event_tz_name(anchor) if anchor else None
+            # No `timeZone` name means read the offset the event's own
+            # `dateTime` carries (e.g. "+02:00") rather than assuming UTC --
+            # that offset decides which side of the 14:00 cutoff the event
+            # falls on, and forcing UTC silently shifted it. A `timeZone`
+            # name the zoneinfo database does not recognise is the same
+            # "cannot read it" case as no name at all -- it must fall back,
+            # not raise `ZoneInfoNotFoundError` out of `evaluate` for every
+            # anchor found from here on, horizon or not.
+            anchor_tz: tzinfo = timezone.utc
+            if anchor:
+                anchor_tz = _event_native_tzinfo(anchor) or timezone.utc
+                if anchor_tz_name:
+                    try:
+                        anchor_tz = ZoneInfo(anchor_tz_name)
+                    except ZoneInfoNotFoundError:
+                        logger.warning(
+                            "planning_reconcile evaluate outcome=anchor_tz_unreadable scope=%s user_id=%s planning_event_id=%s event_id=%s timeZone=%r",
+                            scope,
+                            user_id,
+                            planning_event_id,
+                            anchor.get("id"),
+                            anchor_tz_name,
+                        )
+            # Parsed once, with the resolved zone, and reused below for both
+            # the horizon probe and the decisive branch -- it used to be
+            # parsed a second time here with the same inputs.
+            anchor_start = (
+                _parse_event_dt(anchor.get("start"), tz=anchor_tz) if anchor else None
+            )
             # Bounded above by the horizon (an anchor booked further out than
             # `end` is not this window's concern yet) but not below: a passed
             # anchor must still reach the branch below to be told apart from
             # one still ahead, rather than being excluded by an overlap test
-            # that only recognises events yet to happen.
-            anchor_probe_start = (
-                _parse_event_dt(anchor.get("start"), tz=start.tzinfo or timezone.utc)
-                if anchor
-                else None
+            # that only recognises events yet to happen. It has no lower
+            # bound, so "in the window" is the wrong name for what this
+            # tests -- it means "starts before the horizon ends".
+            anchor_before_horizon = bool(
+                anchor_start is not None and anchor_start <= end
             )
-            anchor_in_window = bool(
-                anchor_probe_start is not None and anchor_probe_start <= end
-            )
-            if anchor_found and anchor_in_window:
-                anchor_tz_name = _event_tz_name(anchor)
-                # No `timeZone` name means read the offset the event's own
-                # `dateTime` carries (e.g. "+02:00") rather than assuming UTC --
-                # that offset decides which side of the 14:00 cutoff the event
-                # falls on, and forcing UTC silently shifted it.
-                anchor_tz = (
-                    ZoneInfo(anchor_tz_name)
-                    if anchor_tz_name
-                    else (_event_native_tzinfo(anchor) or timezone.utc)
+            if anchor_found and anchor_start is None:
+                # A planning event nobody can read (an all-day event, a
+                # malformed payload) must not silence the nudge ladder --
+                # that is the silent-wrong-answer shape CLAUDE.md exists to
+                # stop. Fall through to the stored/fallback checks and the
+                # nudge ladder below, exactly as an absent anchor does.
+                logger.warning(
+                    "planning_reconcile evaluate outcome=anchor_unreadable scope=%s user_id=%s planning_event_id=%s event_id=%s unreadable_field=%s",
+                    scope,
+                    user_id,
+                    planning_event_id,
+                    anchor.get("id"),
+                    "start",
                 )
-                anchor_start = _parse_event_dt(anchor.get("start"), tz=anchor_tz)
+            elif anchor_found and anchor_before_horizon:
                 anchor_end = _parse_event_dt(anchor.get("end"), tz=anchor_tz)
-                if anchor_start is not None and anchor_end is not None:
+                if anchor_end is not None:
                     local_start = anchor_start.astimezone(anchor_tz)
                     anchor_expiry = anchor_end + self._config.expire_after
                     if start < anchor_expiry:
@@ -257,27 +287,50 @@ class PlanningSessionRule:
                             )
                         )
                         outcome = "anchor_ahead" if anchor_end > start else "anchor_expiring"
-                        self._log_evaluate_outcome(outcome=outcome, scope=scope, user_id=user_id, planning_event_id=planning_event_id, start=start, end=end, anchor_found=anchor_found, anchor_in_window=anchor_in_window, stored_hit=stored_hit, list_count=list_count, fallback_hit=fallback_hit, jobs_count=len(jobs))
+                        self._log_evaluate_outcome(outcome=outcome, scope=scope, user_id=user_id, planning_event_id=planning_event_id, start=start, end=end, anchor_found=anchor_found, anchor_before_horizon=anchor_before_horizon, stored_hit=stored_hit, list_count=list_count, fallback_hit=fallback_hit, jobs_count=len(jobs))
                         return jobs
                     # The event has passed and its session has expired. It
                     # counts only if the day it
                     # planned is still relevant to this window (today or
-                    # later, UTC) *and* was committed. The anchor id is one
+                    # later) *and* was committed. The anchor id is one
                     # stable id reused every day (`planning_event_id_for_user`),
                     # so a stale event -- get_event still resolves it days
                     # after the day it named -- must not be read as "today is
                     # planned" forever; that is indistinguishable from an
                     # absent anchor and must fall through exactly like one.
                     day = planning_day_for(local_start)
-                    if day >= start.date() and await self._committed_for(
+                    # `day` is computed in the anchor's own zone; comparing
+                    # it against `start.date()` (UTC) put the two bases on
+                    # different sides of midnight. West of UTC, `start`'s
+                    # UTC date rolls over to tomorrow while it is still
+                    # today at the anchor's offset, which read a
+                    # legitimately committed day as no longer relevant and
+                    # re-nudged it every evening. Comparing against
+                    # `start.astimezone(anchor_tz).date()` -- not
+                    # `planning_day_for(...)` -- is right here: this asks
+                    # what calendar date `now` is at the anchor's offset,
+                    # not which day an event starting at that moment plans;
+                    # the 14:00 cutoff belongs to an anchor's own start
+                    # time, not to the instant being compared against it.
+                    if day >= start.astimezone(anchor_tz).date() and await self._committed_for(
                         user_id=user_id, day=day, now=start
                     ):
-                        self._log_evaluate_outcome(outcome="anchor_past_committed", scope=scope, user_id=user_id, planning_event_id=planning_event_id, start=start, end=end, anchor_found=anchor_found, anchor_in_window=anchor_in_window, stored_hit=stored_hit, list_count=list_count, fallback_hit=fallback_hit, jobs_count=0)
+                        self._log_evaluate_outcome(outcome="anchor_past_committed", scope=scope, user_id=user_id, planning_event_id=planning_event_id, start=start, end=end, anchor_found=anchor_found, anchor_before_horizon=anchor_before_horizon, stored_hit=stored_hit, list_count=list_count, fallback_hit=fallback_hit, jobs_count=0)
                         return []
                     # fall through to the stored/fallback checks and the nudge ladder
                 else:
-                    self._log_evaluate_outcome(outcome="anchor_match", scope=scope, user_id=user_id, planning_event_id=planning_event_id, start=start, end=end, anchor_found=anchor_found, anchor_in_window=anchor_in_window, stored_hit=stored_hit, list_count=list_count, fallback_hit=fallback_hit, jobs_count=0)
-                    return []
+                    # The end couldn't be read either (all-day, malformed
+                    # payload) -- same silent-wrong-answer shape as the
+                    # unreadable start above. Fall through rather than
+                    # silencing the ladder.
+                    logger.warning(
+                        "planning_reconcile evaluate outcome=anchor_unreadable scope=%s user_id=%s planning_event_id=%s event_id=%s unreadable_field=%s",
+                        scope,
+                        user_id,
+                        planning_event_id,
+                        anchor.get("id"),
+                        "end",
+                    )
 
         stored = await self._resolve_planning_from_stored_sessions(
             user_id=user_id, start=start, end=end
@@ -292,7 +345,7 @@ class PlanningSessionRule:
                 start=start,
                 end=end,
                 anchor_found=anchor_found,
-                anchor_in_window=anchor_in_window,
+                anchor_before_horizon=anchor_before_horizon,
                 stored_hit=stored_hit,
                 list_count=list_count,
                 fallback_hit=fallback_hit,
@@ -323,7 +376,7 @@ class PlanningSessionRule:
                 start=start,
                 end=end,
                 anchor_found=anchor_found,
-                anchor_in_window=anchor_in_window,
+                anchor_before_horizon=anchor_before_horizon,
                 stored_hit=stored_hit,
                 list_count=list_count,
                 fallback_hit=fallback_hit,
@@ -384,7 +437,7 @@ class PlanningSessionRule:
             start=start,
             end=end,
             anchor_found=anchor_found,
-            anchor_in_window=anchor_in_window,
+            anchor_before_horizon=anchor_before_horizon,
             stored_hit=stored_hit,
             list_count=list_count,
             fallback_hit=fallback_hit,
@@ -402,14 +455,14 @@ class PlanningSessionRule:
         start: datetime,
         end: datetime,
         anchor_found: bool,
-        anchor_in_window: bool,
+        anchor_before_horizon: bool,
         stored_hit: bool,
         list_count: int,
         fallback_hit: bool,
         jobs_count: int,
     ) -> None:
         logger.info(
-            "planning_reconcile evaluate outcome=%s scope=%s user_id=%s planning_event_id=%s window_start=%s window_end=%s anchor_found=%s anchor_in_window=%s stored_hit=%s list_count=%d fallback_hit=%s jobs_count=%d",
+            "planning_reconcile evaluate outcome=%s scope=%s user_id=%s planning_event_id=%s window_start=%s window_end=%s anchor_found=%s anchor_before_horizon=%s stored_hit=%s list_count=%d fallback_hit=%s jobs_count=%d",
             outcome,
             scope,
             user_id,
@@ -417,7 +470,7 @@ class PlanningSessionRule:
             start.isoformat(),
             end.isoformat(),
             anchor_found,
-            anchor_in_window,
+            anchor_before_horizon,
             stored_hit,
             list_count,
             fallback_hit,
@@ -878,7 +931,7 @@ def _event_native_tzinfo(event: dict) -> Any | None:
     return parsed.tzinfo
 
 
-def _parse_event_dt(raw: Any, *, tz: timezone) -> datetime | None:
+def _parse_event_dt(raw: Any, *, tz: tzinfo) -> datetime | None:
     """Parse a calendar datetime value (str ISO, EventDateTime dict, or None)."""
     if raw is None:
         return None
