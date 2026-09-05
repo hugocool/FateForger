@@ -96,6 +96,14 @@ mechanism existed. The routes never let the message reach it.
 - **Adding a route is adding a row.** An agent, a skill, a command, a routine registers itself as
   an option with a description. No branch is written; the classifier reads the table. If adding
   the second thing costs as much as the first, the shape is wrong — that is map #157's test.
+- **A query over state the system minted is not a judgement, even when its answer changes what
+  the user sees.** `standing_for` answering *"this day is already committed"* is a guarantee: one
+  indexed query over session rows and dates, and it belongs in code with a test beside it. The
+  judgement next to it is narrower and real — *which* day a bare command means when several are
+  plausible, and whether a message about a committed day opens a session or revises the standing
+  one. Split them, or you will replace a correct query with a classifier and call it progress.
+  (Named by admonish-1-56 on 2026-09-06, against a live case where the guard was right all day and
+  the door never asked it.)
 - **What stays code: guarantees about state.** "A session row is created only by an intent that
   starts one." "A cancel on a committed day is refused." "The revision the next load sees is the
   one this turn loaded." A prompt cannot hold those, and they are the only reason ~30 findings
@@ -113,6 +121,7 @@ mechanism existed. The routes never let the message reach it.
 | "…a classifier on every message costs latency" | One flash call at `minimal`, concurrent with the rest. The five-stage session that opened by mistake cost more. |
 | "…the fallback when the model says `none`" | `none` is the model asking for help. Handing it to a hardcoded router is answering the question it just declined to answer. |
 | "…state where there is nothing to decide" | That sentence was in a docstring on 2026-09-05. There was something to decide. |
+| "…so the precondition check becomes a model call too" | No. A query over minted state stays a query. Only the ambiguous half — which day, which standing thing — becomes an option. |
 
 Map: *One grammar for the seams* (#333, `wayfinder:map`); the grammar decision is its first ticket. Contract:
 `docs/architecture/proposal_object_contract.md` §7. Spec that first applied it:
