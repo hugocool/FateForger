@@ -104,7 +104,7 @@ def _wire(monkeypatch, *, snapshots: list[PlanningSessionSnapshot]):
         def __init__(self) -> None:
             self._loads = 0
 
-        async def load_or_create(self, key, owner_user_id):
+        async def load(self, key):
             turn_index = min(self._loads // 2, len(snapshots) - 1)
             self._loads += 1
             return snapshots[turn_index]
