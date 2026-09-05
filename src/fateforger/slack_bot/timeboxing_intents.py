@@ -249,7 +249,9 @@ decided -- "is it planned?", "did you add the gym?", "what did we settle on
 for lunch?", "when is deep work?" -- is question. A reply that supplies a
 fact, a correction, or an instruction against the plan is what it was
 before. A reply that asks and also supplies a fact is that fact: the fact
-changes the day and the question does not.
+changes the day and the question does not. A reply that asks to plan, to
+timebox, or to get going -- "plan tomorrow", "let's do saturday", "start",
+"ok let's go" -- is start, wherever the surface offers it.
 """
 
 _TIMEBOX_PROMPT_FRAGMENT = _TIMEBOX_PROMPT_FRAGMENT_BASE + QUESTION_PARAGRAPH
@@ -318,6 +320,11 @@ def _display_context(
     snapshot: PlanningSessionSnapshot,
 ) -> tuple[str, tuple[str, ...], PlanningArtifact | None]:
     pending = _pending_artifact(snapshot)
+    if snapshot.status == "cancelled":
+        return "cancelled", (), pending
+    # After the cancelled check, never before it: cancel is on offer below, so
+    # a fresh session can now be cancelled at zero artifacts, and a state that
+    # read "no day yet" first would hand that closed thread a start.
     if snapshot.planning_day is None and not any(
         artifact.kind is ArtifactKind.PLANNING_DAY for artifact in snapshot.artifacts
     ):
@@ -325,8 +332,6 @@ def _display_context(
         # start the session, ask about the calendar, or walk away. This used
         # to be an unconditional StartSession with no model asked (#318).
         return "no_session", ("start", "question", "cancel"), pending
-    if snapshot.status == "cancelled":
-        return "cancelled", (), pending
     if snapshot.status == "committed":
         # The day is on the calendar and the user is still talking, which on
         # 2026-09-02 meant "move the work two hours later, I sleep 00:30-08:30"

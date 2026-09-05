@@ -114,7 +114,12 @@ async def test_empty_text_on_a_started_session_is_still_advance() -> None:
 def test_derive_timebox_intent_has_no_unconditional_start() -> None:
     """The guard for the claim this ticket deletes: no `return StartSession()`
     that is not inside the judged path. Any Return whose value calls
-    StartSession must sit under an `if` on the text being empty."""
+    StartSession must sit under an `if` on the text being empty.
+
+    Counting the returns is not enough on its own -- the code this ticket
+    deletes had exactly one too, the unconditional one -- so the enclosing
+    `if` is what the guard actually asserts.
+    """
     tree = ast.parse(inspect.getsource(host_module))
     fn = next(
         n
@@ -130,3 +135,14 @@ def test_derive_timebox_intent_has_no_unconditional_start() -> None:
     ]
     # Exactly one, and it is the empty-text start.
     assert len(starts) == 1
+    guarding = [
+        branch
+        for branch in ast.walk(fn)
+        if isinstance(branch, ast.If)
+        and any(
+            isinstance(node, ast.Name) and node.id == "user_text"
+            for node in ast.walk(branch.test)
+        )
+        and any(node is starts[0] for node in ast.walk(branch))
+    ]
+    assert guarding, "the one StartSession return is not under a test on user_text"
