@@ -80,6 +80,15 @@ class FactKind(StrEnum):
     #: requirement is satisfied by it; it is carried so the planner rebuilding
     #: the artifact can read what was wrong with the last one.
     REVISION_INSTRUCTION = "revision_instruction"
+    #: The registered kinds of block the day's active rules say must be on the
+    #: plan, as ``{"slugs": [...], "by_rule": {slug: {"uid", "name"}}}``.
+    #: Filed by the host at candidate time from memory's ``requires_block``
+    #: values; read by readiness (open while it lists any slug), by the brief
+    #: (which names each one with its rule) and by the submit and acceptance
+    #: checks. Filed on every successful resolve, with an empty slug list when
+    #: no rule requires a kind: facts merge by id and are never deleted, so the
+    #: empty value is the only thing that clears a requirement the day dropped.
+    REQUIRED_BLOCKS = "required_blocks"
     #: The Stage 1 coverage matrix: one state per cell, plus the anchor
     #: placement it was classified against. Rewritten whole on every fold under
     #: the stable id `coverage:{day}`, so Back, redo and a restart see one state.

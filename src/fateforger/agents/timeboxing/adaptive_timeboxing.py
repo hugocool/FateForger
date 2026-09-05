@@ -20,6 +20,7 @@ from .readiness import (
     RequirementOwner,
     TimeboxRequirements,
 )
+from .required_blocks import required_slugs, slugs_on_candidate
 from .session_contracts import (
     Advance,
     ApproveArtifact,
@@ -1324,6 +1325,29 @@ class AdaptiveTimeboxing:
                 message="The planner returned contradictory artifact updates.",
             )
 
+        draft = matching[0]
+        if target is ArtifactKind.VALIDATED_CANDIDATE:
+            # The submit tool already refuses this inside the turn, while the
+            # planner can still fix it; this is the kernel's own copy of the
+            # same set arithmetic, for a host that publishes no required-slug
+            # file. A candidate missing a required kind must not reach the
+            # user for approval (#214).
+            missing = required_slugs(snapshot.facts) - slugs_on_candidate(draft.payload)
+            if missing:
+                logger.error(
+                    "planner result refused reason=%s slugs=%s",
+                    "required_block_missing",
+                    sorted(missing),
+                )
+                return snapshot, TurnFailed(
+                    code="required_block_missing",
+                    message=(
+                        "The plan is missing a required block: "
+                        + ", ".join(sorted(missing))
+                        + "."
+                    ),
+                )
+
         updated = self._invalidate(snapshot, target)
         updated = updated.model_copy(
             update={
@@ -1334,7 +1358,6 @@ class AdaptiveTimeboxing:
                 ]
             }
         )
-        draft = matching[0]
         artifact = PlanningArtifact.create(
             kind=target,
             revision=self._next_artifact_revision(updated, target),

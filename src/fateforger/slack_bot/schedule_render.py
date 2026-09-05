@@ -2,8 +2,8 @@
 
 tmbx renders a plan as a TOON-style table addressed by handle:
 
-    blocks[9]{H,own,type,summary,ST,ET,mode,dur}:
-    DWC1,tmbx,DW,Serious C2F work,09:30,11:00,fs,PT1H30M
+    blocks[9]{H,own,type,summary,ST,ET,mode,dur,slug}:
+    DWC1,tmbx,DW,Serious C2F work,09:30,11:00,fs,PT1H30M,
 
 That is the right shape for the model -- it patches by handle -- and it was
 posted verbatim as the approval card because it was the only form of the

@@ -38,13 +38,15 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from fateforger.agents.timeboxing.required_blocks import required_slugs
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactKind,
+    FactKind,
     PlanningBrief,
     PlanningResult,
 )
 
-from .planning_result_mcp import OPEN_REQUIREMENTS_FILE_ENV
+from .planning_result_mcp import OPEN_REQUIREMENTS_FILE_ENV, REQUIRED_BLOCKS_FILE_ENV
 from .dsh_progress_hook import COMMIT_FILE_ENV, PROGRESS_FILE_ENV, ProgressEvent
 from .schedule_render import candidate_display_text
 from .mrkdwn import to_mrkdwn
@@ -354,6 +356,24 @@ def _planning_obligation(brief: PlanningBrief) -> str:
         if brief.target_artifact is ArtifactKind.SKELETON
         else ""
     )
+    # A rule saying a block must exist is placed, not asked about. The brief
+    # says which kinds and which rule, and splits the two claims the block
+    # will carry: existence is (from memory: …), the time is assumed (#214).
+    required_lines = ""
+    if brief.target_artifact is ArtifactKind.VALIDATED_CANDIDATE:
+        by_rule: dict = {}
+        for fact in brief.facts:
+            if fact.kind is FactKind.REQUIRED_BLOCKS and isinstance(fact.value, dict):
+                by_rule.update(fact.value.get("by_rule") or {})
+        for slug in sorted(required_slugs(brief.facts)):
+            rule = by_rule.get(slug) or {}
+            name = str(rule.get("name") or rule.get("uid") or "a standing rule")
+            required_lines += (
+                f"\nA `{slug}` block is required today (from memory: {name}). "
+                f"Set `slug: {slug}` on it verbatim; place it from the day's other "
+                "rules and record the time as an assumption on "
+                "`candidate.required_blocks`. A candidate without it is refused."
+            )
     return (
         "This planning turn is host-driven. The brief below is authoritative "
         "for the day, the facts, the prior artifacts and the approvals; do not "
@@ -363,6 +383,7 @@ def _planning_obligation(brief: PlanningBrief) -> str:
         f"`submit_planning_result` once, with target_artifact `{target}`. Your "
         "final message is presentation only: it records nothing, and a turn "
         f"that ends without that call has produced nothing.{apply_first}{payload_shape}"
+        f"{required_lines}"
         "\nIf you cannot finish but have not failed -- a retry budget spent "
         "mid-fix, say -- submit a `continuation` saying what is left and what "
         "you already worked out. What you produced is kept and you resume from "
@@ -711,6 +732,15 @@ def ask(
                 json.dumps(_planner_owned_open(planning_brief)), encoding="utf-8"
             )
             child_env[OPEN_REQUIREMENTS_FILE_ENV] = str(open_requirements)
+            # The slugs the day's rules require, so the submit tool can refuse a
+            # candidate that lacks one while the planner can still add it. From
+            # the brief's own facts, so the server and the kernel cannot
+            # disagree about what was required (#214).
+            required_blocks = Path(workspace) / "required-blocks.json"
+            required_blocks.write_text(
+                json.dumps(sorted(required_slugs(planning_brief.facts))), encoding="utf-8"
+            )
+            child_env[REQUIRED_BLOCKS_FILE_ENV] = str(required_blocks)
         stop = threading.Event()
         tail: threading.Thread | None = None
         collected: list[int] = []

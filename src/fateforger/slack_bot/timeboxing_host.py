@@ -23,6 +23,7 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import (
     PlanningContext,
     TurnRequest,
 )
+from fateforger.agents.timeboxing.required_blocks import required_blocks_value
 from fateforger.agents.timeboxing.session_contracts import (
     Advance,
     ArtifactKind,
@@ -321,6 +322,14 @@ def planning_facts(
     So the fact now says *that* the fetch happened and how much it returned,
     which is what a requirement check needs, and the typed field that documents
     the shape stays the one place the data lives.
+
+    The third fact, `REQUIRED_BLOCKS`, is the one exception to "presence only":
+    readiness, the brief and both missing-block checks read its slugs. It is
+    filed on every successful resolve, carrying an empty slug list when no rule
+    requires a kind -- `_merge_facts` merges by fact_id and never deletes, so
+    only an empty value under the same id clears a requirement the day no
+    longer has. Filing it conditionally would leave a suspended rule refusing
+    every later candidate for a block nothing asks for any more.
     """
 
     facts: list[PlanningFact] = []
@@ -330,7 +339,7 @@ def planning_facts(
         # defect -- and a second caller arriving later must not reintroduce it
         # by calling this function directly.
         return facts
-    return [
+    facts = [
         PlanningFact(
             fact_id=f"calendar:{day}",
             kind=FactKind.CALENDAR_SNAPSHOT,
@@ -350,6 +359,15 @@ def planning_facts(
             source="constraint_memory",
         ),
     ]
+    facts.append(
+        PlanningFact(
+            fact_id=f"required-blocks:{day}",
+            kind=FactKind.REQUIRED_BLOCKS,
+            value=required_blocks_value(constraints),
+            source="constraint_memory",
+        )
+    )
+    return facts
 
 
 class PendingCandidateCommitPort:

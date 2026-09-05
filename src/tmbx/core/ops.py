@@ -88,6 +88,7 @@ from .models import (
     Plan,
     Timing,
     is_valid_handle,
+    is_valid_slug,
 )
 
 END = "END"
@@ -341,6 +342,10 @@ def _validate_add(
         errors.append(
             f"op {index}: handle {op.h!r} must be 2-5 uppercase letters then 1-2 digits"
         )
+    if op.slug is not None and not is_valid_slug(op.slug):
+        errors.append(
+            f"op {index}: {op.h} slug {op.slug!r} must be lowercase letters with single hyphens"
+        )
     if op.h in existing_effective or op.h in added:
         errors.append(f"op {index}: handle {op.h} already exists")
     if anchor == PREV:
@@ -383,6 +388,10 @@ def _validate_touch(
         return [f"op {index}: handle {op.h} not found"]
     if op.h in touched:
         errors.append(f"op {index}: {op.h} is touched by more than one op")
+    if isinstance(op, UpdateBlock) and op.slug is not None and not is_valid_slug(op.slug):
+        errors.append(
+            f"op {index}: {op.h} slug {op.slug!r} must be lowercase letters with single hyphens"
+        )
     if isinstance(op, MoveBlock) and op.after == PREV:
         # Named rather than left to fall through as "anchor PREV not
         # found". A move has no previous: it names a position on the plan

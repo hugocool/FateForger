@@ -185,6 +185,17 @@ derived from the rules' `requires_block` values. Arithmetic. Skeleton time is un
 kernel's context port still returns an empty context for any target but the candidate, so
 stage 3 does not read the calendar.
 
+The fact is filed on **every** successful candidate resolve, carrying `{"slugs": [], "by_rule":
+{}}` when no rule requires a kind. Facts merge by `fact_id` and are never deleted, so a host
+that filed this only when something was required would leave the previous turn's slugs standing:
+suspend the rule mid-session and every later candidate is still refused for a block nothing asks
+for any more, with nothing inside the session able to clear it. The empty value under the same
+id is that clearing, and it is satisfied by construction everywhere it is read.
+
+`by_rule` names one rule per slug. Two rules can require one kind and memory promises no order,
+so the lowest uid wins — arbitrary, but stable, so the brief does not tell the user a different
+rule was asking on each turn.
+
 ### One catalog entry
 
 `candidate.required_blocks` — `target_artifact=VALIDATED_CANDIDATE`, `owner=PLANNER`,
@@ -192,12 +203,22 @@ stage 3 does not read the calendar.
 has two halves:
 
 - **Before the planner runs**, the gap is *open* whenever the `REQUIRED_BLOCKS` fact lists at
-  least one slug, and *satisfied* when it lists none. Open means the planner owns a placement
-  this turn; it is told which kinds in the brief and may record its placement as an assumption
-  against this requirement. It cannot ask about it (`illegal_user_blocker`).
+  least one slug, and *satisfied* when it lists none. Presence of the fact is the wrong test —
+  it is always present, and what it lists is the question. Open means the planner owns a
+  placement this turn; it is told which kinds in the brief and may record its placement as an
+  assumption against this requirement. It cannot ask about it (`illegal_user_blocker`).
 - **After the planner submits**, the result is checked: every slug in the fact must appear on a
-  block of the candidate — an `add` or `update` op carrying that `slug`, or an event already on
-  the day carrying it in the snapshot. A miss is the `required_block_missing` refusal below.
+  block of the candidate. Presence is read from the captured `plan_apply` — the post-patch
+  `rows`, which are the day as it will stand and the only place a block already on the calendar
+  shows up, plus the `add` and `update` ops as the fallback for a capture with no rows. Never
+  from the artifact: a model-written claim of presence is a forged basis. A miss is the
+  `required_block_missing` refusal below.
+
+  A capture that says nothing — missing, empty, unparseable, or carrying neither rows nor a
+  patch — is **not** a missing block. Refusing there would name the one cause that is certainly
+  not the case and send the planner to add a block the plan may already hold, while the real
+  failure goes unsaid; `CandidateNotApplied` and the unapplied-candidate guard own it and name
+  it. With a real capture in hand this never fails open.
 
 Both halves are computed over the set; the catalog does not grow when a second kind is tracked.
 `skeleton.gym_placement` is left alone in this increment and retired into this entry later.
@@ -215,9 +236,12 @@ other rules and attribute the time as assumed." Existence is `(from memory: …)
   refuses a blocker naming a planner-owned requirement. Infeasibility stays a typed blocker
   naming the conflict, with `BlockerOption`s where the answer set is closed.
 - **A candidate missing a required slug is refused at submit**, as a skeleton with the wrong
-  payload is (#267): result error `required_block_missing` naming the slug; the planner sees it
-  and retries; nothing is stored. A planner that wrote the block and forgot the slug is caught
-  here, not at 23:00 by the watcher.
+  payload is (#267): `PlanningResultRefused`, message prefixed `[required_block_missing]` and
+  naming the slug; the planner sees it and retries; nothing is stored. A planner that wrote the
+  block and forgot the slug is caught here, not at 23:00 by the watcher. The kernel repeats the
+  same set arithmetic when it accepts the draft, returning `TurnFailed(code=
+  "required_block_missing")`, so a host that publishes no required-slug file still cannot show
+  the user a candidate that is missing one.
 
 ## 3. tmbx side
 
@@ -271,11 +295,13 @@ Named, never swallowed:
 | `duplicate_kind` | `memory.kind_store.DuplicateKind` | promotion | slug already registered |
 | `required_blocks_unreadable` | — | watcher | memory could not be read; no verdict |
 | `calendar_unreadable` | — | watcher | fetch or list failed; no verdict |
-| `required_block_missing` | — | kernel submit | candidate lacks a required slug; names it |
+| `required_block_missing` | `slack_bot.PlanningResultRefused` / `TurnFailed.code` | submit tool, kernel acceptance | candidate lacks a required slug; names it |
 
-Both classes are `ValueError` subclasses carrying `code` as a class attribute, and both prefix
-their message with it (`"[duplicate_kind] kind 'planning' is already registered"`) because the
-MCP tool surfaces the message as-is.
+Both memory classes are `ValueError` subclasses carrying `code` as a class attribute, and both
+prefix their message with it (`"[duplicate_kind] kind 'planning' is already registered"`)
+because the MCP tool surfaces the message as-is. The submit refusal does the same
+(`"[required_block_missing] this candidate has no block of a kind the day requires: …"`), so the
+planner sees one name for the condition at both refusal sites.
 
 ## 6. Testing
 
@@ -301,6 +327,8 @@ MCP tool surfaces the message as-is.
 - Removing `frame_slot`.
 - A `closure` kind for the end-of-day closure block, promoted separately once `planning` has run
   for a while.
+- Counting two blocks of one required kind on one day — the watcher reports the count and never
+  resolves it by picking one, with §4.
 
 ## 8. Sequence and tickets
 

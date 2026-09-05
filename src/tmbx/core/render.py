@@ -47,7 +47,7 @@ from isodate import duration_isoformat
 
 from .models import Plan, Resolved
 
-COLUMNS = ("H", "own", "type", "summary", "ST", "ET", "mode", "dur")
+COLUMNS = ("H", "own", "type", "summary", "ST", "ET", "mode", "dur", "slug")
 
 _DELIMITER = ","
 
@@ -149,6 +149,11 @@ def plan_rows(plan: Plan, foreign_uids: Collection[str] = ()) -> list[dict[str, 
     only form that crossed the boundary, so a human view had to parse it back.
     """
     foreign = set(foreign_uids)
+    # `Resolved` carries only what resolution computes -- times, mode,
+    # duration -- and `slug` is a static field on the block, not something
+    # resolution derives. Read it from the blocks by handle instead of
+    # assuming the resolved row exposes it.
+    slugs_by_h = {b.h: b.slug for b in plan.blocks}
     return [
         {
             "h": r.h,
@@ -159,6 +164,7 @@ def plan_rows(plan: Plan, foreign_uids: Collection[str] = ()) -> list[dict[str, 
             "end": _fmt_clock(r.end, r.end_dt, plan.date),
             "mode": r.mode,
             "dur": _iso_duration(r.dur),
+            "slug": slugs_by_h.get(r.h) or "",
         }
         for r in plan.resolve(check_overlap=False)
     ]
@@ -171,6 +177,12 @@ def render_plan(plan: Plan, foreign_uids: Collection[str] = ()) -> str:
     Uses ``plan.resolve(check_overlap=False)`` — rendering is a read, not a
     validation step, and must not raise just because a plan happens to
     overlap; that is a separate check's job.
+
+    ``slug`` is the recurring kind of block (``planning``, ``sleep``), shown
+    so a planner can see a required kind is already on the day; empty when
+    the block has none. Escaped like ``summary``: tmbx shape-checks a slug on
+    the ops it owns, but a block whose slug was set by hand on the calendar
+    arrives unchecked, and a delimiter in the last column corrupts the row.
 
     ``foreign_uids`` — a block's ``uid`` (never rendered itself, see the
     module docstring) — controls the ``own`` column: ``"foreign"`` when
@@ -188,7 +200,7 @@ def render_plan(plan: Plan, foreign_uids: Collection[str] = ()) -> str:
     lines = [header] + [
         _DELIMITER.join(
             [row["h"], row["own"], row["type"], _escape(row["summary"]),
-             row["start"], row["end"], row["mode"], row["dur"]]
+             row["start"], row["end"], row["mode"], row["dur"], _escape(row["slug"])]
         )
         for row in plan_rows(plan, foreign_uids)
     ]

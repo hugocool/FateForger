@@ -59,3 +59,57 @@ def test_a_non_dict_payload_is_a_failure():
     from fateforger.slack_bot.timeboxing_host import planning_facts
 
     assert planning_facts(day="2026-09-02", calendar_snapshot=None, constraints=[]) == []
+
+
+def test_a_rule_requiring_a_kind_files_the_required_blocks_fact():
+    from fateforger.agents.timeboxing.session_contracts import FactKind
+    from fateforger.slack_bot.timeboxing_host import planning_facts
+
+    facts = planning_facts(
+        day="2026-09-07",
+        calendar_snapshot={"ok": True, "blocks": 3},
+        constraints=[
+            {"uid": "c1", "name": "Daily planning", "requires_block": "planning"},
+            {"uid": "c2", "name": "Work start", "requires_block": None},
+        ],
+    )
+    required = [f for f in facts if f.kind is FactKind.REQUIRED_BLOCKS]
+    assert len(required) == 1
+    assert required[0].fact_id == "required-blocks:2026-09-07"
+    assert required[0].source == "constraint_memory"
+    assert required[0].value["slugs"] == ["planning"]
+    assert required[0].value["by_rule"]["planning"] == {"uid": "c1", "name": "Daily planning"}
+
+
+def test_no_required_kind_files_an_empty_required_blocks_fact():
+    """The fact is filed on every resolve, empty when nothing is required.
+
+    `_merge_facts` merges by fact_id and never deletes, so a fact that is
+    simply absent leaves the previous turn's requirement standing. A day whose
+    rule was suspended mid-session would keep demanding the block it no longer
+    requires, and only an empty fact under the same id clears it.
+    """
+    from fateforger.agents.timeboxing.session_contracts import FactKind
+    from fateforger.slack_bot.timeboxing_host import planning_facts
+
+    facts = planning_facts(
+        day="2026-09-07", calendar_snapshot={"ok": True, "blocks": 3},
+        constraints=[{"uid": "c2", "name": "Work start", "requires_block": None}],
+    )
+    required = [f for f in facts if f.kind is FactKind.REQUIRED_BLOCKS]
+    assert len(required) == 1
+    assert required[0].fact_id == "required-blocks:2026-09-07"
+    assert required[0].value == {"slugs": [], "by_rule": {}}
+
+
+def test_the_memory_row_carries_requires_block():
+    from types import SimpleNamespace
+    from fateforger.agents.timeboxing.kg_constraint_client import _row_from_view
+
+    view = SimpleNamespace(
+        uid="c1", name="Daily planning", description="d",
+        necessity=SimpleNamespace(value="should"), status=SimpleNamespace(value="proposed"),
+        source=SimpleNamespace(value="user"), scope=SimpleNamespace(value="profile"),
+        frame_slot=None, anchors=[], fade=None, applies="always", requires_block="planning",
+    )
+    assert _row_from_view(view)["requires_block"] == "planning"

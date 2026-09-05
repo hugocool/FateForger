@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
+from .required_blocks import required_slugs
 from .session_contracts import (
     ArtifactKind,
     CellRef,
@@ -251,6 +252,17 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
         stage=4,
     ),
     ArtifactRequirement(
+        requirement_id="candidate.required_blocks",
+        target_artifact=ArtifactKind.VALIDATED_CANDIDATE,
+        satisfied_by=(FactKind.REQUIRED_BLOCKS,),
+        owner=RequirementOwner.PLANNER,
+        hard=True,
+        why_needed="a block of every kind the day's rules require must be on the plan",
+        resolution="assume",
+        question="A required block could not be placed. Which block should give way?",
+        stage=4,
+    ),
+    ArtifactRequirement(
         requirement_id="commit.approved_candidate",
         target_artifact=ArtifactKind.COMMIT_RECEIPT,
         satisfied_by=(ArtifactKind.VALIDATED_CANDIDATE,),
@@ -390,6 +402,13 @@ class TimeboxRequirements:
             return self._has_exact_approval(snapshot, ArtifactKind.SKELETON)
         if requirement.requirement_id == "commit.approved_candidate":
             return self._has_exact_approval(snapshot, ArtifactKind.VALIDATED_CANDIDATE)
+        if requirement.requirement_id == "candidate.required_blocks":
+            # One entry for every tracked kind (#214): open while the day's
+            # rules require any kind at all, computed over the set rather than
+            # hardcoded per kind. `satisfied_by` names the fact for the record;
+            # presence is the wrong test here, because the fact lists what is
+            # required and an empty requirement is satisfied by construction.
+            return not required_slugs(snapshot.facts)
         if requirement.cell is not None:
             return matrix is None or matrix.cells[requirement.requirement_id] != "uncovered"
 
