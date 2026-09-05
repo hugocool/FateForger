@@ -409,6 +409,7 @@ def _validate_touch(
     existing: set[str],
     touched: set[str],
     plan: Plan,
+    added_this_patch: frozenset[str] = frozenset(),
 ) -> list[str]:
     errors: list[str] = []
     if op.h not in existing:
@@ -428,6 +429,19 @@ def _validate_touch(
         errors.append(
             f"op {index}: {op.h} — 'PREV' is an add-only anchor. A move names a "
             f"position on the plan as rendered: give a handle, 'END', or null."
+        )
+    elif isinstance(op, MoveBlock) and op.after in added_this_patch:
+        # Same shape as the PREV case: a rule, named as one. Moves are
+        # applied before adds, so at move time the added block is not on
+        # the plan. Reported as "not found", a model read it as a typo and
+        # resent the identical patch three times (#304). Say which rule,
+        # and say the move it wanted is already implied by the add.
+        errors.append(
+            f"op {index}: {op.h} — anchor {op.after} is added by this patch, and "
+            f"moves are applied before adds, so a move can only anchor on a "
+            f"block already on the plan. Anchor the move on an existing handle, "
+            f"or drop it: an add lands right after its anchor, ahead of whatever "
+            f"followed that anchor, so the add alone already places it."
         )
     elif isinstance(op, MoveBlock) and op.after not in (None, END) and op.after not in existing:
         errors.append(f"op {index}: anchor {op.after} not found")
@@ -623,7 +637,8 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
     removed = {op.h for op in patch.ops if isinstance(op, RemoveBlock)}
     existing_effective = existing_pre - removed
     add_ops = [op for op in patch.ops if isinstance(op, AddBlock)]
-    anchorable = existing_pre | {op.h for op in add_ops}
+    added_handles = frozenset(op.h for op in add_ops)
+    anchorable = existing_pre | added_handles
     anchors = _add_anchors(patch)
     touched: set[str] = set()
     added: set[str] = set()
@@ -638,7 +653,9 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
             added.add(op.h)
             continue
 
-        errors.extend(_validate_touch(index, op, existing_pre, touched, plan))
+        errors.extend(
+            _validate_touch(index, op, existing_pre, touched, plan, added_this_patch=added_handles)
+        )
         touched.add(op.h)
 
     move_ops = [op for op in patch.ops if isinstance(op, MoveBlock)]

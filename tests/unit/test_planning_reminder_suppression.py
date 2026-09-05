@@ -140,7 +140,6 @@ class _NoSlotRuntime:
 
 def _session(session_key, *, status, day=None, owner="U1"):
     from fateforger.agents.timeboxing.session_contracts import (
-        DayType,
         PlanningDay,
         PlanningSessionSnapshot,
     )
@@ -151,13 +150,11 @@ def _session(session_key, *, status, day=None, owner="U1"):
     if day is not None:
         snapshot = snapshot.model_copy(
             update={
-                "planning_day": PlanningDay(
-                    date=day,
-                    timezone="Europe/Amsterdam",
-                    iso_weekday=day.isoweekday(),
-                    day_type=DayType.WORKING,
-                    classification_basis="calendar",
-                    lock_revision=1,
+                # Derived from the date, the way the host derives it. A
+                # hardcoded WORKING here failed every Saturday and Sunday,
+                # because `day` is today (#305).
+                "planning_day": PlanningDay.lock_default(
+                    value=day, timezone="Europe/Amsterdam", lock_revision=1
                 )
             }
         )
