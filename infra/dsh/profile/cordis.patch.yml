@@ -337,6 +337,82 @@
         toolCallTimeoutMs: 5000
         failOnStartupError: true
 
+    # 3d. Hugo's task board — mounted, and OFF unless a turn asks for it.
+    #
+    #     Measured 2026-09-05 against the live server: `list_tools()` over
+    #     stdio returns two definitions, and serialising each one the way a
+    #     client hands it to a model -- name, description, inputSchema, compact
+    #     JSON -- comes to 986 bytes, about 250 tokens at four bytes a token
+    #     (task_board_list 638, task_board_get 348). The server's instructions
+    #     add 406 bytes more, so the mount costs roughly 350 tokens of preamble
+    #     wherever it is visible. That is small. It is still not worth paying
+    #     on the turns that will never look at a ticket, which is all of them
+    #     so far.
+    #
+    #     And "visible" is not something this mount gets to scope. dsh-mcp-
+    #     client has no tool allow-list -- the same gap the memory mount above
+    #     works around with a launcher of its own -- and `tools.restrict()`
+    #     refuses a global scope, answering "requires a scoped context", so
+    #     every tool of every mounted server lands in the ROOT planner's
+    #     prompt. `toolFilter` is the only per-agent lever there is, and it is
+    #     a `dsh-tool-subagent` capability: it can narrow what a child sees, it
+    #     cannot keep a server out of the main loop. Section 6 below reaches
+    #     the same conclusion from the other end and disables whole plugins.
+    #
+    #     So the mount itself is the switch. The row stays disabled until the
+    #     host sets FF_TASK_TOOLS, and the only turn that should set it is one
+    #     spawning the `find_material` child -- the materials spec's subagent,
+    #     which is the one thing that reads the board. That child does not
+    #     exist yet, so today this row boots for nobody on purpose. Wiring it
+    #     now means the day it is wanted is one environment variable, not a
+    #     profile edit under time pressure.
+    #
+    #     Read-only by construction, not by instruction: two tools, both
+    #     queries, over a facade that can call `API-post-database-query` and
+    #     `API-retrieve-a-page` and nothing else. There is no write to gate.
+    #
+    #     No Notion settings *values* in this row, deliberately: the board
+    #     talks to the bot's own Notion MCP container -- the official server in
+    #     REST mode on http://localhost:3001/mcp, behind MCP_HTTP_AUTH_TOKEN --
+    #     and both are configured once, for the bridge. But the two variables
+    #     are forwarded by name, as both sibling stdio rows forward theirs: the
+    #     MCP client composes the child's env rather than handing it the
+    #     parent's, so a variable nobody named may not arrive. An empty string
+    #     means "not set" -- get_notion_mcp_url() falls through to its default,
+    #     and an empty token raises TaskBoardUnavailable naming itself.
+    #
+    #     60s and not the 5s above: those two children validate and rename a
+    #     local file, this one waits on a Notion round trip through a
+    #     container. failOnStartupError stays, though -- it proves the Python
+    #     process launched. It does NOT prove the board is reachable: the board
+    #     is built lazily on the first tool call, so a missing token or an
+    #     unreachable container shows up there, as a failed tool call carrying
+    #     the cause, and not at boot. Lazy on purpose -- an import that needs a
+    #     token is one that cannot be tested.
+    #
+    #     The quotes around the `disabled` expression are load-bearing and not
+    #     a style choice: `!` is a YAML tag indicator, so a plain scalar cannot
+    #     begin with one. Unquoted, `!!js !process.env.FF_TASK_TOOLS` is two
+    #     tags on one node and the parser stops there -- which fails the whole
+    #     profile, not just this row.
+    - id: mcp-task-board
+      name: '@deepseek-ai/dsh-mcp-client'
+      disabled: !!js '!process.env.FF_TASK_TOOLS'
+      config:
+        serverName: task_board
+        transport: stdio
+        command: /Users/hugoevers/VScode-projects/admonish-1/.venv/bin/python
+        args:
+          - -m
+          - fateforger.slack_bot.task_board_mcp
+        cwd: !!js process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1'
+        env:
+          PYTHONPATH: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/src'
+          MCP_HTTP_AUTH_TOKEN: !!js process.env.MCP_HTTP_AUTH_TOKEN || ''
+          NOTION_MCP_URL: !!js process.env.NOTION_MCP_URL || ''
+        toolCallTimeoutMs: 60000
+        failOnStartupError: true
+
     # 4b. The clock.
     #
     #     Measured 2026-08-23: the model's SECOND action on "plan tomorrow"

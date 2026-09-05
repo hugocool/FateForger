@@ -161,6 +161,16 @@ class Settings(BaseSettings):
     notion_sprint_data_source_urls: str = Field(
         default=""
     )
+    # The task board the read-only facade reads (#241). Deliberately not
+    # notion_sprint_db_id above: that name says "sprint" but serves the
+    # sprint-page tooling and defaults to empty, and a facade that queried an
+    # empty database id would report a broken board as an empty one.
+    notion_tasks_database_id: str = Field(
+        default="110baca1-857f-48b1-a8ec-cea325202eef"
+    )
+    notion_sprints_database_id: str = Field(
+        default="0e34a9da-1fe6-4cd2-a2fc-c36c0ae688b0"
+    )
 
     # Database Configuration
     alembic_database_url: str = Field(default="sqlite:///data/admonish.db")
