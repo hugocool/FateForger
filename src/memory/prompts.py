@@ -246,6 +246,14 @@ even if sport is in the list; they are different anchors and the relationship
 between them is recorded elsewhere. Merge only when the two names denote the
 same thing.
 
+Sharing a word is not sameness. Ask what a rule about each name would
+constrain: a name that says when something may happen (a window, a slot, a
+cut-off) and a name that says how long or how much (a duration, a count, a
+cap) constrain different things, and a rule about one says nothing about the
+other, so they are different anchors even when they share most of their
+words. The test is whether a rule about the first would necessarily govern
+the second. If it would not, answer null.
+
 Known anchors are listed with a number. Answer with that number. Never invent
 a number: if no known anchor is the same thing, answer null and it will be
 created.
