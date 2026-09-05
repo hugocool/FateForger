@@ -164,24 +164,43 @@ The empty-text case (`Advance()`) is unchanged.
 **Eval — real model, `@slow`, n=8, threshold 7, no temperature pin** (the seam spec's pattern,
 `tests/integration/test_eval_planning_card_intent.py`'s `SAMPLES`/`gather` shape):
 
-- `no_session`: question-vs-start. Questions: *"Is it planned?"*, *"did you add the gym?"*,
-  *"what's on my calendar tomorrow?"*, *"is there a planning session today?"*. Starts: *"plan
-  tomorrow"*, *"let's timebox saturday"*, *"start"*, *"ok let's go"*. Cancels: *"cancel this"*,
-  *"never mind, not today"*.
-- `committed`: question-vs-facts-vs-revise. Questions: *"what did we settle on for lunch?"*,
-  *"when is deep work?"*. Facts: *"I sleep 00:30–08:30"*. Revise: *"move the work two hours
-  later"*.
+- **No case text appears verbatim in `QUESTION_PARAGRAPH`.** A case whose exact words are quoted
+  in the prompt measures recall of the prompt, not the judgement the prompt is meant to produce,
+  so every text the paragraph quotes is reworded to the same intent in other words (#319).
+- `no_session`: question-vs-start-vs-cancel. Questions: *"has it been scheduled?"*, *"did you put
+  the gym in?"*, *"what's on my calendar tomorrow?"*, *"is there a planning session today?"*.
+  Starts: *"plan my day tomorrow"*, *"let's timebox saturday"*, *"kick it off"*, *"right, let's
+  begin"*. Cancels: *"cancel this"*, *"never mind, not today"*.
+- `committed`: question-vs-facts-vs-revise. Questions: *"what did we decide about lunch?"*,
+  *"when's the deep-work block?"*. Facts: *"I sleep 00:30–08:30"* plus the two mixed
+  ask-and-supply texts below, which carry the positive half of the break-it check. Revise:
+  *"move the work two hours later"*.
+- **A draw is retried once, and only when its exception carries a transport cause.** A draw that
+  reached a *wrong* decision — one outside `allowed_decisions`, output that does not fit the
+  narrowed schema, a binder refusal — is never retried: it is the measurement. A blind
+  `except Exception` here re-rolls the exact degenerate answer a stripped paragraph is supposed
+  to produce, which would hide the break-it result (#319). The endpoint's own failure rate is
+  #325's problem, reported per case and never asserted on.
 - Break-it check, as the seam eval does: strip the prompt fragment's question paragraph and
-  confirm the discrimination collapses. **Measured 2026-09-05 (#319), the case is a question
-  that carries a fact, not a plain interrogative:** stripping the paragraph does not move a
-  pure question at all — *"is it planned?"* and *"what did we settle on for lunch?"* still
-  answer `question` at 7/8 and 8/8 without it, because the `question` label in
-  `allowed_decisions` already carries them, so asserting on those tested the label. The
-  paragraph is load-bearing on the mixed case: *"did you move lunch? I sleep 00:30–08:30"*
-  answers `ProvidePlanningFacts` 8/8 with the paragraph and 1/8 then 2/8 without it on two
-  separate draws of eight (*"is deep work still at 9? also I get up at 07:00"*: 8/8 against
-  0/8). A discriminator that passes without its
-  discriminating sentence is not one — and it has to be aimed at a case that needs
+  confirm the discrimination collapses. **Measured 2026-09-05 (#319), it takes two families, and
+  a plain interrogative is neither of them:** stripping the paragraph does not move a pure
+  question at all — *"is it planned?"* and *"what did we settle on for lunch?"* still answer
+  `question` at 7/8 and 8/8 without it, because the `question` label in `allowed_decisions`
+  already carries them, so asserting on those tested the label. What does move:
+  - **fresh session, asked becomes started** — *"what's on my calendar tomorrow?"* answers
+    `AskQuestion` 8/8 with the paragraph and `StartSession` 8/8 without it (6/8, 6/8 and 7/8 to
+    `StartSession` on three earlier stripped draws, and `StartSession` never once in an
+    unstripped run). That is the regression this branch is named for, reproduced on demand.
+  - **committed session, the fact lost to the question** — *"did you move lunch? I sleep
+    00:30–08:30"* answers `ProvidePlanningFacts` 8/8 with the paragraph and 1/8 without it
+    (*"is deep work still at 9? also I get up at 07:00"*: 8/8 against 0/8).
+
+  Both assert the **flip** — the wrong decision outnumbering the right one — not the absence of
+  the right one. An absence-based bar is cleared by two lost calls with the paragraph doing
+  nothing, which is how the first version of this check "passed"; and a bar of
+  `StartSession >= 7` would have failed two of three honest stripped runs at 6/8. A lost draw
+  subtracts from both counts and can never manufacture a flip. A discriminator that passes
+  without its discriminating sentence is not one — and it has to be aimed at a case that needs
   discriminating.
 
 Each case is sampled 8 times concurrently and asserted on the count. A prompt fix validated by
