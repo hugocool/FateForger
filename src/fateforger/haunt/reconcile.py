@@ -31,6 +31,10 @@ class CalendarClient(Protocol):
 
     async def get_event(self, *, calendar_id: str, event_id: str) -> dict | None: ...
 
+    async def list_day(
+        self, *, calendar_id: str, day: date, tz: str
+    ) -> list[dict] | None: ...
+
 
 class PlanningSessionStore(Protocol):
     async def list_for_user_between(
@@ -88,6 +92,10 @@ class PlanningReminder:
     event_start: str | None = None
     event_end: str | None = None
     event_tz: str | None = None
+    #: For a required-block reminder: which registered kind, and why the haunt
+    #: started -- "missing" or "moved_out". None on the planning ladder.
+    slug: str | None = None
+    reason: str | None = None
 
 
 @dataclass
@@ -143,8 +151,83 @@ class McpCalendarClient:
             return []
         return _normalize_events(payload)
 
+    async def list_day(
+        self, *, calendar_id: str, day: date, tz: str
+    ) -> list[dict] | None:
+        """Every event on `day` in `tz`, or None when the read failed.
+
+        `list_events` returns [] for a tool error and always has; the planning
+        ladder inherited that and nudges on an unreadable calendar. The
+        required-block watcher must not (#226), so this is the one call whose
+        failure is distinguishable from an empty day.
+        """
+        zone = ZoneInfo(tz)
+        start = datetime.combine(day, time.min, tzinfo=zone)
+        end = start + timedelta(days=1)
+        args = {
+            "calendarId": calendar_id,
+            "timeMin": _format_mcp_datetime(start),
+            "timeMax": _format_mcp_datetime(end),
+            "singleEvents": True,
+            "orderBy": "startTime",
+        }
+        try:
+            result = await self._workbench.call_tool("list-events", arguments=args)
+        except Exception as exc:  # noqa: BLE001 - a failed read is a named outcome
+            logger.warning(
+                "calendar list_day failed error_type=%s error=%s", type(exc).__name__, exc
+            )
+            return None
+        payload = _extract_tool_payload(result)
+        if isinstance(payload, str) and payload.strip().lower().startswith("mcp error"):
+            logger.warning("calendar list_day returned a tool error: %s", payload.strip())
+            return None
+        return _normalize_events(payload)
+
     async def close(self) -> None:
         await self._workbench.stop()
+
+
+def nudge_offsets(
+    config: PlanningRuleConfig, *, first_nudge_offset: timedelta | None
+) -> list[timedelta]:
+    """The nudge ladder: explicit offsets, or exponential backoff from `base`
+    capped at `cap`, `max_attempts` rungs, all inside `horizon`. Shared by the
+    planning ladder and the required-block watcher so the two cannot drift."""
+    if config.nudge_offsets is not None:
+        offsets = list(config.nudge_offsets)
+        if first_nudge_offset is not None and offsets:
+            offsets[0] = first_nudge_offset
+        return [o for o in offsets if o < config.horizon]
+
+    base = config.nudge_backoff_base
+    cap = config.nudge_backoff_cap
+    max_attempts = max(int(config.nudge_max_attempts or 0), 1)
+
+    offsets: list[timedelta] = []
+    if first_nudge_offset is not None:
+        offsets.append(first_nudge_offset)
+    else:
+        offsets.append(base)
+
+    # Fill remaining attempts with an exponential series using `base`.
+    # Ensure monotonic growth even if first_nudge_offset is 0 or custom.
+    exponent = 0
+    while len(offsets) < max_attempts:
+        candidate = base * (2**exponent)
+        if candidate > cap:
+            candidate = cap
+        if candidate <= offsets[-1]:
+            exponent += 1
+            if candidate == cap:
+                break
+            continue
+        if candidate >= config.horizon:
+            break
+        offsets.append(candidate)
+        exponent += 1
+
+    return offsets
 
 
 class PlanningSessionRule:
@@ -427,40 +510,7 @@ class PlanningSessionRule:
     def _resolve_nudge_offsets(
         self, *, first_nudge_offset: timedelta | None
     ) -> list[timedelta]:
-        if self._config.nudge_offsets is not None:
-            offsets = list(self._config.nudge_offsets)
-            if first_nudge_offset is not None and offsets:
-                offsets[0] = first_nudge_offset
-            return [o for o in offsets if o < self._config.horizon]
-
-        base = self._config.nudge_backoff_base
-        cap = self._config.nudge_backoff_cap
-        max_attempts = max(int(self._config.nudge_max_attempts or 0), 1)
-
-        offsets: list[timedelta] = []
-        if first_nudge_offset is not None:
-            offsets.append(first_nudge_offset)
-        else:
-            offsets.append(base)
-
-        # Fill remaining attempts with an exponential series using `base`.
-        # Ensure monotonic growth even if first_nudge_offset is 0 or custom.
-        exponent = 0
-        while len(offsets) < max_attempts:
-            candidate = base * (2**exponent)
-            if candidate > cap:
-                candidate = cap
-            if candidate <= offsets[-1]:
-                exponent += 1
-                if candidate == cap:
-                    break
-                continue
-            if candidate >= self._config.horizon:
-                break
-            offsets.append(candidate)
-            exponent += 1
-
-        return offsets
+        return nudge_offsets(self._config, first_nudge_offset=first_nudge_offset)
 
     async def _resolve_planning_from_stored_sessions(
         self, *, user_id: str | None, start: datetime, end: datetime
@@ -920,6 +970,7 @@ __all__ = [
     "DesiredJob",
     "JobKey",
     "McpCalendarClient",
+    "nudge_offsets",
     "PlanningReconciler",
     "PlanningReminder",
     "PlanningRuleConfig",
