@@ -260,3 +260,16 @@ def test_an_oversized_top_group_is_kept_partially_under_the_cap() -> None:
     kept_rows = len(first_group.rows)
     assert kept_rows < 150
     assert fold.truncated == (150 - kept_rows + 2, 1)
+
+
+def test_a_rule_placed_under_method_ranks_as_open_when_a_method_cell_is_uncovered(monkeypatch) -> None:
+    import fateforger.slack_bot.stage_context as module
+
+    class Matrix:
+        cells = {"elicit.method.contradictory": "uncovered"}
+        placement = {"a-gym": "method"}
+
+    monkeypatch.setattr(module, "coverage_matrix", lambda snapshot: Matrix())
+    rows = [_row("c1", DINNER, fade=0.9), _row("c2", GYM, fade=None)]
+    ranked = rank_rows(_snapshot(rows), first_shown_with=None)
+    assert ranked[0].uid == "c2" and ranked[0].open_concern is True
