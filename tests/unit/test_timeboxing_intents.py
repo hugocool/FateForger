@@ -1393,9 +1393,30 @@ def test_every_open_state_offers_question(
     assert "question" in allowed
 
 
-def test_a_cancelled_session_offers_nothing() -> None:
+#: Cancelled twice over: mid-session, and before a day was ever proposed. The
+#: second case is only reachable since #318 put `cancel` on offer at zero
+#: artifacts, and it is the one a `no_session` branch placed too early would
+#: reopen -- the thread would take a start, then die on the confirmation with
+#: the generic failure line.
+_CANCELLED_SESSIONS: tuple[tuple[str, PlanningSessionSnapshot], ...] = (
+    ("mid-session", _capture_snapshot().model_copy(update={"status": "cancelled"})),
+    (
+        "before a day",
+        PlanningSessionSnapshot(
+            session_key="C1:1.0",
+            revision=1,
+            owner_user_id="U1",
+            status="cancelled",
+        ),
+    ),
+)
+
+
+@pytest.mark.parametrize(("case", "cancelled"), _CANCELLED_SESSIONS)
+def test_a_cancelled_session_offers_nothing(
+    case: str, cancelled: PlanningSessionSnapshot
+) -> None:
     """The one state that must not gain `question`: the session is closed."""
-    cancelled = _capture_snapshot().model_copy(update={"status": "cancelled"})
     stage, allowed, _ = _display_context(cancelled)
     assert stage == "cancelled"
     assert allowed == ()
