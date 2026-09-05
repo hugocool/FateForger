@@ -21,6 +21,7 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import (
     TimeboxingStanding,
 )
 from fateforger.agents.timeboxing.session_contracts import (
+    FactKind,
     HandledInteraction,
     PlanningSessionSnapshot,
     TurnOutcome,
@@ -277,6 +278,32 @@ class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
             for session_key, revision, updated_at in rows
         ]
 
+    async def day_frame_for(
+        self, *, owner_user_id: str, planning_date: date
+    ) -> dict | None:
+        """The user's day frame for one planned day, from the newest session
+        that holds one. Reads one row's snapshot JSON -- the one exception to
+        `standing_for`'s indexed-columns rule, because the frame lives only in
+        the snapshot and the watcher's sleep boundary needs it. No model call.
+        """
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(_TimeboxingSessionState.snapshot_json)
+                .where(
+                    _TimeboxingSessionState.owner_user_id == owner_user_id,
+                    _TimeboxingSessionState.planning_date == planning_date,
+                    _TimeboxingSessionState.status.in_(("open", "committed")),
+                )
+                .order_by(_TimeboxingSessionState.updated_at.desc())
+            )
+            rows = result.all()
+        for (payload,) in rows:
+            snapshot = self._parse_envelope(payload).snapshot
+            frame = _day_frame(snapshot)
+            if frame is not None:
+                return frame
+        return None
+
     @staticmethod
     async def _load_row(
         session: AsyncSession, session_key: str
@@ -301,6 +328,15 @@ class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
         """Serialize one validated envelope for its atomic SQL write."""
 
         return envelope.model_dump_json()
+
+
+def _day_frame(snapshot: PlanningSessionSnapshot) -> dict | None:
+    """The newest `DAY_FRAME` fact's value, or `None` when the session has none."""
+
+    for fact in reversed(snapshot.facts):
+        if fact.kind is FactKind.DAY_FRAME and isinstance(fact.value, dict):
+            return dict(fact.value)
+    return None
 
 
 __all__ = ["SqlAlchemyTimeboxingSessionRepository"]

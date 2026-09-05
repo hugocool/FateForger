@@ -179,6 +179,18 @@ class PlanningSessionRepository(Protocol):
         outcome: TurnOutcome,
     ) -> PlanningSessionSnapshot: ...
 
+    async def day_frame_for(
+        self, *, owner_user_id: str, planning_date: date
+    ) -> dict | None:
+        """The newest `DAY_FRAME` fact's value among the user's sessions for
+        one planned day (`open` or `committed`), or `None` when none holds one.
+
+        Arithmetic over stored state, not a judgement -- the watcher's sleep
+        boundary reads it instead of asking a model.
+        """
+
+        ...
+
 
 class TimeboxingStanding(BaseModel):
     """What the session store says about one user's planning, for the nudger.
@@ -389,6 +401,22 @@ class InMemoryPlanningSessionRepository:
         ]
         rows.sort(key=lambda row: row.updated_at, reverse=True)
         return rows
+
+    async def day_frame_for(
+        self, *, owner_user_id: str, planning_date: date
+    ) -> dict | None:
+        candidates = sorted(
+            (s for s in self._snapshots.values()
+             if s.owner_user_id == owner_user_id and s.status in ("open", "committed")
+             and s.planning_day is not None and s.planning_day.date == planning_date),
+            key=lambda s: self._updated_at.get(s.session_key, self._clock()),
+            reverse=True,
+        )
+        for snapshot in candidates:
+            for fact in reversed(snapshot.facts):
+                if fact.kind is FactKind.DAY_FRAME and isinstance(fact.value, dict):
+                    return dict(fact.value)
+        return None
 
 
 class _BestEffortProgress:
