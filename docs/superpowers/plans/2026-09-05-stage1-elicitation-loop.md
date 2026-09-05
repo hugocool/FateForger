@@ -2406,7 +2406,15 @@ pytestmark = pytest.mark.slow
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 N = 5
-NON_CONTENDER_MODEL = os.environ.get("STAGE1_NON_CONTENDER_MODEL", "openai/gpt-4.1-mini")
+#: The simulated user and the framing judge must not share the contender's
+#: lineage. The pro-tier pin is a different model family from the flash tier
+#: the judges run on; the literal is the last fallback only, never the first
+#: choice (project pins moved off gemini on 2026-08-24; see PR #312).
+NON_CONTENDER_MODEL = (
+    os.environ.get("STAGE1_NON_CONTENDER_MODEL")
+    or os.environ.get("OPENROUTER_DEFAULT_MODEL_PRO")
+    or "deepseek/deepseek-v4-pro-0813:nitro"
+)
 TURNS_P50_TUESDAY = 4
 CAP = 12
 
@@ -2792,8 +2800,13 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 # Stage 1 loop: the first measurements
 
 Run <date> against `data/fixtures/stage1-<date>.db` (sha256 <first 12>), contender
-`google/gemini-3.6-flash` at `minimal`, simulated user and framing judge on
-`<NON_CONTENDER_MODEL>`, n = 5.
+`<the model build_autogen_chat_client("timeboxing_agent") resolved — print it>` at
+`minimal`, simulated user and framing judge on `<NON_CONTENDER_MODEL>`, n = 5.
+
+The 2026-09-04 spike figures (27/29 placement unanimity, 23/35 cells uncovered,
+`alternatives` never covering) were measured on `google/gemini-3.6-flash`, which the
+project had already left on 2026-08-24; they are that model's numbers and are not
+compared against here.
 
 ## Turns to GateMet
 
