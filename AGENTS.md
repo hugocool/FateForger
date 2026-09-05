@@ -18,6 +18,7 @@
   - user response is interpreted as typed intent (+ optional typed patch/update),
   - NL reply and UI action converge to the same submit executor.
 - Never add deterministic free-form NLU (regex/substring/keyword) for proposal intent extraction.
+- Routing is intent extraction too: which agent answers, whether a channel/command default applies, which controls a state offers — every such route is an *offered option* the interpreter picks or declines (`none` → a capable agent, never a hardcoded fallback). See `CLAUDE.md` "Every route is a judgement" and map #333 *One grammar for the seams*.
 - Deterministic parsing is only allowed for structured transport fields (IDs, timestamps, encoded metadata).
 - Keep contract details in `docs/architecture/proposal_object_contract.md` and ensure module `AGENTS.md` files reference/apply it where relevant.
 
