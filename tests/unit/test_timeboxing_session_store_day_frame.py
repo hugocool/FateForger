@@ -13,7 +13,9 @@ import pytest
 from alembic.config import Config
 
 from alembic import command
-from fateforger.agents.timeboxing.adaptive_timeboxing import InMemoryPlanningSessionRepository
+from fateforger.agents.timeboxing.adaptive_timeboxing import (
+    InMemoryPlanningSessionRepository,
+)
 from fateforger.agents.timeboxing.session_contracts import (
     Cancelled,
     DayType,
@@ -53,6 +55,7 @@ async def test_the_in_memory_repository_returns_the_days_frame_or_none():
 @pytest.mark.asyncio
 async def test_the_sql_repository_reads_one_rows_frame(tmp_path, monkeypatch):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
     from fateforger.slack_bot.timeboxing_session_store import (
         SqlAlchemyTimeboxingSessionRepository,
     )
@@ -98,6 +101,7 @@ async def test_the_in_memory_repository_returns_the_days_locked_day_type():
 @pytest.mark.asyncio
 async def test_the_sql_repository_reads_one_rows_day_type(tmp_path, monkeypatch):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
     from fateforger.slack_bot.timeboxing_session_store import (
         SqlAlchemyTimeboxingSessionRepository,
     )

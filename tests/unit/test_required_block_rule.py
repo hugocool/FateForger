@@ -3,7 +3,7 @@ the nudge ladder; unreadable → no verdict. Presence is equality over the slug
 tmbx wrote, never a title."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
@@ -14,13 +14,14 @@ from fateforger.haunt.required_block_rule import (
     REQUIRED_BLOCK_KIND,
     RequiredBlockConfig,
     RequiredBlockRule,
+    _line,
     slug_of,
     within_bounds,
 )
 
 AMS = "Europe/Amsterdam"
 DAY = date(2026, 9, 7)  # a Monday: working day by arithmetic
-NOW = datetime(2026, 9, 7, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 7, 9, 0, tzinfo=UTC)
 
 
 def _event(eid: str, start: str, end: str, *, slug: str | None = None, day: date = DAY) -> dict:
@@ -417,3 +418,31 @@ async def test_yesterdays_cache_entries_are_dropped():
     assert rule.cached(user_id="U1", day=yesterday, slug="closure") is None
     assert rule.cached(user_id="U2", day=yesterday, slug="closure") is None
     assert rule.cached(user_id="U1", day=DAY, slug="closure") == "e1"
+
+
+@pytest.mark.parametrize("reason", [REASON_MISSING, REASON_MOVED_OUT])
+def test_the_ladder_escalates_over_its_first_three_rungs(reason):
+    """Five identical lines eight hours apart is one line sent five times, and
+    the ladder reads as a stuck loop rather than as escalation."""
+    lines = [_line("closure", reason, rung) for rung in (1, 2, 3)]
+    assert len(set(lines)) == 3
+    assert all("`closure`" in line for line in lines)
+
+
+@pytest.mark.parametrize("reason", [REASON_MISSING, REASON_MOVED_OUT])
+def test_rungs_past_the_third_repeat_the_last(reason):
+    assert _line("closure", reason, 4) == _line("closure", reason, 3)
+    assert _line("closure", reason, 9) == _line("closure", reason, 3)
+
+
+def test_the_two_reasons_read_differently():
+    """A block that is gone and one that drifted need different answers."""
+    assert _line("closure", REASON_MISSING, 1) != _line("closure", REASON_MOVED_OUT, 1)
+
+
+@pytest.mark.asyncio
+async def test_each_rung_of_a_real_ladder_carries_its_own_line():
+    jobs = await _jobs(_rule(_Calendar(day_events=[]), _Store(["closure"])))
+    messages = [job.payload.message for job in jobs]
+    assert len(set(messages)) == 3
+    assert [job.payload.attempt for job in jobs] == [1, 2, 3, 4, 5]

@@ -7,7 +7,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from copy import deepcopy
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from typing import Callable, Protocol
 from uuid import uuid4
 
@@ -28,12 +28,11 @@ from .session_contracts import (
     ArtifactKind,
     ArtifactSnapshot,
     AwaitingApproval,
-    CandidateNotApplied,
-    NeedsAnotherTurn,
     AwaitingUser,
     BlockerOption,
     Cancelled,
     CancelSession,
+    CandidateNotApplied,
     ChooseBlockerOption,
     Committed,
     ConfirmPlanningDay,
@@ -44,6 +43,7 @@ from .session_contracts import (
     GateMet,
     GoBack,
     HandledInteraction,
+    NeedsAnotherTurn,
     PendingBlocker,
     PlannerAssumption,
     PlanningArtifact,
@@ -296,7 +296,7 @@ class InMemoryPlanningSessionRepository:
         self,
         snapshots: list[PlanningSessionSnapshot] | None = None,
         *,
-        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         snapshots = snapshots or []
         self._snapshots = {

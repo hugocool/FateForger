@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -201,7 +201,7 @@ class RequiredBlockRule:
     ) -> RequiredBlockOutcome:
         if not user_id:
             return RequiredBlockOutcome()
-        start = now.astimezone(timezone.utc)
+        start = now.astimezone(UTC)
         day = now.astimezone(ZoneInfo(self._config.tz)).date()
         self._evict_other_days(day)
         try:
@@ -334,9 +334,29 @@ class RequiredBlockRule:
         ]
 
 
+#: One line per rung, escalating, keyed by why the haunt started. Three rungs
+#: for a five-rung ladder: past the third the line stops changing, the way
+#: `session_start.NUDGE_LINES` runs out. `{slug}` is the registry kind, an
+#: identifier this system minted, shown so the user knows which block is meant.
+_MISSING_LINES: tuple[str, ...] = (
+    "No `{slug}` block on today's plan. Put one in, or tell me when it happens.",
+    "Still no `{slug}` block today — put one in, or tell me it is not happening today.",
+    "Today is going and there is still no `{slug}` block. Book it now or write it off.",
+)
+
+_MOVED_OUT_LINES: tuple[str, ...] = (
+    "Your `{slug}` block has left today's plan. Bring it back, or tell me when it happens.",
+    "`{slug}` is still off today's plan — bring it back, or tell me it moved for good.",
+    "`{slug}` has been off today's plan all day. Bring it back now or write it off.",
+)
+
+
 def _line(slug: str, reason: str, attempt: int) -> str:
-    what = "is not on today's calendar" if reason == REASON_MISSING else "has left today's plan"
-    return f"Your `{slug}` block {what}. Put it back, or say when."
+    """The line for rung `attempt` (1-based); past the last rung, the last line."""
+
+    lines = _MISSING_LINES if reason == REASON_MISSING else _MOVED_OUT_LINES
+    index = min(max(attempt, 1), len(lines)) - 1
+    return lines[index].format(slug=slug)
 
 
 __all__ = ["PLANNING_SLUG", "REASON_MISSING", "REASON_MOVED_OUT", "REQUIRED_BLOCK_KIND",

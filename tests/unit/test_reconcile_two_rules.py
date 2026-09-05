@@ -1,7 +1,7 @@
 """Two rules, one tick, one prefix each: neither deletes the other's jobs."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -15,7 +15,7 @@ from fateforger.haunt.reconcile import (
 
 from .test_reconcile import DummyCalendarClient, FakeScheduler
 
-NOW = datetime(2026, 9, 7, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 7, 9, 0, tzinfo=UTC)
 
 
 class _Rule:
@@ -104,7 +104,10 @@ async def test_without_a_required_block_rule_nothing_changes():
 
 
 def test_the_runtime_wiring_constructs_the_rule_with_the_calendar_and_timezone():
-    from fateforger.haunt.required_block_rule import RequiredBlockConfig, RequiredBlockRule
+    from fateforger.haunt.required_block_rule import (
+        RequiredBlockConfig,
+        RequiredBlockRule,
+    )
     rule = RequiredBlockRule(calendar_client=object(), constraint_store=object(), ledger=object(),
                              config=RequiredBlockConfig(calendar_id="hugo@example.com", tz="Europe/Amsterdam"))
     assert rule.rule_id == "required_blocks"
@@ -154,7 +157,8 @@ async def test_an_absent_planning_block_nudges_once_from_the_planning_ladder_onl
     """R2: the two ladders are disjoint for `planning`. With the real watcher
     judging the block absent on the same tick the planning rule nudges, the
     scheduled ids are the planning ladder's and nothing else."""
-    from .test_required_block_rule import _Calendar, _Store, _rule as _required_block_rule
+    from .test_required_block_rule import _Calendar, _Store
+    from .test_required_block_rule import _rule as _required_block_rule
 
     scheduler = FakeScheduler()
     watcher = _required_block_rule(_Calendar(day_events=[]), _Store(["planning"]))
@@ -173,7 +177,9 @@ def test_the_watcher_is_off_when_the_constraint_store_is_the_unavailable_one():
     therefore true on every startup, so the log claimed the watcher was on with
     memory unreachable and the rule asked a reader that could only raise."""
     from fateforger.core.runtime import _required_block_rule_for
-    from fateforger.slack_bot.deepseek_timebox_planner import UnavailableConstraintReader
+    from fateforger.slack_bot.deepseek_timebox_planner import (
+        UnavailableConstraintReader,
+    )
 
     assert _required_block_rule_for(
         calendar_client=object(), constraint_store=UnavailableConstraintReader(),

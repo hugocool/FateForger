@@ -75,12 +75,12 @@ from fateforger.slack_bot.deepseek_timebox_planner import (
 )
 from fateforger.slack_bot.timeboxing_host import planning_timezone
 from fateforger.slack_bot.timeboxing_intents import TimeboxingIntentInterpreter
-from fateforger.slack_bot.tmbx_client import TmbxClient
-from tmbx.build_identity import BuildIdentity, current_build_identity
-from tmbx.build_identity import describe as describe_build
 from fateforger.slack_bot.timeboxing_session_store import (
     SqlAlchemyTimeboxingSessionRepository,
 )
+from fateforger.slack_bot.tmbx_client import TmbxClient
+from tmbx.build_identity import BuildIdentity, current_build_identity
+from tmbx.build_identity import describe as describe_build
 
 USER_CHANNEL_AGENT_TYPE = "user_channel"
 HAUNTING_AGENT_TYPE = "haunting_agent"

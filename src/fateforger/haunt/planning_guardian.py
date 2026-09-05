@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -21,7 +21,7 @@ class PlanningGuardian:
         *,
         anchor_store: SqlAlchemyPlanningAnchorStore,
         reconciler: PlanningReconciler,
-        now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._scheduler = scheduler
         self._anchor_store = anchor_store

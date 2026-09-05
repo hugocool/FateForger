@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Protocol
 from zoneinfo import ZoneInfo
 
@@ -275,7 +275,7 @@ class PlanningSessionRule:
         planning_event_id: str | None = None,
         first_nudge_offset: timedelta | None = None,
     ) -> list[DesiredJob]:
-        start = now.astimezone(timezone.utc)
+        start = now.astimezone(UTC)
         end = start + self._config.horizon
         anchor_found = False
         anchor_in_window = False
@@ -295,7 +295,7 @@ class PlanningSessionRule:
             # one still ahead, rather than being excluded by an overlap test
             # that only recognises events yet to happen.
             anchor_probe_start = (
-                _parse_event_dt(anchor.get("start"), tz=start.tzinfo or timezone.utc)
+                _parse_event_dt(anchor.get("start"), tz=start.tzinfo or UTC)
                 if anchor
                 else None
             )
@@ -311,7 +311,7 @@ class PlanningSessionRule:
                 anchor_tz = (
                     ZoneInfo(anchor_tz_name)
                     if anchor_tz_name
-                    else (_event_native_tzinfo(anchor) or timezone.utc)
+                    else (_event_native_tzinfo(anchor) or UTC)
                 )
                 anchor_start = _parse_event_dt(anchor.get("start"), tz=anchor_tz)
                 anchor_end = _parse_event_dt(anchor.get("end"), tz=anchor_tz)
@@ -433,16 +433,14 @@ class PlanningSessionRule:
             )
             return []
 
-        nudge_offsets = self._resolve_nudge_offsets(
-            first_nudge_offset=first_nudge_offset
-        )
-        if not nudge_offsets:
+        offsets = self._resolve_nudge_offsets(first_nudge_offset=first_nudge_offset)
+        if not offsets:
             # Safety: always schedule at least one nudge, otherwise the reconcile can't work.
-            nudge_offsets = [timedelta(minutes=10)]
+            offsets = [timedelta(minutes=10)]
 
         window_start = start.date().isoformat()
         jobs: list[DesiredJob] = []
-        for idx, offset in enumerate(nudge_offsets, start=1):
+        for idx, offset in enumerate(offsets, start=1):
             jobs.append(
                 DesiredJob(
                     key=JobKey(
@@ -471,7 +469,7 @@ class PlanningSessionRule:
                 payload=PlanningReminder(
                     scope=scope,
                     kind="expire",
-                    attempt=len(nudge_offsets) + 1,
+                    attempt=len(offsets) + 1,
                     message="Still no planning session on the calendar. Want me to block time?",
                     user_id=user_id,
                     channel_id=channel_id,
@@ -588,11 +586,11 @@ class PlanningSessionRule:
         if not isinstance(updated_at, datetime):
             return False
         updated_utc = (
-            updated_at.replace(tzinfo=timezone.utc)
+            updated_at.replace(tzinfo=UTC)
             if updated_at.tzinfo is None
-            else updated_at.astimezone(timezone.utc)
+            else updated_at.astimezone(UTC)
         )
-        delta = now.astimezone(timezone.utc) - updated_utc
+        delta = now.astimezone(UTC) - updated_utc
         if delta < timedelta(0):
             delta = timedelta(0)
         return delta <= self._config.stored_session_consistency_grace
@@ -648,7 +646,7 @@ class PlanningSessionRule:
         if not event_id:
             return
         parsed_start = _parse_event_dt(
-            event.get("start"), tz=start.tzinfo or timezone.utc
+            event.get("start"), tz=start.tzinfo or UTC
         )
         if not parsed_start:
             return
@@ -753,7 +751,7 @@ class PlanningReconciler:
         first_nudge_offset: timedelta | None = None,
         now: datetime | None = None,
     ) -> list[DesiredJob]:
-        now_dt = now or datetime.now(timezone.utc)
+        now_dt = now or datetime.now(UTC)
         desired = list(
             await self._rule.evaluate(
                 now=now_dt, scope=scope, user_id=user_id, channel_id=channel_id,
@@ -994,7 +992,7 @@ def _format_mcp_datetime(dt: datetime) -> str:
 
 
 def _event_within_window(event: dict, start: datetime, end: datetime) -> bool:
-    tz = start.tzinfo or timezone.utc
+    tz = start.tzinfo or UTC
     start_dt = _parse_event_dt(event.get("start"), tz=tz)
     end_dt = _parse_event_dt(event.get("end"), tz=tz)
     if start_dt is None and end_dt is None:
