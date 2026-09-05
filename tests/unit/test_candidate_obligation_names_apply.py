@@ -20,6 +20,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningBrief,
     PlanningDay,
 )
+from fateforger.slack_bot import harness_bridge
 from fateforger.slack_bot.harness_bridge import _planning_obligation
 
 
@@ -64,3 +65,28 @@ def test_a_skeleton_turn_is_not() -> None:
     """Only a candidate is committed, so only a candidate must be applied."""
 
     assert "plan_apply" not in _planning_obligation(_brief(ArtifactKind.SKELETON))
+
+
+def test_the_candidate_obligation_names_each_required_kind_with_its_rule() -> None:
+    """#214: existence is (from memory: …), time is an assumption -- two
+    claims about one block, stated as two, or the model picks one."""
+    from fateforger.agents.timeboxing.session_contracts import FactKind, PlanningFact
+
+    brief = _brief(ArtifactKind.VALIDATED_CANDIDATE)
+    brief = brief.model_copy(update={"facts": [
+        *brief.facts,
+        PlanningFact(
+            fact_id="required-blocks:2026-09-07", kind=FactKind.REQUIRED_BLOCKS,
+            value={"slugs": ["planning"], "by_rule": {"planning": {"uid": "c1", "name": "Daily timeboxing planning session"}}},
+            source="constraint_memory",
+        ),
+    ]})
+    text = harness_bridge._planning_obligation(brief)
+    assert "A `planning` block is required today (from memory: Daily timeboxing planning session)." in text
+    assert "Set `slug: planning` on it verbatim" in text
+    assert "candidate.required_blocks" in text
+
+
+def test_a_brief_without_required_kinds_says_nothing_about_them() -> None:
+    text = harness_bridge._planning_obligation(_brief(ArtifactKind.VALIDATED_CANDIDATE))
+    assert "is required today" not in text
