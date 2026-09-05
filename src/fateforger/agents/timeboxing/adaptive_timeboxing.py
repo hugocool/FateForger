@@ -237,6 +237,11 @@ class OpenSessionRow(BaseModel):
     ``revision`` is how a caller tells a session nobody touched from one the
     user is working in: the turn that opens a session writes revision 1, so
     anything above it is the user's own doing.
+
+    ``planning_date`` is ``None`` until a day is locked, and a session that
+    never locked one stands for no day at all (#299). It carries no default:
+    a row that forgot to say would read as day-less, which is a verdict, not
+    an absence.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -244,6 +249,7 @@ class OpenSessionRow(BaseModel):
     session_key: str
     revision: int
     updated_at: datetime
+    planning_date: date | None
 
 
 class TimeboxingSessionLedger(Protocol):
@@ -265,16 +271,21 @@ class TimeboxingSessionLedger(Protocol):
         planned_to: date,
     ) -> TimeboxingStanding: ...
 
-    async def open_sessions_for_day(
-        self, *, owner_user_id: str, planning_date: date
-    ) -> list[OpenSessionRow]:
-        """Every still-open session this user holds for one planned day.
+    async def open_sessions(self, *, owner_user_id: str) -> list[OpenSessionRow]:
+        """Every still-open session this user holds, newest save first.
 
-        The expiry of an auto-started session asks this instead of
-        ``standing_for``: it needs *which* sessions stand for the day it is
-        closing and how far each one got, not whether the user is busy
-        somewhere. A recency window cannot answer that -- it hides the
-        untouched session it should close and finds the live one it must not.
+        The auto-start guard and the expiry of an auto-started session ask
+        this instead of ``standing_for``: they need *which* sessions the user
+        holds open, how far each got and what day each stands for, not whether
+        the user is busy somewhere. A recency window cannot answer that -- it
+        hides the untouched session it should close and finds the live one it
+        must not.
+
+        The day is not a parameter, and that is the point (#299): a session
+        that proposed a day and never locked one has ``planning_date`` NULL, so
+        any filter in SQL drops it -- and it was exactly those rows that
+        blocked the next start and that nothing ever closed. Callers filter on
+        the day the row carries.
         """
 
         ...
@@ -398,20 +409,20 @@ class InMemoryPlanningSessionRepository:
             open_session_key=open_key, committed_session_key=committed_key
         )
 
-    async def open_sessions_for_day(
-        self, *, owner_user_id: str, planning_date: date
-    ) -> list[OpenSessionRow]:
+    async def open_sessions(self, *, owner_user_id: str) -> list[OpenSessionRow]:
         rows = [
             OpenSessionRow(
                 session_key=key,
                 revision=snapshot.revision,
                 updated_at=self._updated_at[key],
+                planning_date=(
+                    None
+                    if snapshot.planning_day is None
+                    else snapshot.planning_day.date
+                ),
             )
             for key, snapshot in self._snapshots.items()
-            if snapshot.owner_user_id == owner_user_id
-            and snapshot.status == "open"
-            and snapshot.planning_day is not None
-            and snapshot.planning_day.date == planning_date
+            if snapshot.owner_user_id == owner_user_id and snapshot.status == "open"
         ]
         rows.sort(key=lambda row: row.updated_at, reverse=True)
         return rows

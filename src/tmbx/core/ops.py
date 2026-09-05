@@ -76,7 +76,7 @@ handles are meaningful on.
 
 from __future__ import annotations
 
-from typing import Annotated, Callable, Literal, Union
+from typing import Annotated, Any, Callable, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -106,8 +106,35 @@ END = "END"
 PREV = "PREV"
 
 
+def _require_op_tag(schema: dict[str, Any], _model: type[BaseModel]) -> None:
+    """Make ``op`` required, with no default, in the wire schema (#171).
+
+    ``op`` is a ``Literal`` with a Python default so code can build an op
+    without restating its own class name. Pydantic faithfully turned that
+    into ``"default": "add"`` and left ``op`` out of ``required`` in the JSON
+    schema — the schema ``tmbx://schema/ops`` inlines into the planner's
+    prompt. A schema-following model read that as permission to omit the
+    tag: resampled 2026-09-05, gemini-3.6-flash left ``op`` off every op of
+    its first patch in 12 of 20 draws, and each was refused with *Unable to
+    extract tag using discriminator 'op'*. With the tag required in the
+    schema (and one sentence in the preamble naming it), 19 of 20.
+
+    The Python default stays. The wire and the constructor are allowed to
+    differ here because the tag has exactly one value per class: nothing a
+    caller could pass is information, so requiring it on the wire costs the
+    model one key and buys the discriminator a chance to fire.
+    """
+    props = schema.get("properties", {})
+    if "op" not in props:
+        return
+    props["op"].pop("default", None)
+    required = schema.setdefault("required", [])
+    if "op" not in required:
+        required.insert(0, "op")
+
+
 class _OpBase(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_require_op_tag)
     why: str | None = Field(
         default=None, description="Why this op — feeds the journal and memory anchors"
     )
@@ -382,6 +409,7 @@ def _validate_touch(
     existing: set[str],
     touched: set[str],
     plan: Plan,
+    added_this_patch: frozenset[str] = frozenset(),
 ) -> list[str]:
     errors: list[str] = []
     if op.h not in existing:
@@ -401,6 +429,19 @@ def _validate_touch(
         errors.append(
             f"op {index}: {op.h} — 'PREV' is an add-only anchor. A move names a "
             f"position on the plan as rendered: give a handle, 'END', or null."
+        )
+    elif isinstance(op, MoveBlock) and op.after in added_this_patch:
+        # Same shape as the PREV case: a rule, named as one. Moves are
+        # applied before adds, so at move time the added block is not on
+        # the plan. Reported as "not found", a model read it as a typo and
+        # resent the identical patch three times (#304). Say which rule,
+        # and say the move it wanted is already implied by the add.
+        errors.append(
+            f"op {index}: {op.h} — anchor {op.after} is added by this patch, and "
+            f"moves are applied before adds, so a move can only anchor on a "
+            f"block already on the plan. Anchor the move on an existing handle, "
+            f"or drop it: an add lands right after its anchor, ahead of whatever "
+            f"followed that anchor, so the add alone already places it."
         )
     elif isinstance(op, MoveBlock) and op.after not in (None, END) and op.after not in existing:
         errors.append(f"op {index}: anchor {op.after} not found")
@@ -596,7 +637,8 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
     removed = {op.h for op in patch.ops if isinstance(op, RemoveBlock)}
     existing_effective = existing_pre - removed
     add_ops = [op for op in patch.ops if isinstance(op, AddBlock)]
-    anchorable = existing_pre | {op.h for op in add_ops}
+    added_handles = frozenset(op.h for op in add_ops)
+    anchorable = existing_pre | added_handles
     anchors = _add_anchors(patch)
     touched: set[str] = set()
     added: set[str] = set()
@@ -611,7 +653,9 @@ def validate_patch(plan: Plan, patch: Patch) -> list[str]:
             added.add(op.h)
             continue
 
-        errors.extend(_validate_touch(index, op, existing_pre, touched, plan))
+        errors.extend(
+            _validate_touch(index, op, existing_pre, touched, plan, added_this_patch=added_handles)
+        )
         touched.add(op.h)
 
     move_ops = [op for op in patch.ops if isinstance(op, MoveBlock)]

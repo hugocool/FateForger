@@ -246,14 +246,16 @@ class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
             open_session_key=open_key, committed_session_key=committed_key
         )
 
-    async def open_sessions_for_day(
-        self, *, owner_user_id: str, planning_date: date
-    ) -> list[OpenSessionRow]:
-        """Every open session this user holds for one planned day.
+    async def open_sessions(self, *, owner_user_id: str) -> list[OpenSessionRow]:
+        """Every open session this user holds, newest save first.
 
         One query over the indexed columns; the snapshot JSON is never read.
         ``updated_at`` is written naive in UTC by ``save`` and is returned that
         way, so callers compare it against other rows, not against a clock.
+
+        No day filter: a session that never locked one has ``planning_date``
+        NULL and ``planning_date == day`` would drop it (#299). The day comes
+        back on the row and the caller compares it.
         """
 
         async with self._sessionmaker() as session:
@@ -262,20 +264,23 @@ class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
                     _TimeboxingSessionState.session_key,
                     _TimeboxingSessionState.revision,
                     _TimeboxingSessionState.updated_at,
+                    _TimeboxingSessionState.planning_date,
                 )
                 .where(
                     _TimeboxingSessionState.owner_user_id == owner_user_id,
                     _TimeboxingSessionState.status == "open",
-                    _TimeboxingSessionState.planning_date == planning_date,
                 )
                 .order_by(_TimeboxingSessionState.updated_at.desc())
             )
             rows = result.all()
         return [
             OpenSessionRow(
-                session_key=session_key, revision=revision, updated_at=updated_at
+                session_key=session_key,
+                revision=revision,
+                updated_at=updated_at,
+                planning_date=planning_date,
             )
-            for session_key, revision, updated_at in rows
+            for session_key, revision, updated_at, planning_date in rows
         ]
 
     async def _snapshots_for_day(

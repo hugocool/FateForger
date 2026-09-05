@@ -153,6 +153,8 @@ _OPS_SCHEMA_PREAMBLE = """\
 Four ops: add, remove, update, move. Every op addresses a block by its
 handle (h) — never by position.
 
+EVERY OP CARRIES `"op"`: exactly one of "add", "remove", "update", "move". The key is `op`, not `type` — `t` on a block is the block's type (DW, M, H, ...), a different thing. An op without `op` is refused before anything is read.
+
 ADDS ARE APPLIED IN THE ORDER YOU LIST THEM. Omit `after` and the block
 goes after the add listed before it. So the ordinary way to write a day is
 to list the blocks in the order they happen and give exactly one anchor.
@@ -170,7 +172,10 @@ other are refused as a cycle.
 
 Remove, update and move remain a set: their order among themselves changes
 nothing. A move's `after` names a position on the plan as rendered and has
-no "previous"; the default is "END".
+no "previous"; the default is "END". It cannot name a handle this same
+patch adds — moves are applied before adds — and it rarely needs to: an
+add lands right after its anchor, ahead of whatever followed, so "add X
+after A, then move B after X" is just "add X after A".
 
 A new handle (add's `h`) must be 2-5 uppercase letters then 1-2 digits
 (e.g. DW1, MTNG12) — anything else is refused as reason "invalid_patch"

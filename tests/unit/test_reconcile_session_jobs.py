@@ -225,6 +225,45 @@ async def test_a_tzless_offset_event_uses_its_own_offset_for_the_cutoff() -> Non
 
 
 @pytest.mark.asyncio
+async def test_a_committed_day_west_of_utc_is_not_dropped_by_a_utc_date_bound() -> None:
+    """The planned-day bound must compare `now` against `day` in the
+    anchor's own zone, not UTC. West of UTC the two dates disagree before
+    local midnight does: 18:00 in Los Angeles is already 01:00 UTC the next
+    day, so a UTC-dated bound reads "today" as tomorrow and would re-nudge a
+    day that was already planned and committed, every evening from local
+    17:00 to midnight.
+    """
+    scheduler = FakeScheduler()
+    la = ZoneInfo("America/Los_Angeles")
+    start = datetime(2026, 9, 4, 9, 0, tzinfo=la)
+    event = {
+        "id": "ffplanning1",
+        "summary": "Daily planning session",
+        "start": {"dateTime": start.isoformat(), "timeZone": "America/Los_Angeles"},
+        "end": {
+            "dateTime": (start + timedelta(minutes=30)).isoformat(),
+            "timeZone": "America/Los_Angeles",
+        },
+    }
+    ledger = _DayAwareLedger(committed_day=date(2026, 9, 4))
+    reconciler = _reconciler(scheduler, event=event, ledger=ledger)
+    now_local = datetime(2026, 9, 4, 18, 0, tzinfo=la)
+    now_utc = now_local.astimezone(timezone.utc)
+
+    # Sanity: this is exactly the crossing the bug depends on -- UTC has
+    # already rolled over to the next day while it is still today in LA.
+    assert now_utc.date() == date(2026, 9, 5)
+
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1", user_id="U1", channel_id="D1", planning_event_id="ffplanning1", now=now_utc
+    )
+
+    assert jobs == []
+    assert ledger.asked and ledger.asked[0]["planned_from"] == date(2026, 9, 4)
+    assert scheduler.get_jobs() == []
+
+
+@pytest.mark.asyncio
 async def test_expire_after_is_honoured() -> None:
     scheduler = FakeScheduler()
     start = datetime(2026, 9, 4, 9, 0, tzinfo=ZoneInfo(AMS))

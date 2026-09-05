@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -38,11 +38,20 @@ def _reminder(kind: str = SESSION_START_KIND) -> PlanningReminder:
 NOW_NAIVE = START.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def _row(session_key: str, revision: int, *, stale_minutes: int = 60) -> OpenSessionRow:
+def _row(
+    session_key: str,
+    revision: int,
+    *,
+    stale_minutes: int = 60,
+    planning_date: date | None = START.date(),
+) -> OpenSessionRow:
+    """One open row. `planning_date` is None for a session that locked no day."""
+
     return OpenSessionRow(
         session_key=session_key,
         revision=revision,
         updated_at=NOW_NAIVE - timedelta(minutes=stale_minutes),
+        planning_date=planning_date,
     )
 
 
@@ -76,11 +85,12 @@ class _Ledger:
         standing_error=None,
         hand_opened=(),
         unreadable=(),
+        cancel_stuck=(),
     ):
         self.standing = TimeboxingStanding(open_session_key=open_key, committed_session_key=committed_key)
         self.rows = list(rows)
         self.standing_error = standing_error
-        self.asked_for_day = []
+        self.asked_for = []
         self._events = events
         # Session keys whose snapshot carries no auto-open interaction id: the
         # user opened these by hand and expiry may never close them.
@@ -88,20 +98,34 @@ class _Ledger:
         # Session keys whose snapshot cannot be loaded at all -- a transient
         # store error, distinct from "loaded and not ours".
         self._unreadable = set(unreadable)
+        # Session keys whose row stays `open` however many CancelSession turns
+        # reach it: the kernel refused the turn, which it does by posting into
+        # the thread, not by raising.
+        self._cancel_stuck = set(cancel_stuck)
+        self._cancelled: set[str] = set()
+
+    def cancel_turn_delivered(self, session_key):
+        """What a delivered CancelSession does to the row `load` returns."""
+
+        if session_key not in self._cancel_stuck:
+            self._cancelled.add(session_key)
 
     async def standing_for(self, **_):
         if self.standing_error is not None:
             raise self.standing_error
         return self.standing
 
-    async def open_sessions_for_day(self, *, owner_user_id, planning_date):
-        self.asked_for_day.append((owner_user_id, planning_date))
+    async def open_sessions(self, *, owner_user_id):
+        self.asked_for.append(owner_user_id)
         return list(self.rows)
 
     async def load(self, key):
         if key in self._unreadable:
             raise RuntimeError("store unavailable")
-        return _snapshot(key, auto_opened=key not in self._hand_opened)
+        snapshot = _snapshot(key, auto_opened=key not in self._hand_opened)
+        if key in self._cancelled:
+            return snapshot.model_copy(update={"status": "cancelled"})
+        return snapshot
 
 
 class _Haunting:
@@ -169,6 +193,10 @@ def _starter(monkeypatch, *, ledger, haunting=None, runtime=None, guardian=None,
         if events is not None:
             events.append("turn")
         turns.append(kwargs)
+        # A delivered CancelSession ends the session; the store is where that
+        # shows, since the delivery itself returns nothing either way.
+        if isinstance(kwargs["action"].intent, CancelSession):
+            ledger.cancel_turn_delivered(kwargs["session_key"])
 
     monkeypatch.setattr("fateforger.slack_bot.session_start._deliver_timebox_turn", _deliver)
     return SessionStarter(
@@ -249,14 +277,117 @@ async def test_an_event_without_a_named_timezone_keeps_its_own_offset(monkeypatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("standing", [_Ledger(open_key="C1:old"), _Ledger(committed_key="C1:done")])
-async def test_an_open_or_committed_session_blocks_the_start(monkeypatch, standing):
+async def test_a_committed_day_blocks_the_start(monkeypatch):
     haunting = _Haunting()
-    starter, turns = _starter(monkeypatch, ledger=standing, haunting=haunting)
+    starter, turns = _starter(monkeypatch, ledger=_Ledger(committed_key="C1:done"), haunting=haunting)
 
     await starter.start(_reminder())
 
     assert turns == [] and haunting.scheduled == []
+
+
+@pytest.mark.asyncio
+async def test_a_stale_day_less_session_the_user_opened_does_not_block(monkeypatch):
+    # #299, as it happened: a session that proposed a day and never locked one
+    # sits open at revision 1 with no planning_date. `standing`'s hour-wide
+    # window still names it, but nobody has been in it for 45 minutes and it
+    # stands for no day at all -- it may not swallow the day's auto-start, and
+    # it is not ours to close either.
+    haunting = _Haunting()
+    ledger = _Ledger(
+        open_key="C1:halfopen",
+        rows=[_row("C1:halfopen", 1, stale_minutes=45, planning_date=None)],
+        hand_opened=("C1:halfopen",),
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert len(turns) == 1 and isinstance(turns[0]["action"].intent, ConfirmPlanningDay)
+    assert haunting.cancelled == [], "a session that is not ours is never closed"
+    assert haunting.scheduled, "the ladder still arms for a fresh start"
+
+
+@pytest.mark.asyncio
+async def test_our_own_abandoned_opening_is_recovered_and_the_start_proceeds(monkeypatch):
+    # A restart mid-opening leaves our own half-open session behind: open, no
+    # day locked, nobody in it. It is ours, so we close it and start again
+    # rather than leaving it to block the day for an hour.
+    errors = []
+    monkeypatch.setattr(
+        "fateforger.slack_bot.session_start.record_error",
+        lambda **kwargs: errors.append(kwargs),
+    )
+    haunting = _Haunting()
+    ledger = _Ledger(
+        open_key="C1:halfopen",
+        rows=[_row("C1:halfopen", 1, stale_minutes=45, planning_date=None)],
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert haunting.cancelled == [{"topic_id": "C1:halfopen"}]
+    assert isinstance(turns[0]["action"].intent, CancelSession)
+    assert turns[0]["session_key"] == "C1:halfopen"
+    assert turns[0]["action"].expected_revision == 1
+    assert any("canceled" in (u.get("text") or "") for u in starter._client.updates)
+    assert not any(
+        "Missed" in (post.get("text") or "") for post in starter._client.posted
+    ), "recovery is not an expiry: nothing is announced as missed"
+    assert {"component": "session_start", "error_type": "half_open_recovered"} in errors
+    # And the day gets the session it was owed.
+    assert isinstance(turns[1]["action"].intent, ConfirmPlanningDay)
+    assert haunting.scheduled
+
+
+@pytest.mark.asyncio
+async def test_a_recovery_that_does_not_land_claims_nothing_and_blocks(monkeypatch):
+    # The kernel refuses a turn by posting into the thread, not by raising, so
+    # a delivered CancelSession is no evidence the session ended. If the row is
+    # still open, nothing was recovered: the meter must not say it was, and the
+    # start must not put a second session beside one that is still live.
+    errors = []
+    monkeypatch.setattr(
+        "fateforger.slack_bot.session_start.record_error",
+        lambda **kwargs: errors.append(kwargs),
+    )
+    haunting = _Haunting()
+    ledger = _Ledger(
+        rows=[_row("C1:stuck", 1, stale_minutes=45, planning_date=None)],
+        cancel_stuck=("C1:stuck",),
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert [turn["session_key"] for turn in turns] == ["C1:stuck"], "the cancel was tried once"
+    assert not any(e["error_type"] == "half_open_recovered" for e in errors)
+    assert {"component": "session_start", "error_type": "close_failure"} in errors
+    assert haunting.scheduled == [], "no new session, so no ladder"
+    assert starter._client.posted == [], "no surface may be opened beside a live session"
+    assert not any(
+        "canceled" in (u.get("text") or "") for u in starter._client.updates
+    ), "a root that says canceled over a row that is still open is a lie"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hand_opened", [(), ("C1:live",)])
+async def test_a_day_less_session_touched_minutes_ago_blocks_the_start(monkeypatch, hand_opened):
+    # No day locked, but somebody saved it two minutes ago: they are in it.
+    # Ours or theirs, a second session on top of that one is the double open
+    # this guard exists to stop -- and nothing is closed underneath them.
+    haunting = _Haunting()
+    ledger = _Ledger(
+        rows=[_row("C1:live", 1, stale_minutes=2, planning_date=None)],
+        hand_opened=hand_opened,
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert turns == [] and haunting.scheduled == [] and haunting.cancelled == []
+    assert starter._client.posted == []
 
 
 @pytest.mark.asyncio
@@ -304,7 +435,7 @@ async def test_expire_closes_the_session_nobody_touched_and_hands_over(monkeypat
 
     await starter.expire(_reminder(SESSION_EXPIRE_KIND))
 
-    assert ledger.asked_for_day == [("U1", START.date())]
+    assert ledger.asked_for == ["U1"]
     assert haunting.cancelled == [{"topic_id": "C1:root.1"}]
     assert isinstance(turns[0]["action"].intent, CancelSession) and turns[0]["action"].expected_revision == 1
     relabel = starter._client.updates[-1]
@@ -367,7 +498,7 @@ async def test_expire_after_a_commit_does_nothing(monkeypatch):
     await starter.expire(_reminder(SESSION_EXPIRE_KIND))
 
     assert turns == [] and haunting.cancelled == [] and guardian.reconciled == []
-    assert ledger.asked_for_day == []
+    assert ledger.asked_for == []
 
 
 @pytest.mark.asyncio
@@ -432,12 +563,110 @@ async def test_an_auto_opened_session_past_the_untouched_revision_is_live(monkey
 
 
 @pytest.mark.asyncio
-async def test_expire_says_nothing_while_another_session_still_stands(monkeypatch):
-    # A session with no planning_date yet is invisible to open_sessions_for_day
-    # but stands in `standing`. DMing "Missed" at a user who is mid-session,
-    # with no day locked, is the one message that must not go out.
+async def test_expire_closes_our_own_day_less_session(monkeypatch):
+    # A session of ours that never locked a day is invisible to a day filter,
+    # so nothing ever closed it. Its revision says nothing about the user
+    # having engaged -- the day it stands for was never agreed -- so it is
+    # closed however far it got.
+    #
+    # And it is closed the way the recovery closes the identical shape: the
+    # root reads `canceled` and the thread hears nothing. A row left over
+    # from some other day never stood for *this* one, so a root stamped with
+    # today's date and a "Missed" line posted into that unrelated thread
+    # would both be untrue. The DM is a different claim and stays: the day
+    # really did go unplanned.
     haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
-    ledger = _Ledger(open_key="C1:hand")
+    ledger = _Ledger(rows=[_row("C1:root.1", 3, planning_date=None)])
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert haunting.cancelled == [{"topic_id": "C1:root.1"}]
+    assert isinstance(turns[0]["action"].intent, CancelSession)
+    relabel = starter._client.updates[-1]
+    assert relabel["ts"] == "root.1" and "canceled" in relabel["text"]
+    assert "missed" not in relabel["text"]
+    assert starter._client.posted == [], "nothing was missed in a thread that stood for no day"
+    assert any("Missed" in m.content for m, _ in runtime.sent)
+    assert guardian.reconciled == ["U1"]
+
+
+@pytest.mark.asyncio
+async def test_expire_claims_no_close_that_did_not_land(monkeypatch):
+    # The cancel turn was delivered and the row is still open, so this session
+    # was not closed. It still stands, and "Missed" at a user whose session is
+    # open is the one message that must not go out.
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(
+        open_key="C1:stuck",
+        rows=[_row("C1:stuck", 1)],
+        cancel_stuck=("C1:stuck",),
+    )
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert [turn["session_key"] for turn in turns] == ["C1:stuck"]
+    assert starter._client.updates == [], "no root reads missed over a row still open"
+    assert starter._client.posted == []
+    assert runtime.sent == [] and guardian.reconciled == []
+
+
+@pytest.mark.asyncio
+async def test_expire_leaves_a_day_less_session_the_user_opened_alone(monkeypatch):
+    # Hugo's store holds these from ordinary manual sessions. Stale or not,
+    # they are his, and expiry closes nothing it cannot prove it opened.
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(
+        rows=[_row("C1:hand", 1, stale_minutes=240, planning_date=None)],
+        hand_opened=("C1:hand",),
+    )
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == []
+    assert any("Missed" in m.content for m, _ in runtime.sent)
+
+
+@pytest.mark.asyncio
+async def test_expire_ignores_a_session_locked_to_another_day(monkeypatch):
+    # The day filter moved into Python when the query stopped carrying it;
+    # a session standing for tomorrow is not this expiry's to close. Nor does
+    # it stand forever in the way of today's missed line: it is stale (the
+    # default), so today's expiry is not "another session still stands", it
+    # is "a leftover from a day this expiry has no business with".
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(rows=[_row("C1:tomorrow", 1, planning_date=date(2026, 9, 5))])
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == []
+    assert any("Missed" in m.content for m, _ in runtime.sent)
+    assert guardian.reconciled == ["U1"]
+
+
+@pytest.mark.asyncio
+async def test_expire_says_nothing_over_a_row_it_cannot_prove_is_not_its_own(monkeypatch):
+    # A row whose snapshot cannot be read is not provably somebody else's --
+    # closing it would be the mistake `_sweep` already refuses to make, and
+    # DMing "Missed" over it is the same mistake from the other side: the
+    # user could be mid-session in exactly this row. Uncertainty silences the
+    # line, the same way it blocks a fresh start.
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(
+        rows=[_row("C1:mystery", 1)],
+        unreadable=("C1:mystery",),
+    )
     starter, turns = _starter(
         monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
     )
@@ -480,18 +709,27 @@ async def test_a_stale_open_session_does_not_block_the_start(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_an_unreadable_row_blocks_the_start(monkeypatch):
+@pytest.mark.parametrize("planning_date", [START.date(), None])
+async def test_an_unreadable_row_blocks_the_start(monkeypatch, planning_date):
     # Unreadable is not the same finding as "not ours": the guard cannot
     # prove the row isn't its own, and letting a fresh start through on that
     # uncertainty is how a restart double-opens a session. It fails closed,
     # the opposite of what `_sweep` does on the same unreadable row.
+    #
+    # Both readings of the row reach that call: one standing for this day, in
+    # the guard's own loop, and a day-less one, in the recovery pass ahead of
+    # it. The day-less reading is the one that would slip -- it falls past the
+    # day comparison the guard's loop turns on -- so it is named here too.
     errors = []
     monkeypatch.setattr(
         "fateforger.slack_bot.session_start.record_error",
         lambda **kwargs: errors.append(kwargs),
     )
     haunting = _Haunting()
-    ledger = _Ledger(rows=[_row("C1:mystery", 1)], unreadable=("C1:mystery",))
+    ledger = _Ledger(
+        rows=[_row("C1:mystery", 1, planning_date=planning_date)],
+        unreadable=("C1:mystery",),
+    )
     starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
 
     await starter.start(_reminder())
@@ -531,7 +769,7 @@ async def test_the_missed_line_names_the_day_that_was_missed(monkeypatch):
     # An evening event plans tomorrow: "today's planning session" names the
     # wrong day for every session that does.
     runtime = _Runtime()
-    ledger = _Ledger(rows=[_row("C1:root.1", 1)])
+    ledger = _Ledger(rows=[_row("C1:root.1", 1, planning_date=date(2026, 9, 5))])
     starter, _ = _starter(monkeypatch, ledger=ledger, runtime=runtime)
     evening = START.replace(hour=18)
     reminder = PlanningReminder(
@@ -573,3 +811,104 @@ async def test_a_missing_permalink_is_loud_and_still_arms(monkeypatch):
 
     assert {"component": "session_start", "error_type": "permalink_failure"} in errors
     assert haunting.scheduled, "a linkless ladder still beats no ladder"
+
+
+@pytest.mark.asyncio
+async def test_a_session_carrying_this_day_saved_inside_the_hour_blocks_the_start(monkeypatch):
+    # The concrete case: Hugo opened a session by hand at 08:50, engaged with
+    # it (revision 5) and stepped away. At 09:00 the auto-start must not open
+    # a second one. `LIVE_RECENCY` alone would have let this through eleven
+    # minutes after his last save -- but a row carrying *this* day could
+    # genuinely be this day's session, ours or not, so the hour `standing`
+    # always used is the window that governs it.
+    haunting = _Haunting()
+    ledger = _Ledger(
+        rows=[_row("C1:byhand", 5, stale_minutes=11)],
+        hand_opened=("C1:byhand",),
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert turns == [] and haunting.scheduled == [] and haunting.cancelled == []
+    assert starter._client.posted == [], "no second session beside one that stands for the day"
+
+
+@pytest.mark.asyncio
+async def test_a_session_carrying_this_day_saved_past_the_hour_does_not_block(monkeypatch):
+    # The far side of the same window. Past the hour the row is cold, and a
+    # cold session somebody else opened is not this day's session in fact --
+    # it is a leftover, and the day still needs planning.
+    haunting = _Haunting()
+    ledger = _Ledger(
+        rows=[_row("C1:byhand", 5, stale_minutes=70)],
+        hand_opened=("C1:byhand",),
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert len(turns) == 1 and isinstance(turns[0]["action"].intent, ConfirmPlanningDay)
+    assert haunting.scheduled, "the ladder still arms for a fresh start"
+
+
+@pytest.mark.asyncio
+async def test_a_day_less_session_is_judged_on_recency_not_on_the_hour(monkeypatch):
+    # The hour is for rows that carry this day. A row that locked no day
+    # stands for nothing, so eleven minutes after its last save -- past
+    # `LIVE_RECENCY` -- nobody is in it, and it may not swallow the day's
+    # auto-start. This is #299's harm, and it stays fixed.
+    haunting = _Haunting()
+    ledger = _Ledger(
+        rows=[_row("C1:halfopen", 5, stale_minutes=11, planning_date=None)],
+        hand_opened=("C1:halfopen",),
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert len(turns) == 1 and isinstance(turns[0]["action"].intent, ConfirmPlanningDay)
+    assert haunting.cancelled == [], "a session that is not ours is never closed"
+    assert haunting.scheduled
+
+
+@pytest.mark.asyncio
+async def test_expire_says_nothing_over_a_session_that_stood_for_the_day(monkeypatch):
+    # Half an hour ago the user was in a session for this very day. It is not
+    # ours to close and it is too cold to count as live, but it did stand for
+    # the day -- and "Missed the planning session" at somebody who was
+    # planning thirty minutes ago is the message that must not go out.
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(
+        rows=[_row("C1:byhand", 5, stale_minutes=30)],
+        hand_opened=("C1:byhand",),
+    )
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == []
+    assert runtime.sent == [], "no missed DM over a session that stood for the day"
+    assert guardian.reconciled == []
+
+
+@pytest.mark.asyncio
+async def test_expire_says_nothing_while_another_day_is_being_planned(monkeypatch):
+    # The other side of the other-day fallback: a row locked to tomorrow is
+    # not this expiry's business, but somebody saved it two minutes ago, so
+    # they are planning right now. Telling them they missed today's session
+    # while they are typing is exactly the interruption the silence is for.
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(
+        rows=[_row("C1:tomorrow", 4, stale_minutes=2, planning_date=date(2026, 9, 5))]
+    )
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert turns == [] and haunting.cancelled == [], "another day's session is not ours to close"
+    assert runtime.sent == [] and guardian.reconciled == []
