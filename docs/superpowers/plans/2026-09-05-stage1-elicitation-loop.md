@@ -1758,6 +1758,8 @@ and `_stage1_outcome` becomes:
 
 Check the other callers of `_stage1_outcome`: run `grep -n "_stage1_outcome(" src/fateforger/agents/timeboxing/adaptive_timeboxing.py`. Expected: only the run-loop call site above (the docstring says so); if another exists, pass `[]` there.
 
+**Amendment (Task 9 review, 2026-09-05):** `resolve(SKELETON)` runs before the `stage1 != "closed"` branch, so after consent every skeleton-target turn would re-run the three judge fan-outs and rewrite a matrix nobody reads. In `timeboxing_host._frame_from_corpus`, when `snapshot.stage1 == "closed"` return rules, suspended count and the frame handling as before but without calling `elicit` (no matrix fact, `probes=[]`) — arithmetic on a field the kernel minted. One test in `tests/unit/test_timeboxing_host_stage1_rows.py`: a closed stage with a stated frame resolves with `stub_elicit.calls == []`, `context.facts == []`, `context.probes == []`, `context.applicable_constraints == ROWS`. Staleness is bounded by the kernel: an `ELICITED_STATEMENT`, a `SUSPENDED_CONSTRAINT` or `GoBack` reopens the stage, and the judgements run again.
+
 - [ ] **Step 4: Run the kernel tests**
 
 Run: `$PY -m pytest tests/unit/test_adaptive_stage1.py tests/unit -q -m "not slow" -p no:randomly -k "adaptive or stage1 or elicit"`
