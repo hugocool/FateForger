@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.session import ServerSession
 from mcp.shared.exceptions import McpError
 
+from memory.identity import is_minted_uid
 from memory.models import Channel
 from memory.openrouter_judge import OpenRouterJudge
 from memory.sampling import SamplingDeclined, SamplingJudge, SamplingUnavailable
@@ -158,6 +159,20 @@ def register_tools(mcp: FastMCP, service: MemoryService) -> None:
         you intend to record, reuse it across retries of that statement, and
         never reuse it for a different statement.
         """
+        if write_uid is not None and not is_minted_uid(write_uid):
+            # The trust boundary. In-process callers mint deterministic keys
+            # of their own -- `promote_kind` uses `promotion-{slug}` over a
+            # validated slug -- and those are this system minting its own
+            # identity. What arrives here comes from outside, and on
+            # 2026-09-03 what arrived was a fixture's `uid-1`, which became a
+            # permanent row in the production corpus and projected into a
+            # durable rule nobody stated (#288).
+            raise ValueError(
+                f"write_uid {write_uid!r} is not an id this server minted. "
+                "Omit it and one is minted for you, or pass back the id from "
+                "the first attempt at this same statement."
+            )
+
         when = (
             datetime.fromisoformat(observed_at)
             if observed_at
@@ -418,8 +433,33 @@ def build_bridged_server(db_path: str, *, api_key: str, base_url: str) -> FastMC
     return mcp
 
 
+def resolve_db_path() -> str:
+    """The store to open, or a refusal naming what to set.
+
+    This used to default to the relative `data/memory.db`, which is Hugo's
+    real corpus when resolved from the repo root and an empty file when
+    resolved from anywhere else. Both failures happened on 2026-09-03: a
+    headless run wrote a placeholder observation into the production store
+    (#288), and a worktree restart served an empty one. A default that is
+    silently right or silently wrong depending on the caller's cwd is the
+    shape this project refuses; absence is reported, not guessed at.
+
+    `demo.py` sets this explicitly, so the supervised path is unaffected.
+    """
+    configured = (os.environ.get("MEMORY_DB_PATH") or "").strip()
+    if not configured:
+        raise RuntimeError(
+            "MEMORY_DB_PATH is not set. Set it to the store this process "
+            "should write to -- a scratch path for a headless or preview run, "
+            "the configured store for the live bot. There is deliberately no "
+            "default: the previous one wrote test data into the production "
+            "corpus (#288)."
+        )
+    return configured
+
+
 def main() -> None:
-    db_path = os.environ.get("MEMORY_DB_PATH", "data/memory.db")
+    db_path = resolve_db_path()
 
     # Explicit opt-in. Never inferred from a key happening to be in the
     # environment: a server that quietly stops asking its host because a

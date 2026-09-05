@@ -103,6 +103,10 @@ def _judge_kind_chosen(monkeypatch):
     """Which factory main() reaches for, without starting a server."""
     from memory import mcp_server
 
+    # These tests are about the judge, not the store, but main() no longer
+    # defaults the store to the production corpus (#288), so every caller
+    # names one. A scratch path keeps the question here the judge question.
+    monkeypatch.setenv("MEMORY_DB_PATH", "/tmp/judge-selection-scratch.db")
     chosen = {}
     monkeypatch.setattr(
         mcp_server, "build_sampling_server",
@@ -145,6 +149,7 @@ def test_the_bridge_is_taken_only_when_asked_for_explicitly(monkeypatch):
 def test_an_unknown_judge_kind_refuses_to_start(monkeypatch):
     from memory import mcp_server
 
+    monkeypatch.setenv("MEMORY_DB_PATH", "/tmp/judge-selection-scratch.db")
     monkeypatch.setenv("MEMORY_JUDGE", "gemini")
     with pytest.raises(SystemExit, match="not a judge this build knows"):
         mcp_server.main()
@@ -158,6 +163,7 @@ def test_the_bridge_refuses_to_start_without_a_key(monkeypatch):
     """
     from memory import mcp_server
 
+    monkeypatch.setenv("MEMORY_DB_PATH", "/tmp/judge-selection-scratch.db")
     monkeypatch.setenv("MEMORY_JUDGE", "openrouter")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(SystemExit, match="needs OPENROUTER_API_KEY"):
