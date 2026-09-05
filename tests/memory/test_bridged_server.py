@@ -83,7 +83,7 @@ def test_the_bridge_holds_a_key_and_the_sampling_server_does_not():
     This gives that back, and the test exists so the difference is visible
     rather than incidental.
     """
-    from memory.openrouter_judge import OpenRouterJudge
+    from memory.openrouter_judge import DEFAULT_JUDGE_MODEL, OpenRouterJudge
     from memory.sampling import SamplingJudge
 
     bridged = _judge_used(
@@ -96,7 +96,7 @@ def test_the_bridge_holds_a_key_and_the_sampling_server_does_not():
 
     assert isinstance(bridged, OpenRouterJudge)
     assert isinstance(hosted, SamplingJudge)
-    assert bridged._model == "google/gemini-3.6-flash"   # the measured one
+    assert bridged._model == DEFAULT_JUDGE_MODEL   # the measured one (the .env pin, or its fallback)
 
 
 def _judge_kind_chosen(monkeypatch):

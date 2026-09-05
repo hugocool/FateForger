@@ -65,11 +65,14 @@ class Settings(BaseSettings):
     openrouter_reasoning_effort_header: str = Field(
         default="X-Reasoning-Effort"
     )
+    # Decided 2026-08-24 on measurement (scripts/bench/, cordis.patch.yml):
+    # the loop wants the fastest model that holds a conversation, planning and
+    # patching want the better one. `:nitro` routes by throughput, not price.
     openrouter_default_model_flash: str = Field(
-        default="google/gemini-3-flash-preview"
+        default="openai/gpt-oss-120b:nitro"
     )
     openrouter_default_model_pro: str = Field(
-        default="google/gemini-3-flash-preview"
+        default="deepseek/deepseek-v4-pro-0813:nitro"
     )
 
     # Per-agent model selection (optional; provider-specific model IDs)

@@ -36,7 +36,7 @@ Routing note:
 ## Shared Patterns
 
 - All agents use **AutoGen AgentChat** (`RoutedAgent`, `AssistantAgent`, `BaseChatAgent`).
-- LLM provider: OpenRouter -> Gemini (see `src/fateforger/llm/` for client config).
+- LLM provider: OpenRouter -> gpt-oss-120b for the loop, DeepSeek V4 Pro for planning and patching, both `:nitro` (see `src/fateforger/llm/` and the `.env` pins).
 - Structured output: use `output_content_type` for simple Pydantic models; use **schema-in-system-prompt** for models with `oneOf` / discriminated unions (see `timeboxing/AGENTS.md` for rationale).
 - TOON tabular format for list-shaped LLM inputs (see `src/fateforger/llm/toon.py`).
 

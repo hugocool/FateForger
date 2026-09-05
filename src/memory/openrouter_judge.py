@@ -24,6 +24,15 @@ class _ProviderError(Exception):
     """
 
 
+#: The flash-tier model this project decided on 2026-08-24 (scripts/bench/,
+#: infra/dsh/profile/cordis.patch.yml): half gemini-3.6-flash's latency, three
+#: times its throughput, a twenty-first of its cost. `:nitro` is load-bearing:
+#: OpenRouter's default routing sorts by price, `:nitro` by throughput, and the
+#: throughput host (Cerebras) enforces structured outputs. `.env`'s
+#: OPENROUTER_DEFAULT_MODEL_FLASH is the decision record; this is its fallback.
+DEFAULT_JUDGE_MODEL = "openai/gpt-oss-120b:nitro"
+
+
 class OpenRouterJudge(PromptJudge):
     """Judge backed directly by OpenRouter.
 
@@ -38,7 +47,7 @@ class OpenRouterJudge(PromptJudge):
         self,
         api_key: str,
         base_url: str,
-        model: str = "google/gemini-3.6-flash",
+        model: str = DEFAULT_JUDGE_MODEL,
         temperature: float | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -151,9 +160,14 @@ def openrouter_judge_from_env() -> OpenRouterJudge:
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
+    # The pin in .env is the decision record. This judge used to ignore it and
+    # carry its own default, which is how the memory server kept judging on
+    # gemini for weeks after the project had moved (2026-09-05).
+    model = (os.environ.get("OPENROUTER_DEFAULT_MODEL_FLASH") or "").strip()
     return OpenRouterJudge(
         api_key=api_key,
         base_url=os.environ.get(
             "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
         ),
+        model=model or DEFAULT_JUDGE_MODEL,
     )

@@ -380,8 +380,10 @@ Every guard is mutation-verified: neuter it and watch the test fail before trust
 
 **Eval, live model, resampled.** Gap recall and precision against Hugo's hand-labelled
 set on the three fixture days, **n = 5**, reported as rates. Probe framing quality
-judged by the non-contender `google/gemini-3.1-pro-preview`, n = 5; the contender is
-`google/gemini-3.6-flash` at `minimal` for every spike, so measure 3 compares like with
+judged by the non-contender `deepseek/deepseek-v4-pro-0813:nitro`, n = 5; the contender is
+`openai/gpt-oss-120b:nitro` at `minimal` for every spike (the project's flash-tier pin since
+2026-08-24; the 2026-09-04 spike numbers above were taken on gemini-3.6-flash, the pin `.env`
+carried at the time), so measure 3 compares like with
 like. A prompt change to the floor or the criteria is validated here, never by a green
 unit suite. The two spike scripts under `scripts/spikes/` are the first two evals.
 
