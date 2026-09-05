@@ -29,7 +29,9 @@ BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 #: Overridable, because the grader is not the thing under test. The default is
 #: deliberately NOT one of the contenders: a model grading its own output in a
 #: comparison is a bias nobody can see in the table.
-JUDGE = os.environ.get("BENCH_JUDGE", "google/gemini-3.5-flash")
+# The non-contender: a bench judged by one of its own contenders measures agreement,
+# not quality. The pro pin is never a contender in the loop bench.
+JUDGE = os.environ.get("BENCH_JUDGE") or os.environ.get("OPENROUTER_DEFAULT_MODEL_PRO") or "deepseek/deepseek-v4-pro-0813:nitro"
 
 RUBRICS = {
     "stage_prose": """You are grading one message from a day-planning assistant to its user.

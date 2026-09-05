@@ -274,7 +274,7 @@ def build_autogen_chat_client(
     if provider_name == "openrouter" and reasoning_effort:
         kwargs["extra_body"] = {"reasoning": {"effort": reasoning_effort}}
     if provider_name == "openrouter":
-        # OpenRouter model IDs (e.g. `google/gemini-...`) are not valid OpenAI model names,
+        # OpenRouter model IDs (e.g. `openai/gpt-oss-120b:nitro`) are not valid OpenAI model names,
         # so autogen-ext requires an explicit ModelInfo.
         kwargs["model_info"] = {
             "family": ModelFamily.ANY,
