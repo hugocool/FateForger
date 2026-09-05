@@ -284,7 +284,7 @@ async def test_reconcile_schedules_session_jobs_for_an_anchor_event_ahead():
 async def test_reconcile_logs_anchor_ahead_outcome_for_an_event_within_the_window(caplog):
     # Same event, but now asserting the outcome label: an anchor still ahead
     # logs "anchor_ahead", not the old "anchor_match" (which meant "found and
-    # silenced"); see test_reconcile_uses_anchor_event_id_when_provided above.
+    # silenced"); see test_reconcile_schedules_session_jobs_for_an_anchor_event_ahead above.
     scheduler = FakeScheduler()
     client = DummyCalendarClient(events=[])
     reconciler = PlanningReconciler(scheduler, calendar_client=client)
@@ -307,6 +307,51 @@ async def test_reconcile_logs_anchor_ahead_outcome_for_an_event_within_the_windo
 
     assert {job.key.kind for job in jobs} == {SESSION_START_KIND, SESSION_EXPIRE_KIND}
     assert "planning_reconcile evaluate outcome=anchor_ahead" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "anchor_start,unreadable_field",
+    [
+        pytest.param({"date": "2026-09-04"}, "end", id="all_day_missing_end"),
+        pytest.param({}, "start", id="malformed_start"),
+    ],
+)
+async def test_reconcile_falls_through_to_nudges_when_anchor_dates_do_not_parse(
+    caplog, anchor_start, unreadable_field
+):
+    # An anchor nobody can read (an all-day event with no `dateTime`, or a
+    # malformed payload) used to return `[]` with outcome=anchor_match --
+    # silencing the ladder for a planning event that cannot even be
+    # inspected. It must instead fall through to the stored/fallback checks
+    # and the nudge ladder exactly as an absent anchor does, with the fact
+    # logged so it is visible.
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2026, 9, 4, 9, 0, tzinfo=timezone.utc)
+    client.event_lookup[("primary", "ff-planning-u1")] = {
+        "id": "ff-planning-u1",
+        "start": anchor_start,
+        # "end" deliberately omitted for the all-day case: this system
+        # cannot read it either way.
+    }
+
+    with caplog.at_level(logging.WARNING, logger="fateforger.haunt.reconcile"):
+        jobs = await reconciler.reconcile_missing_planning(
+            scope="U1",
+            user_id="U1",
+            channel_id="C1",
+            planning_event_id="ff-planning-u1",
+            now=now,
+        )
+
+    assert jobs
+    assert any(job.key.kind.startswith("nudge") for job in jobs)
+    assert scheduler.get_jobs()
+    assert "outcome=anchor_unreadable" in caplog.text
+    assert f"unreadable_field={unreadable_field}" in caplog.text
 
 
 @pytest.mark.asyncio
