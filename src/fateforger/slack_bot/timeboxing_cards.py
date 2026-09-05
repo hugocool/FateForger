@@ -228,6 +228,7 @@ TIMEBOX_FAILURE_TEXTS = {
         "This is the first step of the session, so there is nothing to go "
         "back to. Pick the day, or cancel."
     ),
+    "nothing_to_cancel": "There is no planning session to cancel yet.",
     # A cited rule that is not one of the day's. Retrying is the right move
     # and the sentence says so, because the citation is the planner's and the
     # next draft may well not repeat it -- but it must not read as "your plan

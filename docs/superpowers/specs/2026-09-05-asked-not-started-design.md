@@ -134,10 +134,12 @@ asked, with `display_state="no_session"` and no offered options. The docstring's
 "there is nothing to decide about" is deleted with the code that made it true.
 
 `start` → `StartSession()`, the same object as before: the opening turn is unchanged.
-`question` → `AskQuestion` → `Asked` → the host answers; **no session row is created beyond the
-revision-0 envelope `load_or_create` already writes**, and revision stays 0.
-`cancel` → `CancelSession()` before a day is locked (#299 option 3). If the kernel refuses a
-cancel at revision 0, that refusal is `TurnFailed` with its existing copy — not a new path.
+`question` → `AskQuestion` → `Asked` → the host answers; **no session row is created at all: the
+kernel answers a question over an in-memory snapshot, and a cancel with nothing to cancel is
+refused before any row exists**, and revision stays 0.
+`cancel` → `CancelSession()` before a day is locked (#299 option 3). A cancel that has nothing to
+cancel — no row, or a row with no locked day and no artifacts — is refused as `TurnFailed` with
+code `nothing_to_cancel`.
 
 The empty-text case (`Advance()`) is unchanged.
 
