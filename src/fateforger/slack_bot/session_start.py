@@ -59,6 +59,11 @@ UNTOUCHED_REVISION = 1
 MISSED_STATE = "missed"
 CANCELED_STATE = "canceled"
 
+#: The snapshot status of a session that has not ended. The store's own word
+#: (`session_contracts.PlanningSessionSnapshot.status`), repeated here for the
+#: one question this module asks of it: did the cancel land?
+OPEN_STATUS = "open"
+
 #: The second half of a session key opened in a DM (`f"{channel}:dm"`), where
 #: there is no thread root. A convention this system minted, not user text.
 DM_SESSION_SUFFIX = "dm"
@@ -290,9 +295,12 @@ class SessionStarter:
                 live[0].session_key,
             )
             return
-        # `standing` sees sessions this day's rows cannot: one still open with
-        # no planning_date on it yet. Telling that user they missed the session
-        # they are sitting in is the one message that must never go out.
+        # `standing` and the rows are two reads of one store: a session saved
+        # between them stands in the first and is missing from the second, and
+        # a close that did not land leaves its key out of `closed_keys`.
+        # Telling a user they missed the session they are sitting in is the one
+        # message that must never go out, so a session standing here and swept
+        # by neither verdict still silences it.
         if (
             standing.open_session_key is not None
             and standing.open_session_key not in closed_keys
@@ -342,8 +350,8 @@ class SessionStarter:
                 # its revision says nothing about the user having engaged:
                 # whatever it counted, it counted before any day was agreed.
                 if row.planning_date is None or row.revision <= UNTOUCHED_REVISION:
-                    await self._close_untouched(user_id=user_id, row=row, day=day)
-                    closed.add(row.session_key)
+                    if await self._close_untouched(user_id=user_id, row=row, day=day):
+                        closed.add(row.session_key)
                 else:
                     live.append(row)
                 continue
@@ -413,8 +421,15 @@ class SessionStarter:
         row: OpenSessionRow,
         day: date,
         state: str = MISSED_STATE,
-    ) -> None:
+    ) -> bool:
         """Shut one session nobody worked in: ladder off, cancelled, relabelled.
+
+        Returns whether the session actually ended. The kernel refuses a turn
+        by posting into the thread, and `_deliver_timebox_turn` returns nothing
+        either way, so the delivery is no evidence: the row the store holds
+        afterwards is. Nothing is relabelled or announced on a close that did
+        not land -- a root reading `missed` or `canceled` over a row that is
+        still `open` is a lie the user acts on.
 
         `state` is the root's new label, and it also says whether the thread
         hears about it. Expiry closes a session the user was expected in, so
@@ -451,6 +466,14 @@ class SessionStarter:
         except Exception:
             logger.exception("session_expire: cancel turn failed for %s", session_key)
             record_error(component="session_start", error_type="expire_failure")
+        if not await self._session_ended(session_key):
+            logger.warning(
+                "session close: %s is still open after its cancel turn; "
+                "leaving its root and thread as they are",
+                session_key,
+            )
+            record_error(component="session_start", error_type="close_failure")
+            return False
         if root_ts == DM_SESSION_SUFFIX:
             # A DM session has no thread root: nothing to relabel and nowhere
             # to post the missed line. The suffix is one this system minted, so
@@ -458,10 +481,10 @@ class SessionStarter:
             logger.info(
                 "session_expire: %s is a DM session; no root to relabel", session_key
             )
-            return
+            return True
         await self._relabel_root(channel_id, root_ts, state=state, day=day)
         if state != MISSED_STATE:
-            return
+            return True
         try:
             await self._client.chat_postMessage(
                 channel=channel_id, thread_ts=root_ts, text=missed_line(day_label=_day_label(day))
@@ -469,6 +492,32 @@ class SessionStarter:
         except Exception:
             logger.exception("session_expire: thread line failed for %s", session_key)
             record_error(component="session_start", error_type="expire_failure")
+        return True
+
+    async def _session_ended(self, session_key: str) -> bool:
+        """Is this session over, according to the store?
+
+        The only honest evidence a cancel landed. Unreadable counts as not
+        ended: a close nobody can see is not one to claim, and both callers
+        are safe on that side -- expiry leaves the row for its next pass, and
+        the start stands down rather than opening a second session beside one
+        that may still be live.
+        """
+
+        try:
+            snapshot = await self._ledger.load(session_key)
+        except Exception:
+            logger.exception("session close: snapshot load failed for %s", session_key)
+            record_error(component="session_start", error_type="guard_failure")
+            return False
+        if snapshot is None:
+            logger.info(
+                "session close: no snapshot behind %s; nothing to end", session_key
+            )
+            return False
+        # `status` is a value this system writes, so this is identity, not a
+        # reading of anything the user said.
+        return snapshot.status != OPEN_STATUS
 
     # -- helpers -------------------------------------------------------------
 
@@ -595,13 +644,25 @@ class SessionStarter:
                 row.revision,
                 row.updated_at,
             )
-            # Not a failure -- a recovery. It is metered so that a restart
-            # storm leaving these behind is visible as a rate rather than as a
-            # day that quietly went unplanned.
-            record_error(component="session_start", error_type="half_open_recovered")
-            await self._close_untouched(
+            landed = await self._close_untouched(
                 user_id=user_id, row=row, day=day, state=CANCELED_STATE
             )
+            if not landed:
+                # The row is still open and it is ours, so the way is not
+                # clear: a second session beside it is the double open this
+                # guard exists to stop. Fail closed, as with a row that cannot
+                # be read -- keeping it in `remaining` would not block, since
+                # a day-less row falls past the day comparison below.
+                logger.warning(
+                    "session_start: %s could not be closed and is still open; not starting",
+                    row.session_key,
+                )
+                return None
+            # Not a failure -- a recovery, and only now that the store agrees
+            # one happened. Metered so that a restart storm leaving these
+            # behind is visible as a rate rather than as a day that quietly
+            # went unplanned.
+            record_error(component="session_start", error_type="half_open_recovered")
         return remaining
 
     async def _open_sessions(self, *, user_id: str) -> list[OpenSessionRow] | None:

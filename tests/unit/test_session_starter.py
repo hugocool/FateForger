@@ -85,6 +85,7 @@ class _Ledger:
         standing_error=None,
         hand_opened=(),
         unreadable=(),
+        cancel_stuck=(),
     ):
         self.standing = TimeboxingStanding(open_session_key=open_key, committed_session_key=committed_key)
         self.rows = list(rows)
@@ -97,6 +98,17 @@ class _Ledger:
         # Session keys whose snapshot cannot be loaded at all -- a transient
         # store error, distinct from "loaded and not ours".
         self._unreadable = set(unreadable)
+        # Session keys whose row stays `open` however many CancelSession turns
+        # reach it: the kernel refused the turn, which it does by posting into
+        # the thread, not by raising.
+        self._cancel_stuck = set(cancel_stuck)
+        self._cancelled: set[str] = set()
+
+    def cancel_turn_delivered(self, session_key):
+        """What a delivered CancelSession does to the row `load` returns."""
+
+        if session_key not in self._cancel_stuck:
+            self._cancelled.add(session_key)
 
     async def standing_for(self, **_):
         if self.standing_error is not None:
@@ -110,7 +122,10 @@ class _Ledger:
     async def load(self, key):
         if key in self._unreadable:
             raise RuntimeError("store unavailable")
-        return _snapshot(key, auto_opened=key not in self._hand_opened)
+        snapshot = _snapshot(key, auto_opened=key not in self._hand_opened)
+        if key in self._cancelled:
+            return snapshot.model_copy(update={"status": "cancelled"})
+        return snapshot
 
 
 class _Haunting:
@@ -178,6 +193,10 @@ def _starter(monkeypatch, *, ledger, haunting=None, runtime=None, guardian=None,
         if events is not None:
             events.append("turn")
         turns.append(kwargs)
+        # A delivered CancelSession ends the session; the store is where that
+        # shows, since the delivery itself returns nothing either way.
+        if isinstance(kwargs["action"].intent, CancelSession):
+            ledger.cancel_turn_delivered(kwargs["session_key"])
 
     monkeypatch.setattr("fateforger.slack_bot.session_start._deliver_timebox_turn", _deliver)
     return SessionStarter(
@@ -320,6 +339,36 @@ async def test_our_own_abandoned_opening_is_recovered_and_the_start_proceeds(mon
     # And the day gets the session it was owed.
     assert isinstance(turns[1]["action"].intent, ConfirmPlanningDay)
     assert haunting.scheduled
+
+
+@pytest.mark.asyncio
+async def test_a_recovery_that_does_not_land_claims_nothing_and_blocks(monkeypatch):
+    # The kernel refuses a turn by posting into the thread, not by raising, so
+    # a delivered CancelSession is no evidence the session ended. If the row is
+    # still open, nothing was recovered: the meter must not say it was, and the
+    # start must not put a second session beside one that is still live.
+    errors = []
+    monkeypatch.setattr(
+        "fateforger.slack_bot.session_start.record_error",
+        lambda **kwargs: errors.append(kwargs),
+    )
+    haunting = _Haunting()
+    ledger = _Ledger(
+        rows=[_row("C1:stuck", 1, stale_minutes=45, planning_date=None)],
+        cancel_stuck=("C1:stuck",),
+    )
+    starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
+
+    await starter.start(_reminder())
+
+    assert [turn["session_key"] for turn in turns] == ["C1:stuck"], "the cancel was tried once"
+    assert not any(e["error_type"] == "half_open_recovered" for e in errors)
+    assert {"component": "session_start", "error_type": "close_failure"} in errors
+    assert haunting.scheduled == [], "no new session, so no ladder"
+    assert starter._client.posted == [], "no surface may be opened beside a live session"
+    assert not any(
+        "canceled" in (u.get("text") or "") for u in starter._client.updates
+    ), "a root that says canceled over a row that is still open is a lie"
 
 
 @pytest.mark.asyncio
@@ -534,6 +583,29 @@ async def test_expire_closes_our_own_day_less_session(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_expire_claims_no_close_that_did_not_land(monkeypatch):
+    # The cancel turn was delivered and the row is still open, so this session
+    # was not closed. It still stands, and "Missed" at a user whose session is
+    # open is the one message that must not go out.
+    haunting, guardian, runtime = _Haunting(), _Guardian(), _Runtime()
+    ledger = _Ledger(
+        open_key="C1:stuck",
+        rows=[_row("C1:stuck", 1)],
+        cancel_stuck=("C1:stuck",),
+    )
+    starter, turns = _starter(
+        monkeypatch, ledger=ledger, haunting=haunting, runtime=runtime, guardian=guardian
+    )
+
+    await starter.expire(_reminder(SESSION_EXPIRE_KIND))
+
+    assert [turn["session_key"] for turn in turns] == ["C1:stuck"]
+    assert starter._client.updates == [], "no root reads missed over a row still open"
+    assert starter._client.posted == []
+    assert runtime.sent == [] and guardian.reconciled == []
+
+
+@pytest.mark.asyncio
 async def test_expire_leaves_a_day_less_session_the_user_opened_alone(monkeypatch):
     # Hugo's store holds these from ordinary manual sessions. Stale or not,
     # they are his, and expiry closes nothing it cannot prove it opened.
@@ -615,18 +687,27 @@ async def test_a_stale_open_session_does_not_block_the_start(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_an_unreadable_row_blocks_the_start(monkeypatch):
+@pytest.mark.parametrize("planning_date", [START.date(), None])
+async def test_an_unreadable_row_blocks_the_start(monkeypatch, planning_date):
     # Unreadable is not the same finding as "not ours": the guard cannot
     # prove the row isn't its own, and letting a fresh start through on that
     # uncertainty is how a restart double-opens a session. It fails closed,
     # the opposite of what `_sweep` does on the same unreadable row.
+    #
+    # Both readings of the row reach that call: one standing for this day, in
+    # the guard's own loop, and a day-less one, in the recovery pass ahead of
+    # it. The day-less reading is the one that would slip -- it falls past the
+    # day comparison the guard's loop turns on -- so it is named here too.
     errors = []
     monkeypatch.setattr(
         "fateforger.slack_bot.session_start.record_error",
         lambda **kwargs: errors.append(kwargs),
     )
     haunting = _Haunting()
-    ledger = _Ledger(rows=[_row("C1:mystery", 1)], unreadable=("C1:mystery",))
+    ledger = _Ledger(
+        rows=[_row("C1:mystery", 1, planning_date=planning_date)],
+        unreadable=("C1:mystery",),
+    )
     starter, turns = _starter(monkeypatch, ledger=ledger, haunting=haunting)
 
     await starter.start(_reminder())
