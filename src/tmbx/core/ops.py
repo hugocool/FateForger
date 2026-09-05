@@ -76,7 +76,7 @@ handles are meaningful on.
 
 from __future__ import annotations
 
-from typing import Annotated, Callable, Literal, Union
+from typing import Annotated, Any, Callable, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -106,8 +106,35 @@ END = "END"
 PREV = "PREV"
 
 
+def _require_op_tag(schema: dict[str, Any], _model: type[BaseModel]) -> None:
+    """Make ``op`` required, with no default, in the wire schema (#171).
+
+    ``op`` is a ``Literal`` with a Python default so code can build an op
+    without restating its own class name. Pydantic faithfully turned that
+    into ``"default": "add"`` and left ``op`` out of ``required`` in the JSON
+    schema — the schema ``tmbx://schema/ops`` inlines into the planner's
+    prompt. A schema-following model read that as permission to omit the
+    tag: resampled 2026-09-05, gemini-3.6-flash left ``op`` off every op of
+    its first patch in 12 of 20 draws, and each was refused with *Unable to
+    extract tag using discriminator 'op'*. With the tag required in the
+    schema (and one sentence in the preamble naming it), 19 of 20.
+
+    The Python default stays. The wire and the constructor are allowed to
+    differ here because the tag has exactly one value per class: nothing a
+    caller could pass is information, so requiring it on the wire costs the
+    model one key and buys the discriminator a chance to fire.
+    """
+    props = schema.get("properties", {})
+    if "op" not in props:
+        return
+    props["op"].pop("default", None)
+    required = schema.setdefault("required", [])
+    if "op" not in required:
+        required.insert(0, "op")
+
+
 class _OpBase(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_require_op_tag)
     why: str | None = Field(
         default=None, description="Why this op — feeds the journal and memory anchors"
     )
