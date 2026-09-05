@@ -190,7 +190,17 @@ class RequiredBlockRule:
             return RequiredBlockOutcome(undecided=[self.scope_prefix(scope)])
         if not required:
             return RequiredBlockOutcome()
-        sleep = await self._sleep(user_id, day)
+        try:
+            sleep = await self._sleep(user_id, day)
+        except Exception as exc:  # noqa: BLE001 - named, and no verdict
+            logger.warning("required_blocks_unreadable user=%s day=%s error_type=%s error=%s (day_frame)",
+                           user_id, day, type(exc).__name__, exc)
+            # The sleep boundary is half of `within_bounds`; without it a block
+            # inside its bounds cannot be told from one past them. No slug is
+            # judged, so no slug's ladder is pruned.
+            return RequiredBlockOutcome(
+                undecided=[self.slug_prefix(scope, day, slug) for slug in required]
+            )
 
         jobs: list[DesiredJob] = []
         undecided: list[str] = []
@@ -243,12 +253,14 @@ class RequiredBlockRule:
         if remembered:
             try:
                 event = await self._calendar.get_event(calendar_id=self._config.calendar_id, event_id=remembered)
-            except Exception as exc:  # noqa: BLE001
+                of_kind = event is not None and _is_kind(event, slug)
+                in_bounds = of_kind and within_bounds(event, day=day, tz=tz, sleep=sleep)
+            except Exception as exc:  # noqa: BLE001 - the fetch or the parse; either way, no verdict
                 logger.warning("calendar_unreadable user=%s slug=%s error_type=%s error=%s",
                                user_id, slug, type(exc).__name__, exc)
                 return None
-            if event is not None and _is_kind(event, slug):
-                if within_bounds(event, day=day, tz=tz, sleep=sleep):
+            if of_kind:
+                if in_bounds:
                     return "present"
                 # R4: the id resolves and the kind still matches -- the block
                 # was dragged to another day or pushed past sleep. That is
@@ -257,14 +269,26 @@ class RequiredBlockRule:
                 # `missing` whenever the drag left the day empty, which is the
                 # wrong reason and the wrong line.
                 return REASON_MOVED_OUT
-        events = await self._calendar.list_day(calendar_id=self._config.calendar_id, day=day, tz=tz)
+        try:
+            events = await self._calendar.list_day(calendar_id=self._config.calendar_id, day=day, tz=tz)
+        except Exception as exc:  # noqa: BLE001 - named, and no verdict
+            logger.warning("calendar_unreadable user=%s slug=%s day=%s error_type=%s error=%s (list_day)",
+                           user_id, slug, day, type(exc).__name__, exc)
+            return None
         if events is None:
             logger.warning("calendar_unreadable user=%s slug=%s day=%s (list_day)", user_id, slug, day)
             return None
-        carrying = [e for e in events if isinstance(e, dict) and _is_kind(e, slug)]
+        try:
+            carrying = [e for e in events if isinstance(e, dict) and _is_kind(e, slug)]
+            inside = [e for e in carrying if within_bounds(e, day=day, tz=tz, sleep=sleep)]
+        except Exception as exc:  # noqa: BLE001 - named, and no verdict
+            # A day whose events cannot be read is an unread day. Judging on
+            # the ones that did parse would haunt for a block that is there.
+            logger.warning("calendar_unreadable user=%s slug=%s day=%s error_type=%s error=%s (parse)",
+                           user_id, slug, day, type(exc).__name__, exc)
+            return None
         if len(carrying) > 1:
             logger.info("required_block_duplicates user=%s slug=%s count=%d", user_id, slug, len(carrying))
-        inside = [e for e in carrying if within_bounds(e, day=day, tz=tz, sleep=sleep)]
         if inside:
             self.remember(user_id=user_id, day=day, slug=slug, event_id=str(inside[0].get("id") or ""))
             return "present"

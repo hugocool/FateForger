@@ -72,13 +72,19 @@ class _UnreadableStore:
 
 
 class _Ledger:
-    def __init__(self, sleep: str | None = "23:00", day_type: str | None = None):
+    def __init__(self, sleep: str | None = "23:00", day_type: str | None = None,
+                 fail_frame=False, fail_day_type=False):
         self._sleep, self._day_type = sleep, day_type
+        self._fail_frame, self._fail_day_type = fail_frame, fail_day_type
 
     async def day_frame_for(self, *, owner_user_id, planning_date):
+        if self._fail_frame:
+            raise RuntimeError("session store unreachable")
         return None if self._sleep is None else {"wake": "07:00", "sleep": self._sleep}
 
     async def day_type_for(self, *, owner_user_id, planning_date):
+        if self._fail_day_type:
+            raise RuntimeError("session store unreachable")
         return self._day_type
 
 
@@ -332,3 +338,45 @@ async def test_a_day_with_no_session_falls_back_to_the_weekday():
     store = _Store(["planning"])
     await _outcome(_rule(_Calendar(day_events=[]), store, _Ledger(day_type=None)))
     assert store.filters[0]["day_type"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_a_frame_the_ledger_cannot_answer_gives_no_verdict(caplog):
+    """The sleep boundary is half of `within_bounds`. Without it a block inside
+    its bounds is indistinguishable from one past them, so nothing is judged --
+    and, R1, nothing is pruned."""
+    rule = _rule(_Calendar(day_events=[]), _Store(["closure"]), _Ledger(fail_frame=True))
+    rule.remember(user_id="U1", day=DAY, slug="closure", event_id="e1")
+    with caplog.at_level("WARNING"):
+        outcome = await _outcome(rule)
+    assert outcome.jobs == []
+    assert outcome.undecided == [f"rule:required_blocks:U1:{DAY.isoformat()}:closure:"]
+    assert rule.cached(user_id="U1", day=DAY, slug="closure") == "e1"
+    assert any("required_blocks_unreadable" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_day_type_the_ledger_cannot_answer_leaves_the_whole_scope_undecided(caplog):
+    """The day type decides which rules are asked for, so a failure here means
+    the required set itself is unknown -- not one slug's, all of them."""
+    rule = _rule(_Calendar(day_events=[]), _Store(["closure"]), _Ledger(fail_day_type=True))
+    with caplog.at_level("WARNING"):
+        outcome = await _outcome(rule)
+    assert outcome.jobs == []
+    assert outcome.undecided == ["rule:required_blocks:U1:"]
+    assert any("required_blocks_unreadable" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_an_unparseable_event_gives_no_verdict_for_that_slug(caplog):
+    """A day whose events cannot be read is an unread day. Treating the ones
+    that did parse as the whole day would haunt for a block that is there."""
+    broken = {"id": "e9", "start": {"dateTime": {"nested": 1}}, "end": {"dateTime": {"nested": 1}},
+              "extendedProperties": {"private": {"tmbx.slug": "closure"}}}
+    cal = _Calendar(day_events=[broken])
+    rule = _rule(cal, _Store(["closure"]))
+    with caplog.at_level("WARNING"):
+        outcome = await _outcome(rule)
+    assert outcome.jobs == []
+    assert outcome.undecided == [f"rule:required_blocks:U1:{DAY.isoformat()}:closure:"]
+    assert any("calendar_unreadable" in record.message for record in caplog.records)
