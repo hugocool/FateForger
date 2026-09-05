@@ -38,6 +38,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningFact,
     PlanningResult,
     ProvidePlanningFacts,
+    StartSession,
     UserBlockerDraft,
     coverage_fact_id,
 )
@@ -287,10 +288,14 @@ async def test_timebox_start_renders_the_date_card_and_starts_no_planner(
     """
 
     planner = ExplodingPlanner()
+    runtime = Runtime(repository=repository, planner=planner)
+    # The opening turn is judged since #318, so even a session that only
+    # renders the date card needs an interpreter to answer the start.
+    runtime.timeboxing_intent_interpreter = ScriptedInterpreter([StartSession()])
     client = Client()
 
     await handlers.route_slack_event(
-        runtime=Runtime(repository=repository, planner=planner),
+        runtime=runtime,
         focus=_focus(),
         default_agent="timeboxing_agent",
         event={"channel": "C1", "user": "U1", "text": "plan my day", "ts": "111"},
@@ -410,7 +415,12 @@ async def test_confirming_the_card_locks_saturday_as_a_weekend_the_host_derived(
     planner = RecordedPlanner()
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
+        [
+            StartSession(),
+            ProvidePlanningFacts(
+                facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")]
+            ),
+        ]
     )
     client = Client()
 
@@ -469,6 +479,7 @@ async def test_a_fresh_repository_rehydrates_the_session_without_the_transcript(
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
         [
+            StartSession(),
             ProvidePlanningFacts(
                 facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")]
             ),
@@ -638,7 +649,12 @@ async def test_a_skeleton_turn_touches_no_calendar_and_stores_no_candidate(
     planner = RecordedPlanner()
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
+        [
+            StartSession(),
+            ProvidePlanningFacts(
+                facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")]
+            ),
+        ]
     )
     client = Client()
 
@@ -706,7 +722,12 @@ async def test_only_an_approved_skeleton_unlocks_the_first_validated_candidate(
     planner = RecordedPlanner([_skeleton_result(), _candidate_result()])
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
+        [
+            StartSession(),
+            ProvidePlanningFacts(
+                facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")]
+            ),
+        ]
     )
     runtime.timeboxing_calendar_id = "cal"
     runtime.timeboxing_constraint_store = _ConstraintStore()
@@ -772,7 +793,12 @@ async def test_a_failed_turn_says_one_stable_thing_and_leaks_no_payload(
 
     runtime = Runtime(repository=repository, planner=_ExplodingPlanner())
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
+        [
+            StartSession(),
+            ProvidePlanningFacts(
+                facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")]
+            ),
+        ]
     )
     client = Client()
 
@@ -817,6 +843,9 @@ async def test_a_stale_card_click_changes_nothing_and_says_so_safely(
 
     planner = RecordedPlanner()
     runtime = Runtime(repository=repository, planner=planner)
+    # The opening turn is judged since #318, so even a session that only
+    # renders the date card needs an interpreter to answer the start.
+    runtime.timeboxing_intent_interpreter = ScriptedInterpreter([StartSession()])
     client = Client()
 
     await handlers.route_slack_event(
@@ -888,6 +917,9 @@ async def test_pressing_vacation_on_a_saturday_locks_vacation_not_the_weekend(
 
     planner = RecordedPlanner()
     runtime = Runtime(repository=repository, planner=planner)
+    # The opening turn is judged since #318, so even a session that only
+    # renders the date card needs an interpreter to answer the start.
+    runtime.timeboxing_intent_interpreter = ScriptedInterpreter([StartSession()])
     client = Client()
 
     await handlers.route_slack_event(
@@ -938,6 +970,9 @@ async def test_picking_another_day_keeps_the_day_type_row_on_the_card(
 
     planner = RecordedPlanner()
     runtime = Runtime(repository=repository, planner=planner)
+    # The opening turn is judged since #318, so even a session that only
+    # renders the date card needs an interpreter to answer the start.
+    runtime.timeboxing_intent_interpreter = ScriptedInterpreter([StartSession()])
     client = Client()
 
     await handlers.route_slack_event(
@@ -1064,7 +1099,12 @@ async def test_a_failed_turn_offers_retry_and_cancel_bound_to_the_session(
     planner = FlakyPlanner()
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
+        [
+            StartSession(),
+            ProvidePlanningFacts(
+                facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")]
+            ),
+        ]
     )
     client = Client()
 
@@ -1127,7 +1167,12 @@ async def test_retry_and_a_typed_advance_reach_one_executor_with_one_intent(
     pressed_planner = FlakyPlanner()
     pressed_runtime = Runtime(repository=repository, planner=pressed_planner)
     pressed_runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
+        [
+            StartSession(),
+            ProvidePlanningFacts(
+                facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")]
+            ),
+        ]
     )
     pressed_client = Client()
     pressed_key = await _drive_to_a_failed_turn(
@@ -1152,6 +1197,7 @@ async def test_retry_and_a_typed_advance_reach_one_executor_with_one_intent(
     typed_runtime = Runtime(repository=repository, planner=typed_planner)
     typed_runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
         [
+            StartSession(),
             ProvidePlanningFacts(
                 facts=[_fact("b1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("b1-frame")]
             ),
@@ -1209,6 +1255,9 @@ async def test_an_open_question_is_asked_without_a_button_row(
 
     planner = RecordedPlanner()
     runtime = Runtime(repository=repository, planner=planner)
+    # The opening turn is judged since #318, so even a session that only
+    # renders the date card needs an interpreter to answer the start.
+    runtime.timeboxing_intent_interpreter = ScriptedInterpreter([StartSession()])
     client = Client()
 
     session_key = await _start_and_confirm_saturday(
@@ -1256,6 +1305,7 @@ async def test_approving_a_superseded_skeleton_plans_nothing(
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
         [
+            StartSession(),
             ProvidePlanningFacts(
                 facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")]
             ),
@@ -1442,7 +1492,12 @@ async def test_approving_the_candidate_commits_it_and_records_the_receipt(
     planner = RecordedPlanner([_skeleton_result(), _candidate_result()])
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
+        [
+            StartSession(),
+            ProvidePlanningFacts(
+                facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")]
+            ),
+        ]
     )
     runtime.timeboxing_calendar_id = "cal"
     runtime.timeboxing_constraint_store = _ConstraintStore()
@@ -1579,7 +1634,12 @@ async def test_every_rendered_control_names_its_session_and_revision(
     planner = RecordedPlanner([_skeleton_result(), _candidate_result()])
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = ScriptedInterpreter(
-        [ProvidePlanningFacts(facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")])]
+        [
+            StartSession(),
+            ProvidePlanningFacts(
+                facts=[_fact("a1", FactKind.REQUESTED_ACTIVITY, "gym"), _frame("a1-frame")]
+            ),
+        ]
     )
     runtime.timeboxing_calendar_id = "cal"
     runtime.timeboxing_constraint_store = _ConstraintStore()
@@ -1681,7 +1741,10 @@ async def test_a_typed_vacation_gets_past_the_date_card_without_a_press(
     planner = RecordedPlanner()
     runtime = Runtime(repository=repository, planner=planner)
     model = ScriptedModel(
-        {"decision": "confirm_planning_day", "day_type": "vacation", "facts": []}
+        # The opening turn is judged like any other since #318: typed words on
+        # a fresh session are a start, not an assumption.
+        {"decision": "start", "facts": []},
+        {"decision": "confirm_planning_day", "day_type": "vacation", "facts": []},
     )
     runtime.timeboxing_intent_interpreter = TimeboxingIntentInterpreter(model)
     client = Client()
@@ -1695,8 +1758,9 @@ async def test_a_typed_vacation_gets_past_the_date_card_without_a_press(
         say=None,
         client=client,
     )
-    # The card is on screen and nobody pressed it.
-    assert not model.prompts
+    # The card is on screen and nobody pressed it: the one interpretation so
+    # far is the start the opening words were judged to be (#318).
+    assert len(model.prompts) == 1
 
     await handlers.route_slack_event(
         runtime=runtime,
@@ -1723,7 +1787,8 @@ async def test_a_typed_vacation_gets_past_the_date_card_without_a_press(
     # basis that disagrees with the weekday, so a chat override that skipped it
     # would raise rather than quietly claim the calendar said so.
     assert snapshot.planning_day.classification_basis == "user_override"
-    assert len(model.prompts) == 1
+    # The start, and then the sentence that got past the card.
+    assert len(model.prompts) == 2
 
 
 def _closed_choice_requirements() -> type:
@@ -1858,7 +1923,10 @@ async def test_a_closed_question_arrives_as_buttons_carrying_what_they_answer(
     planner = ShapePlanner()
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = TimeboxingIntentInterpreter(
-        ScriptedModel({"decision": "confirm_planning_day"})
+        ScriptedModel(
+            {"decision": "start"},
+            {"decision": "confirm_planning_day"},
+        )
     )
     client = Client()
 
@@ -1907,7 +1975,10 @@ async def test_an_option_question_keeps_its_buttons_when_a_press_is_refused(
     planner = ShapePlanner()
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = TimeboxingIntentInterpreter(
-        ScriptedModel({"decision": "confirm_planning_day"})
+        ScriptedModel(
+            {"decision": "start"},
+            {"decision": "confirm_planning_day"},
+        )
     )
     client = Client()
 
@@ -2068,6 +2139,7 @@ async def test_a_whole_session_can_be_driven_by_chat_and_by_button_alike(
     typed_runtime, typed_planner, typed_model = _shape_runtime(
         repository,
         responses=[
+            {"decision": "start"},
             {"decision": "confirm_planning_day", "day_type": "vacation"},
             facts_reply,
             {"decision": "advance", "facts": []},
@@ -2100,7 +2172,8 @@ async def test_a_whole_session_can_be_driven_by_chat_and_by_button_alike(
             text=text,
             ts=ts,
         )
-        assert len(typed_model.prompts) == step + 1
+        # One interpretation per reply, after the opening start (#318).
+        assert len(typed_model.prompts) == step + 2
 
     typed_snapshot = await repository.load_or_create("C1:p1", owner_user_id="U1")
     assert typed_snapshot.planning_day is not None
@@ -2114,7 +2187,11 @@ async def test_a_whole_session_can_be_driven_by_chat_and_by_button_alike(
     # -- pressed, wherever a control exists -------------------------------
     pressed_runtime, pressed_planner, pressed_model = _shape_runtime(
         repository,
-        responses=[facts_reply, {"decision": "advance", "facts": []}],
+        responses=[
+            {"decision": "start", "facts": []},
+            facts_reply,
+            {"decision": "advance", "facts": []},
+        ],
     )
     pressed_client = Client()
 
@@ -2209,15 +2286,16 @@ async def test_a_whole_session_can_be_driven_by_chat_and_by_button_alike(
     # The typed choice was made from the offer rather than from a memory of it:
     # the turn that answered had the ids, the labels and the effects in front of
     # it, which is the whole difference between choosing and guessing.
-    choice_prompt = typed_model.prompts[3]
+    choice_prompt = typed_model.prompts[4]
     for option in _shape_options():
         assert option.option_id in choice_prompt
         assert option.label in choice_prompt
         assert option.effect in choice_prompt
-    # Three of the pressed run's five transitions needed no model at all. That
-    # is the case for buttons where the answer set is closed, and the case for
-    # keeping both doors: the typed run needed five.
-    assert len(pressed_model.prompts) == 2
-    assert len(typed_model.prompts) == 5
+    # Three of the pressed run's transitions needed no model at all. That is
+    # the case for buttons where the answer set is closed, and the case for
+    # keeping both doors: the typed run judged every turn it had, the opening
+    # one included (#318).
+    assert len(pressed_model.prompts) == 3
+    assert len(typed_model.prompts) == 6
     for planner in (typed_planner, pressed_planner):
         assert planner.briefs[-1].target_artifact is ArtifactKind.VALIDATED_CANDIDATE
