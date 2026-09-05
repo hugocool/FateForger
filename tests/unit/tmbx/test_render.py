@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+
 from datetime import date, time, timedelta
 
 import pytest
@@ -193,6 +195,32 @@ def test_empty_name_renders_as_an_empty_field_not_two_quotes():
         "blocks[1]{H,own,type,summary,ST,ET,mode,dur,slug}:\n"
         "XX1,tmbx,DW,,09:00,10:00,fw,PT1H,"
     )
+
+
+def test_a_slug_containing_the_delimiter_is_quoted_like_the_summary():
+    """`Block.slug` is only shape-checked on the add/update ops tmbx owns; a
+    block whose slug was set by hand on the calendar reaches the renderer
+    unchecked. Rendered raw, a comma in it shifts every column of every later
+    row -- and it is the last column, so the damage lands on the next line.
+    """
+    plan = Plan(
+        date=date(2026, 8, 17),
+        blocks=[
+            Block(uid="u1", h="XX1", n="Sprint", t=ET.DW,
+                  p=FixedWindow(st=time(9, 0), et=time(10, 0)),
+                  anchor_source="user", slug="a,b"),
+        ],
+    )
+    body = render_plan(plan)
+    assert body == (
+        "blocks[1]{H,own,type,summary,ST,ET,mode,dur,slug}:\n"
+        'XX1,tmbx,DW,Sprint,09:00,10:00,fw,PT1H,"a,b"'
+    )
+    # The escape rule is CSV quoting exactly (see `_escape`), so a CSV reader
+    # is the honest test that the row still has the nine columns the header
+    # promises -- a naive split on the delimiter cannot tell the two apart.
+    row, = csv.reader([body.splitlines()[1]])
+    assert row == ["XX1", "tmbx", "DW", "Sprint", "09:00", "10:00", "fw", "PT1H", "a,b"]
 
 
 # --- ISO duration edge cases ----------------------------------------------

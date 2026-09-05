@@ -180,7 +180,9 @@ def render_plan(plan: Plan, foreign_uids: Collection[str] = ()) -> str:
 
     ``slug`` is the recurring kind of block (``planning``, ``sleep``), shown
     so a planner can see a required kind is already on the day; empty when
-    the block has none.
+    the block has none. Escaped like ``summary``: tmbx shape-checks a slug on
+    the ops it owns, but a block whose slug was set by hand on the calendar
+    arrives unchecked, and a delimiter in the last column corrupts the row.
 
     ``foreign_uids`` — a block's ``uid`` (never rendered itself, see the
     module docstring) — controls the ``own`` column: ``"foreign"`` when
@@ -198,7 +200,7 @@ def render_plan(plan: Plan, foreign_uids: Collection[str] = ()) -> str:
     lines = [header] + [
         _DELIMITER.join(
             [row["h"], row["own"], row["type"], _escape(row["summary"]),
-             row["start"], row["end"], row["mode"], row["dur"], row["slug"]]
+             row["start"], row["end"], row["mode"], row["dur"], _escape(row["slug"])]
         )
         for row in plan_rows(plan, foreign_uids)
     ]
