@@ -13,6 +13,7 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import PlanningContext
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactDraft,
     ArtifactKind,
+    PlanningFact,
     PlanningResult,
 )
 from tests.unit.test_adaptive_timeboxing import RecordedContextPort
@@ -26,8 +27,13 @@ class RowsContextPort(RecordedContextPort):
     carries no rules. Provenance cannot be verified against nothing.
     """
 
-    def __init__(self, rows: list[dict[str, object]]) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        rows: list[dict[str, object]],
+        *,
+        facts: tuple[PlanningFact, ...] = (),
+    ) -> None:
+        super().__init__(facts=facts)
         self.rows = rows
 
     async def resolve(self, snapshot, *, target, progress):

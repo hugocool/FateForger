@@ -646,6 +646,14 @@ class NeedsAnotherTurn(_StrictModel):
 
     kind: Literal["needs_another_turn"] = "needs_another_turn"
     reason: str = Field(min_length=1)
+    #: A non-blocking question the same turn also raised, when the artifact
+    #: it would ride with is not being offered for approval yet. Nothing
+    #: renders this today -- the "still working on that one" message carries
+    #: no card -- but it must still be on the outcome: `blocking=False` never
+    #: had a guarantee the planner would raise the same question again next
+    #: turn, and a field nothing reads is a smaller failure than a value that
+    #: silently never reached the type at all (#259).
+    question: Asking | None = None
 
 
 class TurnFailed(_StrictModel):

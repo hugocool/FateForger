@@ -23,9 +23,16 @@ from __future__ import annotations
 
 import pytest
 
+from fateforger.agents.timeboxing.adaptive_timeboxing import TurnRequest
 from fateforger.agents.timeboxing.session_contracts import (
+    ApproveArtifact,
     AwaitingApproval,
     AwaitingUser,
+    BlockerOption,
+    ChooseBlockerOption,
+    FactKind,
+    NeedsAnotherTurn,
+    PlannerContinuation,
     PlanningResult,
     TurnFailed,
     UserBlockerDraft,
@@ -35,7 +42,10 @@ from tests.unit.test_adaptive_timeboxing import (
     InMemoryPlanningSessionRepository,
     RecordedPlanner,
     RecordingProgressSink,
+    _ScriptedPlanner,
     _advance_request,
+    _candidate_result,
+    _fact,
     _incident_snapshot,
     _kernel,
 )
@@ -123,3 +133,139 @@ async def test_a_non_blocking_question_with_no_artifact_still_blocks() -> None:
 
     assert isinstance(outcome, AwaitingUser)
     assert outcome.requirement_id == "skeleton.activity_reading"
+
+
+@pytest.mark.asyncio
+async def test_a_non_blocking_question_survives_a_continuation() -> None:
+    """The question must not vanish just because the planner is not done.
+
+    `NeedsAnotherTurn` renders no card today, so nothing shows this
+    question to the user this turn either -- but the outcome must still
+    carry it rather than leave its survival up to whether the planner
+    happens to raise the same blocker again next turn (#259 fix round 1).
+    """
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    result = _skeleton_with([_blocker(blocking=False)]).model_copy(
+        update={
+            "continuation": PlannerContinuation(reason="still balancing the evening")
+        }
+    )
+    outcome = await _kernel(
+        repo, RecordedPlanner(result), context=RowsContextPort(_ROWS),
+    ).turn(_advance_request(), progress=RecordingProgressSink())
+
+    assert isinstance(outcome, NeedsAnotherTurn)
+    assert outcome.question is not None
+    assert outcome.question.requirement_id == "skeleton.activity_reading"
+
+
+@pytest.mark.asyncio
+async def test_a_riding_questions_option_press_is_accepted_and_recorded() -> None:
+    """Finding 2: the riding question's buttons must answer for real, or the
+    feature is cosmetic. A press against it must not refuse as
+    `stale_blocker_choice` the way an unheld question would."""
+
+    options = [
+        BlockerOption(
+            option_id="wake-1",
+            label="Protect a wake time",
+            effect="keeps 08:00 wake even if the party runs late",
+        ),
+        BlockerOption(
+            option_id="wake-2",
+            label="Leave the evening open",
+            effect="the wake time moves with the party",
+        ),
+    ]
+    riding_result = _skeleton_with(
+        [
+            UserBlockerDraft(
+                requirement_id="skeleton.activity_reading",
+                why_needed="the party's end is unknown and 8h sleep is wanted",
+                blocking=False,
+                options=options,
+            )
+        ]
+    )
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    planner = _ScriptedPlanner(riding_result, _skeleton_citing("a1"))
+    kernel = _kernel(repo, planner, context=RowsContextPort(_ROWS))
+
+    first = await kernel.turn(_advance_request(), progress=RecordingProgressSink())
+    assert isinstance(first, AwaitingApproval)
+    assert first.question is not None
+
+    outcome = await kernel.turn(
+        TurnRequest(
+            session_key="C1:1.0",
+            interaction_id="1772.press",
+            actor_user_id="U1",
+            expected_revision=4,
+            intent=ChooseBlockerOption(
+                requirement_id="skeleton.activity_reading", option_id="wake-1"
+            ),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    recorded = [f for f in saved.facts if f.kind is FactKind.ACTIVITY_READING]
+
+    assert not isinstance(outcome, TurnFailed), outcome
+    assert isinstance(outcome, AwaitingApproval)
+    assert len(recorded) == 1
+    assert recorded[0].value == {
+        "requirement_id": "skeleton.activity_reading",
+        "label": "Protect a wake time",
+        "effect": "keeps 08:00 wake even if the party runs late",
+    }
+    assert saved.pending_blocker is None
+
+
+@pytest.mark.asyncio
+async def test_proceeding_with_the_question_unanswered_still_produces_the_plan() -> None:
+    """Proceed means 'approve, question unanswered' -- pressing it must not
+    get stuck on the `pending_blocker` the riding question now holds."""
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    planner = _ScriptedPlanner(
+        _skeleton_with([_blocker(blocking=False)]),
+        _candidate_result(),
+    )
+    context = RowsContextPort(
+        _ROWS,
+        facts=(
+            _fact("cal-1", FactKind.CALENDAR_SNAPSHOT, {"fetched": True, "blocks": 3}),
+            _fact("con-1", FactKind.ACTIVE_CONSTRAINTS, {"fetched": True, "count": 1}),
+        ),
+    )
+    kernel = _kernel(repo, planner, context=context)
+
+    first = await kernel.turn(_advance_request(), progress=RecordingProgressSink())
+    assert isinstance(first, AwaitingApproval)
+    assert first.question is not None
+
+    outcome = await kernel.turn(
+        TurnRequest(
+            session_key="C1:1.0",
+            interaction_id="1772.approve",
+            actor_user_id="U1",
+            expected_revision=4,
+            intent=ApproveArtifact(
+                artifact_id=first.artifact.artifact_id,
+                artifact_revision=first.artifact.revision,
+                artifact_digest=first.artifact.digest,
+            ),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(outcome, AwaitingApproval), outcome
+    assert outcome.artifact.kind.value == "validated_candidate"
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert any(a.artifact_id == first.artifact.artifact_id for a in saved.approvals)
+    # The candidate outcome carries no question of its own -- the skeleton's
+    # was never answered, and `_release_question` must not keep holding it
+    # once a different outcome has superseded it.
+    assert saved.pending_blocker is None

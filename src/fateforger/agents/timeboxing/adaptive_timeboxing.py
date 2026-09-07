@@ -1509,23 +1509,43 @@ class AdaptiveTimeboxing:
         if result.continuation is not None:
             # It produced something *and* wants to keep going. The artifact is
             # kept -- it is real work -- but it is not offered for approval,
-            # because the planner has just said it is not finished. A
-            # non-blocking question does not surface on this turn either --
-            # there is no approval to attach it to yet -- and may be raised
-            # again once the planner is done.
+            # because the planner has just said it is not finished.
+            if pending_question is not None:
+                # Nothing renders `NeedsAnotherTurn` with a card -- the
+                # question has nowhere to be answered from this turn either
+                # -- but it must not depend on the planner happening to raise
+                # the same blocker again next turn. Held (like the riding
+                # case below) so a press against it still binds if a future
+                # surface reads `pending_blocker`, and attached to the typed
+                # outcome so it cannot be dropped between here and whatever
+                # renders `NeedsAnotherTurn` (#259).
+                gap, blocker = pending_question
+                held = self._hold_question(updated, gap, blocker.options)
+                return held, self._another_turn(
+                    result, question=self._asking(gap, blocker)
+                )
             return updated, self._another_turn(result)
         if pending_question is not None:
             gap, blocker = pending_question
-            return updated, AwaitingApproval(
-                artifact=artifact,
-                question=Asking(
-                    requirement_id=gap.requirement_id,
-                    question=gap.question,
-                    why_needed=blocker.why_needed,
-                    options=blocker.options,
-                ),
+            # Held so a `ChooseBlockerOption` press against the riding
+            # question can bind (`_offered_option` reads `pending_blocker`);
+            # `_release_question` knows to leave it standing for exactly this
+            # outcome shape rather than clearing it the way it would for a
+            # plain approval (#259).
+            held = self._hold_question(updated, gap, blocker.options)
+            return held, AwaitingApproval(
+                artifact=artifact, question=self._asking(gap, blocker)
             )
         return updated, AwaitingApproval(artifact=artifact)
+
+    @staticmethod
+    def _asking(gap: ReadinessGap, blocker: UserBlockerDraft) -> Asking:
+        return Asking(
+            requirement_id=gap.requirement_id,
+            question=gap.question,
+            why_needed=blocker.why_needed,
+            options=blocker.options,
+        )
 
     def _known_rule_uids(self, context: PlanningContext) -> set[str]:
         """The uids memory returned for this day -- identifiers this system
@@ -1560,7 +1580,9 @@ class AdaptiveTimeboxing:
                 if item.rule_uid is not None and item.rule_uid not in known:
                     raise UnknownRuleUid(item.rule_uid)
 
-    def _another_turn(self, result: PlanningResult) -> NeedsAnotherTurn:
+    def _another_turn(
+        self, result: PlanningResult, *, question: Asking | None = None
+    ) -> NeedsAnotherTurn:
         """Log it and type it.
 
         Logged at warning because a planner that asks every turn is a bug, and
@@ -1572,7 +1594,7 @@ class AdaptiveTimeboxing:
         logger.warning(
             "planner asked for another turn reason=%s", result.continuation.reason
         )
-        return NeedsAnotherTurn(reason=result.continuation.reason)
+        return NeedsAnotherTurn(reason=result.continuation.reason, question=question)
 
     def _continue_later(
         self,
@@ -1771,9 +1793,25 @@ class AdaptiveTimeboxing:
         against whatever replaced it. A ``TurnFailed`` is the exception: a
         refused press means nothing happened, and clearing here would turn one
         recoverable refusal into live-looking buttons with no way to answer.
+
+        An ``AwaitingApproval`` or ``NeedsAnotherTurn`` carrying a riding
+        ``question`` is a second exception, and a new one: `_apply_planning_result`
+        just held this same question via `_hold_question` so a
+        `ChooseBlockerOption` press against it can bind. Clearing it back out
+        here on the very save that set it would make holding it pointless --
+        the riding question's option buttons would refuse every press as
+        `stale_blocker_choice`, same as if it had never been held at all
+        (#259). The two outcomes without a question keep clearing as before:
+        Proceed still works with it unanswered, and the *next* turn's outcome
+        -- whatever it is -- releases a question this one did not re-raise.
         """
 
         if isinstance(outcome, (AwaitingUser, TurnFailed)):
+            return snapshot
+        if (
+            isinstance(outcome, (AwaitingApproval, NeedsAnotherTurn))
+            and outcome.question is not None
+        ):
             return snapshot
         if snapshot.pending_blocker is None:
             return snapshot
