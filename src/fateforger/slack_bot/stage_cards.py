@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+import html
 import json
 from typing import Annotated, Literal, Union
 
@@ -26,9 +27,9 @@ from fateforger.agents.timeboxing.elicitation import criterion_label, row_label
 from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactKind,
+    Asking,
     AwaitingApproval,
     AwaitingUser,
-    BlockerOption,
     Committed,
     FactKind,
     Gate,
@@ -84,11 +85,16 @@ class DecidedItem(_Frozen):
     controls: list["Control"] = Field(default_factory=list)
 
 
-class Asking(_Frozen):
-    requirement_id: str
-    question: str
-    why_needed: str
-    options: list[BlockerOption] = Field(default_factory=list)
+class CardGroup(_Frozen):
+    """One stretch of the day, with its lines already composed as mrkdwn."""
+
+    name: str
+    lines: list[str]
+
+
+#: Label for a source that is not "user" and not "rule" -- those two are
+#: composed directly, since a rule's marker names the rule, not the category.
+_SOURCE_LABEL: dict[str, str] = {"assumed": "my guess", "calendar": "on your calendar"}
 
 
 class ApproveControl(_Frozen):
@@ -170,9 +176,15 @@ class StageCard(_Frozen):
     #: The gate line, always present on a Stage 1 card: what is still needed,
     #: or the proposal to close. Rendered from typed fields; nothing reads it.
     gate: str | None = None
-    #: The stage's own text: the skeleton markdown, the rendered candidate,
-    #: the commit sentence. Empty on the date card, whose body is its controls.
+    #: The stage's own text: the rendered candidate, the commit sentence.
+    #: Empty on the date card, whose body is its controls, and empty on the
+    #: skeleton card, whose content is `artifact_day`/`artifact_groups`.
     body: str = ""
+    #: The skeleton's day label and its groups, already composed as mrkdwn
+    #: lines with per-line provenance. Set only on a Stage 3 card; Task 6
+    #: renders these and composes nothing itself.
+    artifact_day: str = ""
+    artifact_groups: list[CardGroup] = Field(default_factory=list)
     controls: list[Control] = Field(default_factory=list)
     #: Set only on a receipt: what happened to this card.
     done: str | None = None
@@ -288,6 +300,10 @@ _FACT_LABELS: dict[FactKind, str] = {
 
 
 def _decided(snapshot: PlanningSessionSnapshot) -> list[DecidedItem]:
+    """Facts only. An assumption is marked inline, on the line it decided --
+    a rule-less item's `_(my guess)_` marker in `_artifact_groups` -- so
+    listing it again here would be the same decision said twice (#267)."""
+
     facts = [
         DecidedItem(
             text=f"{_FACT_LABELS[fact.kind]}: {_as_text(fact.value)}",
@@ -315,17 +331,7 @@ def _decided(snapshot: PlanningSessionSnapshot) -> list[DecidedItem]:
         for fact in snapshot.facts
         if fact.kind is FactKind.ELICITED_STATEMENT
     )
-    assumptions = [
-        DecidedItem(
-            text=f"{_as_text(assumption.value)} — {assumption.why_needed}",
-            kind="assumption",
-            ref=assumption.assumption_id,
-            filed_by=assumption.filed_by,
-            controls=[DenyControl(assumption_id=assumption.assumption_id)],
-        )
-        for assumption in snapshot.assumptions
-    ]
-    return [*facts, *assumptions]
+    return facts
 
 
 def _suspended_constraint_name(snapshot: PlanningSessionSnapshot, value: object) -> str:
@@ -392,6 +398,66 @@ def _gate_line(gate: Gate) -> str:
     if rest > 0:
         return f"Still need: {needs}. _+{rest} more_"
     return f"Still need: {needs}."
+
+
+def _rule_names(snapshot: PlanningSessionSnapshot) -> dict[str, str]:
+    """uid -> name for the day's rules.
+
+    Read from `applicable_constraints` -- the rows the host resolved for this
+    day, in the planner's order (#202) -- never from the `ACTIVE_CONSTRAINTS`
+    fact, which carries only a count and no names.
+    """
+
+    return {
+        row["uid"]: row["name"]
+        for row in snapshot.applicable_constraints
+        if isinstance(row, dict)
+        and isinstance(row.get("uid"), str)
+        and isinstance(row.get("name"), str)
+    }
+
+
+def _artifact_groups(
+    payload: SkeletonPayload, names: dict[str, str]
+) -> list[CardGroup]:
+    """Compose each line, marking only what did not come from the user.
+
+    A rule's marker names the rule -- its stored name, never a paraphrase --
+    so "drop Sci-Fi Reading before bed today" is actionable where "drop from
+    memory" would not be. Group names and item text are model-authored, so
+    both are escaped exactly as `render_schedule` escapes a block summary:
+    `&`, `<` and `>` only. `*` and `_` are deliberately left alone -- Slack
+    mrkdwn has no escape for them, so a rule literally named "Deep *work*"
+    renders half-bold. Decided and accepted 2026-09-07; do not "fix" this.
+
+    A `rule_uid` the kernel already verified but whose name is missing here
+    means the artifact and the snapshot disagree; that raises rather than
+    drawing a rule with no name.
+    """
+
+    groups: list[CardGroup] = []
+    for group in payload.groups:
+        lines: list[str] = []
+        for item in group.items:
+            text = html.escape(item.text, quote=False)
+            if item.source == "user":
+                lines.append(f"• {text}")
+                continue
+            if item.source == "rule":
+                name = names.get(item.rule_uid or "")
+                if name is None:
+                    raise ValueError(
+                        f"skeleton cites rule {item.rule_uid!r} which the "
+                        f"day's applicable constraints do not name"
+                    )
+                label = html.escape(name, quote=False)
+            else:
+                label = _SOURCE_LABEL[item.source]
+            lines.append(f"• {text}  _({label})_")
+        groups.append(
+            CardGroup(name=html.escape(group.name, quote=False), lines=lines)
+        )
+    return groups
 
 
 def map_outcome(
@@ -469,21 +535,15 @@ def map_outcome(
                 if skeleton.reasoning
                 else []
             )
-            # TODO(Task 4): render groups/items with per-line provenance
-            # markers instead of flattening to plain lines -- this is the
-            # minimum to keep the card drawing something after the payload
-            # went from markdown to typed groups (#267, #344).
-            body_lines = [skeleton.day_label]
-            for group in skeleton.groups:
-                body_lines.append(f"*{group.name}*")
-                body_lines.extend(item.text for item in group.items)
             return StageCard(
                 stage=stage(3),
                 session_key=session_key,
                 expected_revision=snapshot.revision,
                 context=context,
                 decided=_decided(snapshot),
-                body="\n".join(body_lines),
+                asking=outcome.question,
+                artifact_day=skeleton.day_label,
+                artifact_groups=_artifact_groups(skeleton, _rule_names(snapshot)),
                 controls=[
                     ApproveControl(
                         artifact_id=artifact.artifact_id,
@@ -573,6 +633,7 @@ __all__ = [
     "Asking",
     "BackControl",
     "CancelControl",
+    "CardGroup",
     "CommitControl",
     "ContextItem",
     "Control",

@@ -233,8 +233,12 @@ def test_the_skeleton_is_stage_three_with_approve_back_cancel() -> None:
     approve = card.controls[0]
     assert approve.artifact_id == "skeleton-1"
     assert approve.artifact_digest == _skeleton().digest
-    assert card.body == "Morning\n*Tasks*\nmemo"
-    assert [item.ref for item in card.decided if item.kind == "assumption"] == ["a-1"]
+    assert card.artifact_day == "Morning"
+    assert card.artifact_groups[0].name == "Tasks"
+    assert card.artifact_groups[0].lines == ["• memo"]
+    # Assumptions are marked inline on the artifact line that decided them,
+    # not listed again here -- Decided carries facts only (#267).
+    assert all(item.kind == "fact" for item in card.decided)
 
 
 def test_a_skeleton_without_groups_fails_loudly() -> None:
@@ -461,10 +465,10 @@ def test_an_elicited_statement_is_a_decided_fact() -> None:
     assert item.text.startswith("you said: ")
 
 
-def test_a_user_filed_assumption_is_marked_on_the_decided_item() -> None:
-    """The #266 session's deny control renders differently for a user-filed
-    assumption, so the renderer needs the field -- never the label text --
-    to tell the two apart."""
+def test_a_user_filed_assumption_never_reaches_decided() -> None:
+    """Decided is facts only regardless of who filed the assumption -- a
+    user-forced one is marked inline on the artifact line it decided, same as
+    a planner-filed one, not listed here (#267)."""
     snapshot = _snapshot(
         assumptions=[
             PlannerAssumption(
@@ -479,8 +483,7 @@ def test_a_user_filed_assumption_is_marked_on_the_decided_item() -> None:
     )
     card = _map(AwaitingApproval(artifact=_skeleton()), snapshot)
     assert card is not None
-    [item] = [d for d in card.decided if d.ref == "a-2"]
-    assert item.filed_by == "user"
+    assert [d for d in card.decided if d.ref == "a-2"] == []
 
 
 def test_gate_met_is_a_stage_one_card_with_next_and_the_closing_line() -> None:
@@ -510,15 +513,14 @@ def test_the_stage_of_a_question_comes_from_the_catalog() -> None:
     assert _map(outcome, _snapshot(pending_blocker=frame)).stage.index == 1
 
 
-def test_every_decided_assumption_carries_a_deny_control_and_facts_do_not() -> None:
-    from fateforger.slack_bot.stage_cards import DenyControl
-
+def test_decided_facts_carry_no_controls_and_no_assumption_rides_along() -> None:
     card = _map(
         AwaitingUser(requirement_id="skeleton.requested_activity", question="q", why_needed="w"),
         _snapshot(),
     )
+    assert all(item.kind == "fact" for item in card.decided)
     by_ref = {item.ref: item for item in card.decided}
-    assert by_ref["a-1"].controls == [DenyControl(assumption_id="a-1")]
+    assert "a-1" not in by_ref
     assert by_ref["activity-1"].controls == []
 
 
