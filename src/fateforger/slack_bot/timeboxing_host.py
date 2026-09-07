@@ -14,8 +14,9 @@ than about planning.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -50,6 +51,14 @@ from .progress_events import (
     ProgressStatus as TimeboxProgressStatus,
 )
 from .timebox_candidate import PendingTimeboxCandidates, ValidatedTimeboxCandidate
+
+logger = logging.getLogger(__name__)
+
+#: How far past today the day proposal will walk looking for a day that is not
+#: already on the calendar. A week covers what produced this (one committed
+#: day, occasionally two); past it the proposal falls back to the starting day
+#: and the user flips it on the card, which is what the card is for.
+_PROPOSAL_HORIZON_DAYS = 7
 
 #: Kernel lifecycle phases worth showing. The kernel names its own phases, so
 #: this maps identifiers this system minted -- anything outside the map is
@@ -141,9 +150,73 @@ class HostPlanningContext:
     async def propose_planning_day(self, request: TurnRequest) -> PlanningDay:
         tz_name = planning_timezone()
         today = self._now().astimezone(ZoneInfo(tz_name)).date()
-        return PlanningDay.lock_default(
-            value=today, timezone=tz_name, lock_revision=1
+        value = await self._first_unplanned_day(
+            today, owner_user_id=request.actor_user_id
         )
+        return PlanningDay.lock_default(
+            value=value, timezone=tz_name, lock_revision=1
+        )
+
+    async def _first_unplanned_day(self, start: date, *, owner_user_id: str) -> date:
+        """`start`, or the first day after it carrying no committed session.
+
+        The scheduled opener has always asked this before opening a session
+        (`session_start.SessionStarter._blocked`). The `/timebox` and typed-text
+        door never did, so on 2026-09-05 a card at 18:47 proposed the Saturday
+        that had been committed at 03:40 and Hugo moved it to Sunday by hand.
+
+        This is not a judgement and must not become one: `standing_for` answers
+        it from rows this system minted, and it was answering correctly every
+        ten minutes that evening while the card ignored it. What a message
+        *means* -- a new day, or a revision of the standing one -- is the
+        judgement, and it is decided elsewhere.
+
+        Failing to read the store falls back to `start`. The day is a proposal
+        the user can flip, so a lookup that cannot be made is worth a line in
+        the log and not a session that refuses to open.
+        """
+
+        ledger = getattr(self._runtime, "timeboxing_session_store", None)
+        if ledger is None:
+            return start
+        # Only `committed_session_key` is read below, so this bound merely has
+        # to be a real datetime; the open clause it governs is another
+        # question -- whether the user is busy -- and not this one.
+        asked_at = self._now()
+        for offset in range(_PROPOSAL_HORIZON_DAYS):
+            day = start + timedelta(days=offset)
+            try:
+                standing = await ledger.standing_for(
+                    owner_user_id=owner_user_id,
+                    open_since=asked_at,
+                    planned_from=day,
+                    planned_to=day,
+                )
+            except Exception:
+                logger.warning(
+                    "propose_planning_day: could not read the session store for %s; "
+                    "proposing %s unchecked",
+                    owner_user_id,
+                    start,
+                    exc_info=True,
+                )
+                return start
+            if standing.committed_session_key is None:
+                return day
+            logger.info(
+                "propose_planning_day: %s is already committed by %s; looking past it",
+                day,
+                standing.committed_session_key,
+            )
+        logger.warning(
+            "propose_planning_day: %s days from %s are all committed for %s; "
+            "proposing %s and letting the user choose",
+            _PROPOSAL_HORIZON_DAYS,
+            start,
+            owner_user_id,
+            start,
+        )
+        return start
 
     async def resolve(
         self,
