@@ -408,8 +408,18 @@ class ProbeJudge:
             question=judgement.question,
             why_needed=judgement.why_needed,
             # Option ids are minted here from the cell id, never by the model.
+            # `effect` carries the reason, not a second copy of the label: the
+            # card renders "*{label}* -- {effect}", so effect=label showed
+            # "*18:00* -- 18:00" the moment this branch reached the live path.
+            # The probe's `why_needed` is what the line has to say -- what the
+            # answer is for -- and it is the same for every option of one
+            # probe, which is correct: the reason belongs to the question.
             options=[
-                BlockerOption(option_id=f"{cell.id}:{index}", label=label, effect=label)
+                BlockerOption(
+                    option_id=f"{cell.id}:{index}",
+                    label=label,
+                    effect=judgement.why_needed,
+                )
                 for index, label in enumerate(labels, start=1)
             ],
         )

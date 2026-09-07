@@ -242,6 +242,10 @@ async def test_generate_returns_a_draft_with_host_minted_option_ids() -> None:
     assert draft.why_needed == "to place it"
     assert [o.option_id for o in draft.options] == ["elicit.body.tacit_knowledge:1", "elicit.body.tacit_knowledge:2"]
     assert [o.label for o in draft.options] == ["60 min", "90 min"]
+    # The effect says what the answer is for. It was the label, which the card
+    # renders as "*60 min* -- 60 min"; the reason belongs to the question, so
+    # every option of one probe carries the same one.
+    assert [o.effect for o in draft.options] == ["to place it", "to place it"]
     sent = json.loads(client.calls[0][0][1].content)
     assert sent["rules"][0]["description"].startswith("Eat oats")
 
