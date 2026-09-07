@@ -649,3 +649,90 @@ def test_a_probe_for_another_cell_falls_back_to_the_catalog_text() -> None:
     assert outcome.requirement_id == cell.id
     assert outcome.question != "other?"
     assert outcome.options == []
+
+
+def test_a_pressed_option_files_the_same_fact_a_typed_answer_does() -> None:
+    """A press and a typed reply must reach the store as one shape.
+
+    `closed_cells` closes a cell on `value["cell"]` and the judges read the
+    answer out of `value["text"]`. The press once filed
+    `{requirement_id, label, effect}` instead, so a button-answered cell was
+    never closed, its answer never reached `CoverageJudge` or `ProbeJudge`,
+    and an empty string entered the conversation the next probe was written
+    against -- the cell came back every turn to the cap.
+    """
+    from fateforger.agents.timeboxing.elicitation import closed_cells
+    from fateforger.agents.timeboxing.session_contracts import (
+        BlockerOption,
+        ChooseBlockerOption,
+        ProbeDraft,
+    )
+
+    cell = ALL_CELLS[0]
+    probe = ProbeDraft(
+        cell_id=cell.id,
+        question="Still up at 07:00 on Tuesday?",
+        why_needed="to bound the morning",
+        options=[
+            BlockerOption(
+                option_id=f"{cell.id}:1", label="07:00", effect="to bound the morning"
+            )
+        ],
+    )
+    kernel, repository, _ = _probing_kernel(_snapshot(), _matrix_fact(cell.id), [probe])
+    _turn(kernel, _snapshot(), Advance())
+    held = _load(repository)
+
+    _turn(
+        kernel,
+        held,
+        ChooseBlockerOption(requirement_id=cell.id, option_id=f"{cell.id}:1"),
+    )
+    answered = _load(repository)
+
+    # (a) the stored shape
+    [statement] = [f for f in answered.facts if f.kind is FactKind.ELICITED_STATEMENT]
+    assert statement.value == {"cell": cell.id, "text": "07:00"}
+    assert statement.source == "user"
+
+    # (b) the cell is closed
+    assert cell.id in closed_cells(answered)
+
+    # (c) the next turn does not re-ask it. The context keeps handing back a
+    # matrix that still calls the cell uncovered, so the answer is the only
+    # thing that can stop the re-ask.
+    outcome = _turn(kernel, answered, Advance())
+    reasked = isinstance(outcome, AwaitingUser) and outcome.requirement_id == cell.id
+    assert not reasked
+
+
+def test_the_typed_path_files_that_same_shape_against_the_pending_cell() -> None:
+    """The other half of the seam: `_typed_facts` binds a typed answer to the
+    held cell, which is why the press had to be made to match it and not the
+    other way round. Recorded as a known limit: any elicited statement while
+    a cell is held binds to that cell, so an off-topic reply closes the cell
+    that was asked."""
+    from fateforger.agents.timeboxing.session_contracts import PendingBlocker
+    from fateforger.slack_bot.timeboxing_intents import (
+        ElicitedStatementDraft,
+        InterpretedTimeboxTurn,
+        _typed_facts,
+    )
+
+    cell = ALL_CELLS[0]
+    snapshot = _snapshot(
+        pending_blocker=PendingBlocker(
+            requirement_id=cell.id,
+            fact_kind=FactKind.ELICITED_STATEMENT,
+            options=[],
+        )
+    )
+    [typed] = _typed_facts(
+        InterpretedTimeboxTurn(
+            decision="provide_facts",
+            facts=[ElicitedStatementDraft(kind="elicited_statement", value="07:00")],
+        ),
+        snapshot,
+    )
+    assert typed.kind is FactKind.ELICITED_STATEMENT
+    assert typed.value == {"cell": cell.id, "text": "07:00"}

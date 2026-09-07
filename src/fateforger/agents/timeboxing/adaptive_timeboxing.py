@@ -61,6 +61,7 @@ from .session_contracts import (
     TurnFailed,
     TurnOutcome,
     UserBlockerDraft,
+    elicited_fact_id,
     has_commit_receipt,
     suspension_fact_id,
 )
@@ -884,24 +885,7 @@ class AdaptiveTimeboxing:
             assert pending is not None
             answered = self._merge_facts(
                 snapshot,
-                [
-                    PlanningFact(
-                        fact_id=str(uuid4()),
-                        kind=pending.fact_kind,
-                        # The option id is deliberately not recorded. It is a
-                        # handle on one turn's question and the next question
-                        # mints the same one again, so filing it as a durable
-                        # fact would present a recycled identifier as a stable
-                        # one. What the user chose is the label and its effect.
-                        value={
-                            "requirement_id": pending.requirement_id,
-                            "label": chosen.label,
-                            "effect": chosen.effect,
-                        },
-                        source="user",
-                        source_interaction_id=request.interaction_id,
-                    )
-                ],
+                [self._pressed_fact(pending, chosen, request)],
             )
             answered = answered.model_copy(update={"pending_blocker": None})
             # A pressed answer is a supplied fact, so it invalidates downstream
@@ -1759,6 +1743,49 @@ class AdaptiveTimeboxing:
         if snapshot.status != "committed":
             return snapshot
         return snapshot.model_copy(update={"status": "open"})
+
+    @staticmethod
+    def _pressed_fact(
+        pending: PendingBlocker, chosen: BlockerOption, request: TurnRequest
+    ) -> PlanningFact:
+        """The fact a pressed option files. One shape per fact kind.
+
+        The option id is deliberately not recorded. It is a handle on one
+        turn's question and the next question mints the same one again, so
+        filing it as a durable fact would present a recycled identifier as a
+        stable one. What the user chose is the label and its effect.
+
+        `ELICITED_STATEMENT` is the exception, and it is the whole point of
+        this method: a Stage 1 cell is closed by `closed_cells` reading
+        `value["cell"]` and its answer reaches `CoverageJudge` and
+        `ProbeJudge` through `value["text"]`. A press that filed the generic
+        shape carried neither key, so the cell was never closed and the answer
+        never reached a judge -- the probe came back every turn to the cap,
+        with an empty string in the conversation the next probe was written
+        against. Typing an answer and pressing one must arrive as the same
+        fact; `_typed_facts` writes exactly this, and `readiness` gives
+        `ELICITED_STATEMENT` to the forty-five cell requirements and nothing
+        else, so `pending.requirement_id` here is always a cell id.
+        """
+        if pending.fact_kind is FactKind.ELICITED_STATEMENT:
+            return PlanningFact(
+                fact_id=elicited_fact_id(pending.requirement_id),
+                kind=pending.fact_kind,
+                value={"cell": pending.requirement_id, "text": chosen.label},
+                source="user",
+                source_interaction_id=request.interaction_id,
+            )
+        return PlanningFact(
+            fact_id=str(uuid4()),
+            kind=pending.fact_kind,
+            value={
+                "requirement_id": pending.requirement_id,
+                "label": chosen.label,
+                "effect": chosen.effect,
+            },
+            source="user",
+            source_interaction_id=request.interaction_id,
+        )
 
     @staticmethod
     def _merge_facts(
