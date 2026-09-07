@@ -674,11 +674,17 @@ def test_a_non_blocking_question_keeps_proceed_and_a_blocking_one_does_not():
     assert "Proceed" not in json.dumps(_rendered(asking=asking, controls=[]))
 
 
-def test_formatting_characters_in_a_group_name_or_item_do_not_become_formatting():
-    """A rule named with an asterisk must not bold half the card."""
-    text = json.dumps(_rendered(group_name="Deep *work*",
-                                lines=["• Ship the _thing_"]))
-    assert "Deep *work*" not in text  # escaped, not emitted raw
+def test_reserved_characters_are_escaped_the_way_the_schedule_escapes_them():
+    """`&`, `<` and `>` are Slack's reserved three; the 4/5 card already
+    neutralises them via html.escape and both card paths must agree.
+
+    `*` and `_` are deliberately NOT handled: Slack mrkdwn has no escape for
+    them, so a rule literally named "Deep *work*" renders half-bold. Accepted
+    (2026-09-07) rather than wrapping the day in code spans."""
+    text = json.dumps(_rendered(group_name="R&D <urgent>",
+                                lines=["• Ship A & B"]))
+    assert "R&amp;D &lt;urgent&gt;" in text
+    assert "R&D <urgent>" not in text
 
 
 def test_a_candidate_body_is_passed_through_byte_identical():
@@ -716,6 +722,12 @@ Reorder `render_stage_card` to:
     if card.decided:
         blocks.append(_ctx("*Decided*  " + "  ·  ".join(i.text for i in card.decided)))
 ```
+
+Group names and item text are escaped exactly as `render_schedule` escapes a block
+summary — `html.escape(value, quote=False)` — so both card paths treat Slack's
+reserved three identically. Apply it in `_artifact_groups` (Task 4) when composing
+each line and when emitting the group name here; do not apply it to the provenance
+label's surrounding underscores, which the renderer itself minted.
 
 `_ctx(text)` returns `{"type": "context", "elements": [{"type": "mrkdwn", "text": text[:SLACK_MAX_BLOCK_TEXT_CHARS]}]}`. Delete the `STAGE_LIST_CAP` truncation and the `_+N more_` line: small text carries the full list, and the capped line rendered as text and was not clickable. Update the block-budget arithmetic in the docstring: stage 1 + header 1 + groups N + body 1 + asking 4 + gate 1 + nav 1 + context 1 + decided 1 = 11 + N, so N ≤ 29.
 
