@@ -299,10 +299,22 @@ _FACT_LABELS: dict[FactKind, str] = {
 }
 
 
-def _decided(snapshot: PlanningSessionSnapshot) -> list[DecidedItem]:
-    """Facts only. An assumption is marked inline, on the line it decided --
-    a rule-less item's `_(my guess)_` marker in `_artifact_groups` -- so
-    listing it again here would be the same decision said twice (#267)."""
+def _decided(
+    snapshot: PlanningSessionSnapshot, *, include_assumptions: bool = True
+) -> list[DecidedItem]:
+    """Facts, and -- on every card except the skeleton -- assumptions too.
+
+    The skeleton is the one card that marks an assumption inline, on the
+    artifact line it decided (a rule-less item's `_(my guess)_` marker in
+    `_artifact_groups`), so listing it again in Decided there would be the
+    same decision said twice. Every other card, including the stage-4
+    candidate approval -- the last human gate before the calendar is
+    written -- has no such inline marker, so an assumption behind it has to
+    surface here, with its `DenyControl`, or it cannot be retracted at all.
+    Scoped by Hugo's ruling after #267's review flagged the global cut as a
+    regression: the "inline only" call was about the sketch card
+    specifically, never about stripping deny from the rest of the ladder.
+    """
 
     facts = [
         DecidedItem(
@@ -331,7 +343,19 @@ def _decided(snapshot: PlanningSessionSnapshot) -> list[DecidedItem]:
         for fact in snapshot.facts
         if fact.kind is FactKind.ELICITED_STATEMENT
     )
-    return facts
+    if not include_assumptions:
+        return facts
+    assumptions = [
+        DecidedItem(
+            text=f"{_as_text(assumption.value)} — {assumption.why_needed}",
+            kind="assumption",
+            ref=assumption.assumption_id,
+            filed_by=assumption.filed_by,
+            controls=[DenyControl(assumption_id=assumption.assumption_id)],
+        )
+        for assumption in snapshot.assumptions
+    ]
+    return [*facts, *assumptions]
 
 
 def _suspended_constraint_name(snapshot: PlanningSessionSnapshot, value: object) -> str:
@@ -540,7 +564,12 @@ def map_outcome(
                 session_key=session_key,
                 expected_revision=snapshot.revision,
                 context=context,
-                decided=_decided(snapshot),
+                # Assumptions are suppressed here only: this card already
+                # marks a rule-less item inline with `_(my guess)_` in
+                # `artifact_groups`, so listing the same assumption again in
+                # Decided would say it twice. No other card has that inline
+                # marker -- do not extend this suppression to them.
+                decided=_decided(snapshot, include_assumptions=False),
                 asking=outcome.question,
                 artifact_day=skeleton.day_label,
                 artifact_groups=_artifact_groups(skeleton, _rule_names(snapshot)),
