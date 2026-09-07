@@ -273,6 +273,40 @@ async def test_generate_refuses_more_than_four_options() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_a_blank_option_is_dropped_and_the_question_survives() -> None:
+    """A model returned "" in the options list and BlockerOption's min_length
+    refused it, taking down the turn and the whole day (sunday, 2026-09-06).
+    An empty string is not an option; the question is what the user needed."""
+    client = _SchemaOutputClient(
+        {"grounded": True, "question": "How long is the gym?", "why_needed": "to place it",
+         "options": ["60 min", "", "   ", "90 min"]}
+    )
+    cell = CellRef(row="body", criterion="tacit_knowledge")
+    draft = await ProbeJudge(client).generate(
+        cell=cell, rules_full=[], conversation=[], request=None, session_key="C1:1.0"
+    )
+    assert draft is not None
+    assert draft.question == "How long is the gym?"
+    assert [o.label for o in draft.options] == ["60 min", "90 min"]
+    # Ids are minted from the surviving options, contiguously.
+    assert [o.option_id for o in draft.options] == [
+        "elicit.body.tacit_knowledge:1", "elicit.body.tacit_knowledge:2"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_options_that_are_all_blank_leave_a_free_text_probe() -> None:
+    client = _SchemaOutputClient(
+        {"grounded": True, "question": "How long is the gym?", "why_needed": "w", "options": ["", " "]}
+    )
+    draft = await ProbeJudge(client).generate(
+        cell=CellRef(row="body", criterion="tacit_knowledge"), rules_full=[], conversation=[],
+        request=None, session_key="C1:1.0",
+    )
+    assert draft is not None and draft.options == []
+
+
 class _StubPlacement:
     def __init__(self, placement: dict[str, str], rules: dict[str, str] | None = None) -> None:
         self._placement = placement

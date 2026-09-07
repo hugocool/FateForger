@@ -392,10 +392,17 @@ class ProbeJudge:
             return None
         if not judgement.question or not judgement.why_needed:
             raise ValueError(f"probe judgement for {cell.id} said grounded and gave no question or reason")
+        # A model returned "" here and `BlockerOption`'s min_length refused it,
+        # failing the turn and losing the day (sunday, 2026-09-06). An empty
+        # string is not an option: it carries nothing to render and nothing to
+        # press. Dropping it is a presence check on a field the schema already
+        # requires to be non-empty, and the question -- the part the user
+        # needed -- survives. The four-option cap is applied to what survives.
+        labels = [label.strip() for label in judgement.options if label.strip()]
         # Slack renders at most four buttons, and `ProbeDraft.options` caps at
         # four as well; this is the loud failure the schema can no longer carry.
-        if len(judgement.options) > 4:
-            raise ValueError(f"probe judgement for {cell.id} offered {len(judgement.options)} options; at most four")
+        if len(labels) > 4:
+            raise ValueError(f"probe judgement for {cell.id} offered {len(labels)} options; at most four")
         return ProbeDraft(
             cell_id=cell.id,
             question=judgement.question,
@@ -403,7 +410,7 @@ class ProbeJudge:
             # Option ids are minted here from the cell id, never by the model.
             options=[
                 BlockerOption(option_id=f"{cell.id}:{index}", label=label, effect=label)
-                for index, label in enumerate(judgement.options, start=1)
+                for index, label in enumerate(labels, start=1)
             ],
         )
 
