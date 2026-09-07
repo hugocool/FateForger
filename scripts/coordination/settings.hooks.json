@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "PROPOSED settings fragment for the claim release hook (#371). NOT INSTALLED.",
+    "Merge the `hooks` key into .claude/settings.json (project, committed, so it",
+    "ships with the rulebook) or ~/.claude/settings.json (user; then replace",
+    "$CLAUDE_PROJECT_DIR with an absolute path, because a user-level hook fires",
+    "in every project).",
+    "",
+    "Stop takes no matcher -- it always fires -- but the value is still an array",
+    "of matcher-wrapper objects with the matcher omitted. Verified against",
+    "https://code.claude.com/docs/en/hooks.md on 2026-09-07.",
+    "",
+    "timeout is 20s deliberately. The documented default is 600s, which is a",
+    "terrible default for a hook that runs at the end of EVERY assistant turn:",
+    "one wedged gh call would hang the session for ten minutes. The hook makes",
+    "zero network calls when this session holds no release-on-idle claim, which",
+    "is the common case."
+  ],
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/coordination/claim_stop_hook.py\"",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}
