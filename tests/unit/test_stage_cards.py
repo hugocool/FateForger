@@ -532,3 +532,30 @@ def test_map_outcome_reads_the_stage_from_the_requirements_it_is_given() -> None
         session_key="C1:1.0", channel_id="C1", thread_ts="1.0", requirements=requirements,
     )
     assert card is not None and card.stage.index == 4
+
+
+def test_the_gate_line_caps_the_open_cells_and_names_the_overflow() -> None:
+    """Turn one is when the most cells are open, and the section builder
+    slices at 1600 characters rather than raising. All 45 rendered unbounded
+    came to 1589 -- eleven from silent mid-word truncation."""
+    from fateforger.agents.timeboxing.elicitation import ALL_CELLS
+    from fateforger.slack_bot.messages import SLACK_MAX_BLOCK_TEXT_CHARS
+    from fateforger.slack_bot.stage_cards import GATE_LINE_CAP, _gate_line
+    from fateforger.slack_bot.timeboxing_cards import render_stage_card
+
+    gate = Gate(open_cells=list(ALL_CELLS), day_label="working Tuesday")
+    line = _gate_line(gate)
+    dropped = len(ALL_CELLS) - GATE_LINE_CAP
+    assert line.endswith(f"_+{dropped} more_")
+    assert len(line) < SLACK_MAX_BLOCK_TEXT_CHARS
+
+    outcome = GateMet(gate=gate)
+    card = _map(outcome, _snapshot())
+    assert card.gate == line
+    sections = [
+        block["text"]["text"]
+        for block in render_stage_card(card).blocks
+        if block.get("type") == "section"
+    ]
+    # The section carries the line whole: nothing was sliced on the way out.
+    assert line in sections

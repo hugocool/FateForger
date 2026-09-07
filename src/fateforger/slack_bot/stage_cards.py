@@ -367,15 +367,30 @@ def _nav(*, back: bool) -> list[Control]:
     return controls
 
 
+#: How many open cells the gate line names before it says "and N more".
+#: Cut by count, not by characters, so the last pair shown is a whole pair --
+#: the same shape `_bullets` uses in `timeboxing_cards`. Eight is chosen
+#: against the longest labels in the catalog: eight of the longest row and
+#: criterion pairs render in 374 characters, well inside Slack's 1600 per
+#: section. Uncapped, turn one -- when all 45 cells are open -- rendered 1589
+#: characters and was eleven from being silently truncated mid-word by the
+#: section builder, which slices rather than raises.
+GATE_LINE_CAP = 8
+
+
 def _gate_line(gate: Gate) -> str:
     if not gate.open_cells:
         return (
             f"That's what I know to ask about a {gate.day_label}. "
             "Anything else, or shall I plan?"
         )
+    shown = gate.open_cells[:GATE_LINE_CAP]
     needs = ", ".join(
-        f"{row_label(cell.row)}, {criterion_label(cell.criterion)}" for cell in gate.open_cells
+        f"{row_label(cell.row)}, {criterion_label(cell.criterion)}" for cell in shown
     )
+    rest = len(gate.open_cells) - len(shown)
+    if rest > 0:
+        return f"Still need: {needs}. _+{rest} more_"
     return f"Still need: {needs}."
 
 
