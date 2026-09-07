@@ -252,9 +252,8 @@ class HostPlanningContext:
             if frame is None
             else snapshot.model_copy(update={"facts": [*snapshot.facts, frame]})
         )
-        rows = constraints if isinstance(constraints, list) else []
         result = await elicit(
-            seen, rows, build_judges(model_client), session_key=snapshot.session_key
+            seen, constraints, build_judges(model_client), session_key=snapshot.session_key
         )
         return PlanningContext(
             facts=([frame] if frame is not None else []) + [result.matrix_fact],
