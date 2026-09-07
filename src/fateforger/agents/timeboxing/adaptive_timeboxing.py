@@ -11,7 +11,7 @@ from datetime import UTC, date, datetime, timezone
 from typing import Callable, Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from .elicitation import stage1_gate
 from .readiness import (
@@ -56,6 +56,7 @@ from .session_contracts import (
     ProvidePlanningFacts,
     RestoreConstraint,
     ReviseArtifact,
+    SkeletonPayload,
     StartSession,
     TimeboxIntent,
     TurnFailed,
@@ -303,6 +304,16 @@ class TimeboxingSessionLedger(Protocol):
 
 class StaleSessionRevision(RuntimeError):
     """The persisted session no longer matches the expected revision."""
+
+
+class UnknownRuleUid(RuntimeError):
+    """A skeleton item cites a rule_uid that memory did not return for this day.
+
+    Internal signal only: raised and caught inside `_apply_planning_result`,
+    beside the same function's other inline refusals, and never crosses that
+    boundary -- the caller sees `TurnFailed(code="unknown_rule_uid")`, not
+    this exception.
+    """
 
 
 class InMemoryPlanningSessionRepository:
@@ -733,7 +744,7 @@ class AdaptiveTimeboxing:
             )
         else:
             snapshot, outcome = self._apply_planning_result(
-                snapshot, target, readiness, result, request.actor_user_id
+                snapshot, target, readiness, result, request.actor_user_id, resolved
             )
 
         saved_outcome = await self._save(
@@ -1245,7 +1256,14 @@ class AdaptiveTimeboxing:
         readiness: ReadinessReport,
         result: PlanningResult,
         actor_user_id: str,
+        context: PlanningContext | None = None,
     ) -> tuple[PlanningSessionSnapshot, TurnOutcome]:
+        # Two call sites in tests/unit/test_adaptive_timeboxing.py exercise
+        # only the blocker branches below and never reach the skeleton
+        # provenance check, so they predate this parameter. An empty context
+        # reads as "no known rules" there, which is correct: those turns
+        # never get far enough to ask.
+        context = context if context is not None else PlanningContext()
         gaps = {gap.requirement_id: gap for gap in readiness.gaps}
         user_blockers: list[tuple[ReadinessGap, UserBlockerDraft]] = []
         for blocker in result.blockers:
@@ -1414,6 +1432,39 @@ class AdaptiveTimeboxing:
                     ),
                 )
 
+        if target is ArtifactKind.SKELETON:
+            try:
+                skeleton_payload = SkeletonPayload.model_validate(draft.payload)
+            except ValidationError as exc:
+                logger.error(
+                    "planner result refused reason=%s target=%s error=%s",
+                    "invalid_skeleton_payload",
+                    target.value,
+                    exc,
+                )
+                return snapshot, TurnFailed(
+                    code="invalid_planner_result",
+                    message="The planner returned a skeleton that does not match its contract.",
+                )
+            try:
+                self._verify_rule_uids(skeleton_payload, context)
+            except UnknownRuleUid as exc:
+                uid = exc.args[0]
+                known = self._known_rule_uids(context)
+                logger.error(
+                    "planner result refused reason=%s uid=%s known=%s",
+                    "unknown_rule_uid",
+                    uid,
+                    len(known),
+                )
+                return snapshot, TurnFailed(
+                    code="unknown_rule_uid",
+                    message=(
+                        f"the skeleton cites rule {uid!r}, which is not among "
+                        f"the {len(known)} rules active on this day"
+                    ),
+                )
+
         updated = self._invalidate(snapshot, target)
         updated = updated.model_copy(
             update={
@@ -1442,6 +1493,39 @@ class AdaptiveTimeboxing:
             # because the planner has just said it is not finished.
             return updated, self._another_turn(result)
         return updated, AwaitingApproval(artifact=artifact)
+
+    def _known_rule_uids(self, context: PlanningContext) -> set[str]:
+        """The uids memory returned for this day -- identifiers this system
+        minted, not user content, so set membership over them is exactly what
+        the no-matching rule carves out as fine.
+
+        `applicable_constraints` is `JsonValue`: a host that has not looked
+        leaves it at the default empty dict, and iterating a dict yields its
+        keys (plain strings), which the `isinstance(row, dict)` guard drops.
+        Either shape lands on "no known uids", never a crash.
+        """
+
+        return {
+            row["uid"]
+            for row in (context.applicable_constraints or [])
+            if isinstance(row, dict) and "uid" in row
+        }
+
+    def _verify_rule_uids(
+        self, payload: SkeletonPayload, context: PlanningContext
+    ) -> None:
+        """Every cited rule must be one memory returned for this day.
+
+        A uid the model invented would put a rule on the card that does not
+        exist, and the user would have no way to tell (#330: a judge mistyped
+        one by a single character).
+        """
+
+        known = self._known_rule_uids(context)
+        for group in payload.groups:
+            for item in group.items:
+                if item.rule_uid is not None and item.rule_uid not in known:
+                    raise UnknownRuleUid(item.rule_uid)
 
     def _another_turn(self, result: PlanningResult) -> NeedsAnotherTurn:
         """Log it and type it.
