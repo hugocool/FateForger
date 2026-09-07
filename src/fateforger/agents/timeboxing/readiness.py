@@ -279,7 +279,7 @@ _REQUIREMENTS: tuple[ArtifactRequirement, ...] = (
 def _cell_requirements() -> tuple[ArtifactRequirement, ...]:
     """Forty-five requirements from two fixed lists. Soft, so none is a hard
     blocker; the elicitor picks which to ask, so catalog order means nothing."""
-    from .elicitation import ALL_CELLS, CRITERION_BY_KEY, ROWS
+    from .elicitation import ALL_CELLS, ROWS
 
     return tuple(
         ArtifactRequirement(
@@ -291,9 +291,16 @@ def _cell_requirements() -> tuple[ArtifactRequirement, ...]:
             satisfied_by=(FactKind.ELICITED_STATEMENT,),
             owner=RequirementOwner.USER,
             hard=False,
-            why_needed=ROWS[cell.row].label,
+            # The row's authored ask, not the criterion's question. The
+            # criterion text is written for `classify` and `generate`; put in
+            # front of a person it reads "Are the assumptions behind what is
+            # on record justified for this day, or unstated?" under a heading
+            # saying "body". This fallback fires exactly when every open cell
+            # is unaskable, which is the endgame a long session ends in, so it
+            # is the question the user is most likely to actually be shown.
+            why_needed=ROWS[cell.row].why,
             resolution="ask",
-            question=CRITERION_BY_KEY[cell.criterion].question,
+            question=ROWS[cell.row].ask,
             stage=1,
             cell=cell,
         )

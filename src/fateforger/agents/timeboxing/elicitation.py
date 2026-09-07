@@ -38,6 +38,18 @@ class Concern:
     key: str
     label: str
     description: str
+    #: What to ask a person about this row when no probe could be grounded.
+    #: `Criterion.question` is written for the judges -- it names the criterion
+    #: in the criterion's own vocabulary, which is what `classify` and
+    #: `generate` need and what a person should never see. Rendered under the
+    #: row's heading it read "Are the assumptions behind what is on record
+    #: justified for this day, or unstated?" beneath the word "body", which is
+    #: the generic, jargon-laden question the probe prompt exists to prevent.
+    #: This is the sentence that goes out instead, and the endgame where every
+    #: still-open cell is unaskable is exactly when it fires.
+    ask: str
+    #: Why this row matters, in a phrase. Rendered in italics under the ask.
+    why: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,13 +71,42 @@ class Criterion:
 #: criteria, scheduling gates, duration caps) fit no concern about a thing in
 #: the day and carry no anchor, so placement routes them here by rule name.
 CONCERNS: tuple[Concern, ...] = (
-    Concern("bounded", "how the day is bounded", "when it starts and ends, what frames it"),
-    Concern("fixed", "what is fixed", "events, appointments, arrivals that do not move"),
-    Concern("movement", "movement and transitions", "commutes, travel, the gaps between fixed things"),
-    Concern("body", "body", "food, sleep, energy, exercise; the physical constraints on attention"),
-    Concern("fragile", "fragile intentions", "the things that only happen if protected"),
-    Concern("not_today", "what today is not", "rules that usually hold and do not today"),
-    Concern("method", "how the day gets planned", "rules about the planning itself: gates, caps, orderings; not about a thing in the day"),
+    Concern(
+        "bounded", "how the day is bounded", "when it starts and ends, what frames it",
+        "Is there anything about when this day starts and ends that I should know before I plan it?",
+        "the day's edges bound everything inside them",
+    ),
+    Concern(
+        "fixed", "what is fixed", "events, appointments, arrivals that do not move",
+        "Is there anything already fixed in this day, like a meeting or an appointment, that I should know about?",
+        "a fixed thing the plan misses moves everything around it",
+    ),
+    Concern(
+        "movement", "movement and transitions", "commutes, travel, the gaps between fixed things",
+        "Is there anything about getting between the fixed things in this day that I should know?",
+        "travel nobody planned for comes out of the work",
+    ),
+    Concern(
+        "body", "body", "food, sleep, energy, exercise; the physical constraints on attention",
+        "Is there anything about food, sleep, energy or exercise that I should know before I plan this day?",
+        "food, sleep and energy decide what attention is available",
+    ),
+    Concern(
+        "fragile", "fragile intentions", "the things that only happen if protected",
+        "Is there anything you mean to do that will only happen if the plan protects it?",
+        "an intention with no block around it is what the day eats first",
+    ),
+    Concern(
+        "not_today", "what today is not", "rules that usually hold and do not today",
+        "Is there anything that usually holds for you but does not hold on this day?",
+        "a rule that does not hold today would be planned around anyway",
+    ),
+    Concern(
+        "method", "how the day gets planned",
+        "rules about the planning itself: gates, caps, orderings; not about a thing in the day",
+        "Is there anything about how you want this day planned that I should know?",
+        "how the plan is built binds as much as what goes in it",
+    ),
 )
 
 #: Not concerns: places a gap can live that no concern covers. `unplaced` holds
@@ -73,8 +114,16 @@ CONCERNS: tuple[Concern, ...] = (
 #: what the user said they want from the day, which the fixture showed carrying
 #: the gap every other row was reporting.
 EXTRA_ROWS: tuple[Concern, ...] = (
-    Concern("unplaced", "rules under no concern", "anchors the placement could not put anywhere"),
-    Concern("request", "what you asked for today", "the stated request for this day"),
+    Concern(
+        "unplaced", "rules under no concern", "anchors the placement could not put anywhere",
+        "Is there anything about the rules I could not file under a concern that I should know?",
+        "a rule under no concern is one nothing else is checking",
+    ),
+    Concern(
+        "request", "what you asked for today", "the stated request for this day",
+        "Is there anything more about what you want out of this day?",
+        "the request is what the whole plan has to serve",
+    ),
 )
 
 ROWS: dict[str, Concern] = {c.key: c for c in (*CONCERNS, *EXTRA_ROWS)}

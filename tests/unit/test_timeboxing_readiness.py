@@ -442,3 +442,33 @@ def test_the_catalog_has_exactly_one_required_blocks_entry_however_many_kinds() 
     )
     report = TimeboxRequirements().evaluate(ArtifactKind.VALIDATED_CANDIDATE, two_kinds)
     assert [g.requirement_id for g in report.gaps].count("candidate.required_blocks") == 1
+
+
+def test_a_cell_asks_a_person_a_question_not_the_criterion_the_judges_read() -> None:
+    """`Criterion.question` is written for `classify` and `generate`. Shown to
+    the user it read "Are the assumptions behind what is on record justified
+    for this day, or unstated?" under a heading saying "body" -- the generic,
+    jargon-laden question the probe prompt exists to prevent. It is the
+    fallback when no probe could be grounded, which is exactly the endgame a
+    long session ends in, so it is the question most likely to be seen.
+    """
+    from fateforger.agents.timeboxing.elicitation import CRITERION_BY_KEY, ROWS
+
+    reqs = TimeboxRequirements()
+    report = reqs.evaluate(ArtifactKind.SKELETON, _locked_snapshot())
+    cells = [gap.requirement for gap in report.gaps if gap.requirement.cell is not None]
+    assert len(cells) == 45
+
+    judge_text = {criterion.question for criterion in CRITERION_BY_KEY.values()}
+    for requirement in cells:
+        assert requirement.question not in judge_text
+        # Addressed to a person: it is a question, and it is the row's own
+        # authored ask rather than a label pressed into service as prose.
+        assert requirement.question.endswith("?")
+        assert requirement.question == ROWS[requirement.cell.row].ask
+        # `why_needed` says why the row matters, not just what it is called.
+        assert requirement.why_needed == ROWS[requirement.cell.row].why
+        assert requirement.why_needed != ROWS[requirement.cell.row].label
+
+    # The criterion text itself is untouched: it is still what the judges see.
+    assert all(criterion.question.endswith("?") for criterion in CRITERION_BY_KEY.values())
