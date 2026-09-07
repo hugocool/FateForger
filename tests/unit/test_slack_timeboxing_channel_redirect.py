@@ -345,7 +345,10 @@ def _session_past_the_skeleton_gate(session_key: str) -> PlanningSessionSnapshot
     skeleton = PlanningArtifact.create(
         kind=ArtifactKind.SKELETON,
         revision=1,
-        payload={"markdown": "## Sunday"},
+        payload={
+            "day_label": "Sunday",
+            "groups": [{"name": "Day", "items": [{"text": "memo", "source": "user"}]}],
+        },
         dependency_revisions={"planning_day": 1},
     )
     return PlanningSessionSnapshot(
