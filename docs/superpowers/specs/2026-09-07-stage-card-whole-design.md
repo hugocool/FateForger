@@ -98,7 +98,7 @@ Line composition, style A:
 
 ### Planner
 
-Its instructions are generated from the Pydantic models rather than restated — the #158 decision: import the symbols, never copy. It is told to set `source` per item, to give `rule_uid` whenever a placement is owed to a rule it was given, and that it may raise one question with `blocking` set only when proceeding would produce a plan it believes is wrong.
+Its instructions are generated from the Pydantic models rather than restated — the #158 decision: import the symbols, never copy. It is told to set `source` per item, to give `rule_uid` whenever a placement is owed to a rule it was given, and that it may raise **at most one question per turn** — a second one waits for the next draft. `blocking` is set on it only when proceeding would produce a plan the planner believes is wrong; the ordinary case is `blocking=False`.
 
 ## Tests, each broken on purpose before it is trusted
 
