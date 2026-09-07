@@ -27,6 +27,7 @@ from .session_contracts import (
     ArtifactApproval,
     ArtifactKind,
     ArtifactSnapshot,
+    Asking,
     AwaitingApproval,
     AwaitingUser,
     BlockerOption,
@@ -1371,19 +1372,37 @@ class AdaptiveTimeboxing:
                 )
             )
 
-        if user_blockers:
-            gap, blocker = user_blockers[0]
-            return self._hold_question(snapshot, gap, blocker.options), AwaitingUser(
-                requirement_id=gap.requirement_id,
-                question=gap.question,
-                why_needed=blocker.why_needed,
-                options=blocker.options,
+        if len(user_blockers) > 1:
+            # At most one question per turn, whether or not either blocks --
+            # a second one waits for the next draft rather than picking a
+            # winner between two things the user did not ask to choose.
+            logger.error(
+                "planner result refused reason=%s count=%s requirement_ids=%s",
+                "too_many_questions",
+                len(user_blockers),
+                sorted(gap.requirement_id for gap, _ in user_blockers),
             )
+            return snapshot, TurnFailed(
+                code="too_many_questions",
+                message="The planner raised more than one question this turn.",
+            )
+
+        pending_question = user_blockers[0] if user_blockers else None
+        if pending_question is not None and pending_question[1].blocking:
+            gap, blocker = pending_question
+            return self._awaiting_user(snapshot, gap, blocker)
 
         matching = [
             update for update in result.artifact_updates if update.kind is target
         ]
         if not matching:
+            if pending_question is not None:
+                # A non-blocking question rides with the artifact it is
+                # about; with no artifact produced this turn there is
+                # nothing to attach it to, so it must block instead of
+                # silently vanishing.
+                gap, blocker = pending_question
+                return self._awaiting_user(snapshot, gap, blocker)
             if result.continuation is not None:
                 # Nothing to approve yet, but nothing went wrong either: the
                 # planner is mid-fix and said so. Keep its assumptions and let
@@ -1490,8 +1509,22 @@ class AdaptiveTimeboxing:
         if result.continuation is not None:
             # It produced something *and* wants to keep going. The artifact is
             # kept -- it is real work -- but it is not offered for approval,
-            # because the planner has just said it is not finished.
+            # because the planner has just said it is not finished. A
+            # non-blocking question does not surface on this turn either --
+            # there is no approval to attach it to yet -- and may be raised
+            # again once the planner is done.
             return updated, self._another_turn(result)
+        if pending_question is not None:
+            gap, blocker = pending_question
+            return updated, AwaitingApproval(
+                artifact=artifact,
+                question=Asking(
+                    requirement_id=gap.requirement_id,
+                    question=gap.question,
+                    why_needed=blocker.why_needed,
+                    options=blocker.options,
+                ),
+            )
         return updated, AwaitingApproval(artifact=artifact)
 
     def _known_rule_uids(self, context: PlanningContext) -> set[str]:
@@ -1686,6 +1719,22 @@ class AdaptiveTimeboxing:
                     options=options,
                 )
             }
+        )
+
+    def _awaiting_user(
+        self,
+        snapshot: PlanningSessionSnapshot,
+        gap: ReadinessGap,
+        blocker: UserBlockerDraft,
+    ) -> tuple[PlanningSessionSnapshot, AwaitingUser]:
+        """The one channel a question has when nothing is on screen for it to
+        ride with: it blocks the turn, and a press later answers it."""
+
+        return self._hold_question(snapshot, gap, blocker.options), AwaitingUser(
+            requirement_id=gap.requirement_id,
+            question=gap.question,
+            why_needed=blocker.why_needed,
+            options=blocker.options,
         )
 
     @staticmethod

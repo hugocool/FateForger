@@ -553,6 +553,22 @@ class ProbeDraft(_StrictModel):
     options: list[BlockerOption] = Field(default_factory=list, max_length=4)
 
 
+class Asking(_StrictModel):
+    """One open question, independent of whether it stops the turn.
+
+    `AwaitingUser` carries the same four fields plus `gate` because it *is*
+    the turn's outcome. `AwaitingApproval.question` needed a value shape for
+    a question that rides beside an artifact instead of replacing it, so this
+    is that shape kept separate rather than folded into `AwaitingUser` --
+    there is no gate to carry once the artifact is already on screen.
+    """
+
+    requirement_id: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    why_needed: str = Field(min_length=1)
+    options: list[BlockerOption] = Field(default_factory=list, max_length=4)
+
+
 class AwaitingUser(_StrictModel):
     kind: Literal["awaiting_user"] = "awaiting_user"
     requirement_id: str = Field(min_length=1)
@@ -585,6 +601,9 @@ class ArtifactReady(_StrictModel):
 class AwaitingApproval(_StrictModel):
     kind: Literal["awaiting_approval"] = "awaiting_approval"
     artifact: PlanningArtifact
+    #: The planner's one open question, when it did not block. Presented
+    #: below the artifact rather than instead of it.
+    question: Asking | None = None
 
 
 class Committed(_StrictModel):
@@ -751,6 +770,13 @@ class UserBlockerDraft(_StrictModel):
     #: guesses at an open question would hide the fifth answer the user had,
     #: which is exactly the failure buttons are supposed to prevent.
     options: list[BlockerOption] = Field(default_factory=list, max_length=4)
+    #: True only when proceeding would produce a plan the planner believes is
+    #: wrong. The ordinary case is False: the question rides with the artifact
+    #: and Proceed stays live, because the user ends the stage. A question
+    #: that always blocks lets the planner stall a session over something the
+    #: user does not care about; one that never blocks is half a channel, and
+    #: #259 is what a question with no channel costs.
+    blocking: bool = False
 
     @model_validator(mode="after")
     def option_ids_are_unique(self) -> UserBlockerDraft:
@@ -779,6 +805,7 @@ __all__ = [
     "ArtifactKind",
     "ArtifactReady",
     "ArtifactSnapshot",
+    "Asking",
     "AwaitingApproval",
     "AwaitingUser",
     "BlockerOption",
