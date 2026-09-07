@@ -105,6 +105,35 @@ async def test_placement_offers_indices_and_maps_them_back_to_uids() -> None:
 
 
 @pytest.mark.asyncio
+async def test_placement_call_is_attributed_to_the_judge_role_not_the_planner() -> None:
+    """Stage 1 runs on its own model client so its spend can be split from the
+    planner's on a dashboard. That only holds if the call is labelled with the
+    judge's own agent id -- confirm it's what AutoGen sees while the call is
+    in flight, not the planner's `timeboxing_agent`.
+    """
+    from autogen_core._message_handler_context import MessageHandlerContext
+
+    class _RecordingClient(_SchemaOutputClient):
+        def __init__(self, *responses: dict[str, object]) -> None:
+            super().__init__(*responses)
+            self.agent_ids: list[object] = []
+
+        async def create(self, messages, *, json_output):  # noqa: ANN001
+            self.agent_ids.append(MessageHandlerContext.agent_id())
+            return await super().create(messages, json_output=json_output)
+
+    client = _RecordingClient(
+        {"anchors": [{"index": 1, "row": "body"}, {"index": 2, "row": "fixed"}],
+         "rules": [{"index": 1, "row": "method"}]}
+    )
+    await PlacementJudge(client).place(
+        anchors=anchors_in(ROWS_FIXTURE), unanchored_rules=unanchored_in(ROWS_FIXTURE), session_key="C1:1.0"
+    )
+    assert len(client.agent_ids) == 1
+    assert client.agent_ids[0].type == "timeboxing_judge"
+
+
+@pytest.mark.asyncio
 async def test_placement_refuses_an_index_it_did_not_offer() -> None:
     client = _SchemaOutputClient(
         {"anchors": [{"index": 1, "row": "body"}, {"index": 2, "row": "fixed"}, {"index": 9, "row": "body"}],

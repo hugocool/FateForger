@@ -176,7 +176,7 @@ class PlacementJudge:
             separators=(",", ":"),
             sort_keys=False,
         )
-        with llm_attribution(agent="timeboxing_agent", call_label="stage1_placement", key=session_key):
+        with llm_attribution(agent="timeboxing_judge", call_label="stage1_placement", key=session_key):
             result = await self.model_client.create(
                 [SystemMessage(content=_PLACEMENT_PROMPT), UserMessage(content=prompt, source="user")],
                 json_output=_PlacementJudgement,
@@ -302,7 +302,7 @@ class CoverageJudge:
             separators=(",", ":"),
             sort_keys=False,
         )
-        with llm_attribution(agent="timeboxing_agent", call_label=f"stage1_classify:{cell.id}", key=session_key):
+        with llm_attribution(agent="timeboxing_judge", call_label=f"stage1_classify:{cell.id}", key=session_key):
             result = await self.model_client.create(
                 [SystemMessage(content=_COVERAGE_PROMPT), UserMessage(content=prompt, source="user")],
                 json_output=_CoverageJudgement,
@@ -379,7 +379,7 @@ class ProbeJudge:
             separators=(",", ":"),
             sort_keys=False,
         )
-        with llm_attribution(agent="timeboxing_agent", call_label=f"stage1_probe:{cell.id}", key=session_key):
+        with llm_attribution(agent="timeboxing_judge", call_label=f"stage1_probe:{cell.id}", key=session_key):
             result = await self.model_client.create(
                 [SystemMessage(content=_PROBE_PROMPT), UserMessage(content=prompt, source="user")],
                 json_output=_ProbeJudgement,
