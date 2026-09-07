@@ -686,16 +686,49 @@ class ArtifactDraft(_StrictModel):
     dependency_revisions: dict[str, int] = Field(default_factory=dict)
 
 
+class SkeletonItem(_StrictModel):
+    """One line of the day, and where it came from.
+
+    `source` is what the card marks. Nothing is marked when it came from the
+    user, so the only markers a person sees are things they did not say --
+    which is exactly the set worth arguing with (#267).
+    """
+
+    text: str = Field(min_length=1)
+    source: Literal["user", "rule", "assumed", "calendar"]
+    #: The constraint that placed this, iff `source` is "rule". Verified
+    #: against the day's applicable constraints by the kernel before it is
+    #: stored: a uid the model invented would name a rule that does not
+    #: exist, and #330 is a judge mistyping one by a single character.
+    rule_uid: str | None = None
+
+    @model_validator(mode="after")
+    def rule_uid_iff_rule(self) -> "SkeletonItem":
+        if self.source == "rule" and self.rule_uid is None:
+            raise ValueError('source "rule" requires rule_uid')
+        if self.source != "rule" and self.rule_uid is not None:
+            raise ValueError(f'source "{self.source}" must not carry rule_uid')
+        return self
+
+
+class SkeletonGroup(_StrictModel):
+    """A named stretch of the day -- Morning, Hockey, Evening."""
+
+    name: str = Field(min_length=1)
+    items: list[SkeletonItem] = Field(min_length=1)
+
+
 class SkeletonPayload(_StrictModel):
     """What a `skeleton` artifact's payload has to carry to be drawn.
 
-    Loose markdown -- `# anchor` headings and `-` bullets -- plus the reasoning
-    that put things where they are. `blocks`, `events` and any other shape a
-    planner invents are refused here by name rather than rendered as an empty
-    card (#267). Strictness is inherited: no coercion, no extra keys.
+    Typed groups, not markdown. Flat markdown cannot carry provenance the
+    system can verify, and an unverified rule name on the card is the
+    model-supplied-identifier failure this project has already had once.
+    Reverses the shape chosen in #267; see the spec's decisions table.
     """
 
-    markdown: str = Field(min_length=1)
+    day_label: str = Field(min_length=1)
+    groups: list[SkeletonGroup] = Field(min_length=1)
     reasoning: str = ""
 
 
@@ -770,6 +803,8 @@ __all__ = [
     "PlanningSessionSnapshot",
     "ProvidePlanningFacts",
     "ReviseArtifact",
+    "SkeletonGroup",
+    "SkeletonItem",
     "SkeletonPayload",
     "StartSession",
     "TimeboxIntent",

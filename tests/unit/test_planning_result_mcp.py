@@ -58,7 +58,21 @@ def _gym_assumption() -> dict[str, Any]:
 
 
 def _skeleton() -> dict[str, Any]:
-    return {"markdown": "## Saturday\n- 17:00 Gym"}
+    return {
+        "day_label": "Saturday",
+        "groups": [
+            {"name": "Evening", "items": [{"text": "17:00 Gym", "source": "user"}]}
+        ],
+    }
+
+
+def _skeleton_with_gym_at(text: str) -> dict[str, Any]:
+    """A valid, differently-shaped skeleton -- for tests that need two."""
+
+    return {
+        "day_label": "Saturday",
+        "groups": [{"name": "Evening", "items": [{"text": text, "source": "user"}]}],
+    }
 
 
 @pytest.fixture()
@@ -353,7 +367,7 @@ def test_a_second_differing_submission_is_refused_and_the_first_stands(result_fi
     with pytest.raises(PlanningResultRefused):
         submit_planning_result(
             target_artifact="skeleton",
-            artifact={"markdown": "## Saturday\n- 19:00 Gym"},
+            artifact=_skeleton_with_gym_at("19:00 Gym"),
             assumptions=[_gym_assumption()],
             blockers=[],
         )
@@ -759,7 +773,7 @@ async def test_a_refusal_reaches_the_model_as_a_tool_error(result_file):
             "submit_planning_result",
             {
                 "target_artifact": "skeleton",
-                "artifact": {"markdown": "## Saturday\n- 19:00 Gym"},
+                "artifact": _skeleton_with_gym_at("19:00 Gym"),
                 "assumptions": [],
                 "blockers": [],
             },
@@ -779,13 +793,13 @@ def test_a_retry_reordering_keys_is_the_same_submission(tmp_path, monkeypatch) -
 
     first = submit_planning_result(
         target_artifact="skeleton",
-        artifact={"markdown": "## Saturday", "reasoning": "Saturday"},
+        artifact={**_skeleton(), "reasoning": "Saturday"},
         assumptions=[],
         blockers=[],
     )
     second = submit_planning_result(
         target_artifact="skeleton",
-        artifact={"reasoning": "Saturday", "markdown": "## Saturday"},
+        artifact={"reasoning": "Saturday", **_skeleton()},
         assumptions=[],
         blockers=[],
     )

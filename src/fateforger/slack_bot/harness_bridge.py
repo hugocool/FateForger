@@ -348,9 +348,13 @@ def _planning_obligation(brief: PlanningBrief) -> str:
     # field by field, and nothing used to say what those fields were: the
     # planner shipped `blocks`, the host stored it, the card was blank (#267).
     payload_shape = (
-        "\nThe `skeleton` payload is exactly {\"markdown\": ..., \"reasoning\": "
-        "...}: `markdown` is the day as loose markdown -- a `# heading` per "
-        "anchor, `-` bullets under it, no times you were not given -- and "
+        "\nThe `skeleton` payload is exactly {\"day_label\": ..., \"groups\": "
+        "[...], \"reasoning\": ...}: `day_label` names the day (e.g. \"Sunday "
+        "6 September\"); `groups` is a list of {\"name\": ..., \"items\": "
+        "[...]}, one per named stretch of the day -- Morning, Hockey, Evening "
+        "-- and each item is {\"text\": ..., \"source\": \"user\"|\"rule\"|"
+        "\"assumed\"|\"calendar\", \"rule_uid\": <only when source is "
+        "\"rule\", and only a uid from the day's applicable constraints>}; "
         "`reasoning` is one short paragraph on why it is shaped that way. Any "
         "other key is refused."
         if brief.target_artifact is ArtifactKind.SKELETON

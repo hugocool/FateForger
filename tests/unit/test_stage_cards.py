@@ -89,12 +89,20 @@ def _planning_day_artifact() -> PlanningArtifact:
     )
 
 
+def _skeleton_payload() -> dict:
+    return {
+        "day_label": "Morning",
+        "groups": [{"name": "Tasks", "items": [{"text": "memo", "source": "user"}]}],
+        "reasoning": "memo first",
+    }
+
+
 def _skeleton(payload: dict | None = None) -> PlanningArtifact:
     return PlanningArtifact.create(
         artifact_id="skeleton-1",
         kind=ArtifactKind.SKELETON,
         revision=1,
-        payload=payload or {"markdown": "# Morning\n- memo", "reasoning": "memo first"},
+        payload=payload or _skeleton_payload(),
         dependency_revisions={"planning_day": 1},
     )
 
@@ -225,11 +233,11 @@ def test_the_skeleton_is_stage_three_with_approve_back_cancel() -> None:
     approve = card.controls[0]
     assert approve.artifact_id == "skeleton-1"
     assert approve.artifact_digest == _skeleton().digest
-    assert card.body == "# Morning\n- memo"
+    assert card.body == "Morning\n*Tasks*\nmemo"
     assert [item.ref for item in card.decided if item.kind == "assumption"] == ["a-1"]
 
 
-def test_a_skeleton_without_markdown_fails_loudly() -> None:
+def test_a_skeleton_without_groups_fails_loudly() -> None:
     with pytest.raises(ValidationError):
         _map(AwaitingApproval(artifact=_skeleton({"blocks": []})), _snapshot())
 

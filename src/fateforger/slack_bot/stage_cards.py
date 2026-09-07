@@ -469,13 +469,21 @@ def map_outcome(
                 if skeleton.reasoning
                 else []
             )
+            # TODO(Task 4): render groups/items with per-line provenance
+            # markers instead of flattening to plain lines -- this is the
+            # minimum to keep the card drawing something after the payload
+            # went from markdown to typed groups (#267, #344).
+            body_lines = [skeleton.day_label]
+            for group in skeleton.groups:
+                body_lines.append(f"*{group.name}*")
+                body_lines.extend(item.text for item in group.items)
             return StageCard(
                 stage=stage(3),
                 session_key=session_key,
                 expected_revision=snapshot.revision,
                 context=context,
                 decided=_decided(snapshot),
-                body=skeleton.markdown,
+                body="\n".join(body_lines),
                 controls=[
                     ApproveControl(
                         artifact_id=artifact.artifact_id,

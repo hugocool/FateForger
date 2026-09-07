@@ -109,7 +109,12 @@ def _skeleton_result() -> PlanningResult:
         artifact_updates=[
             ArtifactDraft(
                 kind=ArtifactKind.SKELETON,
-                payload={"markdown": "## Saturday\n- 17:00 Gym"},
+                payload={
+                    "day_label": "Saturday",
+                    "groups": [
+                        {"name": "Evening", "items": [{"text": "17:00 Gym", "source": "user"}]}
+                    ],
+                },
                 dependency_revisions={"planning_day": 1},
             )
         ]

@@ -66,7 +66,11 @@ def _skeleton() -> PlanningArtifact:
         artifact_id="skeleton-1",
         kind=ArtifactKind.SKELETON,
         revision=1,
-        payload={"markdown": "# Morning\n- memo", "reasoning": "memo first"},
+        payload={
+            "day_label": "Morning",
+            "groups": [{"name": "Morning", "items": [{"text": "memo", "source": "user"}]}],
+            "reasoning": "memo first",
+        },
         dependency_revisions={"planning_day": 1},
     )
 

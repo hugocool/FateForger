@@ -47,7 +47,11 @@ def _back_button_value() -> str:
         artifact_id="skeleton-1",
         kind=ArtifactKind.SKELETON,
         revision=1,
-        payload={"markdown": "# Morning", "reasoning": ""},
+        payload={
+            "day_label": "Morning",
+            "groups": [{"name": "Morning", "items": [{"text": "memo", "source": "user"}]}],
+            "reasoning": "",
+        },
         dependency_revisions={"planning_day": 1},
     )
     card = map_outcome(
@@ -118,7 +122,11 @@ def _every_artifact_card() -> list:
         artifact_id="skeleton-1",
         kind=ArtifactKind.SKELETON,
         revision=1,
-        payload={"markdown": "# Morning", "reasoning": ""},
+        payload={
+            "day_label": "Morning",
+            "groups": [{"name": "Morning", "items": [{"text": "memo", "source": "user"}]}],
+            "reasoning": "",
+        },
         dependency_revisions={"planning_day": 1},
     )
     candidate = PlanningArtifact.create(

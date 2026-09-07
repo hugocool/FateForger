@@ -30,6 +30,8 @@ from fateforger.agents.timeboxing.session_contracts import (
     BlockerOption,
     PlannerAssumptionDraft,
     PlanningResult,
+    SkeletonGroup,
+    SkeletonItem,
     SkeletonPayload,
     UserBlockerDraft,
 )
@@ -407,9 +409,12 @@ def _validated(
             SkeletonPayload.model_validate(artifact)
         except ValidationError as exc:
             raise PlanningResultRefused(
-                "a skeleton payload is {\"markdown\": <the day as loose "
-                "markdown>, \"reasoning\": <why it is shaped that way>} and "
-                f"nothing else; this one does not match ({_shape_codes(exc)})."
+                "a skeleton payload is {\"day_label\": <e.g. \"Sunday 6 "
+                "September\">, \"groups\": [{\"name\": ..., \"items\": "
+                "[{\"text\": ..., \"source\": \"user\"|\"rule\"|\"assumed\""
+                "|\"calendar\", \"rule_uid\": <only when source is rule>}]}], "
+                "\"reasoning\": <why it is shaped that way>} and nothing "
+                f"else; this one does not match ({_shape_codes(exc)})."
             ) from exc
 
     updates = (
@@ -503,6 +508,8 @@ def _known_field_names() -> frozenset[str]:
         ArtifactDraft,
         PlannerAssumptionDraft,
         SkeletonPayload,
+        SkeletonGroup,
+        SkeletonItem,
         UserBlockerDraft,
         BlockerOption,
     )
