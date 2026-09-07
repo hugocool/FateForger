@@ -147,7 +147,7 @@ async def test_placement_with_nothing_to_place_makes_no_call() -> None:
 
 @pytest.mark.asyncio
 async def test_classify_sends_names_only_for_a_criterion_that_does_not_need_the_text() -> None:
-    client = _SchemaOutputClient({"status": "uncovered", "why": "no duration"})
+    client = _SchemaOutputClient({"why": "no duration", "verdict": "would_ask"})
     cell = CellRef(row="body", criterion="tacit_knowledge")
     state, why = await CoverageJudge(client).classify(
         cell=cell,
@@ -172,7 +172,7 @@ async def test_classify_sends_the_rule_text_for_a_contradiction_or_an_ambiguity(
     judge called "work from 08:00" against a 09:30 `must` not-contradictory
     5/5 (2026-09-05)."""
     for criterion in ("contradictory", "unclear"):
-        client = _SchemaOutputClient({"status": "uncovered", "why": "clashes"})
+        client = _SchemaOutputClient({"why": "clashes", "verdict": "would_ask"})
         await CoverageJudge(client).classify(
             cell=CellRef(row="fixed", criterion=criterion),
             rules=[{"name": "Work start time", "necessity": "must", "description": "Work starts at 09:30 on arrival."}],
@@ -187,12 +187,40 @@ async def test_classify_sends_the_rule_text_for_a_contradiction_or_an_ambiguity(
 
 
 @pytest.mark.asyncio
-async def test_classify_refuses_a_status_outside_the_schema() -> None:
-    client = _SchemaOutputClient({"status": "maybe", "why": ""})
+async def test_classify_refuses_a_verdict_outside_the_schema() -> None:
+    client = _SchemaOutputClient({"why": "", "verdict": "maybe"})
     with pytest.raises(ValueError):
         await CoverageJudge(client).classify(
             cell=CellRef(row="body", criterion="unclear"), rules=[], stated=[], request=None, session_key="C1:1.0"
         )
+
+
+@pytest.mark.asyncio
+async def test_each_verdict_maps_to_the_matrix_state_it_means() -> None:
+    for verdict, state in (("would_ask", "uncovered"), ("would_not_ask", "covered"), ("nothing_here", "not_applicable")):
+        client = _SchemaOutputClient({"why": "because", "verdict": verdict})
+        got, why = await CoverageJudge(client).classify(
+            cell=CellRef(row="body", criterion="unclear"), rules=[], stated=[], request=None, session_key="C1:1.0"
+        )
+        assert got == state, verdict
+        assert why == "because"
+
+
+@pytest.mark.asyncio
+async def test_the_matrix_words_are_not_a_legal_verdict() -> None:
+    """The judge is never offered `covered`: that is the word it misread."""
+    client = _SchemaOutputClient({"why": "because", "verdict": "covered"})
+    with pytest.raises(ValueError):
+        await CoverageJudge(client).classify(
+            cell=CellRef(row="body", criterion="unclear"), rules=[], stated=[], request=None, session_key="C1:1.0"
+        )
+
+
+def test_the_judgement_reasons_before_it_decides() -> None:
+    """Field order is generation order for a schema-bound answer."""
+    from fateforger.agents.timeboxing.elicitation_judges import _CoverageJudgement
+
+    assert list(_CoverageJudgement.model_fields) == ["why", "verdict"]
 
 
 @pytest.mark.asyncio

@@ -203,29 +203,58 @@ class PlacementJudge:
         return Placement(anchors=placed_anchors, rules=placed_rules)
 
 
+#: What the judge answers, and in this order: the reason is generated before
+#: the verdict, so the verdict is written against a reason that already exists
+#: rather than justified after the fact.
 class _CoverageJudgement(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    status: CellState
-    #: Kept for the eval report; never rendered, so it carries no cap. A wrong
-    #: `status` corrupts the gate and stays strict; a long `why` corrupts
-    #: nothing, and a length bound would fail a whole batch of cells over
-    #: cosmetic text.
+    #: Kept for the eval report; never rendered. No length cap: a wrong verdict
+    #: corrupts the gate, a long reason corrupts nothing, and a cap here would
+    #: fail a whole batched turn over cosmetic text (Task 6 review).
     why: str
+    #: Deliberately not the matrix's own words. Asked with `covered`, the judge
+    #: wrote a conflict into `why` and answered `covered` in 4 of 5 draws
+    #: (2026-09-06): it read the word as "I have identified this". A verdict
+    #: phrased as the behaviour it implies cannot be read that way.
+    verdict: Literal["would_ask", "would_not_ask", "nothing_here"]
 
 
-_COVERAGE_PROMPT = """You audit an elicitation conversation for a personal day
-planner, before the day is planned. Decide, for ONE criterion about ONE row of
-concern, whether the conversation so far settles it. Base the decision only on
-the rules on record for this row and on what the user said this session; do
-not invent concerns never raised.
+#: The judge's vocabulary to the matrix's. Arithmetic over two closed sets this
+#: system authored; the matrix keeps the words the gate and the cards read.
+_VERDICT_TO_STATE: dict[str, CellState] = {
+    "would_ask": "uncovered",
+    "would_not_ask": "covered",
+    "nothing_here": "not_applicable",
+}
 
-status "covered": settled for this day. status "uncovered": a good coach would
-ask about this before planning. status "not_applicable": there is nothing in
-this row to have this criterion about. For the "alternatives" criterion,
-answer "uncovered" only where a rule in this row is at risk given what the
-user said today; a contingency nobody needs is not a gap. Give "why" in at
-most fifteen words. Return only the requested schema.
+
+_COVERAGE_PROMPT = """You are a planning coach's assistant, reading one
+person's saved rules and what they have said in this session, before their day
+is planned. You are asked about ONE criterion for ONE row of concern, and you
+answer one question: would you put a question to this person about it, right
+now, before their day is planned?
+
+Answer "would_ask" when a question here would change where something goes on
+today's timeline and the person has not already given you the answer.
+
+Answer "would_not_ask" when you would say nothing: what is on record and what
+they have said this session is enough to place these things today. Being able
+to remark on something is not a reason to ask about it. Most rows on a
+well-described day are "would_not_ask".
+
+Answer "nothing_here" when this row holds nothing for this criterion to be
+about.
+
+Write `why` first, in at most fifteen words, then the verdict it supports. If
+your reason names a conflict, a missing value, an ambiguity or an open
+question, then you would ask, and the verdict is "would_ask" -- a reason that
+names a problem and a verdict of "would_not_ask" contradict each other.
+
+Do not raise a concern the person never raised. For the "alternatives"
+criterion, answer "would_ask" only where a rule in this row is genuinely at
+risk given what they said today; a contingency nobody needs is not worth their
+time. Return only the requested schema.
 """
 
 
@@ -282,7 +311,7 @@ class CoverageJudge:
         if not isinstance(content, str):
             raise ValueError(f"coverage judgement for {cell.id} returned no schema-bound JSON content")
         judgement = _CoverageJudgement.model_validate_json(content)
-        return judgement.status, judgement.why
+        return _VERDICT_TO_STATE[judgement.verdict], judgement.why
 
 
 class _ProbeJudgement(BaseModel):
