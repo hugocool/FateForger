@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
-from .models import JournalEntry
+from .models import JournalEntry, Material
 
 DEFAULT_JOURNAL_PATH = Path("data/tmbx_journal.db")
 
@@ -37,17 +37,23 @@ def journal_sessionmaker(
 async def init_journal(
     db_path: Path | str = DEFAULT_JOURNAL_PATH,
 ) -> async_sessionmaker[AsyncSession]:
-    """Create the journal schema and return a sessionmaker.
+    """Create the journal and materials schema and return a sessionmaker.
 
     Explicit entrypoint — call it from an async server startup or the
     ``tmbx-init-journal`` command, never from a write path. Repo policy
     forbids runtime table creation in live paths.
+
+    Both tables live in this one file, so one init call is the whole schema;
+    ``MaterialStore`` takes the sessionmaker this returns.
     """
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
     async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all, tables=[JournalEntry.__table__])
+        await conn.run_sync(
+            SQLModel.metadata.create_all,
+            tables=[JournalEntry.__table__, Material.__table__],
+        )
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
@@ -56,7 +62,7 @@ def init_journal_cli() -> None:
     import asyncio
 
     asyncio.run(init_journal())
-    print(f"journal ready at {DEFAULT_JOURNAL_PATH}")
+    print(f"journal and materials ready at {DEFAULT_JOURNAL_PATH}")
 
 
 class JournalStore:
