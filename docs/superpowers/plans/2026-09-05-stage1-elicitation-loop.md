@@ -2857,7 +2857,26 @@ The evals ran end to end against the frozen store on the production judge client
 
 **16d — placement picks an index.** The vacation day died on a uid the model mistyped by one character, the same defect as #330. The prompt now offers a 1-based index and the code maps it back. Brief: `task-16d-brief.md`.
 
-**16e — the criterion discriminators, written against a re-measured baseline.** 318 of 336 classifications came back `uncovered` even after answers: the `alternatives` pathology of the 2026-09-04 spike, repeating on `tacit_assumptions`. The wording needs the same treatment the `alternatives` criterion got, validated by resampling at n ≥ 8. It is deliberately last: tuning a prompt against a live-locked loop measures the live-lock.
+**16e — the classifier is asked whether it would ask.** Written after the re-measurement, and it is not the criterion discriminators the flood first suggested. Pass 3 named the defect exactly: in 4 of 5 draws the judge wrote *"Deep work 08:00-09:30 conflicts with mandatory 9:30 work start"* into `why` and answered **`covered`** on the same call. It reads `covered` as *"I have identified this"*. So the judge is no longer offered the matrix's words: it answers `would_ask | would_not_ask | nothing_here`, reasons before it decides, and the code maps its vocabulary to the matrix's. Brief: `task-16e-brief.md`.
+
+**The probe-count threshold is retired** (Hugo, 2026-09-06). *"≤ 4 probes at p50"* was invented in this plan before anything was measured; the working Tuesday now sits at 9 against a 41-rule corpus, and whether that is too many is a question about a real session, not about the fixture. The loop eval keeps a smoke check that the gate opens at all and drops the numeric bar; the real budget is set after Hugo has run a session himself.
+
+**Pass 3, for the record** (contender `openai/gpt-oss-120b:nitro` at `minimal` via `timeboxing_judge`, non-contender `deepseek/deepseek-v4-pro-0813:nitro`, n = 5):
+
+| measure | pass 2 | pass 3 |
+| --- | --- | --- |
+| gate met, working Tuesday | 0/5 | 3/5 |
+| gate met, vacation day | crashed | 0/5 |
+| gate met, Sunday | 0/5 | 0/5 |
+| probes per draw, Tuesday | 12 (cap) | 9 at p50 |
+| re-asks | 13 | 13 (now across distinct cells) |
+| nuisance | 8/57 | 17/58 |
+| round-trips per probe | 2 ✅ | 2 ✅ |
+| ablation: gym time | 5/5, 0/5 | 5/5, 4/5 ✅ |
+| ablation: deep-work duration | 5/5, 1/5 | 4/5, 2/5 |
+| ablation: work-start clash | 0/5 | 0/5 |
+
+The dominant remaining cost is one gap opening the same criterion on many rows: one vacation-day draw ended with 13 open cells whose reasons are 13 restatements of *"travel time to the gym is unknown"*, and one cell closes per turn. If 16e's bar does not collapse that, the next lever is generating one probe for a cluster of open cells rather than one for the top cell — a change to `elicit`, deliberately not attempted before the calibration is measured.
 
 **The ablation's second assertion changes** (Hugo, 2026-09-05). Asserting that the probe for one cell addresses one deleted fact measured probe *selection*, not probe quality: a cell holds several gaps, one probe is generated, and for the gym case the generator saw `rules: []` and asked a good question about deep-work duration 5/5. It becomes loop-level recall — run the loop and let the non-contender judge say whether the deleted fact was elicited anywhere in the trace before the cap.
 
