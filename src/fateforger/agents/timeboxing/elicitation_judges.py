@@ -402,7 +402,7 @@ class ProbeJudge:
         # Slack renders at most four buttons, and `ProbeDraft.options` caps at
         # four as well; this is the loud failure the schema can no longer carry.
         if len(labels) > 4:
-            raise ValueError(f"probe judgement for {cell.id} offered {len(labels)} options; at most four")
+            raise ValueError(f"probe judgement for {cell.id} left {len(labels)} non-blank options; at most four")
         return ProbeDraft(
             cell_id=cell.id,
             question=judgement.question,

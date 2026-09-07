@@ -307,6 +307,23 @@ async def test_options_that_are_all_blank_leave_a_free_text_probe() -> None:
     assert draft is not None and draft.options == []
 
 
+@pytest.mark.asyncio
+async def test_the_four_option_cap_counts_what_survives_not_what_was_returned() -> None:
+    """One option is one Slack button, and a blank was never a button. Four
+    real labels plus blanks is four buttons and must not raise; the filter
+    therefore has to run before the cap, and this pins that order."""
+    client = _SchemaOutputClient(
+        {"grounded": True, "question": "Which?", "why_needed": "w",
+         "options": ["60 min", "", "75 min", "  ", "90 min", "105 min"]}
+    )
+    draft = await ProbeJudge(client).generate(
+        cell=CellRef(row="body", criterion="tacit_knowledge"), rules_full=[], conversation=[],
+        request=None, session_key="C1:1.0",
+    )
+    assert draft is not None
+    assert [o.label for o in draft.options] == ["60 min", "75 min", "90 min", "105 min"]
+
+
 class _StubPlacement:
     def __init__(self, placement: dict[str, str], rules: dict[str, str] | None = None) -> None:
         self._placement = placement
