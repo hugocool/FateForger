@@ -96,6 +96,21 @@ cancel. The **fold** (`stage_context.context_fold`) is the modal behind the pane
 (`ff_timebox_steer`) or on a decided item (`ff_timebox_decided`) goes through
 `intent_from_artifact_action` like any button.
 
+The turn card's question is judge-written where the Stage 1 elicitation loop
+(`elicitation_judges.py`, see the timeboxing agent's own
+[README](../agents/timeboxing/README.md#stage-1-elicitation)) grounded a probe
+for the top open cell: `ProbeJudge` phrases it from what the user has said
+this session, with up to four option buttons (`BlockerOption`); a cell no
+probe could ground falls back to the concern floor's own criterion wording
+instead. The card's gate line -- what Stage 1 still needs, across every open
+cell, not only the one being asked -- names at most eight cells before an
+overflow marker (`GATE_LINE_CAP` in `stage_cards.py`, `_gate_line`). Measured
+2026-09-07 against the card renderer: all 45 cells open on turn one rendered
+1589 characters, eleven short of Slack's 1600-character section-text limit
+and being sliced mid-word by the section builder rather than raising; capped
+at eight, the same turn renders in 295 characters and the worst case across
+the catalog's longest labels is 374.
+
 ### Thread Focus
 
 - Each Slack thread is "owned" by one agent type at a time (via `focus.py`).

@@ -12,11 +12,10 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | GraphFlow orchestration | Implemented, Documented | graphflow state machine tests | — |
 | Skeleton pre-generation (AC1) | Implemented, Tested | `test_timeboxing_skeleton_pre_generation.py` | — |
 | Calendar sync + undo controls | Implemented, Tested (submit-time baseline refresh + deterministic reconciliation summary in Stage 5) | `test_timeboxing_submit_flow.py`, `test_slack_timebox_buttons.py` | 2026-03-07 |
-| Stage 1 constraint-template coverage UX | Implemented, Tested (collect-stage calendar anchor merge + anchor summary line) | `test_timeboxing_stage_message_template_coverage.py`, `test_timeboxing_calendar_prefetch_feedback.py`, `test_timeboxing_durable_constraints.py` | 2026-03-07 |
 | Durable profile/date-span constraint auto-upsert + Stage 1 prefetch wait | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_constraint_memory_client_tool_name.py` | — |
 | Graphiti durable memory cutover (Neo4j-backed MCP, no Mem0/file fallback) | Implemented, Tested | `test_graphiti_constraint_memory.py`, `test_settings_mcp_endpoints.py`, `test_runtime_mcp_startup_checks.py`, `test_timeboxing_memory_backend_selection.py` | 2026-03-10 |
 | Constraint-memory MCP payload decoding hardening | Implemented, Tested | `test_timeboxing_constraint_memory_client_tool_name.py` | — |
-| Stage 1 lookup-first defaults + session override suppression | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_stage_gate_json_context.py` | — |
+| Stage 1 elicitation loop (concern-floor coverage matrix, three judges, arithmetic gate) | Implemented, Tested (see [Stage 1 Elicitation](#stage-1-elicitation)) | `test_elicitation_gate.py`, `test_elicitation_judges.py`, `test_elicitation_composes.py`, `tests/evals/test_stage1_elicitation.py` | 2026-09-06 |
 | Stage 3 markdown-first skeleton overview | Implemented, Tested | `test_timeboxing_skeleton_draft_contract.py` | — |
 | Stage 4 advisory quality facts (0-4) | Implemented, Tested | `test_phase4_rewiring.py` | — |
 | Deterministic stage action buttons | Implemented, Tested | `test_timeboxing_stage_actions.py`, `test_slack_timebox_stage_buttons.py` | — |
@@ -91,6 +90,16 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | `state.py` | Session persistence helpers. |
 | `flow.py` | Legacy flow logic (being replaced by GraphFlow). |
 
+### Stage 1 Elicitation
+
+| File | Responsibility |
+|------|---------------|
+| `elicitation.py` | The Stage 1 concern floor and the arithmetic gate. `CONCERNS` is the one authored list (seven rows, including `method` for rules about the planning itself); with the two non-concern rows `unplaced` and `request` that's nine rows total, each crossed with the five `CRITERIA` into a `CoverageMatrix`. `ranked_open_cells` orders what is still open, `stage1_gate` is the gate the kernel and the interpreter both read, and `closed_cells` tracks cells this session will not ask again. Calls no model. |
+| `elicitation_judges.py` | The three judgements that fill the matrix each turn -- `PlacementJudge` (files anchors and unanchored rules under a row), `CoverageJudge` (one verdict per open cell), `ProbeJudge` (phrases the question and up to four option buttons for the top open cells) -- and `elicit()`, the orchestrator `HostPlanningContext._frame_from_corpus` in `slack_bot/timeboxing_host.py` calls once per Stage 1 turn on its own model client (`agent_type="timeboxing_judge"`; see `docs/reference/setup/llm.md`). |
+
+Design: `docs/superpowers/specs/2026-09-05-stage1-elicitation-loop-design.md`.
+Measurements: `docs/superpowers/research/2026-09-06-stage1-loop-evals.md`.
+
 ### Subfolders
 
 | Folder | Responsibility |
@@ -110,7 +119,10 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 ```
 Stage 0: Date Confirmation (Slack buttons)
     background: calendar prefetch + Notion constraint retrieval (with short await before first Stage 1 render)
-Stage 1: CollectConstraints -> StageGateOutput (frame_facts)
+Stage 1: Constraints -> elicitation loop (elicitation.py, elicitation_judges.py): three judges
+    (PlacementJudge, CoverageJudge, ProbeJudge) fill a CoverageMatrix over the concern floor each
+    turn; stage1_gate asks the top open cell and proposes to close only once every cell is
+    covered, not applicable, or already answered -- locking the day does not, by itself, close it
 Stage 2: CaptureInputs -> StageGateOutput (input_facts)
 Stage 3: Skeleton -> pre-generated draft if available, else synchronous draft -> markdown overview (presentation-first) + carry-forward seed `TBPlan` (no Stage 3 patch loop)
 Stage 4: Refine -> prompt-guided tool orchestration (`timebox_patch_and_sync` primary, `memory_extract_and_upsert` optional background) -> advisory quality facts (0-4) -> sync to Google Calendar with explicit changed/unchanged reporting
