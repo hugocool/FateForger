@@ -12,6 +12,7 @@ produced, these functions say what the user sees; the router says where it goes.
 
 from __future__ import annotations
 
+import html
 import logging
 
 from pydantic import BaseModel, ConfigDict
@@ -47,6 +48,7 @@ from .stage_cards import (
     UndoControl,
     map_outcome,
 )
+from .mrkdwn import to_mrkdwn
 from .stage_context import ContextFold, ContextPanel, FoldRow
 from .timebox_candidate import PendingTimeboxCandidates
 from .timeboxing_commit import build_timebox_date_card
@@ -304,12 +306,18 @@ def _section(text: str) -> dict:
     }
 
 
-def _bullets(title: str, lines: list[str]) -> dict:
-    shown = [f"• {line}" for line in lines[:STAGE_LIST_CAP]]
-    rest = len(lines) - len(shown)
-    if rest > 0:
-        shown.append(f"_+{rest} more_")
-    return _section(f"*{title}*\n" + "\n".join(shown))
+def _ctx(text: str) -> dict:
+    """Small grey text. Supporting material -- Context, and any Decided
+    item with no control to reach -- folds here rather than into a
+    `section`, so it never competes with the day for Slack's collapse
+    threshold. Uncapped: small text carries the whole list, which is what
+    retires the old `_+N more_` line here (it rendered as text and was
+    never clickable)."""
+
+    return {
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": text[:SLACK_MAX_BLOCK_TEXT_CHARS]}],
+    }
 
 
 def _nav_button(action_id: str, label: str, value: str, *, primary: bool = False) -> dict:
@@ -571,13 +579,34 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
     thread reads as a ladder. A receipt is the same card with no controls and
     a `done` label -- what the user acted on, kept legible after the fact.
 
+    The day leads. `artifact_day` draws Slack's only larger-text affordance,
+    a `header` block, ahead of one `section` per `artifact_group` --
+    measured live across nine variants on 2026-09-07: a single long section
+    holding the whole day collapses behind Slack's "Show more", so the user
+    had to click to see the day they were approving; a `header` plus one
+    section per group renders whole. `card.body` (the 4/5 and 5/5 cards)
+    follows the same way, verbatim.
+
+    Context and Decided are supporting material, not the thing being
+    approved, so they fold to the very end in small grey `context` text --
+    after the asking, the gate and the nav, not before them as they used to
+    render. A Decided item with no `controls` folds into one uncapped
+    `context` block; small text carries the whole list, which is what
+    retires the old `_+N more_` line there (it rendered as text and was
+    never clickable). A Decided item *with* `controls` (an assumption's
+    `DenyControl`) cannot fold the same way -- Slack's `context` block has
+    no `accessory` slot -- so it stays its own `section` with the overflow
+    attached, capped at `STAGE_LIST_CAP` (8) with a "_+N more_" line if the
+    capped list overflows, same as before but now scoped to only the items
+    that need a control.
+
     No divider is ever emitted here; the ladder reads as a sequence of
-    sections and actions blocks, nothing more. The decided block count is
-    `1 + min(len, 8) + 1` (heading, up to `STAGE_LIST_CAP` items, an optional
-    "+N more"), so the turn card's maximum is header 1 + context 1 +
-    decided 10 + body 1 + asking (question 1 + hint 1 + effects 1 +
-    options 1) 4 + gate 1 + nav 1 + typing hint 1 = 20, under
-    `SLACK_MAX_BLOCKS` (40).
+    sections, a header, context and actions blocks, nothing more. The block
+    budget, worst case: stage header 1 + artifact-day header 1 + groups N +
+    body 1 + asking (question 1 + hint 1 + effects 1 + options 1) 4 +
+    gate 1 + nav 1 + typing hint 1 + context (one block, any item count) 1 +
+    decided (controlled items capped at 8, one "+N more" line, one folded
+    context block) 10 = 21 + N, under `SLACK_MAX_BLOCKS` (40) while N <= 19.
     """
 
     header = f"*{card.stage.index}/5 · {card.stage.name}*"
@@ -586,23 +615,26 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
     blocks: list[dict] = [_section(header)]
     text_lines = [f"{card.stage.index}/5 · {card.stage.name}"]
 
-    if card.context:
-        blocks.append(_bullets("Context", [item.text for item in card.context]))
-    if card.decided:
-        blocks.append(_section("*Decided*"))
-        shown = card.decided[:STAGE_LIST_CAP]
-        for item in shown:
-            block = _section(f"• {item.text}")
-            if item.controls and card.done is None:
-                block["accessory"] = {
-                    "type": "overflow",
-                    "action_id": FF_TIMEBOX_DECIDED_ACTION_ID,
-                    "options": [_decided_option(card, control) for control in item.controls],
-                }
-            blocks.append(block)
-        rest = len(card.decided) - len(shown)
-        if rest > 0:
-            blocks.append(_section(f"_+{rest} more_"))
+    if card.artifact_day:
+        blocks.append(
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": card.artifact_day[:150],
+                    "emoji": True,
+                },
+            }
+        )
+        text_lines.append(card.artifact_day)
+    for group in card.artifact_groups:
+        # `group.lines` are rendered verbatim -- already mrkdwn, already
+        # escaped, already carrying their provenance label (Task 4). The
+        # name is escaped again here, at the point this renderer composes
+        # it into the bold heading, the same reserved three
+        # `render_schedule` escapes on a block summary.
+        name = html.escape(group.name, quote=False)
+        blocks.append(_section(f"*{name}*\n" + "\n".join(group.lines)))
     if card.body:
         blocks.append(_section(card.body))
         text_lines.append(card.body)
@@ -765,6 +797,36 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
                 ],
             }
         )
+
+    # Supporting material folds last, in small grey text, so the day above
+    # it is what renders whole rather than what collapses.
+    if card.context:
+        blocks.append(
+            _ctx("*Context*  " + " · ".join(to_mrkdwn(item.text) for item in card.context))
+        )
+    #: A receipt (`card.done` set) has nothing left to act on, so every
+    #: Decided item folds there regardless of `controls` -- a control that
+    #: can no longer be pressed is not a reason to keep an item out of the
+    #: fold.
+    show_controls = card.done is None
+    controlled = [item for item in card.decided if item.controls and show_controls]
+    folded = [item for item in card.decided if not (item.controls and show_controls)]
+    if controlled:
+        shown = controlled[:STAGE_LIST_CAP]
+        for item in shown:
+            block = _section(f"• {item.text}")
+            block["accessory"] = {
+                "type": "overflow",
+                "action_id": FF_TIMEBOX_DECIDED_ACTION_ID,
+                "options": [_decided_option(card, control) for control in item.controls],
+            }
+            blocks.append(block)
+        rest = len(controlled) - len(shown)
+        if rest > 0:
+            blocks.append(_section(f"_+{rest} more_"))
+    if folded:
+        blocks.append(_ctx("*Decided*  " + "  ·  ".join(item.text for item in folded)))
+
     return SlackBlockMessage(
         text="\n".join(text_lines)[:SLACK_MAX_TEXT_CHARS], blocks=blocks
     )

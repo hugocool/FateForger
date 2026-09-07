@@ -15,6 +15,7 @@ from fateforger.slack_bot.stage_cards import (
     CommitControl,
     ContextItem,
     DecidedItem,
+    DenyControl,
     StageCard,
     UndoControl,
     date_stage_card,
@@ -194,11 +195,36 @@ def test_the_commit_stage_offers_undo() -> None:
 
 
 def test_long_lists_are_capped_by_count() -> None:
-    # Decided items are drawn one section per item, capped by count, so an
-    # overflow can be attached per item rather than to a single bullet block.
+    # A Decided item with no control folds into one uncapped context block
+    # (2026-09-07): small grey text carries the whole list, so a plain fact
+    # is never capped or counted here.
     card = _skeleton_card(
         decided=[
             DecidedItem(text=f"item {i}", kind="fact", ref=f"f-{i}") for i in range(12)
+        ]
+    )
+    message = render_stage_card(card)
+    decided_items = [
+        b for b in message.blocks
+        if b.get("text", {}).get("text", "").startswith("• item ")
+    ]
+    assert len(decided_items) == 0
+    folded = next(b for b in message.blocks if "item 11" in json.dumps(b))
+    assert folded["type"] == "context"
+
+
+def test_long_controlled_lists_are_capped_by_count() -> None:
+    # A Decided item *with* a control (an assumption's DenyControl) cannot
+    # fold into context -- Slack's context block has no accessory slot --
+    # so it stays its own section, capped by count so an overflow can be
+    # attached per item and the last section shown is a whole one.
+    card = _skeleton_card(
+        decided=[
+            DecidedItem(
+                text=f"item {i}", kind="assumption", ref=f"f-{i}", filed_by="planner",
+                controls=[DenyControl(assumption_id=f"f-{i}")],
+            )
+            for i in range(12)
         ]
     )
     message = render_stage_card(card)
