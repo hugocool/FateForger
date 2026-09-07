@@ -59,6 +59,8 @@ class SkeletonPayload(_StrictModel):
     reasoning: str = ""
 ```
 
+The rules are already on the snapshot: `PlanningSessionSnapshot.applicable_constraints` holds the flat rows the planner receives, each with `uid` and `name`, written on every resolve precisely so the card can render what the planner saw (#202). Nothing new is plumbed — the kernel verifies against those rows and the renderer resolves names from them.
+
 A `rule_uid` not among the day's active constraint uids fails the turn by name — `TurnFailed(code="unknown_rule_uid")` — rather than being drawn. Comparing a returned uid against uids this system minted is set membership over its own identifiers, explicitly outside the no-matching rule.
 
 `markdown` is gone. An artifact stored under the old shape is refused loudly, as `_StrictModel` already does for `blocks` — consistent with #267's existing stance that a payload failing here predates the contract and must not be drawn as an empty day. **A session mid-flight across the deploy loses its skeleton and must re-draft**; that is the accepted cost and is stated so nobody discovers it in a live session.
