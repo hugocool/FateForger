@@ -95,14 +95,74 @@ def test_the_task_board_row_follows_the_planning_result_row():
     assert ids.index("mcp-task-board") == ids.index("mcp-planning-result") + 1, ids
 
 
-def test_the_mount_forwards_the_notion_variables():
-    """The client composes the child's env; anything not named may be scrubbed.
+def test_the_mount_hands_the_child_the_parents_environment():
+    """The client composes a child's env, so anything unnamed may be scrubbed.
 
-    Both sibling stdio rows pass their own variables explicitly, and without
-    the token the board raises on the first tool call rather than at boot.
+    Forwarding the whole parent env is what passes a variable that IS set and
+    omits one that is not. The row is one `!!js` expression rather than a map
+    of keys precisely so absence stays absence.
     """
     env = _row_named("task_board")["config"]["env"]
 
-    assert "MCP_HTTP_AUTH_TOKEN" in env, env
-    assert "NOTION_MCP_URL" in env, env
+    assert isinstance(env, _Js), f"env must be one !!js expression, got {env!r}"
+    assert "process.env" in env, env
+    assert "PYTHONPATH" in env, env
 
+
+def test_the_mount_never_forwards_a_variable_as_an_empty_string():
+    """An empty string is not "unset", and both readings of it were fatal.
+
+    NOTION_MCP_URL is set nowhere here, so `process.env.NOTION_MCP_URL || ''`
+    handed the child "", `Settings` refused it as not an absolute URL, the
+    server died before serving a tool, and `failOnStartupError: true` took the
+    whole profile down with it -- so the first turn that switched this feature
+    on stopped /dsh answering at all. The token fails the other way and in
+    silence: an env var set to "" shadows the dotenv value in pydantic-settings,
+    so a real token in .env is read as empty and the board refuses itself.
+
+    Pinned as an expression check because both failures need the row enabled to
+    appear, and nothing else in the suite enables it.
+    """
+    env = _row_named("task_board")["config"]["env"]
+
+    assert "|| ''" not in env, (
+        "a `|| ''` fallback forwards an empty string where the variable is "
+        f"unset, which is boot-fatal for a validated setting: {env!r}"
+    )
+    assert '|| ""' not in env, env
+
+
+
+def _subagent_rows() -> list[dict]:
+    """Every `dsh-tool-subagent` instance in the mount block."""
+    return [
+        row
+        for row in _mount_rows()
+        if row.get("name") == "@deepseek-ai/dsh-tool-subagent"
+    ]
+
+
+def test_every_subagent_may_actually_be_started():
+    """`maxDepth` counts the child's own depth, so 0 refuses every call.
+
+    `resolveChildDepth` computes `delegationDepthOf(parent) + 1` and refuses
+    when that exceeds `maxDepth`. The root is depth 0, so its child is depth 1
+    and `1 > 0` refuses. `timebox_patch` carried 0 to mean "may not delegate
+    onward" and was therefore uninvokable for as long as the row existed --
+    measured 2026-09-08: the tool answers "subagent depth exceeds maxDepth (0)"
+    and no candidate basis is captured. 1 is what that intent costs: the child
+    runs, and its own children are depth 2 and refused.
+
+    Read as a defect the day it reappears, because nothing else does: a row
+    that cannot start looks exactly like a model that chose not to call it.
+    """
+    rows = _subagent_rows()
+    assert rows, "no dsh-tool-subagent rows found; has the mount block moved?"
+    for row in rows:
+        depth = row["config"]["maxDepth"]
+        if depth == "provider-managed":
+            continue
+        assert depth >= 1, (
+            f"{row.get('id')!r} carries maxDepth {depth}; a child is its "
+            f"parent's depth plus one, so anything below 1 refuses every call"
+        )
