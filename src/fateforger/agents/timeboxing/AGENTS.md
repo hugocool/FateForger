@@ -25,6 +25,10 @@ For file index, architecture, and status, see `README.md` in this folder.
 - Durable constraint retrieval is centralized in `constraint_retriever.py` (query_types -> type_ids -> query_constraints).
 - Inject list-shaped prompt data via TOON tables (not JSON arrays); see `src/fateforger/llm/toon.py` and `toon_views.py`.
 - Stage 5 submit parity is mandatory: NL submit intent and button submit must converge to the same submission executor path (currently `_submit_pending_plan`).
+- Stage 1's gate (`stage1_gate` in `elicitation.py`) is arithmetic over the session snapshot and never calls a model; only the three judges in `elicitation_judges.py` (via `elicit()`) touch a model client, and only from the Slack host's `resolve()`.
+- A cell whose probe was answered (an `ELICITED_STATEMENT` fact carrying that cell id) or assumed past (a `PlannerAssumption`) is never asked again. `closed_cells` is the single source of that subtraction; read it there rather than re-deriving "closed" at a call site, or the gate could disagree with itself about whether a cell is still open depending on who asked.
+- A Stage 1 judge failure (a bad schema, an index the model was not offered, an empty option label) propagates out of `elicit()` rather than degrading to a smaller matrix or a silently skipped cell. A host that cannot judge fails the turn instead of proposing to close a stage it never opened.
+- `elicit()`'s classify batch runs every open cell concurrently and completes in full -- via `asyncio.gather`, so any one failure fails the whole batch -- before the coverage matrix is assembled and written to the snapshot. Nothing reads a matrix that is still being built.
 
 ## Framework First (Don't Reinvent It)
 

@@ -110,7 +110,7 @@ class DayFrameJudge:
             sort_keys=True,
         )
         with llm_attribution(
-            agent="timeboxing_agent",
+            agent="timeboxing_judge",
             call_label="day_frame_on_record",
             key=session_key,
         ):
