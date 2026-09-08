@@ -125,8 +125,12 @@ Per configuration, and what the uncapped ones spent on their longest answers:
 
 ## The pin — the judgement difference
 
-Judgement losses only — transport, truncation, failures after `create` and the break-it
-flips are excluded from this comparison by construction.
+Transport losses, truncated draws and the break-it flips are excluded from this comparison
+by construction: a case whose draws raised or truncated is classified before it can reach
+this list. **Failures after `create` are not.** They are counted separately, in their own
+column above, but they are not subtracted from the junit case outcomes these lists are
+built from — so a case can appear here with one such draw inside it. Where that happens the
+reading below says which case and what the count is without it.
 
 - Lost on the flash pin, held on the pro pin: `planning_card::test_a_non_press_is_none[later]`, `planning_card::test_a_non_press_is_none[plan tomorrow for me]`, `timebox_question::test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]`, `timebox_question::test_a_revision_after_commit_is_still_a_revision[move the work two hours later]`
 - Lost on the pro pin, held on the flash pin: **none**
@@ -198,7 +202,8 @@ The `intent_interpreter` row's code defaults are `openrouter_pro` and `"high"`, 
 The flash pin remains CLAUDE.md's recorded role for routing and remains the destination. What has to
 change first is the prompts, not the pin: a surface that cares about revise-versus-fact needs a
 discriminator the flash pin can key off, exactly as the `project`-versus-`permanent` judgement did.
-A ticket follows. `.env` is untouched either way.
+That is #406 — *llm: fit the surface interpreters' prompts to the flash pin, then flip the
+`intent_interpreter` default (#336 follow-up)*. `.env` is untouched either way.
 
 ### Reading
 

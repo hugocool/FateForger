@@ -41,7 +41,8 @@ The `intent_interpreter` row's code defaults are `openrouter_pro` and `"high"`, 
 The flash pin remains CLAUDE.md's recorded role for routing and remains the destination. What has to
 change first is the prompts, not the pin: a surface that cares about revise-versus-fact needs a
 discriminator the flash pin can key off, exactly as the `project`-versus-`permanent` judgement did.
-A ticket follows. `.env` is untouched either way.
+That is #406 — *llm: fit the surface interpreters' prompts to the flash pin, then flip the
+`intent_interpreter` default (#336 follow-up)*. `.env` is untouched either way.
 
 ### Reading
 

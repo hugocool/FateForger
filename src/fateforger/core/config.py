@@ -98,7 +98,7 @@ class Settings(BaseSettings):
     #: Defaults to the pro pin at `high` on the 2026-09-06 bench, not the flash
     #: pin CLAUDE.md names for routing: the prompts as written lose there
     #: (27/34 cases against 32/34; revision-after-commit 1/8 against 8/8). The
-    #: flash pin is the destination, after prompt work.
+    #: flash pin is the destination, after the prompt work in #406.
     llm_model_intent_interpreter: str = Field(default="")
 
     # Per-agent temperature

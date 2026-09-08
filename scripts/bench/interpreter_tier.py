@@ -769,8 +769,12 @@ def _markdown(summary: dict, totals: dict, caps: dict, pins: dict, date: str) ->
         "",
         "## The pin — the judgement difference",
         "",
-        "Judgement losses only — transport, truncation, failures after `create` and the break-it",
-        "flips are excluded from this comparison by construction.",
+        "Transport losses, truncated draws and the break-it flips are excluded from this comparison",
+        "by construction: a case whose draws raised or truncated is classified before it can reach",
+        "this list. **Failures after `create` are not.** They are counted separately, in their own",
+        "column above, but they are not subtracted from the junit case outcomes these lists are",
+        "built from — so a case can appear here with one such draw inside it. Where that happens the",
+        "reading below says which case and what the count is without it.",
         "",
     ]
     for prefix in ("pro", "flash"):

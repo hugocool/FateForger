@@ -176,7 +176,7 @@ def _model_for_agent(agent_type: str) -> str:
         # cases against the pro pin's 32/34, and revision-after-commit at 1/8
         # against 8/8, the flash pin reading a revision as a fact. The prompts
         # need a discriminator before the pin moves, exactly as the
-        # project-versus-permanent judgement did; a ticket follows. Until then
+        # project-versus-permanent judgement did -- #406. Until that lands
         # this default follows the measurement rather than the intention.
         return pick(
             settings.llm_model_intent_interpreter,
@@ -231,7 +231,7 @@ def _reasoning_effort_for_agent(agent_type: str) -> ReasoningEffort | None:
     if agent_type == INTENT_INTERPRETER:
         # `high`, with the model, on the 2026-09-06 bench: the measured pair is
         # pro/high, and half of a measured pair is not a measurement. `minimal`
-        # returns with the flash pin once the prompts are fitted to it.
+        # returns with the flash pin once the prompts are fitted to it (#406).
         return normalize(settings.llm_reasoning_effort_intent_interpreter) or "high"
     if agent_type == "revisor_agent":
         return normalize(settings.llm_reasoning_effort_revisor) or "medium"
