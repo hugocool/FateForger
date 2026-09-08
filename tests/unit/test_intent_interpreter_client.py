@@ -41,6 +41,9 @@ def test_the_default_row_is_the_flash_pin_at_minimal_and_capped(openrouter, monk
     assert captured["extra_body"] == {"reasoning": {"effort": "minimal"}}
     assert captured["max_tokens"] == factory._INTENT_INTERPRETER_MAX_TOKENS
     assert factory._INTENT_INTERPRETER_MAX_TOKENS > 0
+    # No sampling pin: CLAUDE.md retired temperature=0 on measurement, and this
+    # is now the only place the interpreter's full kwargs are in hand.
+    assert "temperature" not in captured
 
 
 def test_the_env_overrides_each_column(openrouter, monkeypatch):
@@ -98,24 +101,91 @@ def test_the_planning_site_builds_on_the_interpreter_client(monkeypatch):
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "fateforger"
 
+_INTERPRETERS = {"SurfaceIntentInterpreter", "TimeboxingIntentInterpreter"}
+_THE_ONE_BUILDER = "build_intent_interpreter_client"
+
+
+def _called_name(node: ast.Call) -> str | None:
+    return getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+
+
+def _parents(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    return parents
+
+
+def _enclosing_scope(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> ast.AST | None:
+    current = parents.get(node)
+    while current is not None and not isinstance(
+        current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)
+    ):
+        current = parents.get(current)
+    return current
+
+
+def _last_assigned_value(name: str, scope: ast.AST, before: int) -> ast.expr | None:
+    """The value last bound to ``name`` in this scope before line ``before``.
+
+    A name with no assignment in scope -- a parameter, i.e. a client the
+    function was handed rather than built -- resolves to nothing, and the
+    caller treats that as clean: the construction site is wherever the
+    argument was built, not wherever it was passed along.
+    """
+    found: ast.stmt | None = None
+    for stmt in ast.walk(scope):
+        if isinstance(stmt, ast.Assign):
+            targets: list[ast.expr] = list(stmt.targets)
+            value = stmt.value
+        elif isinstance(stmt, ast.AnnAssign):
+            targets = [stmt.target]
+            value = stmt.value
+        else:
+            continue
+        if value is None or stmt.lineno >= before:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+            if found is None or stmt.lineno > found.lineno:
+                found = stmt
+    if found is None:
+        return None
+    return found.value  # type: ignore[return-value]
+
 
 def test_no_site_under_src_builds_an_interpreter_on_another_agents_client():
     """The guard: an interpreter's client comes from build_intent_interpreter_client
-    and nowhere else. Walks every module for a call to SurfaceIntentInterpreter or
-    TimeboxingIntentInterpreter whose first argument is build_autogen_chat_client(...)
-    with any agent type. Identifiers this system minted; no user content."""
+    and nowhere else.
+
+    Walks every module for a call to SurfaceIntentInterpreter or
+    TimeboxingIntentInterpreter and inspects the client it is handed --
+    following a local variable back to its last assignment, because the site
+    this ticket exists to fix (runtime.py) builds the client on one line and
+    passes it on the next. Anything the argument resolves to that is a call to
+    something other than build_intent_interpreter_client is an offender:
+    build_autogen_chat_client, build_langchain_chat_openai and a bare
+    OpenAIChatCompletionClient are all equally another agent's client.
+
+    Identifiers this system minted; no user content.
+    """
+    assert _SRC.is_dir(), f"the guard found no source tree at {_SRC}"
     offenders: list[str] = []
     for path in _SRC.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        parents = _parents(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-            if name not in {"SurfaceIntentInterpreter", "TimeboxingIntentInterpreter"}:
+            if _called_name(node) not in _INTERPRETERS:
                 continue
+            scope = _enclosing_scope(node, parents)
             for arg in list(node.args) + [kw.value for kw in node.keywords]:
-                if isinstance(arg, ast.Call):
-                    inner = getattr(arg.func, "id", None) or getattr(arg.func, "attr", None)
-                    if inner == "build_autogen_chat_client":
-                        offenders.append(f"{path.relative_to(_SRC)}:{node.lineno}")
+                resolved = arg
+                if isinstance(resolved, ast.Name) and scope is not None:
+                    resolved = _last_assigned_value(resolved.id, scope, node.lineno)
+                if isinstance(resolved, ast.Call) and _called_name(resolved) != _THE_ONE_BUILDER:
+                    offenders.append(
+                        f"{path.relative_to(_SRC)}:{node.lineno} <- {_called_name(resolved)}"
+                    )
     assert offenders == []

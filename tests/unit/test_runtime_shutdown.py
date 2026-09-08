@@ -123,11 +123,16 @@ async def test_shutdown_runtime_is_noop_when_uninitialized() -> None:
         runtime_module._runtime = original_runtime
 
 
-def test_runtime_builds_one_intent_client_without_a_sampling_pin(monkeypatch) -> None:
-    """Catches per-turn model-client construction or a reintroduced sampling pin.
+def test_runtime_builds_one_intent_client_from_the_interpreter_site(monkeypatch) -> None:
+    """Catches per-turn model-client construction, and the wrong construction site.
 
-    No temperature pin (CLAUDE.md): the client is built with no sampling
-    parameter at all, not with temperature pinned to zero.
+    One client, built once, from the interpreter's own row -- and the object
+    the interpreter holds is the one the runtime owns and closes.
+
+    It no longer sees the client's kwargs: build_intent_interpreter_client()
+    takes none, so the no-temperature-pin rule (CLAUDE.md) is asserted where
+    those kwargs exist -- tests/unit/test_intent_interpreter_client.py,
+    test_the_default_row_is_the_flash_pin_at_minimal_and_capped.
     """
 
     created: list[dict[str, object]] = []
