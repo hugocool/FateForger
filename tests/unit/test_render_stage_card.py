@@ -239,6 +239,46 @@ def test_long_controlled_lists_are_capped_by_count() -> None:
     assert more is not None
 
 
+def test_the_decided_label_appears_once_when_every_item_has_a_control() -> None:
+    """Every Decided item carries a control, so nothing folds. Before this
+    fix the heading section only ever drew on the folded block, so an
+    all-controlled Decided list rendered as bare bullets with no heading at
+    all (2026-09-08 review)."""
+    card = _skeleton_card(
+        decided=[
+            DecidedItem(
+                text="assumed x", kind="assumption", ref="a-1", filed_by="planner",
+                controls=[DenyControl(assumption_id="a-1")],
+            ),
+        ],
+    )
+    message = render_stage_card(card)
+    headings = [
+        b for b in message.blocks
+        if b.get("text", {}).get("text", "") == "*Decided*"
+    ]
+    assert len(headings) == 1
+
+
+def test_the_decided_label_appears_once_when_items_are_mixed() -> None:
+    """A controlled item and a folded item together still name the section
+    exactly once -- on the heading above the controlled section, not
+    repeated on the folded context block."""
+    card = _skeleton_card(
+        decided=[
+            DecidedItem(
+                text="assumed x", kind="assumption", ref="a-1", filed_by="planner",
+                controls=[DenyControl(assumption_id="a-1")],
+            ),
+            DecidedItem(text="wanted y", kind="fact", ref="f-1"),
+        ],
+    )
+    message = render_stage_card(card)
+    labelled = [b for b in message.blocks if "Decided" in json.dumps(b)]
+    assert len(labelled) == 1
+    assert labelled[0]["text"]["text"] == "*Decided*"
+
+
 def test_a_receipted_commit_card_keeps_its_undo() -> None:
     """Every other control is dropped by `as_receipt`, and Undo went with
     them: a reopen-to-revise 80s after the commit rewrote the stage-5 card to

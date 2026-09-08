@@ -12,7 +12,6 @@ produced, these functions say what the user sees; the router says where it goes.
 
 from __future__ import annotations
 
-import html
 import logging
 
 from pydantic import BaseModel, ConfigDict
@@ -598,15 +597,19 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
     no `accessory` slot -- so it stays its own `section` with the overflow
     attached, capped at `STAGE_LIST_CAP` (8) with a "_+N more_" line if the
     capped list overflows, same as before but now scoped to only the items
-    that need a control.
+    that need a control. "*Decided*" names this exactly once whenever
+    `card.decided` is non-empty: as its own heading `section` above the
+    controlled items when there are any, or as the prefix on the folded
+    `context` block when every item folded -- never both, never neither.
 
     No divider is ever emitted here; the ladder reads as a sequence of
     sections, a header, context and actions blocks, nothing more. The block
     budget, worst case: stage header 1 + artifact-day header 1 + groups N +
     body 1 + asking (question 1 + hint 1 + effects 1 + options 1) 4 +
     gate 1 + nav 1 + typing hint 1 + context (one block, any item count) 1 +
-    decided (controlled items capped at 8, one "+N more" line, one folded
-    context block) 10 = 21 + N, under `SLACK_MAX_BLOCKS` (40) while N <= 19.
+    decided ("*Decided*" heading 1, controlled items capped at 8, one
+    "+N more" line, one folded context block) 11 = 22 + N, under
+    `SLACK_MAX_BLOCKS` (40) while N <= 18.
     """
 
     header = f"*{card.stage.index}/5 · {card.stage.name}*"
@@ -628,13 +631,14 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
         )
         text_lines.append(card.artifact_day)
     for group in card.artifact_groups:
-        # `group.lines` are rendered verbatim -- already mrkdwn, already
-        # escaped, already carrying their provenance label (Task 4). The
-        # name is escaped again here, at the point this renderer composes
-        # it into the bold heading, the same reserved three
-        # `render_schedule` escapes on a block summary.
-        name = html.escape(group.name, quote=False)
-        blocks.append(_section(f"*{name}*\n" + "\n".join(group.lines)))
+        # Both `group.name` and `group.lines` are rendered verbatim -- one
+        # `html.escape(x, quote=False)` call, in `_artifact_groups`
+        # (stage_cards.py), already escaped both of them, already composed
+        # the lines as mrkdwn with their provenance label. Escaping either
+        # field again here would double-escape it (`R&D` -> `R&amp;D` ->
+        # `R&amp;amp;D`), which is exactly the bug this comment used to
+        # cause (#344 review, 2026-09-08).
+        blocks.append(_section(f"*{group.name}*\n" + "\n".join(group.lines)))
     if card.body:
         blocks.append(_section(card.body))
         text_lines.append(card.body)
@@ -811,7 +815,12 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
     show_controls = card.done is None
     controlled = [item for item in card.decided if item.controls and show_controls]
     folded = [item for item in card.decided if not (item.controls and show_controls)]
+    #: "*Decided*" names the section exactly once, never twice and never
+    #: not-at-all: above the controlled items when there are any (they are
+    #: their own sections, unlabelled otherwise), or -- when every item
+    #: folded -- as the prefix on that one context block.
     if controlled:
+        blocks.append(_section("*Decided*"))
         shown = controlled[:STAGE_LIST_CAP]
         for item in shown:
             block = _section(f"• {item.text}")
@@ -824,7 +833,9 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
         rest = len(controlled) - len(shown)
         if rest > 0:
             blocks.append(_section(f"_+{rest} more_"))
-    if folded:
+        if folded:
+            blocks.append(_ctx("  ·  ".join(item.text for item in folded)))
+    elif folded:
         blocks.append(_ctx("*Decided*  " + "  ·  ".join(item.text for item in folded)))
 
     return SlackBlockMessage(

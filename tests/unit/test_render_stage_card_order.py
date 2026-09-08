@@ -6,8 +6,14 @@ section holding the whole day collapses behind Slack's "Show more"."""
 
 from __future__ import annotations
 
+import html
 import json
 
+from fateforger.agents.timeboxing.session_contracts import (
+    SkeletonGroup,
+    SkeletonItem,
+    SkeletonPayload,
+)
 from fateforger.slack_bot.schedule_render import render_schedule
 from fateforger.slack_bot.stage_cards import (
     ApproveControl,
@@ -16,6 +22,7 @@ from fateforger.slack_bot.stage_cards import (
     ContextItem,
     DecidedItem,
     StageCard,
+    _artifact_groups,
     stage,
 )
 from fateforger.slack_bot.timeboxing_cards import render_stage_card
@@ -70,17 +77,57 @@ def test_a_non_blocking_question_keeps_proceed_and_a_blocking_one_does_not():
     assert "Proceed" not in json.dumps(_rendered(asking=asking, controls=[]))
 
 
-def test_reserved_characters_are_escaped_the_way_the_schedule_escapes_them():
+def test_reserved_characters_are_escaped_exactly_once_by_the_real_pipeline():
     """`&`, `<` and `>` are Slack's reserved three; the 4/5 card already
     neutralises them via html.escape and both card paths must agree.
 
     `*` and `_` are deliberately NOT handled: Slack mrkdwn has no escape for
     them, so a rule literally named "Deep *work*" renders half-bold. Accepted
-    (2026-09-07) rather than wrapping the day in code spans."""
-    text = json.dumps(_rendered(group_name="R&D <urgent>",
-                                lines=["• Ship A & B"]))
+    (2026-09-07) rather than wrapping the day in code spans.
+
+    `_artifact_groups` (`stage_cards.py`) is the sole escaper for a
+    `CardGroup` -- both `name` and `lines`, one `html.escape` call each,
+    since it is incoherent for one field of the same struct to arrive
+    pre-escaped and the other not. This goes through that real seam rather
+    than constructing a `CardGroup` directly, because a raw, unescaped
+    `CardGroup` is not a shape `render_stage_card` is ever actually handed
+    -- constructing one directly is what let a double-escape (`render_
+    stage_card` escaping `group.name` a second time) hide behind a passing
+    test before (2026-09-08 review)."""
+    payload = SkeletonPayload(
+        day_label="Sunday 6 September",
+        groups=[
+            SkeletonGroup(
+                name="R&D <urgent>",
+                items=[SkeletonItem(text="Ship A & B", source="user")],
+            )
+        ],
+    )
+    groups = _artifact_groups(payload, names={})
+    card = StageCard(
+        stage=stage(3), session_key="C1:1.0", expected_revision=1,
+        artifact_day=payload.day_label,
+        artifact_groups=groups,
+    )
+    text = json.dumps(render_stage_card(card).blocks)
     assert "R&amp;D &lt;urgent&gt;" in text
+    assert "Ship A &amp; B" in text
+    # Escaped exactly once: neither the raw form nor a double-escape survived.
     assert "R&D <urgent>" not in text
+    assert "&amp;amp;" not in text
+
+
+def test_a_pre_escaped_group_is_passed_through_byte_identical():
+    """The renderer treats `group.name` exactly as it already treats
+    `group.lines` and `card.body`: verbatim. A name `_artifact_groups`
+    already escaped must not be escaped again on the way out."""
+    escaped_name = html.escape("R&D <urgent>", quote=False)
+    escaped_line = "• " + html.escape("Ship A & B", quote=False)
+    blocks = _rendered(group_name=escaped_name, lines=[escaped_line])
+    group_section = next(
+        b for b in blocks if b["type"] == "section" and escaped_name in b["text"]["text"]
+    )
+    assert group_section["text"]["text"] == f"*{escaped_name}*\n{escaped_line}"
 
 
 def test_a_candidate_body_is_passed_through_byte_identical():
