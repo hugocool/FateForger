@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from memory.models import Channel, Observation, Provenance
 from memory.store import ObservationStore
+from tests.repo import ROOT as REPO_ROOT
 
 
 def _obs(text: str = "wake up at 07:00", **kw) -> Observation:
@@ -61,7 +62,7 @@ def test_package_does_not_import_fateforger():
     """Global constraint: cleanroom package."""
     import pathlib
 
-    root = pathlib.Path(__file__).resolve().parents[2] / "src" / "memory"
+    root = REPO_ROOT / "src" / "memory"
     for path in root.rglob("*.py"):
         assert "fateforger" not in path.read_text(), f"{path} imports fateforger"
 

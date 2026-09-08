@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from tests.repo import ROOT as REPO_ROOT
 
-TMBX_ROOT = Path(__file__).resolve().parents[3] / "src" / "tmbx"
+TMBX_ROOT = REPO_ROOT / "src" / "tmbx"
 
 
 def _imported_modules(path: Path) -> set[str]:

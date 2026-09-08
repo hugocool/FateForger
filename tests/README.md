@@ -1,143 +1,151 @@
 # Tests
 
-pytest test suite for FateForger. Organized by scope: unit, integration, end-to-end.
+pytest suite for FateForger, organized by scope: unit, integration, e2e, plus
+a few narrower suites (evals, replay, coordination, memory) described below.
 
-## How to Run
+## How to run
+
+The suite runs against the shared venv directly, not through `poetry run`.
+`poetry run pytest` happens to resolve to the same interpreter today, but a
+`poetry install` inside a worktree silently repoints the parent `.venv`
+(`AGENTS.md`, "Worktrees, e2e testing, and PRs" — the 2026-09-03 incident:
+two bots answering one workspace on code 451 lines apart, traced to a
+repointed `.venv`), so it is not reliable across worktrees. Use the venv's
+python explicitly.
+
+There is one `.venv`, and it lives in the main checkout. A worktree has none
+of its own, so from a worktree the path is the main checkout's -- and do not
+create a second one there, which is the mistake the incident above describes:
 
 ```bash
-# All tests
-poetry run pytest
+# The fast suite -- run this before every commit
+.venv/bin/python -m pytest tests -m "not slow" -q
 
-# Unit tests only
-poetry run pytest tests/unit/ -v
+# Everything, including slow tests
+.venv/bin/python -m pytest tests
 
-# Specific test suite
-poetry run pytest tests/unit/test_sync_engine.py -v
+# One subpackage
+.venv/bin/python -m pytest tests/unit/timeboxing/ -v
+
+# One file
+.venv/bin/python -m pytest tests/unit/core/test_toon_encode.py -v
 
 # By keyword
-poetry run pytest tests/unit/ -k timeboxing -v
+.venv/bin/python -m pytest tests -k timeboxing -v
 
-# Integration (requires running services)
-poetry run pytest tests/integration/ -v
-
-# E2E (requires Slack mock + running services)
-poetry run pytest tests/e2e/ -v
+# From a worktree, name the main checkout's interpreter
+/path/to/admonish-1/.venv/bin/python -m pytest tests -m "not slow" -q
 ```
+
+Nothing in `.github/workflows/` runs pytest today, so "the tests pass" means
+someone ran them.
+
+Markers (`pyproject.toml`): `slow`, `integration`, `unit`. `-m "not slow"` is
+the suite you run before every commit; the slow tests hit real endpoints
+(OpenRouter evals) or exercise timing-sensitive code and are excluded from the
+fast loop on purpose, not by accident — run them deliberately when a change
+touches what they cover.
+
+`tests/integration/` needs running services (DB, MCP containers) and
+`tests/e2e/` needs a Slack mock plus running services; both are excluded
+unless you have those up. `tests/evals/` and `tests/memory/test_eval_*.py`
+hit a real model over OpenRouter and are `slow` for that reason, not because
+they're large.
 
 ## Structure
 
 ```
 tests/
-  conftest.py              # Shared fixtures (DB, mocks, factories)
-  unit/                    # Fast, isolated, no external services
-  integration/             # Requires DB / MCP containers
-  e2e/                     # Full Slack flow simulation
+  conftest.py       # shared fixtures: sqlite engine, session, admonisher Base
+  repo.py           # ROOT — the repo root, found rather than counted
+  doubles/          # test doubles shared by more than one module
+  unit/             # fast, isolated, no external services — subject subpackages
+  integration/      # requires DB / MCP containers
+  e2e/              # full Slack flow simulation
+  evals/            # quality evals against a real model (slow)
+  replay/           # incident replays against recorded inputs
+  coordination/     # multi-session claim-protocol plumbing
+  memory/           # the standalone memory server's own suite (see below)
+  fixtures/         # frozen inputs the evals and replays read
 ```
 
-## Test Index
+### `tests/unit/` subpackages
 
-### Sync Engine Suite (115 tests)
+Each subpackage is a subject, not a file-naming convention. Before adding a
+new unit test, find the subpackage whose subject it extends; open a new one
+only when none fits.
 
-| File | Tests | Covers |
-|------|-------|--------|
-| `test_tb_models.py` | 32 | TBEvent, TBPlan, Timing union, ET enum, color map, event ID generation |
-| `test_tb_ops.py` | 30 | TBPatch, TBOp union, apply_tb_ops(), all op types (add, remove, update, move, replace_all) |
-| `test_sync_engine.py` | 29 | plan_sync(), execute_sync(), undo_sync(), gcal_response_to_tb_plan(), SyncOp, SyncTransaction |
-| `test_phase4_rewiring.py` | 10 | Stage 4 refine node wiring, session.tb_plan update, base_snapshot preservation |
-| `test_patching.py` | 14 | TimeboxPatcher, schema-in-prompt, _extract_patch(), markdown fence stripping, error handling |
+| Subpackage | Subject |
+|---|---|
+| `timeboxing/` | The stage-gated timeboxing agent: the adaptive kernel, stage cards and prompts, the sync engine (`TBPlan`/`TBOp`/patching), calendar reconciliation |
+| `slack/` | The Slack surface: card rendering, message routing, the `/dsh` harness, planning/task/timebox Slack flows |
+| `constraints/` | The constraint memory pipeline as FateForger calls it: extraction, the Notion/KG stores, NLU frame slots, MCP tool wiring — as opposed to `tests/memory/`, which is the memory server's own suite |
+| `core/` | Cross-cutting infrastructure not owned by one agent: settings, logging/observability, MCP schema and URL validation, contracts, environment sanity, alembic |
+| `haunt/` | `src/fateforger/haunt/`: reminder orchestration, planning-session store, calendar reconciliation, the required-block rule |
+| `tasks/` | The task board and its Notion/TickTick tool wiring |
+| `schedular/` | Admonisher models, the planner agent, revisor handoff, routing prompts |
+| `tmbx/` | The `tmbx` package: ops, patching, journaling, calendar ports, the render layer — pre-existing, kept as the model the 2026-09 reorganization followed |
 
-### Timeboxing Tests
+`tests/memory/` is not under `tests/unit/`: it is `src/memory/`'s own suite
+— a standalone, agent-agnostic MCP server that imports nothing from
+`fateforger.*` (see `CLAUDE.md`, "The memory server"). Running it through
+`pytest` needs no extra setup — `pyproject.toml` sets `pythonpath = ["src"]`
+for the whole suite — but any script or tool call against `src/memory/`
+outside pytest needs `PYTHONPATH=src` set explicitly, per that package's own
+rule.
 
-| File | Covers |
-|------|--------|
-| `test_timeboxing_graphflow_state_machine.py` | GraphFlow stage transitions, edge conditions |
-| `test_timeboxing_flow.py` | Legacy flow logic |
-| `test_timeboxing_activity.py` | Session activity tracking |
-| `test_timeboxing_capture_inputs_prompt_block_based.py` | Stage 2 prompt uses block-based planning |
-| `test_timeboxing_commit_modal.py` | Stage 0 commit UI |
-| `test_timeboxing_commit_skips_initial_extraction.py` | Commit does not trigger constraint extraction |
-| `test_timeboxing_constraint_extraction_background.py` | Background constraint extraction |
-| `test_timeboxing_constraint_extractor_tool_nonblocking.py` | Non-blocking extractor tool |
-| `test_timeboxing_constraint_extractor_tool_strict.py` | Strict mode extractor tool |
-| `test_timeboxing_constraint_memory_client_tool_name.py` | MCP tool name sanitization |
-| `test_timeboxing_durable_constraints.py` | Durable Notion constraint persistence |
-| `test_timeboxing_prompt_rendering.py` | Jinja prompt rendering |
-| `test_timeboxing_review_submit_prompt.py` | Stage 2 pre-gen trigger and Stage 5 pending-submit state |
-| `test_timeboxing_skeleton_context_injection.py` | Skeleton context assembly |
-| `test_timeboxing_skeleton_fallback.py` | Skeleton timeout fallback |
-| `test_timeboxing_skeleton_pre_generation.py` | Stage 3 uses pre-generated skeleton when available |
-| `test_timeboxing_stage_gate_json_context.py` | Stage gate JSON context building |
-| `test_timeboxing_stage_prompts_block_based.py` | Stage prompts use block-based terms |
-| `test_timeboxing_stage_prompts_no_tools.py` | Stage LLMs do not have tools registered |
-| `test_timeboxing_submit_flow.py` | Confirm/cancel/undo session transitions + deterministic undo state |
-| `test_timebox_schedule_and_validate.py` | Legacy Timebox validation |
-| `test_contracts.py` | Typed stage context contracts |
+### `tests/doubles/`
 
-### Slack Bot Tests
+A double used by two or more test modules lives here, not in whichever test
+file happened to define it first. Two things went wrong under the old
+pattern, both now fixed:
 
-| File | Covers |
-|------|--------|
-| `test_slack_app_home_view.py` | App Home tab rendering |
-| `test_slack_channel_default_routing.py` | Default channel routing |
-| `test_slack_constraint_review.py` | Constraint review modal |
-| `test_slack_revisor_channel_redirect.py` | Revisor channel redirect |
-| `test_slack_setup_invite.py` | Setup invite flow |
-| `test_slack_setup_response.py` | Setup response handling |
-| `test_slack_timeboxing_channel_redirect.py` | Timeboxing channel redirect |
-| `test_slack_timeboxing_dm_no_redirect.py` | DM does not redirect |
-| `test_slack_timeboxing_focus_recovery.py` | Thread focus recovery |
-| `test_slack_timeboxing_routing.py` | Timeboxing message routing |
-| `test_slack_workspace_bootstrap.py` | Workspace bootstrap provisioning |
+- Nine modules had each grown their own `DummyClient` for the Slack web
+  client, differing only in the timestamps they invented — nine copies of one
+  fake, silently drifting.
+- Several modules imported a double out of another *test* file. Under
+  pytest's `--import-mode=importlib` (set in `pyproject.toml`), a test
+  module's import of another test module only works if the exporter has
+  already been collected — an accident of collection order, not something
+  the test asserts or that survives a reorganization.
 
-### Agent Tests
+Current doubles: `slack.py` (`RecordingSlackClient`, the one Slack web-client
+fake), `haunt.py` (calendar + scheduler doubles for the planning reconciler),
+`planning.py` and `planning_card.py` (the planning-reminder dispatch and
+add-to-calendar doubles), `required_block.py` (calendar/constraint-store/
+ledger doubles for the required-block watcher), `timeboxing.py` (ports for
+the adaptive-timeboxing kernel, shared with `tests/replay/`).
 
-| File | Covers |
-|------|--------|
-| `test_calendar_haunter.py` | Calendar haunter nudge logic |
-| `test_haunt_slack_delivery.py` | Haunt delivery to Slack |
-| `test_diffing_agent.py` | Calendar plan diffing |
-| `test_planner_agent_return_type.py` | Planner agent return type |
-| `test_receptionist_handoff_message.py` | Receptionist handoff routing |
-| `test_reconcile.py` | Planning reconciler |
+If you're about to write a fake that plausibly serves more than one test
+file, put it here instead of in the first file that needs it.
 
-### Planning Tests
+### `tests/repo.py`
 
-| File | Covers |
-|------|--------|
-| `test_planning_add_to_calendar_flow.py` | Add-to-calendar flow |
-| `test_planning_card.py` | Planning card rendering |
-| `test_planning_reminder_blocks_include_dismiss.py` | Reminder blocks with dismiss |
-| `test_planning_reminder_suppression.py` | Reminder suppression during timeboxing |
-| `test_planning_time_picker_modal.py` | Time picker modal |
+Exports `ROOT`: the repository root, found by walking up from the test file
+to the first parent containing `pyproject.toml`. Tests used to spell this
+`Path(__file__).resolve().parents[2]` — twenty of them did — which encodes
+how deep the file happens to sit and breaks with a `FileNotFoundError` the
+moment the file moves one directory down, as it did when the flat `unit/`
+directory was reorganized into subpackages. Use `from tests.repo import
+ROOT` instead of counting `parents[N]`.
 
-### Infrastructure Tests
+## What's out of `tests/unit/`
 
-| File | Covers |
-|------|--------|
-| `test_backoff.py` | Exponential backoff helper |
-| `test_constraint_mcp_server_tools_openai_safe.py` | MCP tool name safety |
-| `test_constraint_mcp_tool_names.py` | MCP tool name mapping |
-| `test_constraint_retriever.py` | Constraint retriever logic |
-| `test_models.py` | General data models |
-| `test_openrouter_reasoning_effort_request.py` | OpenRouter reasoning effort |
-| `test_settings_mcp_endpoints.py` | Settings MCP endpoints |
-| `test_toon_encode.py` | TOON tabular encoding |
-| `test_trustcall_timebox_patch.py` | Legacy trustcall patch (superseded) |
+Six test modules were deleted in the 2026-09 reorganization because their
+subject has no caller anywhere in `src/` or `scripts/`: `test_backoff.py`
+(`admonisher.base`), `test_calendar_haunter.py` and
+`test_calendar_haunter_integration.py` (`admonisher.calendar`),
+`test_diffing_agent.py` (`schedular.diffing_agent`), `test_timeboxing_flow.py`
+(`timeboxing.flow`), and `test_timeboxing_notebook_entrypoints.py`
+(`timeboxing.notebook_entrypoints`) — the last of these asserted the line
+numbers of methods in a code-navigation helper. Deleting the dead *source*
+modules themselves is a separate, out-of-scope change with its own PR (the
+evidence for each is in that PR's body); this one only removed the tests
+that had nothing left to guard.
 
-### Integration Tests
-
-| File | Covers |
-|------|--------|
-| `test_calendar_haunter_integration.py` | Calendar haunter with real MCP |
-| `test_haunting_service.py` | Haunting service lifecycle |
-| `test_notion_constraint_store.py` | Notion constraint store |
-| `test_slack_timebox_buttons.py` | Stage 5 Slack confirm/cancel/undo button wiring |
-| `test_timeboxing_durable_constraint_retriever_wiring.py` | Durable constraint retriever wiring |
-
-### E2E Tests
-
-| File | Covers |
-|------|--------|
-| `test_slack_handoff_flow.py` | Full Slack handoff flow |
-| `test_slack_timebox_command.py` | /timebox slash command flow |
-| `test_slack_timeboxing_background_status.py` | Background status during timeboxing |
+`CALENDAR_QUERY_LOCATIONS.md` and `MIGRATION_ARCHIVE_TO_CALENDAR_HAUNTER.md`
+at the repo root document the pre-AutoGen `CalendarHaunter` (`admonisher.calendar`)
+as production; nothing has constructed it since haunting moved to
+`fateforger/haunt/`, so both are now marked superseded rather than rewritten
+— they stay as a record of what was true when written, with a pointer to
+what replaced it.

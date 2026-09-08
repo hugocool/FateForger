@@ -15,6 +15,7 @@ from memory.constraint import (
 from memory.constraint_store import ConstraintStore
 from memory.models import Tier
 from memory.read_api import get_active_constraints
+from tests.repo import ROOT as REPO_ROOT
 
 T0 = datetime(2026, 3, 9, 9, 0, tzinfo=timezone.utc)
 MONDAY = date(2026, 3, 9)
@@ -97,7 +98,7 @@ def test_the_read_path_cannot_reach_a_model():
     import pathlib
 
     source = (
-        pathlib.Path(__file__).resolve().parents[2]
+        REPO_ROOT
         / "src" / "memory" / "read_api.py"
     ).read_text()
     tree = ast.parse(source)

@@ -14,6 +14,7 @@ from memory.constraint import (
 from memory.constraint_store import ConstraintStore
 from memory.models import DecayClass, Tier
 from memory.read_api import get_active_constraints, get_faded_constraints
+from tests.repo import ROOT as REPO_ROOT
 
 JAN = datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc)
 AUGUST = date(2026, 8, 17)
@@ -76,7 +77,7 @@ def test_the_read_path_is_still_model_free():
     import pathlib
 
     src = (
-        pathlib.Path(__file__).resolve().parents[2]
+        REPO_ROOT
         / "src" / "memory" / "read_api.py"
     ).read_text()
     tree = ast.parse(src)

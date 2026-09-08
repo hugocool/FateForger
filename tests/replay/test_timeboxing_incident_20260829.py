@@ -86,13 +86,7 @@ from fateforger.agents.timeboxing.session_contracts import (
 )
 from fateforger.slack_bot.progress_events import ProgressStatus
 
-# The kernel-side doubles already written for Task 4. Reused rather than
-# reimplemented: a second recording sink with slightly different semantics is
-# how two tests come to disagree about what "was emitted" means.
-from tests.unit.test_adaptive_timeboxing import (
-    RecordedContextPort,
-    RecordingProgressSink,
-)
+from tests.doubles.timeboxing import RecordedContextPort, RecordingProgressSink
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "timeboxing_incident_20260829.json"
 
