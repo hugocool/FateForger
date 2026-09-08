@@ -138,11 +138,18 @@ def test_the_stub_stands_in_for_the_board_it_replaces() -> None:
     refuses -- a green suite over an interface nothing implements. Signatures
     are compared whole: names, kinds, defaults, keyword-only marker and
     annotations.
+
+    `eval_str=True` because the interface is the types, not how they are
+    spelled. Both modules carry `from __future__ import annotations`, so
+    unevaluated the annotations are source strings and this would fail over
+    `Scope` written out as its `Literal`, or over either module dropping the
+    future import -- neither of which changes what the board accepts.
     """
     for name in ("list_tasks", "get_task"):
-        assert inspect.signature(getattr(StubBoard, name)) == inspect.signature(
-            getattr(TaskBoard, name)
-        ), f"StubBoard.{name} has drifted from TaskBoard.{name}"
+        stub = inspect.signature(getattr(StubBoard, name), eval_str=True)
+        real = inspect.signature(getattr(TaskBoard, name), eval_str=True)
+
+        assert stub == real, f"StubBoard.{name} has drifted from TaskBoard.{name}"
 
 
 def test_the_instructions_carry_the_three_clauses_the_schema_cannot() -> None:
