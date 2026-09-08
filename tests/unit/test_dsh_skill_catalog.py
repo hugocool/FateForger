@@ -99,7 +99,11 @@ def _mounts(tree: Any) -> dict[str, dict]:
     which is the answer that hides a live backend.
 
     A mount is a mapping carrying a `config.serverName`, and it is found
-    wherever it is written.
+    wherever it is written. Two rows claiming one name raise rather than
+    overwrite: keyed by name, the survivor would be whichever the walk reached
+    last, so an enabled mount shadowed by a gated one would report as "off" --
+    the direction that hides a live backend, which is the whole point of the
+    check downstream.
     """
     found: dict[str, dict] = {}
 
@@ -109,7 +113,15 @@ def _mounts(tree: Any) -> dict[str, dict]:
             if isinstance(config, dict) and isinstance(
                 config.get("serverName"), str
             ):
-                found[config["serverName"]] = node
+                name = config["serverName"]
+                previous = found.get(name)
+                assert previous is None, (
+                    f"two rows mount serverName {name!r}: {previous.get('id')!r} "
+                    f"and {node.get('id')!r}. Which one governs is a question "
+                    "this scan cannot answer; give them distinct names or "
+                    "delete one"
+                )
+                found[name] = node
             for value in node.values():
                 walk(value)
         elif isinstance(node, list):
@@ -364,6 +376,36 @@ def test_the_mount_scan_reads_the_whole_tree_not_only_insert_lists() -> None:
 
     assert set(found) == {"elsewhere"}
     assert found["elsewhere"]["id"] == "mcp-elsewhere"
+
+
+def test_two_rows_mounting_one_server_name_are_refused() -> None:
+    """Last-wins here would answer the question backwards.
+
+    The scan keys by `serverName`, so two rows claiming one name overwrite each
+    other in tree order. If one of them is enabled and the other gated, the
+    state this file reports is whichever the walk reached last -- and a live
+    mount reading as "off" is exactly the direction the connected-backend check
+    exists to rule out. Neither row is more authoritative than the other, so the
+    scan refuses to pick and names both.
+    """
+    twice = [
+        {
+            "insert": [
+                {"id": "mcp-board-live", "config": {"serverName": "task_board"}},
+                {
+                    "id": "mcp-board-gated",
+                    "disabled": True,
+                    "config": {"serverName": "task_board"},
+                },
+            ]
+        }
+    ]
+
+    with pytest.raises(AssertionError) as excinfo:
+        _mounts(twice)
+
+    assert "mcp-board-live" in str(excinfo.value)
+    assert "mcp-board-gated" in str(excinfo.value)
 
 
 def test_profile_mounts_a_separate_progress_tool_and_instructs_bounded_use() -> None:
