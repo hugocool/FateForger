@@ -59,6 +59,7 @@ from fateforger.slack_bot.timeboxing_session_store import (
     SqlAlchemyTimeboxingSessionRepository,
 )
 from tests.fixtures.stage1.elicit_stub import install_stub_elicit
+from tests.repo import ROOT as REPO_ROOT
 
 
 @pytest.fixture(autouse=True)
@@ -219,7 +220,7 @@ def sessionmaker_factory(
 ) -> async_sessionmaker:
     database_path = tmp_path / "adaptive-sessions.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
-    config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
+    config = Config(str(REPO_ROOT / "alembic.ini"))
     command.upgrade(config, "head")
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
     return async_sessionmaker(engine, expire_on_commit=False)
@@ -1713,7 +1714,7 @@ def _closed_choice_requirements() -> type:
     intended requirement, and the two would drift the moment either moved.
     """
 
-    module_path = Path(__file__).parents[1] / "unit" / "test_adaptive_timeboxing.py"
+    module_path = REPO_ROOT / "tests" / "unit" / "timeboxing" / "test_adaptive_timeboxing.py"
     spec = importlib.util.spec_from_file_location("_kernel_catalog", module_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

@@ -1,0 +1,688 @@
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+import logging
+
+import pytest
+
+from fateforger.haunt.reconcile import (
+    McpCalendarClient,
+    PlanningReconciler,
+    PlanningReminder,
+    PlanningRuleConfig,
+)
+from fateforger.haunt.session_start import SESSION_EXPIRE_KIND, SESSION_START_KIND
+from tests.doubles.haunt import DummyCalendarClient, FakeScheduler
+
+
+@dataclass
+class _StoredSession:
+    user_id: str
+    planned_date: date
+    calendar_id: str
+    event_id: str
+    status: str = "planned"
+    title: str | None = None
+    event_url: str | None = None
+    source: str | None = None
+    channel_id: str | None = None
+    thread_ts: str | None = None
+    created_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
+    )
+    updated_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
+    )
+
+
+class FakePlanningSessionStore:
+    def __init__(self, sessions=None):
+        self._sessions = list(sessions or [])
+        self.upserts = []
+
+    async def list_for_user_between(
+        self, *, user_id: str, start_date: date, end_date: date, statuses
+    ):
+        allowed = set(statuses)
+        return [
+            s
+            for s in self._sessions
+            if s.user_id == user_id
+            and start_date <= s.planned_date <= end_date
+            and s.status in allowed
+        ]
+
+    async def upsert(self, **kwargs):
+        self.upserts.append(kwargs)
+        row = _StoredSession(**kwargs)
+        self._sessions = [
+            s
+            for s in self._sessions
+            if not (s.user_id == row.user_id and s.planned_date == row.planned_date)
+        ]
+        self._sessions.append(row)
+        return row
+
+
+class _FakeTextItem:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeToolResult:
+    def __init__(self, content: str) -> None:
+        self.result = [_FakeTextItem(content)]
+
+
+class _FakeWorkbench:
+    def __init__(self, content: str) -> None:
+        self._content = content
+
+    async def call_tool(self, name: str, arguments: dict):
+        assert name == "list-events"
+        return _FakeToolResult(self._content)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_adds_and_clears_jobs():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    dispatched = []
+
+    async def dispatch(reminder: PlanningReminder):
+        dispatched.append(reminder)
+
+    reconciler = PlanningReconciler(
+        scheduler,
+        calendar_client=client,
+        dispatcher=dispatch,
+    )
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="C1:1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    # Default rule schedules multiple nudges (exponential backoff) + an expiry.
+    assert len(jobs) == 6
+    assert len(scheduler.get_jobs()) == 6
+    assert [j.payload.kind for j in jobs[:5]] == ["nudge1", "nudge2", "nudge3", "nudge4", "nudge5"]
+    assert jobs[-1].payload.kind == "expire"
+
+    client._events = [
+        {
+            # The minted id, not the title. `planning_event_id_for_user` stamps
+            # `ffplanning...` on every planning event this system creates, and
+            # that is the only thing the reconciler now recognises.
+            "id": "ffplanningu1abc",
+            "summary": "Planning session",
+            "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
+            "end": {"dateTime": "2025-01-01T10:30:00+00:00"},
+        }
+    ]
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="C1:1",
+        user_id="U1",
+        channel_id="C1",
+        now=now + timedelta(hours=1),
+    )
+
+    assert jobs == []
+    assert scheduler.get_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_use_color_id_to_detect_planning():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[{"summary": "Focus time", "colorId": "10"}])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="C1:1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    assert jobs
+
+
+@pytest.mark.asyncio
+async def test_reconcile_nudges_use_exponential_backoff_by_default():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="C1:1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+    nudges = [j for j in jobs if j.payload.kind.startswith("nudge")]
+    assert len(nudges) == 5
+    offsets = [n.run_at - now for n in nudges]
+    assert offsets == [
+        timedelta(minutes=10),
+        timedelta(minutes=20),
+        timedelta(minutes=40),
+        timedelta(minutes=80),
+        timedelta(minutes=160),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_list_events_window_omits_microseconds() -> None:
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, 0, 654321, tzinfo=timezone.utc)
+    await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    assert client.calls
+    _, time_min, time_max = client.calls[-1]
+    assert "." not in time_min
+    assert "." not in time_max
+
+
+@pytest.mark.asyncio
+async def test_haunt_calendar_client_logs_mcp_tool_error_payload(caplog) -> None:
+    client = object.__new__(McpCalendarClient)
+    client._workbench = _FakeWorkbench(
+        'MCP error -32602: Invalid arguments for tool list-events'
+    )
+
+    with caplog.at_level(logging.WARNING, logger="fateforger.haunt.reconcile"):
+        events = await client.list_events(
+            calendar_id="primary",
+            time_min="2025-01-01T09:00:00+00:00",
+            time_max="2025-01-02T09:00:00+00:00",
+        )
+
+    assert events == []
+    assert "list-events returned tool error payload" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reconcile_schedules_session_jobs_for_an_anchor_event_ahead():
+    # An anchor still ahead now schedules its own session_start/session_expire
+    # instead of nothing (#see task-3: "anchor in window" used to mean "quiet
+    # until the ladder's own horizon logic kicks in" -- it now means the event
+    # owns the window and drives its own two jobs).
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    client.event_lookup[("primary", "ff-planning-u1")] = {
+        "id": "ff-planning-u1",
+        "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
+        "end": {"dateTime": "2025-01-01T10:30:00+00:00"},
+    }
+
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        planning_event_id="ff-planning-u1",
+        now=now,
+    )
+
+    kinds = {job.key.kind for job in jobs}
+    assert kinds == {SESSION_START_KIND, SESSION_EXPIRE_KIND}
+    scheduled_kinds = {job.kwargs["reminder"].kind for job in scheduler.get_jobs()}
+    assert scheduled_kinds == {SESSION_START_KIND, SESSION_EXPIRE_KIND}
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_anchor_timezone_still_evaluates_and_schedules(caplog):
+    # `ZoneInfo(anchor_tz_name)` used to run unguarded for every anchor found,
+    # horizon or not: a `timeZone` string the zoneinfo database does not
+    # recognise raised `ZoneInfoNotFoundError` straight out of `evaluate`,
+    # instead of falling back the same way a missing `timeZone` already does
+    # -- to the offset the event's own `dateTime` carries.
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    client.event_lookup[("primary", "ff-planning-u1")] = {
+        "id": "ff-planning-u1",
+        "start": {"dateTime": "2025-01-01T10:00:00+00:00", "timeZone": "Not/AZone"},
+        "end": {"dateTime": "2025-01-01T10:30:00+00:00", "timeZone": "Not/AZone"},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="fateforger.haunt.reconcile"):
+        jobs = await reconciler.reconcile_missing_planning(
+            scope="U1",
+            user_id="U1",
+            channel_id="C1",
+            planning_event_id="ff-planning-u1",
+            now=now,
+        )
+
+    kinds = {job.key.kind for job in jobs}
+    assert kinds == {SESSION_START_KIND, SESSION_EXPIRE_KIND}
+    scheduled_kinds = {job.kwargs["reminder"].kind for job in scheduler.get_jobs()}
+    assert scheduled_kinds == {SESSION_START_KIND, SESSION_EXPIRE_KIND}
+    assert "outcome=anchor_tz_unreadable" in caplog.text
+    assert "timeZone='Not/AZone'" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reconcile_logs_anchor_ahead_outcome_for_an_event_within_the_window(caplog):
+    # Same event, but now asserting the outcome label: an anchor still ahead
+    # logs "anchor_ahead", not the old "anchor_match" (which meant "found and
+    # silenced"); see test_reconcile_schedules_session_jobs_for_an_anchor_event_ahead above.
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    client.event_lookup[("primary", "ff-planning-u1")] = {
+        "id": "ff-planning-u1",
+        "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
+        "end": {"dateTime": "2025-01-01T10:30:00+00:00"},
+    }
+
+    with caplog.at_level(logging.INFO, logger="fateforger.haunt.reconcile"):
+        jobs = await reconciler.reconcile_missing_planning(
+            scope="U1",
+            user_id="U1",
+            channel_id="C1",
+            planning_event_id="ff-planning-u1",
+            now=now,
+        )
+
+    assert {job.key.kind for job in jobs} == {SESSION_START_KIND, SESSION_EXPIRE_KIND}
+    assert "planning_reconcile evaluate outcome=anchor_ahead" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "anchor_start,unreadable_field",
+    [
+        pytest.param({"date": "2026-09-04"}, "end", id="all_day_missing_end"),
+        pytest.param({}, "start", id="malformed_start"),
+    ],
+)
+async def test_reconcile_falls_through_to_nudges_when_anchor_dates_do_not_parse(
+    caplog, anchor_start, unreadable_field
+):
+    # An anchor nobody can read (an all-day event with no `dateTime`, or a
+    # malformed payload) used to return `[]` with outcome=anchor_match --
+    # silencing the ladder for a planning event that cannot even be
+    # inspected. It must instead fall through to the stored/fallback checks
+    # and the nudge ladder exactly as an absent anchor does, with the fact
+    # logged so it is visible.
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2026, 9, 4, 9, 0, tzinfo=timezone.utc)
+    client.event_lookup[("primary", "ff-planning-u1")] = {
+        "id": "ff-planning-u1",
+        "start": anchor_start,
+        # "end" deliberately omitted for the all-day case: this system
+        # cannot read it either way.
+    }
+
+    with caplog.at_level(logging.WARNING, logger="fateforger.haunt.reconcile"):
+        jobs = await reconciler.reconcile_missing_planning(
+            scope="U1",
+            user_id="U1",
+            channel_id="C1",
+            planning_event_id="ff-planning-u1",
+            now=now,
+        )
+
+    assert jobs
+    assert any(job.key.kind.startswith("nudge") for job in jobs)
+    assert scheduler.get_jobs()
+    assert "outcome=anchor_unreadable" in caplog.text
+    assert f"unreadable_field={unreadable_field}" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reconcile_ignores_anchor_event_outside_window():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    client.event_lookup[("primary", "ff-planning-u1")] = {
+        "id": "ff-planning-u1",
+        "start": {"dateTime": "2024-12-30T09:00:00+00:00"},
+        "end": {"dateTime": "2024-12-30T09:30:00+00:00"},
+    }
+
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        planning_event_id="ff-planning-u1",
+        now=now,
+    )
+
+    assert len(jobs) == 6
+    assert scheduler.get_jobs()
+    assert client.calls
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_confuse_social_planning_events():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(
+        events=[
+            {
+                "id": "evt-wife",
+                "summary": "Planning with wife",
+                "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
+                "end": {"dateTime": "2025-01-01T11:00:00+00:00"},
+            }
+        ]
+    )
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    assert len(jobs) == 6
+
+
+@pytest.mark.asyncio
+async def test_an_unmarked_event_is_not_adopted_however_it_is_titled():
+    """This test asserted the opposite until 2026-09-01, and it was wrong.
+
+    An event titled "timeboxing" used to score 70 and be adopted as the user's
+    planning session. That is a judgement about what a title someone wrote
+    means, made by a keyword table -- the thing CLAUDE.md sends to a model and
+    never to a pattern. It also had to be defended by hand: "Planning with wife"
+    needed a -40 guardrail, "poker" needed its own, and that list has no end
+    because it is a list of every way a person might phrase something.
+
+    So an event carrying no mark this system minted is not adopted, whatever it
+    is called. The user is nudged, the nudge books a session, and the booked one
+    carries the mark. Nudging about a session that exists is visible and
+    correctable in one reply; silently adopting a poker night is neither.
+    """
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(
+        events=[
+            {
+                "id": "evt-timeboxing",
+                "summary": "timeboxing",
+                "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
+                "end": {"dateTime": "2025-01-01T10:30:00+00:00"},
+            }
+        ]
+    )
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1", user_id="U1", channel_id="C1", now=now
+    )
+
+    assert len(jobs) == 6, "an unmarked event was adopted as the planning session"
+
+
+@pytest.mark.asyncio
+async def test_a_marked_event_is_adopted_whatever_it_is_titled():
+    """The other half: identity decides, so the title is irrelevant both ways.
+
+    A planning event the user renamed to something unrecognisable is still
+    theirs, and would have scored 0 under the old table.
+    """
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(
+        events=[
+            {
+                "id": "ffplanningu1xyz",
+                "summary": "zzz",
+                "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
+                "end": {"dateTime": "2025-01-01T10:30:00+00:00"},
+            }
+        ]
+    )
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1", user_id="U1", channel_id="C1", now=now
+    )
+
+    assert jobs == [], "a marked event was not recognised"
+
+@pytest.mark.asyncio
+async def test_reconcile_logs_outcome_for_nudges_scheduled(caplog):
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    reconciler = PlanningReconciler(scheduler, calendar_client=client)
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    with caplog.at_level(logging.INFO, logger="fateforger.haunt.reconcile"):
+        jobs = await reconciler.reconcile_missing_planning(
+            scope="U1",
+            user_id="U1",
+            channel_id="C1",
+            planning_event_id="ff-planning-u1",
+            now=now,
+        )
+
+    assert len(jobs) == 6
+    assert "planning_reconcile evaluate outcome=nudges_scheduled" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reconcile_uses_stored_session_event_id_before_title_scan():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    client.event_lookup[("primary", "ffplanningu1")] = {
+        "id": "ffplanningu1",
+        "summary": "Daily planning session",
+        "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
+        "end": {"dateTime": "2025-01-01T10:30:00+00:00"},
+    }
+    store = FakePlanningSessionStore(
+        sessions=[
+            _StoredSession(
+                user_id="U1",
+                planned_date=date(2025, 1, 1),
+                calendar_id="primary",
+                event_id="ffplanningu1",
+                status="planned",
+            )
+        ]
+    )
+    reconciler = PlanningReconciler(
+        scheduler, calendar_client=client, planning_session_store=store
+    )
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    assert jobs == []
+    assert scheduler.get_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_fallback_keeps_nudges_on_ambiguous_titles():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(
+        events=[
+            {
+                "id": "evt-planning",
+                "summary": "Planning session",
+                "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
+                "end": {"dateTime": "2025-01-01T10:30:00+00:00"},
+            },
+            {
+                "id": "evt-timebox",
+                "summary": "Timeboxing session",
+                "start": {"dateTime": "2025-01-01T11:00:00+00:00"},
+                "end": {"dateTime": "2025-01-01T11:30:00+00:00"},
+            },
+        ]
+    )
+    store = FakePlanningSessionStore()
+    reconciler = PlanningReconciler(
+        scheduler, calendar_client=client, planning_session_store=store
+    )
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    assert len(jobs) == 6
+    assert not store.upserts
+
+
+@pytest.mark.asyncio
+async def test_reconcile_fallback_prefers_deterministic_ffplanning_id():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(
+        events=[
+            {
+                "id": "ffplanning-u1",
+                "summary": "Planning session",
+                "start": {"dateTime": "2025-01-01T10:00:00+00:00"},
+                "end": {"dateTime": "2025-01-01T10:30:00+00:00"},
+            },
+            {
+                "id": "evt-timebox",
+                "summary": "Timeboxing session",
+                "start": {"dateTime": "2025-01-01T11:00:00+00:00"},
+                "end": {"dateTime": "2025-01-01T11:30:00+00:00"},
+            },
+        ]
+    )
+    store = FakePlanningSessionStore()
+    reconciler = PlanningReconciler(
+        scheduler, calendar_client=client, planning_session_store=store
+    )
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    assert jobs == []
+    assert store.upserts
+    assert store.upserts[-1]["event_id"] == "ffplanning-u1"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_trusts_recent_local_stored_session_when_calendar_read_lags():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    store = FakePlanningSessionStore(
+        sessions=[
+            _StoredSession(
+                user_id="U1",
+                planned_date=date(2025, 1, 1),
+                calendar_id="primary",
+                event_id="ffplanningu1",
+                status="planned",
+                source="admonisher_planning_card",
+                updated_at=datetime(2025, 1, 1, 9, 0, 0),
+            )
+        ]
+    )
+    reconciler = PlanningReconciler(
+        scheduler, calendar_client=client, planning_session_store=store
+    )
+
+    now = datetime(2025, 1, 1, 9, 1, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    assert jobs == []
+    assert scheduler.get_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_trust_stale_local_stored_session_without_calendar_event():
+    scheduler = FakeScheduler()
+    client = DummyCalendarClient(events=[])
+    store = FakePlanningSessionStore(
+        sessions=[
+            _StoredSession(
+                user_id="U1",
+                planned_date=date(2025, 1, 1),
+                calendar_id="primary",
+                event_id="ffplanningu1",
+                status="planned",
+                source="admonisher_planning_card",
+                updated_at=datetime(2025, 1, 1, 8, 40, 0),
+            )
+        ]
+    )
+    reconciler = PlanningReconciler(
+        scheduler, calendar_client=client, planning_session_store=store
+    )
+
+    now = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    jobs = await reconciler.reconcile_missing_planning(
+        scope="U1",
+        user_id="U1",
+        channel_id="C1",
+        now=now,
+    )
+
+    assert len(jobs) == 6
+    assert scheduler.get_jobs()
+
+
+@pytest.mark.asyncio
+async def test_list_day_returns_none_on_a_tool_error_not_an_empty_day(monkeypatch):
+    """#226 for the watcher: an unreadable calendar must not read as an empty one."""
+    from datetime import date
+    from fateforger.haunt import reconcile as r
+
+    class _Workbench:
+        def __init__(self, payload): self._payload = payload
+        async def call_tool(self, name, arguments): return type("R", (), {"result": self._payload})()
+
+    client = r.McpCalendarClient.__new__(r.McpCalendarClient)
+    client._workbench = _Workbench("MCP error -32603: calendar unreachable")
+    assert await client.list_day(calendar_id="primary", day=date(2026, 9, 7), tz="Europe/Amsterdam") is None
+
+    class _Raises:
+        async def call_tool(self, name, arguments): raise RuntimeError("boom")
+    client._workbench = _Raises()
+    assert await client.list_day(calendar_id="primary", day=date(2026, 9, 7), tz="Europe/Amsterdam") is None
+
+    client._workbench = _Workbench({"items": [{"id": "e1", "summary": "x"}]})
+    assert await client.list_day(calendar_id="primary", day=date(2026, 9, 7), tz="Europe/Amsterdam") == [{"id": "e1", "summary": "x"}]

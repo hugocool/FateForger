@@ -21,7 +21,9 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "coordination"))
+from tests.repo import ROOT as REPO_ROOT
+
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "coordination"))
 
 import claim_lib as L  # noqa: E402
 import claim_sweep as S  # noqa: E402
