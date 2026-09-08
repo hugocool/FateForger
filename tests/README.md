@@ -11,10 +11,14 @@ The suite runs against the shared venv directly, not through `poetry run`.
 (`AGENTS.md`, "Worktrees, e2e testing, and PRs" — the 2026-09-03 incident:
 two bots answering one workspace on code 451 lines apart, traced to a
 repointed `.venv`), so it is not reliable across worktrees. Use the venv's
-python explicitly:
+python explicitly.
+
+There is one `.venv`, and it lives in the main checkout. A worktree has none
+of its own, so from a worktree the path is the main checkout's -- and do not
+create a second one there, which is the mistake the incident above describes:
 
 ```bash
-# Fast suite (what CI and pre-merge checks run)
+# The fast suite -- run this before every commit
 .venv/bin/python -m pytest tests -m "not slow" -q
 
 # Everything, including slow tests
@@ -28,7 +32,13 @@ python explicitly:
 
 # By keyword
 .venv/bin/python -m pytest tests -k timeboxing -v
+
+# From a worktree, name the main checkout's interpreter
+/path/to/admonish-1/.venv/bin/python -m pytest tests -m "not slow" -q
 ```
+
+Nothing in `.github/workflows/` runs pytest today, so "the tests pass" means
+someone ran them.
 
 Markers (`pyproject.toml`): `slow`, `integration`, `unit`. `-m "not slow"` is
 the suite you run before every commit; the slow tests hit real endpoints
