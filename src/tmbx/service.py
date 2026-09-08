@@ -45,7 +45,7 @@ import json
 import logging
 import secrets
 import uuid
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from datetime import date as date_type
 from typing import Literal, get_args
 
@@ -71,7 +71,7 @@ from .core.models import (
 from .core.ops import AddBlock, MoveBlock, Patch, RemoveBlock, UpdateBlock, apply_ops
 from .core.render import plan_rows, render_plan
 from .core.unallocated import Gap, unallocated
-from .journal.models import EntryKind, JournalEntry, PatchOutcome
+from .journal.models import EntryKind, JournalEntry, Material, PatchOutcome
 from .journal.store import JournalStore
 from .materials import MaterialStore
 
@@ -438,6 +438,15 @@ def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
     (round-tripped through provider extended properties by a real adapter
     — see ``gcal.py``).
 
+    ``link`` comes straight off ``event.link_id`` — the material store's
+    handle, round-tripped the same way, and the reason a day read back
+    still knows which piece of work each block is for. It needs no
+    reconstruction: it is opaque here, verified against the store only
+    where a patch names one. A foreign event carries none, so a foreign
+    block's link is ``None`` without any check of its own. The url is
+    never recovered: it lives in the event description for a person to
+    click, and the store is where a handle becomes a url again.
+
     ``anchor_source`` is reconstructed independently of the other two: it
     says why a block is pinned, not how, so an event whose type/mode are
     unusable can still have perfectly good provenance and must not lose it
@@ -491,6 +500,7 @@ def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
                 slug=event.slug,
                 n=event.summary,
                 d=event.description,
+                link=event.link_id,
                 t=block_type,
                 p=timing,
                 anchor_source=_anchor_for(timing, anchor_source),
@@ -520,6 +530,7 @@ def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
         slug=event.slug,
         n=event.summary,
         d=event.description,
+        link=event.link_id,
         t=_FALLBACK_TYPE,
         p=fallback_timing,
         anchor_source=_anchor_for(fallback_timing, anchor_source),
@@ -530,12 +541,12 @@ def _event_unchanged(existing: CalendarEvent, candidate: CalendarEvent) -> bool:
     """True if writing ``candidate`` over ``existing`` would be a no-op.
 
     Compares only the fields tmbx actually controls — summary, description,
-    start, end, uid, handle, slug, block_type, timing_mode — never ``etag``
-    (``candidate`` never carries a real one; see ``_write``) or
-    ``event_id`` (already the join key that got the two events paired
-    up). A block whose resolved state is identical to what's live must
-    not be re-``update``d just because some *other* block in the same
-    commit changed.
+    start, end, uid, handle, slug, block_type, timing_mode, link_id —
+    never ``etag`` (``candidate`` never carries a real one; see
+    ``_write``) or ``event_id`` (already the join key that got the two
+    events paired up). A block whose resolved state is identical to what's
+    live must not be re-``update``d just because some *other* block in the
+    same commit changed.
 
     ``block_type``/``timing_mode``/``anchor_source`` matter here for the
     same reason the identity fields do: a patch that only relaxes ``fs``
@@ -549,6 +560,20 @@ def _event_unchanged(existing: CalendarEvent, candidate: CalendarEvent) -> bool:
     (see ``ops._boundary_relaxation_errors``); a re-source that never
     reached the calendar would make that handover a no-op and leave the
     block un-relaxable forever.
+
+    ``link_id`` is compared for the same reason and ``link_url`` is
+    deliberately not. Moving a block onto a different ticket changes
+    nothing else about it, so without the handle in this comparison the
+    new ticket would never reach the calendar. The url, though, is
+    write-only: a real adapter puts it in the description and reads only
+    the handle back (``gcal._event_from_payload``), so every event fetched
+    from a real provider carries ``link_url=None`` while every candidate
+    built here carries a url. Comparing them would make every linked block
+    on every day differ forever — an etag bump and a change notification
+    per block, per commit, to record nothing. The handle is the identity;
+    a url that changed under a handle is the store's business, and the
+    description follows it the next time anything else about the block
+    does change.
     """
     return (
         existing.summary == candidate.summary
@@ -561,6 +586,7 @@ def _event_unchanged(existing: CalendarEvent, candidate: CalendarEvent) -> bool:
         and existing.block_type == candidate.block_type
         and existing.timing_mode == candidate.timing_mode
         and existing.anchor_source == candidate.anchor_source
+        and existing.link_id == candidate.link_id
     )
 
 
@@ -642,6 +668,60 @@ def _unknown_link_violation(
     )
 
 
+def _link_labels(materials: Mapping[str, Material]) -> dict[str, str]:
+    """What the renderer needs out of a material row: the handle's label.
+
+    ``_resolve_links`` hands back whole rows because the commit path needs
+    the url off the same lookup; the read and preview paths need only the
+    label, and ``render_plan``/``plan_rows`` take exactly that. Narrowing
+    here rather than looking the rows up twice keeps one query answering
+    both questions, and keeps the url out of anything a planner is shown.
+    """
+    return {link_id: material.label for link_id, material in materials.items()}
+
+
+def _dead_link_violation(plan: Plan, known: Collection[str]) -> Violation | None:
+    """The refusal for a plan carrying a handle the material store lost.
+
+    ``None`` when every link on the plan resolves. Commit-only, and
+    deliberately stricter than ``apply``'s check — ``_unknown_link_violation``
+    looks at what the *patch* names and lets a block the patch never touches
+    keep a handle whose row has gone. That is right for a preview, which
+    writes nothing: refusing there would hide the whole day from the caller
+    who has to fix it.
+
+    A commit is where the handle has to become a url on a real event, and a
+    handle nobody stores has none. Writing the event anyway would leave a
+    block that claims a ticket and shows no link — the silent half-answer
+    this project refuses on principle — and by write time there is nothing
+    left to guess from.
+
+    The cost is real and accepted: a day holding a dead handle cannot be
+    committed until that block's link is cleared. That is one explicit null
+    on an update, and the message says so.
+    """
+    dead = [
+        block
+        for block in plan.blocks
+        if block.link is not None and block.link not in known
+    ]
+    if not dead:
+        return None
+    return Violation(
+        kind=ViolationKind.UNKNOWN_LINK,
+        blocks=[ViolationBlock(h=block.h, n=block.n) for block in dead],
+        message=(
+            "; ".join(
+                f"{block.h}: link {block.link!r} is no longer in the material store"
+                for block in dead
+            )
+            + ". The row it pointed at is gone, so there is no url to write. "
+            "Clear the link with an explicit null, or attach a handle the "
+            "store still holds."
+        ),
+    )
+
+
 class PlanService:
     """Read, preview, commit and undo day plans.
 
@@ -711,13 +791,18 @@ class PlanService:
 
     async def _resolve_links(
         self, plan: Plan, patch: Patch | None = None
-    ) -> dict[str, str]:
-        """Verify what the patch names, label what the plan carries, in one lookup.
+    ) -> dict[str, Material]:
+        """Verify what the patch names, resolve what the plan carries, in one lookup.
 
-        The two questions are one query on purpose. Both are answered by the
-        same rows — is this handle real, and what is it called — and asking
-        twice would make a patch that names one ticket on three blocks cost
-        two round-trips to say one thing.
+        The questions are one query on purpose. All of them are answered by
+        the same rows — is this handle real, what is it called, and what url
+        does it point at — and asking separately would make a patch that
+        names one ticket on three blocks cost several round-trips to say one
+        thing.
+
+        The rows themselves come back, not just their labels: the read and
+        preview paths want the label (``_link_labels``) and the commit path
+        wants the url, and one lookup owes both.
 
         Raises ``PlanViolation`` naming the handle when ``patch`` names one
         the store does not hold. That refusal comes before any write, in
@@ -740,7 +825,7 @@ class PlanService:
             violation = _unknown_link_violation(patch, plan, materials)
             if violation is not None:
                 raise PlanViolation(violation)
-        return {link_id: material.label for link_id, material in materials.items()}
+        return materials
 
     async def read(
         self, calendar_id: str, day: date_type, tz: str = _DEFAULT_TZ
@@ -770,7 +855,9 @@ class PlanService:
         snapshot = make_snapshot(calendar_id, day, tz, events)
         return ReadResult(
             snapshot=snapshot,
-            rendered=render_plan(plan, foreign_uids, await self._resolve_links(plan)),
+            rendered=render_plan(
+                plan, foreign_uids, _link_labels(await self._resolve_links(plan))
+            ),
             blocks=len(plan.blocks),
         )
 
@@ -803,7 +890,7 @@ class PlanService:
             # Applying is pure — nothing is written until ``commit`` — so the
             # link check runs on the patched plan, which is what needs
             # labelling anyway. One lookup answers both.
-            link_labels = await self._resolve_links(patched, patch)
+            link_labels = _link_labels(await self._resolve_links(patched, patch))
         except ValueError as exc:
             await self._journal(snapshot, patch, PatchOutcome.APPLY_FAILED, error=str(exc))
             raise
@@ -905,13 +992,21 @@ class PlanService:
 
         patched = apply_ops(plan, patch, mint_uid=self._mint_uid)
         # Before anything is written: every handle this patch names must be
-        # one the material store holds. ``expect="force"`` does not reach
-        # this — force writes a day the user chose to accept, and nobody can
-        # choose to accept a link to a thing that does not exist. Journalled
-        # like the foreign-block refusal above it: the row is the only record
-        # of the attempt that outlives the session.
+        # one the material store holds, and so must every handle already on
+        # the day — this is the one lookup that turns handles into the urls
+        # the event loop writes, so a handle with no row has no url and the
+        # commit stops here rather than writing a block that claims a ticket
+        # and shows no link (``_dead_link_violation``). ``expect="force"``
+        # does not reach either refusal — force writes a day the user chose
+        # to accept, and nobody can choose to accept a link to a thing that
+        # does not exist. Journalled like the foreign-block refusal above
+        # it: the row is the only record of the attempt that outlives the
+        # session.
         try:
-            await self._resolve_links(patched, patch)
+            materials = await self._resolve_links(patched, patch)
+            dead = _dead_link_violation(patched, materials)
+            if dead is not None:
+                raise PlanViolation(dead)
         except PlanViolation as exc:
             await self._journal(
                 snapshot, patch, PatchOutcome.APPLY_FAILED, error=str(exc)
@@ -938,7 +1033,7 @@ class PlanService:
                 raise PlanViolationError([exc.violation], forceable=forceable) from exc
 
         before = [event.model_copy(deep=True) for event in live]
-        await self._write(snapshot.calendar_id, patched, live, foreign_uids)
+        await self._write(snapshot.calendar_id, patched, live, foreign_uids, materials)
 
         # Capture state as it stands immediately after the write. Undo
         # compares live state against THIS. Re-deriving it at undo time
@@ -1046,6 +1141,7 @@ class PlanService:
         plan: Plan,
         existing: list[CalendarEvent],
         foreign_uids: set[str],
+        materials: Mapping[str, Material],
     ) -> None:
         """Push a resolved plan to the calendar.
 
@@ -1091,6 +1187,16 @@ class PlanService:
         variant, and the reason the block is pinned, via
         ``_event_to_block`` instead of always seeing a plain fixed window
         pinned for no stated reason.
+
+        ``materials`` is the caller's single link lookup, passed in rather
+        than repeated here: the store is asked once per commit, before this
+        loop, and by the time execution arrives every handle on the plan is
+        known to be in it (``_dead_link_violation``). The handle goes on the
+        event as ``link_id`` and its url as ``link_url``; a real provider
+        round-trips the handle through an extended property and puts the url
+        in the description, where a person can click it (see ``gcal.py``). A
+        block with no link gets neither, which is what makes clearing a link
+        reach the calendar as a real change.
         """
         resolved = {row.h: row for row in plan.resolve(check_overlap=False)}
         existing_by_id = {event.event_id: event for event in existing}
@@ -1104,6 +1210,11 @@ class PlanService:
             row = resolved[block.h]
             event_id = event_ids.get(block.uid) or _mint_event_id()
             keep.add(event_id)
+            # Indexed, not ``.get``: every handle on the plan was proved to
+            # be in ``materials`` before this loop ran, so a miss here is a
+            # broken invariant and must raise rather than quietly write a
+            # block that claims a ticket and carries no url.
+            material = materials[block.link] if block.link else None
             event = CalendarEvent(
                 event_id=event_id,
                 summary=block.n,
@@ -1116,6 +1227,8 @@ class PlanService:
                 block_type=block.t.value,
                 timing_mode=block.p.a,
                 anchor_source=_stored_anchor_source(block),
+                link_id=block.link,
+                link_url=material.url if material is not None else None,
             )
             existing_event = existing_by_id.get(event_id)
             if existing_event is None:

@@ -9,12 +9,11 @@ module already solved the argument shapes and response normalisation
 against this exact server; see each helper's docstring for what changed and
 why.
 
-``extendedProperties.private`` under the ``tmbx`` namespace carries six
+``extendedProperties.private`` under the ``tmbx`` namespace carries seven
 values round-tripped verbatim: identity (``uid``/``handle``/``slug``, as
-before) plus ``block_type``/``timing_mode``/``anchor_source``. Without
-``block_type``/``timing_mode``, every
-block reads back as a plain fixed window regardless of what it actually
-was — an event has no field of its own for "this is a deep-work block" or
+before) plus ``block_type``/``timing_mode``/``anchor_source``/``link``.
+Without ``block_type``/``timing_mode``, every block reads back as a plain
+fixed window regardless of what it actually was — an event has no field of its own for "this is a deep-work block" or
 "this was meant to float after the previous one"; without persisting
 them, that information is invented fresh on every read (always ``ET.M``,
 always ``fw``), which ossifies every chain into a wall of independently
@@ -25,6 +24,12 @@ block is pinned, and both ``commitment.overspecified`` and
 ``ops.validate_patch`` key on it to tell a boundary from a convenience
 pin. Unpersisted, every pin reads back as ``"calendar"`` — provenance
 gone — and a constraint-backed boundary becomes advice to unpin.
+
+``link`` is the material store's handle for the piece of work a block is
+for. It is the half of a link that round-trips: the other half, the url,
+is written into the event's *description* — a bare url on its own line,
+which is what a person actually clicks — and is never read back out of
+it. See ``_description_for``.
 
 This module only carries the raw strings through; reconstructing them
 into a real ``ET``/``Timing``/``AnchorSource`` (and what happens when
@@ -99,6 +104,7 @@ _PRIVATE_SLUG_KEY = "tmbx.slug"
 _PRIVATE_TYPE_KEY = "tmbx.type"
 _PRIVATE_MODE_KEY = "tmbx.mode"
 _PRIVATE_ANCHOR_KEY = "tmbx.anchor"
+_PRIVATE_LINK_KEY = "tmbx.link"
 
 _CANCELLED_STATUS = "cancelled"
 
@@ -296,6 +302,47 @@ def _list_events_args(*, calendar_id: str, day: date_type, tz: str) -> dict[str,
     }
 
 
+def _description_for(event: CalendarEvent) -> str:
+    """The description as the provider should hold it: the block's own text,
+    then a blank line, then the material's url on a line of its own.
+
+    **A bare url, not an anchor tag.** Google Calendar auto-links a bare url
+    in a description, and this server's ``description`` field is a plain
+    string whose HTML handling nobody here has verified — so markup would be
+    a guess that fails visibly on the one surface a person actually reads.
+    The anchor text they see is the event's own title, which is what they
+    are looking at anyway.
+
+    Last, and on its own line, so the block's own description keeps the top
+    of the field and a person's eye lands on the words before the url.
+    An event with no description of its own gets the url alone rather than
+    a pair of leading blank lines.
+
+    ``event.link_url`` is write-only (see ``CalendarEvent``), so nothing
+    reads this apart again: ``_event_from_payload`` takes the handle back
+    out of the extended properties and leaves the description as the
+    provider holds it.
+
+    **The consequence of that, stated rather than hidden.** A day fetched
+    back from a real provider carries the url *inside* ``description``,
+    and ``service._event_to_block`` puts the whole field on the block as
+    ``d``. Re-committing an unchanged day is still a no-op (the two
+    descriptions match, so ``_event_unchanged`` says so), but a write that
+    changes anything else about a linked block appends its url a second
+    time, and the plan a planner is shown carries the url in a column
+    Task 2 deliberately kept urls out of. Undoing the append would mean
+    deciding which stretch of a description this module wrote and which a
+    person typed into the Google UI — a judgement about text, which is
+    exactly what this project does not do in code. The fix belongs where
+    a block's own description is separated from the event's, not here.
+    """
+    if not event.link_url:
+        return event.description
+    if not event.description:
+        return event.link_url
+    return f"{event.description}\n\n{event.link_url}"
+
+
 def _write_event_args(event: CalendarEvent, *, tz: str) -> dict[str, Any]:
     """Argument shape shared by ``create-event`` and ``update-event``.
 
@@ -305,10 +352,13 @@ def _write_event_args(event: CalendarEvent, *, tz: str) -> dict[str, Any]:
     not a nested ``{dateTime, timeZone}`` object; that nested shape shows
     up only in this repo's throwaway dev seed scripts, not the tool's
     actual schema. ``extendedProperties.private`` carries identity plus
-    ``block_type``/``timing_mode``/``anchor_source`` — see the module
-    docstring — and is included only when at least one of those six is
-    set, since a foreign event is never written here at all (the service
-    never calls create/update for one).
+    ``block_type``/``timing_mode``/``anchor_source``/``link`` — see the
+    module docstring — and is included only when at least one of those
+    seven is set, since a foreign event is never written here at all (the
+    service never calls create/update for one).
+
+    The description sent is not ``event.description`` verbatim: a linked
+    event's url is appended to it. See ``_description_for``.
     """
     private = {
         key: value
@@ -319,12 +369,13 @@ def _write_event_args(event: CalendarEvent, *, tz: str) -> dict[str, Any]:
             (_PRIVATE_TYPE_KEY, event.block_type),
             (_PRIVATE_MODE_KEY, event.timing_mode),
             (_PRIVATE_ANCHOR_KEY, event.anchor_source),
+            (_PRIVATE_LINK_KEY, event.link_id),
         )
         if value is not None
     }
     args: dict[str, Any] = {
         "summary": event.summary,
-        "description": event.description,
+        "description": _description_for(event),
         "start": event.start.isoformat(timespec="seconds"),
         "end": event.end.isoformat(timespec="seconds"),
         "timeZone": tz,
@@ -428,9 +479,17 @@ def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
     does not decide what happens when they're absent
     on an otherwise-owned event; that reconstruction, and its documented
     fallback, live in ``service._event_to_block``, which is where a
-    provider-neutral decision like that belongs. ``etag`` is the
-    provider's ``updated`` timestamp — see the module docstring for why
-    there is no real etag to carry here.
+    provider-neutral decision like that belongs.
+
+    ``link_id`` comes back from ``tmbx.link``; ``link_url`` never does.
+    The url lives in the description (see ``_description_for``), and
+    recovering it from there would mean deciding what a stretch of
+    description text means — banned outright, and unnecessary: the
+    material store is where a handle becomes a url, and the handle is
+    what came back.
+
+    ``etag`` is the provider's ``updated`` timestamp — see the module
+    docstring for why there is no real etag to carry here.
     """
     start = _parse_event_dt(raw.get("start"), tz=tz)
     end = _parse_event_dt(raw.get("end"), tz=tz)
@@ -457,6 +516,7 @@ def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
         block_type=private.get(_PRIVATE_TYPE_KEY),
         timing_mode=private.get(_PRIVATE_MODE_KEY),
         anchor_source=private.get(_PRIVATE_ANCHOR_KEY),
+        link_id=private.get(_PRIVATE_LINK_KEY),
     )
 
 
