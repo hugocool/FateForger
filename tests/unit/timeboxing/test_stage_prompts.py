@@ -1,4 +1,31 @@
+"""What the stage prompts must and must not say.
+
+These assert the contracts a prompt carries, not its phrasing: that it scopes
+work in blocks rather than asking for durations, that it defaults
+deterministically before reaching for search, and that it never names a tool
+the agent does not have. A prompt may be reworded freely as long as those
+hold.
+"""
+
+from __future__ import annotations
+
 from fateforger.agents.timeboxing import stage_gating
+from fateforger.agents.timeboxing.stage_gating import CAPTURE_INPUTS_PROMPT
+
+
+# ── CaptureInputs: blocks, not durations ────────────────────────────────────
+
+
+def test_capture_inputs_prompt_prefers_block_scoping() -> None:
+    """Pin that CaptureInputs defaults to block-based scoping, not time estimates."""
+    prompt = CAPTURE_INPUTS_PROMPT.lower()
+    assert "block_count" in prompt
+    assert "durations are optional" in prompt
+    assert "how long" not in prompt
+    assert "lead summary with what is still missing" in prompt
+
+
+# ── the tools a prompt may name ─────────────────────────────────────────────
 
 
 def test_stage_prompts_do_not_reference_forbidden_tools():

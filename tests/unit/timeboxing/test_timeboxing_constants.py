@@ -1,15 +1,14 @@
-"""Tests for timeboxing constants — timeout and limit sanity invariants.
-
-These tests encode operational invariants derived from production observations:
-- stage_gate_s observed p95 latency was ~46s in session 1773337741.092819.
-  The timeout must exceed observed p95 with a safety margin.
-- stage_gate_s must fit inside graph_turn_s with at least 30s to spare.
+"""The tunable constants of a timeboxing session, and the timeouts derived
+from them.
 """
 
-import pytest
+from __future__ import annotations
 
+import pytest
 from fateforger.agents.timeboxing.constants import TIMEBOXING_TIMEOUTS
 
+
+# ── constants ─────────────────────────────────────────────────────────────────
 
 class TestStageGateTimeout:
     """Timeout values must be grounded in observed runtime latency."""
@@ -40,3 +39,15 @@ class TestStageGateTimeout:
             f"{headroom:.1f}s inside graph_turn_s={TIMEBOXING_TIMEOUTS.graph_turn_s}. "
             "Need at least 30s of headroom."
         )
+
+
+# ── timeouts ──────────────────────────────────────────────────────────────────
+
+def test_stage_gate_timeout_budget_has_headroom() -> None:
+    """Stage-gate LLM calls should have enough budget for real Slack runs."""
+    assert TIMEBOXING_TIMEOUTS.stage_gate_s >= 35.0
+
+
+def test_slow_turn_warning_threshold_is_set() -> None:
+    """Slow-turn telemetry should have a deterministic threshold."""
+    assert TIMEBOXING_TIMEOUTS.slow_turn_warn_s >= 30.0

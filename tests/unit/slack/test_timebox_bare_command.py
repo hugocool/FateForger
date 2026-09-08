@@ -58,3 +58,14 @@ def test_the_body_is_otherwise_untouched():
     body = _timebox_body_for_harness({"text": "", "channel_id": "C1", "user_id": "U1"})
     assert body["channel_id"] == "C1"
     assert body["user_id"] == "U1"
+
+
+def test_a_bare_timebox_is_given_the_day_to_plan():
+    """The command names the intent; silence is not ambiguity here.
+
+    /dsh refusing an empty message is right — there is nothing to infer. A
+    bare /timebox answering "Give me something to plan" reads as the bot not
+    knowing what its own command is for.
+    """
+    text = _timebox_body_for_harness({"text": ""})["text"]
+    assert "calendar" in text and "constraints" in text
