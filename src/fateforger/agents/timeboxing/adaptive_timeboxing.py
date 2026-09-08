@@ -588,11 +588,22 @@ class AdaptiveTimeboxing:
 
         pending = self._pending_approval(snapshot)
         if pending is not None:
+            # The question comes with it. Re-presenting used to answer
+            # `AwaitingApproval(artifact=pending)` with no question, and
+            # `_release_question` -- seeing none -- cleared the held blocker:
+            # the card was redrawn without the question, the card that had it
+            # was receipted with its buttons stripped, and a press on that one
+            # refused as `stale_blocker_choice`. Silently, on any `Advance`
+            # ("Try that again"), `NextControl` or `StartSession`. A question
+            # that can vanish is the thing #259 exists to stop.
             return await self._save(
                 snapshot,
                 base_revision=base_revision,
                 request=request,
-                outcome=AwaitingApproval(artifact=pending),
+                outcome=AwaitingApproval(
+                    artifact=pending,
+                    question=self._still_asking(snapshot, pending),
+                ),
             )
 
         target = self._derive_target(snapshot)
@@ -1138,6 +1149,50 @@ class AdaptiveTimeboxing:
             if artifact is not None and not self._is_approved(snapshot, artifact):
                 return artifact
         return None
+
+    def _still_asking(
+        self, snapshot: PlanningSessionSnapshot, artifact: PlanningArtifact
+    ) -> Asking | None:
+        """The riding question this artifact is still waiting on, if any.
+
+        Re-attached rather than merely kept: a question the user cannot see is
+        not being asked, so leaving `pending_blocker` standing while drawing a
+        card without it would only trade a vanished question for an invisible
+        one. Answering with it puts it back below the day and makes
+        `_release_question` leave the record alone, so the fresh card's option
+        buttons bind exactly as the original's did.
+
+        The text is re-read from the catalog, which is where `_asking` gets the
+        question in the first place -- so the re-presented question is the same
+        sentence, not a paraphrase. Only `why_needed` differs: the planner's
+        day-specific phrasing is not on the snapshot, and the catalog's reason
+        is the honest stand-in. What is *not* re-derived is `options`: a press
+        binds against the set that was offered, so that comes from the held
+        record, never from the catalog.
+
+        Silence is correct in three cases, and each is a real state rather than
+        a fallback: nothing is held; what is held belongs to a different
+        artifact (so this card is not where it rides); or the requirement has
+        since been satisfied, which is the question being answered.
+        """
+
+        pending = snapshot.pending_blocker
+        if pending is None:
+            return None
+        target = self._requirements.target_of(pending.requirement_id)
+        if target is not artifact.kind:
+            return None
+        gap = self._requirements.evaluate(target, snapshot).by_id(
+            pending.requirement_id
+        )
+        if gap.satisfied:
+            return None
+        return Asking(
+            requirement_id=gap.requirement_id,
+            question=gap.question,
+            why_needed=gap.why_needed,
+            options=list(pending.options),
+        )
 
     def _derive_target(
         self, snapshot: PlanningSessionSnapshot
@@ -1804,6 +1859,12 @@ class AdaptiveTimeboxing:
         (#259). The two outcomes without a question keep clearing as before:
         Proceed still works with it unanswered, and the *next* turn's outcome
         -- whatever it is -- releases a question this one did not re-raise.
+
+        Re-presenting an unapproved artifact goes through the same exemption:
+        `_still_asking` puts the open question back on the outcome, so the
+        redrawn card carries it and the record survives to bind the press. A
+        re-present that answers no question is one whose requirement is closed
+        or whose record belongs elsewhere, and clearing there is right.
         """
 
         if isinstance(outcome, (AwaitingUser, TurnFailed)):

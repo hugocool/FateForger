@@ -130,17 +130,47 @@ def test_the_skeleton_obligation_names_every_item_field() -> None:
         assert f'"{field}"' in text
 
 
-def test_the_obligation_names_the_blocking_field() -> None:
+def test_the_skeleton_obligation_names_the_blocking_field() -> None:
     """Drift guard: a planner never told about `blocking` will never set it.
 
     #259 is what an unstated channel already cost once: the planner invented
-    a field the kernel never read. `blocking` is a real channel now, and
-    every turn that can end in `AwaitingApproval` must say so.
+    a field the kernel never read. `blocking` is a real channel now, and the
+    skeleton turn -- the only one whose open gaps a user blocker can name --
+    must say so.
     """
     assert "blocking" in UserBlockerDraft.model_fields
-    for target in (ArtifactKind.SKELETON, ArtifactKind.VALIDATED_CANDIDATE):
-        text = harness_bridge._planning_obligation(_brief(target))
-        assert "`blocking`" in text
+    text = harness_bridge._planning_obligation(_brief(ArtifactKind.SKELETON))
+    assert "`blocking`" in text
+
+
+def test_the_candidate_obligation_does_not_invite_a_question() -> None:
+    """The candidate turn has no gap a user blocker could legally name.
+
+    Every user-owned requirement targets `SKELETON`, and `evaluate` returns
+    only this turn's target's gaps -- so a blocker raised here is refused as
+    `invalid_planner_result` and the finished candidate is discarded with the
+    turn. Inviting one would be inviting that.
+    """
+    text = harness_bridge._planning_obligation(
+        _brief(ArtifactKind.VALIDATED_CANDIDATE)
+    )
+    assert "`blocking`" not in text
+
+
+def test_no_user_owned_requirement_targets_the_candidate() -> None:
+    """The kernel fact the gate above rests on, asserted where it is used.
+
+    If a user-owned requirement ever targets `VALIDATED_CANDIDATE`, the
+    obligation may invite a question there -- and this test is the thing that
+    says so, rather than the next reader re-deriving it from the catalog.
+    """
+    from fateforger.agents.timeboxing.readiness import _CATALOG, RequirementOwner
+
+    assert {
+        requirement.target_artifact
+        for requirement in _CATALOG
+        if requirement.owner is RequirementOwner.USER
+    } == {ArtifactKind.SKELETON}
 
 
 def test_the_candidate_obligation_does_not_describe_a_skeleton() -> None:

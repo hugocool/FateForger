@@ -25,6 +25,7 @@ import pytest
 
 from fateforger.agents.timeboxing.adaptive_timeboxing import TurnRequest
 from fateforger.agents.timeboxing.session_contracts import (
+    Advance,
     ApproveArtifact,
     AwaitingApproval,
     AwaitingUser,
@@ -269,3 +270,133 @@ async def test_proceeding_with_the_question_unanswered_still_produces_the_plan()
     # was never answered, and `_release_question` must not keep holding it
     # once a different outcome has superseded it.
     assert saved.pending_blocker is None
+
+
+@pytest.mark.asyncio
+async def test_re_presenting_the_skeleton_keeps_the_riding_question() -> None:
+    """The card is redrawn; the question is redrawn with it.
+
+    Any turn that lands on the same unapproved skeleton -- `Advance` (the
+    "Try that again" button on a transient failure, and `NextControl`) or a
+    fresh `StartSession` -- short-circuits at `_pending_approval`. That branch
+    used to answer with the artifact alone, `_release_question` saw no
+    question and cleared the held record, and the redrawn card had no question
+    on it while the card that did was receipted with its buttons stripped. The
+    question vanished, and a press on the old card refused as
+    `stale_blocker_choice`. No log line said so.
+    """
+
+    options = [
+        BlockerOption(
+            option_id="read-1",
+            label="Agent analysis",
+            effect="titles the block 'Agent analysis'",
+        )
+    ]
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    planner = _ScriptedPlanner(
+        _skeleton_with(
+            [
+                UserBlockerDraft(
+                    requirement_id="skeleton.activity_reading",
+                    why_needed="'agent-in-ysis' is not a name I can read",
+                    blocking=False,
+                    options=options,
+                )
+            ]
+        ),
+        # Never reached: the second turn short-circuits on the unapproved
+        # skeleton and asks no planner. Scripted anyway so a regression that
+        # *does* call one fails here rather than raising StopIteration.
+        _skeleton_citing("a1"),
+    )
+    kernel = _kernel(repo, planner, context=RowsContextPort(_ROWS))
+
+    first = await kernel.turn(_advance_request(), progress=RecordingProgressSink())
+    assert isinstance(first, AwaitingApproval)
+    assert first.question is not None
+
+    again = await kernel.turn(
+        TurnRequest(
+            session_key="C1:1.0",
+            interaction_id="1772.retry",
+            actor_user_id="U1",
+            expected_revision=4,
+            intent=Advance(),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(again, AwaitingApproval), again
+    assert again.artifact.artifact_id == first.artifact.artifact_id
+    assert again.question is not None
+    assert again.question.requirement_id == "skeleton.activity_reading"
+    # The options are the ones that were offered, from the held record --
+    # the catalog has none to re-derive.
+    assert [o.option_id for o in again.question.options] == ["read-1"]
+
+    saved = await repo.load_or_create("C1:1.0", owner_user_id="U1")
+    assert saved.pending_blocker is not None
+    assert saved.pending_blocker.requirement_id == "skeleton.activity_reading"
+
+
+@pytest.mark.asyncio
+async def test_a_re_present_raises_no_question_once_it_is_answered() -> None:
+    """The exemption is scoped to a requirement that is still open.
+
+    A record left standing after its requirement closed would redraw an
+    answered question and let a second press file a second answer against it.
+    """
+
+    repo = InMemoryPlanningSessionRepository([_incident_snapshot()])
+    planner = _ScriptedPlanner(
+        _skeleton_with(
+            [
+                UserBlockerDraft(
+                    requirement_id="skeleton.activity_reading",
+                    why_needed="'agent-in-ysis' is not a name I can read",
+                    blocking=False,
+                    options=[
+                        BlockerOption(
+                            option_id="read-1",
+                            label="Agent analysis",
+                            effect="titles the block 'Agent analysis'",
+                        )
+                    ],
+                )
+            ]
+        ),
+        _skeleton_citing("a1"),
+    )
+    kernel = _kernel(repo, planner, context=RowsContextPort(_ROWS))
+
+    first = await kernel.turn(_advance_request(), progress=RecordingProgressSink())
+    assert isinstance(first, AwaitingApproval)
+
+    answered = await kernel.turn(
+        TurnRequest(
+            session_key="C1:1.0",
+            interaction_id="1772.press",
+            actor_user_id="U1",
+            expected_revision=4,
+            intent=ChooseBlockerOption(
+                requirement_id="skeleton.activity_reading", option_id="read-1"
+            ),
+        ),
+        progress=RecordingProgressSink(),
+    )
+    assert isinstance(answered, AwaitingApproval), answered
+
+    again = await kernel.turn(
+        TurnRequest(
+            session_key="C1:1.0",
+            interaction_id="1772.retry",
+            actor_user_id="U1",
+            expected_revision=5,
+            intent=Advance(),
+        ),
+        progress=RecordingProgressSink(),
+    )
+
+    assert isinstance(again, AwaitingApproval), again
+    assert again.question is None

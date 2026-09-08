@@ -366,9 +366,20 @@ def _planning_obligation(brief: PlanningBrief) -> str:
     # to go. Nothing here said the option existed, and #259 is what that cost:
     # the planner invented an `open_questions` field the kernel never read,
     # and the host discarded it in silence. `_apply_planning_result` accepts
-    # a riding question for whichever artifact the planner just submitted, so
-    # this applies to both turns that reach it -- skeleton and candidate --
-    # and not to day_frame or captured_inputs, which never reach that path.
+    # a riding question for whichever artifact the planner just submitted.
+    #
+    # Skeleton only, and it must stay that way. A blocker names a requirement,
+    # and `_apply_planning_result` refuses one whose gap is not open and
+    # user-owned -- discarding the artifact submitted with it. Every
+    # user-owned requirement in the catalog targets SKELETON (the three named
+    # ones plus all forty-five elicitation cells), and `evaluate` only ever
+    # returns gaps whose `target_artifact` is this turn's, so on a candidate
+    # turn there is no gap a blocker could legally name: every open gap is
+    # `system` or `planner` owned. Inviting a question there would refuse the
+    # turn as `invalid_planner_result` and throw away the finished candidate
+    # with it -- the most expensive turn in the session, destroyed by taking
+    # the host at its word. Widen this only after a user-owned requirement
+    # actually targets VALIDATED_CANDIDATE.
     question_channel = (
         "\nYou may raise one question as a blocker. At most one: a second "
         "blocker in the same turn is refused as `too_many_questions` no "
@@ -381,8 +392,7 @@ def _planning_obligation(brief: PlanningBrief) -> str:
         "placement is unanswerable without the placement on screen, which is "
         "why a non-blocking question rides with the artifact instead of "
         "replacing it."
-        if brief.target_artifact
-        in (ArtifactKind.SKELETON, ArtifactKind.VALIDATED_CANDIDATE)
+        if brief.target_artifact is ArtifactKind.SKELETON
         else ""
     )
     # A rule saying a block must exist is placed, not asked about. The brief
