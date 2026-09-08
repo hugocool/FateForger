@@ -225,3 +225,6 @@ never a request-path one. The live seeded store still predates all of it.
 
 `data/memory.db*` holds Hugo's real preference corpus. Gitignored, and it stays that way — two
 copies were once committed and had to be purged from history.
+
+### Documentation needs to be kept up to date
+At the end of every implementation round(once behaviour has to be reviewed by a human user) make sure there is a ticket to update the docs to reflect the changes you made and these are explained according to best practices(which you explain), make sure a sonnet model subagent picks this ticket up, finishes and makes it part of the PR/it gets merged into main so the docs keep up to date as the system evolves.
