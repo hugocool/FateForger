@@ -15,41 +15,15 @@ no-matching rule.
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import yaml
-
-PROFILE = (
-    Path(__file__).resolve().parents[2]
-    / "infra"
-    / "dsh"
-    / "profile"
-    / "cordis.patch.yml"
-)
+# The profile is parsed by the `profile` fixture in `tests/unit/conftest.py`.
 
 TASK_BOARD_MODULE = "fateforger.slack_bot.task_board_mcp"
 GATE_VARIABLE = "FF_TASK_TOOLS"
 
 
-class _Js(str):
-    """A `!!js` scalar kept as its source text so we can inspect the expression."""
-
-
-def _js_constructor(loader, node):
-    return _Js(loader.construct_scalar(node))
-
-
-def _load_profile():
-    loader = yaml.SafeLoader
-    loader.add_constructor("!!js", _js_constructor)
-    # PyYAML resolves `!!js` to the full tag name; register both spellings.
-    loader.add_constructor("tag:yaml.org,2002:js", _js_constructor)
-    return yaml.load(PROFILE.read_text(encoding="utf-8"), Loader=loader)
-
-
-def _mount_rows() -> list[dict]:
+def _mount_rows(profile) -> list[dict]:
     """Every row of the `insert:` list that carries the server mounts."""
-    for entry in _load_profile():
+    for entry in profile.tree:
         if not isinstance(entry, dict):
             continue
         rows = entry.get("insert")
@@ -61,55 +35,55 @@ def _mount_rows() -> list[dict]:
     raise AssertionError("no insert: block holds the mcp-planning-result row")
 
 
-def _row_named(server_name: str) -> dict:
-    for row in _mount_rows():
+def _row_named(profile, server_name: str) -> dict:
+    for row in _mount_rows(profile):
         config = row.get("config")
         if isinstance(config, dict) and config.get("serverName") == server_name:
             return row
     raise AssertionError(f"no mount declares serverName {server_name!r}")
 
 
-def test_the_task_board_server_is_mounted():
+def test_the_task_board_server_is_mounted(profile):
     """Without a row the subagent has no board and falls back to guessing."""
-    assert _row_named("task_board")["config"]["transport"] == "stdio"
+    assert _row_named(profile, "task_board")["config"]["transport"] == "stdio"
 
 
-def test_the_mount_runs_the_task_board_module():
+def test_the_mount_runs_the_task_board_module(profile):
     """A mount pointing at the wrong module fails at boot, not at call time."""
-    args = _row_named("task_board")["config"]["args"]
+    args = _row_named(profile, "task_board")["config"]["args"]
     assert TASK_BOARD_MODULE in args, args
 
 
-def test_the_mount_is_gated_on_the_task_tools_variable():
+def test_the_mount_is_gated_on_the_task_tools_variable(profile):
     """Ungated, both tool schemas reach every planning call's preamble."""
-    disabled = _row_named("task_board")["disabled"]
-    assert isinstance(disabled, _Js), (
+    disabled = _row_named(profile, "task_board")["disabled"]
+    assert profile.is_js(disabled), (
         f"disabled must be a !!js expression, got {disabled!r}"
     )
     assert GATE_VARIABLE in disabled, disabled
 
 
-def test_the_task_board_row_follows_the_planning_result_row():
+def test_the_task_board_row_follows_the_planning_result_row(profile):
     """Placement is the file's own filing system; the row belongs with 3c."""
-    ids = [row.get("id") for row in _mount_rows()]
+    ids = [row.get("id") for row in _mount_rows(profile)]
     assert ids.index("mcp-task-board") == ids.index("mcp-planning-result") + 1, ids
 
 
-def test_the_mount_hands_the_child_the_parents_environment():
+def test_the_mount_hands_the_child_the_parents_environment(profile):
     """The client composes a child's env, so anything unnamed may be scrubbed.
 
     Forwarding the whole parent env is what passes a variable that IS set and
     omits one that is not. The row is one `!!js` expression rather than a map
     of keys precisely so absence stays absence.
     """
-    env = _row_named("task_board")["config"]["env"]
+    env = _row_named(profile, "task_board")["config"]["env"]
 
-    assert isinstance(env, _Js), f"env must be one !!js expression, got {env!r}"
+    assert profile.is_js(env), f"env must be one !!js expression, got {env!r}"
     assert "process.env" in env, env
     assert "PYTHONPATH" in env, env
 
 
-def test_the_mount_never_forwards_a_variable_as_an_empty_string():
+def test_the_mount_never_forwards_a_variable_as_an_empty_string(profile):
     """An empty string is not "unset", and both readings of it were fatal.
 
     NOTION_MCP_URL is set nowhere here, so `process.env.NOTION_MCP_URL || ''`
@@ -123,7 +97,7 @@ def test_the_mount_never_forwards_a_variable_as_an_empty_string():
     Pinned as an expression check because both failures need the row enabled to
     appear, and nothing else in the suite enables it.
     """
-    env = _row_named("task_board")["config"]["env"]
+    env = _row_named(profile, "task_board")["config"]["env"]
 
     assert "|| ''" not in env, (
         "a `|| ''` fallback forwards an empty string where the variable is "
@@ -133,16 +107,16 @@ def test_the_mount_never_forwards_a_variable_as_an_empty_string():
 
 
 
-def _subagent_rows() -> list[dict]:
+def _subagent_rows(profile) -> list[dict]:
     """Every `dsh-tool-subagent` instance in the mount block."""
     return [
         row
-        for row in _mount_rows()
+        for row in _mount_rows(profile)
         if row.get("name") == "@deepseek-ai/dsh-tool-subagent"
     ]
 
 
-def test_every_subagent_may_actually_be_started():
+def test_every_subagent_may_actually_be_started(profile):
     """`maxDepth` counts the child's own depth, so 0 refuses every call.
 
     `resolveChildDepth` computes `delegationDepthOf(parent) + 1` and refuses
@@ -156,7 +130,7 @@ def test_every_subagent_may_actually_be_started():
     Read as a defect the day it reappears, because nothing else does: a row
     that cannot start looks exactly like a model that chose not to call it.
     """
-    rows = _subagent_rows()
+    rows = _subagent_rows(profile)
     assert rows, "no dsh-tool-subagent rows found; has the mount block moved?"
     for row in rows:
         depth = row["config"]["maxDepth"]
