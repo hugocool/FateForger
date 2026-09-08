@@ -26,6 +26,43 @@ That 5/3 split is the coin-flip signature: the prompt named a category without
 giving the model anything to key off. Attaching one C2F ticket to a block Hugo
 meant as a broad C2F session is a wrong answer that reads as a right one on
 the card, so it is the failure worth an eval.
+
+Measured again after the fix, 2026-09-08, same pin and shape. Every case
+clears the threshold; the rates below pool several sweeps:
+
+    case                                     answer      rate
+    "the next finance ticket ..."            #427        109/112
+    "get the DNS and the holding page ..."   #457 #458   16/16
+    "book a dentist appointment tomorrow"    none        16/16
+    "serious c2f work in the morning ..."    none        16/16
+    "finish the Auth0 M2M registration"      #500        16/16
+    "block out the afternoon for portal ..." none        15/15
+
+The finance case is the one that is not flat. Over 112 draws it answered #427
+109 times, none once, and #500 twice — and both #500 draws fell in a single
+batch of eight, which is 6/8 and would have failed this file. So a red run on
+that case alone is a resample away from a green one and is not by itself
+evidence that the prompt moved: re-run before believing it, and only treat a
+repeated dip as a finding.
+
+**Quoted cases and held-out cases.** The four above are worded from the
+prompt's own examples, which makes them regression pins and nothing more: they
+catch the discriminator being deleted or weakened, but a rule that merely
+recognised those four sentences would pass them too. Each side therefore also
+carries a case whose wording appears nowhere in the prompt — "finish the Auth0
+M2M registration" for singling out an item, "block out the afternoon for
+portal stuff" for naming a topic. The second is the hard direction: the
+snapshot holds three PORTAL tickets, so the empty answer has to survive an
+area with obvious candidates in it. Both are marked `held-out` in the test ids.
+
+**The request shape this measured, which is part of the number.** One user
+turn carrying the whole prompt, `reasoning: {"effort": "minimal"}`,
+`response_format: {"type": "json_object"}`, no temperature, on the flash pin.
+`resolve_work` requires none of that: its parser deliberately accepts JSON
+wrapped in prose, which this shape never produces, so the prose path is not
+exercised here. A caller that sends a different shape — a system/user split, a
+transport without `response_format`, a different reasoning effort — invalidates
+these rates and must re-measure rather than cite them.
 """
 
 from __future__ import annotations
@@ -155,6 +192,15 @@ def _rows() -> list[TaskRow]:
     ]
 
 
+class TransportFailure(Exception):
+    """OpenRouter did not answer. Not a judgement, and not a quality signal.
+
+    Folded into the rate, an outage reads as a prompt regression and the
+    verdict word is wrong for the cause. These are counted separately and the
+    case is skipped, saying so.
+    """
+
+
 async def _ask(prompt: str) -> str:
     """One OpenRouter call, in the request shape the memory judge uses.
 
@@ -164,43 +210,73 @@ async def _ask(prompt: str) -> str:
     typing rather than deliberation, and it sits in a planning turn's latency.
     No temperature pin — resampling measures the distribution.
     """
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-        response = await client.post(
-            f"{os.environ.get('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')}"
-            "/chat/completions",
-            headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
-            json={
-                "model": MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "reasoning": {"effort": "minimal"},
-                "response_format": {"type": "json_object"},
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0)
+        ) as client:
+            response = await client.post(
+                f"{os.environ.get('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')}"
+                "/chat/completions",
+                headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
+                json={
+                    "model": MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "reasoning": {"effort": "minimal"},
+                    "response_format": {"type": "json_object"},
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPError as exc:
+        raise TransportFailure(f"{type(exc).__name__}: {exc}") from exc
     if "choices" not in payload:
-        raise AssertionError(f"OpenRouter returned no choices: {json.dumps(payload)}")
+        # OpenRouter's way of surfacing an upstream hiccup: HTTP 200 with an
+        # error body instead of a completion.
+        raise TransportFailure(f"no choices in response: {json.dumps(payload)}")
     return payload["choices"][0]["message"]["content"]
 
 
-async def _draws(message: str) -> Counter:
-    """SAMPLES answers to one message, counted by the set of task numbers."""
+async def _draws(message: str) -> tuple[Counter, list[str]]:
+    """SAMPLES answers to one message, counted by the set of task numbers.
+
+    Returns the counter and, separately, the transport failures. A judgement
+    that raised — an unknown id, an unparseable answer — stays in the counter,
+    because that is the prompt behaving badly and belongs in the rate.
+    """
     rows = _rows()
     results = await asyncio.gather(
         *(resolve_work(message, rows, ask=_ask) for _ in range(SAMPLES)),
         return_exceptions=True,
     )
     counted: Counter = Counter()
+    transport: list[str] = []
     for result in results:
-        if isinstance(result, BaseException):
+        if isinstance(result, TransportFailure):
+            transport.append(str(result))
+        elif isinstance(result, BaseException):
             counted[f"raised: {result!r}"] += 1
         else:
             counted[frozenset(row.number for row in result)] += 1
-    return counted
+    return counted, transport
 
 
-def _rate(counted: Counter, expected: frozenset) -> int:
-    return counted[expected]
+async def _assert_rate(message: str, expected: set[int]) -> None:
+    """Assert the rate, and say "transport" when the transport is what failed."""
+    counted, transport = await _draws(message)
+    if len(transport) > SAMPLES - THRESHOLD:
+        # Too few draws came back for the threshold to be reachable, so there
+        # is no measurement to pass or fail. A hiccup or two below this line
+        # still leaves a verdict available and is counted against the rate.
+        pytest.skip(
+            f"OpenRouter failed on {len(transport)}/{SAMPLES} draws for "
+            f"{message!r}, so the prompt was not measured: {transport}"
+        )
+    hits = counted[frozenset(expected)]
+    assert hits >= THRESHOLD, (
+        f"{hits}/{SAMPLES} answered {sorted(expected) or 'none'} for "
+        f"{message!r}; draws: {counted}; "
+        f"transport failures: {len(transport)}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -208,17 +284,30 @@ def _rate(counted: Counter, expected: frozenset) -> int:
     [
         # The case no pattern could reach: #427's title is a Dutch corporate
         # tax filing and carries no finance vocabulary at all.
-        ("I want to finish the next finance ticket in the first shallow work block", {427}),
+        pytest.param(
+            "I want to finish the next finance ticket in the first shallow work block",
+            {427},
+            id="quoted-the-next-finance-ticket",
+        ),
         # Two items, each singled out by a description fitting exactly one row.
-        ("get the DNS and the holding page done today", {457, 458}),
+        pytest.param(
+            "get the DNS and the holding page done today",
+            {457, 458},
+            id="quoted-dns-and-holding-page",
+        ),
+        # Held out: nothing in this sentence appears in the prompt. It points
+        # at #500 through the row's own words instead of the prompt's.
+        pytest.param(
+            "finish the Auth0 M2M registration",
+            {500},
+            id="held-out-auth0-m2m",
+        ),
     ],
 )
 async def test_a_message_naming_particular_work_resolves_to_those_rows(
     message: str, expected: set[int]
 ) -> None:
-    counted = await _draws(message)
-    hits = _rate(counted, frozenset(expected))
-    assert hits >= THRESHOLD, f"{hits}/{SAMPLES} for {message!r}; draws: {counted}"
+    await _assert_rate(message, expected)
 
 
 @pytest.mark.parametrize(
@@ -226,14 +315,25 @@ async def test_a_message_naming_particular_work_resolves_to_those_rows(
     [
         # Names a topic and a mood of work, not an item. The board holds five
         # C2F-ish tickets; attaching one of them to a broad session is wrong.
-        "serious c2f work in the morning, gym in the evening",
+        pytest.param(
+            "serious c2f work in the morning, gym in the evening",
+            id="quoted-c2f-session",
+        ),
         # Names work that is not on the board at all.
-        "book a dentist appointment tomorrow",
+        pytest.param(
+            "book a dentist appointment tomorrow",
+            id="quoted-dentist",
+        ),
+        # Held out, and the hard direction: the snapshot holds three PORTAL
+        # tickets (#457, #458, #464), so the empty answer has to survive an
+        # area with obvious candidates sitting in it.
+        pytest.param(
+            "block out the afternoon for portal stuff",
+            id="held-out-portal-topic",
+        ),
     ],
 )
 async def test_a_message_naming_a_topic_or_nothing_on_the_board_resolves_to_none(
     message: str,
 ) -> None:
-    counted = await _draws(message)
-    hits = _rate(counted, frozenset())
-    assert hits >= THRESHOLD, f"{hits}/{SAMPLES} none for {message!r}; draws: {counted}"
+    await _assert_rate(message, set())
