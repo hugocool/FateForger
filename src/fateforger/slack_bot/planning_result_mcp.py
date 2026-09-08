@@ -19,7 +19,7 @@ from typing import Any, Literal
 from collections.abc import Iterable, Mapping
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 from pydantic import ValidationError
 
@@ -88,9 +88,16 @@ class AssumptionInput(BaseModel):
     recover the field names, at 110-119s per candidate turn. A tool argument
     whose shape the caller cannot see is one it will get wrong.
 
-    Loose on purpose: the strict contract still validates in `_validated`. This
-    exists to be *described*, not to be the gate.
+    Loose on purpose: the strict contract still validates in `_validated`,
+    so the *types* here don't have to be the gate -- `value` stays `Any`
+    rather than a union of everything a placement could be. Looseness stops
+    at the field names, though: `extra="forbid"` closes the gap that let
+    `BlockerInput.blocking` be sent and silently dropped before this class
+    existed to declare it (#259). An internal contract between one planner
+    and one tool gains nothing from tolerating a name it does not know.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     requirement_id: str = PydanticField(
         description="The exact requirement id from the brief's readiness gaps."
@@ -106,16 +113,25 @@ class AssumptionInput(BaseModel):
 class BlockerInput(BaseModel):
     """One decision that is genuinely the user's to make."""
 
+    model_config = ConfigDict(extra="forbid")
+
     requirement_id: str = PydanticField(
         description="The exact requirement id from the brief's readiness gaps."
     )
     why_needed: str = PydanticField(description="One line: why the user must decide.")
-    #: Mirrors `UserBlockerDraft.blocking`. Declared here, not just there:
-    #: neither this model nor FastMCP's generated arg model sets
-    #: `extra="forbid"`, so an undeclared field the planner sends is dropped
-    #: before `submit_planning_result`'s body -- and therefore before
-    #: `_validated` -- ever runs. A field only on the internal contract is a
-    #: field the wire never carries.
+    #: Mirrors `UserBlockerDraft.blocking`. Declared here, not just there: a
+    #: field only on the internal contract is a field the wire never
+    #: carries. It once was: this class had no `blocking` field while the
+    #: kernel already had one, and because FastMCP's generated arg model
+    #: (built from these annotations) did not forbid extras, a `blocking:
+    #: true` the planner actually sent was silently dropped before
+    #: `submit_planning_result`'s body -- and therefore before `_validated`
+    #: -- ever ran. `model_config` above closes that class of hazard for
+    #: every field on this model, not just this one: an unknown field is now
+    #: refused at the wire, loudly, instead of disappearing. Do not loosen it
+    #: back to tolerate an unrecognised key "for compatibility" -- this is an
+    #: internal contract between one planner and one tool, not a versioned
+    #: external API, so there is no forward-compatibility case for it.
     blocking: bool = PydanticField(
         default=False,
         description=(
@@ -128,6 +144,8 @@ class BlockerInput(BaseModel):
 
 class BlockerOptionInput(BaseModel):
     """One concrete alternative offered against a blocker."""
+
+    model_config = ConfigDict(extra="forbid")
 
     label: str = PydanticField(description="What the user reads on the button.")
     effect: str = PydanticField(description="One line: what choosing it does.")

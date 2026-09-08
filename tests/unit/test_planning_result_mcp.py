@@ -1101,6 +1101,69 @@ async def test_a_blocking_blocker_is_refused_over_the_real_wire(result_file):
     assert result_file.read_text(encoding="utf-8") == ""
 
 
+async def test_an_undeclared_blocker_field_is_refused_not_dropped(result_file):
+    """`extra="forbid"` closes the exact hazard that hid `blocking` itself.
+
+    Before `BlockerInput` declared `blocking`, an unknown field a planner
+    sent over MCP was silently coerced away and never reached `_validated`
+    -- the failure mode Gap 2 was. This must be exercised through
+    `mcp.call_tool`, not the bare-dict path every other test in this module
+    uses: a dict passed directly to `submit_planning_result` skips FastMCP's
+    argument model entirely, which is exactly what let the original hazard
+    go uncaught.
+    """
+
+    with pytest.raises(ToolError) as caught:
+        await planning_result_mcp.mcp.call_tool(
+            "submit_planning_result",
+            {
+                "target_artifact": "skeleton",
+                "artifact": None,
+                "assumptions": [],
+                "blockers": [
+                    {
+                        "requirement_id": "skeleton.requested_activity",
+                        "why_needed": "nothing was requested",
+                        "urgent": True,
+                    }
+                ],
+            },
+        )
+
+    assert "extra_forbidden" in str(caught.value) or "urgent" in str(caught.value)
+    assert result_file.read_text(encoding="utf-8") == ""
+
+
+async def test_an_undeclared_assumption_field_is_refused_not_dropped(result_file):
+    """`AssumptionInput` gets the same treatment for the same reason.
+
+    `value` staying `Any` (the docstring's "loose on purpose") is about the
+    field's *type*, not about tolerating a field it does not declare -- an
+    unknown name is refused here exactly like on `BlockerInput`.
+    """
+
+    with pytest.raises(ToolError) as caught:
+        await planning_result_mcp.mcp.call_tool(
+            "submit_planning_result",
+            {
+                "target_artifact": "skeleton",
+                "artifact": _skeleton(),
+                "assumptions": [
+                    {
+                        "requirement_id": "skeleton.ordinary_placement",
+                        "value": {"start": "17:00"},
+                        "why_needed": "the day names gym without a fixed time",
+                        "confidence": "high",
+                    }
+                ],
+                "blockers": [],
+            },
+        )
+
+    assert "extra_forbidden" in str(caught.value) or "confidence" in str(caught.value)
+    assert result_file.read_text(encoding="utf-8") == ""
+
+
 def test_a_refusal_names_the_field_that_was_wrong(tmp_path, monkeypatch) -> None:
     """Catches a refusal that says which argument but never which field.
 
