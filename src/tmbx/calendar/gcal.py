@@ -9,11 +9,13 @@ module already solved the argument shapes and response normalisation
 against this exact server; see each helper's docstring for what changed and
 why.
 
-``extendedProperties.private`` under the ``tmbx`` namespace carries seven
+``extendedProperties.private`` under the ``tmbx`` namespace carries eight
 values round-tripped verbatim: identity (``uid``/``handle``/``slug``, as
-before) plus ``block_type``/``timing_mode``/``anchor_source``/``link``.
+before) plus ``block_type``/``timing_mode``/``anchor_source``/``link``/
+``desc``.
 Without ``block_type``/``timing_mode``, every block reads back as a plain
-fixed window regardless of what it actually was — an event has no field of its own for "this is a deep-work block" or
+fixed window regardless of what it actually was — an event has no field
+of its own for "this is a deep-work block" or
 "this was meant to float after the previous one"; without persisting
 them, that information is invented fresh on every read (always ``ET.M``,
 always ``fw``), which ossifies every chain into a wall of independently
@@ -28,8 +30,21 @@ gone — and a constraint-backed boundary becomes advice to unpin.
 ``link`` is the material store's handle for the piece of work a block is
 for. It is the half of a link that round-trips: the other half, the url,
 is written into the event's *description* — a bare url on its own line,
-which is what a person actually clicks — and is never read back out of
-it. See ``_description_for``.
+which is what a person actually clicks. See ``_description_for``.
+
+``desc`` is what makes that projection reversible, and it is the same
+move as every key above it: **the visible field is for a person, the
+machine-readable original lives in a private property.** The description
+Google holds is composed — the block's own text plus the url — so
+reading it back as the block's description would fold the url into
+authored prose, put it in front of a planner, and append a second copy
+the next time anything else about the block changed. ``desc`` carries the
+authored text verbatim and ``_event_from_payload`` prefers it, falling
+back to the composed field only for an event written before this existed.
+Recovering the original by *looking for* the url inside the description
+would be a judgement about what a stretch of text is, on a field a person
+can edit in the Google UI; storing the original costs one property and
+guesses nothing.
 
 This module only carries the raw strings through; reconstructing them
 into a real ``ET``/``Timing``/``AnchorSource`` (and what happens when
@@ -105,6 +120,15 @@ _PRIVATE_TYPE_KEY = "tmbx.type"
 _PRIVATE_MODE_KEY = "tmbx.mode"
 _PRIVATE_ANCHOR_KEY = "tmbx.anchor"
 _PRIVATE_LINK_KEY = "tmbx.link"
+_PRIVATE_DESC_KEY = "tmbx.desc"
+
+MAX_PRIVATE_VALUE_CHARS = 1024
+"""Google's cap on one ``extendedProperties.private`` value, in characters.
+
+Only ``tmbx.desc`` can plausibly approach it — every other value here is an
+id, a two-letter code, or a handle. Public so a test can assert the refusal
+without typing the number a second time.
+"""
 
 _CANCELLED_STATUS = "cancelled"
 
@@ -318,29 +342,69 @@ def _description_for(event: CalendarEvent) -> str:
     An event with no description of its own gets the url alone rather than
     a pair of leading blank lines.
 
-    ``event.link_url`` is write-only (see ``CalendarEvent``), so nothing
-    reads this apart again: ``_event_from_payload`` takes the handle back
-    out of the extended properties and leaves the description as the
-    provider holds it.
-
-    **The consequence of that, stated rather than hidden.** A day fetched
-    back from a real provider carries the url *inside* ``description``,
-    and ``service._event_to_block`` puts the whole field on the block as
-    ``d``. Re-committing an unchanged day is still a no-op (the two
-    descriptions match, so ``_event_unchanged`` says so), but a write that
-    changes anything else about a linked block appends its url a second
-    time, and the plan a planner is shown carries the url in a column
-    Task 2 deliberately kept urls out of. Undoing the append would mean
-    deciding which stretch of a description this module wrote and which a
-    person typed into the Google UI — a judgement about text, which is
-    exactly what this project does not do in code. The fix belongs where
-    a block's own description is separated from the event's, not here.
+    Nothing takes this apart again. The authored description is round-
+    tripped whole in ``tmbx.desc`` (see ``_private_properties``), so
+    ``_event_from_payload`` reads the original back out of a private
+    property rather than searching this composed string for a url it
+    would have to recognise. That keeps the composed value display-only:
+    a person reads it, and no code ever has to decide which half of it
+    somebody typed.
     """
     if not event.link_url:
         return event.description
     if not event.description:
         return event.link_url
     return f"{event.description}\n\n{event.link_url}"
+
+
+def _private_properties(event: CalendarEvent) -> dict[str, str]:
+    """The ``extendedProperties.private`` map for one event.
+
+    Every value here is something this system minted or was handed as an
+    id, with one exception: ``tmbx.desc`` is the block's own description,
+    authored prose, kept verbatim so the composed description Google
+    displays can be reversed without reading it. A ``None`` value is
+    dropped rather than written, so an event with no slug, no link, or no
+    description of its own simply has no key for it — which is what makes
+    clearing any of them a real change on the next write.
+
+    **The description is checked against the provider's limit and refused,
+    never truncated.** Google caps one private property value at
+    ``MAX_PRIVATE_VALUE_CHARS``; silently shortening a description here
+    would lose what a person wrote and only surface the next time the day
+    was read back, which is the quiet-wrong-answer shape this project
+    refuses everywhere else. The refusal names the block handle, because
+    that is what the caller has to go and shorten, and the limit, because
+    that is the fact they need. Raising mid-loop can leave a commit
+    partially written — but so can any provider error on any event, and a
+    loud stop beats a day that reads back with a description a person did
+    not write.
+    """
+    description = event.description or None
+    if description is not None and len(description) > MAX_PRIVATE_VALUE_CHARS:
+        raise ValueError(
+            f"block {event.handle or event.event_id!r}: description is "
+            f"{len(description)} characters, over the "
+            f"{MAX_PRIVATE_VALUE_CHARS}-character limit Google enforces on an "
+            "extendedProperties.private value. tmbx keeps the authored "
+            "description there so it can be read back without the material "
+            "url appended to it; truncating it would silently lose what you "
+            "wrote. Shorten the block's description."
+        )
+    return {
+        key: value
+        for key, value in (
+            (_PRIVATE_UID_KEY, event.uid),
+            (_PRIVATE_HANDLE_KEY, event.handle),
+            (_PRIVATE_SLUG_KEY, event.slug),
+            (_PRIVATE_TYPE_KEY, event.block_type),
+            (_PRIVATE_MODE_KEY, event.timing_mode),
+            (_PRIVATE_ANCHOR_KEY, event.anchor_source),
+            (_PRIVATE_LINK_KEY, event.link_id),
+            (_PRIVATE_DESC_KEY, description),
+        )
+        if value is not None
+    }
 
 
 def _write_event_args(event: CalendarEvent, *, tz: str) -> dict[str, Any]:
@@ -352,27 +416,17 @@ def _write_event_args(event: CalendarEvent, *, tz: str) -> dict[str, Any]:
     not a nested ``{dateTime, timeZone}`` object; that nested shape shows
     up only in this repo's throwaway dev seed scripts, not the tool's
     actual schema. ``extendedProperties.private`` carries identity plus
-    ``block_type``/``timing_mode``/``anchor_source``/``link`` — see the
-    module docstring — and is included only when at least one of those
-    seven is set, since a foreign event is never written here at all (the
-    service never calls create/update for one).
+    ``block_type``/``timing_mode``/``anchor_source``/``link``/``desc`` —
+    see the module docstring — and is included only when at least one of
+    those eight is set, since a foreign event is never written here at all
+    (the service never calls create/update for one).
 
     The description sent is not ``event.description`` verbatim: a linked
-    event's url is appended to it. See ``_description_for``.
+    event's url is appended to it (``_description_for``), and the authored
+    text goes into ``tmbx.desc`` so the composition can be reversed on the
+    way back (``_private_properties``).
     """
-    private = {
-        key: value
-        for key, value in (
-            (_PRIVATE_UID_KEY, event.uid),
-            (_PRIVATE_HANDLE_KEY, event.handle),
-            (_PRIVATE_SLUG_KEY, event.slug),
-            (_PRIVATE_TYPE_KEY, event.block_type),
-            (_PRIVATE_MODE_KEY, event.timing_mode),
-            (_PRIVATE_ANCHOR_KEY, event.anchor_source),
-            (_PRIVATE_LINK_KEY, event.link_id),
-        )
-        if value is not None
-    }
+    private = _private_properties(event)
     args: dict[str, Any] = {
         "summary": event.summary,
         "description": _description_for(event),
@@ -488,6 +542,17 @@ def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
     material store is where a handle becomes a url, and the handle is
     what came back.
 
+    ``description`` therefore comes from ``tmbx.desc`` when the event has
+    one — the authored text, without the url this adapter appended for
+    display. An event written before that key existed has no such value,
+    and falls back to the composed ``description`` field, which is all
+    there is for it: honest, and the same value it read back before. The
+    first write that touches such an event stores the key, so the fallback
+    is a migration path rather than a permanent second behaviour. It costs
+    no spurious update either: an event written before this change carries
+    no link, so its composed and authored descriptions are the same string
+    and ``_event_unchanged`` still says nothing changed.
+
     ``etag`` is the provider's ``updated`` timestamp — see the module
     docstring for why there is no real etag to carry here.
     """
@@ -506,7 +571,9 @@ def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
     return CalendarEvent(
         event_id=str(raw.get("id") or ""),
         summary=str(raw.get("summary") or ""),
-        description=str(raw.get("description") or ""),
+        description=str(
+            private.get(_PRIVATE_DESC_KEY) or raw.get("description") or ""
+        ),
         start=start,
         end=end,
         etag=str(raw.get("updated") or ""),
@@ -588,6 +655,7 @@ def _extract_payload(tool_name: str, result: CallToolResult) -> Any:
 
 __all__ = [
     "DEFAULT_SERVER_URL",
+    "MAX_PRIVATE_VALUE_CHARS",
     "SERVER_URL_ENV_VAR",
     "GoogleCalendarAdapter",
     "McpToolCaller",

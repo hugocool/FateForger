@@ -68,6 +68,14 @@ class CalendarEvent(BaseModel):
     text this system did not mint. An event fetched from a real provider
     therefore carries ``link_id`` and ``link_url is None`` — which is why
     ``service._event_unchanged`` compares the handle and not the url.
+
+    ``description`` is the block's **authored** description on both sides
+    of the port, never the composed one a provider displays. A real
+    adapter appends the url for a person to read and round-trips the
+    authored text in a private property of its own, so what comes back
+    here is what somebody wrote and nothing else — see ``gcal.py``.
+    Without that, the url would fold into authored prose one read at a
+    time.
     """
 
     model_config = ConfigDict(extra="forbid")

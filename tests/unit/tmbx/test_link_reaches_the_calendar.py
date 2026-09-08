@@ -28,14 +28,16 @@ import pytest
 from mcp.types import CallToolResult, TextContent
 
 from tmbx.calendar.fake import FakeCalendar
-from tmbx.calendar.gcal import GoogleCalendarAdapter
+from tmbx.calendar.gcal import MAX_PRIVATE_VALUE_CHARS, GoogleCalendarAdapter
 from tmbx.calendar.port import CalendarEvent
 from tmbx.core.models import ET, AfterPrev, PlanViolation, ViolationKind
+from tmbx.core.models import Plan
 from tmbx.core.ops import AddBlock, Patch, UpdateBlock
+from tmbx.core.render import render_plan
 from tmbx.journal.models import PatchOutcome
 from tmbx.journal.store import JournalStore, init_journal
 from tmbx.materials import MaterialStore
-from tmbx.service import PlanService
+from tmbx.service import PlanService, _event_to_block
 
 DAY = date(2026, 8, 17)
 TZ = "Europe/Amsterdam"
@@ -692,3 +694,191 @@ async def test_the_url_is_not_reconstructed_from_the_description():
     events = await adapter.list_day("primary", DAY, TZ)
 
     assert events[0].link_url is None
+
+
+# ---------------------------------------------------------------------------
+# the authored description round-trips; the composed one is display-only
+# ---------------------------------------------------------------------------
+
+
+def _raw_from_args(args: dict[str, Any]) -> dict[str, Any]:
+    """The raw event a provider would hand back for what the adapter just sent.
+
+    Built from the adapter's own write arguments rather than typed out again,
+    so a round-trip test really is a round trip: whatever ``_write_event_args``
+    decided to send is exactly what ``_event_from_payload`` is then asked to
+    read. A hand-written "expected" payload would let the two drift apart and
+    still pass.
+    """
+    raw: dict[str, Any] = {
+        "id": args.get("eventId", "tmb0abc123"),
+        "summary": args["summary"],
+        "description": args["description"],
+        "start": {"dateTime": "2026-08-17T10:00:00+02:00"},
+        "end": {"dateTime": "2026-08-17T12:00:00+02:00"},
+        "status": "confirmed",
+        "updated": "2026-08-17T08:00:00.000Z",
+    }
+    if "extendedProperties" in args:
+        raw["extendedProperties"] = args["extendedProperties"]
+    return raw
+
+
+async def _round_trip(event: CalendarEvent) -> tuple[CalendarEvent, dict[str, Any]]:
+    """Write ``event``, hand the result back as a provider read, return both."""
+    adapter, caller = _make_adapter(
+        {"create-event": [_text_result({"event": _raw_event()})]}
+    )
+    await adapter.create("primary", event)
+    _name, args = caller.calls[0]
+
+    reader, _reader_caller = _make_adapter(
+        {"list-events": [_text_result({"events": [_raw_from_args(args)]})]}
+    )
+    read_back = (await reader.list_day("primary", DAY, TZ))[0]
+    return read_back, args
+
+
+async def test_the_authored_description_comes_back_without_the_url():
+    """The composed description is for a person to read; ``tmbx.desc`` is the
+    machine-readable original, exactly as identity and the structural fields
+    already work."""
+    read_back, args = await _round_trip(_linked_event())
+
+    assert args["extendedProperties"]["private"]["tmbx.desc"] == "focus block"
+    assert read_back.description == "focus block"
+
+
+async def test_a_day_read_back_keeps_the_url_out_of_what_a_planner_sees():
+    """Task 2 kept urls out of the planner's view; a day fetched back from a
+    real calendar must not put one back.
+
+    ``Block.d`` is where that is decided. The rendered table has no
+    description column today — the url would reach a planner through the plan
+    object and the cards built from it — so the block field is the assertion
+    that carries weight, and the render check is the cheap net for a
+    description column added later.
+    """
+    read_back, _args = await _round_trip(_linked_event())
+
+    block = _event_to_block(read_back, 0, "u-1")
+
+    assert block.d == "focus block"
+    rendered = render_plan(
+        Plan(date=DAY, tz=TZ, blocks=[block]), set(), {"mdeadbeef0": TICKET_LABEL}
+    )
+    assert TICKET_URL not in rendered
+
+
+async def test_re_writing_a_day_read_back_carries_the_url_exactly_once():
+    """The defect this fix exists to close.
+
+    Before ``tmbx.desc``, the url came back as part of the description, became
+    part of ``Block.d``, and the next write that changed anything *else* about
+    the block — a retime, a rename — sent it back with the url still inside
+    and had a second copy appended. So this changes the summary and leaves the
+    description exactly as the provider handed it over.
+    """
+    read_back, _args = await _round_trip(_linked_event())
+    retimed = read_back.model_copy(
+        update={"summary": "Deeper Work", "link_url": TICKET_URL}
+    )
+    adapter, caller = _make_adapter(
+        {"update-event": [_text_result({"event": _raw_event()})]}
+    )
+
+    await adapter.update("primary", retimed)
+
+    _name, args = caller.calls[0]
+    assert args["description"] == f"focus block\n\n{TICKET_URL}"
+    assert args["description"].count(TICKET_URL) == 1
+
+
+async def test_writing_what_was_read_back_sends_byte_identical_arguments():
+    """Reversible, so a re-commit is a no-op rather than a rewrite. If the
+    projection lost or added anything, the second write would differ from the
+    first and every linked block would churn on every commit."""
+    read_back, first = await _round_trip(_linked_event())
+    adapter, caller = _make_adapter(
+        {"update-event": [_text_result({"event": _raw_event()})]}
+    )
+
+    await adapter.update(
+        "primary", read_back.model_copy(update={"link_url": TICKET_URL})
+    )
+
+    _name, second = caller.calls[0]
+    assert second["description"] == first["description"]
+    assert second["extendedProperties"] == first["extendedProperties"]
+
+
+async def test_an_event_written_before_this_change_still_reads_its_description():
+    """No ``tmbx.desc`` — every event already on Hugo's calendar. The composed
+    description is all there is, so that is what comes back rather than an
+    empty field."""
+    adapter, _caller = _make_adapter(
+        {
+            "list-events": [
+                _text_result(
+                    {
+                        "events": [
+                            {
+                                "id": "tmb0abc123",
+                                "summary": "Deep Work",
+                                "description": "focus block",
+                                "start": {"dateTime": "2026-08-17T10:00:00+02:00"},
+                                "end": {"dateTime": "2026-08-17T12:00:00+02:00"},
+                                "status": "confirmed",
+                                "updated": "2026-08-17T08:00:00.000Z",
+                                "extendedProperties": {
+                                    "private": {"tmbx.uid": "u-1"}
+                                },
+                            }
+                        ]
+                    }
+                )
+            ]
+        }
+    )
+
+    events = await adapter.list_day("primary", DAY, TZ)
+
+    assert events[0].description == "focus block"
+
+
+async def test_an_empty_description_writes_no_property_and_reads_back_empty():
+    read_back, args = await _round_trip(
+        _linked_event(description="", link_id=None, link_url=None)
+    )
+
+    assert "tmbx.desc" not in args["extendedProperties"]["private"]
+    assert read_back.description == ""
+
+
+# ---------------------------------------------------------------------------
+# the provider's own limit on a private property value
+# ---------------------------------------------------------------------------
+
+
+async def test_a_description_over_the_limit_refuses_naming_the_handle_and_the_limit():
+    """Loud, not truncated. Silently shortening it would lose what a person
+    wrote and only show up the next time the day was read back."""
+    adapter, _caller = _make_adapter(
+        {"create-event": [_text_result({"event": _raw_event()})]}
+    )
+    too_long = "x" * (MAX_PRIVATE_VALUE_CHARS + 1)
+
+    with pytest.raises(ValueError) as excinfo:
+        await adapter.create("primary", _linked_event(description=too_long))
+
+    assert "DW1" in str(excinfo.value)
+    assert str(MAX_PRIVATE_VALUE_CHARS) in str(excinfo.value)
+
+
+async def test_a_description_exactly_at_the_limit_is_written():
+    """The boundary belongs on the allowed side — a refusal one character early
+    is a refusal nobody can explain."""
+    at_limit = "x" * MAX_PRIVATE_VALUE_CHARS
+    _read_back, args = await _round_trip(_linked_event(description=at_limit))
+
+    assert args["extendedProperties"]["private"]["tmbx.desc"] == at_limit

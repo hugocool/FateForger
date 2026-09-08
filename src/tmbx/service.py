@@ -444,8 +444,11 @@ def _event_to_block(event: CalendarEvent, index: int, uid: str) -> Block:
     reconstruction: it is opaque here, verified against the store only
     where a patch names one. A foreign event carries none, so a foreign
     block's link is ``None`` without any check of its own. The url is
-    never recovered: it lives in the event description for a person to
-    click, and the store is where a handle becomes a url again.
+    never recovered: it lives in the description a provider *displays*,
+    for a person to click, while ``event.description`` carries the
+    authored text a real adapter round-trips separately — so ``d`` is
+    what somebody wrote, with no url folded into it. The store is where
+    a handle becomes a url again.
 
     ``anchor_source`` is reconstructed independently of the other two: it
     says why a block is pinned, not how, so an event whose type/mode are
