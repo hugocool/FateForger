@@ -682,6 +682,44 @@ def build_server(
             }
         )
 
+    @mcp.tool(name="material_put", structured_output=False)
+    async def material_put(
+        source: str, external_id: str, url: str, label: str
+    ) -> str:
+        """Record one external piece of work and get the handle a block links by.
+
+        **If you are planning a day, do not call this.** The handles you may
+        put on a block are already listed on your brief, resolved before your
+        turn began; minting one here would attach a block to work nobody asked
+        for. This exists for the host, which reads the task board, decides
+        which tickets a day was asked to carry, and stores them here before the
+        planning turn starts.
+
+        `source` names the system the id belongs to ("notion"); `external_id`
+        is that system's id for the item; `url` is where a person clicks
+        through to it and `label` is what it is called. The handle is derived
+        from `source` and `external_id`, so storing the same item twice returns
+        the same handle and refreshes its url and label.
+
+        On success, "link" is the handle: pass it as a block's `link` in
+        plan_apply/plan_commit. A result with "ok": false is a refusal, with
+        reason "malformed_input" for an empty source or external_id — either
+        would fold unrelated items onto one handle.
+        """
+        try:
+            link_id = await service.materials.put(
+                source=source, external_id=external_id, url=url, label=label
+            )
+        except ValueError as exc:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "reason": "malformed_input",
+                    "message": str(exc),
+                }
+            )
+        return json.dumps({"ok": True, "link": link_id})
+
     @mcp.resource("tmbx://schema/ops")
     def ops_schema() -> str:
         """JSON schema for the Patch object accepted by plan_apply/plan_commit."""

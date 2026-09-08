@@ -8,6 +8,7 @@ from autogen_agentchat.messages import HandoffMessage, TextMessage
 
 from datetime import date
 
+from fateforger.agents.tasks.board import TaskBoardUnavailable
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
     InMemoryPlanningSessionRepository,
 )
@@ -409,6 +410,17 @@ async def test_harness_redirect_offers_the_owned_approval_in_the_timeboxing_thre
 
     monkeypatch.setattr(
         "fateforger.slack_bot.tmbx_client.TmbxClient", _RecordingTmbx
+    )
+
+    # The candidate resolve now asks which board rows the session's requested
+    # activity names. This test is about where the approval lands, not about
+    # that lookup: refusing the board takes the host's loud, non-blocking path
+    # and keeps a unit test off Notion on a machine that holds a token.
+    def _no_board():
+        raise TaskBoardUnavailable("no board in a unit test")
+
+    monkeypatch.setattr(
+        "fateforger.agents.tasks.board.TaskBoard.from_settings", staticmethod(_no_board)
     )
 
     repository = InMemoryPlanningSessionRepository(

@@ -46,6 +46,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningResult,
 )
 
+from .timeboxing_host import work_refs_on
 from .planning_result_mcp import OPEN_REQUIREMENTS_FILE_ENV, REQUIRED_BLOCKS_FILE_ENV
 from .dsh_progress_hook import COMMIT_FILE_ENV, PROGRESS_FILE_ENV, ProgressEvent
 from .schedule_render import candidate_display_text
@@ -374,6 +375,7 @@ def _planning_obligation(brief: PlanningBrief) -> str:
                 "rules and record the time as an assumption on "
                 "`candidate.required_blocks`. A candidate without it is refused."
             )
+    work_lines = _work_lines(brief)
     return (
         "This planning turn is host-driven. The brief below is authoritative "
         "for the day, the facts, the prior artifacts and the approvals; do not "
@@ -383,13 +385,63 @@ def _planning_obligation(brief: PlanningBrief) -> str:
         f"`submit_planning_result` once, with target_artifact `{target}`. Your "
         "final message is presentation only: it records nothing, and a turn "
         f"that ends without that call has produced nothing.{apply_first}{payload_shape}"
-        f"{required_lines}"
+        f"{required_lines}{work_lines}"
         "\nIf you cannot finish but have not failed -- a retry budget spent "
         "mid-fix, say -- submit a `continuation` saying what is left and what "
         "you already worked out. What you produced is kept and you resume from "
         "that reason, so write it for yourself. It is not a way to hand back a "
         "decision that is yours to make."
     )
+
+
+def _work_lines(brief: PlanningBrief) -> str:
+    """The work this day was asked to carry, by handle, and the one use for it.
+
+    Candidate turns only: a link reaches a block through the `link` field of a
+    tmbx add or update, and no other stage writes one.
+
+    **No URL, ever.** The handle is the whole point -- ten characters a model
+    copies without transcription error, against a link it would have to get
+    right character by character (Hugo's own reason for this design). A planner
+    that has seen one URL is a planner that will write one, so the fact carries
+    none and neither does this.
+
+    The unavailable sentence is the other half. Without it, a board that could
+    not be read and a day nobody named work for reach the planner as the same
+    silence, and the planner would take the more comfortable reading.
+    """
+
+    if brief.target_artifact is not ArtifactKind.VALIDATED_CANDIDATE:
+        return ""
+    lines = ""
+    refs = work_refs_on(brief.facts)
+    if refs:
+        listed = "".join(
+            # A row whose board number is missing is named without one rather
+            # than with the word None: `TaskRow.number` is optional, and a
+            # ticket nobody numbered is still a ticket.
+            f"\n  {ref.get('link')} -- "
+            + (f"#{ref['task']} " if ref.get("task") is not None else "")
+            + f"{ref.get('label')}"
+            for ref in refs
+        )
+        lines += (
+            "\nHugo named work for this day, and the host resolved it on his "
+            f"board. Each handle below stands for one ticket:{listed}"
+            "\nTo plan a block for one of them, set `link` to its handle on the "
+            "`add` or `update` that places that block -- the handle exactly as "
+            "written above, never a URL, a ticket name or a number. A block "
+            "that is not for one of these carries no link, and you attach "
+            "nothing that is not listed here."
+        )
+    if brief.work_board_unavailable:
+        lines += (
+            "\nThe task board could not be read this turn, so no work is named "
+            "by handle above. That is the host failing to look, not a day with "
+            "no work in it: plan what Hugo asked for and leave every block "
+            "unlinked. Do not go looking for the tickets yourself."
+        )
+    return lines
 
 
 #: Constraint fields that reach the planner and cannot inform anything it does.

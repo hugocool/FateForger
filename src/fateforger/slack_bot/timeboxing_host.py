@@ -15,7 +15,8 @@ than about planning.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -265,12 +266,66 @@ class HostPlanningContext:
                 + (f" ({reason})" if reason else "")
             )
         constraints = await self._active_constraints(planning_day)
+        # After the calendar read, deliberately: that read is what proves tmbx
+        # is up, and the material store the handles are written into lives in
+        # that same process.
+        work = await self._work_refs(snapshot, day)
         return PlanningContext(
-            facts=planning_facts(
-                day=day, calendar_snapshot=calendar_snapshot, constraints=constraints
-            ),
+            facts=[
+                *planning_facts(
+                    day=day,
+                    calendar_snapshot=calendar_snapshot,
+                    constraints=constraints,
+                ),
+                *work.facts,
+            ],
             applicable_constraints=constraints,
             calendar_snapshot=calendar_snapshot,
+            work_board_unavailable=work.board_unavailable,
+        )
+
+    async def _work_refs(
+        self, snapshot: PlanningSessionSnapshot, day: str
+    ) -> WorkRefs:
+        """Which of the current sprint's Ready tickets this session asked for.
+
+        Runs on every candidate resolve, so a request made after the first
+        candidate reaches the next one. A session that asked for no work at all
+        costs nothing: `requested_work_text` is empty, and `work_refs_for_turn`
+        returns before it reads a board or asks a model.
+
+        The judge client is the one the Stage 1 judgements use -- the flash pin
+        at `minimal` effort, which with `json_output=True` is the request shape
+        the work-lookup eval measured. A host without one fails the turn rather
+        than quietly planning every day unlinked: that is a misconfiguration,
+        not an answer.
+        """
+        message = requested_work_text(snapshot)
+        if not message.strip():
+            return WorkRefs(facts=[], board_unavailable=False)
+
+        from fateforger.agents.tasks.board import TaskBoard, TaskBoardError
+
+        try:
+            board = TaskBoard.from_settings()
+        except TaskBoardError as exc:
+            # `from_settings` raises on a missing token, before any request --
+            # and before a judge is asked for, since there would be nothing to
+            # ask about.
+            return work_board_unavailable(exc)
+
+        model_client = getattr(self._runtime, "timeboxing_judge_model_client", None)
+        if model_client is None:
+            raise AdaptiveDependencyUnavailable("no model client for the work lookup")
+
+        from .tmbx_client import TmbxClient
+
+        return await work_refs_for_turn(
+            day=day,
+            message=message,
+            board=board,
+            ask=judge_ask(model_client),
+            put_material=TmbxClient().material_put,
         )
 
     async def _frame_from_corpus(
@@ -467,6 +522,197 @@ def planning_facts(
         )
     )
     return facts
+
+
+#: The system a work ref points into. It is the material store's key alongside
+#: the page id, and both are identifiers somebody minted -- comparing them is
+#: the documented exception to CLAUDE.md's matching ban, not an opinion about
+#: what a ticket says.
+WORK_SOURCE = "notion"
+
+#: One page of the current sprint's Ready list. Notion caps a query at 100, and
+#: a sprint holding more Ready tickets than that is a different problem from
+#: this one: paging would widen a scope that is deliberately narrow, and the
+#: narrowness is what fixes what "the next one" means.
+WORK_ROW_LIMIT = 100
+
+#: The model transport `resolve_work` takes: one prompt in, one answer out.
+Ask = Callable[[str], Awaitable[str]]
+#: `MaterialStore.put` as the host reaches it -- across a process boundary in
+#: production, directly in a test. Returns the handle.
+PutMaterial = Callable[..., Awaitable[str]]
+
+
+def work_refs_fact_id(day: str) -> str:
+    """One id per day, so a re-resolve rewrites rather than accumulates."""
+    return f"work-refs:{day}"
+
+
+@dataclass(frozen=True)
+class WorkRefs:
+    """What one turn's work lookup produced, and whether it got to look.
+
+    The two fields are not redundant. No facts means either "the message named
+    no ticket" or "the board could not be read", and only the second changes
+    how the planner should read the brief -- so the flag travels beside the
+    facts rather than as an empty one, which would read as the first.
+    """
+
+    facts: list[PlanningFact]
+    board_unavailable: bool
+
+
+def work_board_unavailable(exc: Exception) -> WorkRefs:
+    """The board did not answer: say so at error, and let the turn continue.
+
+    One event name, `work_board_unavailable`, whether the board could not be
+    built (no token) or could not be queried (no sprint, two sprints, a
+    malformed page). They are one problem for the planner -- no handles this
+    turn -- and the cause is in the message for whoever has to fix it.
+    """
+    logger.error(
+        "work_board_unavailable: %s: %s",
+        type(exc).__name__,
+        exc,
+        extra={"error_type": type(exc).__name__},
+    )
+    return WorkRefs(facts=[], board_unavailable=True)
+
+
+def requested_work_text(snapshot: Any) -> str:
+    """What the user asked this day to hold, in their own words.
+
+    `requested_activity` facts are what the intent interpreter filed from what
+    they typed -- one per thing they want the day to carry. They are joined and
+    handed to the judgement whole; nothing here reads them, and no other fact
+    kind is mixed in, because a bedtime is not a request for work.
+
+    An empty string means nobody asked for anything, and the caller skips the
+    lookup entirely: no board read, no model call, nothing on the brief.
+    """
+    wanted = [
+        fact.value
+        for fact in getattr(snapshot, "facts", [])
+        if fact.kind is FactKind.REQUESTED_ACTIVITY and isinstance(fact.value, str)
+    ]
+    return "\n".join(text for text in wanted if text.strip())
+
+
+def work_refs_on(facts: Iterable[PlanningFact]) -> list[dict[str, Any]]:
+    """The refs carried by the `WORK_REFS` facts among these, in fact order.
+
+    A reader rather than a field lookup at each call site: this fact's value is
+    read, not merely present, and one place that knows its shape is one place
+    to change when it grows.
+    """
+    refs: list[dict[str, Any]] = []
+    for fact in facts:
+        if fact.kind is not FactKind.WORK_REFS or not isinstance(fact.value, list):
+            continue
+        refs.extend(entry for entry in fact.value if isinstance(entry, dict))
+    return refs
+
+
+def judge_ask(model_client: Any) -> Ask:
+    """`resolve_work`'s transport, in the request shape the eval measured.
+
+    The whole prompt goes in one user turn and the answer comes back as a JSON
+    object -- `json_output=True`, not a schema. That is what
+    `tests/integration/test_eval_work_lookup.py` sampled, and it says so: a
+    system/user split or a transport without `response_format` invalidates its
+    rates. The model and the reasoning effort are the client's, and the judge
+    client is built as the flash pin at `minimal` (`llm/factory.py`), which is
+    the other half of that shape.
+    """
+
+    async def ask(prompt: str) -> str:
+        from autogen_core.models import UserMessage
+
+        result = await model_client.create(
+            [UserMessage(content=prompt, source="host")],
+            json_output=True,
+        )
+        content = result.content
+        if not isinstance(content, str):
+            raise AdaptiveDependencyUnavailable(
+                f"the work lookup answered with {type(content).__name__}, not text"
+            )
+        return content
+
+    return ask
+
+
+async def work_refs_for_turn(
+    *,
+    day: str,
+    message: str,
+    board: Any,
+    ask: Ask,
+    put_material: PutMaterial,
+) -> WorkRefs:
+    """Turn what the user asked for into handles the planner can attach.
+
+    Four steps, in this order and host-side: read the current sprint's Ready
+    rows, ask which of them the message names, record each answer in the
+    material store, and file one fact carrying the handles.
+
+    **The scope is decided here and never by the model.** `current_sprint_ready`
+    is what fixes the meaning of "the next one" -- the spike that produced this
+    plan watched a subagent choose its own scope and pass over an overdue
+    in-sprint tax filing. The rows go to `resolve_work` in the board's own
+    order, unsorted and unfiltered, because the prompt tells the model that
+    order is the person's ranking (see `build_prompt`).
+
+    **A board that cannot be read is loud and does not block.** It logs under
+    `work_board_unavailable` with the cause and returns the flag; the turn goes
+    on and the brief says the board could not be read. Filing an empty fact
+    instead would tell the planner the board was read and named nothing, which
+    is a different and false thing.
+
+    Every other failure propagates. A model that answered with an id nobody
+    showed it (`UnknownWorkId`), or a material store that would not take a row,
+    is an integrity failure rather than a day without links, and a link that
+    silently did not happen is the failure this whole path exists to avoid.
+    """
+    if not message.strip():
+        # Nobody asked for anything, so there is nothing to point at: no board
+        # read, no model call, and nothing on the brief either way.
+        return WorkRefs(facts=[], board_unavailable=False)
+
+    from fateforger.agents.tasks.board import TaskBoardError
+    from fateforger.agents.timeboxing.work_lookup import resolve_work
+
+    try:
+        listing = await board.list_tasks("current_sprint_ready", limit=WORK_ROW_LIMIT)
+    except TaskBoardError as exc:
+        return work_board_unavailable(exc)
+
+    rows = await resolve_work(message, list(listing.tasks), ask=ask)
+    if not rows:
+        # The ordinary case, and it stays silent: a message naming a topic
+        # rather than an item plans the day with no ticket attached.
+        return WorkRefs(facts=[], board_unavailable=False)
+
+    refs: list[dict[str, Any]] = []
+    for row in rows:
+        handle = await put_material(
+            source=WORK_SOURCE,
+            external_id=row.page_id,
+            url=row.url,
+            label=row.name,
+        )
+        refs.append({"link": handle, "label": row.name, "task": row.number})
+    return WorkRefs(
+        facts=[
+            PlanningFact(
+                fact_id=work_refs_fact_id(day),
+                kind=FactKind.WORK_REFS,
+                value=refs,
+                source="system",
+            )
+        ],
+        board_unavailable=False,
+    )
 
 
 class PendingCandidateCommitPort:

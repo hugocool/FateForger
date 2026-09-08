@@ -8,6 +8,7 @@ import pytest
 
 from datetime import date
 
+from fateforger.agents.tasks.board import TaskBoardUnavailable
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
     InMemoryPlanningSessionRepository,
 )
@@ -570,6 +571,17 @@ async def test_top_level_mention_routes_card_and_approval_through_actual_root(
 
     monkeypatch.setattr(
         "fateforger.slack_bot.tmbx_client.TmbxClient", _RecordingTmbx
+    )
+
+    # The candidate resolve now looks up which board rows the session's
+    # requested activity names. This test is about routing, not that lookup:
+    # the board is refused so the host takes its loud, non-blocking path and
+    # no unit test reaches Notion on a machine that happens to hold a token.
+    def _no_board():
+        raise TaskBoardUnavailable("no board in a unit test")
+
+    monkeypatch.setattr(
+        "fateforger.agents.tasks.board.TaskBoard.from_settings", staticmethod(_no_board)
     )
 
     repository = InMemoryPlanningSessionRepository(

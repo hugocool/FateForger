@@ -97,6 +97,17 @@ class FactKind(StrEnum):
     #: ``{"cell": <requirement id or null>, "text": <their words>}``. Never
     #: reused as a request: a request is what they want, this is what holds.
     ELICITED_STATEMENT = "elicited_statement"
+    #: The work this day was asked to carry, as
+    #: ``[{"link": <material handle>, "label": <ticket name>, "task": <number>}]``
+    #: under the id `work-refs:{day}`. Filed by the host at candidate time from
+    #: one judgement over the current sprint's Ready rows (`resolve_work`), and
+    #: only when that judgement named something -- a message naming a topic
+    #: rather than a ticket files nothing, and so does a board that could not be
+    #: read. Its value is read, not merely present: the brief lists each handle
+    #: and tells the planner to put it on the `link` field of the op that places
+    #: the block. The URL behind a handle is deliberately not here; the planner
+    #: has no use for one and must not learn to write one.
+    WORK_REFS = "work_refs"
     #: A rule the user set aside for this session, ``{"uid": ..., "reason": ...}``
     #: under the id `suspend:{uid}`, so a second "not today" is a no-op and a
     #: restore is deleting one fact. The brief drops the rule; the card shows it
@@ -676,6 +687,13 @@ class PlanningBrief(_StrictModel):
     target_artifact: ArtifactKind
     readiness: JsonValue
     allowed_outputs: set[ArtifactKind]
+    #: The task board could not be read for this turn. Not a fact, because it
+    #: is the absence of one: a `WORK_REFS` fact filed empty would read as "the
+    #: board was read and named nothing", which is the other thing entirely.
+    #: The brief says so in words so the planner knows the absence of handles
+    #: is a failure to look rather than a day with no work in it. Written by
+    #: the resolve that tried; false is both "it answered" and "nobody asked".
+    work_board_unavailable: bool = False
 
 
 class ArtifactDraft(_StrictModel):
