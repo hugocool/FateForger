@@ -253,3 +253,7 @@ data/memory.db*
 # demo stack supervisor: pids, git sha and source fingerprints of the
 # processes this checkout started. Machine-local by definition.
 .demo/
+
+# Per-draw bench artefacts: several MB of JSONL/logs per run. The
+# results-*.json summary and the results-*.md decision record are committed.
+scripts/bench/interpreter-tier-*/

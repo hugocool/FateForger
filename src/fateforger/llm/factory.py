@@ -15,11 +15,21 @@ ReasoningEffort = Literal["minimal", "low", "medium", "high"]
 
 INTENT_INTERPRETER = "intent_interpreter"
 
-#: The interpreter's answer is a small fixed schema (~120 bytes; a few hundred
-#: tokens with several facts and a revision instruction). Uncapped, the pro pin
-#: ran to 16,384 tokens on ~5% of calls (#325). Set by the bench in
-#: scripts/bench/results-interpreter-tier-2026-09-06.md; 1024 until then.
-_INTENT_INTERPRETER_MAX_TOKENS = 1024
+#: No cap, on measurement. ``None`` means the provider default, as everywhere
+#: else in this table; ``LLM_MAX_TOKENS_INTENT_INTERPRETER`` still sets one.
+#:
+#: The interpreter's answer is a small fixed schema -- a 78-token median on the
+#: flash pin, 45 on the pro pin -- so 1024 looked like generous headroom, and
+#: #325's runaway looked like something a cap would fence off. The bench
+#: (scripts/bench/results-interpreter-tier-2026-09-06.md: six configurations,
+#: three evals, n=8 per case) says otherwise on both counts. 1024 truncated
+#: three draws and 2048 truncated four, out of ~816 each, on both pins; neither
+#: uncapped configuration had a single draw stopped by a provider limit. A cap
+#: does not turn a runaway back into an answer, it turns a long answer into a
+#: lost one -- and the draws it cut were spread across cases that otherwise
+#: passed. Spec §3's rule (the smaller cap that bites nowhere, else 2048, else
+#: uncapped) therefore lands here, and #325 keeps the seam-level question.
+_INTENT_INTERPRETER_MAX_TOKENS: int | None = None
 
 logger = logging.getLogger(__name__)
 
