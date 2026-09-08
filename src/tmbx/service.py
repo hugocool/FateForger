@@ -51,7 +51,14 @@ from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, ValidationError, computed_field
 
-from .calendar.port import CalendarEvent, CalendarPort, Snapshot, drift, make_snapshot
+from .calendar.port import (
+    MAX_DESCRIPTION_CHARS,
+    CalendarEvent,
+    CalendarPort,
+    Snapshot,
+    drift,
+    make_snapshot,
+)
 from .core.commitment import overspecified
 from .core.models import (
     ET,
@@ -671,6 +678,55 @@ def _unknown_link_violation(
     )
 
 
+def _long_description_violation(plan: Plan) -> Violation | None:
+    """The refusal for a linked block whose description cannot be round-tripped.
+
+    ``None`` when every linked block fits. A provider keeps a linked block's
+    authored description in a property it caps at
+    ``MAX_DESCRIPTION_CHARS`` (see ``calendar.port``), because the
+    description it *displays* has the material url composed into it and
+    something has to hold the original. Over that length there is nowhere to
+    put it, and truncating would lose what somebody wrote and only surface on
+    the next read.
+
+    **Only a linked block is checked.** ``Block.d`` has no length of its own
+    and a day of long descriptions committed fine before links existed; an
+    unlinked block composes nothing, needs no private copy, and must keep
+    committing. So this is a cost of attaching a ticket, and the message says
+    which block to shorten.
+
+    It lives here, before the write, rather than in the adapter that owns the
+    limit, because the adapter can only raise from inside the commit's event
+    loop — past the journal, with some events already written and the delete
+    sweep skipped. The service sees every block's description and link before
+    anything is written, so it can refuse whole and record the attempt. The
+    adapter keeps its own raise as a backstop for callers that never came
+    through here.
+    """
+    too_long = [
+        block
+        for block in plan.blocks
+        if block.link is not None and len(block.d) > MAX_DESCRIPTION_CHARS
+    ]
+    if not too_long:
+        return None
+    return Violation(
+        kind=ViolationKind.DESCRIPTION_TOO_LONG,
+        blocks=[ViolationBlock(h=block.h, n=block.n) for block in too_long],
+        message=(
+            "; ".join(
+                f"{block.h}: description is {len(block.d)} characters, over the "
+                f"{MAX_DESCRIPTION_CHARS}-character limit"
+                for block in too_long
+            )
+            + ". A block carrying a link keeps its own description in a "
+            "calendar property so the url shown alongside it can be told "
+            "apart from what you wrote, and that property has a length "
+            "limit. Shorten the description, or drop the link."
+        ),
+    )
+
+
 def _link_labels(materials: Mapping[str, Material]) -> dict[str, str]:
     """What the renderer needs out of a material row: the handle's label.
 
@@ -999,8 +1055,12 @@ class PlanService:
         # the day — this is the one lookup that turns handles into the urls
         # the event loop writes, so a handle with no row has no url and the
         # commit stops here rather than writing a block that claims a ticket
-        # and shows no link (``_dead_link_violation``). ``expect="force"``
-        # does not reach either refusal — force writes a day the user chose
+        # and shows no link (``_dead_link_violation``). The same place
+        # refuses a linked block whose description is too long to round-trip
+        # (``_long_description_violation``): the adapter that owns that limit
+        # could only raise from inside the write loop, past the journal and
+        # after some events had already been written.  ``expect="force"``
+        # does not reach any of these refusals — force writes a day the user chose
         # to accept, and nobody can choose to accept a link to a thing that
         # does not exist. Journalled like the foreign-block refusal above
         # it: the row is the only record of the attempt that outlives the
@@ -1010,6 +1070,9 @@ class PlanService:
             dead = _dead_link_violation(patched, materials)
             if dead is not None:
                 raise PlanViolation(dead)
+            too_long = _long_description_violation(patched)
+            if too_long is not None:
+                raise PlanViolation(too_long)
         except PlanViolation as exc:
             await self._journal(
                 snapshot, patch, PatchOutcome.APPLY_FAILED, error=str(exc)

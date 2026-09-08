@@ -379,10 +379,10 @@ async def test_create_sends_flat_iso_start_end_and_tz():
             "tmbx.slug": "deep-work",
             "tmbx.type": "DW",
             "tmbx.mode": "ap",
-            # The authored description, kept verbatim so the composed one
-            # Google displays can be reversed without reading it — see
-            # gcal._private_properties and test_link_reaches_the_calendar.py.
-            "tmbx.desc": "focus block",
+            # No "tmbx.desc": this event carries no link, so nothing is
+            # composed into its description and there is no composition to
+            # reverse — see gcal._private_properties and
+            # test_link_reaches_the_calendar.py.
         }
     }
     assert (created.uid, created.handle, created.slug) == ("u-1", "DW1", "deep-work")

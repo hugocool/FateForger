@@ -28,8 +28,8 @@ import pytest
 from mcp.types import CallToolResult, TextContent
 
 from tmbx.calendar.fake import FakeCalendar
-from tmbx.calendar.gcal import MAX_PRIVATE_VALUE_CHARS, GoogleCalendarAdapter
-from tmbx.calendar.port import CalendarEvent
+from tmbx.calendar.gcal import GoogleCalendarAdapter
+from tmbx.calendar.port import MAX_DESCRIPTION_CHARS, CalendarEvent
 from tmbx.core.models import ET, AfterPrev, PlanViolation, ViolationKind
 from tmbx.core.models import Plan
 from tmbx.core.ops import AddBlock, Patch, UpdateBlock
@@ -846,7 +846,10 @@ async def test_an_event_written_before_this_change_still_reads_its_description()
     assert events[0].description == "focus block"
 
 
-async def test_an_empty_description_writes_no_property_and_reads_back_empty():
+async def test_an_unlinked_empty_description_writes_no_property_and_reads_back_empty():
+    """The easy half: no link, so nothing is composed in and the composed and
+    authored descriptions are the same empty string either way. The hard half
+    — a link *and* no description — is below, and it is the case that broke."""
     read_back, args = await _round_trip(
         _linked_event(description="", link_id=None, link_url=None)
     )
@@ -856,8 +859,172 @@ async def test_an_empty_description_writes_no_property_and_reads_back_empty():
 
 
 # ---------------------------------------------------------------------------
+# a linked block with no description of its own
+# ---------------------------------------------------------------------------
+
+
+async def test_a_linked_block_with_no_description_reads_back_empty_not_the_url():
+    """The ordinary case — an add carrying a link and no description.
+
+    The composed description is the url alone, so a read that fell back to it
+    would hand the url back as authored prose. It does not: ``tmbx.link`` can
+    only have been written by this change, which always writes ``tmbx.desc``
+    alongside it when there is a description, so link-without-desc means the
+    authored description was empty. Two keys this system minted, no reading of
+    any text.
+    """
+    read_back, args = await _round_trip(_linked_event(description=""))
+
+    assert args["description"] == TICKET_URL
+    assert "tmbx.desc" not in args["extendedProperties"]["private"]
+    assert read_back.description == ""
+
+
+async def test_a_linked_block_with_no_description_never_doubles_its_url():
+    """What the fallback used to do on the second write: compose the url onto
+    a description that was already the url, and freeze the pair into
+    ``tmbx.desc`` as if a person had typed it."""
+    read_back, _args = await _round_trip(_linked_event(description=""))
+    retimed = read_back.model_copy(
+        update={"summary": "Deeper Work", "link_url": TICKET_URL}
+    )
+    adapter, caller = _make_adapter(
+        {"update-event": [_text_result({"event": _raw_event()})]}
+    )
+
+    await adapter.update("primary", retimed)
+
+    _name, args = caller.calls[0]
+    assert args["description"] == TICKET_URL
+    assert args["description"].count(TICKET_URL) == 1
+    assert "tmbx.desc" not in args["extendedProperties"]["private"]
+
+
+async def test_a_linked_block_with_no_description_gives_a_block_with_no_description():
+    read_back, _args = await _round_trip(_linked_event(description=""))
+
+    assert _event_to_block(read_back, 0, "u-1").d == ""
+
+
+# ---------------------------------------------------------------------------
+# the property, and its limit, belong to a linked event only
+# ---------------------------------------------------------------------------
+
+
+async def test_an_unlinked_event_writes_no_desc_property_and_still_round_trips():
+    """Nothing is composed into an unlinked event's description, so the
+    provider's own field already is the authored text. Storing a second copy
+    would buy nothing and cost a limit."""
+    read_back, args = await _round_trip(_linked_event(link_id=None, link_url=None))
+
+    assert "tmbx.desc" not in args["extendedProperties"]["private"]
+    assert read_back.description == "focus block"
+
+
+async def test_a_long_description_on_an_unlinked_event_is_written_unrefused():
+    """``Block.d`` has no length cap, and a day of long descriptions committed
+    fine before links existed. It must keep committing."""
+    long_description = "x" * (MAX_DESCRIPTION_CHARS + 1)
+    _read_back, args = await _round_trip(
+        _linked_event(description=long_description, link_id=None, link_url=None)
+    )
+
+    assert args["description"] == long_description
+
+
+# ---------------------------------------------------------------------------
 # the provider's own limit on a private property value
 # ---------------------------------------------------------------------------
+
+
+async def test_a_too_long_description_refuses_the_commit_before_anything_is_written(
+    service, calendar, known
+):
+    """The refusal belongs before the event loop, not inside it.
+
+    Raised from the adapter mid-loop it would escape ``commit`` past the
+    journal: some events already written, the delete sweep skipped, and no row
+    recording the attempt. The service knows every block's description and
+    link, so it can refuse first — and journal it, like every other refusal.
+    """
+    _plan, snapshot = await service.read("primary", DAY)
+    patch = Patch(
+        ops=[
+            UpdateBlock(
+                h="DW1", link=known, d="x" * (MAX_DESCRIPTION_CHARS + 1)
+            )
+        ]
+    )
+
+    with pytest.raises(PlanViolation) as excinfo:
+        await service.commit(snapshot, patch)
+
+    assert excinfo.value.violation.kind is ViolationKind.DESCRIPTION_TOO_LONG
+    assert [b.h for b in excinfo.value.violation.blocks] == ["DW1"]
+    assert "DW1" in str(excinfo.value)
+    assert str(MAX_DESCRIPTION_CHARS) in str(excinfo.value)
+    assert calendar.created == []
+    assert calendar.updated == []
+
+
+async def test_a_too_long_description_is_journalled_like_every_other_refusal(
+    service, calendar, known
+):
+    _plan, snapshot = await service.read("primary", DAY)
+    patch = Patch(
+        ops=[
+            UpdateBlock(
+                h="DW1", link=known, d="x" * (MAX_DESCRIPTION_CHARS + 1)
+            )
+        ]
+    )
+
+    with pytest.raises(PlanViolation):
+        await service.commit(snapshot, patch)
+
+    rows = await service.store.by_day("primary", DAY)
+    assert rows[-1].outcome is PatchOutcome.APPLY_FAILED
+    assert "DW1" in (rows[-1].error or "")
+
+
+async def test_a_forced_commit_cannot_write_past_a_too_long_description(
+    service, known
+):
+    _plan, snapshot = await service.read("primary", DAY)
+    patch = Patch(
+        ops=[
+            UpdateBlock(
+                h="DW1", link=known, d="x" * (MAX_DESCRIPTION_CHARS + 1)
+            )
+        ]
+    )
+
+    with pytest.raises(PlanViolation):
+        await service.commit(snapshot, patch, expect="force")
+
+
+async def test_a_long_description_on_an_unlinked_block_still_commits(
+    service, calendar
+):
+    """The regression Important 1 is about, seen from the service: a day that
+    committed fine before links existed must keep committing."""
+    _plan, snapshot = await service.read("primary", DAY)
+    long_description = "x" * (MAX_DESCRIPTION_CHARS + 1)
+    patch = Patch(ops=[UpdateBlock(h="DW1", d=long_description)])
+
+    await service.commit(snapshot, patch)
+
+    assert (await _stored(calendar, "DW1")).description == long_description
+
+
+async def test_a_description_at_the_limit_with_a_link_commits(service, calendar, known):
+    _plan, snapshot = await service.read("primary", DAY)
+    at_limit = "x" * MAX_DESCRIPTION_CHARS
+    patch = Patch(ops=[UpdateBlock(h="DW1", link=known, d=at_limit)])
+
+    await service.commit(snapshot, patch)
+
+    assert (await _stored(calendar, "DW1")).description == at_limit
 
 
 async def test_a_description_over_the_limit_refuses_naming_the_handle_and_the_limit():
@@ -866,19 +1033,19 @@ async def test_a_description_over_the_limit_refuses_naming_the_handle_and_the_li
     adapter, _caller = _make_adapter(
         {"create-event": [_text_result({"event": _raw_event()})]}
     )
-    too_long = "x" * (MAX_PRIVATE_VALUE_CHARS + 1)
+    too_long = "x" * (MAX_DESCRIPTION_CHARS + 1)
 
     with pytest.raises(ValueError) as excinfo:
         await adapter.create("primary", _linked_event(description=too_long))
 
     assert "DW1" in str(excinfo.value)
-    assert str(MAX_PRIVATE_VALUE_CHARS) in str(excinfo.value)
+    assert str(MAX_DESCRIPTION_CHARS) in str(excinfo.value)
 
 
 async def test_a_description_exactly_at_the_limit_is_written():
     """The boundary belongs on the allowed side — a refusal one character early
     is a refusal nobody can explain."""
-    at_limit = "x" * MAX_PRIVATE_VALUE_CHARS
+    at_limit = "x" * MAX_DESCRIPTION_CHARS
     _read_back, args = await _round_trip(_linked_event(description=at_limit))
 
     assert args["extendedProperties"]["private"]["tmbx.desc"] == at_limit

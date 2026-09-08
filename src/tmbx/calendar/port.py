@@ -28,6 +28,22 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+MAX_DESCRIPTION_CHARS = 1024
+"""Longest ``description`` that can survive a round trip through a provider.
+
+Not a domain rule — ``Block.d`` has no length of its own — but a real
+provider limit that the domain has to respect, so it lives here where both
+the adapter that enforces it and the service that refuses ahead of it can
+read one number. It is Google's cap on a single
+``extendedProperties.private`` value, which is where ``gcal.py`` keeps a
+linked event's authored description so the composed one can be reversed.
+
+**It binds a linked event only.** Nothing is composed into an unlinked
+event's description, so its provider field already *is* the authored text,
+no private copy is written, and no limit applies. A day of long
+descriptions committed fine before links existed and must keep doing so.
+"""
+
 
 class CalendarEvent(BaseModel):
     """One calendar event, provider-neutral.

@@ -273,12 +273,21 @@ class ViolationKind(str, Enum):
     there is no "other".
 
     The first five are the ways a day does not *fit*, and every one is
-    raised by ``Plan.resolve()``. ``UNKNOWN_LINK`` is the one raised
-    elsewhere — by ``PlanService`` where a patch is applied, because only
-    the service holds the material store a link handle is checked against.
-    It is in this enum rather than an enum of its own because it reaches a
-    renderer by the same path and answers the same question the others do:
-    which blocks, and why the plan was refused.
+    raised by ``Plan.resolve()``. ``UNKNOWN_LINK`` and
+    ``DESCRIPTION_TOO_LONG`` are the two raised elsewhere — by
+    ``PlanService``, because only the service holds the material store a
+    link handle is checked against, and only the service sees a whole day
+    before it is written. They are in this enum rather than an enum of
+    their own because they reach a renderer by the same path and answer
+    the same question the others do: which blocks, and why the plan was
+    refused.
+
+    ``DESCRIPTION_TOO_LONG`` is a provider limit, not a domain one: a
+    linked block's authored description is round-tripped through a
+    provider property that caps its length
+    (``calendar.port.MAX_DESCRIPTION_CHARS``). It is refused before the
+    write rather than truncated there, because a truncation would lose
+    what somebody wrote and only surface on the next read.
     """
 
     OVERLAP = "overlap"
@@ -287,6 +296,7 @@ class ViolationKind(str, Enum):
     UNANCHORED_BEFORE_NEXT = "unanchored_before_next"
     NEGATIVE_DURATION = "negative_duration"
     UNKNOWN_LINK = "unknown_link"
+    DESCRIPTION_TOO_LONG = "description_too_long"
 
 
 class ViolationBlock(BaseModel):

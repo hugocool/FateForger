@@ -103,7 +103,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.types import CallToolResult, TextContent
 
-from .port import CalendarEvent
+from .port import MAX_DESCRIPTION_CHARS, CalendarEvent
 
 DEFAULT_SERVER_URL = "http://localhost:3000"
 SERVER_URL_ENV_VAR = "MCP_CALENDAR_SERVER_URL"
@@ -122,13 +122,6 @@ _PRIVATE_ANCHOR_KEY = "tmbx.anchor"
 _PRIVATE_LINK_KEY = "tmbx.link"
 _PRIVATE_DESC_KEY = "tmbx.desc"
 
-MAX_PRIVATE_VALUE_CHARS = 1024
-"""Google's cap on one ``extendedProperties.private`` value, in characters.
-
-Only ``tmbx.desc`` can plausibly approach it — every other value here is an
-id, a two-letter code, or a handle. Public so a test can assert the refusal
-without typing the number a second time.
-"""
 
 _CANCELLED_STATUS = "cancelled"
 
@@ -368,28 +361,39 @@ def _private_properties(event: CalendarEvent) -> dict[str, str]:
     description of its own simply has no key for it — which is what makes
     clearing any of them a real change on the next write.
 
-    **The description is checked against the provider's limit and refused,
-    never truncated.** Google caps one private property value at
-    ``MAX_PRIVATE_VALUE_CHARS``; silently shortening a description here
-    would lose what a person wrote and only surface the next time the day
-    was read back, which is the quiet-wrong-answer shape this project
-    refuses everywhere else. The refusal names the block handle, because
-    that is what the caller has to go and shorten, and the limit, because
-    that is the fact they need. Raising mid-loop can leave a commit
-    partially written — but so can any provider error on any event, and a
-    loud stop beats a day that reads back with a description a person did
-    not write.
+    **``tmbx.desc`` is written for a linked event only.** It exists to
+    reverse a composition, and nothing is composed into an unlinked
+    event's description — its provider field already is the authored text.
+    Writing it anyway would store a redundant copy and, worse, impose the
+    provider's length limit on days that have nothing to do with links and
+    committed fine before they existed.
+
+    That pairing is also what makes the read side decidable. ``tmbx.link``
+    is only ever written by the code that writes ``tmbx.desc`` beside it,
+    so a link with no desc means the authored description was empty — see
+    ``_event_from_payload``. Two keys this system minted; no reading of
+    any text.
+
+    **The description is checked against the limit and refused, never
+    truncated.** Silently shortening it would lose what a person wrote and
+    only surface the next time the day was read back, which is the
+    quiet-wrong-answer shape this project refuses everywhere else. The
+    refusal names the block handle and the limit. In practice
+    ``PlanService`` refuses the whole commit before this is reached, and
+    journals it — this raise is the backstop for any other caller, and
+    exists so a provider limit cannot be violated by a path that skipped
+    the service's check.
     """
-    description = event.description or None
-    if description is not None and len(description) > MAX_PRIVATE_VALUE_CHARS:
+    description = event.description if event.link_id and event.description else None
+    if description is not None and len(description) > MAX_DESCRIPTION_CHARS:
         raise ValueError(
             f"block {event.handle or event.event_id!r}: description is "
             f"{len(description)} characters, over the "
-            f"{MAX_PRIVATE_VALUE_CHARS}-character limit Google enforces on an "
-            "extendedProperties.private value. tmbx keeps the authored "
-            "description there so it can be read back without the material "
-            "url appended to it; truncating it would silently lose what you "
-            "wrote. Shorten the block's description."
+            f"{MAX_DESCRIPTION_CHARS}-character limit Google enforces on an "
+            "extendedProperties.private value. tmbx keeps a linked block's "
+            "authored description there so it can be read back without the "
+            "material url appended to it; truncating it would silently lose "
+            "what you wrote. Shorten the block's description."
         )
     return {
         key: value
@@ -518,6 +522,40 @@ def _parse_event_dt(raw: dict[str, Any] | None, *, tz: ZoneInfo) -> datetime | N
     return None
 
 
+def _authored_description(raw: dict[str, Any], private: dict[str, Any]) -> str:
+    """The description somebody wrote, recovered from what a provider holds.
+
+    Three cases, decided entirely on which keys are present — keys this
+    system minted and is reading back, never on what any text says:
+
+    1. ``tmbx.desc`` is there: that is the authored text, kept verbatim
+       precisely so the composed field never has to be interpreted.
+    2. ``tmbx.link`` is there and ``tmbx.desc`` is not: **the authored
+       description was empty.** ``tmbx.link`` is only ever written by the
+       code that writes ``tmbx.desc`` beside it whenever there is a
+       description to write (``_private_properties``), so its absence
+       here is positive evidence, not missing information. This is the
+       ordinary case — a block carrying a ticket and no description of
+       its own — and it is the one that used to break: the composed field
+       for such an event is the bare url, so falling back to it handed the
+       url back as authored prose, put it in front of a planner, and had a
+       second copy appended on the next write.
+    3. Neither: nothing was composed in, so the provider's own field is
+       the authored text. That covers every event written before any of
+       this existed, and it costs no spurious update — such an event
+       carries no link, so its composed and authored descriptions are the
+       same string and ``_event_unchanged`` still says nothing changed.
+       A foreign event lands here too, which is right: tmbx wrote none of
+       it and must read it exactly as it stands.
+    """
+    stored = private.get(_PRIVATE_DESC_KEY)
+    if stored is not None:
+        return str(stored)
+    if _PRIVATE_LINK_KEY in private:
+        return ""
+    return str(raw.get("description") or "")
+
+
 def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
     """Build a ``CalendarEvent`` from one raw provider event dict.
 
@@ -542,16 +580,9 @@ def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
     material store is where a handle becomes a url, and the handle is
     what came back.
 
-    ``description`` therefore comes from ``tmbx.desc`` when the event has
-    one — the authored text, without the url this adapter appended for
-    display. An event written before that key existed has no such value,
-    and falls back to the composed ``description`` field, which is all
-    there is for it: honest, and the same value it read back before. The
-    first write that touches such an event stores the key, so the fallback
-    is a migration path rather than a permanent second behaviour. It costs
-    no spurious update either: an event written before this change carries
-    no link, so its composed and authored descriptions are the same string
-    and ``_event_unchanged`` still says nothing changed.
+    ``description`` therefore comes from ``_authored_description``, which
+    decides between the private copy and the provider's own field on the
+    presence of two keys and nothing else.
 
     ``etag`` is the provider's ``updated`` timestamp — see the module
     docstring for why there is no real etag to carry here.
@@ -571,9 +602,7 @@ def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
     return CalendarEvent(
         event_id=str(raw.get("id") or ""),
         summary=str(raw.get("summary") or ""),
-        description=str(
-            private.get(_PRIVATE_DESC_KEY) or raw.get("description") or ""
-        ),
+        description=_authored_description(raw, private),
         start=start,
         end=end,
         etag=str(raw.get("updated") or ""),
@@ -655,7 +684,6 @@ def _extract_payload(tool_name: str, result: CallToolResult) -> Any:
 
 __all__ = [
     "DEFAULT_SERVER_URL",
-    "MAX_PRIVATE_VALUE_CHARS",
     "SERVER_URL_ENV_VAR",
     "GoogleCalendarAdapter",
     "McpToolCaller",
