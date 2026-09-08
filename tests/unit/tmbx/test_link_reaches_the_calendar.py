@@ -427,9 +427,12 @@ def test_nothing_is_composed_into_a_description_without_a_link_id():
 
     assert _description_for(orphan_url) == "focus block"
     assert TICKET_URL not in _description_for(orphan_url)
-    # and the two halves still agree: neither wrote anything about a link.
-    assert "tmbx.link" not in _private_properties(orphan_url)
-    assert "tmbx.desc" not in _private_properties(orphan_url)
+    # and the two halves still agree: neither claims a link. Empty, not
+    # absent -- the key is always sent, because the server merges this map
+    # and an omitted key keeps its old value. `_private_str` reads an empty
+    # string back as absence.
+    assert _private_properties(orphan_url)["tmbx.link"] == ""
+    assert _private_properties(orphan_url)["tmbx.desc"] == ""
 
 
 def test_a_url_with_a_handle_beside_it_is_still_composed_in():
@@ -956,7 +959,7 @@ async def test_an_unlinked_event_writes_neither_the_property_nor_the_line():
     await adapter.create("primary", _linked_event(link_id=None, link_url=None))
 
     _name, args = caller.calls[0]
-    assert "tmbx.link" not in args["extendedProperties"]["private"]
+    assert args["extendedProperties"]["private"]["tmbx.link"] == ""
     assert args["description"] == "focus block"
 
 
@@ -1082,6 +1085,98 @@ async def _round_trip(event: CalendarEvent) -> tuple[CalendarEvent, dict[str, An
     return read_back, args
 
 
+async def _merged_round_trip(
+    first: CalendarEvent, second: CalendarEvent
+) -> tuple[CalendarEvent, dict[str, Any]]:
+    """Write ``first``, then ``second``, and read back what the server holds.
+
+    **The private map is merged, not replaced** — measured against the real
+    server on 2026-09-08 (see ``gcal.py``'s module docstring). A key the second
+    write omits keeps the value the first write gave it. That is the whole
+    point of this helper: ``_round_trip`` writes once and can never show it,
+    which is why an omission was taken for a clearance for as long as it was.
+
+    Returns the event as a provider would hand it back, and the arguments of
+    the *second* write.
+    """
+    writer, first_caller = _make_adapter(
+        {"create-event": [_text_result({"event": _raw_event()})]}
+    )
+    await writer.create("primary", first)
+    _name, first_args = first_caller.calls[0]
+
+    updater, second_caller = _make_adapter(
+        {"update-event": [_text_result({"event": _raw_event()})]}
+    )
+    await updater.update("primary", second)
+    _name, second_args = second_caller.calls[0]
+
+    raw = _raw_from_args(second_args)
+    merged = {
+        **first_args.get("extendedProperties", {}).get("private", {}),
+        **second_args.get("extendedProperties", {}).get("private", {}),
+    }
+    raw["extendedProperties"] = {"private": merged}
+
+    reader, _reader_caller = _make_adapter(
+        {"list-events": [_text_result({"events": [raw]})]}
+    )
+    return (await reader.list_day("primary", DAY, TZ))[0], second_args
+
+
+async def test_a_detached_link_does_not_come_back_after_the_servers_merge():
+    """Consequence 1 of the measured merge semantics.
+
+    An explicit null clears `Block.link`, the write omitted ``tmbx.link``, the
+    old handle survived on the event, the next read handed it back, and the
+    next commit composed the url into the description again. A link the user
+    removed came back.
+    """
+    read_back, args = await _merged_round_trip(
+        _linked_event(), _linked_event(link_id=None, link_url=None)
+    )
+
+    assert read_back.link_id is None
+    assert read_back.link_url is None
+    assert TICKET_URL not in args["description"]
+
+
+async def test_a_cleared_description_does_not_revert_after_the_servers_merge():
+    """Consequence 2, and the reason this is Critical rather than Important.
+
+    ``tmbx.desc`` survived the same way, so ``_authored_description`` took case
+    1 and returned the stale authored text in preference to what is actually on
+    the event. Content reverting under a person is worse than a resurrected
+    link: nothing about the event says the words came from a write two commits
+    ago.
+    """
+    read_back, _args = await _merged_round_trip(
+        _linked_event(description="focus block"), _linked_event(description="")
+    )
+
+    assert read_back.description == ""
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["uid", "handle", "slug", "block_type", "timing_mode", "anchor_source"],
+)
+async def test_every_pre_existing_key_clears_under_the_servers_merge(field: str):
+    """Consequence 3, and why this is not a link fix.
+
+    The six keys that predate this branch clear by the same mechanism and were
+    broken by it in the same way — ``tmbx.slug`` is the one the coordinator
+    measured, and a required-kind slug removed from a block stayed on the
+    event. A half-fix covering only the two keys this branch added would leave
+    the identical bug in the identical file.
+    """
+    read_back, _args = await _merged_round_trip(
+        _linked_event(**{field: "planning"}), _linked_event(**{field: None})
+    )
+
+    assert getattr(read_back, field) is None
+
+
 async def test_the_authored_description_comes_back_without_the_url():
     """The composed description is for a person to read; ``tmbx.desc`` is the
     machine-readable original, exactly as identity and the structural fields
@@ -1192,12 +1287,15 @@ async def test_an_event_written_before_this_change_still_reads_its_description()
 async def test_an_unlinked_empty_description_writes_no_property_and_reads_back_empty():
     """The easy half: no link, so nothing is composed in and the composed and
     authored descriptions are the same empty string either way. The hard half
-    — a link *and* no description — is below, and it is the case that broke."""
+    — a link *and* no description — is below, and it is the case that broke.
+
+    "No property" now means the key sent empty rather than the key left out:
+    the server merges this map, so absence has to be stated to be true."""
     read_back, args = await _round_trip(
         _linked_event(description="", link_id=None, link_url=None)
     )
 
-    assert "tmbx.desc" not in args["extendedProperties"]["private"]
+    assert args["extendedProperties"]["private"]["tmbx.desc"] == ""
     assert read_back.description == ""
 
 
@@ -1219,7 +1317,7 @@ async def test_a_linked_block_with_no_description_reads_back_empty_not_the_url()
     read_back, args = await _round_trip(_linked_event(description=""))
 
     assert args["description"] == TICKET_URL
-    assert "tmbx.desc" not in args["extendedProperties"]["private"]
+    assert args["extendedProperties"]["private"]["tmbx.desc"] == ""
     assert read_back.description == ""
 
 
@@ -1240,7 +1338,7 @@ async def test_a_linked_block_with_no_description_never_doubles_its_url():
     _name, args = caller.calls[0]
     assert args["description"] == TICKET_URL
     assert args["description"].count(TICKET_URL) == 1
-    assert "tmbx.desc" not in args["extendedProperties"]["private"]
+    assert args["extendedProperties"]["private"]["tmbx.desc"] == ""
 
 
 async def test_a_linked_block_with_no_description_gives_a_block_with_no_description():
@@ -1257,10 +1355,14 @@ async def test_a_linked_block_with_no_description_gives_a_block_with_no_descript
 async def test_an_unlinked_event_writes_no_desc_property_and_still_round_trips():
     """Nothing is composed into an unlinked event's description, so the
     provider's own field already is the authored text. Storing a second copy
-    would buy nothing and cost a limit."""
+    would buy nothing and cost a limit.
+
+    The key still goes out, empty: on an event that carried a description
+    before, that empty string is what clears the old one. Omitting it left the
+    stale text in place and `_authored_description` preferred it to the truth."""
     read_back, args = await _round_trip(_linked_event(link_id=None, link_url=None))
 
-    assert "tmbx.desc" not in args["extendedProperties"]["private"]
+    assert args["extendedProperties"]["private"]["tmbx.desc"] == ""
     assert read_back.description == "focus block"
 
 

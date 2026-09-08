@@ -379,10 +379,16 @@ async def test_create_sends_flat_iso_start_end_and_tz():
             "tmbx.slug": "deep-work",
             "tmbx.type": "DW",
             "tmbx.mode": "ap",
-            # No "tmbx.desc": this event carries no link, so nothing is
-            # composed into its description and there is no composition to
-            # reverse — see gcal._private_properties and
-            # test_link_reaches_the_calendar.py.
+            # Every key is sent, and an absent value is sent as an empty
+            # string rather than left out. The server MERGES this map
+            # (measured 2026-09-08, gcal.py's module docstring), so an
+            # omitted key keeps its old value and dropping one in order to
+            # clear it did nothing at all. "tmbx.desc" is empty here because
+            # this event carries no link, so nothing is composed into its
+            # description and there is no composition to reverse.
+            "tmbx.anchor": "",
+            "tmbx.link": "",
+            "tmbx.desc": "",
         }
     }
     assert (created.uid, created.handle, created.slug) == ("u-1", "DW1", "deep-work")
@@ -390,7 +396,16 @@ async def test_create_sends_flat_iso_start_end_and_tz():
     assert created.event_id == "tmbxabc123"
 
 
-async def test_create_omits_extended_properties_when_identity_is_unset():
+async def test_an_event_with_no_identity_sends_every_key_empty():
+    """It used to omit ``extendedProperties`` entirely, and that was the bug.
+
+    The server merges this map, so a write that leaves keys out keeps whatever
+    the last write put there. An event whose identity has been cleared is
+    exactly the case that has to say so on the wire, and it cannot say it by
+    staying silent. Empty strings clear the properties under merge semantics
+    and mean the same as omission under replace semantics, so this is right
+    either way -- and ``_private_str`` reads every one of them back as absence.
+    """
     event = CalendarEvent(
         event_id="e1",
         summary="No identity",
@@ -402,7 +417,18 @@ async def test_create_omits_extended_properties_when_identity_is_unset():
     )
     await adapter.create("primary", event)
     _, args = caller.calls[0]
-    assert "extendedProperties" not in args
+    assert args["extendedProperties"] == {
+        "private": {
+            "tmbx.uid": "",
+            "tmbx.handle": "",
+            "tmbx.slug": "",
+            "tmbx.type": "",
+            "tmbx.mode": "",
+            "tmbx.anchor": "",
+            "tmbx.link": "",
+            "tmbx.desc": "",
+        }
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -719,6 +745,11 @@ async def test_create_writes_tmbx_anchor_into_extended_properties():
             "tmbx.type": "R",
             "tmbx.mode": "fw",
             "tmbx.anchor": "constraint",
+            # Absent values go out as empty strings, never omitted: the
+            # server merges this map. See gcal.py's module docstring.
+            "tmbx.slug": "",
+            "tmbx.link": "",
+            "tmbx.desc": "",
         }
     }
     assert created.anchor_source == "constraint"

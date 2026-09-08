@@ -9,6 +9,22 @@ module already solved the argument shapes and response normalisation
 against this exact server; see each helper's docstring for what changed and
 why.
 
+**``extendedProperties.private`` is MERGED by this server, not replaced.**
+Measured 2026-09-08 against the real server on a far-future scratch day:
+an event was created carrying ``tmbx.slug = "planning"`` alongside uid,
+handle, type and mode; ``update-event`` was then called with the same
+event and no ``tmbx.slug`` key at all, the other five still sent; the day
+was read back and **``slug`` came back as ``"planning"``**. Omitting a key
+does not clear it.
+
+So a value is cleared by **sending the key with an empty string**, never
+by leaving it out — see ``_private_properties``, and ``_private_str`` for
+the read half that turns an empty string back into absence. That is
+correct under either semantics: it clears the property where the map is
+merged, and it is equivalent to omission where the map is replaced. This
+code bet on replacement once and every clearance silently failed; it does
+not get to bet again.
+
 ``extendedProperties.private`` under the ``tmbx`` namespace carries eight
 values round-tripped verbatim: identity (``uid``/``handle``/``slug``, as
 before) plus ``block_type``/``timing_mode``/``anchor_source``/``link``/
@@ -319,6 +335,33 @@ def _list_events_args(*, calendar_id: str, day: date_type, tz: str) -> dict[str,
     }
 
 
+def _private_str(private: dict[str, Any], key: str) -> str | None:
+    """One ``tmbx.*`` private value, with an empty string read as absence.
+
+    The write half clears a property by sending the key with an empty string,
+    because this server merges the private map rather than replacing it and an
+    omitted key keeps its old value (module docstring, measured 2026-09-08).
+    This is the other half of that: what was written to mean "no value" has to
+    read back as no value, or clearing a property would merely change it to the
+    empty string and every reader downstream would see something that is not
+    there.
+
+    **Not a judgement about user content.** The empty string here is a sentinel
+    this adapter writes and this adapter reads back — comparing a value against
+    it decides nothing about what any text means (CLAUDE.md's documented
+    exception for identifiers this system minted). The one value that is a
+    person's words rather than an id is ``tmbx.desc``, and there the equivalence
+    is exact anyway: an authored description that is empty and one that is
+    absent are the same description, and ``_authored_description`` returns
+    ``""`` for both.
+    """
+    value = private.get(key)
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
 def _description_for(event: CalendarEvent) -> str:
     """The description as the provider should hold it: the block's own text,
     then a blank line, then the material's url on a line of its own.
@@ -367,10 +410,31 @@ def _private_properties(event: CalendarEvent) -> dict[str, str]:
     Every value here is something this system minted or was handed as an
     id, with one exception: ``tmbx.desc`` is the block's own description,
     authored prose, kept verbatim so the composed description Google
-    displays can be reversed without reading it. A ``None`` value is
-    dropped rather than written, so an event with no slug, no link, or no
-    description of its own simply has no key for it — which is what makes
-    clearing any of them a real change on the next write.
+    displays can be reversed without reading it.
+
+    **A ``None`` value is written as an empty string, not dropped.** Every
+    key is always sent. This server *merges* the private map rather than
+    replacing it — measured 2026-09-08, module docstring — so a key left out
+    keeps whatever the last write gave it, and dropping one in order to clear
+    it did nothing at all. An empty string clears the property under merge
+    semantics and is equivalent to omission under replace semantics, so this
+    is correct either way and does not depend on a provider behaviour that
+    could change again. ``_private_str`` reads it back as absence.
+
+    This was never a link bug. All eight keys clear by this mechanism and all
+    eight were broken by it:
+
+    * ``tmbx.link`` — a ticket the user detached came back on the next read,
+      and the next commit composed its url into the description again.
+    * ``tmbx.desc`` — worse, and why this counted as a Critical: the stale
+      authored description won over what was actually on the event
+      (``_authored_description`` case 1), so a person's words silently
+      reverted to a write two commits ago.
+    * ``tmbx.slug`` and the rest of the six that predate links — the same
+      mechanism, and the one the semantics were actually measured on. **A
+      required-kind slug removed from a block stayed on the event**; what
+      that means for #212 is not addressed here, but the cause is this, and
+      whoever picks that up should start from this docstring.
 
     **``tmbx.desc`` is written for a linked event only.** It exists to
     reverse a composition, and nothing is composed into an unlinked
@@ -407,7 +471,7 @@ def _private_properties(event: CalendarEvent) -> dict[str, str]:
             "what you wrote. Shorten the block's description."
         )
     return {
-        key: value
+        key: value if value is not None else ""
         for key, value in (
             (_PRIVATE_UID_KEY, event.uid),
             (_PRIVATE_HANDLE_KEY, event.handle),
@@ -418,7 +482,6 @@ def _private_properties(event: CalendarEvent) -> dict[str, str]:
             (_PRIVATE_LINK_KEY, event.link_id),
             (_PRIVATE_DESC_KEY, description),
         )
-        if value is not None
     }
 
 
@@ -559,10 +622,10 @@ def _authored_description(raw: dict[str, Any], private: dict[str, Any]) -> str:
        A foreign event lands here too, which is right: tmbx wrote none of
        it and must read it exactly as it stands.
     """
-    stored = private.get(_PRIVATE_DESC_KEY)
+    stored = _private_str(private, _PRIVATE_DESC_KEY)
     if stored is not None:
-        return str(stored)
-    if _PRIVATE_LINK_KEY in private:
+        return stored
+    if _private_str(private, _PRIVATE_LINK_KEY) is not None:
         return ""
     return str(raw.get("description") or "")
 
@@ -617,13 +680,13 @@ def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
         start=start,
         end=end,
         etag=str(raw.get("updated") or ""),
-        uid=private.get(_PRIVATE_UID_KEY),
-        handle=private.get(_PRIVATE_HANDLE_KEY),
-        slug=private.get(_PRIVATE_SLUG_KEY),
-        block_type=private.get(_PRIVATE_TYPE_KEY),
-        timing_mode=private.get(_PRIVATE_MODE_KEY),
-        anchor_source=private.get(_PRIVATE_ANCHOR_KEY),
-        link_id=private.get(_PRIVATE_LINK_KEY),
+        uid=_private_str(private, _PRIVATE_UID_KEY),
+        handle=_private_str(private, _PRIVATE_HANDLE_KEY),
+        slug=_private_str(private, _PRIVATE_SLUG_KEY),
+        block_type=_private_str(private, _PRIVATE_TYPE_KEY),
+        timing_mode=_private_str(private, _PRIVATE_MODE_KEY),
+        anchor_source=_private_str(private, _PRIVATE_ANCHOR_KEY),
+        link_id=_private_str(private, _PRIVATE_LINK_KEY),
     )
 
 
