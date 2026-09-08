@@ -266,11 +266,35 @@ class HostPlanningContext:
                 f"the calendar {calendar_id} could not be read for {day}"
                 + (f" ({reason})" if reason else "")
             )
-        constraints = await self._active_constraints(planning_day)
-        # After the calendar read, deliberately: that read is what proves tmbx
-        # is up, and the material store the handles are written into lives in
-        # that same process.
-        work = await self._work_refs(snapshot, day)
+        # Both after the calendar read, deliberately: that read is what proves
+        # tmbx is up, and the material store the handles are written into lives
+        # in that same process. But neither of these needs the other's answer,
+        # and running them in sequence put the whole of `_work_refs` -- board
+        # 20s, then the judgement 45s, then the material writes 20s -- in front
+        # of the planner on top of the constraint query. The three inside
+        # `_work_refs` genuinely chain (there is nothing to judge before the
+        # board answers, and nothing to store before the judgement does); these
+        # two do not. CLAUDE.md's parallelise rule, on the one path where the
+        # user is watching a card and waiting.
+        #
+        # `return_exceptions=True` and re-raise, the same shape as
+        # `_store_materials` below and for the same reason: a bare gather
+        # propagates the first failure and leaves its sibling running detached,
+        # which here would be a half-finished lookup writing materials into a
+        # turn that has already failed. Collecting means both are awaited and
+        # the failure keeps its own traceback and its own type -- the caller
+        # catches `AdaptiveDependencyUnavailable`, not an ExceptionGroup.
+        #
+        # The constraint failure is raised first when both fail, which is the
+        # order a caller saw when these ran in sequence.
+        constraints, work = await asyncio.gather(
+            self._active_constraints(planning_day),
+            self._work_refs(snapshot, day),
+            return_exceptions=True,
+        )
+        for settled in (constraints, work):
+            if isinstance(settled, BaseException):
+                raise settled
         return PlanningContext(
             facts=[
                 *planning_facts(

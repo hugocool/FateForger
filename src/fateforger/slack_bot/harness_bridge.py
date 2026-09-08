@@ -409,10 +409,35 @@ def _work_lines(brief: PlanningBrief) -> str:
     The unavailable sentence is the other half. Without it, a board that could
     not be read and a day nobody named work for reach the planner as the same
     silence, and the planner would take the more comfortable reading.
+
+    **The two are exclusive, and unresolved wins.** A snapshot can carry both
+    -- facts merge by id and are never deleted, so a ref an earlier turn filed
+    outlives the turn that filed it -- and rendering both put a handle on the
+    brief above a sentence saying the work could not be worked out. Nobody can
+    tell which half describes this turn, and the planner is the reader who can
+    act on the contradiction by attaching the link. A failed lookup now clears
+    the day's refs at the source, so in the ordinary flow there is nothing here
+    to suppress; this is the line of defence for a snapshot written before that
+    fix, or any later path that sets the flag without filing the fact. The same
+    guard, for the same reason, is in `stage_context._work`.
     """
 
     if brief.target_artifact is not ArtifactKind.VALIDATED_CANDIDATE:
         return ""
+    if brief.work_refs_unresolved:
+        # What the turn may not do, never what the day must look like.
+        # "leave every block unlinked" read as an instruction to strip the
+        # links a re-planned day already carries -- deleting work the host
+        # resolved on an earlier turn, precisely because this turn could not
+        # reach the board.
+        return (
+            "\nThe work Hugo asked for could not be resolved this turn, so no "
+            "ticket is named by handle here. That is the host failing to look "
+            "-- an unreadable board, a lookup that did not answer -- and not a "
+            "day with no work in it: plan what he asked for. Do not attach a "
+            "link on this turn, and leave any link a block already carries "
+            "exactly as it is. Do not go looking for the tickets yourself."
+        )
     lines = ""
     refs = work_refs_on(brief.facts)
     if refs:
@@ -433,14 +458,6 @@ def _work_lines(brief: PlanningBrief) -> str:
             "written above, never a URL, a ticket name or a number. A block "
             "that is not for one of these carries no link, and you attach "
             "nothing that is not listed here."
-        )
-    if brief.work_refs_unresolved:
-        lines += (
-            "\nThe work Hugo asked for could not be resolved this turn, so no "
-            "ticket is named by handle above. That is the host failing to look "
-            "-- an unreadable board, a lookup that did not answer -- and not a "
-            "day with no work in it: plan what he asked for and leave every "
-            "block unlinked. Do not go looking for the tickets yourself."
         )
     return lines
 

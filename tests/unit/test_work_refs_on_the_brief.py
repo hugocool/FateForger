@@ -52,10 +52,12 @@ from fateforger.agents.timeboxing.session_contracts import (
 )
 from fateforger.agents.timeboxing.adaptive_timeboxing import TurnRequest
 from fateforger.slack_bot import timeboxing_host
-from fateforger.slack_bot.harness_bridge import _planning_obligation
+from fateforger.slack_bot.harness_bridge import _planning_obligation, _work_lines
 from fateforger.slack_bot.timeboxing_host import HostPlanningContext
 from fateforger.agents.timeboxing.work_refs import work_refs_fact_id, work_refs_on
 from fateforger.slack_bot.timeboxing_host import (
+    AdaptiveDependencyUnavailable,
+    WorkRefs,
     judge_ask,
     requested_work_text,
     work_refs_for_turn,
@@ -314,6 +316,59 @@ async def test_the_brief_never_shows_the_planner_a_url() -> None:
     assert FINANCE_URL not in text
     assert DNS_URL not in text
     assert "notion.so" not in text
+
+
+async def test_the_brief_never_names_a_ticket_beside_the_sentence_disowning_it(
+) -> None:
+    """The two blocks are exclusive, not additive.
+
+    A snapshot can carry both -- refs filed by an earlier turn and the flag
+    set by this one -- and `_work_lines` used to render both, so the brief
+    listed a handle and then said the work could not be worked out. The
+    planner is the one reader who can act on that contradiction: it attaches
+    the link. So it needs the guard more than the card does, not less.
+
+    Task 6 closed this at the source (a failed lookup files an empty
+    `WORK_REFS`) and again in `stage_context._work`. This is the third line,
+    on the surface where acting on it is possible.
+    """
+    refs, _board, _store, _prompts = await _resolved(["page-427"])
+    # Asserted on `_work_lines` rather than the whole obligation: the brief
+    # carries its facts to the planner as JSON, so a ref that survived onto the
+    # snapshot is visible there whatever the prose says. This is the prose --
+    # the half that tells the planner what to do with a handle, and the half
+    # that used to say both things at once.
+    lines = _work_lines(
+        _brief(
+            ArtifactKind.VALIDATED_CANDIDATE,
+            facts=refs.facts,
+            work_refs_unresolved=True,
+        )
+    )
+
+    assert "could not be resolved" in lines
+    assert "m0000000001" not in lines
+    assert "Verify VPB 2024 aangifte" not in lines
+    assert "set `link` to its handle" not in lines
+
+
+async def test_the_unresolved_sentence_does_not_ask_for_existing_links_to_go(
+) -> None:
+    """"leave every block unlinked" read as an instruction to strip links.
+
+    Re-planning a day whose blocks already carry links is ordinary, and the
+    planner rewrites those blocks. Told to leave them unlinked, the faithful
+    reading is to remove what is there -- deleting work the host resolved on
+    an earlier turn precisely because this turn could not reach the board.
+    The sentence has to bound the turn, not the day.
+    """
+    text = _planning_obligation(
+        _brief(ArtifactKind.VALIDATED_CANDIDATE, work_refs_unresolved=True)
+    )
+
+    assert "leave every block unlinked" not in text
+    assert "Do not attach a link on this turn" in text
+    assert "leave any link a block already carries exactly as it is" in text
 
 
 async def test_a_turn_that_resolves_nothing_is_silent() -> None:
@@ -935,6 +990,89 @@ async def _brief_from_a_candidate_turn(
 class _Progress:
     async def emit(self, event: object) -> None:
         _ = event
+
+
+async def test_the_constraint_read_and_the_work_lookup_do_not_wait_on_each_other(
+    monkeypatch,
+) -> None:
+    """Both hang off the calendar read; neither hangs off the other.
+
+    `_work_refs` is up to 85 seconds on its own -- the board (20s), then the
+    judgement (45s), then the material writes (20s) -- and those three do chain:
+    there is nothing to judge before the board answers and nothing to store
+    before the judgement does. The constraint query chains with none of it, and
+    running it first put its latency in front of all of that while a user
+    watched a card.
+
+    Written so a regression cannot pass. `_active_constraints` waits for
+    `_work_refs` to start; in sequence that wait can never be satisfied and the
+    test fails on the timeout instead of quietly measuring nothing.
+    """
+    work_started = asyncio.Event()
+
+    async def gated_constraints(self, planning_day):
+        await asyncio.wait_for(work_started.wait(), timeout=5)
+        return []
+
+    async def gated_work(self, snapshot, day):
+        work_started.set()
+        return WorkRefs(facts=[], unresolved=False)
+
+    monkeypatch.setattr(
+        HostPlanningContext, "_active_constraints", gated_constraints
+    )
+    monkeypatch.setattr(HostPlanningContext, "_work_refs", gated_work)
+
+    brief = await _brief_from_a_candidate_turn(
+        monkeypatch, FakeBoard([FINANCE, DNS]), ["page-427"]
+    )
+
+    assert brief.work_refs_unresolved is False
+
+
+async def test_a_constraint_failure_still_reaches_the_caller_by_its_own_type(
+    monkeypatch,
+) -> None:
+    """Gathering must not change what a failure looks like.
+
+    `return_exceptions=True` plus a re-raise, not a bare gather and not a
+    TaskGroup: the caller catches `AdaptiveDependencyUnavailable`, and an
+    ExceptionGroup wrapping it is a different thing entirely. The sibling is
+    awaited rather than left running detached into a turn that has failed.
+    """
+    work_finished = False
+
+    async def failing_constraints(self, planning_day):
+        raise AdaptiveDependencyUnavailable("constraint memory is unavailable")
+
+    async def slow_work(self, snapshot, day):
+        nonlocal work_finished
+        await asyncio.sleep(0)
+        work_finished = True
+        return WorkRefs(facts=[], unresolved=False)
+
+    monkeypatch.setattr(
+        HostPlanningContext, "_active_constraints", failing_constraints
+    )
+    monkeypatch.setattr(HostPlanningContext, "_work_refs", slow_work)
+    monkeypatch.setattr("fateforger.slack_bot.tmbx_client.TmbxClient", _FakeTmbx)
+
+    # Called directly: the kernel catches this and turns it into a failed turn,
+    # so a test driving the whole turn would assert on the kernel's handling
+    # rather than on what `resolve` raises.
+    context = HostPlanningContext(
+        _KernelRuntime(["page-427"]),
+        now=lambda: datetime(2026, 9, 8, 9, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(AdaptiveDependencyUnavailable):
+        await context.resolve(
+            _candidate_session(),
+            target=ArtifactKind.VALIDATED_CANDIDATE,
+            progress=_Progress(),
+        )
+
+    assert work_finished is True
 
 
 async def test_the_resolved_handle_reaches_the_planners_brief(monkeypatch) -> None:
