@@ -739,7 +739,9 @@ def _link_labels(materials: Mapping[str, Material]) -> dict[str, str]:
     return {link_id: material.label for link_id, material in materials.items()}
 
 
-def _dead_link_violation(plan: Plan, known: Collection[str]) -> Violation | None:
+def _dead_link_violation(
+    plan: Plan, known: Collection[str], foreign_handles: Collection[str]
+) -> Violation | None:
     """The refusal for a plan carrying a handle the material store lost.
 
     ``None`` when every link on the plan resolves. Commit-only, and
@@ -758,11 +760,21 @@ def _dead_link_violation(plan: Plan, known: Collection[str]) -> Violation | None
     The cost is real and accepted: a day holding a dead handle cannot be
     committed until that block's link is cleared. That is one explicit null
     on an update, and the message says so.
+
+    **A foreign block is not checked.** ``_write`` never touches one, so there
+    is no url to write and nothing half-answered — and the remedy this message
+    offers does not exist for it: an explicit null on a foreign handle is
+    itself refused by ``_foreign_touches``, because tmbx must never write a
+    foreign event. Checking one would refuse every commit of that day forever
+    with no way out. Membership in a set of handles, over identifiers read off
+    the calendar; the caller has the set already.
     """
     dead = [
         block
         for block in plan.blocks
-        if block.link is not None and block.link not in known
+        if block.link is not None
+        and block.link not in known
+        and block.h not in foreign_handles
     ]
     if not dead:
         return None
@@ -1067,7 +1079,7 @@ class PlanService:
         # session.
         try:
             materials = await self._resolve_links(patched, patch)
-            dead = _dead_link_violation(patched, materials)
+            dead = _dead_link_violation(patched, materials, foreign_handles)
             if dead is not None:
                 raise PlanViolation(dead)
             too_long = _long_description_violation(patched)
@@ -1175,6 +1187,7 @@ class PlanService:
         owned_before = [event for event in before_events if event.uid]
         owned_before_ids = {event.event_id for event in owned_before}
 
+        owned_before = await self._with_link_urls(owned_before)
         for event in owned_before:
             if event.event_id in current_ids:
                 await self.calendar.update(calendar_id, event)
@@ -1200,6 +1213,50 @@ class PlanService:
             calendar_backend=getattr(self.calendar, "backend", ""),
             durable=bool(getattr(self.calendar, "durable", False)),
         )
+
+    async def _with_link_urls(
+        self, events: list[CalendarEvent]
+    ) -> list[CalendarEvent]:
+        """The same events with each handle resolved back to its url.
+
+        ``undo`` replays ``before_events``, and those were captured at commit
+        time from ``calendar.list_day`` — where, by the port's own contract, a
+        provider-fetched event carries ``link_id`` and ``link_url is None``
+        (the url lives in the description and is never read back). Replaying
+        them verbatim therefore wrote every owned event back with no url: the
+        adapter composed the authored description alone and the clickable link
+        was gone.
+
+        It did not come back on its own, either. The next commit's candidate
+        matches the now-live event on summary, description, times, identity
+        *and* ``link_id``, so ``_event_unchanged`` says nothing changed and
+        ``_write`` skips it. That comparison is right — every provider read has
+        no url, and comparing one would rewrite every linked block on every
+        commit forever — so the repair belongs here, at the one place that
+        knows a restore is being built rather than read.
+
+        One ``get_many`` over the distinct handles, like ``commit``: a day
+        where three blocks work the same ticket asks the store once.
+
+        **A handle whose row is gone degrades, never refuses.** ``commit``
+        can refuse a dead handle because a caller still has choices; undo has
+        no override and no second chance, and a refusal here would strand the
+        day in exactly the state undo exists to leave. Such an event goes back
+        carrying its handle and no url — which is what it did before this
+        existed.
+        """
+        handles = sorted({event.link_id for event in events if event.link_id})
+        if not handles:
+            return events
+        materials = await self.materials.get_many(handles)
+        restored: list[CalendarEvent] = []
+        for event in events:
+            material = materials.get(event.link_id) if event.link_id else None
+            if material is None:
+                restored.append(event)
+            else:
+                restored.append(event.model_copy(update={"link_url": material.url}))
+        return restored
 
     async def _write(
         self,

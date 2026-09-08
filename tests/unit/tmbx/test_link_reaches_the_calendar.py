@@ -37,7 +37,7 @@ from tmbx.core.render import render_plan
 from tmbx.journal.models import PatchOutcome
 from tmbx.journal.store import JournalStore, init_journal
 from tmbx.materials import MaterialStore
-from tmbx.service import PlanService, _event_to_block
+from tmbx.service import ForeignBlockError, PlanService, _event_to_block
 
 DAY = date(2026, 8, 17)
 TZ = "Europe/Amsterdam"
@@ -62,19 +62,28 @@ class RecordingCalendar(FakeCalendar):
     cannot be answered from stored state alone — an update that rewrites an
     event with identical content leaves the same content behind. Only the
     call itself is evidence, so the call is what this records.
+
+    It is also the only place ``link_url`` can be observed at all. The fake
+    answers like a provider and never hands the url back (``fake._as_fetched``),
+    so "did the service resolve this handle to a url" is a question about the
+    *call*, not about stored state. ``writes`` keeps creates and updates in one
+    ordered log for exactly that.
     """
 
     def __init__(self, events: dict[str, list[CalendarEvent]] | None = None) -> None:
         super().__init__(events)
         self.created: list[CalendarEvent] = []
         self.updated: list[CalendarEvent] = []
+        self.writes: list[CalendarEvent] = []
 
     async def create(self, calendar_id: str, event: CalendarEvent) -> CalendarEvent:
         self.created.append(event.model_copy(deep=True))
+        self.writes.append(event.model_copy(deep=True))
         return await super().create(calendar_id, event)
 
     async def update(self, calendar_id: str, event: CalendarEvent) -> CalendarEvent:
         self.updated.append(event.model_copy(deep=True))
+        self.writes.append(event.model_copy(deep=True))
         return await super().update(calendar_id, event)
 
 
@@ -156,8 +165,20 @@ async def service(tmp_path, materials, calendar):
 
 
 async def _stored(calendar: RecordingCalendar, handle: str) -> CalendarEvent:
+    """The block as the calendar hands it back — provider-shaped, no url."""
     events = await calendar.list_day("primary", DAY, TZ)
     return next(event for event in events if event.handle == handle)
+
+
+def _written(calendar: RecordingCalendar, handle: str) -> CalendarEvent:
+    """The last event the service actually handed the port for ``handle``.
+
+    Where ``link_url`` is asserted, because it is write-only: it goes out on
+    the call and never comes back from a read. See ``RecordingCalendar``.
+    """
+    return next(
+        event for event in reversed(calendar.writes) if event.handle == handle
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -177,18 +198,44 @@ def test_a_calendar_event_carries_neither_by_default():
     assert (event.link_id, event.link_url) == (None, None)
 
 
-async def test_the_fake_calendar_round_trips_both_halves(calendar):
-    """``FakeCalendar`` stores the model itself, so it carries whatever the
-    port carries — asserted through a real create/list rather than assumed,
-    because every service-level test below reads its evidence back out of
-    it. A fake that dropped these fields would make all of them vacuous."""
+async def test_the_fake_calendar_hands_back_the_handle_and_never_the_url(calendar):
+    """``FakeCalendar`` answers the way a provider does: the handle comes
+    back, the url does not.
+
+    The port documents ``link_url`` as write-only — ``gcal._event_from_payload``
+    reads ``tmbx.link`` and nothing else, so an event fetched from Google
+    carries ``link_id`` and ``link_url is None``. A fake that echoed the url
+    back gave every service-level test below a fidelity production does not
+    have, and it hid a Critical: ``undo`` replayed provider-shaped events and
+    stripped the url off every linked block for good. Twice now a fake more
+    honest than this one would have caught the bug the day it was written.
+    """
     await calendar.create(
         "primary",
         _event("e9", "X1", 13, 14, link_id="mdeadbeef0", link_url=TICKET_URL),
     )
 
     stored = await _stored(calendar, "X1")
-    assert (stored.link_id, stored.link_url) == ("mdeadbeef0", TICKET_URL)
+    assert (stored.link_id, stored.link_url) == ("mdeadbeef0", None)
+
+
+async def test_the_fake_calendar_drops_the_url_from_a_create_and_an_update_too(
+    calendar,
+):
+    """Every way out of the fake, not only ``list_day``. ``create`` and
+    ``update`` hand back the stored event, and a caller that trusted the url
+    on one of those returns would be trusting something no provider gives."""
+    created = await calendar.create(
+        "primary",
+        _event("e9", "X1", 13, 14, link_id="mdeadbeef0", link_url=TICKET_URL),
+    )
+    updated = await calendar.update(
+        "primary",
+        _event("e9", "X1", 13, 15, link_id="mdeadbeef0", link_url=TICKET_URL),
+    )
+
+    assert (created.link_id, created.link_url) == ("mdeadbeef0", None)
+    assert (updated.link_id, updated.link_url) == ("mdeadbeef0", None)
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +250,8 @@ async def test_committing_a_linked_block_puts_the_handle_and_the_url_on_the_even
 
     await service.commit(snapshot, Patch(ops=[UpdateBlock(h="DW1", link=known)]))
 
-    written = await _stored(calendar, "DW1")
-    assert written.link_id == known
-    assert written.link_url == TICKET_URL
+    assert (await _stored(calendar, "DW1")).link_id == known
+    assert _written(calendar, "DW1").link_url == TICKET_URL
 
 
 async def test_the_url_comes_from_the_store_not_from_the_patch(
@@ -217,7 +263,7 @@ async def test_the_url_comes_from_the_store_not_from_the_patch(
 
     await service.commit(snapshot, Patch(ops=[UpdateBlock(h="DW1", link=known)]))
 
-    assert (await _stored(calendar, "DW1")).link_url == TICKET_URL
+    assert _written(calendar, "DW1").link_url == TICKET_URL
 
 
 async def test_committing_a_new_linked_block_carries_the_link_onto_the_created_event(
@@ -239,8 +285,8 @@ async def test_committing_a_new_linked_block_carries_the_link_onto_the_created_e
 
     await service.commit(snapshot, patch)
 
-    created = await _stored(calendar, "SW1")
-    assert (created.link_id, created.link_url) == (known, TICKET_URL)
+    assert (await _stored(calendar, "SW1")).link_id == known
+    assert _written(calendar, "SW1").link_url == TICKET_URL
 
 
 async def test_a_block_with_no_link_commits_neither_half(service, calendar, known):
@@ -264,8 +310,8 @@ async def test_an_explicit_null_takes_the_link_back_off_the_event(
         Patch.model_validate({"ops": [{"op": "update", "h": "DW1", "link": None}]}),
     )
 
-    cleared = await _stored(calendar, "DW1")
-    assert (cleared.link_id, cleared.link_url) == (None, None)
+    assert (await _stored(calendar, "DW1")).link_id is None
+    assert _written(calendar, "DW1").link_url is None
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +343,7 @@ async def test_changing_only_the_link_triggers_an_update(
     await service.commit(snapshot, Patch(ops=[UpdateBlock(h="DW1", link=other)]))
 
     assert [event.handle for event in calendar.updated] == ["DW1"]
-    assert (await _stored(calendar, "DW1")).link_url == OTHER_URL
+    assert _written(calendar, "DW1").link_url == OTHER_URL
 
 
 async def test_clearing_only_the_link_triggers_an_update(service, calendar, known):
@@ -317,13 +363,19 @@ async def test_clearing_only_the_link_triggers_an_update(service, calendar, know
 async def test_an_event_whose_url_was_never_read_back_is_still_unchanged(
     tmp_path, materials, known
 ):
-    """The provider-shaped case the fake would otherwise hide.
+    """A day that already carries a link, read the way a provider answers.
 
     A real adapter puts the url in the description and reads only the handle
     back (``gcal._event_from_payload``), so every event fetched from Google
     carries ``link_id`` and ``link_url=None``. If the no-op check compared
     ``link_url`` too, every linked block would be rewritten on every commit
     forever — an etag bump and a change notification per block, per day.
+
+    The seeded event is handed a url on purpose: the fake drops it on the way
+    out (``fake._as_fetched``), which is the point. This test used to pass
+    ``link_url=None`` by hand to compensate for a fake that echoed it back —
+    a test working around its own scaffolding, and the scaffolding was what
+    was wrong.
     """
     calendar = RecordingCalendar(
         {
@@ -336,7 +388,7 @@ async def test_an_event_whose_url_was_never_read_back_is_still_unchanged(
                     12,
                     description="focus block",
                     link_id=known,
-                    link_url=None,
+                    link_url=TICKET_URL,
                 ),
             ]
         }
@@ -347,6 +399,297 @@ async def test_an_event_whose_url_was_never_read_back_is_still_unchanged(
     await service.commit(snapshot, Patch(ops=[UpdateBlock(h="DW1", link=known)]))
 
     assert calendar.updated == []
+
+
+# ---------------------------------------------------------------------------
+# both halves of a link key on the same field
+# ---------------------------------------------------------------------------
+
+
+def test_nothing_is_composed_into_a_description_without_a_link_id():
+    """A url with no handle beside it composes nothing.
+
+    ``_description_for`` and ``_private_properties`` must agree on what makes
+    an event linked, because the read side decides on ``tmbx.link`` alone. A
+    url appended without ``tmbx.link``/``tmbx.desc`` written beside it comes
+    back as authored prose, is appended to a second time on the next write,
+    and lands in front of a planner as text somebody typed -- the Critical
+    this file has already produced once.
+
+    Unreachable through the service, which sets both halves together. Asserted
+    at the function, which is where the divergence lived.
+    """
+    from tmbx.calendar.gcal import _description_for, _private_properties
+
+    orphan_url = _event(
+        "e1", "DW1", 10, 12, description="focus block", link_url=TICKET_URL
+    )
+
+    assert _description_for(orphan_url) == "focus block"
+    assert TICKET_URL not in _description_for(orphan_url)
+    # and the two halves still agree: neither wrote anything about a link.
+    assert "tmbx.link" not in _private_properties(orphan_url)
+    assert "tmbx.desc" not in _private_properties(orphan_url)
+
+
+def test_a_url_with_a_handle_beside_it_is_still_composed_in():
+    """The narrowing above must not cost the ordinary case."""
+    from tmbx.calendar.gcal import _description_for, _private_properties
+
+    linked = _event(
+        "e1",
+        "DW1",
+        10,
+        12,
+        description="focus block",
+        link_id="mdeadbeef0",
+        link_url=TICKET_URL,
+    )
+
+    assert _description_for(linked) == f"focus block\n\n{TICKET_URL}"
+    assert _private_properties(linked)["tmbx.desc"] == "focus block"
+
+
+def test_max_description_chars_is_exported_by_the_port():
+    """The service imports it and the refusal messages quote it, so it is
+    part of the port's interface whether or not ``__all__`` said so."""
+    from tmbx.calendar import port
+
+    assert "MAX_DESCRIPTION_CHARS" in port.__all__
+
+
+# ---------------------------------------------------------------------------
+# a foreign block's link is not tmbx's business
+# ---------------------------------------------------------------------------
+
+
+def _foreign_event(
+    eid: str, start_h: int, end_h: int, *, link_id: str | None = None
+) -> CalendarEvent:
+    """A calendar event tmbx did not write: no ``uid``, so no ownership.
+
+    It carries a ``tmbx.link`` anyway. Contrived — but ``_event_to_block``
+    reads ``link_id`` on every event, owned or not, and a day that once held
+    an owned block whose uid property was later stripped is exactly this
+    shape.
+    """
+    return CalendarEvent(
+        event_id=eid,
+        summary="Standup",
+        start=datetime(2026, 8, 17, start_h, 0),
+        end=datetime(2026, 8, 17, end_h, 0),
+        etag="v1",
+        link_id=link_id,
+    )
+
+
+async def test_a_foreign_blocks_dead_handle_does_not_refuse_the_day(
+    tmp_path, materials
+):
+    """A deadlock with no exit, until this filter.
+
+    ``_dead_link_violation`` walked ``plan.blocks`` unfiltered, so a foreign
+    block carrying a handle the store had lost refused every commit of that
+    day, forever. The refusal names the one remedy — clear the link with an
+    explicit null — and that null is itself refused by ``_foreign_touches``,
+    because tmbx must never write a foreign event. Nothing tmbx owns is
+    broken, nothing tmbx writes is affected, and the day cannot be planned.
+
+    ``commit`` already has ``foreign_handles`` in hand a screen above.
+    """
+    calendar = RecordingCalendar(
+        {
+            "primary": [
+                _foreign_event("f1", 9, 10, link_id=DEAD_HANDLE),
+                _event("e2", "DW1", 10, 12, description="focus block"),
+            ]
+        }
+    )
+    service = await _service(tmp_path, materials, calendar)
+    _plan, snapshot = await service.read("primary", DAY)
+
+    result = await service.commit(
+        snapshot, Patch(ops=[UpdateBlock(h="DW1", d="deep focus")])
+    )
+
+    assert result.committed is True
+
+
+async def test_the_only_remedy_for_a_foreign_dead_handle_is_itself_refused(
+    tmp_path, materials
+):
+    """Why the filter, and not a message telling the caller to clear it.
+
+    Kept as a test rather than a comment because it is the half that makes
+    the deadlock a deadlock: if this ever started succeeding, the refusal
+    above would have been survivable all along.
+    """
+    calendar = RecordingCalendar(
+        {
+            "primary": [
+                _foreign_event("f1", 9, 10, link_id=DEAD_HANDLE),
+                _event("e2", "DW1", 10, 12),
+            ]
+        }
+    )
+    service = await _service(tmp_path, materials, calendar)
+    plan, snapshot = await service.read("primary", DAY)
+    foreign = next(block.h for block in plan.blocks if block.link == DEAD_HANDLE)
+
+    with pytest.raises(ForeignBlockError):
+        await service.commit(
+            snapshot,
+            Patch.model_validate(
+                {"ops": [{"op": "update", "h": foreign, "link": None}]}
+            ),
+        )
+
+
+async def test_an_owned_blocks_dead_handle_still_refuses(tmp_path, materials):
+    """The filter narrows the check to what tmbx owns; it does not remove it."""
+    calendar = RecordingCalendar(
+        {
+            "primary": [
+                _foreign_event("f1", 9, 10),
+                _event("e2", "DW1", 10, 12, link_id=DEAD_HANDLE),
+            ]
+        }
+    )
+    service = await _service(tmp_path, materials, calendar)
+    _plan, snapshot = await service.read("primary", DAY)
+
+    with pytest.raises(PlanViolation) as excinfo:
+        await service.commit(snapshot, Patch(ops=[UpdateBlock(h="DW1", d="focus")]))
+
+    assert DEAD_HANDLE in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# undo puts the url back, and never refuses over a link
+# ---------------------------------------------------------------------------
+
+
+async def test_undo_restores_the_url_onto_a_linked_event_it_replays(
+    service, calendar, known
+):
+    """The Critical this section exists for.
+
+    ``before_events`` is captured at commit from ``calendar.list_day``, and a
+    provider-fetched event carries ``link_url is None`` by the port's own
+    contract. Replaying those rows verbatim therefore wrote every owned event
+    back with no url — the composed description collapsed to the authored text
+    alone and the clickable link was gone.
+
+    And it never came back: the next commit's candidate matches the now-live
+    event on summary, description, times, identity and ``link_id``, so
+    ``_event_unchanged`` is True and ``_write`` skips it. The fix is here,
+    where the handles are, not in ``_event_unchanged`` — which ignores
+    ``link_url`` deliberately, because every provider read has none.
+
+    Note what is being undone: a *later*, unrelated commit. The link need not
+    be anywhere near the transaction to be destroyed by it.
+    """
+    _plan, snapshot = await service.read("primary", DAY)
+    await service.commit(snapshot, Patch(ops=[UpdateBlock(h="DW1", link=known)]))
+
+    _plan, snapshot = await service.read("primary", DAY)
+    later = await service.commit(
+        snapshot, Patch(ops=[UpdateBlock(h="PR1", d="prep")])
+    )
+    calendar.writes.clear()
+
+    await service.undo(later.tx_id)
+
+    assert _written(calendar, "DW1").link_url == TICKET_URL
+
+
+async def test_undo_leaves_an_unlinked_event_without_a_url(service, calendar, known):
+    """The restore resolves handles; it does not invent them. A block that
+    carried no link before the undone commit is written back carrying none."""
+    _plan, snapshot = await service.read("primary", DAY)
+    await service.commit(snapshot, Patch(ops=[UpdateBlock(h="DW1", link=known)]))
+
+    _plan, snapshot = await service.read("primary", DAY)
+    later = await service.commit(
+        snapshot, Patch(ops=[UpdateBlock(h="PR1", d="prep")])
+    )
+    calendar.writes.clear()
+
+    await service.undo(later.tx_id)
+
+    assert (_written(calendar, "PR1").link_id, _written(calendar, "PR1").link_url) == (
+        None,
+        None,
+    )
+
+
+async def test_one_lookup_covers_a_handle_two_blocks_share(
+    tmp_path, materials, known, monkeypatch
+):
+    """The restore asks the store once, for the distinct handles, the way
+    ``commit`` does — not once per event."""
+    calendar = RecordingCalendar(
+        {
+            "primary": [
+                _event("e1", "PR1", 9, 10, link_id=known),
+                _event("e2", "DW1", 10, 12, link_id=known),
+                _event("e3", "SW1", 13, 14),
+            ]
+        }
+    )
+    service = await _service(tmp_path, materials, calendar)
+    _plan, snapshot = await service.read("primary", DAY)
+    later = await service.commit(
+        snapshot, Patch(ops=[UpdateBlock(h="SW1", d="admin")])
+    )
+
+    calls: list[list[str]] = []
+    original = service.materials.get_many
+
+    async def counting(link_ids):
+        calls.append(list(link_ids))
+        return await original(link_ids)
+
+    monkeypatch.setattr(service.materials, "get_many", counting)
+    await service.undo(later.tx_id)
+
+    assert len(calls) == 1
+    assert sorted(calls[0]) == [known]
+
+
+async def test_a_handle_whose_row_is_gone_never_blocks_an_undo(
+    tmp_path, materials, known
+):
+    """Undo has no override and no second chance: a refusal here strands the
+    day in the state the commit left it in, which is the one thing undo exists
+    to prevent. A dead handle degrades to the old behaviour — the event goes
+    back with its handle and no url — and never raises.
+    """
+    calendar = RecordingCalendar(
+        {
+            "primary": [
+                _event("e1", "PR1", 9, 10),
+                _event("e2", "DW1", 10, 12, description="focus block"),
+            ]
+        }
+    )
+    service = await _service(tmp_path, materials, calendar)
+    _plan, snapshot = await service.read("primary", DAY)
+    await service.commit(snapshot, Patch(ops=[UpdateBlock(h="DW1", link=known)]))
+    _plan, snapshot = await service.read("primary", DAY)
+    later = await service.commit(snapshot, Patch(ops=[UpdateBlock(h="PR1", d="prep")]))
+
+    # The row goes away between the commit and the undo. A commit could not
+    # reach this state -- ``_dead_link_violation`` refuses first, deliberately
+    # -- so the store is swapped for an empty one rather than the refusal being
+    # weakened to set it up.
+    service.materials = MaterialStore(await init_journal(tmp_path / "empty.db"))
+    calendar.writes.clear()
+
+    await service.undo(later.tx_id)
+
+    restored = _written(calendar, "DW1")
+    assert (restored.link_id, restored.link_url) == (known, None)
 
 
 # ---------------------------------------------------------------------------

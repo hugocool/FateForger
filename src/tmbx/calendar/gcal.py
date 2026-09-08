@@ -342,8 +342,19 @@ def _description_for(event: CalendarEvent) -> str:
     would have to recognise. That keeps the composed value display-only:
     a person reads it, and no code ever has to decide which half of it
     somebody typed.
+
+    **``link_id`` decides whether an event is linked — here and in
+    ``_private_properties``, the same field in both halves.** This once
+    keyed on ``link_url`` while the private copy keyed on ``link_id``,
+    which is only unreachable because every writer sets the two together.
+    Let them diverge and a url composed in with no ``tmbx.link``/``tmbx.desc``
+    beside it reads back as authored prose (``_authored_description`` case
+    3), gets a second copy appended on the next write, and reaches the
+    planner as text somebody typed. That is the Critical this file already
+    produced once. ``link_url`` is only the value appended: no url is
+    nothing to show, not a different kind of event.
     """
-    if not event.link_url:
+    if not event.link_id or not event.link_url:
         return event.description
     if not event.description:
         return event.link_url

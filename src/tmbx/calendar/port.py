@@ -228,4 +228,11 @@ class CalendarPort(Protocol):
     async def delete(self, calendar_id: str, event_id: str) -> None: ...
 
 
-__all__ = ["CalendarEvent", "CalendarPort", "Snapshot", "drift", "make_snapshot"]
+__all__ = [
+    "MAX_DESCRIPTION_CHARS",
+    "CalendarEvent",
+    "CalendarPort",
+    "Snapshot",
+    "drift",
+    "make_snapshot",
+]
