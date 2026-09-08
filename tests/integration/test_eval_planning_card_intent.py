@@ -56,7 +56,7 @@ def _draft(status_name: str = "DRAFT"):
 
 
 async def _presses(text: str, *, status_name: str = "DRAFT", strip_effect: bool = False) -> list:
-    from fateforger.llm.factory import build_autogen_chat_client
+    from fateforger.llm.factory import build_intent_interpreter_client
     from fateforger.slack_bot.planning_surface import (
         PLANNING_PROMPT_FRAGMENT,
         InterpretedPlanningTurn,
@@ -71,7 +71,7 @@ async def _presses(text: str, *, status_name: str = "DRAFT", strip_effect: bool 
         view = view.model_copy(
             update={"offered_options": tuple(o.model_copy(update={"effect": "-"}) for o in view.offered_options)}
         )
-    interpreter = SurfaceIntentInterpreter(build_autogen_chat_client("planner_agent"))
+    interpreter = SurfaceIntentInterpreter(build_intent_interpreter_client())
 
     async def one():
         turn = await interpreter.interpret(

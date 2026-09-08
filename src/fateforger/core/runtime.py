@@ -66,7 +66,10 @@ from fateforger.haunt.settings_store import (
     ensure_admonishment_settings_schema,
 )
 from fateforger.haunt.tools import build_haunting_tools
-from fateforger.llm import build_autogen_chat_client
+from fateforger.llm import (
+    build_autogen_chat_client,
+    build_intent_interpreter_client,
+)
 from fateforger.slack_bot.deepseek_timebox_planner import (
     ConstraintReader,
     DeepSeekTimeboxPlanner,
@@ -509,7 +512,7 @@ def _build_timeboxing_intent_interpreter() -> tuple[
     disagreeing less at 0 and whole-record disagreement higher; a pin that
     looks like a guarantee invites skipping the resample (CLAUDE.md).
     """
-    model_client = build_autogen_chat_client("timeboxing_agent")
+    model_client = build_intent_interpreter_client()
     return TimeboxingIntentInterpreter(model_client), model_client
 
 

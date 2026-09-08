@@ -52,7 +52,9 @@ BEDTIME = {"uid": "c-bed", "name": "Bedtime", "description": "In bed by 00:30 on
 def _client():
     from fateforger.llm.factory import build_autogen_chat_client
 
-    return build_autogen_chat_client("timeboxing_agent")
+    # Production runs this judge on `timeboxing_judge_model_client`
+    # (`timeboxing_host.py:~223`); the eval measures that client.
+    return build_autogen_chat_client("timeboxing_judge")
 
 
 def _day():

@@ -94,6 +94,8 @@ class Settings(BaseSettings):
     llm_model_calendar_submitter: str = Field(
         default=""
     )
+    #: Every surface interpreter (planning card, timeboxing stage cards).
+    llm_model_intent_interpreter: str = Field(default="")
 
     # Per-agent temperature
     llm_temperature_admonisher: float = Field(
@@ -119,10 +121,15 @@ class Settings(BaseSettings):
     llm_reasoning_effort_timebox_patcher: str = Field(
         default=""
     )
+    llm_reasoning_effort_intent_interpreter: str = Field(default="")
     llm_max_tokens: int = Field(default=0)
     llm_max_tokens_timebox_patcher: int = Field(
         default=0
     )
+    #: -1: the code default (see llm/factory._INTENT_INTERPRETER_MAX_TOKENS).
+    #: 0: uncapped. >0: the cap. The interpreter answers a small fixed schema;
+    #: uncapped it ran away to 16,384 tokens on ~5% of calls (#325).
+    llm_max_tokens_intent_interpreter: int = Field(default=-1)
 
     # MCP Server Configuration
     mcp_version: str = Field(default="v1.4.8")
@@ -296,6 +303,18 @@ class Settings(BaseSettings):
         if value >= 0:
             return value
         raise ValueError("LLM max token limits must be >= 0")
+
+    @field_validator("llm_max_tokens_intent_interpreter")
+    @classmethod
+    def _validate_interpreter_tokens(cls, value: int) -> int:
+        # Its own validator: -1 is legal here and means "the code default",
+        # which the bench needs to tell apart from 0 ("uncapped").
+        if value >= -1:
+            return value
+        raise ValueError(
+            "LLM_MAX_TOKENS_INTENT_INTERPRETER must be >= -1 "
+            "(-1: the code default, 0: uncapped, >0: the cap)"
+        )
 
     @field_validator("timeboxing_memory_backend")
     @classmethod

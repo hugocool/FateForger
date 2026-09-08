@@ -13,6 +13,14 @@ from fateforger.core.config import settings
 
 ReasoningEffort = Literal["minimal", "low", "medium", "high"]
 
+INTENT_INTERPRETER = "intent_interpreter"
+
+#: The interpreter's answer is a small fixed schema (~120 bytes; a few hundred
+#: tokens with several facts and a revision instruction). Uncapped, the pro pin
+#: ran to 16,384 tokens on ~5% of calls (#325). Set by the bench in
+#: scripts/bench/results-interpreter-tier-2026-09-06.md; 1024 until then.
+_INTENT_INTERPRETER_MAX_TOKENS = 1024
+
 logger = logging.getLogger(__name__)
 
 
@@ -142,6 +150,16 @@ def _model_for_agent(agent_type: str) -> str:
         # The Stage 1 judgements (placement, coverage, probe) and the day-frame
         # judgement: every one is term typing on the flash pin, per CLAUDE.md.
         return pick(settings.llm_model_timeboxing_judge, openai=openai_default, openrouter=openrouter_flash)
+    if agent_type == INTENT_INTERPRETER:
+        # Every surface interpreter: choosing among listed options is term
+        # typing on the flash pin (CLAUDE.md "Every route is a judgement").
+        # Its own row so it stops inheriting its host agent's client, which is
+        # how the routing seam ended up on the pro pin at high and ran away (#325).
+        return pick(
+            settings.llm_model_intent_interpreter,
+            openai=openai_default,
+            openrouter=openrouter_flash,
+        )
     if agent_type == "revisor_agent":
         return pick(settings.llm_model_revisor, openai="gpt-4o", openrouter=openrouter_pro)
     if agent_type == "tasks_agent":
@@ -187,6 +205,8 @@ def _reasoning_effort_for_agent(agent_type: str) -> ReasoningEffort | None:
         return normalize(settings.llm_reasoning_effort_timeboxing_draft) or "high"
     if agent_type == "timeboxing_judge":
         return normalize(settings.llm_reasoning_effort_timeboxing_judge) or "minimal"
+    if agent_type == INTENT_INTERPRETER:
+        return normalize(settings.llm_reasoning_effort_intent_interpreter) or "minimal"
     if agent_type == "revisor_agent":
         return normalize(settings.llm_reasoning_effort_revisor) or "medium"
     if agent_type == "tasks_agent":
@@ -212,6 +232,11 @@ def _max_tokens_for_agent(agent_type: str) -> int | None:
         # Stage 4 patch prompts are large. Keep patcher uncapped by default to
         # avoid truncating JSON patches; allow explicit env override when set.
         return normalize(settings.llm_max_tokens_timebox_patcher)
+    if agent_type == INTENT_INTERPRETER:
+        configured = settings.llm_max_tokens_intent_interpreter
+        if configured == -1:
+            return _INTENT_INTERPRETER_MAX_TOKENS
+        return normalize(configured)
 
     return normalize(settings.llm_max_tokens)
 
@@ -294,6 +319,17 @@ def build_autogen_chat_client(
     return OpenAIChatCompletionClient(**kwargs)
 
 
+def build_intent_interpreter_client() -> OpenAIChatCompletionClient:
+    """The one client every surface interpreter is built on.
+
+    Tier one: choosing among listed options is term typing, not deliberation
+    (CLAUDE.md "Every route is a judgement"). One row, one function, so the
+    next surface gets the same client for free and no interpreter inherits
+    whatever its host agent happens to run on.
+    """
+    return build_autogen_chat_client(INTENT_INTERPRETER)
+
+
 def build_langchain_chat_openai(
     agent_type: str,
     *,
@@ -323,4 +359,10 @@ def build_langchain_chat_openai(
     return ChatOpenAI(**kwargs)
 
 
-__all__ = ["build_autogen_chat_client", "build_langchain_chat_openai", "ReasoningEffort"]
+__all__ = [
+    "INTENT_INTERPRETER",
+    "ReasoningEffort",
+    "build_autogen_chat_client",
+    "build_intent_interpreter_client",
+    "build_langchain_chat_openai",
+]

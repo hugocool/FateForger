@@ -130,20 +130,21 @@ def test_runtime_builds_one_intent_client_without_a_sampling_pin(monkeypatch) ->
     parameter at all, not with temperature pinned to zero.
     """
 
-    created: list[tuple[str, dict[str, object]]] = []
+    created: list[dict[str, object]] = []
     client = _FakeIntentModelClient()
 
-    def _build(name: str, **kwargs: object) -> _FakeIntentModelClient:
-        created.append((name, kwargs))
+    def _build(**kwargs: object) -> _FakeIntentModelClient:
+        created.append(kwargs)
         return client
 
-    monkeypatch.setattr(runtime_module, "build_autogen_chat_client", _build)
+    # The interpreter's own row, not its host agent's client (#336).
+    monkeypatch.setattr(runtime_module, "build_intent_interpreter_client", _build)
 
     interpreter, owned_client = (
         runtime_module._build_timeboxing_intent_interpreter()
     )
 
-    assert created == [("timeboxing_agent", {})]
+    assert created == [{}]
     assert owned_client is client
     assert interpreter.model_client is client
 
@@ -156,8 +157,8 @@ async def test_runtime_interpreter_reuses_owned_client_across_turns(
     client = _FakeIntentModelClient()
     monkeypatch.setattr(
         runtime_module,
-        "build_autogen_chat_client",
-        lambda _name, **_kwargs: client,
+        "build_intent_interpreter_client",
+        lambda **_kwargs: client,
     )
     interpreter, owned_client = (
         runtime_module._build_timeboxing_intent_interpreter()
