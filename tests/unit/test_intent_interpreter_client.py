@@ -34,44 +34,41 @@ def _kwargs(monkeypatch):
     return captured
 
 
-def _assert_carries_the_landed_default(captured: dict) -> None:
-    """The kwargs say what the constant says -- whatever the constant says.
+def test_the_landed_cap_is_the_bench_ruling():
+    """1024, on Hugo's ruling over the 2026-09-06 bench.
 
-    Asserted against the constant rather than a literal so the two cannot
-    drift, and branched rather than fixed so a later bench that moves the cap
-    moves these tests with it instead of breaking them. What the cap *is* is
-    pinned once, in `test_the_landed_default_is_uncapped`.
+    `scripts/bench/results-interpreter-tier-2026-09-06.md` (six configurations,
+    three evals, n=8 per case) with the reading in the `.reading.md` sidecar:
+    1024 truncated 3 of the 545 draws taken at that cap and 2048 truncated 4 of
+    546, so spec §3's rule lands on uncapped -- and was overruled, because the
+    seven truncated draws were runaways stopped, not answers lost. Every one
+    ran 6-56s against a 1-2s median, the largest legitimate uncapped answer was
+    405 tokens, 2048 cut more draws than 1024 without buying one back, and no
+    case failed on length.
+
+    Moving this line without a bench beside it is what this test exists to stop.
     """
 
-    if factory._INTENT_INTERPRETER_MAX_TOKENS is None:
-        assert "max_tokens" not in captured
-    else:
-        assert captured["max_tokens"] == factory._INTENT_INTERPRETER_MAX_TOKENS
+    assert factory._INTENT_INTERPRETER_MAX_TOKENS == 1024
 
 
-def test_the_landed_default_is_uncapped():
-    """No cap, and the bench is why.
+def test_the_default_row_is_the_pro_pin_at_high_and_capped(openrouter, monkeypatch):
+    """The measured pair, not the intended one.
 
-    `scripts/bench/results-interpreter-tier-2026-09-06.md`, six configurations
-    over the three interpreter evals at n=8 per case: 1024 truncated three
-    draws and 2048 truncated four, out of ~816 each, on both pins, while
-    neither uncapped configuration had a draw stopped by a provider limit. A
-    cap does not turn #325's runaway back into an answer; it turns a long
-    answer into a lost one. Spec §3's rule lands on uncapped.
-
-    Changing this line without a new bench beside it is the thing this test
-    exists to stop.
+    The flash pin at `minimal` is CLAUDE.md's recorded role for routing and is
+    where this row is going. The 2026-09-06 bench says the prompts as written
+    lose there -- 27/34 cases against 32/34, revision-after-commit 1/8 against
+    8/8 -- so the default follows the measurement until the prompts are fitted
+    to flash. Model and effort are asserted together because pro/high is the
+    pair that was measured; half of a measured pair is not a measurement.
     """
 
-    assert factory._INTENT_INTERPRETER_MAX_TOKENS is None
-
-
-def test_the_default_row_is_the_flash_pin_at_minimal(openrouter, monkeypatch):
     captured = _kwargs(monkeypatch)
     factory.build_intent_interpreter_client()
-    assert captured["model"] == "flash/pin:nitro"
-    assert captured["extra_body"] == {"reasoning": {"effort": "minimal"}}
-    _assert_carries_the_landed_default(captured)
+    assert captured["model"] == "pro/pin:nitro"
+    assert captured["extra_body"] == {"reasoning": {"effort": "high"}}
+    assert captured["max_tokens"] == factory._INTENT_INTERPRETER_MAX_TOKENS
+    assert factory._INTENT_INTERPRETER_MAX_TOKENS > 0
     # No sampling pin: CLAUDE.md retired temperature=0 on measurement, and this
     # is now the only place the interpreter's full kwargs are in hand.
     assert "temperature" not in captured
@@ -89,12 +86,6 @@ def test_the_env_overrides_each_column(openrouter, monkeypatch):
 
 
 def test_zero_means_uncapped_and_minus_one_means_the_default(openrouter, monkeypatch):
-    # The constant is pinned to a number here on purpose. The landed default is
-    # uncapped, so against it the two sentinels build the identical client and
-    # this test could not tell a working -1 from one that had stopped reading
-    # the constant at all -- it would pass either way. A number makes the
-    # difference observable, which is the whole of what the test is for.
-    monkeypatch.setattr(factory, "_INTENT_INTERPRETER_MAX_TOKENS", 1234)
     monkeypatch.setattr(factory.settings, "llm_max_tokens_intent_interpreter", 0)
     captured = _kwargs(monkeypatch)
     factory.build_intent_interpreter_client()
@@ -102,7 +93,7 @@ def test_zero_means_uncapped_and_minus_one_means_the_default(openrouter, monkeyp
     monkeypatch.setattr(factory.settings, "llm_max_tokens_intent_interpreter", -1)
     captured = _kwargs(monkeypatch)
     factory.build_intent_interpreter_client()
-    assert captured["max_tokens"] == 1234
+    assert captured["max_tokens"] == factory._INTENT_INTERPRETER_MAX_TOKENS
 
 
 def test_the_global_cap_does_not_leak_into_the_interpreter_row(openrouter, monkeypatch):
@@ -110,7 +101,7 @@ def test_the_global_cap_does_not_leak_into_the_interpreter_row(openrouter, monke
     monkeypatch.setattr(factory.settings, "llm_max_tokens", 9999)
     captured = _kwargs(monkeypatch)
     factory.build_intent_interpreter_client()
-    _assert_carries_the_landed_default(captured)
+    assert captured["max_tokens"] == factory._INTENT_INTERPRETER_MAX_TOKENS
 
 
 def test_the_runtime_site_builds_on_the_interpreter_client(monkeypatch):

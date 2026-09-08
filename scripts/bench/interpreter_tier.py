@@ -8,14 +8,25 @@ prompt/completion tokens, finish reason, the error class if it raised, and the
 model, cap and effort the client was actually built with. **Per case**: the
 outcome pytest reached and the draws lost to transport, kept apart. **Per
 configuration**: cases passed, the cases that failed and why, transport losses
-by class, cap bites (``finish_reason == "length"``), median/p90 latency, median
-completion tokens, and cost from the live OpenRouter catalogue.
+by class, cap bites (``LengthFinishReasonError``, which is the form truncation
+takes on a structured-output call), median/p90 latency, median completion
+tokens, and cost from the live OpenRouter catalogue.
 
 Transport is never folded into judgement. A case below the eval's 7/8 bar with
 no draw that raised is a judgement loss and is named by case; a case whose
 draws raised is a transport loss and is named by error class. The two are
 different findings and a table that adds them reads a broken call as a
-misjudged one (#319's lesson).
+misjudged one (#319's lesson). The instrument wraps ``create``, so it sees only
+what escapes that call -- a draw that came back and then failed validation
+raises afterwards and leaves no trace in the draws; ``_reconcile_breakdowns``
+recovers those from the one eval that prints a per-draw breakdown and reports
+them in their own column.
+
+**This file generates tables, never conclusions.** What the numbers mean, and
+what anyone ruled on them, lives in a hand-written
+``results-interpreter-tier-<date>.reading.md`` that the runner includes verbatim
+and never writes -- so ``--summarise-only`` can rebuild every table without
+reprinting one day's rulings under another day's numbers.
 
 Configurations reach the code as process environment for each pytest
 subprocess only; ``.env`` is never written. The pro and flash pins race each
@@ -33,6 +44,7 @@ already on disk without spending another call.
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import json
 import os
@@ -202,6 +214,97 @@ def _junit_cases(path: Path) -> list[dict]:
     return cases
 
 
+def _parse_eval_line(line: str) -> dict | None:
+    """One `[eval] <Kind> <n>/<N> <- <case> :: {breakdown} retries=<n>` line.
+
+    Split on the separators that format string puts there, then
+    ``ast.literal_eval`` the two Python reprs it embeds. No pattern matching
+    over anything a user wrote: the whole line was minted by `_count` in this
+    repository's own eval, and every field taken out of it is a class name or a
+    count.
+    """
+
+    body = line[len("[eval] ") :]
+    try:
+        left, right = body.split(" <- ", 1)
+        rest, retries = right.rsplit(" retries=", 1)
+        case_repr, breakdown_repr = rest.split(" :: ", 1)
+        kind, fraction = left.split()[0], left.split()[1]
+        count, total = fraction.split("/")
+        return {
+            "asserted_kind": kind,
+            "count": int(count),
+            "samples": int(total),
+            "case": ast.literal_eval(case_repr),
+            "breakdown": dict(ast.literal_eval(breakdown_repr)),
+            "retries": int(retries),
+        }
+    except (ValueError, SyntaxError, IndexError):
+        return None
+
+
+def _failure_outcomes(summary_rows: list[dict]) -> set[str]:
+    """Which outcome names in the breakdowns are failures rather than decisions.
+
+    Derived, not listed. Every decision the eval recognises appears somewhere in
+    the run as an *asserted kind* -- the first field of its own `[eval]` line,
+    which is the eval declaring "this is a decision I assert on". A name that
+    turns up only inside a breakdown was never asserted anywhere, so it is what
+    stopped a draw, not what the draw decided. A hand-typed list of exception
+    names would be a hardcoded opinion that goes stale the first time a schema
+    changes; this cannot.
+    """
+
+    asserted, seen = set(), set()
+    for row in summary_rows:
+        for line in row["decision_breakdown"]:
+            parsed = _parse_eval_line(line)
+            if parsed:
+                asserted.add(parsed["asserted_kind"])
+                seen |= set(parsed["breakdown"])
+    return seen - asserted
+
+
+def _reconcile_breakdowns(row: dict, failures: set[str]) -> dict:
+    """Failures the eval saw that never reached the instrument.
+
+    The plugin wraps `create`, so it sees only what escapes `create`. A draw
+    that came back and then failed -- schema validation, a decision outside the
+    allowed set -- raises *after* the call returned and leaves no trace in the
+    draws. That is how one `ValidationError` on
+    `flash-minimal::timebox_question` sat inside a judgement column with an
+    empty transport column beside it.
+
+    The break-it families call `_count` twice over one set of results to assert
+    a flip, so the same eight draws print two lines; distinct (case, breakdown)
+    pairs are counted once.
+    """
+
+    per_case: dict[tuple, dict] = {}
+    for line in row["decision_breakdown"]:
+        parsed = _parse_eval_line(line)
+        if not parsed:
+            continue
+        key = (parsed["case"], tuple(sorted(parsed["breakdown"].items())))
+        per_case[key] = parsed
+    counted: Counter = Counter()
+    by_case: dict[str, dict] = {}
+    for (case, _), parsed in per_case.items():
+        hits = {k: v for k, v in parsed["breakdown"].items() if k in failures}
+        if hits:
+            counted.update(hits)
+            by_case[case] = hits
+    escaped = Counter(row["transport_losses"]) + Counter(
+        {LENGTH_ERROR: row["length_draws"]} if row["length_draws"] else {}
+    )
+    after = {k: v - escaped.get(k, 0) for k, v in counted.items() if v - escaped.get(k, 0) > 0}
+    return {
+        "eval_reported_failures": dict(counted),
+        "failures_after_create": after,
+        "failures_after_create_by_case": {c: h for c, h in by_case.items() if any(k in after for k in h)},
+    }
+
+
 def _eval_lines(path: Path) -> list[str]:
     """The eval's own per-case decision breakdown, where it prints one.
 
@@ -328,7 +431,14 @@ def _summarise_run(run: dict, prices: dict, base_env: dict) -> dict:
 
 
 def _summarise(runs: list[dict], prices: dict, base_env: dict) -> dict:
-    return {f"{r['config']}::{r['eval']}": _summarise_run(r, prices, base_env) for r in runs}
+    summary = {f"{r['config']}::{r['eval']}": _summarise_run(r, prices, base_env) for r in runs}
+    # Second pass: which outcome names are failures can only be told from the
+    # whole run, so the reconciliation happens once every row exists.
+    failures = _failure_outcomes(list(summary.values()))
+    for row in summary.values():
+        row.update(_reconcile_breakdowns(row, failures))
+        row["prints_breakdown"] = row["eval"] in PRINTS_BREAKDOWN
+    return summary
 
 
 def _config_totals(summary: dict) -> dict:
@@ -350,6 +460,11 @@ def _config_totals(summary: dict) -> dict:
             "break_it_did_not_break": [f"{r['eval']}::{c['case']}" for r in rows for c in r["break_it_did_not_break"]],
             "transport_losses": dict(sum((Counter(r["transport_losses"]) for r in rows), Counter())),
             "transport_loss_draws": sum(r["transport_loss_draws"] for r in rows),
+            "failures_after_create": dict(sum((Counter(r["failures_after_create"]) for r in rows), Counter())),
+            "failures_after_create_by_case": [
+                f"{r['eval']}::{c}" for r in rows for c in r["failures_after_create_by_case"]
+            ],
+            "evals_printing_a_breakdown": [r["eval"] for r in rows if r["prints_breakdown"]],
             "cap_bites": sum(r["cap_bites"] for r in rows),
             "runaway_draws": sum(r["runaway_draws"] for r in rows),
             "length_draws": sum(r["length_draws"] for r in rows),
@@ -367,40 +482,29 @@ def _config_totals(summary: dict) -> dict:
     return totals
 
 
-def _cap_decision(totals: dict) -> dict:
-    """Spec §3: the smaller cap that bit on neither pin; else 2048; else uncapped."""
+def _cap_measurement(totals: dict) -> dict:
+    """What each cap did, per cap level. No verdict.
 
-    def bites(cap: int) -> int:
-        return sum(t["cap_bites"] for c, t in totals.items() if CONFIGS[c][2] == cap)
+    This used to apply spec §3's rule and name a winner. It no longer does:
+    Hugo overruled §3 on these numbers (2026-09-06), and a generator that keeps
+    printing a superseded rule's answer under a table is a decision record that
+    argues with itself. The measurement is derivable and stays here; the ruling
+    is hand-written in the sidecar `.reading.md`, which the runner includes and
+    never writes.
+    """
 
-    present = {cap for c, cap in ((c, CONFIGS[c][2]) for c in totals) if cap}
-    bites_1024, bites_2048 = bites(1024), bites(2048)
-    missing = sorted(
-        c for c in CONFIGS if c not in totals
-    )
-    if missing:
-        # A partial run cannot pick the cap: "2048 never bit" is not a finding
-        # when 2048 never ran. Say so rather than answering from half the matrix.
-        return {
-            "max_tokens": None,
-            "why": f"incomplete matrix -- no draws for: {', '.join(missing)}. The cap is not decided here.",
-            "bites_1024": bites_1024,
-            "bites_2048": bites_2048,
-            "missing_configs": missing,
+    out: dict = {"missing_configs": sorted(c for c in CONFIGS if c not in totals), "by_cap": {}}
+    for cap in sorted({cap for cap in (CONFIGS[c][2] for c in CONFIGS) if cap}):
+        configs = [c for c in totals if CONFIGS[c][2] == cap]
+        out["by_cap"][cap] = {
+            "configs": configs,
+            "truncated_draws": sum(totals[c]["cap_bites"] for c in configs),
+            # The denominator is the draws that ran *at that cap*, not the whole
+            # matrix -- a cap cannot truncate a draw taken without it.
+            "draws": sum(totals[c]["draws"] for c in configs),
+            "cases": sorted({n for c in configs for n in totals[c]["length_draw_cases"]}),
         }
-    if 1024 in present and bites_1024 == 0:
-        chosen, why = 1024, "1024 bit on neither pin (finish_reason=length: 0 draws), so the smaller cap stands."
-    elif 2048 in present and bites_2048 == 0:
-        chosen, why = 2048, f"1024 bit ({bites_1024} draws finished on length); 2048 bit on neither pin."
-    else:
-        chosen, why = 0, f"both caps bit (1024: {bites_1024} draws, 2048: {bites_2048} draws); the default stays uncapped and the finding goes on #325."
-    return {
-        "max_tokens": chosen,
-        "why": why,
-        "bites_1024": bites_1024,
-        "bites_2048": bites_2048,
-        "missing_configs": [],
-    }
+    return out
 
 
 def _pin_comparison(summary: dict) -> dict:
@@ -429,8 +533,18 @@ def _pin_comparison(summary: dict) -> dict:
     def length(prefix: str) -> int:
         return sum(r["length_draws"] for r in summary.values() if r["config"].startswith(prefix))
 
+    def after_create(prefix: str) -> dict:
+        return dict(
+            sum(
+                (Counter(r["failures_after_create"]) for r in summary.values() if r["config"].startswith(prefix)),
+                Counter(),
+            )
+        )
+
     flash, pro = lost("flash"), lost("pro")
     return {
+        "failures_after_create_pro": after_create("pro"),
+        "failures_after_create_flash": after_create("flash"),
         "judgement_lost_on_flash": sorted(flash),
         "judgement_lost_on_pro": sorted(pro),
         "lost_on_flash_only": sorted(flash - pro),
@@ -444,6 +558,73 @@ def _pin_comparison(summary: dict) -> dict:
 
 def _n(value, spec: str = ".2f") -> str:
     return "—" if value is None else format(value, spec)
+
+
+def _case_counts_table(summary: dict) -> list[str]:
+    """Per-case decision counts, pro against flash, where the two disagree.
+
+    Generated, not written: this is the table the pin argument rests on, so it
+    has to be rebuildable from the draws rather than retyped beside them. The
+    eval prints one line per `_count` call, and the break-it families call it
+    twice over one set of results, so a (kind, case) key can carry two counts
+    for one configuration; both are shown rather than one of them picked.
+    """
+
+    counts: dict[tuple[str, str], dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
+    samples: set[int] = set()
+    for row in summary.values():
+        for line in row["decision_breakdown"]:
+            parsed = _parse_eval_line(line)
+            if not parsed:
+                continue
+            counts[(parsed["asserted_kind"], parsed["case"])][row["config"]].append(parsed["count"])
+            samples.add(parsed["samples"])
+    order = [c for c in CONFIGS if any(c in v for v in counts.values())]
+    pro = [c for c in order if c.startswith("pro")]
+    flash = [c for c in order if c.startswith("flash")]
+    rows = []
+    for (kind, case), per_config in sorted(counts.items()):
+        pro_seen = {tuple(per_config.get(c, [])) for c in pro}
+        flash_seen = {tuple(per_config.get(c, [])) for c in flash}
+        if pro_seen == flash_seen:
+            continue
+        cells = " | ".join(
+            " and ".join(str(n) for n in per_config.get(c, [])) or "—" for c in order
+        )
+        rows.append(f"| `{kind}` | `{case}` | {cells} |")
+    if not rows:
+        return ["No case's decision counts differ between the pins.", ""]
+    n = sorted(samples)[0] if len(samples) == 1 else "n"
+    return [
+        f"How many of the {n} draws reached the asserted decision, for every case where the pins",
+        "disagree. A cell reading \"x and y\" is one set of draws counted by two tests — the break-it",
+        "families assert a flip over the same results.",
+        "",
+        "| asserted decision | case | " + " | ".join(f"`{c}`" for c in order) + " |",
+        "|---" * (2 + len(order)) + "|",
+        *rows,
+        "",
+    ]
+
+
+def _reading(date: str) -> list[str]:
+    """The hand-written reading, included verbatim and never generated.
+
+    The conclusions used to be string literals in this function's neighbours,
+    which meant any `--summarise-only` rebuild -- or a run on another date --
+    reprinted one day's rulings under another day's tables. Everything the
+    numbers imply is generated above; what someone *decided* lives in a sidecar
+    this runner reads and never writes.
+    """
+
+    sidecar = HERE / f"results-interpreter-tier-{date}.reading.md"
+    if not sidecar.exists():
+        return [
+            f"No reading written yet. Put one in `{sidecar.name}` beside this file and re-run",
+            "`--summarise-only`; it is included here verbatim.",
+            "",
+        ]
+    return [sidecar.read_text(encoding="utf-8").rstrip(), ""]
 
 
 def _per_eval_sections(summary: dict) -> list[str]:
@@ -482,7 +663,7 @@ def _per_eval_sections(summary: dict) -> list[str]:
     return lines
 
 
-def _markdown(summary: dict, totals: dict, decision: dict, pins: dict, date: str) -> str:
+def _markdown(summary: dict, totals: dict, caps: dict, pins: dict, date: str) -> str:
     order = list(CONFIGS)
     lines = [
         f"# Interpreter tier bench — {date}",
@@ -504,6 +685,14 @@ def _markdown(summary: dict, totals: dict, decision: dict, pins: dict, date: str
         "structured-output calls; the smoke run had it sitting in the transport column, where it",
         "would have made the cap look free.)",
         "",
+        "**The instrument sees only what escapes `create`.** It wraps that call, so a draw that",
+        "came back and then failed — schema validation, a decision outside the allowed set — raises",
+        "after the call returned and leaves no trace in the draws. Only `timebox_question` prints a",
+        "per-draw breakdown (`planning_card` and `day_frame` assert on counts they do not print), so",
+        "only there can the gap be closed: the `failures after create` column below is its `[eval]`",
+        "lines reconciled against the draws, and where it is non-zero the judgement column beside it",
+        "is that many draws smaller than it looks.",
+        "",
         "One transport class is the bench's own: `BenchDrawTimeout` is a draw the bench stopped",
         "waiting for. Uncapped on the pro pin at `high`, a first attempt at this run had a single",
         "draw open for over eleven minutes against a 3s median — #325 with nothing to stop it,",
@@ -513,8 +702,8 @@ def _markdown(summary: dict, totals: dict, decision: dict, pins: dict, date: str
         "",
         "## Summary — the six configurations",
         "",
-        "| configuration | model | cases | judgement losses | length losses (cap bites / runaways) | transport losses | lat med | lat max | max compl. tok | cost | config verified |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| configuration | model | cases | judgement losses | length losses (cap bites / runaways) | transport losses | failures after `create` | lat med | lat max | max compl. tok | cost | config verified |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for config in order:
         t = totals.get(config)
@@ -526,7 +715,8 @@ def _markdown(summary: dict, totals: dict, decision: dict, pins: dict, date: str
             f"{len(t['judgement_loss_cases'])}"
             + (f" ({', '.join('`' + c + '`' for c in t['judgement_loss_cases'])})" if t["judgement_loss_cases"] else "")
             + f" | {length} | "
-            f"{t['transport_losses'] or '—'} | {_n(t['latency_median_s'])}s | "
+            f"{t['transport_losses'] or '—'} | {t['failures_after_create'] or '—'} | "
+            f"{_n(t['latency_median_s'])}s | "
             f"{_n(t['latency_max_s'])}s | {t['completion_tokens_max']} | ${t['cost_usd']:.3f} | "
             f"{'yes' if t['config_verified'] else '**NO**'} |"
         )
@@ -552,54 +742,35 @@ def _markdown(summary: dict, totals: dict, decision: dict, pins: dict, date: str
     lines += ["", "## Per eval", "", *_per_eval_sections(summary)]
 
     lines += [
-        "## The cap",
+        "## The cap — what each cap did",
         "",
-        (
-            "**Not decided by this run.** " + decision["why"]
-            if decision["max_tokens"] is None
-            else f"`_INTENT_INTERPRETER_MAX_TOKENS = {decision['max_tokens']}`"
-            + (" (uncapped)" if decision["max_tokens"] == 0 else "")
-        ),
-        "",
-        "Rule (spec §3): the smaller cap with zero cap-bites on both pins; else 2048; else uncapped.",
-        "A cap bite is a draw truncated at the cap — `finish_reason = length`, or the SDK's",
+        "A cap bite is a draw truncated at the cap: `finish_reason = length`, or the SDK's",
         "`LengthFinishReasonError` on a structured-output call, which is the form it actually takes.",
+        "The denominator is the draws taken *at that cap*, not the whole matrix — a cap cannot",
+        "truncate a draw taken without it.",
         "",
-        f"Measured over both pins: 1024 → **{decision['bites_1024']}** truncated draws; "
-        f"2048 → **{decision['bites_2048']}**. {decision['why']}",
-        "",
-        "Uncapped, the same measurement is #325's runaway: "
-        + (
-            ", ".join(f"`{c}` → {t['runaway_draws']} truncated draws" for c, t in totals.items() if not CONFIGS[c][2])
-            or "no uncapped configuration in this run"
-        )
-        + ".",
-        "",
-        "The cases a cap actually cut, pass or fail — what #325 needs named:",
-        "",
-        "| capped configuration | truncated draws | the cases |",
-        "|---|---|---|",
+        "| cap | truncated draws | of draws at that cap | the cases it cut |",
+        "|---|---|---|---|",
         *[
-            f"| `{c}` | {t['length_draws']} | "
-            f"{', '.join('`' + n + '`' for n in t['length_draw_cases']) or '—'} |"
-            for c, t in totals.items()
-            if CONFIGS[c][2]
+            f"| {cap} | **{m['truncated_draws']}** | {m['draws']} | "
+            f"{', '.join('`' + n + '`' for n in m['cases']) or '—'} |"
+            for cap, m in caps["by_cap"].items()
         ],
         "",
-        "And what the uncapped configurations spent on their longest answers, for the same cases:",
+        "Per configuration, and what the uncapped ones spent on their longest answers:",
         "",
-        "| uncapped configuration | longest completion | the case it belonged to |",
-        "|---|---|---|",
+        "| configuration | cap | truncated draws | longest completion | the case it belonged to |",
+        "|---|---|---|---|---|",
         *[
-            f"| `{c}` | {t['completion_tokens_max']} tokens | `{t.get('longest_case') or '—'}` |"
+            f"| `{c}` | {CONFIGS[c][2] or 'none'} | {t['length_draws']} | "
+            f"{t['completion_tokens_max']} tokens | `{t.get('longest_case') or '—'}` |"
             for c, t in totals.items()
-            if not CONFIGS[c][2]
         ],
         "",
-        "## The pin, for Hugo's line",
+        "## The pin — the judgement difference",
         "",
-        "Judgement losses only — transport, truncation and the break-it flips are excluded from",
-        "this comparison by construction.",
+        "Judgement losses only — transport, truncation, failures after `create` and the break-it",
+        "flips are excluded from this comparison by construction.",
         "",
     ]
     for prefix in ("pro", "flash"):
@@ -614,48 +785,16 @@ def _markdown(summary: dict, totals: dict, decision: dict, pins: dict, date: str
         "Beside it, what each pin cost in things that are not judgement, over all three of its",
         "configurations:",
         "",
-        "| pin | transport losses | truncated draws |",
-        "|---|---|---|",
-        f"| pro | {pins['transport_losses_pro'] or '—'} | {pins['length_draws_pro']} |",
-        f"| flash | {pins['transport_losses_flash'] or '—'} | {pins['length_draws_flash']} |",
+        "| pin | transport losses | truncated draws | failures after `create` |",
+        "|---|---|---|---|",
+        f"| pro | {pins['transport_losses_pro'] or '—'} | {pins['length_draws_pro']} | {pins['failures_after_create_pro'] or '—'} |",
+        f"| flash | {pins['transport_losses_flash'] or '—'} | {pins['length_draws_flash']} | {pins['failures_after_create_flash'] or '—'} |",
         "",
-        "The `.env` pin line stays Hugo's. This file is the evidence, not the change.",
+        *_case_counts_table(summary),
         "",
-        "## Reading (written 2026-09-06, against the numbers above)",
+        "## Reading and rulings",
         "",
-        "**The cap is not the fix for #325, and the rule says so.** Both caps cut draws — 1024 cut",
-        "three, 2048 cut four, out of roughly 816 each, on both pins — while neither uncapped",
-        "configuration had a single draw stopped by a provider limit. A cap does not turn a",
-        "runaway back into an answer; it turns a slow answer into a lost one. Spec §3's rule lands",
-        "on uncapped, and it lands there for the right reason.",
-        "",
-        "**What did reproduce is the runaway's shape.** On `pro-high-2048` a draw came back as",
-        "`ValidationError` over the model's own text — `'13:45}Wait invalid JSON missing quote.",
-        "Need fix.{'` — a self-repair loop inside a structured answer. A first attempt at this run,",
-        "uncapped on the pro pin at `high`, had one draw of",
-        "`test_a_time_with_consent_updates_and_adds[no, let's do 13:45]` open for over eleven",
-        "minutes: the same case a 1024 cap later cut. On the flash pin the longest answer ran to",
-        "4839 completion tokens against a 78-token median. The loop is real on both pins; what the",
-        "flash pin changes is what it costs when it happens.",
-        "",
-        "**The switch to the flash pin is not free, and one case is not close.** With the eval's",
-        "own decision counts (`timebox_question` prints them; the appendix has every line):",
-        "",
-        "| case | pro-high / 1024 / 2048 | flash-minimal / 1024 / 2048 |",
-        "|---|---|---|",
-        "| `test_a_revision_after_commit_is_still_a_revision[move the work two hours later]` | 8/8, 8/8, 8/8 `ReviseArtifact` | **1/8, 2/8, 2/8** — the rest read as `ProvidePlanningFacts` |",
-        "| `test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]` | 8/8, 8/8, 8/8 | 6/8, 6/8, 8/8 |",
-        "",
-        "The first is not sampling noise at n=8 across three configurations: the flash pin reads",
-        "a revision after commit as a fact six times in eight, and the pro pin never does.",
-        "`planning_card::test_a_non_press_is_none[plan tomorrow for me]` fails on all three flash",
-        "configurations too (5/8 at best, the misses pressing `add` or emitting `update_time`",
-        "without a time) and passes on all three pro ones.",
-        "",
-        "That is the number the `.env` pin line needs, and it is not this ticket's to spend. The",
-        "code default is CLAUDE.md's recorded role for routing; the measurement above says a",
-        "surface that cares about revise-versus-fact should be read before it is switched.",
-        "",
+        *_reading(date),
         "## Appendix — per-case decision counts",
         "",
         "The evals' own `[eval] <Kind> <n>/8 <- <case> :: {breakdown} retries=<n>` lines, captured",
@@ -751,14 +890,14 @@ def main() -> int:
 
     summary = _summarise(runs, prices, base_env)
     totals = _config_totals(summary)
-    decision = _cap_decision(totals)
+    caps = _cap_measurement(totals)
     pins = _pin_comparison(summary)
     payload = {
         "date": args.date,
         "runs": runs,
         "summary": summary,
         "config_totals": totals,
-        "cap_decision": decision,
+        "cap_measurement": caps,
         "pin_comparison": pins,
         "pricing_per_token": {k: list(v) for k, v in prices.items()},
         "total_cost_usd": round(sum(t["cost_usd"] for t in totals.values()), 4),
@@ -766,7 +905,7 @@ def main() -> int:
     (HERE / f"results-interpreter-tier-{args.date}.json").write_text(
         json.dumps(payload, indent=2), encoding="utf-8"
     )
-    markdown = _markdown(summary, totals, decision, pins, args.date)
+    markdown = _markdown(summary, totals, caps, pins, args.date)
     (HERE / f"results-interpreter-tier-{args.date}.md").write_text(markdown, encoding="utf-8")
     print(markdown)
     print(f"total cost: ${payload['total_cost_usd']:.3f}")

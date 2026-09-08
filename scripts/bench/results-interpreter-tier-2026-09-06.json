@@ -190,7 +190,11 @@
       "prompt_tokens_total": 31489,
       "completion_tokens_total": 4319,
       "cost_usd": 0.0466,
-      "decision_breakdown": []
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
     },
     "pro-high::day_frame": {
       "config": "pro-high",
@@ -235,7 +239,11 @@
       "prompt_tokens_total": 19024,
       "completion_tokens_total": 2318,
       "cost_usd": 0.0273,
-      "decision_breakdown": []
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
     },
     "pro-high::timebox_question": {
       "config": "pro-high",
@@ -320,7 +328,11 @@
         "[eval] AskQuestion 0/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
         "[eval] ProvidePlanningFacts 7/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 7, 'AskQuestion': 1} retries=0",
         "[eval] AskQuestion 1/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 7, 'AskQuestion': 1} retries=0"
-      ]
+      ],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": true
     },
     "pro-high-1024::planning_card": {
       "config": "pro-high-1024",
@@ -367,7 +379,11 @@
       "prompt_tokens_total": 31193,
       "completion_tokens_total": 5091,
       "cost_usd": 0.0488,
-      "decision_breakdown": []
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
     },
     "pro-high-1024::day_frame": {
       "config": "pro-high-1024",
@@ -412,7 +428,11 @@
       "prompt_tokens_total": 19103,
       "completion_tokens_total": 2647,
       "cost_usd": 0.0284,
-      "decision_breakdown": []
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
     },
     "pro-high-1024::timebox_question": {
       "config": "pro-high-1024",
@@ -497,7 +517,11 @@
         "[eval] AskQuestion 0/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
         "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
         "[eval] AskQuestion 0/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0"
-      ]
+      ],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": true
     },
     "pro-high-2048::planning_card": {
       "config": "pro-high-2048",
@@ -546,7 +570,11 @@
       "prompt_tokens_total": 31132,
       "completion_tokens_total": 5254,
       "cost_usd": 0.0492,
-      "decision_breakdown": []
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
     },
     "pro-high-2048::day_frame": {
       "config": "pro-high-2048",
@@ -591,7 +619,11 @@
       "prompt_tokens_total": 19024,
       "completion_tokens_total": 2314,
       "cost_usd": 0.0272,
-      "decision_breakdown": []
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
     },
     "pro-high-2048::timebox_question": {
       "config": "pro-high-2048",
@@ -678,7 +710,11 @@
         "[eval] AskQuestion 0/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
         "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
         "[eval] AskQuestion 0/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0"
-      ]
+      ],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": true
     },
     "flash-minimal::planning_card": {
       "config": "flash-minimal",
@@ -741,7 +777,11 @@
       "prompt_tokens_total": 53599,
       "completion_tokens_total": 5372,
       "cost_usd": 0.0029,
-      "decision_breakdown": []
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
     },
     "flash-minimal::day_frame": {
       "config": "flash-minimal",
@@ -786,7 +826,11 @@
       "prompt_tokens_total": 25128,
       "completion_tokens_total": 5445,
       "cost_usd": 0.0019,
-      "decision_breakdown": []
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
     },
     "flash-minimal::timebox_question": {
       "config": "flash-minimal",
@@ -897,7 +941,19 @@
         "[eval] AskQuestion 0/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
         "[eval] ProvidePlanningFacts 7/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 7, 'AskQuestion': 1} retries=0",
         "[eval] AskQuestion 1/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 7, 'AskQuestion': 1} retries=0"
-      ]
+      ],
+      "eval_reported_failures": {
+        "ValidationError": 1
+      },
+      "failures_after_create": {
+        "ValidationError": 1
+      },
+      "failures_after_create_by_case": {
+        "move the work two hours later": {
+          "ValidationError": 1
+        }
+      },
+      "prints_breakdown": true
     },
     "flash-minimal-1024::planning_card": {
       "config": "flash-minimal-1024",
@@ -959,7 +1015,11 @@
       "prompt_tokens_total": 53896,
       "completion_tokens_total": 5345,
       "cost_usd": 0.0029,
-      "decision_breakdown": []
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
     },
     "flash-minimal-1024::day_frame": {
       "config": "flash-minimal-1024",
@@ -1006,7 +1066,11 @@
       "prompt_tokens_total": 24482,
       "completion_tokens_total": 5234,
       "cost_usd": 0.0018,
-      "decision_breakdown": []
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
     },
     "flash-minimal-1024::timebox_question": {
       "config": "flash-minimal-1024",
@@ -1120,7 +1184,11 @@
         "[eval] AskQuestion 0/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=1",
         "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
         "[eval] AskQuestion 0/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0"
-      ]
+      ],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": true
     },
     "flash-minimal-2048::planning_card": {
       "config": "flash-minimal-2048",
@@ -1174,7 +1242,11 @@
       "prompt_tokens_total": 53896,
       "completion_tokens_total": 5227,
       "cost_usd": 0.0029,
-      "decision_breakdown": []
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
     },
     "flash-minimal-2048::day_frame": {
       "config": "flash-minimal-2048",
@@ -1220,7 +1292,11 @@
       "prompt_tokens_total": 25123,
       "completion_tokens_total": 5456,
       "cost_usd": 0.0019,
-      "decision_breakdown": []
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
     },
     "flash-minimal-2048::timebox_question": {
       "config": "flash-minimal-2048",
@@ -1324,7 +1400,13 @@
         "[eval] AskQuestion 0/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
         "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
         "[eval] AskQuestion 0/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0"
-      ]
+      ],
+      "eval_reported_failures": {
+        "LengthFinishReasonError": 1
+      },
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": true
     }
   },
   "config_totals": {
@@ -1344,6 +1426,11 @@
       ],
       "transport_losses": {},
       "transport_loss_draws": 0,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
       "cap_bites": 0,
       "runaway_draws": 0,
       "length_draws": 0,
@@ -1371,6 +1458,11 @@
       ],
       "transport_losses": {},
       "transport_loss_draws": 0,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
       "cap_bites": 1,
       "runaway_draws": 0,
       "length_draws": 1,
@@ -1402,6 +1494,11 @@
         "ValidationError": 1
       },
       "transport_loss_draws": 1,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
       "cap_bites": 2,
       "runaway_draws": 0,
       "length_draws": 2,
@@ -1438,6 +1535,15 @@
       ],
       "transport_losses": {},
       "transport_loss_draws": 0,
+      "failures_after_create": {
+        "ValidationError": 1
+      },
+      "failures_after_create_by_case": [
+        "timebox_question::move the work two hours later"
+      ],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
       "cap_bites": 0,
       "runaway_draws": 0,
       "length_draws": 0,
@@ -1471,6 +1577,11 @@
       ],
       "transport_losses": {},
       "transport_loss_draws": 0,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
       "cap_bites": 2,
       "runaway_draws": 0,
       "length_draws": 2,
@@ -1505,6 +1616,11 @@
       ],
       "transport_losses": {},
       "transport_loss_draws": 0,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
       "cap_bites": 2,
       "runaway_draws": 0,
       "length_draws": 2,
@@ -1519,14 +1635,42 @@
       "config_verified": true
     }
   },
-  "cap_decision": {
-    "max_tokens": 0,
-    "why": "both caps bit (1024: 3 draws, 2048: 4 draws); the default stays uncapped and the finding goes on #325.",
-    "bites_1024": 3,
-    "bites_2048": 4,
-    "missing_configs": []
+  "cap_measurement": {
+    "missing_configs": [],
+    "by_cap": {
+      "1024": {
+        "configs": [
+          "pro-high-1024",
+          "flash-minimal-1024"
+        ],
+        "truncated_draws": 3,
+        "draws": 545,
+        "cases": [
+          "day_frame::test_bare_times_answer_the_open_frame_question",
+          "planning_card::test_a_time_with_consent_updates_and_adds[no, let's do 13:45]",
+          "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]"
+        ]
+      },
+      "2048": {
+        "configs": [
+          "pro-high-2048",
+          "flash-minimal-2048"
+        ],
+        "truncated_draws": 4,
+        "draws": 546,
+        "cases": [
+          "planning_card::test_a_time_without_consent_only_updates",
+          "timebox_question::test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]",
+          "timebox_question::test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]"
+        ]
+      }
+    }
   },
   "pin_comparison": {
+    "failures_after_create_pro": {},
+    "failures_after_create_flash": {
+      "ValidationError": 1
+    },
     "judgement_lost_on_flash": [
       "planning_card::test_a_non_press_is_none[later]",
       "planning_card::test_a_non_press_is_none[plan tomorrow for me]",

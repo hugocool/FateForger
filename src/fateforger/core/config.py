@@ -95,6 +95,10 @@ class Settings(BaseSettings):
         default=""
     )
     #: Every surface interpreter (planning card, timeboxing stage cards).
+    #: Defaults to the pro pin at `high` on the 2026-09-06 bench, not the flash
+    #: pin CLAUDE.md names for routing: the prompts as written lose there
+    #: (27/34 cases against 32/34; revision-after-commit 1/8 against 8/8). The
+    #: flash pin is the destination, after prompt work.
     llm_model_intent_interpreter: str = Field(default="")
 
     # Per-agent temperature
@@ -126,9 +130,15 @@ class Settings(BaseSettings):
     llm_max_tokens_timebox_patcher: int = Field(
         default=0
     )
-    #: -1: the code default (see llm/factory._INTENT_INTERPRETER_MAX_TOKENS).
-    #: 0: uncapped. >0: the cap. The interpreter answers a small fixed schema;
-    #: uncapped it ran away to 16,384 tokens on ~5% of calls (#325).
+    #: -1: the code default (see llm/factory._INTENT_INTERPRETER_MAX_TOKENS,
+    #: 1024 on Hugo's ruling over the 2026-09-06 bench). 0: uncapped. >0: the
+    #: cap. The interpreter answers a small fixed schema -- a 45-token median
+    #: on the pro pin, 78 on the flash pin, and 405 tokens was the largest
+    #: answer anything gave with nothing stopping it. Uncapped, #325's runaway
+    #: holds the user's turn open while the SDK waits 600s and retries twice;
+    #: the bench measured 3 truncated draws in the 545 taken at 1024, all of
+    #: them slow ones, and no case failing on length.
+    #: scripts/bench/results-interpreter-tier-2026-09-06.md has the numbers.
     llm_max_tokens_intent_interpreter: int = Field(default=-1)
 
     # MCP Server Configuration
