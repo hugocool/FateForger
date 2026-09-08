@@ -492,6 +492,64 @@ async def test_the_judgement_is_bounded(monkeypatch, caplog) -> None:
     assert "TimeoutError" in caplog.text
 
 
+async def test_the_material_writes_are_bounded(monkeypatch, caplog) -> None:
+    """The puts cross the same mount the calendar read crosses. A hung write
+    is a dead turn exactly as a hung board read would be."""
+    monkeypatch.setattr(timeboxing_host, "MATERIAL_TIMEOUT_S", 0.01)
+
+    async def _hanging_store(**_kwargs) -> str:
+        await asyncio.sleep(60)
+        raise AssertionError("the wait should have been bounded")
+
+    with caplog.at_level(logging.ERROR):
+        refs = await _lookup(put_material=_hanging_store)
+
+    assert refs.facts == []
+    assert refs.unresolved is True
+    assert "work_material_unstorable" in caplog.text
+    assert "TimeoutError" in caplog.text
+
+
+async def test_a_failed_write_does_not_leave_its_siblings_detached() -> None:
+    """A bare gather propagates the first failure and lets the rest run on;
+    the second failure then lands as an unretrieved-exception warning with
+    nothing to trace it to. Every write is awaited before this returns."""
+    finished: list[str] = []
+
+    async def _slow_second_failure(*, external_id: str, **_kwargs) -> str:
+        if external_id == "page-457":
+            await asyncio.sleep(0.05)
+        finished.append(external_id)
+        raise RuntimeError("tmbx refused")
+
+    ask, _prompts = _answering(["page-427", "page-457"])
+    refs = await _lookup(ask=ask, put_material=_slow_second_failure)
+
+    assert refs.unresolved is True
+    assert sorted(finished) == ["page-427", "page-457"]
+
+
+async def test_a_failure_carries_its_traceback_and_its_event_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The catch is broad, so the log line is the only thing left to debug
+    from -- a type and a message with no frame names neither the layer nor the
+    call. The event goes in a structured field too, not only in the text."""
+
+    class _Bad:
+        async def list_tasks(self, scope: str, *, limit: int = 25, cursor=None):
+            raise TypeError("'NoneType' object is not subscriptable")
+
+    with caplog.at_level(logging.ERROR):
+        await _lookup(board=_Bad())
+
+    record = caplog.records[-1]
+    assert record.exc_info is not None
+    assert record.exc_info[0] is TypeError
+    assert record.event == "work_board_unavailable"
+    assert record.error_type == "TypeError"
+
+
 async def test_the_rows_are_stored_concurrently() -> None:
     """Two puts are independent, and this sits inside the latency of a turn
     somebody is watching. The barrier makes a sequential loop deadlock rather

@@ -551,6 +551,11 @@ PutMaterial = Callable[..., Awaitable[str]]
 #: the day is planned unlinked.
 BOARD_TIMEOUT_S = 20.0
 LOOKUP_TIMEOUT_S = 45.0
+#: The material writes cross the same MCP mount the calendar read crosses, so
+#: they can hang the same way. Bounded for the same reason as the other two: a
+#: hung write is still a dead turn, and a dead turn is the one outcome this
+#: whole path is arranged to prevent.
+MATERIAL_TIMEOUT_S = 20.0
 
 
 @dataclass(frozen=True)
@@ -589,7 +594,13 @@ def work_lookup_failed(event: str, exc: BaseException) -> WorkRefs:
         event,
         type(exc).__name__,
         exc,
-        extra={"error_type": type(exc).__name__},
+        # The traceback, because the catch is broad. A bare
+        # "work_lookup_failed: TypeError: 'NoneType' object is not
+        # subscriptable" names neither the frame nor the layer it came from,
+        # and the thing that raised may be `resolve_work`, the MCP client or a
+        # row mapper. Loudness that survives the widening.
+        exc_info=True,
+        extra={"event": event, "error_type": type(exc).__name__},
     )
     return WorkRefs(facts=[], unresolved=True)
 
@@ -645,6 +656,49 @@ def judge_ask(model_client: Any) -> Ask:
         return content
 
     return ask
+
+
+async def _store_materials(rows: list[Any], put_material: PutMaterial) -> list[str]:
+    """The handle for each row, all written at once and all waited for.
+
+    Concurrent because the writes are independent and this sits inside the
+    latency of a turn somebody is watching a progress card for.
+
+    `return_exceptions=True` because a bare gather propagates the first failure
+    and leaves its siblings running detached: a second failure then surfaces as
+    an unretrieved-exception warning with nothing to trace it to. Harmless for
+    correctness -- the puts are idempotent and these refs are discarded -- but
+    noise nobody owns. Collecting them means every write is awaited, and the
+    first failure is re-raised with its own traceback intact.
+
+    One failed write refuses the whole set rather than returning the handles
+    that did land: a partial list reads as "this is the work", and the ticket
+    that fell out is the one nobody would notice missing.
+
+    Bounded, because these cross the same MCP mount the calendar read crosses
+    and can hang the same way.
+    """
+    settled = await asyncio.wait_for(
+        asyncio.gather(
+            *(
+                put_material(
+                    source=WORK_SOURCE,
+                    external_id=row.page_id,
+                    url=row.url,
+                    label=row.name,
+                )
+                for row in rows
+            ),
+            return_exceptions=True,
+        ),
+        timeout=MATERIAL_TIMEOUT_S,
+    )
+    refused = next(
+        (result for result in settled if isinstance(result, BaseException)), None
+    )
+    if refused is not None:
+        raise refused
+    return list(settled)
 
 
 async def work_refs_for_turn(
@@ -712,19 +766,7 @@ async def work_refs_for_turn(
         return WorkRefs(facts=[], unresolved=False)
 
     try:
-        # Concurrently: independent writes, and this sits inside the latency of
-        # a turn somebody is watching a progress card for.
-        handles = await asyncio.gather(
-            *(
-                put_material(
-                    source=WORK_SOURCE,
-                    external_id=row.page_id,
-                    url=row.url,
-                    label=row.name,
-                )
-                for row in rows
-            )
-        )
+        handles = await _store_materials(rows, put_material)
     except Exception as exc:  # noqa: BLE001 - a handle nothing stored is no handle
         return work_lookup_failed("work_material_unstorable", exc)
 
