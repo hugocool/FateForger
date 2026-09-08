@@ -511,10 +511,16 @@ def test_placeholder_token_in_env_raises_unavailable(
 ) -> None:
     """`.env.template` ships the placeholder, so it arrives by environment too.
 
-    Settings are untouched here: the environment wins, and forwarding
-    "change_me..." to Notion buys a 401 that reads like an outage rather than
-    like a host nobody configured.
+    Forwarding "change_me..." to Notion buys a 401 that reads like an outage
+    rather than like a host nobody configured, so the check has to happen after
+    the token is resolved rather than on the settings default alone.
+
+    Settings carry a token that WOULD have worked, which is the half this test
+    was missing: with both sides at the placeholder it passed whichever value
+    `_auth_headers` consulted, and the precedence -- environment first, settings
+    as the fallback -- is the thing it exists to pin.
     """
+    monkeypatch.setattr(settings, "mcp_http_auth_token", "a-real-looking-secret")
     monkeypatch.setenv("MCP_HTTP_AUTH_TOKEN", PLACEHOLDER_TOKEN)
 
     with pytest.raises(TaskBoardUnavailable) as excinfo:
