@@ -24,6 +24,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningSessionSnapshot,
     suspension_fact_id,
 )
+from fateforger.agents.timeboxing.work_refs import work_refs_on
 from fateforger.slack_bot.messages import SLACK_MAX_MODAL_BLOCKS
 
 Necessity = Literal["must", "should"]
@@ -179,6 +180,21 @@ class SuspendedRow(_Frozen):
     reason: str
 
 
+class WorkItem(_Frozen):
+    """One ticket this day is being planned around, as a person reads it.
+
+    The board number and the ticket's own name, and nothing else. The handle
+    the ref also carries is a machine identifier: the planner writes it onto a
+    block, and showing it here would ask the reader to check a string that
+    tells them nothing about which ticket it is. There is no url on the ref at
+    all, by design (`work_refs`).
+    """
+
+    #: `TaskRow.number` is optional; a ticket nobody numbered is still a ticket.
+    number: int | None
+    label: str
+
+
 class ContextPanel(_Frozen):
     session_key: str
     expected_revision: int
@@ -192,12 +208,23 @@ class ContextPanel(_Frozen):
     #: The day type, an enum value.
     off_today_reason: str
     groups: list[AnchorGroup]
+    #: The tickets the host resolved for this day, in the order it resolved
+    #: them. Empty whenever `work_refs_unresolved` is set -- see `_work`.
+    work: list[WorkItem] = Field(default_factory=list)
+    #: The last resolve that looked could not work out which ticket was meant.
+    work_refs_unresolved: bool = False
     suspended: list[SuspendedRow]
     #: Row uids and suspension fact ids the panel was drawn from. A snapshot
     #: whose set differs needs the panel edited; equal means nothing to do.
     shown_with: frozenset[str]
     #: Row uids at stage entry. Ordering key 1 reads it; kept by the registry.
     first_shown_with: frozenset[str]
+
+
+#: The mark that stands for "this day's work could not be resolved" inside
+#: `shown_with_of`. Minted here, and shaped so it cannot collide with a
+#: constraint uid, a suspension fact id or a material handle.
+_WORK_UNRESOLVED_MARK = "work-refs:unresolved"
 
 
 def shown_with_of(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
@@ -207,11 +234,51 @@ def shown_with_of(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
         for fact in snapshot.facts
         if fact.kind is FactKind.SUSPENDED_CONSTRAINT
     }
-    return frozenset(uids | facts)
+    # The panel names the day's work too, so the set it is compared by has to
+    # move when the work does: the work is resolved on a candidate turn, which
+    # usually leaves the rules exactly as they were, and a panel compared on
+    # rules alone would never be edited to show the line. By handle, because
+    # that is what the host minted per ticket -- a ticket renamed on the board
+    # keeps its handle and does not redraw the panel, which is one turn of a
+    # stale label and never a wrong ticket.
+    work = {
+        str(ref["link"])
+        for ref in work_refs_on(snapshot.facts)
+        if isinstance(ref.get("link"), str)
+    }
+    marks = {_WORK_UNRESOLVED_MARK} if snapshot.work_refs_unresolved else set()
+    return frozenset(uids | facts | work | marks)
 
 
 def _row_uids(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
     return frozenset(str(raw["uid"]) for raw in snapshot.applicable_constraints)
+
+
+def _work(snapshot: PlanningSessionSnapshot) -> list[WorkItem]:
+    """The tickets the panel may name, which is none of them when the last
+    resolve could not answer.
+
+    **A ref outlives the turn that filed it.** Facts merge by id and are never
+    deleted, so a turn that resolved nothing leaves the previous turn's ref
+    standing on the snapshot; the id is per-day, so the staleness is bounded to
+    one day, but one day is the whole session. Naming a ticket beside the
+    sentence saying the work could not be worked out is the one combination
+    that could get a day approved against the wrong ticket -- the reader has no
+    way to tell which half of the line describes this turn. So the unresolved
+    case shows the sentence and no names, and the sentence says the day is
+    planned without a ticket, which is what the planner was told as well.
+    """
+
+    if snapshot.work_refs_unresolved:
+        return []
+    return [
+        WorkItem(
+            number=ref["task"] if isinstance(ref.get("task"), int) else None,
+            label=ref["label"],
+        )
+        for ref in work_refs_on(snapshot.facts)
+        if isinstance(ref.get("label"), str) and ref["label"]
+    ]
 
 
 def context_panel(
@@ -231,6 +298,8 @@ def context_panel(
         off_today_count=snapshot.suspended_constraint_count,
         off_today_reason=snapshot.planning_day.day_type.value,
         groups=group_rows(rows),
+        work=_work(snapshot),
+        work_refs_unresolved=snapshot.work_refs_unresolved,
         suspended=[
             SuspendedRow(uid=r.uid, name=r.name, reason=r.suspended_reason)
             for r in rows
@@ -382,6 +451,7 @@ __all__ = [
     "RankedRow",
     "SteerVerb",
     "SuspendedRow",
+    "WorkItem",
     "context_fold",
     "context_panel",
     "fold_block_count",

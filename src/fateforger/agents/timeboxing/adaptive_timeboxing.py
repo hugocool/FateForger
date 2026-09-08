@@ -660,6 +660,16 @@ class AdaptiveTimeboxing:
                     "suspended_constraint_count": resolved.suspended_constraint_count
                 }
             )
+        # Unconditional, unlike the count above, because this bool has no "did
+        # not look" value: `PlanningContext` defaults it to False and the brief
+        # is built from that same field, so mirroring it as-is is what keeps
+        # the card and the planner reading one answer. A resolve that did not
+        # run the lookup therefore clears it -- the flag describes the last
+        # resolve, never the session, and a warning left standing after a later
+        # turn resolved the work would be the wrong error to make.
+        snapshot = snapshot.model_copy(
+            update={"work_refs_unresolved": resolved.work_refs_unresolved}
+        )
         readiness = self._requirements.evaluate(target, snapshot)
         blocker = readiness.first_hard_user_blocker()
         if blocker is not None:

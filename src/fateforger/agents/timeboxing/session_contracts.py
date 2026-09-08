@@ -357,6 +357,13 @@ class PlanningSessionSnapshot(_StrictModel):
     #: suspends every working rule). A count because the rows would flood a
     #: card; written by the same resolve that writes the rows.
     suspended_constraint_count: int = Field(default=0, ge=0)
+    #: The last resolve that looked could not work out which ticket the
+    #: session asked for. Mirrored from `PlanningContext` for the same reason
+    #: the count above is: it is the absence of a fact, and the cards read the
+    #: snapshot, so a signal that stopped at the brief would be invisible to
+    #: the person approving the day. See `PlanningBrief.work_refs_unresolved`,
+    #: which carries the same bool to the planner.
+    work_refs_unresolved: bool = False
     #: Where Stage 1 stands. `open`: eliciting or not yet evaluated. `proposed`:
     #: the kernel emitted GateMet and is waiting for consent. `closed`: the user
     #: consented, or a Stage 2 fact arrived, and planning may proceed.

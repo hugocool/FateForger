@@ -339,6 +339,41 @@ def _row_tags(row: FoldRow) -> str:
     return " · ".join(tags)
 
 
+#: Tickets named before the tail becomes a count. Three is already a long
+#: line, and this is a line somebody glances at to catch a wrong resolution
+#: before approving a day -- not a report. The "+N more" tail is the same
+#: idiom `_bullets` uses.
+WORK_LINE_CAP = 3
+
+
+def _work_line(panel: ContextPanel) -> str:
+    """What the day is being planned around, as one line, or nothing at all.
+
+    Never both halves: `context_panel` empties `work` when the resolve could
+    not answer (its `_work` says why), so a ticket resolved on an earlier turn
+    is never named beside the sentence saying this turn resolved nothing.
+
+    The number and the name, never the handle and never a url. A handle is
+    what the planner writes onto a block; a person checking whether the day is
+    about the right ticket needs the ticket.
+    """
+
+    if panel.work_refs_unresolved:
+        return (
+            "\nI could not work out which ticket you meant, so the day is "
+            "planned without one — you can attach it later."
+        )
+    if not panel.work:
+        return ""
+    shown = panel.work[:WORK_LINE_CAP]
+    named = ", ".join(
+        f"#{item.number} {item.label}" if item.number is not None else item.label
+        for item in shown
+    )
+    rest = len(panel.work) - len(shown)
+    return f"\nPlanning around {named}" + (f" _+{rest} more_" if rest > 0 else "")
+
+
 def _off_today_line(count: int, reason: str) -> str:
     if count == 0:
         return ""
@@ -367,6 +402,7 @@ def render_context_panel(panel: ContextPanel, done: str | None = None) -> SlackB
         f"{panel.rule_count} rules apply ({panel.must_count} must, "
         f"{panel.rule_count - panel.must_count} should)"
         f"{_off_today_line(panel.off_today_count, panel.off_today_reason)}\n{summary}"
+        f"{_work_line(panel)}"
     )
     section: dict = {
         "type": "section",
