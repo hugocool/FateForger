@@ -101,12 +101,12 @@ class PlanningContext(BaseModel):
     #: Probes the host's judges phrased for the top open Stage 1 cells, in
     #: rank order. Read by `_stage1_outcome` and nowhere else.
     probes: list[ProbeDraft] = Field(default_factory=list)
-    #: The host tried to read the task board for this turn and could not. It
-    #: travels beside the facts rather than as one because it is the absence of
-    #: a fact -- see `PlanningBrief.work_board_unavailable`, which this feeds --
-    #: and it does not block the turn: a planner told the board is unreadable
-    #: plans the day and leaves the blocks unlinked.
-    work_board_unavailable: bool = False
+    #: The host tried to resolve the work this session asked for and could
+    #: not. It travels beside the facts rather than as one because it is the
+    #: absence of a fact -- see `PlanningBrief.work_refs_unresolved`, which this
+    #: feeds -- and it never blocks the turn: a planner told the work could not
+    #: be resolved plans the day and leaves the blocks unlinked.
+    work_refs_unresolved: bool = False
 
 
 class ProgressSink(Protocol):
@@ -1506,7 +1506,7 @@ class AdaptiveTimeboxing:
                 snapshot, context.applicable_constraints
             ),
             calendar_snapshot=context.calendar_snapshot,
-            work_board_unavailable=context.work_board_unavailable,
+            work_refs_unresolved=context.work_refs_unresolved,
             target_artifact=target,
             readiness={
                 "target_artifact": target.value,

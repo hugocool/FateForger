@@ -14,8 +14,9 @@ than about planning.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -281,7 +282,7 @@ class HostPlanningContext:
             ],
             applicable_constraints=constraints,
             calendar_snapshot=calendar_snapshot,
-            work_board_unavailable=work.board_unavailable,
+            work_refs_unresolved=work.unresolved,
         )
 
     async def _work_refs(
@@ -302,13 +303,13 @@ class HostPlanningContext:
         """
         message = requested_work_text(snapshot)
         if not message.strip():
-            return WorkRefs(facts=[], board_unavailable=False)
+            return WorkRefs(facts=[], unresolved=False)
 
-        from fateforger.agents.tasks.board import TaskBoard, TaskBoardError
+        from fateforger.agents.tasks.board import TaskBoard
 
         try:
             board = TaskBoard.from_settings()
-        except TaskBoardError as exc:
+        except Exception as exc:  # noqa: BLE001 - no board is one outcome
             # `from_settings` raises on a missing token, before any request --
             # and before a judge is asked for, since there would be nothing to
             # ask about.
@@ -543,40 +544,59 @@ Ask = Callable[[str], Awaitable[str]]
 PutMaterial = Callable[..., Awaitable[str]]
 
 
-def work_refs_fact_id(day: str) -> str:
-    """One id per day, so a re-resolve rewrites rather than accumulates."""
-    return f"work-refs:{day}"
+#: How long the board read and the judgement each get. Both sit inside a
+#: planning turn the user is waiting on, so an unbounded hang is worse than
+#: either failing: a turn that never answers is a session nobody can continue,
+#: while a timeout takes the same non-blocking path as any other failure and
+#: the day is planned unlinked.
+BOARD_TIMEOUT_S = 20.0
+LOOKUP_TIMEOUT_S = 45.0
 
 
 @dataclass(frozen=True)
 class WorkRefs:
-    """What one turn's work lookup produced, and whether it got to look.
+    """What one turn's work lookup produced, and whether it got an answer.
 
     The two fields are not redundant. No facts means either "the message named
-    no ticket" or "the board could not be read", and only the second changes
-    how the planner should read the brief -- so the flag travels beside the
-    facts rather than as an empty one, which would read as the first.
+    no ticket" or "the lookup could not be completed", and only the second
+    changes how the planner should read the brief -- so the flag travels beside
+    the facts rather than as an empty fact, which would read as the first.
     """
 
     facts: list[PlanningFact]
-    board_unavailable: bool
+    unresolved: bool
 
 
-def work_board_unavailable(exc: Exception) -> WorkRefs:
-    """The board did not answer: say so at error, and let the turn continue.
+def work_lookup_failed(event: str, exc: BaseException) -> WorkRefs:
+    """A step of the lookup did not complete: say so at error, and go on.
 
-    One event name, `work_board_unavailable`, whether the board could not be
-    built (no token) or could not be queried (no sprint, two sprints, a
-    malformed page). They are one problem for the planner -- no handles this
-    turn -- and the cause is in the message for whoever has to fix it.
+    **Every failure here is non-blocking**, decided 2026-09-08: the user asked
+    to plan a day, and whether the board timed out, the model named a ticket
+    nobody showed it, or the material store refused the write, the outcome for
+    them is the same -- nobody knows which ticket they meant, so the day is
+    planned unlinked and someone attaches one later, which is a decision this
+    plan already took. Nothing acts on a bad answer and the brief still says
+    the work could not be resolved, so the loudness lives in this log line and
+    on the brief rather than in a dead turn.
+
+    `event` distinguishes the four for whoever has to fix one --
+    `work_board_unavailable`, `work_lookup_hallucinated_id`,
+    `work_lookup_failed`, `work_material_unstorable` -- because they have four
+    different remedies even though the planner's next move is identical.
     """
     logger.error(
-        "work_board_unavailable: %s: %s",
+        "%s: %s: %s",
+        event,
         type(exc).__name__,
         exc,
         extra={"error_type": type(exc).__name__},
     )
-    return WorkRefs(facts=[], board_unavailable=True)
+    return WorkRefs(facts=[], unresolved=True)
+
+
+def work_board_unavailable(exc: BaseException) -> WorkRefs:
+    """The board could not be built or read, under its own event name."""
+    return work_lookup_failed("work_board_unavailable", exc)
 
 
 def requested_work_text(snapshot: Any) -> str:
@@ -596,21 +616,6 @@ def requested_work_text(snapshot: Any) -> str:
         if fact.kind is FactKind.REQUESTED_ACTIVITY and isinstance(fact.value, str)
     ]
     return "\n".join(text for text in wanted if text.strip())
-
-
-def work_refs_on(facts: Iterable[PlanningFact]) -> list[dict[str, Any]]:
-    """The refs carried by the `WORK_REFS` facts among these, in fact order.
-
-    A reader rather than a field lookup at each call site: this fact's value is
-    read, not merely present, and one place that knows its shape is one place
-    to change when it grows.
-    """
-    refs: list[dict[str, Any]] = []
-    for fact in facts:
-        if fact.kind is not FactKind.WORK_REFS or not isinstance(fact.value, list):
-            continue
-        refs.extend(entry for entry in fact.value if isinstance(entry, dict))
-    return refs
 
 
 def judge_ask(model_client: Any) -> Ask:
@@ -663,45 +668,70 @@ async def work_refs_for_turn(
     order, unsorted and unfiltered, because the prompt tells the model that
     order is the person's ranking (see `build_prompt`).
 
-    **A board that cannot be read is loud and does not block.** It logs under
-    `work_board_unavailable` with the cause and returns the flag; the turn goes
-    on and the brief says the board could not be read. Filing an empty fact
-    instead would tell the planner the board was read and named nothing, which
-    is a different and false thing.
-
-    Every other failure propagates. A model that answered with an id nobody
-    showed it (`UnknownWorkId`), or a material store that would not take a row,
-    is an integrity failure rather than a day without links, and a link that
-    silently did not happen is the failure this whole path exists to avoid.
+    **No failure here blocks the turn.** Each step is caught broadly and logged
+    under its own event name (see `work_lookup_failed`), and the caller puts
+    one sentence on the brief. Broadly, because the failures that matter are
+    not the typed ones: `TaskBoard` wraps an error envelope and a malformed
+    page, but a Notion outage arrives as an httpx or anyio error from inside
+    the MCP client, which is the single likeliest way this fails. Both waits
+    are bounded, because a planning turn that hangs is worse than one planned
+    unlinked.
     """
     if not message.strip():
         # Nobody asked for anything, so there is nothing to point at: no board
         # read, no model call, and nothing on the brief either way.
-        return WorkRefs(facts=[], board_unavailable=False)
+        return WorkRefs(facts=[], unresolved=False)
 
-    from fateforger.agents.tasks.board import TaskBoardError
-    from fateforger.agents.timeboxing.work_lookup import resolve_work
+    from fateforger.agents.timeboxing.work_lookup import UnknownWorkId, resolve_work
+    from fateforger.agents.timeboxing.work_refs import work_refs_fact_id
 
     try:
-        listing = await board.list_tasks("current_sprint_ready", limit=WORK_ROW_LIMIT)
-    except TaskBoardError as exc:
+        listing = await asyncio.wait_for(
+            board.list_tasks("current_sprint_ready", limit=WORK_ROW_LIMIT),
+            timeout=BOARD_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 - every board failure is one outcome
         return work_board_unavailable(exc)
 
-    rows = await resolve_work(message, list(listing.tasks), ask=ask)
+    try:
+        rows = await asyncio.wait_for(
+            resolve_work(message, list(listing.tasks), ask=ask),
+            timeout=LOOKUP_TIMEOUT_S,
+        )
+    except UnknownWorkId as exc:
+        # Its own name: an id nobody showed the model is a prompt or a model
+        # problem, not an outage, and it is the one failure here that says
+        # something about the judgement rather than about the plumbing.
+        return work_lookup_failed("work_lookup_hallucinated_id", exc)
+    except Exception as exc:  # noqa: BLE001 - transport, timeout, unparseable
+        return work_lookup_failed("work_lookup_failed", exc)
+
     if not rows:
         # The ordinary case, and it stays silent: a message naming a topic
         # rather than an item plans the day with no ticket attached.
-        return WorkRefs(facts=[], board_unavailable=False)
+        return WorkRefs(facts=[], unresolved=False)
 
-    refs: list[dict[str, Any]] = []
-    for row in rows:
-        handle = await put_material(
-            source=WORK_SOURCE,
-            external_id=row.page_id,
-            url=row.url,
-            label=row.name,
+    try:
+        # Concurrently: independent writes, and this sits inside the latency of
+        # a turn somebody is watching a progress card for.
+        handles = await asyncio.gather(
+            *(
+                put_material(
+                    source=WORK_SOURCE,
+                    external_id=row.page_id,
+                    url=row.url,
+                    label=row.name,
+                )
+                for row in rows
+            )
         )
-        refs.append({"link": handle, "label": row.name, "task": row.number})
+    except Exception as exc:  # noqa: BLE001 - a handle nothing stored is no handle
+        return work_lookup_failed("work_material_unstorable", exc)
+
+    refs = [
+        {"link": handle, "label": row.name, "task": row.number}
+        for handle, row in zip(handles, rows)
+    ]
     return WorkRefs(
         facts=[
             PlanningFact(
@@ -711,7 +741,7 @@ async def work_refs_for_turn(
                 source="system",
             )
         ],
-        board_unavailable=False,
+        unresolved=False,
     )
 
 

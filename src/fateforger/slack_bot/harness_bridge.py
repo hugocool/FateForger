@@ -39,6 +39,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from fateforger.agents.timeboxing.required_blocks import required_slugs
+from fateforger.agents.timeboxing.work_refs import work_refs_on
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactKind,
     FactKind,
@@ -46,7 +47,6 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningResult,
 )
 
-from .timeboxing_host import work_refs_on
 from .planning_result_mcp import OPEN_REQUIREMENTS_FILE_ENV, REQUIRED_BLOCKS_FILE_ENV
 from .dsh_progress_hook import COMMIT_FILE_ENV, PROGRESS_FILE_ENV, ProgressEvent
 from .schedule_render import candidate_display_text
@@ -434,12 +434,13 @@ def _work_lines(brief: PlanningBrief) -> str:
             "that is not for one of these carries no link, and you attach "
             "nothing that is not listed here."
         )
-    if brief.work_board_unavailable:
+    if brief.work_refs_unresolved:
         lines += (
-            "\nThe task board could not be read this turn, so no work is named "
-            "by handle above. That is the host failing to look, not a day with "
-            "no work in it: plan what Hugo asked for and leave every block "
-            "unlinked. Do not go looking for the tickets yourself."
+            "\nThe work Hugo asked for could not be resolved this turn, so no "
+            "ticket is named by handle above. That is the host failing to look "
+            "-- an unreadable board, a lookup that did not answer -- and not a "
+            "day with no work in it: plan what he asked for and leave every "
+            "block unlinked. Do not go looking for the tickets yourself."
         )
     return lines
 

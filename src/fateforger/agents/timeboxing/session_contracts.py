@@ -687,13 +687,17 @@ class PlanningBrief(_StrictModel):
     target_artifact: ArtifactKind
     readiness: JsonValue
     allowed_outputs: set[ArtifactKind]
-    #: The task board could not be read for this turn. Not a fact, because it
-    #: is the absence of one: a `WORK_REFS` fact filed empty would read as "the
-    #: board was read and named nothing", which is the other thing entirely.
-    #: The brief says so in words so the planner knows the absence of handles
-    #: is a failure to look rather than a day with no work in it. Written by
-    #: the resolve that tried; false is both "it answered" and "nobody asked".
-    work_board_unavailable: bool = False
+    #: The work this session asked for could not be resolved this turn -- the
+    #: board could not be read, the judgement did not complete, or the handles
+    #: could not be stored. Not a fact, because it is the absence of one: a
+    #: `WORK_REFS` fact filed empty would read as "the board was read and named
+    #: nothing", which is the other thing entirely. The brief says so in words
+    #: so the planner knows the absence of handles is a failure to look rather
+    #: than a day with no work in it. One flag for every cause, because the
+    #: planner's next move is the same for all of them; the four causes are
+    #: separated in the log. Written by the resolve that tried; false is both
+    #: "it answered" and "nobody asked".
+    work_refs_unresolved: bool = False
 
 
 class ArtifactDraft(_StrictModel):
