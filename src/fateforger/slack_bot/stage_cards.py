@@ -602,6 +602,13 @@ def map_outcome(
                 stage=stage(4),
                 session_key=session_key,
                 expected_revision=snapshot.revision,
+                # No `asking=`, and that is not an oversight. A stage-4
+                # question is impossible by construction: every user-owned
+                # requirement targets SKELETON, so a blocker on a candidate
+                # turn is refused and takes the candidate with it -- which is
+                # why `_planning_obligation` never invites one here. If a
+                # user-owned requirement ever targets VALIDATED_CANDIDATE,
+                # that gate opens and this line has to be added with it.
                 decided=_decided(snapshot),
                 body=body,
                 controls=[

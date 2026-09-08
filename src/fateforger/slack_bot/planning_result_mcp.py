@@ -477,9 +477,11 @@ def _validated(
         )
     if artifact is not None and target_artifact == ArtifactKind.SKELETON.value:
         # The one payload whose shape the card depends on. A skeleton that
-        # arrives without `markdown` is stored, approved, and drawn as an empty
-        # day (#267); refusing it here costs the planner one retry in the same
-        # turn, with the field names in hand.
+        # arrives without `day_label` and `groups` is stored, approved, and
+        # drawn as an empty day (#267); refusing it here costs the planner one
+        # retry in the same turn, with the field names in hand. (`markdown`
+        # was the shape this replaced -- flat prose cannot carry provenance
+        # the host can verify, #344.)
         try:
             SkeletonPayload.model_validate(artifact)
         except ValidationError as exc:

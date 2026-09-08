@@ -10,6 +10,7 @@ import html
 import json
 
 from fateforger.agents.timeboxing.session_contracts import (
+    BlockerOption,
     SkeletonGroup,
     SkeletonItem,
     SkeletonPayload,
@@ -66,15 +67,40 @@ def test_context_and_decided_are_context_blocks():
             assert b["type"] == "context"
 
 
-def test_a_non_blocking_question_keeps_proceed_and_a_blocking_one_does_not():
-    """Proceed means 'approve, question unanswered' — it must still be there."""
-    asking = Asking(requirement_id="skeleton.ordinary_placement",
-                    question="Protect a wake time?", why_needed="the end is unknown")
+def test_a_riding_question_is_drawn_beside_proceed_not_instead_of_it():
+    """Proceed means 'approve, question unanswered' — the question and its
+    own option buttons must appear *and* leave Proceed live.
+
+    The half this replaced asserted "Proceed" was absent from a card handed
+    no `ApproveControl`, which is true however the question renders: nothing
+    draws that button but that control. It proved the fixture, not the card.
+    """
+    asking = Asking(
+        requirement_id="skeleton.activity_reading",
+        question="Which did you mean?",
+        why_needed="the name as typed is not one I can read",
+        options=[
+            BlockerOption(
+                option_id="read-1",
+                label="Agent analysis",
+                effect="titles the block 'Agent analysis'",
+            )
+        ],
+    )
     # `artifact_digest` round-trips through `ArtifactActionMeta`, which
     # pins it to a 64-char hex digest; "d" alone fails that pattern.
     approve = ApproveControl(artifact_id="a", artifact_revision=1, artifact_digest="d" * 64)
-    assert "Proceed" in json.dumps(_rendered(asking=asking, controls=[approve]))
-    assert "Proceed" not in json.dumps(_rendered(asking=asking, controls=[]))
+    blocks = _rendered(asking=asking, controls=[approve])
+    rendered = json.dumps(blocks)
+    assert "Which did you mean?" in rendered
+    assert "Agent analysis" in rendered
+    assert "Proceed" in rendered
+    # And it rides *below* the day rather than replacing it: the group is
+    # still on the card, and it comes first.
+    day = next(i for i, b in enumerate(blocks) if b["type"] == "header")
+    question = next(i for i, b in enumerate(blocks)
+                    if "Which did you mean?" in json.dumps(b))
+    assert day < question
 
 
 def test_reserved_characters_are_escaped_exactly_once_by_the_real_pipeline():
@@ -139,3 +165,46 @@ def test_a_candidate_body_is_passed_through_byte_identical():
                      expected_revision=1, body=body)
     blocks = render_stage_card(card).blocks
     assert any(b.get("text", {}).get("text") == body for b in blocks)
+
+
+def test_a_folded_list_too_long_for_slack_says_how_many_it_dropped():
+    """Silent truncation on the card the user approves is disqualifying.
+
+    `_ctx` used to slice the join at `SLACK_MAX_BLOCK_TEXT_CHARS` with no
+    indication, so a long Decided list lost its tail — and its last visible
+    line was cut mid-word. It now drops whole items and counts them.
+    """
+    from fateforger.slack_bot.messages import SLACK_MAX_BLOCK_TEXT_CHARS
+
+    # Each item is long enough that a few dozen overflow the block cap.
+    items = [DecidedItem(text=f"decided item {i} " + "x" * 200, kind="fact",
+                         ref=f"f{i}") for i in range(40)]
+    card = StageCard(
+        stage=stage(3), session_key="C1:1.0", expected_revision=1,
+        artifact_day="Sunday 6 September",
+        artifact_groups=[CardGroup(name="Morning", lines=["• Pay taxes"])],
+        decided=items,
+    )
+    blocks = render_stage_card(card).blocks
+    folded = next(b for b in blocks
+                  if b["type"] == "context" and "Decided" in json.dumps(b))
+    text = folded["elements"][0]["text"]
+
+    assert len(text) <= SLACK_MAX_BLOCK_TEXT_CHARS
+    # It says how many it could not fit, and the number is the real one.
+    dropped = sum(1 for item in items if item.text not in text)
+    assert dropped > 0, "fixture no longer overflows; make the items longer"
+    assert f"_+{dropped} more_" in text
+
+
+def test_a_folded_list_that_fits_says_nothing_about_dropping():
+    """The counter is not a decoration: a list under the cap carries no tail."""
+    card = StageCard(
+        stage=stage(3), session_key="C1:1.0", expected_revision=1,
+        artifact_day="Sunday 6 September",
+        artifact_groups=[CardGroup(name="Morning", lines=["• Pay taxes"])],
+        decided=[DecidedItem(text="hockey at 12:15", kind="fact", ref="f1")],
+    )
+    folded = next(b for b in render_stage_card(card).blocks
+                  if b["type"] == "context" and "Decided" in json.dumps(b))
+    assert "more_" not in folded["elements"][0]["text"]

@@ -1611,12 +1611,22 @@ class AdaptiveTimeboxing:
         leaves it at the default empty dict, and iterating a dict yields its
         keys (plain strings), which the `isinstance(row, dict)` guard drops.
         Either shape lands on "no known uids", never a crash.
+
+        A row counts only if it carries a string `name` as well as a string
+        `uid`, because that is exactly what `stage_cards._rule_names` requires
+        to draw the citation. Admitting a nameless row here would let a
+        skeleton pass verification and then fail to render -- and the render
+        happens *after* the artifact is stored, so the turn would die on a
+        `ValueError` inside `_artifact_groups` with the citation already
+        committed. The two agree by construction instead.
         """
 
         return {
             row["uid"]
             for row in (context.applicable_constraints or [])
-            if isinstance(row, dict) and "uid" in row
+            if isinstance(row, dict)
+            and isinstance(row.get("uid"), str)
+            and isinstance(row.get("name"), str)
         }
 
     def _verify_rule_uids(

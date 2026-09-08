@@ -29,6 +29,7 @@ from fateforger.slack_bot.timebox_candidate import (
 )
 from fateforger.slack_bot.timeboxing_cards import (
     FF_TIMEBOX_ARTIFACT_BACK_ACTION_ID,
+    TIMEBOX_FAILURE_TEXTS,
     TIMEBOX_TURN_FAILED_TEXT,
 )
 
@@ -323,8 +324,13 @@ async def test_a_skeleton_older_than_its_contract_fails_the_turn(
     """The mapper refuses a stored payload that is not a `SkeletonPayload`
     (#267: `{"blocks": []}`, the 2026-09-02 shape, which used to be drawn as an
     empty day). The turn itself is already saved, so only its picture failed:
-    the user gets the one stable failure sentence, and the card they are
-    standing on stays live rather than being receipted over as confirmed.
+    the user gets a stable failure sentence, and the card they are standing on
+    stays live rather than being receipted over as confirmed.
+
+    Not the *generic* sentence, which invites a retry. Retry is the one move
+    that cannot work here -- the next turn re-presents the same stored
+    artifact and fails identically -- so this failure has its own code and its
+    own sentence, naming Back and Proceed instead.
     """
     stale = PlanningArtifact.create(
         artifact_id="skeleton-old",
@@ -350,7 +356,8 @@ async def test_a_skeleton_older_than_its_contract_fails_the_turn(
     with caplog.at_level(logging.ERROR):
         message = await _turn(runtime, client, ts="100.2")
 
-    assert message.text == TIMEBOX_TURN_FAILED_TEXT
+    assert message.text != TIMEBOX_TURN_FAILED_TEXT
+    assert message.text == TIMEBOX_FAILURE_TEXTS["unpresentable_artifact"]
     assert [u for u in client.updates if u.get("ts") == "100.1"] == []
     assert registry.shown("C1:1.0").ts == "100.1"
 

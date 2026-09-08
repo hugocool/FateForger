@@ -228,6 +228,24 @@ TIMEBOX_FAILURE_TEXTS = {
         "This is the first step of the session, so there is nothing to go "
         "back to. Pick the day, or cancel."
     ),
+    # A cited rule that is not one of the day's. Retrying is the right move
+    # and the sentence says so, because the citation is the planner's and the
+    # next draft may well not repeat it -- but it must not read as "your plan
+    # was wrong", which the generic sentence does.
+    "unknown_rule_uid": (
+        "The outline named a saved rule I could not match to this day, so I "
+        "did not show it. Try that again and I will redraw it."
+    ),
+    # The stored artifact is one this build cannot draw -- a skeleton in the
+    # retired shape, most likely, held by a session started before the card
+    # changed. Retry is the one move that cannot work: the turn re-presents
+    # the same stored artifact and fails identically, forever. So the sentence
+    # names the two that do.
+    "unpresentable_artifact": (
+        "This session is holding an outline in a shape I can no longer draw. "
+        "Press Back to redo it, or Proceed to move past it — trying again "
+        "will land in the same place."
+    ),
 }
 
 
@@ -305,14 +323,30 @@ def _section(text: str) -> dict:
     }
 
 
-def _ctx(text: str) -> dict:
+def _ctx(prefix: str, items: list[str], *, sep: str = "  ·  ") -> dict:
     """Small grey text. Supporting material -- Context, and any Decided
     item with no control to reach -- folds here rather than into a
     `section`, so it never competes with the day for Slack's collapse
-    threshold. Uncapped: small text carries the whole list, which is what
-    retires the old `_+N more_` line here (it rendered as text and was
-    never clickable)."""
+    threshold.
 
+    No count cap: small text carries far more than a `section` does, which is
+    what retired the old eight-item limit here. But "far more" is not "all",
+    and Slack still refuses a `context` element over
+    `SLACK_MAX_BLOCK_TEXT_CHARS` -- so this takes the items rather than the
+    joined string, drops whole ones off the tail until the join fits, and
+    says how many went. Slicing the string instead would cut a line in half
+    and tell the user nothing, on the card they are being asked to approve.
+    """
+
+    shown = list(items)
+    dropped = 0
+    while True:
+        tail = f"{sep}_+{dropped} more_" if dropped else ""
+        text = (f"{prefix}  " if prefix else "") + sep.join(shown) + tail
+        if len(text) <= SLACK_MAX_BLOCK_TEXT_CHARS or not shown:
+            break
+        shown.pop()
+        dropped += 1
     return {
         "type": "context",
         "elements": [{"type": "mrkdwn", "text": text[:SLACK_MAX_BLOCK_TEXT_CHARS]}],
@@ -589,10 +623,12 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
     Context and Decided are supporting material, not the thing being
     approved, so they fold to the very end in small grey `context` text --
     after the asking, the gate and the nav, not before them as they used to
-    render. A Decided item with no `controls` folds into one uncapped
-    `context` block; small text carries the whole list, which is what
-    retires the old `_+N more_` line there (it rendered as text and was
-    never clickable). A Decided item *with* `controls` (an assumption's
+    render. A Decided item with no `controls` folds into one `context` block
+    with no count cap: small text carries far more than a section, which is
+    what retired the old eight-item limit there. Not *unlimited* -- Slack
+    still caps a `context` element's text, so `_ctx` drops whole items off
+    the tail until the join fits and says how many went, never cutting a
+    line in half. A Decided item *with* `controls` (an assumption's
     `DenyControl`) cannot fold the same way -- Slack's `context` block has
     no `accessory` slot -- so it stays its own `section` with the overflow
     attached, capped at `STAGE_LIST_CAP` (8) with a "_+N more_" line if the
@@ -806,7 +842,11 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
     # it is what renders whole rather than what collapses.
     if card.context:
         blocks.append(
-            _ctx("*Context*  " + " · ".join(to_mrkdwn(item.text) for item in card.context))
+            _ctx(
+                "*Context*",
+                [to_mrkdwn(item.text) for item in card.context],
+                sep=" · ",
+            )
         )
     #: A receipt (`card.done` set) has nothing left to act on, so every
     #: Decided item folds there regardless of `controls` -- a control that
@@ -834,9 +874,9 @@ def render_stage_card(card: StageCard) -> SlackBlockMessage:
         if rest > 0:
             blocks.append(_section(f"_+{rest} more_"))
         if folded:
-            blocks.append(_ctx("  ·  ".join(item.text for item in folded)))
+            blocks.append(_ctx("", [item.text for item in folded]))
     elif folded:
-        blocks.append(_ctx("*Decided*  " + "  ·  ".join(item.text for item in folded)))
+        blocks.append(_ctx("*Decided*", [item.text for item in folded]))
 
     return SlackBlockMessage(
         text="\n".join(text_lines)[:SLACK_MAX_TEXT_CHARS], blocks=blocks

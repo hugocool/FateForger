@@ -20,6 +20,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningSessionSnapshot,
 )
 from fateforger.slack_bot.timeboxing_cards import (
+    TIMEBOX_FAILURE_TEXTS,
     TIMEBOX_TURN_FAILED_TEXT,
     timebox_failure_message,
 )
@@ -159,3 +160,30 @@ def test_the_bot_log_carries_a_timestamp() -> None:
         assert "%(asctime)s" in handler.formatter._fmt
     finally:
         root.removeHandler(handler)
+
+
+def test_a_refused_citation_gets_its_own_sentence() -> None:
+    """`unknown_rule_uid` is a refusal the user can act on, so it must not
+    reach them as the generic "I could not carry that through".
+
+    The assertion is over the code -- an identifier this system minted -- and
+    over the fact that the sentence differs from the default, never over the
+    prose itself.
+    """
+    message = timebox_failure_message("unknown_rule_uid", snapshot=_snapshot(committed=False))
+    assert message.text != TIMEBOX_TURN_FAILED_TEXT
+    assert message.text == TIMEBOX_FAILURE_TEXTS["unknown_rule_uid"]
+
+
+def test_an_undrawable_artifact_gets_its_own_sentence() -> None:
+    """The one failure Retry cannot clear.
+
+    A stored skeleton in the retired shape fails validation in the mapper,
+    and the turn that re-presents it will fail identically next time -- so
+    the generic sentence ("say it again and I will retry") is exactly wrong.
+    """
+    message = timebox_failure_message(
+        "unpresentable_artifact", snapshot=_snapshot(committed=False)
+    )
+    assert message.text != TIMEBOX_TURN_FAILED_TEXT
+    assert message.text == TIMEBOX_FAILURE_TEXTS["unpresentable_artifact"]
