@@ -259,7 +259,19 @@ def test_the_mount_is_read_from_source_and_not_hardcoded() -> None:
     otherwise stop the corpus growing in silence.
     """
     tmbx = _published_tmbx_tools()
-    assert tmbx == {"plan_read", "plan_apply", "plan_commit", "plan_undo", "plan_history"}
+    # `material_put` is published and is deliberately not a planning tool: the
+    # host calls it before a turn to store a resolved ticket, and no skill may
+    # instruct it. It is listed here because this reader reports what the mount
+    # publishes, and the surface is pinned exactly so a sixth tool is a
+    # decision somebody made rather than one that arrived.
+    assert tmbx == {
+        "plan_read",
+        "plan_apply",
+        "plan_commit",
+        "plan_undo",
+        "plan_history",
+        "material_put",
+    }
 
     allowed = _allow_listed_memory_tools()
     assert "memory_observe" in allowed

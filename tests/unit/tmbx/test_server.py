@@ -105,8 +105,84 @@ async def server(built):
 
 
 async def test_exposes_exactly_the_level_one_tools(server):
+    """The tool surface is pinned because widening it costs the planner.
+
+    `material_put` is the sixth and it is not the planner's: the host calls it
+    before a turn to put a resolved ticket in the store, and the planner is
+    told, in its own brief and in the tool's description, that the handles it
+    may use are already listed for it. The mount has no allow-list, so the
+    description is the only thing standing between a planning turn and a tool
+    that mints links -- which is why this list is asserted exactly.
+    """
     names = {tool.name for tool in await server.list_tools()}
-    assert names == {"plan_read", "plan_apply", "plan_commit", "plan_undo", "plan_history"}
+    assert names == {
+        "plan_read",
+        "plan_apply",
+        "plan_commit",
+        "plan_undo",
+        "plan_history",
+        "material_put",
+    }
+
+
+async def test_material_put_returns_a_handle_the_plan_will_accept(built):
+    server, service = built
+    result = await server.call_tool(
+        "material_put",
+        {
+            "source": "notion",
+            "external_id": "page-427",
+            "url": "https://www.notion.so/Verify-VPB-2024-aangifte",
+            "label": "Verify VPB 2024 aangifte",
+        },
+    )
+    payload = json.loads(_text(result))
+
+    assert payload["ok"] is True
+    stored = await service.materials.get(payload["link"])
+    assert stored is not None
+    assert stored.external_id == "page-427"
+    assert stored.label == "Verify VPB 2024 aangifte"
+
+
+async def test_material_put_is_idempotent_on_the_same_ticket(server):
+    """The host calls it every turn it resolves the same ticket."""
+    request = {
+        "source": "notion",
+        "external_id": "page-427",
+        "url": "https://www.notion.so/one",
+        "label": "One",
+    }
+    first = json.loads(_text(await server.call_tool("material_put", request)))
+    again = json.loads(
+        _text(
+            await server.call_tool(
+                "material_put", {**request, "label": "One, renamed"}
+            )
+        )
+    )
+
+    assert first["link"] == again["link"]
+
+
+async def test_material_put_reports_an_empty_id_as_a_refusal_not_a_crash(server):
+    """An empty external id would fold every ticket of that source onto one
+    handle. `mint_link_id` refuses it; the tool must report that refusal."""
+    result = await server.call_tool(
+        "material_put",
+        {"source": "notion", "external_id": "", "url": "u", "label": "L"},
+    )
+    payload = json.loads(_text(result))
+
+    assert payload["ok"] is False
+    assert payload["reason"] == "malformed_input"
+
+
+async def test_material_put_tells_a_planner_it_is_not_for_them(server):
+    """The mount has no allow-list, so the description is the only guard."""
+    tool = next(t for t in await server.list_tools() if t.name == "material_put")
+
+    assert "do not call this" in tool.description.lower()
 
 
 async def test_patch_nl_is_absent_at_level_one(server):

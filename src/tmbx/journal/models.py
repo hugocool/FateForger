@@ -110,10 +110,41 @@ class JournalEntry(SQLModel, table=True):
         return [ConstraintRef.model_validate(item) for item in raw]
 
 
+class Material(SQLModel, table=True):
+    """A thing a block can point at — today a Notion ticket, tomorrow anything.
+
+    Lives beside ``JournalEntry`` because it shares the database file and the
+    ``init_journal`` entrypoint; it is not a journal row and nothing derives
+    disposition from it.
+
+    ``link_id`` is minted from ``(source, external_id)`` by
+    ``tmbx.materials.mint_link_id`` — deterministic, so one ticket keeps one
+    handle across turns and days. ``source`` is a field rather than an
+    assumption: a TickTick item or a document costs no migration.
+
+    ``first_seen`` is written on the first insert and never again; a re-``put``
+    refreshes ``url`` and ``label`` only, because a renamed ticket is the same
+    ticket.
+    """
+
+    __tablename__ = "materials"
+
+    link_id: str = Field(primary_key=True)
+    source: str = Field(index=True)
+    external_id: str = Field(index=True)
+    url: str
+    label: str
+    first_seen: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="When this material was first linked. Set on insert only.",
+    )
+
+
 __all__ = [
     "JOURNAL_SCHEMA_VERSION",
     "ConstraintRef",
     "EntryKind",
     "JournalEntry",
+    "Material",
     "PatchOutcome",
 ]

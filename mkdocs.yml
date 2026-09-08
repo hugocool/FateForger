@@ -32,6 +32,7 @@ nav:
   - Architecture:
       - Overview: architecture/overview.md
       - Agents: architecture/agents.md
+      - Materials and Work Links: architecture/materials-and-work-links.md
       - Data Models: architecture/data-models.md
       - Scheduling: architecture/scheduling.md
       - Timeboxing Refactor: architecture/timeboxing_refactor.md

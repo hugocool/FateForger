@@ -39,7 +39,7 @@ gets one, tmbx-owned or not) and must not be pattern-matched on instead.
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from datetime import date as date_type
 from datetime import datetime, time, timedelta
 
@@ -47,7 +47,10 @@ from isodate import duration_isoformat
 
 from .models import Plan, Resolved
 
-COLUMNS = ("H", "own", "type", "summary", "ST", "ET", "mode", "dur", "slug")
+COLUMNS = (
+    "H", "own", "type", "summary", "ST", "ET", "mode", "dur", "slug",
+    "link", "link_label",
+)
 
 _DELIMITER = ","
 
@@ -140,37 +143,62 @@ def _row(plan_date: date_type, r: Resolved, *, foreign: bool) -> str:
     )
 
 
-def plan_rows(plan: Plan, foreign_uids: Collection[str] = ()) -> list[dict[str, str]]:
+def plan_rows(
+    plan: Plan,
+    foreign_uids: Collection[str] = (),
+    link_labels: Mapping[str, str] | None = None,
+) -> list[dict[str, str]]:
     """The rows behind `render_plan`, as data.
 
     Same resolution, same ownership rule, same clock formatting -- one dict
     per block, keyed by the table's own column names. A host that shows the
     schedule to a person renders from these; before this the table was the
     only form that crossed the boundary, so a human view had to parse it back.
+
+    ``link_labels`` maps a block's link handle to what that piece of work is
+    called. It is passed IN rather than looked up here because the labels
+    live in the material store, which is the service's collaborator, not
+    this module's -- rendering stays a pure function of the plan it is
+    handed. A handle with no label renders bare: a link can outlive the row
+    it pointed at, and showing the handle with nothing beside it says
+    exactly that. **The url is never rendered.** The planner attaches work
+    by handle and has no use for a url; showing one would teach it to write
+    one, which is the mistake the handle exists to prevent.
     """
     foreign = set(foreign_uids)
+    labels = link_labels or {}
     # `Resolved` carries only what resolution computes -- times, mode,
     # duration -- and `slug` is a static field on the block, not something
     # resolution derives. Read it from the blocks by handle instead of
     # assuming the resolved row exposes it.
     slugs_by_h = {b.h: b.slug for b in plan.blocks}
-    return [
-        {
-            "h": r.h,
-            "own": "foreign" if r.uid in foreign else "tmbx",
-            "type": r.t.value,
-            "summary": r.n,
-            "start": _fmt_clock(r.start, r.start_dt, plan.date),
-            "end": _fmt_clock(r.end, r.end_dt, plan.date),
-            "mode": r.mode,
-            "dur": _iso_duration(r.dur),
-            "slug": slugs_by_h.get(r.h) or "",
-        }
-        for r in plan.resolve(check_overlap=False)
-    ]
+    links_by_h = {b.h: b.link for b in plan.blocks}
+    rows: list[dict[str, str]] = []
+    for r in plan.resolve(check_overlap=False):
+        link = links_by_h.get(r.h) or ""
+        rows.append(
+            {
+                "h": r.h,
+                "own": "foreign" if r.uid in foreign else "tmbx",
+                "type": r.t.value,
+                "summary": r.n,
+                "start": _fmt_clock(r.start, r.start_dt, plan.date),
+                "end": _fmt_clock(r.end, r.end_dt, plan.date),
+                "mode": r.mode,
+                "dur": _iso_duration(r.dur),
+                "slug": slugs_by_h.get(r.h) or "",
+                "link": link,
+                "link_label": labels.get(link, ""),
+            }
+        )
+    return rows
 
 
-def render_plan(plan: Plan, foreign_uids: Collection[str] = ()) -> str:
+def render_plan(
+    plan: Plan,
+    foreign_uids: Collection[str] = (),
+    link_labels: Mapping[str, str] | None = None,
+) -> str:
     """Render ``plan`` as a TOON-style table: a header naming the row count
     and columns, then one comma-separated row per block, in plan order.
 
@@ -190,6 +218,17 @@ def render_plan(plan: Plan, foreign_uids: Collection[str] = ()) -> str:
     caller with nothing foreign to mark (or that doesn't track ownership at
     all) still gets valid output; ``PlanService`` is the only caller that
     knows the real set, from the same calendar fetch that built the plan.
+
+    ``link`` is the handle of the work the block is for and ``link_label``
+    is what that work is called -- both empty for a block that is for no
+    stored work. The handle is there because it is what an op names; the
+    label is there because a handle alone names nothing anybody, model or
+    person, could recognise. Never the url: see ``plan_rows``. BOTH are
+    escaped like ``summary``: a label is a foreign system's prose, and the
+    handle is only hex while it comes from the material store -- a block
+    reaching the renderer from a calendar extended property set by hand
+    arrives unchecked, exactly as ``slug`` does, and a delimiter in either
+    field shifts every column after it.
     """
     header = f"blocks[{len(plan.blocks)}]{{{','.join(COLUMNS)}}}:"
     if not plan.blocks:
@@ -200,9 +239,10 @@ def render_plan(plan: Plan, foreign_uids: Collection[str] = ()) -> str:
     lines = [header] + [
         _DELIMITER.join(
             [row["h"], row["own"], row["type"], _escape(row["summary"]),
-             row["start"], row["end"], row["mode"], row["dur"], _escape(row["slug"])]
+             row["start"], row["end"], row["mode"], row["dur"], _escape(row["slug"]),
+             _escape(row["link"]), _escape(row["link_label"])]
         )
-        for row in plan_rows(plan, foreign_uids)
+        for row in plan_rows(plan, foreign_uids, link_labels)
     ]
     return "\n".join(lines)
 

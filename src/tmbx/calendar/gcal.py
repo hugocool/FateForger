@@ -9,12 +9,29 @@ module already solved the argument shapes and response normalisation
 against this exact server; see each helper's docstring for what changed and
 why.
 
-``extendedProperties.private`` under the ``tmbx`` namespace carries six
+**``extendedProperties.private`` is MERGED by this server, not replaced.**
+Measured 2026-09-08 against the real server on a far-future scratch day:
+an event was created carrying ``tmbx.slug = "planning"`` alongside uid,
+handle, type and mode; ``update-event`` was then called with the same
+event and no ``tmbx.slug`` key at all, the other five still sent; the day
+was read back and **``slug`` came back as ``"planning"``**. Omitting a key
+does not clear it.
+
+So a value is cleared by **sending the key with an empty string**, never
+by leaving it out — see ``_private_properties``, and ``_private_str`` for
+the read half that turns an empty string back into absence. That is
+correct under either semantics: it clears the property where the map is
+merged, and it is equivalent to omission where the map is replaced. This
+code bet on replacement once and every clearance silently failed; it does
+not get to bet again.
+
+``extendedProperties.private`` under the ``tmbx`` namespace carries eight
 values round-tripped verbatim: identity (``uid``/``handle``/``slug``, as
-before) plus ``block_type``/``timing_mode``/``anchor_source``. Without
-``block_type``/``timing_mode``, every
-block reads back as a plain fixed window regardless of what it actually
-was — an event has no field of its own for "this is a deep-work block" or
+before) plus ``block_type``/``timing_mode``/``anchor_source``/``link``/
+``desc``.
+Without ``block_type``/``timing_mode``, every block reads back as a plain
+fixed window regardless of what it actually was — an event has no field
+of its own for "this is a deep-work block" or
 "this was meant to float after the previous one"; without persisting
 them, that information is invented fresh on every read (always ``ET.M``,
 always ``fw``), which ossifies every chain into a wall of independently
@@ -25,6 +42,25 @@ block is pinned, and both ``commitment.overspecified`` and
 ``ops.validate_patch`` key on it to tell a boundary from a convenience
 pin. Unpersisted, every pin reads back as ``"calendar"`` — provenance
 gone — and a constraint-backed boundary becomes advice to unpin.
+
+``link`` is the material store's handle for the piece of work a block is
+for. It is the half of a link that round-trips: the other half, the url,
+is written into the event's *description* — a bare url on its own line,
+which is what a person actually clicks. See ``_description_for``.
+
+``desc`` is what makes that projection reversible, and it is the same
+move as every key above it: **the visible field is for a person, the
+machine-readable original lives in a private property.** The description
+Google holds is composed — the block's own text plus the url — so
+reading it back as the block's description would fold the url into
+authored prose, put it in front of a planner, and append a second copy
+the next time anything else about the block changed. ``desc`` carries the
+authored text verbatim and ``_event_from_payload`` prefers it, falling
+back to the composed field only for an event written before this existed.
+Recovering the original by *looking for* the url inside the description
+would be a judgement about what a stretch of text is, on a field a person
+can edit in the Google UI; storing the original costs one property and
+guesses nothing.
 
 This module only carries the raw strings through; reconstructing them
 into a real ``ET``/``Timing``/``AnchorSource`` (and what happens when
@@ -83,7 +119,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.types import CallToolResult, TextContent
 
-from .port import CalendarEvent
+from .port import MAX_DESCRIPTION_CHARS, CalendarEvent
 
 DEFAULT_SERVER_URL = "http://localhost:3000"
 SERVER_URL_ENV_VAR = "MCP_CALENDAR_SERVER_URL"
@@ -99,6 +135,9 @@ _PRIVATE_SLUG_KEY = "tmbx.slug"
 _PRIVATE_TYPE_KEY = "tmbx.type"
 _PRIVATE_MODE_KEY = "tmbx.mode"
 _PRIVATE_ANCHOR_KEY = "tmbx.anchor"
+_PRIVATE_LINK_KEY = "tmbx.link"
+_PRIVATE_DESC_KEY = "tmbx.desc"
+
 
 _CANCELLED_STATUS = "cancelled"
 
@@ -296,6 +335,156 @@ def _list_events_args(*, calendar_id: str, day: date_type, tz: str) -> dict[str,
     }
 
 
+def _private_str(private: dict[str, Any], key: str) -> str | None:
+    """One ``tmbx.*`` private value, with an empty string read as absence.
+
+    The write half clears a property by sending the key with an empty string,
+    because this server merges the private map rather than replacing it and an
+    omitted key keeps its old value (module docstring, measured 2026-09-08).
+    This is the other half of that: what was written to mean "no value" has to
+    read back as no value, or clearing a property would merely change it to the
+    empty string and every reader downstream would see something that is not
+    there.
+
+    **Not a judgement about user content.** The empty string here is a sentinel
+    this adapter writes and this adapter reads back — comparing a value against
+    it decides nothing about what any text means (CLAUDE.md's documented
+    exception for identifiers this system minted). The one value that is a
+    person's words rather than an id is ``tmbx.desc``, and there the equivalence
+    is exact anyway: an authored description that is empty and one that is
+    absent are the same description, and ``_authored_description`` returns
+    ``""`` for both.
+    """
+    value = private.get(key)
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
+def _description_for(event: CalendarEvent) -> str:
+    """The description as the provider should hold it: the block's own text,
+    then a blank line, then the material's url on a line of its own.
+
+    **A bare url, not an anchor tag.** Google Calendar auto-links a bare url
+    in a description, and this server's ``description`` field is a plain
+    string whose HTML handling nobody here has verified — so markup would be
+    a guess that fails visibly on the one surface a person actually reads.
+    The anchor text they see is the event's own title, which is what they
+    are looking at anyway.
+
+    Last, and on its own line, so the block's own description keeps the top
+    of the field and a person's eye lands on the words before the url.
+    An event with no description of its own gets the url alone rather than
+    a pair of leading blank lines.
+
+    Nothing takes this apart again. The authored description is round-
+    tripped whole in ``tmbx.desc`` (see ``_private_properties``), so
+    ``_event_from_payload`` reads the original back out of a private
+    property rather than searching this composed string for a url it
+    would have to recognise. That keeps the composed value display-only:
+    a person reads it, and no code ever has to decide which half of it
+    somebody typed.
+
+    **``link_id`` decides whether an event is linked — here and in
+    ``_private_properties``, the same field in both halves.** This once
+    keyed on ``link_url`` while the private copy keyed on ``link_id``,
+    which is only unreachable because every writer sets the two together.
+    Let them diverge and a url composed in with no ``tmbx.link``/``tmbx.desc``
+    beside it reads back as authored prose (``_authored_description`` case
+    3), gets a second copy appended on the next write, and reaches the
+    planner as text somebody typed. That is the Critical this file already
+    produced once. ``link_url`` is only the value appended: no url is
+    nothing to show, not a different kind of event.
+    """
+    if not event.link_id or not event.link_url:
+        return event.description
+    if not event.description:
+        return event.link_url
+    return f"{event.description}\n\n{event.link_url}"
+
+
+def _private_properties(event: CalendarEvent) -> dict[str, str]:
+    """The ``extendedProperties.private`` map for one event.
+
+    Every value here is something this system minted or was handed as an
+    id, with one exception: ``tmbx.desc`` is the block's own description,
+    authored prose, kept verbatim so the composed description Google
+    displays can be reversed without reading it.
+
+    **A ``None`` value is written as an empty string, not dropped.** Every
+    key is always sent. This server *merges* the private map rather than
+    replacing it — measured 2026-09-08, module docstring — so a key left out
+    keeps whatever the last write gave it, and dropping one in order to clear
+    it did nothing at all. An empty string clears the property under merge
+    semantics and is equivalent to omission under replace semantics, so this
+    is correct either way and does not depend on a provider behaviour that
+    could change again. ``_private_str`` reads it back as absence.
+
+    This was never a link bug. All eight keys clear by this mechanism and all
+    eight were broken by it:
+
+    * ``tmbx.link`` — a ticket the user detached came back on the next read,
+      and the next commit composed its url into the description again.
+    * ``tmbx.desc`` — worse, and why this counted as a Critical: the stale
+      authored description won over what was actually on the event
+      (``_authored_description`` case 1), so a person's words silently
+      reverted to a write two commits ago.
+    * ``tmbx.slug`` and the rest of the six that predate links — the same
+      mechanism, and the one the semantics were actually measured on. **A
+      required-kind slug removed from a block stayed on the event**; what
+      that means for #212 is not addressed here, but the cause is this, and
+      whoever picks that up should start from this docstring.
+
+    **``tmbx.desc`` is written for a linked event only.** It exists to
+    reverse a composition, and nothing is composed into an unlinked
+    event's description — its provider field already is the authored text.
+    Writing it anyway would store a redundant copy and, worse, impose the
+    provider's length limit on days that have nothing to do with links and
+    committed fine before they existed.
+
+    That pairing is also what makes the read side decidable. ``tmbx.link``
+    is only ever written by the code that writes ``tmbx.desc`` beside it,
+    so a link with no desc means the authored description was empty — see
+    ``_event_from_payload``. Two keys this system minted; no reading of
+    any text.
+
+    **The description is checked against the limit and refused, never
+    truncated.** Silently shortening it would lose what a person wrote and
+    only surface the next time the day was read back, which is the
+    quiet-wrong-answer shape this project refuses everywhere else. The
+    refusal names the block handle and the limit. In practice
+    ``PlanService`` refuses the whole commit before this is reached, and
+    journals it — this raise is the backstop for any other caller, and
+    exists so a provider limit cannot be violated by a path that skipped
+    the service's check.
+    """
+    description = event.description if event.link_id and event.description else None
+    if description is not None and len(description) > MAX_DESCRIPTION_CHARS:
+        raise ValueError(
+            f"block {event.handle or event.event_id!r}: description is "
+            f"{len(description)} characters, over the "
+            f"{MAX_DESCRIPTION_CHARS}-character limit Google enforces on an "
+            "extendedProperties.private value. tmbx keeps a linked block's "
+            "authored description there so it can be read back without the "
+            "material url appended to it; truncating it would silently lose "
+            "what you wrote. Shorten the block's description."
+        )
+    return {
+        key: value if value is not None else ""
+        for key, value in (
+            (_PRIVATE_UID_KEY, event.uid),
+            (_PRIVATE_HANDLE_KEY, event.handle),
+            (_PRIVATE_SLUG_KEY, event.slug),
+            (_PRIVATE_TYPE_KEY, event.block_type),
+            (_PRIVATE_MODE_KEY, event.timing_mode),
+            (_PRIVATE_ANCHOR_KEY, event.anchor_source),
+            (_PRIVATE_LINK_KEY, event.link_id),
+            (_PRIVATE_DESC_KEY, description),
+        )
+    }
+
+
 def _write_event_args(event: CalendarEvent, *, tz: str) -> dict[str, Any]:
     """Argument shape shared by ``create-event`` and ``update-event``.
 
@@ -305,26 +494,20 @@ def _write_event_args(event: CalendarEvent, *, tz: str) -> dict[str, Any]:
     not a nested ``{dateTime, timeZone}`` object; that nested shape shows
     up only in this repo's throwaway dev seed scripts, not the tool's
     actual schema. ``extendedProperties.private`` carries identity plus
-    ``block_type``/``timing_mode``/``anchor_source`` — see the module
-    docstring — and is included only when at least one of those six is
-    set, since a foreign event is never written here at all (the service
-    never calls create/update for one).
+    ``block_type``/``timing_mode``/``anchor_source``/``link``/``desc`` —
+    see the module docstring — and is included only when at least one of
+    those eight is set, since a foreign event is never written here at all
+    (the service never calls create/update for one).
+
+    The description sent is not ``event.description`` verbatim: a linked
+    event's url is appended to it (``_description_for``), and the authored
+    text goes into ``tmbx.desc`` so the composition can be reversed on the
+    way back (``_private_properties``).
     """
-    private = {
-        key: value
-        for key, value in (
-            (_PRIVATE_UID_KEY, event.uid),
-            (_PRIVATE_HANDLE_KEY, event.handle),
-            (_PRIVATE_SLUG_KEY, event.slug),
-            (_PRIVATE_TYPE_KEY, event.block_type),
-            (_PRIVATE_MODE_KEY, event.timing_mode),
-            (_PRIVATE_ANCHOR_KEY, event.anchor_source),
-        )
-        if value is not None
-    }
+    private = _private_properties(event)
     args: dict[str, Any] = {
         "summary": event.summary,
-        "description": event.description,
+        "description": _description_for(event),
         "start": event.start.isoformat(timespec="seconds"),
         "end": event.end.isoformat(timespec="seconds"),
         "timeZone": tz,
@@ -413,6 +596,40 @@ def _parse_event_dt(raw: dict[str, Any] | None, *, tz: ZoneInfo) -> datetime | N
     return None
 
 
+def _authored_description(raw: dict[str, Any], private: dict[str, Any]) -> str:
+    """The description somebody wrote, recovered from what a provider holds.
+
+    Three cases, decided entirely on which keys are present — keys this
+    system minted and is reading back, never on what any text says:
+
+    1. ``tmbx.desc`` is there: that is the authored text, kept verbatim
+       precisely so the composed field never has to be interpreted.
+    2. ``tmbx.link`` is there and ``tmbx.desc`` is not: **the authored
+       description was empty.** ``tmbx.link`` is only ever written by the
+       code that writes ``tmbx.desc`` beside it whenever there is a
+       description to write (``_private_properties``), so its absence
+       here is positive evidence, not missing information. This is the
+       ordinary case — a block carrying a ticket and no description of
+       its own — and it is the one that used to break: the composed field
+       for such an event is the bare url, so falling back to it handed the
+       url back as authored prose, put it in front of a planner, and had a
+       second copy appended on the next write.
+    3. Neither: nothing was composed in, so the provider's own field is
+       the authored text. That covers every event written before any of
+       this existed, and it costs no spurious update — such an event
+       carries no link, so its composed and authored descriptions are the
+       same string and ``_event_unchanged`` still says nothing changed.
+       A foreign event lands here too, which is right: tmbx wrote none of
+       it and must read it exactly as it stands.
+    """
+    stored = _private_str(private, _PRIVATE_DESC_KEY)
+    if stored is not None:
+        return stored
+    if _private_str(private, _PRIVATE_LINK_KEY) is not None:
+        return ""
+    return str(raw.get("description") or "")
+
+
 def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
     """Build a ``CalendarEvent`` from one raw provider event dict.
 
@@ -428,9 +645,21 @@ def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
     does not decide what happens when they're absent
     on an otherwise-owned event; that reconstruction, and its documented
     fallback, live in ``service._event_to_block``, which is where a
-    provider-neutral decision like that belongs. ``etag`` is the
-    provider's ``updated`` timestamp — see the module docstring for why
-    there is no real etag to carry here.
+    provider-neutral decision like that belongs.
+
+    ``link_id`` comes back from ``tmbx.link``; ``link_url`` never does.
+    The url lives in the description (see ``_description_for``), and
+    recovering it from there would mean deciding what a stretch of
+    description text means — banned outright, and unnecessary: the
+    material store is where a handle becomes a url, and the handle is
+    what came back.
+
+    ``description`` therefore comes from ``_authored_description``, which
+    decides between the private copy and the provider's own field on the
+    presence of two keys and nothing else.
+
+    ``etag`` is the provider's ``updated`` timestamp — see the module
+    docstring for why there is no real etag to carry here.
     """
     start = _parse_event_dt(raw.get("start"), tz=tz)
     end = _parse_event_dt(raw.get("end"), tz=tz)
@@ -447,16 +676,17 @@ def _event_from_payload(raw: dict[str, Any], *, tz: ZoneInfo) -> CalendarEvent:
     return CalendarEvent(
         event_id=str(raw.get("id") or ""),
         summary=str(raw.get("summary") or ""),
-        description=str(raw.get("description") or ""),
+        description=_authored_description(raw, private),
         start=start,
         end=end,
         etag=str(raw.get("updated") or ""),
-        uid=private.get(_PRIVATE_UID_KEY),
-        handle=private.get(_PRIVATE_HANDLE_KEY),
-        slug=private.get(_PRIVATE_SLUG_KEY),
-        block_type=private.get(_PRIVATE_TYPE_KEY),
-        timing_mode=private.get(_PRIVATE_MODE_KEY),
-        anchor_source=private.get(_PRIVATE_ANCHOR_KEY),
+        uid=_private_str(private, _PRIVATE_UID_KEY),
+        handle=_private_str(private, _PRIVATE_HANDLE_KEY),
+        slug=_private_str(private, _PRIVATE_SLUG_KEY),
+        block_type=_private_str(private, _PRIVATE_TYPE_KEY),
+        timing_mode=_private_str(private, _PRIVATE_MODE_KEY),
+        anchor_source=_private_str(private, _PRIVATE_ANCHOR_KEY),
+        link_id=_private_str(private, _PRIVATE_LINK_KEY),
     )
 
 

@@ -101,6 +101,14 @@ class PlanningContext(BaseModel):
     #: Probes the host's judges phrased for the top open Stage 1 cells, in
     #: rank order. Read by `_stage1_outcome` and nowhere else.
     probes: list[ProbeDraft] = Field(default_factory=list)
+    #: The host tried to resolve the work this session asked for and could
+    #: not. It travels beside the facts rather than as one because the facts
+    #: of such a turn -- one `WORK_REFS` with an empty value -- clear the
+    #: day's refs without saying why they are gone; see
+    #: `PlanningBrief.work_refs_unresolved`, which this feeds. It never blocks
+    #: the turn: a planner told the work could not be resolved plans the day
+    #: and leaves the blocks unlinked.
+    work_refs_unresolved: bool = False
 
 
 class ProgressSink(Protocol):
@@ -654,6 +662,16 @@ class AdaptiveTimeboxing:
                     "suspended_constraint_count": resolved.suspended_constraint_count
                 }
             )
+        # Unconditional, unlike the count above, because this bool has no "did
+        # not look" value: `PlanningContext` defaults it to False and the brief
+        # is built from that same field, so mirroring it as-is is what keeps
+        # the card and the planner reading one answer. A resolve that did not
+        # run the lookup therefore clears it -- the flag describes the last
+        # resolve, never the session, and a warning left standing after a later
+        # turn resolved the work would be the wrong error to make.
+        snapshot = snapshot.model_copy(
+            update={"work_refs_unresolved": resolved.work_refs_unresolved}
+        )
         readiness = self._requirements.evaluate(target, snapshot)
         blocker = readiness.first_hard_user_blocker()
         if blocker is not None:
@@ -1500,6 +1518,7 @@ class AdaptiveTimeboxing:
                 snapshot, context.applicable_constraints
             ),
             calendar_snapshot=context.calendar_snapshot,
+            work_refs_unresolved=context.work_refs_unresolved,
             target_artifact=target,
             readiness={
                 "target_artifact": target.value,

@@ -64,6 +64,15 @@ class ReadUnavailable(RuntimeError):
     """The calendar snapshot could not be read from tmbx."""
 
 
+class MaterialUnavailable(RuntimeError):
+    """A material could not be stored, so no handle exists to link a block by.
+
+    Loud rather than a None the caller could skip: a handle that was never
+    stored is refused at ``plan_apply``, one layer later and with nothing left
+    to say which ticket it was meant to be.
+    """
+
+
 class TmbxClient:
     """The only thing here that knows tmbx exists."""
 
@@ -139,6 +148,58 @@ class TmbxClient:
                 continue
             return payload
         raise ReadUnavailable(unavailable_message)
+
+    async def material_put(
+        self, *, source: str, external_id: str, url: str, label: str
+    ) -> str:
+        """Store one piece of external work in tmbx and return its handle.
+
+        **Why through the mount rather than the database.** The material store
+        lives in the tmbx process, beside the plan that will refuse an unknown
+        handle. A host opening that database directly would be a second writer
+        to somebody else's schema, and the check and the write would sit either
+        side of a file lock instead of inside one process.
+
+        Idempotent, because the handle is derived from ``source`` and
+        ``external_id``: the same ticket resolved on three turns is one row and
+        one handle, with its label refreshed.
+        """
+        from autogen_core import CancellationToken
+
+        try:
+            tools = await self._client.get_tools()
+        except Exception as exc:
+            raise MaterialUnavailable(
+                f"the material store could not be reached: {type(exc).__name__}"
+            ) from exc
+
+        tool = next((t for t in tools if t.name == "material_put"), None)
+        if tool is None:
+            raise MaterialUnavailable(
+                "the tmbx mount does not publish material_put"
+            )
+
+        request = {
+            "source": source,
+            "external_id": external_id,
+            "url": url,
+            "label": label,
+        }
+        try:
+            raw = await tool.run_json(request, CancellationToken())
+        except Exception as exc:
+            raise MaterialUnavailable(
+                f"material_put failed: {type(exc).__name__}"
+            ) from exc
+
+        payload = _as_payload(raw, operation="material_put")
+        link = payload.get("link")
+        if payload.get("ok") is not True or not isinstance(link, str) or not link:
+            reason = str(payload.get("reason") or "no handle returned")
+            raise MaterialUnavailable(
+                f"material_put refused {source}:{external_id}: {reason}"
+            )
+        return link
 
     async def undo(self, tx_id: str) -> dict[str, Any]:
         """Reverse one committed transaction, by the id that commit returned.
@@ -273,6 +334,7 @@ def _text_of(raw: Any) -> str:
 __all__ = [
     "CommitOutcomeUnknown",
     "CommitUnavailable",
+    "MaterialUnavailable",
     "ReadUnavailable",
     "TmbxClient",
     "UndoUnavailable",

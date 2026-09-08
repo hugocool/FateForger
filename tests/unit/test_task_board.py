@@ -494,6 +494,7 @@ async def test_a_non_json_result_raises_rather_than_returning_nothing() -> None:
     assert "502 Bad Gateway" in str(excinfo.value)
 
 
+@pytest.mark.real_task_board
 def test_missing_token_raises_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MCP_HTTP_AUTH_TOKEN", raising=False)
     monkeypatch.setattr(settings, "mcp_http_auth_token", PLACEHOLDER_TOKEN)
@@ -504,6 +505,7 @@ def test_missing_token_raises_unavailable(monkeypatch: pytest.MonkeyPatch) -> No
     assert "token" in str(excinfo.value)
 
 
+@pytest.mark.real_task_board
 def test_placeholder_token_in_env_raises_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -521,6 +523,7 @@ def test_placeholder_token_in_env_raises_unavailable(
     assert "token" in str(excinfo.value)
 
 
+@pytest.mark.real_task_board
 def test_from_settings_uses_the_configured_database_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

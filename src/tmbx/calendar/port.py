@@ -28,6 +28,22 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+MAX_DESCRIPTION_CHARS = 1024
+"""Longest ``description`` that can survive a round trip through a provider.
+
+Not a domain rule — ``Block.d`` has no length of its own — but a real
+provider limit that the domain has to respect, so it lives here where both
+the adapter that enforces it and the service that refuses ahead of it can
+read one number. It is Google's cap on a single
+``extendedProperties.private`` value, which is where ``gcal.py`` keeps a
+linked event's authored description so the composed one can be reversed.
+
+**It binds a linked event only.** Nothing is composed into an unlinked
+event's description, so its provider field already *is* the authored text,
+no private copy is written, and no limit applies. A day of long
+descriptions committed fine before links existed and must keep doing so.
+"""
+
 
 class CalendarEvent(BaseModel):
     """One calendar event, provider-neutral.
@@ -55,6 +71,27 @@ class CalendarEvent(BaseModel):
     pin a constraint is holding becomes indistinguishable from one added
     for convenience. That is not cosmetic — ``commitment.overspecified``
     and ``ops.validate_patch`` both key on it.
+
+    ``link_id`` and ``link_url`` are the two halves of one link, and they
+    travel by different routes on purpose. ``link_id`` is the material
+    store's handle — an identifier this system minted — and it round-trips
+    through a provider extended property like the identity fields above,
+    so a day read back still knows which piece of work a block is for.
+    ``link_url`` is what a person clicks, and it is **write-only**: a real
+    adapter puts it in the event's description (see ``gcal.py``) and never
+    reads it back, because the store is the one place a url is looked up
+    and reconstructing one from description text would be a guess about
+    text this system did not mint. An event fetched from a real provider
+    therefore carries ``link_id`` and ``link_url is None`` — which is why
+    ``service._event_unchanged`` compares the handle and not the url.
+
+    ``description`` is the block's **authored** description on both sides
+    of the port, never the composed one a provider displays. A real
+    adapter appends the url for a person to read and round-trips the
+    authored text in a private property of its own, so what comes back
+    here is what somebody wrote and nothing else — see ``gcal.py``.
+    Without that, the url would fold into authored prose one read at a
+    time.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -71,6 +108,8 @@ class CalendarEvent(BaseModel):
     block_type: str | None = None
     timing_mode: str | None = None
     anchor_source: str | None = None
+    link_id: str | None = None
+    link_url: str | None = None
 
 
 class Snapshot(BaseModel):
@@ -189,4 +228,11 @@ class CalendarPort(Protocol):
     async def delete(self, calendar_id: str, event_id: str) -> None: ...
 
 
-__all__ = ["CalendarEvent", "CalendarPort", "Snapshot", "drift", "make_snapshot"]
+__all__ = [
+    "MAX_DESCRIPTION_CHARS",
+    "CalendarEvent",
+    "CalendarPort",
+    "Snapshot",
+    "drift",
+    "make_snapshot",
+]
