@@ -371,15 +371,33 @@
     #     queries, over a facade that can call `API-post-database-query` and
     #     `API-retrieve-a-page` and nothing else. There is no write to gate.
     #
-    #     No Notion settings *values* in this row, deliberately: the board
-    #     talks to the bot's own Notion MCP container -- the official server in
-    #     REST mode on http://localhost:3001/mcp, behind MCP_HTTP_AUTH_TOKEN --
-    #     and both are configured once, for the bridge. But the two variables
-    #     are forwarded by name, as both sibling stdio rows forward theirs: the
-    #     MCP client composes the child's env rather than handing it the
-    #     parent's, so a variable nobody named may not arrive. An empty string
-    #     means "not set" -- get_notion_mcp_url() falls through to its default,
-    #     and an empty token raises TaskBoardUnavailable naming itself.
+    #     The env is the PARENT's env plus PYTHONPATH, and that shape is the
+    #     fix for a boot-fatal bug this row shipped with. It used to name the
+    #     two Notion variables explicitly, `process.env.X || ''`, on the
+    #     reasoning that the MCP client composes a child's env rather than
+    #     handing it the parent's, so a variable nobody names may not arrive.
+    #     The naming was right and the `|| ''` was wrong, in two ways that only
+    #     appear when the row is switched on:
+    #
+    #       NOTION_MCP_URL is set nowhere on this host, so the child received
+    #       the empty string, and `Settings` validates that field -- "must be
+    #       absolute and start with http" -- at import. The server died before
+    #       serving a tool, `failOnStartupError: true` turned that into a
+    #       plugin-tree failure, and /dsh stopped answering AT ALL. Measured
+    #       2026-09-08: the first turn with FF_TASK_TOOLS set exited 1 with
+    #       `mcp-client(task_board): initial connection or tool synchronization
+    #       failed`. The feature's first use killed the host.
+    #
+    #       MCP_HTTP_AUTH_TOKEN is worse where it is silent. An env var set to
+    #       "" still SHADOWS the dotenv value in pydantic-settings, so a child
+    #       given `MCP_HTTP_AUTH_TOKEN: ''` reads an empty token even though
+    #       .env carries a real one, and the board refuses itself.
+    #
+    #     `Object.assign({}, process.env, {...})` forwards what exists and
+    #     omits what does not, which is the semantics the explicit list was
+    #     reaching for. The memory launcher row above already spells it this
+    #     way; this row now matches it. Never reintroduce `|| ''` for a
+    #     variable a settings model validates.
     #
     #     60s and not the 5s above: those two children validate and rename a
     #     local file, this one waits on a Notion round trip through a
@@ -406,10 +424,10 @@
           - -m
           - fateforger.slack_bot.task_board_mcp
         cwd: !!js process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1'
-        env:
-          PYTHONPATH: !!js (process.env.FF_FATEFORGER_ROOT || '/Users/hugoevers/VScode-projects/admonish-1') + '/src'
-          MCP_HTTP_AUTH_TOKEN: !!js process.env.MCP_HTTP_AUTH_TOKEN || ''
-          NOTION_MCP_URL: !!js process.env.NOTION_MCP_URL || ''
+        env: !!js >-
+          Object.assign({}, process.env, { PYTHONPATH:
+          (process.env.FF_FATEFORGER_ROOT ||
+          '/Users/hugoevers/VScode-projects/admonish-1') + '/src' })
         toolCallTimeoutMs: 60000
         failOnStartupError: true
 
@@ -455,8 +473,22 @@
     #     parent, behind the Slack approval gate, so no failure mode inside
     #     this child reaches the calendar.
     #
-    #     `maxDepth: 0` forbids it delegating onward. A patch agent that can
-    #     spawn is a patch agent that can do anything.
+    #     `maxDepth: 1` is what "forbids it delegating onward" costs. A patch
+    #     agent that can spawn is a patch agent that can do anything -- that
+    #     reasoning was right and the number was not, and it made this row
+    #     dead config for as long as it has existed.
+    #
+    #     `resolveChildDepth` (dsh-subagent, child-agent.ts) computes
+    #     `delegationDepthOf(parent) + 1` and refuses when that EXCEEDS
+    #     maxDepth. The root is depth 0, so any child of it is depth 1, and
+    #     `1 > 0` refused every call. Measured 2026-09-08 against this profile:
+    #     at 0 the tool answers "subagent depth exceeds maxDepth (0)" and no
+    #     candidate is captured; at 1 the child runs, the parent's PostToolUse
+    #     hook sees its `plan_read` and `plan_apply`, and
+    #     FF_DSH_CANDIDATE_OUTPUT_FILE gets its full basis. So maxDepth counts
+    #     the child's own depth, not the generations below it: 1 lets this
+    #     child run and refuses ITS children at depth 2, which is the rule the
+    #     line above states.
     #
     #     The model is DeepSeek V4 Pro on Sail Research (`:nitro`), which is
     #     slower per call than the loop model and is the right trade here: a
@@ -473,7 +505,7 @@
         # One call, one answer. A patch is not a conversation.
         backgroundMode: one-shot
         enableRunInBackground: false
-        maxDepth: 0
+        maxDepth: 1
         agentOptions:
           provider: openrouter
           model: deepseek/deepseek-v4-pro-0813:nitro
