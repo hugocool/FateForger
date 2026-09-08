@@ -154,15 +154,29 @@ async def test_json_wrapped_in_prose_is_still_read() -> None:
     assert [r.page_id for r in resolved] == [TAX_PAGE_ID]
 
 
-async def test_an_answer_with_no_json_raises() -> None:
+async def test_an_answer_with_no_json_raises_saying_so() -> None:
     ask = FakeAsk("I could not find anything relevant.")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as excinfo:
         await resolve_work("the tax one", [row()], ask=ask)
 
+    assert "no JSON object" in str(excinfo.value)
 
-async def test_an_answer_without_the_field_raises() -> None:
+
+async def test_an_answer_without_the_field_raises_naming_the_field() -> None:
+    """A different failure from unparseable text, and it says which fired."""
     ask = FakeAsk('{"tasks": ["Verify VPB 2024 aangifte"]}')
+
+    with pytest.raises(ValueError) as excinfo:
+        await resolve_work("the tax one", [row()], ask=ask)
+
+    assert "page_ids" in str(excinfo.value)
+    assert "no JSON object" not in str(excinfo.value)
+
+
+async def test_a_missing_field_is_not_read_as_naming_nothing() -> None:
+    """The empty answer is `{"page_ids": []}`; a missing key is a non-answer."""
+    ask = FakeAsk("{}")
 
     with pytest.raises(ValueError):
         await resolve_work("the tax one", [row()], ask=ask)
@@ -182,6 +196,34 @@ def test_the_rows_are_a_list_to_point_at_not_a_vocabulary() -> None:
     for candidate in rows:
         assert candidate.page_id in prompt
     assert '"page_ids"' in prompt
+
+
+def test_the_prompt_shows_the_none_answer_shape() -> None:
+    """The declared normal outcome needs a shape the model can copy.
+
+    With only the populated form demonstrated, a model rendering "none" as
+    `{}` or a bare `[]` hits the parse guard and turns a normal answer into an
+    exception the caller would have to catch.
+    """
+    prompt = build_prompt("book a haircut", [row()])
+
+    assert '{"page_ids": []}' in prompt
+
+
+def test_the_prompt_separates_naming_an_item_from_naming_a_topic() -> None:
+    """The discriminator an eval showed the prompt could not do without.
+
+    At n=8 on the flash pin, "serious c2f work in the morning, gym in the
+    evening" attached ticket #500 five times in eight and gave two further
+    multi-ticket sets — the coin flip CLAUDE.md describes, from a prompt that
+    named a category without giving the model anything to key off. Both sides
+    are shown in the prompt now; the rate is asserted in
+    tests/integration/test_eval_work_lookup.py.
+    """
+    prompt = build_prompt("serious c2f work in the morning", [row()])
+
+    assert "SINGLES OUT" in prompt
+    assert "NAMES A TOPIC" in prompt
 
 
 def test_a_long_summary_is_truncated_in_the_prompt() -> None:
