@@ -54,7 +54,7 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import TurnRequest
 from fateforger.slack_bot import timeboxing_host
 from fateforger.slack_bot.harness_bridge import _planning_obligation
 from fateforger.slack_bot.timeboxing_host import HostPlanningContext
-from fateforger.agents.timeboxing.work_refs import work_refs_on
+from fateforger.agents.timeboxing.work_refs import work_refs_fact_id, work_refs_on
 from fateforger.slack_bot.timeboxing_host import (
     judge_ask,
     requested_work_text,
@@ -62,6 +62,25 @@ from fateforger.slack_bot.timeboxing_host import (
 )
 
 DAY = "2026-09-08"
+
+
+def _assert_the_days_refs_were_cleared(refs) -> None:
+    """A lookup that could not answer files the day's fact with an empty value.
+
+    Not "files no fact": facts merge by fact_id and are never deleted, so
+    filing nothing leaves the previous turn's handles standing on the brief
+    beside the sentence saying the work could not be resolved -- the planner
+    could attach a ticket the card is telling the reader it does not have.
+    Only an empty value under the same id clears them, which is the pattern
+    `REQUIRED_BLOCKS` already uses.
+    """
+
+    (fact,) = refs.facts
+    assert fact.fact_id == work_refs_fact_id(DAY)
+    assert fact.kind is FactKind.WORK_REFS
+    assert fact.value == []
+    assert work_refs_on(refs.facts) == []
+
 
 FINANCE_URL = "https://www.notion.so/Verify-VPB-2024-aangifte-33628174"
 DNS_URL = "https://www.notion.so/Move-the-DNS-33628174"
@@ -324,7 +343,7 @@ async def test_a_turn_that_resolves_nothing_is_silent() -> None:
 # --- the board that could not be read ---------------------------------------
 
 
-async def test_an_unreachable_board_files_no_fact_and_does_not_block(
+async def test_an_unreachable_board_clears_the_days_refs_and_does_not_block(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     board = RefusingBoard()
@@ -340,7 +359,7 @@ async def test_an_unreachable_board_files_no_fact_and_does_not_block(
             put_material=store,
         )
 
-    assert refs.facts == []
+    _assert_the_days_refs_were_cleared(refs)
     assert refs.unresolved is True
     # Nothing was asked and nothing was stored: there were no rows to point at.
     assert prompts == []
@@ -410,7 +429,7 @@ async def test_a_board_outage_is_not_a_typed_board_error_and_is_still_caught(
     with caplog.at_level(logging.ERROR):
         refs = await _lookup(board=_Outage())
 
-    assert refs.facts == []
+    _assert_the_days_refs_were_cleared(refs)
     assert refs.unresolved is True
     assert "work_board_unavailable" in caplog.text
     assert "ConnectionError" in caplog.text
@@ -427,7 +446,7 @@ async def test_a_hallucinated_id_is_dropped_under_its_own_name(
     with caplog.at_level(logging.ERROR):
         refs = await _lookup(ask=ask)
 
-    assert refs.facts == []
+    _assert_the_days_refs_were_cleared(refs)
     assert refs.unresolved is True
     assert "work_lookup_hallucinated_id" in caplog.text
     assert "page-999" in caplog.text
@@ -442,7 +461,7 @@ async def test_a_transport_failure_on_the_judge_call_does_not_kill_the_turn(
     with caplog.at_level(logging.ERROR):
         refs = await _lookup(ask=_refusing_ask)
 
-    assert refs.facts == []
+    _assert_the_days_refs_were_cleared(refs)
     assert refs.unresolved is True
     assert "work_lookup_failed" in caplog.text
 
@@ -459,7 +478,7 @@ async def test_a_store_that_refuses_files_no_handle_it_cannot_back(
     with caplog.at_level(logging.ERROR):
         refs = await _lookup(put_material=_refusing_store)
 
-    assert refs.facts == []
+    _assert_the_days_refs_were_cleared(refs)
     assert refs.unresolved is True
     assert "work_material_unstorable" in caplog.text
 
@@ -504,7 +523,7 @@ async def test_the_material_writes_are_bounded(monkeypatch, caplog) -> None:
     with caplog.at_level(logging.ERROR):
         refs = await _lookup(put_material=_hanging_store)
 
-    assert refs.facts == []
+    _assert_the_days_refs_were_cleared(refs)
     assert refs.unresolved is True
     assert "work_material_unstorable" in caplog.text
     assert "TimeoutError" in caplog.text
@@ -828,7 +847,7 @@ class _FakeTmbx:
         return f"m-{external_id}"
 
 
-def _candidate_session() -> PlanningSessionSnapshot:
+def _candidate_session(prior_refs: list[dict] | None = None) -> PlanningSessionSnapshot:
     """Past the skeleton gate, so one Advance reaches a candidate turn."""
     skeleton = PlanningArtifact.create(
         kind=ArtifactKind.SKELETON,
@@ -849,7 +868,19 @@ def _candidate_session() -> PlanningSessionSnapshot:
                 kind=FactKind.REQUESTED_ACTIVITY,
                 value="finish the next finance ticket",
                 source="user",
-            )
+            ),
+            *(
+                []
+                if prior_refs is None
+                else [
+                    PlanningFact(
+                        fact_id=work_refs_fact_id("2026-09-08"),
+                        kind=FactKind.WORK_REFS,
+                        value=prior_refs,
+                        source="system",
+                    )
+                ]
+            ),
         ],
         artifacts=[skeleton],
         approvals=[
@@ -864,7 +895,9 @@ def _candidate_session() -> PlanningSessionSnapshot:
     )
 
 
-async def _brief_from_a_candidate_turn(monkeypatch, board, page_ids) -> PlanningBrief:
+async def _brief_from_a_candidate_turn(
+    monkeypatch, board, page_ids, prior_refs: list[dict] | None = None
+) -> PlanningBrief:
     monkeypatch.setattr(
         "fateforger.agents.tasks.board.TaskBoard.from_settings",
         staticmethod(lambda: board),
@@ -873,7 +906,9 @@ async def _brief_from_a_candidate_turn(monkeypatch, board, page_ids) -> Planning
 
     planner = _RecordingPlanner()
     kernel = AdaptiveTimeboxing(
-        repository=InMemoryPlanningSessionRepository([_candidate_session()]),
+        repository=InMemoryPlanningSessionRepository(
+            [_candidate_session(prior_refs)]
+        ),
         requirements=TimeboxRequirements(),
         planner=planner,
         context=HostPlanningContext(
@@ -926,3 +961,31 @@ async def test_an_unresolvable_lookup_reaches_the_brief_as_a_sentence(
     assert work_refs_on(brief.facts) == []
     assert brief.work_refs_unresolved is True
     assert "could not be resolved" in _planning_obligation(brief)
+
+
+async def test_a_failed_lookup_does_not_leave_last_turns_handles_on_the_brief(
+    monkeypatch,
+) -> None:
+    """The brief must not list handles and disown them in the same breath.
+
+    An earlier turn resolved #427 and filed it; this turn cannot read the
+    board. Filing nothing would leave that ref on the brief beside the
+    sentence saying the work could not be resolved, and the planner would be
+    free to attach a ticket the card is telling the reader the day does not
+    have -- the inversion of the whole point of the line.
+    """
+
+    brief = await _brief_from_a_candidate_turn(
+        monkeypatch,
+        RefusingBoard(),
+        ["page-427"],
+        prior_refs=[
+            {"link": "m-page-427", "label": "Verify VPB 2024 aangifte", "task": 427}
+        ],
+    )
+
+    assert work_refs_on(brief.facts) == []
+    assert brief.work_refs_unresolved is True
+    text = _planning_obligation(brief)
+    assert "m-page-427" not in text
+    assert "could not be resolved" in text

@@ -356,17 +356,26 @@ def _work_line(panel: ContextPanel) -> str:
     The number and the name, never the handle and never a url. A handle is
     what the planner writes onto a block; a person checking whether the day is
     about the right ticket needs the ticket.
+
+    The unresolved sentence names the route back rather than a consequence
+    this line cannot know: no control was added, so the only way to attach a
+    ticket is to say which one on a turn that reaches a candidate resolve, and
+    "you can attach it later" promised an affordance that does not exist.
+
+    Names are joined with the panel's own ` · `, not a comma: a ticket whose
+    name contains a comma would otherwise make the list boundaries ambiguous
+    the moment two are named.
     """
 
     if panel.work_refs_unresolved:
         return (
-            "\nI could not work out which ticket you meant, so the day is "
-            "planned without one — you can attach it later."
+            "\nI could not work out which ticket you meant — say which one "
+            "and I'll attach it."
         )
     if not panel.work:
         return ""
     shown = panel.work[:WORK_LINE_CAP]
-    named = ", ".join(
+    named = " · ".join(
         f"#{item.number} {item.label}" if item.number is not None else item.label
         for item in shown
     )

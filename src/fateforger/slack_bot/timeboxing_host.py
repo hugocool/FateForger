@@ -313,7 +313,7 @@ class HostPlanningContext:
             # `from_settings` raises on a missing token, before any request --
             # and before a judge is asked for, since there would be nothing to
             # ask about.
-            return work_board_unavailable(exc)
+            return work_board_unavailable(day, exc)
 
         model_client = getattr(self._runtime, "timeboxing_judge_model_client", None)
         if model_client is None:
@@ -562,18 +562,33 @@ MATERIAL_TIMEOUT_S = 20.0
 class WorkRefs:
     """What one turn's work lookup produced, and whether it got an answer.
 
-    The two fields are not redundant. No facts means either "the message named
-    no ticket" or "the lookup could not be completed", and only the second
-    changes how the planner should read the brief -- so the flag travels beside
-    the facts rather than as an empty fact, which would read as the first.
+    The two fields are not redundant, and neither is implied by the other. An
+    empty fact says "this turn resolved no handles"; the flag says why -- the
+    lookup could not be completed, rather than a message that named no ticket
+    -- and only the second changes how the planner should read the brief.
     """
 
     facts: list[PlanningFact]
     unresolved: bool
 
 
-def work_lookup_failed(event: str, exc: BaseException) -> WorkRefs:
+def work_lookup_failed(day: str, event: str, exc: BaseException) -> WorkRefs:
     """A step of the lookup did not complete: say so at error, and go on.
+
+    **The fact is filed, with an empty value.** `_merge_facts` merges by
+    fact_id and never deletes, so only an empty value under the same id clears
+    the day's refs -- the same house pattern `REQUIRED_BLOCKS` uses, and for
+    the same reason. Filing nothing would leave the previous turn's handles
+    standing on the brief beside the sentence saying the work could not be
+    resolved, so the planner could attach a ticket while the card told the
+    reader the day was planned without one. That is the failure this whole
+    line exists to catch, inverted.
+
+    Clearing loses nothing. The fact records what the current message named,
+    not durable state: a link the planner already attached lives on the block
+    in the plan and in the material store, and neither is touched here. All
+    this stops is a new turn acting on an older message's intent, which is the
+    more dangerous direction.
 
     **Every failure here is non-blocking**, decided 2026-09-08: the user asked
     to plan a day, and whether the board timed out, the model named a ticket
@@ -602,12 +617,24 @@ def work_lookup_failed(event: str, exc: BaseException) -> WorkRefs:
         exc_info=True,
         extra={"event": event, "error_type": type(exc).__name__},
     )
-    return WorkRefs(facts=[], unresolved=True)
+    from fateforger.agents.timeboxing.work_refs import work_refs_fact_id
+
+    return WorkRefs(
+        facts=[
+            PlanningFact(
+                fact_id=work_refs_fact_id(day),
+                kind=FactKind.WORK_REFS,
+                value=[],
+                source="system",
+            )
+        ],
+        unresolved=True,
+    )
 
 
-def work_board_unavailable(exc: BaseException) -> WorkRefs:
+def work_board_unavailable(day: str, exc: BaseException) -> WorkRefs:
     """The board could not be built or read, under its own event name."""
-    return work_lookup_failed("work_board_unavailable", exc)
+    return work_lookup_failed(day, "work_board_unavailable", exc)
 
 
 def requested_work_text(snapshot: Any) -> str:
@@ -745,7 +772,7 @@ async def work_refs_for_turn(
             timeout=BOARD_TIMEOUT_S,
         )
     except Exception as exc:  # noqa: BLE001 - every board failure is one outcome
-        return work_board_unavailable(exc)
+        return work_board_unavailable(day, exc)
 
     try:
         rows = await asyncio.wait_for(
@@ -756,19 +783,24 @@ async def work_refs_for_turn(
         # Its own name: an id nobody showed the model is a prompt or a model
         # problem, not an outage, and it is the one failure here that says
         # something about the judgement rather than about the plumbing.
-        return work_lookup_failed("work_lookup_hallucinated_id", exc)
+        return work_lookup_failed(day, "work_lookup_hallucinated_id", exc)
     except Exception as exc:  # noqa: BLE001 - transport, timeout, unparseable
-        return work_lookup_failed("work_lookup_failed", exc)
+        return work_lookup_failed(day, "work_lookup_failed", exc)
 
     if not rows:
         # The ordinary case, and it stays silent: a message naming a topic
-        # rather than an item plans the day with no ticket attached.
+        # rather than an item plans the day with no ticket attached. No fact,
+        # deliberately unlike the failure paths above: this is an answer, and
+        # the message it answered still holds every earlier request, so a ref
+        # the model named on an earlier draw and passes over on this one is a
+        # disagreement between two samples, not a retraction. Clearing on it
+        # would let sampling noise drop a ticket the user did ask for.
         return WorkRefs(facts=[], unresolved=False)
 
     try:
         handles = await _store_materials(rows, put_material)
     except Exception as exc:  # noqa: BLE001 - a handle nothing stored is no handle
-        return work_lookup_failed("work_material_unstorable", exc)
+        return work_lookup_failed(day, "work_material_unstorable", exc)
 
     refs = [
         {"link": handle, "label": row.name, "task": row.number}

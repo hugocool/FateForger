@@ -148,6 +148,18 @@ def test_the_panel_never_shows_the_handle_a_ticket_is_attached_by() -> None:
     assert "m-page-431" not in json.dumps(message.blocks)
 
 
+def test_several_tickets_are_joined_by_the_panels_own_separator() -> None:
+    """` · `, not a comma: a ticket whose name holds a comma would otherwise
+    make the boundaries between two names unreadable."""
+
+    message = _panel_message(refs=[FINANCE, DNS])
+
+    assert (
+        "#427 Verify VPB 2024 aangifte · #431 Move the DNS records"
+        in _head(message)
+    )
+
+
 def test_a_day_with_no_work_says_nothing_extra() -> None:
     """A session nobody named work for reads exactly as it did before: title,
     counts, anchor summary, and no fourth line."""
@@ -169,8 +181,8 @@ def test_an_unresolved_turn_says_what_happened_in_the_persons_terms() -> None:
     message = _panel_message(unresolved=True)
 
     assert (
-        "I could not work out which ticket you meant, so the day is planned "
-        "without one — you can attach it later." in _head(message)
+        "I could not work out which ticket you meant — say which one and "
+        "I'll attach it." in _head(message)
     )
     assert "board" not in _head(message)
     _validated(message.blocks)
@@ -260,17 +272,25 @@ class _Planner:
 
 
 class _Context:
-    """A host resolve that answers about the work and nothing else."""
+    """A host resolve that answers about the work and nothing else.
 
-    def __init__(self, unresolved: bool) -> None:
+    `facts` is what the host would splice in: `work_refs_for_turn` files the
+    day's `WORK_REFS` fact with an empty value when it could not answer, and
+    files nothing at all on a turn that never ran the lookup.
+    """
+
+    def __init__(self, unresolved: bool, facts: list[PlanningFact] | None = None) -> None:
         self.unresolved = unresolved
+        self.facts = facts or []
 
     async def propose_planning_day(self, request):
         raise AssertionError("the day is locked in this test")
 
     async def resolve(self, snapshot, *, target, progress):
         return PlanningContext(
-            applicable_constraints=_rows(), work_refs_unresolved=self.unresolved
+            facts=list(self.facts),
+            applicable_constraints=_rows(),
+            work_refs_unresolved=self.unresolved,
         )
 
 
@@ -310,19 +330,21 @@ def _kernel_session() -> PlanningSessionSnapshot:
     )
 
 
-def _advance(kernel, snapshot) -> None:
-    asyncio.run(
-        kernel.turn(
-            TurnRequest(
-                session_key=snapshot.session_key,
-                interaction_id=f"1.{next(_interaction_ids)}",
-                actor_user_id="U1",
-                expected_revision=snapshot.revision,
-                intent=Advance(),
-            ),
-            progress=_Sink(),
-        )
+async def _advance_async(kernel, snapshot) -> None:
+    await kernel.turn(
+        TurnRequest(
+            session_key=snapshot.session_key,
+            interaction_id=f"1.{next(_interaction_ids)}",
+            actor_user_id="U1",
+            expected_revision=snapshot.revision,
+            intent=Advance(),
+        ),
+        progress=_Sink(),
     )
+
+
+def _advance(kernel, snapshot) -> None:
+    asyncio.run(_advance_async(kernel, snapshot))
 
 
 def test_the_kernel_mirrors_the_unresolved_flag_onto_the_snapshot() -> None:
@@ -347,3 +369,71 @@ def test_the_kernel_mirrors_the_unresolved_flag_onto_the_snapshot() -> None:
     _advance(kernel, after)
     cleared = asyncio.run(repository.load_or_create("C1:1.0", owner_user_id="U1"))
     assert cleared.work_refs_unresolved is False
+
+
+async def test_a_failed_lookup_then_a_later_turn_names_no_ticket_at_all() -> None:
+    """The sequence the review traced, end to end.
+
+    An earlier turn resolved #427. The next candidate turn cannot read the
+    board, so the host files the day's fact with an empty value and sets the
+    flag: the panel says so and names nothing. A later turn -- a Back, a
+    skeleton -- never runs the lookup, so it clears the flag. That is only
+    safe because the ref is already gone: before the fix it would have brought
+    #427 back onto the panel as this turn's answer, with nothing marking it.
+    """
+
+    from fateforger.slack_bot.timeboxing_host import work_refs_for_turn
+
+    class _RefusingBoard:
+        async def list_tasks(self, scope, *, limit=25, cursor=None):
+            raise ConnectionError("connection refused")
+
+    async def _unused_ask(prompt: str) -> str:
+        raise AssertionError("no rows, so nothing to ask about")
+
+    async def _unused_store(**_kwargs) -> str:
+        raise AssertionError("no rows, so nothing to store")
+
+    failed = await work_refs_for_turn(
+        day=DAY.isoformat(),
+        message="finish the next finance ticket",
+        board=_RefusingBoard(),
+        ask=_unused_ask,
+        put_material=_unused_store,
+    )
+    assert failed.unresolved is True
+
+    started = _kernel_session().model_copy(
+        update={"facts": [*_kernel_session().facts, _work_fact([FINANCE])]}
+    )
+    repository = InMemoryPlanningSessionRepository([started])
+    context = _Context(unresolved=True, facts=failed.facts)
+    kernel = AdaptiveTimeboxing(
+        repository=repository,
+        requirements=TimeboxRequirements(),
+        planner=_Planner(),
+        context=context,
+        commit=_Commit(),
+    )
+
+    await _advance_async(kernel, started)
+    after_failure = await repository.load_or_create("C1:1.0", owner_user_id="U1")
+    failed_head = _head(
+        render_context_panel(context_panel(after_failure, first_shown_with=None))
+    )
+    assert "could not work out" in failed_head
+    assert "427" not in failed_head
+
+    # The later turn: no lookup, so no facts and no flag.
+    context.unresolved = False
+    context.facts = []
+    await _advance_async(kernel, after_failure)
+    later = await repository.load_or_create("C1:1.0", owner_user_id="U1")
+    later_head = _head(
+        render_context_panel(context_panel(later, first_shown_with=None))
+    )
+
+    assert later.work_refs_unresolved is False
+    assert "427" not in later_head
+    assert "Verify VPB 2024 aangifte" not in later_head
+    assert "Planning around" not in later_head
