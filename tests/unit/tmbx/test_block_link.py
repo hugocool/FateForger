@@ -9,6 +9,7 @@ build it.
 
 from __future__ import annotations
 
+import csv
 import itertools
 from datetime import date, datetime
 
@@ -330,6 +331,26 @@ def test_a_rendered_block_shows_its_handle_and_label_and_never_a_url():
     assert "mdeadbeef0" in rendered
     assert TICKET_LABEL in rendered
     assert TICKET_URL not in rendered
+
+
+def test_a_handle_containing_the_delimiter_is_quoted_like_its_label():
+    """A store-minted handle is hex and cannot hold a comma. A handle read
+    back off a calendar extended property set by hand can, and `Block.link`
+    shape-checks nothing -- the same unchecked path `slug` already documents.
+    Rendered raw it would shift every column after it and corrupt the next
+    row, so the block is written directly here rather than through the store,
+    which could not produce this input.
+    """
+    plan = _plan(_linked_block("DW1", "m0a1,b2c3d4"))
+
+    body = render_plan(plan, link_labels={"m0a1,b2c3d4": TICKET_LABEL})
+
+    # A CSV reader, not a split on the delimiter: the two cannot be told
+    # apart by splitting, which is the whole point of quoting.
+    row, = csv.reader([body.splitlines()[1]])
+    assert len(row) == len(COLUMNS)
+    assert row[COLUMNS.index("link")] == "m0a1,b2c3d4"
+    assert row[COLUMNS.index("link_label")] == TICKET_LABEL
 
 
 def test_an_unlinked_block_renders_empty_link_columns():

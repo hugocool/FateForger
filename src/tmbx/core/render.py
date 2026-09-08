@@ -223,9 +223,12 @@ def render_plan(
     is what that work is called -- both empty for a block that is for no
     stored work. The handle is there because it is what an op names; the
     label is there because a handle alone names nothing anybody, model or
-    person, could recognise. Never the url: see ``plan_rows``. Escaped like
-    ``summary``, since a label is a foreign system's prose and may hold a
-    delimiter.
+    person, could recognise. Never the url: see ``plan_rows``. BOTH are
+    escaped like ``summary``: a label is a foreign system's prose, and the
+    handle is only hex while it comes from the material store -- a block
+    reaching the renderer from a calendar extended property set by hand
+    arrives unchecked, exactly as ``slug`` does, and a delimiter in either
+    field shifts every column after it.
     """
     header = f"blocks[{len(plan.blocks)}]{{{','.join(COLUMNS)}}}:"
     if not plan.blocks:
@@ -237,7 +240,7 @@ def render_plan(
         _DELIMITER.join(
             [row["h"], row["own"], row["type"], _escape(row["summary"]),
              row["start"], row["end"], row["mode"], row["dur"], _escape(row["slug"]),
-             row["link"], _escape(row["link_label"])]
+             _escape(row["link"]), _escape(row["link_label"])]
         )
         for row in plan_rows(plan, foreign_uids, link_labels)
     ]
