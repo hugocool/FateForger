@@ -25,6 +25,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     SkeletonGroup,
     SkeletonItem,
     SkeletonPayload,
+    UserBlockerDraft,
 )
 from fateforger.slack_bot import harness_bridge
 from fateforger.slack_bot.planning_result_mcp import (
@@ -114,6 +115,32 @@ def test_the_skeleton_obligation_names_every_payload_field() -> None:
     text = harness_bridge._planning_obligation(_brief(ArtifactKind.SKELETON))
     for field in SkeletonPayload.model_fields:
         assert f"`{field}`" in text
+
+
+def test_the_skeleton_obligation_names_every_item_field() -> None:
+    """Drift guard: a field added to `SkeletonItem` must reach the prompt too.
+
+    `payload_shape` states each item as a JSON literal rather than a backtick
+    reference (`{"text": ..., "source": ..., "rule_uid": ...}`), so the check
+    matches that form -- unlike the payload-level guard above, which matches
+    the backtick form those fields get instead.
+    """
+    text = harness_bridge._planning_obligation(_brief(ArtifactKind.SKELETON))
+    for field in SkeletonItem.model_fields:
+        assert f'"{field}"' in text
+
+
+def test_the_obligation_names_the_blocking_field() -> None:
+    """Drift guard: a planner never told about `blocking` will never set it.
+
+    #259 is what an unstated channel already cost once: the planner invented
+    a field the kernel never read. `blocking` is a real channel now, and
+    every turn that can end in `AwaitingApproval` must say so.
+    """
+    assert "blocking" in UserBlockerDraft.model_fields
+    for target in (ArtifactKind.SKELETON, ArtifactKind.VALIDATED_CANDIDATE):
+        text = harness_bridge._planning_obligation(_brief(target))
+        assert "`blocking`" in text
 
 
 def test_the_candidate_obligation_does_not_describe_a_skeleton() -> None:

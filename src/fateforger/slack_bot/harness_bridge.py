@@ -360,6 +360,31 @@ def _planning_obligation(brief: PlanningBrief) -> str:
         if brief.target_artifact is ArtifactKind.SKELETON
         else ""
     )
+    # A blocker used to be the only channel for a question, and it always
+    # replaced the artifact it was about -- so a question that needed the day
+    # on screen to make sense of ("does the party end by 22:00?") had nowhere
+    # to go. Nothing here said the option existed, and #259 is what that cost:
+    # the planner invented an `open_questions` field the kernel never read,
+    # and the host discarded it in silence. `_apply_planning_result` accepts
+    # a riding question for whichever artifact the planner just submitted, so
+    # this applies to both turns that reach it -- skeleton and candidate --
+    # and not to day_frame or captured_inputs, which never reach that path.
+    question_channel = (
+        "\nYou may raise one question as a blocker. At most one: a second "
+        "blocker in the same turn is refused as `too_many_questions` no "
+        "matter what either one sets `blocking` to, so hold the second "
+        "question for the next draft. Set `blocking` only when proceeding "
+        "would produce a plan you believe is wrong. Otherwise leave it "
+        "false, which is the ordinary case: the question is shown below the "
+        "day, the user answers it with a button, and Proceed stays live, "
+        "meaning \"approve, question unanswered\". A question about a "
+        "placement is unanswerable without the placement on screen, which is "
+        "why a non-blocking question rides with the artifact instead of "
+        "replacing it."
+        if brief.target_artifact
+        in (ArtifactKind.SKELETON, ArtifactKind.VALIDATED_CANDIDATE)
+        else ""
+    )
     # A rule saying a block must exist is placed, not asked about. The brief
     # says which kinds and which rule, and splits the two claims the block
     # will carry: existence is (from memory: …), the time is assumed (#214).
@@ -387,7 +412,7 @@ def _planning_obligation(brief: PlanningBrief) -> str:
         f"`submit_planning_result` once, with target_artifact `{target}`. Your "
         "final message is presentation only: it records nothing, and a turn "
         f"that ends without that call has produced nothing.{apply_first}{payload_shape}"
-        f"{required_lines}"
+        f"{question_channel}{required_lines}"
         "\nIf you cannot finish but have not failed -- a retry budget spent "
         "mid-fix, say -- submit a `continuation` saying what is left and what "
         "you already worked out. What you produced is kept and you resume from "
