@@ -102,10 +102,12 @@ class PlanningContext(BaseModel):
     #: rank order. Read by `_stage1_outcome` and nowhere else.
     probes: list[ProbeDraft] = Field(default_factory=list)
     #: The host tried to resolve the work this session asked for and could
-    #: not. It travels beside the facts rather than as one because it is the
-    #: absence of a fact -- see `PlanningBrief.work_refs_unresolved`, which this
-    #: feeds -- and it never blocks the turn: a planner told the work could not
-    #: be resolved plans the day and leaves the blocks unlinked.
+    #: not. It travels beside the facts rather than as one because the facts
+    #: of such a turn -- one `WORK_REFS` with an empty value -- clear the
+    #: day's refs without saying why they are gone; see
+    #: `PlanningBrief.work_refs_unresolved`, which this feeds. It never blocks
+    #: the turn: a planner told the work could not be resolved plans the day
+    #: and leaves the blocks unlinked.
     work_refs_unresolved: bool = False
 
 

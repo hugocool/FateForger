@@ -359,10 +359,12 @@ class PlanningSessionSnapshot(_StrictModel):
     suspended_constraint_count: int = Field(default=0, ge=0)
     #: The last resolve that looked could not work out which ticket the
     #: session asked for. Mirrored from `PlanningContext` for the same reason
-    #: the count above is: it is the absence of a fact, and the cards read the
-    #: snapshot, so a signal that stopped at the brief would be invisible to
-    #: the person approving the day. See `PlanningBrief.work_refs_unresolved`,
-    #: which carries the same bool to the planner.
+    #: the count above is: the cards read the snapshot, so a signal that
+    #: stopped at the brief would be invisible to the person approving the
+    #: day. The empty `WORK_REFS` fact such a turn files clears the day's
+    #: refs; it does not say why they are gone, which is this flag's job. See
+    #: `PlanningBrief.work_refs_unresolved`, which carries the same bool to
+    #: the planner.
     work_refs_unresolved: bool = False
     #: Where Stage 1 stands. `open`: eliciting or not yet evaluated. `proposed`:
     #: the kernel emitted GateMet and is waiting for consent. `closed`: the user
@@ -696,14 +698,17 @@ class PlanningBrief(_StrictModel):
     allowed_outputs: set[ArtifactKind]
     #: The work this session asked for could not be resolved this turn -- the
     #: board could not be read, the judgement did not complete, or the handles
-    #: could not be stored. Not a fact, because it is the absence of one: a
-    #: `WORK_REFS` fact filed empty would read as "the board was read and named
-    #: nothing", which is the other thing entirely. The brief says so in words
-    #: so the planner knows the absence of handles is a failure to look rather
-    #: than a day with no work in it. One flag for every cause, because the
-    #: planner's next move is the same for all of them; the four causes are
-    #: separated in the log. Written by the resolve that tried; false is both
-    #: "it answered" and "nobody asked".
+    #: could not be stored. Such a turn also files `WORK_REFS` with an empty
+    #: value, and the two do different jobs: the empty fact is what *clears*
+    #: the day's refs, because facts merge by id and an empty value under that
+    #: id is the only way to empty one, while this flag is what puts the
+    #: sentence on the brief and on the card. Neither does the other's job --
+    #: an empty fact alone says "no handles" and cannot say whether nobody
+    #: named a ticket or nobody could look, and the planner must not read a
+    #: failure to look as a day with no work in it. One flag for every cause,
+    #: because the planner's next move is the same for all of them; the four
+    #: causes are separated in the log. Written by the resolve that tried;
+    #: false is both "it answered" and "nobody asked".
     work_refs_unresolved: bool = False
 
 

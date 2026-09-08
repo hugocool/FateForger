@@ -258,15 +258,21 @@ def _work(snapshot: PlanningSessionSnapshot) -> list[WorkItem]:
     """The tickets the panel may name, which is none of them when the last
     resolve could not answer.
 
-    **A ref outlives the turn that filed it.** Facts merge by id and are never
-    deleted, so a turn that resolved nothing leaves the previous turn's ref
+    **A ref can outlive the turn that filed it.** Facts merge by id and are
+    never deleted, so a turn that files none leaves the previous turn's ref
     standing on the snapshot; the id is per-day, so the staleness is bounded to
     one day, but one day is the whole session. Naming a ticket beside the
     sentence saying the work could not be worked out is the one combination
     that could get a day approved against the wrong ticket -- the reader has no
-    way to tell which half of the line describes this turn. So the unresolved
-    case shows the sentence and no names, and the sentence says the day is
-    planned without a ticket, which is what the planner was told as well.
+    way to tell which half of the line describes this turn.
+
+    A failed lookup now clears the day's refs at the source, by filing
+    `WORK_REFS` with an empty value, so in the ordinary flow there is nothing
+    left here to suppress. This stays as the second line of defence: a
+    snapshot written before that fix, or any later path that sets the flag
+    without filing the fact, must still not name a ticket beside a sentence
+    disowning it. The sentence itself offers the way back -- say which ticket
+    -- and never a name.
     """
 
     if snapshot.work_refs_unresolved:
