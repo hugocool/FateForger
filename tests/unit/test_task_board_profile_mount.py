@@ -15,6 +15,13 @@ no-matching rule.
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
+
+import pytest
+
 # The profile is parsed by the `profile` fixture in `tests/unit/conftest.py`.
 
 TASK_BOARD_MODULE = "fateforger.slack_bot.task_board_mcp"
@@ -105,6 +112,80 @@ def test_the_mount_never_forwards_a_variable_as_an_empty_string(profile):
     )
     assert '|| ""' not in env, env
 
+
+
+#: What the child needs out of the environment to reach the Notion container,
+#: and what it does with each. The row names none of them -- it forwards the
+#: whole parent environment -- so this list is what that shape has to keep
+#: delivering, and the two tests below check it from both ends.
+#:
+#:   MCP_HTTP_AUTH_TOKEN  the bearer the facade sends; empty is fatal and silent
+#:   NOTION_MCP_URL       the endpoint, when it is set anywhere
+#:   MCP_HTTP_PORT        the port the endpoint DEFAULTS to when it is not
+#:
+#: The port was the one nobody had checked. `get_notion_mcp_url()` resolves
+#: through `os.environ` alone and falls back to 3001, so a host running the
+#: container anywhere else needs the variable in the child's environment or the
+#: board dials the wrong port -- loudly, but a long way from the cause.
+CHILD_NOTION_VARIABLES = (
+    "MCP_HTTP_AUTH_TOKEN",
+    "NOTION_MCP_URL",
+    "MCP_HTTP_PORT",
+)
+
+
+def test_the_mount_names_none_of_the_notion_variables_it_forwards(profile):
+    """Naming one can only shadow what the whole-env forward already delivers.
+
+    This is the half that needs no `node`: the expression starts from
+    `process.env`, so every variable that is set arrives, and any of these three
+    appearing in the expression means the row went back to composing them one by
+    one -- the shape that shipped `|| ''` and took the host down.
+    """
+    env = _row_named(profile, "task_board")["config"]["env"]
+
+    assert "Object.assign({}, process.env" in env, env
+    for name in CHILD_NOTION_VARIABLES:
+        assert name not in env, (
+            f"{name} is named in the mount's env expression; composing a "
+            "variable by hand is what forwarded an empty string before"
+        )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node runs the profile")
+def test_the_forwarded_env_actually_carries_the_notion_variables(profile):
+    """The expression evaluated, because "it forwards everything" is a claim.
+
+    `dsh-mcp-client` composes the child's env from this JavaScript, so the
+    question is what the object holds, not what the source says. Run under node
+    with a parent environment that carries all three, it must hand every one of
+    them through unchanged, and add the PYTHONPATH the child imports from.
+    """
+    env_expression = _row_named(profile, "task_board")["config"]["env"]
+    parent = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "FF_FATEFORGER_ROOT": "/somewhere/else",
+        "MCP_HTTP_AUTH_TOKEN": "a-real-looking-secret",
+        "NOTION_MCP_URL": "http://notion-mcp:3100/mcp",
+        "MCP_HTTP_PORT": "3100",
+    }
+
+    result = subprocess.run(
+        ["node", "-e", f"console.log(JSON.stringify(({env_expression})))"],
+        env=parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    child = json.loads(result.stdout)
+    for name in CHILD_NOTION_VARIABLES:
+        assert child.get(name) == parent[name], (
+            f"the child's env carries {name}={child.get(name)!r}, "
+            f"not the parent's {parent[name]!r}"
+        )
+    assert child["PYTHONPATH"] == "/somewhere/else/src"
 
 
 def _subagent_rows(profile) -> list[dict]:
