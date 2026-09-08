@@ -40,7 +40,7 @@ PY=/Users/hugoevers/VScode-projects/admonish-1/.venv/bin/python
 | `src/fateforger/slack_bot/planning_result_mcp.py` | refuse a malformed skeleton with the new field names | 1 |
 | `src/fateforger/slack_bot/stage_cards.py` | `StageCard` carries the typed artifact; `map_outcome` builds it | 4 |
 | `src/fateforger/slack_bot/timeboxing_cards.py` | order, `header` block, per-group sections, provenance line, folded context | 5 |
-| `src/fateforger/agents/timeboxing/skeleton_draft_system_prompt.j2` | the planner is told the new shape | 6 |
+| `src/fateforger/slack_bot/harness_bridge.py` (`_planning_obligation`) | the planner is told the new shape | 6 |
 
 ---
 
@@ -547,19 +547,22 @@ _SOURCE_LABEL: dict[str, str] = {"assumed": "my guess", "calendar": "on your cal
 
 On `StageCard`: `artifact_day: str = ""` and `artifact_groups: list[CardGroup] = Field(default_factory=list)`.
 
+**Controller correction:** the snippet below is a leftover from a draft that
+read an `ACTIVE_CONSTRAINTS` fact. That fact carries only a count, no names
+(see `src/fateforger/slack_bot/stage_cards.py`), so the shipped implementation
+reads `PlanningSessionSnapshot.applicable_constraints` instead -- the rows the
+host already resolved for this day, in the planner's order (#202).
+
 ```python
 def _rule_names(snapshot: PlanningSessionSnapshot) -> dict[str, str]:
-    """uid -> name for the day's rules, from the ACTIVE_CONSTRAINTS fact."""
-    for fact in snapshot.facts:
-        if fact.kind is not FactKind.ACTIVE_CONSTRAINTS:
-            continue
-        if isinstance(fact.value, dict):
-            return {
-                r["uid"]: r["name"]
-                for r in fact.value.get("rules", [])
-                if isinstance(r, dict) and "uid" in r and "name" in r
-            }
-    return {}
+    """uid -> name for the day's rules, from `applicable_constraints`."""
+    return {
+        row["uid"]: row["name"]
+        for row in snapshot.applicable_constraints
+        if isinstance(row, dict)
+        and isinstance(row.get("uid"), str)
+        and isinstance(row.get("name"), str)
+    }
 
 
 def _artifact_groups(
@@ -756,9 +759,17 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ### Task 6: The planner is told the new shape
 
+**Controller correction:** the file target below names
+`skeleton_draft_system_prompt.j2`, rendered via `render_skeleton_draft_system_prompt()`.
+That renderer is imported only by `agent.py` -- the legacy agent slated for
+deletion in #192 -- and its Stage 3 never produces a `SkeletonPayload`, so
+changing it would tell nothing the live planner reads. The instruction the
+live planner actually receives is `_planning_obligation()` in
+`src/fateforger/slack_bot/harness_bridge.py`, and that is what was changed.
+
 **Files:**
-- Modify: `src/fateforger/agents/timeboxing/skeleton_draft_system_prompt.j2`
-- Test: `tests/unit/test_skeleton_prompt_contract.py`
+- Modify: `src/fateforger/slack_bot/harness_bridge.py` (`_planning_obligation`)
+- Test: `tests/unit/test_skeleton_payload_contract.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -799,6 +810,57 @@ git commit -m "feat(timeboxing): the planner is told to attribute every item
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
+
+---
+
+### Task 6b: Close the two gaps beneath the riding question (added mid-execution)
+
+**Files:**
+- Modify: `src/fateforger/slack_bot/planning_result_mcp.py`
+- Test: `tests/unit/test_planning_result_mcp.py`
+
+Not in the original plan. Task 6 told the planner it could submit a
+non-blocking question beside an artifact, but two gaps beneath
+`submit_planning_result` made that unreachable in production, so the
+controller added this task during execution rather than shipping a feature
+the wire could not carry.
+
+**Gap 1.** `_validated()` refused an artifact and *any* blocker together,
+unconditionally, regardless of `blocking`. Corrected to a case split: one
+non-blocking blocker rides with the artifact (the kernel already supports
+this, from Task 3); a *blocking* blocker beside an artifact is refused by
+name (`[blocking_blocker_with_artifact]`), because `_apply_planning_result`
+checks `pending_question[1].blocking` before it ever looks at
+`artifact_updates` — reaching the kernel with both would silently discard the
+artifact rather than fail the turn. Two or more blockers beside an artifact
+are refused too (`[too_many_questions]`), duplicated from the kernel the same
+way `required_block_missing` already is.
+
+**Gap 2, the one that mattered most.** `BlockerInput` — the MCP-facing input
+model — never declared a `blocking` field, and neither it nor FastMCP's
+generated arg model set `extra="forbid"`. A planner that actually sent
+`blocking: true` over the wire had it silently dropped before this tool's
+body, and therefore before Gap 1's check, ever ran. Every existing test
+called the bare Python function with dicts, bypassing FastMCP's schema
+coercion entirely, so a green suite proved nothing about the real wire.
+Fixed by adding `blocking` to `BlockerInput`, then closing the same hole for
+good by adding `model_config = ConfigDict(extra="forbid")` to `BlockerInput`,
+`AssumptionInput`, and `BlockerOptionInput` — the three input models on this
+tool — so an unknown field is refused loudly instead of vanishing. Verified
+over the real wire with `mcp.list_tools()` (schema now carries the field) and
+`mcp.call_tool()` (a live call with `blocking: true` is refused by name; a
+live call with an undeclared field raises `extra_forbidden` instead of being
+dropped), not just the bypassed dict path.
+
+Without both fixes, the whole non-blocking-question feature built across
+Task 3 and Task 6 was unreachable in production: a planner could form the
+right JSON, and the tool would either refuse it outright or silently drop
+the one field that made it non-blocking.
+
+Full trace, break-it-on-purpose evidence, and commands:
+`.superpowers/sdd/2026-09-07-stage-card-whole/task-6b-report.md`. Commits:
+`8976743` (Gap 1 and Gap 2's `blocking` field) and `cf20178` (`extra="forbid"`
+on all three input models).
 
 ---
 
