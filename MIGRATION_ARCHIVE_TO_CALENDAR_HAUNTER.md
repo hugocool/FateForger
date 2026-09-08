@@ -1,5 +1,15 @@
 # Migration Guide: Archive to CalendarHaunter
 
+> **Superseded (2026-09).** This guide recommends migrating *to*
+> `CalendarHaunter` (`src/fateforger/agents/admonisher/calendar.py`).
+> `CalendarHaunter` is itself dead: nothing has constructed it since
+> haunting moved to `fateforger/haunt/`. Migrate to that package instead —
+> `src/fateforger/haunt/reconcile.py` and `src/fateforger/haunt/service.py`
+> are where calendar reconciliation and reminder orchestration live now. The
+> `CalendarHaunter` tests were removed in the 2026-09 test-suite prune
+> (`tests/README.md`, "What's out of `tests/unit/`"). Everything below is
+> left as written, as a record of what was true then.
+
 If you have code using the old `CalendarMcpClient` from the archive, here's how to migrate to the mature `CalendarHaunter` implementation.
 
 ---

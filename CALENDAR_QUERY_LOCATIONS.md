@@ -1,5 +1,16 @@
 # Google Calendar MCP Query Locations - Complete Inventory
 
+> **Superseded (2026-09).** This document calls `CalendarHaunter`
+> (`src/fateforger/agents/admonisher/calendar.py`) production. Nothing has
+> constructed it since haunting moved to `fateforger/haunt/` — see
+> `src/fateforger/haunt/README.md` for the current reminder/reconciliation
+> orchestration and `src/fateforger/haunt/reconcile.py` for the calendar
+> access it uses instead. `admonisher/base.py` and `admonisher/calendar.py`
+> have no caller in `src/` or `scripts/`; their tests were removed in the
+> 2026-09 test-suite prune (`tests/README.md`, "What's out of `tests/unit/`").
+> Everything below is left as written, as a record of what was true then —
+> it is not a guide to the current architecture.
+
 ## 🎯 Summary
 
 You have Google Calendar MCP integration in **3 locations**, with the **CalendarHaunter** being the most mature production-ready implementation.
