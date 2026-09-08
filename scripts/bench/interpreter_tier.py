@@ -142,6 +142,26 @@ def _paths(config: str, name: str, out_dir: Path) -> dict:
     }
 
 
+def _portable(run: dict) -> dict:
+    """The run index as it is committed: paths relative to the repo root.
+
+    The draw files themselves are gitignored, so this index is the committed
+    record's only pointer at them. An absolute path names one machine's
+    worktree -- ``/Users/<someone>/.../.worktrees/interpreter-tier-one/...`` --
+    and is unusable to anyone else reading the JSON, so the index that survives
+    the merge is the relative one. Paths stay absolute in memory: the runs are
+    driven from two different worktrees and a relative path would resolve
+    against the wrong one.
+    """
+
+    out = dict(run)
+    for key in ("draws", "junit", "log"):
+        out[key] = str(Path(run[key]).relative_to(WORKTREE))
+    if out.get("returncode") is None:
+        out.pop("returncode", None)
+    return out
+
+
 async def _run(config: str, name: str, out_dir: Path, base_env: dict) -> dict:
     worktree, rel, kind = EVALS[name]
     row = _paths(config, name, out_dir)
@@ -381,7 +401,11 @@ def _summarise_run(run: dict, prices: dict, base_env: dict) -> dict:
     return {
         "config": run["config"],
         "eval": run["eval"],
-        "returncode": run["returncode"],
+        # Only when this process actually ran pytest. A `--summarise-only`
+        # rebuild has no return code to report, and emitting null for one reads
+        # as "pytest returned nothing", which is a claim about a run that did
+        # not happen. Absent is the honest shape.
+        **({"returncode": run["returncode"]} if run.get("returncode") is not None else {}),
         "model": model,
         "models_seen": models,
         "expected_model": _expected_model(run["config"], base_env),
@@ -410,6 +434,29 @@ def _summarise_run(run: dict, prices: dict, base_env: dict) -> dict:
         "length_draw_cases": sorted({
             str(d.get("node") or "").split("::")[-1] for d in draws if _is_length(d)
         }),
+        # Every truncated draw, one row each. The aggregates above cannot carry
+        # the argument the cap ruling actually rests on -- that each of these
+        # was *slow*, six to fifty-six seconds against a one-to-two-second
+        # median, so it was a runaway stopped and not an answer lost. That
+        # evidence lived only in the per-draw JSONL, which is gitignored, so it
+        # would not have survived the merge; #325 wants exactly these rows.
+        # `prompt_tokens`/`completion_tokens` are null on a truncated draw:
+        # the SDK raises `LengthFinishReasonError` instead of returning, so
+        # there is no usage block to read. Null is the honest value.
+        "truncated_draws": [
+            {
+                "config": run["config"],
+                "eval": run["eval"],
+                "case": str(d.get("node") or "").split("::")[-1],
+                "latency_s": d.get("latency_s"),
+                "prompt_tokens": d.get("prompt_tokens"),
+                "completion_tokens": d.get("completion_tokens"),
+                "error": d.get("error"),
+                "finish_reason": d.get("finish_reason"),
+            }
+            for d in draws
+            if _is_length(d)
+        ],
         "cap_bites": sum(1 for d in draws if _is_length(d)) if want_cap else 0,
         "runaway_draws": 0 if want_cap else sum(1 for d in draws if _is_length(d)),
         "finish_reasons": dict(Counter(str(d.get("finish_reason")) for d in draws if not d.get("error"))),
@@ -767,6 +814,26 @@ def _markdown(summary: dict, totals: dict, caps: dict, pins: dict, date: str) ->
             for c, t in totals.items()
         ],
         "",
+        "Every truncated draw, one row each, slowest last. The cap ruling rests on these having",
+        "been *slow* rather than merely long — an aggregate cannot carry that, and the per-draw",
+        "files these come from are gitignored, so this table and `truncated_draws` in the JSON are",
+        "where the evidence survives. Token counts are blank because a truncated structured-output",
+        "call raises instead of returning: there is no usage block to read, and a zero would be a",
+        "measurement nobody took.",
+        "",
+        "| configuration | eval | case | latency | prompt tok | completion tok | raised |",
+        "|---|---|---|---|---|---|---|",
+        *[
+            f"| `{d['config']}` | `{d['eval']}` | `{d['case']}` | {_n(d['latency_s'])}s | "
+            f"{'—' if d['prompt_tokens'] is None else d['prompt_tokens']} | "
+            f"{'—' if d['completion_tokens'] is None else d['completion_tokens']} | "
+            f"`{d['error'] or d['finish_reason']}` |"
+            for d in sorted(
+                (d for row in summary.values() for d in row["truncated_draws"]),
+                key=lambda d: d["latency_s"] or 0.0,
+            )
+        ],
+        "",
         "## The pin — the judgement difference",
         "",
         "Transport losses, truncated draws and the break-it flips are excluded from this comparison",
@@ -849,7 +916,7 @@ def main() -> int:
 
     if args.summarise_only:
         runs = [
-            {**_paths(config, name, out_dir), "returncode": None}
+            _paths(config, name, out_dir)
             for config in CONFIGS
             for name in EVALS
             if (out_dir / f"{config}--{name}.jsonl").exists()
@@ -873,7 +940,7 @@ def main() -> int:
         # everything present so a partial re-run still produces a whole report.
         seen = {(r["config"], r["eval"]) for r in runs}
         runs += [
-            {**_paths(config, name, out_dir), "returncode": None}
+            _paths(config, name, out_dir)
             for config in CONFIGS
             for name in EVALS
             if (config, name) not in seen and (out_dir / f"{config}--{name}.jsonl").exists()
@@ -898,7 +965,7 @@ def main() -> int:
     pins = _pin_comparison(summary)
     payload = {
         "date": args.date,
-        "runs": runs,
+        "runs": [_portable(r) for r in runs],
         "summary": summary,
         "config_totals": totals,
         "cap_measurement": caps,

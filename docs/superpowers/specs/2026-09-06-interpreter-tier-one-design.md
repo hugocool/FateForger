@@ -41,8 +41,10 @@ the switch and the cap cost in judgement.
 
   **Superseded by the 2026-09-06 bench (see §3's ruling).** The model and effort defaults
   written above were the plan going in; the bench found the prompts *as written* lose on the
-  flash pin at `minimal` (27/34 cases against the pro pin's 32/34, and
-  `test_a_revision_after_commit_is_still_a_revision` at 1/8 against 8/8). Hugo's ruling landed
+  flash pin at `minimal` — 4 judgement losses against the pro pin's 0, and
+  `test_a_revision_after_commit_is_still_a_revision` at 1/8 against 8/8. (The raw case counts
+  are 27/34 against 32/34; they include the break-it families, which assert a flip and are
+  never judgement losses, so they are not the pin comparison.) Hugo's ruling landed
   the row on the **pro pin at `high`** instead, holding the flash pin as the destination once
   #406 fits the prompts with a discriminator. `.env` is untouched either way — see
   `docs/reference/setup/llm.md`'s "Surface interpreter model" section and
@@ -77,7 +79,13 @@ def build_intent_interpreter_client() -> OpenAIChatCompletionClient:
 
 Rows added to `_model_for_agent` (default `openrouter_flash`), `_reasoning_effort_for_agent`
 (default `"minimal"`) and `_max_tokens_for_agent` (default `_INTENT_INTERPRETER_MAX_TOKENS`, the
-bench's pick; `0` in the env means uncapped, as today's `llm_max_tokens` convention). Settings fields
+bench's pick; `0` in the env means uncapped, as today's `llm_max_tokens` convention).
+
+**Superseded by the 2026-09-06 bench, same ruling as §S1 above.** The two defaults written in
+this paragraph are the plan going in; what landed is `openrouter_pro` and `"high"`, with
+`_INTENT_INTERPRETER_MAX_TOKENS = 1024`. `-1` in the env, not `0`, is "use the code default"
+(`0` stayed "uncapped"). `docs/reference/setup/llm.md` carries the landed row.
+ Settings fields
 `llm_model_intent_interpreter`, `llm_reasoning_effort_intent_interpreter`,
 `llm_max_tokens_intent_interpreter` in `core/config.py`, validated like the existing token fields.
 

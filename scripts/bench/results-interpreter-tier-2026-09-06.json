@@ -4,153 +4,134 @@
     {
       "config": "pro-high",
       "eval": "planning_card",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high--planning_card.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high--planning_card.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high--planning_card.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high--planning_card.log"
     },
     {
       "config": "pro-high",
       "eval": "day_frame",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high--day_frame.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high--day_frame.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high--day_frame.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high--day_frame.log"
     },
     {
       "config": "pro-high",
       "eval": "timebox_question",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high--timebox_question.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high--timebox_question.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high--timebox_question.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high--timebox_question.log"
     },
     {
       "config": "pro-high-1024",
       "eval": "planning_card",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--planning_card.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--planning_card.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--planning_card.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--planning_card.log"
     },
     {
       "config": "pro-high-1024",
       "eval": "day_frame",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--day_frame.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--day_frame.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--day_frame.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--day_frame.log"
     },
     {
       "config": "pro-high-1024",
       "eval": "timebox_question",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--timebox_question.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--timebox_question.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--timebox_question.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--timebox_question.log"
     },
     {
       "config": "pro-high-2048",
       "eval": "planning_card",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--planning_card.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--planning_card.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--planning_card.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--planning_card.log"
     },
     {
       "config": "pro-high-2048",
       "eval": "day_frame",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--day_frame.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--day_frame.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--day_frame.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--day_frame.log"
     },
     {
       "config": "pro-high-2048",
       "eval": "timebox_question",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--timebox_question.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--timebox_question.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--timebox_question.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--timebox_question.log"
     },
     {
       "config": "flash-minimal",
       "eval": "planning_card",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal--planning_card.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal--planning_card.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal--planning_card.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--planning_card.log"
     },
     {
       "config": "flash-minimal",
       "eval": "day_frame",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal--day_frame.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal--day_frame.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal--day_frame.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--day_frame.log"
     },
     {
       "config": "flash-minimal",
       "eval": "timebox_question",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal--timebox_question.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal--timebox_question.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal--timebox_question.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--timebox_question.log"
     },
     {
       "config": "flash-minimal-1024",
       "eval": "planning_card",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--planning_card.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--planning_card.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--planning_card.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--planning_card.log"
     },
     {
       "config": "flash-minimal-1024",
       "eval": "day_frame",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--day_frame.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--day_frame.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--day_frame.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--day_frame.log"
     },
     {
       "config": "flash-minimal-1024",
       "eval": "timebox_question",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--timebox_question.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--timebox_question.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--timebox_question.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--timebox_question.log"
     },
     {
       "config": "flash-minimal-2048",
       "eval": "planning_card",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--planning_card.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--planning_card.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--planning_card.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--planning_card.log"
     },
     {
       "config": "flash-minimal-2048",
       "eval": "day_frame",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--day_frame.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--day_frame.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--day_frame.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--day_frame.log"
     },
     {
       "config": "flash-minimal-2048",
       "eval": "timebox_question",
-      "draws": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--timebox_question.jsonl",
-      "junit": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--timebox_question.xml",
-      "log": "/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--timebox_question.log",
-      "returncode": null
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--timebox_question.log"
     }
   ],
   "summary": {
     "pro-high::planning_card": {
       "config": "pro-high",
       "eval": "planning_card",
-      "returncode": null,
       "model": "deepseek/deepseek-v4-pro-0813:nitro",
       "models_seen": [
         "deepseek/deepseek-v4-pro-0813:nitro"
@@ -175,6 +156,7 @@
       "transport_loss_draws": 0,
       "length_draws": 0,
       "length_draw_cases": [],
+      "truncated_draws": [],
       "cap_bites": 0,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -199,7 +181,6 @@
     "pro-high::day_frame": {
       "config": "pro-high",
       "eval": "day_frame",
-      "returncode": null,
       "model": "deepseek/deepseek-v4-pro-0813:nitro",
       "models_seen": [
         "deepseek/deepseek-v4-pro-0813:nitro"
@@ -224,6 +205,7 @@
       "transport_loss_draws": 0,
       "length_draws": 0,
       "length_draw_cases": [],
+      "truncated_draws": [],
       "cap_bites": 0,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -248,7 +230,6 @@
     "pro-high::timebox_question": {
       "config": "pro-high",
       "eval": "timebox_question",
-      "returncode": null,
       "model": "deepseek/deepseek-v4-pro-0813:nitro",
       "models_seen": [
         "deepseek/deepseek-v4-pro-0813:nitro"
@@ -290,6 +271,7 @@
       "transport_loss_draws": 0,
       "length_draws": 0,
       "length_draw_cases": [],
+      "truncated_draws": [],
       "cap_bites": 0,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -337,7 +319,6 @@
     "pro-high-1024::planning_card": {
       "config": "pro-high-1024",
       "eval": "planning_card",
-      "returncode": null,
       "model": "deepseek/deepseek-v4-pro-0813:nitro",
       "models_seen": [
         "deepseek/deepseek-v4-pro-0813:nitro"
@@ -364,6 +345,18 @@
       "length_draw_cases": [
         "test_a_time_with_consent_updates_and_adds[no, let's do 13:45]"
       ],
+      "truncated_draws": [
+        {
+          "config": "pro-high-1024",
+          "eval": "planning_card",
+          "case": "test_a_time_with_consent_updates_and_adds[no, let's do 13:45]",
+          "latency_s": 15.859234957999433,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
       "cap_bites": 1,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -388,7 +381,6 @@
     "pro-high-1024::day_frame": {
       "config": "pro-high-1024",
       "eval": "day_frame",
-      "returncode": null,
       "model": "deepseek/deepseek-v4-pro-0813:nitro",
       "models_seen": [
         "deepseek/deepseek-v4-pro-0813:nitro"
@@ -413,6 +405,7 @@
       "transport_loss_draws": 0,
       "length_draws": 0,
       "length_draw_cases": [],
+      "truncated_draws": [],
       "cap_bites": 0,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -437,7 +430,6 @@
     "pro-high-1024::timebox_question": {
       "config": "pro-high-1024",
       "eval": "timebox_question",
-      "returncode": null,
       "model": "deepseek/deepseek-v4-pro-0813:nitro",
       "models_seen": [
         "deepseek/deepseek-v4-pro-0813:nitro"
@@ -479,6 +471,7 @@
       "transport_loss_draws": 0,
       "length_draws": 0,
       "length_draw_cases": [],
+      "truncated_draws": [],
       "cap_bites": 0,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -526,7 +519,6 @@
     "pro-high-2048::planning_card": {
       "config": "pro-high-2048",
       "eval": "planning_card",
-      "returncode": null,
       "model": "deepseek/deepseek-v4-pro-0813:nitro",
       "models_seen": [
         "deepseek/deepseek-v4-pro-0813:nitro"
@@ -555,6 +547,18 @@
       "length_draw_cases": [
         "test_a_time_without_consent_only_updates"
       ],
+      "truncated_draws": [
+        {
+          "config": "pro-high-2048",
+          "eval": "planning_card",
+          "case": "test_a_time_without_consent_only_updates",
+          "latency_s": 55.6511918340002,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
       "cap_bites": 1,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -579,7 +583,6 @@
     "pro-high-2048::day_frame": {
       "config": "pro-high-2048",
       "eval": "day_frame",
-      "returncode": null,
       "model": "deepseek/deepseek-v4-pro-0813:nitro",
       "models_seen": [
         "deepseek/deepseek-v4-pro-0813:nitro"
@@ -604,6 +607,7 @@
       "transport_loss_draws": 0,
       "length_draws": 0,
       "length_draw_cases": [],
+      "truncated_draws": [],
       "cap_bites": 0,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -628,7 +632,6 @@
     "pro-high-2048::timebox_question": {
       "config": "pro-high-2048",
       "eval": "timebox_question",
-      "returncode": null,
       "model": "deepseek/deepseek-v4-pro-0813:nitro",
       "models_seen": [
         "deepseek/deepseek-v4-pro-0813:nitro"
@@ -671,6 +674,18 @@
       "length_draws": 1,
       "length_draw_cases": [
         "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]"
+      ],
+      "truncated_draws": [
+        {
+          "config": "pro-high-2048",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "latency_s": 38.06912429100339,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
       ],
       "cap_bites": 1,
       "runaway_draws": 0,
@@ -719,7 +734,6 @@
     "flash-minimal::planning_card": {
       "config": "flash-minimal",
       "eval": "planning_card",
-      "returncode": null,
       "model": "openai/gpt-oss-120b:nitro",
       "models_seen": [
         "openai/gpt-oss-120b:nitro"
@@ -761,6 +775,7 @@
       "transport_loss_draws": 0,
       "length_draws": 0,
       "length_draw_cases": [],
+      "truncated_draws": [],
       "cap_bites": 0,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -786,7 +801,6 @@
     "flash-minimal::day_frame": {
       "config": "flash-minimal",
       "eval": "day_frame",
-      "returncode": null,
       "model": "openai/gpt-oss-120b:nitro",
       "models_seen": [
         "openai/gpt-oss-120b:nitro"
@@ -811,6 +825,7 @@
       "transport_loss_draws": 0,
       "length_draws": 0,
       "length_draw_cases": [],
+      "truncated_draws": [],
       "cap_bites": 0,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -835,7 +850,6 @@
     "flash-minimal::timebox_question": {
       "config": "flash-minimal",
       "eval": "timebox_question",
-      "returncode": null,
       "model": "openai/gpt-oss-120b:nitro",
       "models_seen": [
         "openai/gpt-oss-120b:nitro"
@@ -902,6 +916,7 @@
       "transport_loss_draws": 0,
       "length_draws": 0,
       "length_draw_cases": [],
+      "truncated_draws": [],
       "cap_bites": 0,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -958,7 +973,6 @@
     "flash-minimal-1024::planning_card": {
       "config": "flash-minimal-1024",
       "eval": "planning_card",
-      "returncode": null,
       "model": "openai/gpt-oss-120b:nitro",
       "models_seen": [
         "openai/gpt-oss-120b:nitro"
@@ -1000,6 +1014,7 @@
       "transport_loss_draws": 0,
       "length_draws": 0,
       "length_draw_cases": [],
+      "truncated_draws": [],
       "cap_bites": 0,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -1024,7 +1039,6 @@
     "flash-minimal-1024::day_frame": {
       "config": "flash-minimal-1024",
       "eval": "day_frame",
-      "returncode": null,
       "model": "openai/gpt-oss-120b:nitro",
       "models_seen": [
         "openai/gpt-oss-120b:nitro"
@@ -1051,6 +1065,18 @@
       "length_draw_cases": [
         "test_bare_times_answer_the_open_frame_question"
       ],
+      "truncated_draws": [
+        {
+          "config": "flash-minimal-1024",
+          "eval": "day_frame",
+          "case": "test_bare_times_answer_the_open_frame_question",
+          "latency_s": 6.428963665999618,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
       "cap_bites": 1,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -1075,7 +1101,6 @@
     "flash-minimal-1024::timebox_question": {
       "config": "flash-minimal-1024",
       "eval": "timebox_question",
-      "returncode": null,
       "model": "openai/gpt-oss-120b:nitro",
       "models_seen": [
         "openai/gpt-oss-120b:nitro"
@@ -1146,6 +1171,18 @@
       "length_draw_cases": [
         "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]"
       ],
+      "truncated_draws": [
+        {
+          "config": "flash-minimal-1024",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "latency_s": 7.9785312919993885,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
       "cap_bites": 1,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -1193,7 +1230,6 @@
     "flash-minimal-2048::planning_card": {
       "config": "flash-minimal-2048",
       "eval": "planning_card",
-      "returncode": null,
       "model": "openai/gpt-oss-120b:nitro",
       "models_seen": [
         "openai/gpt-oss-120b:nitro"
@@ -1227,6 +1263,7 @@
       "transport_loss_draws": 0,
       "length_draws": 0,
       "length_draw_cases": [],
+      "truncated_draws": [],
       "cap_bites": 0,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -1251,7 +1288,6 @@
     "flash-minimal-2048::day_frame": {
       "config": "flash-minimal-2048",
       "eval": "day_frame",
-      "returncode": null,
       "model": "openai/gpt-oss-120b:nitro",
       "models_seen": [
         "openai/gpt-oss-120b:nitro"
@@ -1276,6 +1312,7 @@
       "transport_loss_draws": 0,
       "length_draws": 0,
       "length_draw_cases": [],
+      "truncated_draws": [],
       "cap_bites": 0,
       "runaway_draws": 0,
       "finish_reasons": {
@@ -1301,7 +1338,6 @@
     "flash-minimal-2048::timebox_question": {
       "config": "flash-minimal-2048",
       "eval": "timebox_question",
-      "returncode": null,
       "model": "openai/gpt-oss-120b:nitro",
       "models_seen": [
         "openai/gpt-oss-120b:nitro"
@@ -1361,6 +1397,28 @@
       "length_draws": 2,
       "length_draw_cases": [
         "test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "truncated_draws": [
+        {
+          "config": "flash-minimal-2048",
+          "eval": "timebox_question",
+          "case": "test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]",
+          "latency_s": 11.009812750000492,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "flash-minimal-2048",
+          "eval": "timebox_question",
+          "case": "test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]",
+          "latency_s": 9.669717500000843,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
       ],
       "cap_bites": 2,
       "runaway_draws": 0,

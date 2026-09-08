@@ -25,9 +25,13 @@ INTENT_INTERPRETER = "intent_interpreter"
 #: else uncapped") lands on uncapped. The rule was overruled, because it counts
 #: a truncated draw as an answer lost and these were runaways stopped: every
 #: one of the seven ran 6-56s against a 1-2s median, the largest legitimate
-#: uncapped answer was 405 tokens (median 45 on the pro pin, 78 on the flash
-#: pin), 2048 cut *more* draws than 1024 without buying one back, and no case
-#: failed on length. Uncapped, the runaway is one user's turn held open while
+#: uncapped answer on *this row's pin* was 405 tokens (median 45 on the pro
+#: pin, 78 on the flash pin), 2048 cut *more* draws than 1024 without buying
+#: one back, and no case failed on length. The 405 is the pro pin's number, not
+#: the whole bench's: `flash-minimal` returned a *completed* 4,839-token draw
+#: inside a case it still scored 8/8 on -- a right answer this cap would have
+#: cut -- so #406 has to re-read the cap when it flips the pin.
+#: Uncapped, the runaway is one user's turn held open while
 #: the SDK waits 600s and retries twice -- the bench watched an eleven-minute
 #: draw on exactly the case a 1024 cap later cut. 1024 turns that into a fast,
 #: loud failure; what the seam then says is still #325's question.
@@ -172,9 +176,13 @@ def _model_for_agent(agent_type: str) -> str:
         # (scripts/bench/results-interpreter-tier-2026-09-06.md). Choosing
         # among listed options is term typing and the flash pin is CLAUDE.md's
         # recorded role for it -- and the destination for this row. What the
-        # bench measured is that the prompts *as written* lose there: 27/34
-        # cases against the pro pin's 32/34, and revision-after-commit at 1/8
-        # against 8/8, the flash pin reading a revision as a fact. The prompts
+        # bench measured is that the prompts *as written* lose there: 4
+        # judgement losses against the pro pin's 0, and revision-after-commit
+        # at 1/8 against 8/8, the flash pin reading a revision as a fact. (The
+        # raw case counts are 27/34 against 32/34, but those include the
+        # break-it families, which assert a flip and are never judgement
+        # losses -- 3 of flash's 7 failures and both of pro's 2. Quoting the
+        # mixed number is the conflation the bench file forbids.) The prompts
         # need a discriminator before the pin moves, exactly as the
         # project-versus-permanent judgement did -- #406. Until that lands
         # this default follows the measurement rather than the intention.

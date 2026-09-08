@@ -132,7 +132,7 @@ def test_runtime_builds_one_intent_client_from_the_interpreter_site(monkeypatch)
     It no longer sees the client's kwargs: build_intent_interpreter_client()
     takes none, so the no-temperature-pin rule (CLAUDE.md) is asserted where
     those kwargs exist -- tests/unit/test_intent_interpreter_client.py,
-    test_the_default_row_is_the_flash_pin_at_minimal_and_capped.
+    test_the_default_row_is_the_pro_pin_at_high_and_capped.
     """
 
     created: list[dict[str, object]] = []

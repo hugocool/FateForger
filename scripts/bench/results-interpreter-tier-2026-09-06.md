@@ -123,6 +123,23 @@ Per configuration, and what the uncapped ones spent on their longest answers:
 | `flash-minimal-1024` | 1024 | 2 | 294 tokens | `timebox_question::test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]` |
 | `flash-minimal-2048` | 2048 | 2 | 692 tokens | `timebox_question::test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]` |
 
+Every truncated draw, one row each, slowest last. The cap ruling rests on these having
+been *slow* rather than merely long — an aggregate cannot carry that, and the per-draw
+files these come from are gitignored, so this table and `truncated_draws` in the JSON are
+where the evidence survives. Token counts are blank because a truncated structured-output
+call raises instead of returning: there is no usage block to read, and a zero would be a
+measurement nobody took.
+
+| configuration | eval | case | latency | prompt tok | completion tok | raised |
+|---|---|---|---|---|---|---|
+| `flash-minimal-1024` | `day_frame` | `test_bare_times_answer_the_open_frame_question` | 6.43s | — | — | `LengthFinishReasonError` |
+| `flash-minimal-1024` | `timebox_question` | `test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]` | 7.98s | — | — | `LengthFinishReasonError` |
+| `flash-minimal-2048` | `timebox_question` | `test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]` | 9.67s | — | — | `LengthFinishReasonError` |
+| `flash-minimal-2048` | `timebox_question` | `test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]` | 11.01s | — | — | `LengthFinishReasonError` |
+| `pro-high-1024` | `planning_card` | `test_a_time_with_consent_updates_and_adds[no, let's do 13:45]` | 15.86s | — | — | `LengthFinishReasonError` |
+| `pro-high-2048` | `timebox_question` | `test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]` | 38.07s | — | — | `LengthFinishReasonError` |
+| `pro-high-2048` | `planning_card` | `test_a_time_without_consent_only_updates` | 55.65s | — | — | `LengthFinishReasonError` |
+
 ## The pin — the judgement difference
 
 Transport losses, truncated draws and the break-it flips are excluded from this comparison
@@ -175,8 +192,11 @@ It counted every truncated draw as an answer lost. Four things say they were run
    median of 1.1–1.3s on the flash pin and 1.8–2.0s on the pro pin. Not one was a normal answer that
    happened to be long.
 2. **The largest legitimate uncapped answer was 405 tokens** (pro pin), against a 45-token median;
-   the flash pin's own median is 78. 1024 is more than twice the largest answer anything gave when
-   nothing stopped it.
+   the flash pin's own median is 78. 1024 is more than twice the largest answer the *pro* pin gave
+   when nothing stopped it — which is the pin this row runs on. It is not the flash pin's number:
+   `flash-minimal` returned a completed 4,839-token draw inside a case it still scored 8/8 on
+   (`test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]`),
+   so on flash the cap is not yet shown to be free. #406 has to re-read it there.
 3. **2048 cut more draws than 1024** — four against three. A cap that is supposed to be safer by
    being larger did not buy a single draw back; it just let the loop run twice as long first.
 4. **No case failed on length.** Every truncated draw sat inside a case that still cleared its 7/8
@@ -196,8 +216,20 @@ question of what the seam does when it fires.
 ### The pin — Hugo's ruling: **the pro pin at `high`, now; flash after prompt work**
 
 The `intent_interpreter` row's code defaults are `openrouter_pro` and `"high"`, not the flash pin at
-`minimal`. The bench is the reason: the prompts **as written** lose on flash — 27/34 cases against
-32/34, and revision-after-commit at 1/8 against 8/8.
+`minimal`. The bench is the reason: the prompts **as written** lose on flash — **4 judgement losses
+against the pro pin's 0**, and revision-after-commit at 1/8 against 8/8. The raw case counts, 27/34
+against 32/34, are not the pin comparison and must not be quoted as one: they include the break-it
+families, which assert a flip and which this file says are "never counted as judgement losses" —
+3 of flash's 7 failures and *both* of pro's 2 are break-it.
+
+**Which sites this ruling moved, and where it did not.** The timeboxing stage cards inherited
+`timeboxing_agent` (pro pin, `high` under `.env`) and stay there — that is the configuration
+measured here. The planning card inherited `planner_agent`, the pro pin at reasoning `low`, and
+moved **up** to `high`; pro/`low` was never one of the six configurations, so this bench says
+nothing about what that costs on the planning-card reply path — `planning_card` at `pro-high` is
+10/10, and the 1024 cap is what bounds the raised-effort path until #406. The day-frame *eval*
+moved the other way, off `timeboxing_agent` onto the judge's own flash/`minimal` client, which is
+what production runs that judge on.
 
 The flash pin remains CLAUDE.md's recorded role for routing and remains the destination. What has to
 change first is the prompts, not the pin: a surface that cares about revise-versus-fact needs a

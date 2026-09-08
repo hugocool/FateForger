@@ -96,9 +96,11 @@ class Settings(BaseSettings):
     )
     #: Every surface interpreter (planning card, timeboxing stage cards).
     #: Defaults to the pro pin at `high` on the 2026-09-06 bench, not the flash
-    #: pin CLAUDE.md names for routing: the prompts as written lose there
-    #: (27/34 cases against 32/34; revision-after-commit 1/8 against 8/8). The
-    #: flash pin is the destination, after the prompt work in #406.
+    #: pin CLAUDE.md names for routing: the prompts as written lose there --
+    #: 4 judgement losses against the pro pin's 0, revision-after-commit 1/8
+    #: against 8/8. (Not "27/34 against 32/34": those raw case counts fold in
+    #: the break-it families, which assert a flip and are never judgement
+    #: losses.) The flash pin is the destination, after the prompt work in #406.
     llm_model_intent_interpreter: str = Field(default="")
 
     # Per-agent temperature
@@ -134,7 +136,10 @@ class Settings(BaseSettings):
     #: 1024 on Hugo's ruling over the 2026-09-06 bench). 0: uncapped. >0: the
     #: cap. The interpreter answers a small fixed schema -- a 45-token median
     #: on the pro pin, 78 on the flash pin, and 405 tokens was the largest
-    #: answer anything gave with nothing stopping it. Uncapped, #325's runaway
+    #: legitimate answer *the pro pin* gave with nothing stopping it. That
+    #: figure is the pro pin's, not the whole bench's: the flash pin returned a
+    #: completed 4,839-token draw in a case it still scored 8/8, so the cap has
+    #: yet to be shown free on the pin #406 flips to. Uncapped, #325's runaway
     #: holds the user's turn open while the SDK waits 600s and retries twice;
     #: the bench measured 3 truncated draws in the 545 taken at 1024, all of
     #: them slow ones, and no case failing on length.

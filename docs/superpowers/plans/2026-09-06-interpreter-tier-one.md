@@ -4,6 +4,8 @@
 
 **Goal:** Every surface interpreter is built by one named function on its own factory row (flash pin, `minimal`, capped), the switch and the cap are benched against today's client on the three evals, and the cap default is set by the numbers.
 
+> **Superseded, on the bench this plan asked for.** "Flash pin, `minimal`" was the plan going in; the row landed on the **pro pin at `high`, capped at 1024** — Hugo's ruling over `scripts/bench/results-interpreter-tier-2026-09-06.md` and its `.reading.md` sidecar, because the prompts as written lose 4 judgements to 0 on flash. The flash pin is still the destination and waits on #406. Step 5 below carries the same note; `docs/reference/setup/llm.md`'s "Surface interpreter model" section is what an incoming reader should read instead of this header.
+
 **Architecture:** A new `intent_interpreter` agent type in `llm/factory.py`'s per-agent table, mirroring `timeboxing_judge`; `build_intent_interpreter_client()` is the only way an interpreter gets a client. A bench script runs the existing eval files under a six-configuration matrix through a pytest plugin that wraps the OpenAI client's `create` to record latency, usage, finish reason and errors per draw; results land in `scripts/bench/` beside the 2026-08-24 decision.
 
 **Tech Stack:** Python 3.11, Pydantic settings, AutoGen `OpenAIChatCompletionClient`, pytest (+ a `-p` plugin), OpenRouter, `scripts/bench/report.py`'s pricing helper.
@@ -12,7 +14,7 @@
 
 ## Global Constraints
 
-- **No `.env` change, ever, by an agent.** Configuration for the bench travels as process environment set by the bench script for its subprocesses only. The code default for the interpreter's model is the flash pin — CLAUDE.md's recorded role for routing, not a new pin.
+- **No `.env` change, ever, by an agent.** Configuration for the bench travels as process environment set by the bench script for its subprocesses only. The code default for the interpreter's model is the flash pin — CLAUDE.md's recorded role for routing, not a new pin. **Superseded by the bench (see the note under Goal):** the landed code default is the pro pin at `high`. `.env` was untouched either way, so the no-`.env`-change constraint held.
 - **No keyword matching, string matching, or regex on user content.** The guard test compares identifiers this system minted (function names, agent-type strings).
 - **Never pin `temperature`.** Never assert an exact model output string in a unit test.
 - **Worktree discipline.** All work in `.worktrees/interpreter-tier-one` on `feat/336-interpreter-tier-one`. Every pytest run: `PYTHONPATH=src ../../.venv/bin/python -m pytest …` from the worktree root — without `PYTHONPATH=src` the venv imports the parent checkout's unchanged `src`. `.env` is absent in the worktree: for anything that reaches OpenRouter, `cp ../../.env .env` once and `set -a; source .env; set +a` in the shell; `git status` must never show `.env`.
@@ -581,8 +583,10 @@ ran 6–56s against a 1–2s median, the largest legitimate uncapped answer was 
 tokens, 2048 cut more draws than 1024 without buying one back, and no case failed on length —
 so the truncated draws were runaways stopped, not answers lost. **Ruling:
 `_INTENT_INTERPRETER_MAX_TOKENS = 1024`.** The pin, separately, landed on the pro pin at
-`high` rather than the flash pin at `minimal`: the prompts as written lose on flash (27/34
-cases against 32/34, revision-after-commit 1/8 against 8/8), and the flash pin waits on #406.
+`high` rather than the flash pin at `minimal`: the prompts as written lose on flash — 4
+judgement losses against the pro pin's 0, revision-after-commit 1/8 against 8/8 (the raw case
+counts, 27/34 against 32/34, fold in the break-it families and are not the pin comparison) —
+and the flash pin waits on #406.
 `docs/reference/setup/llm.md`'s "Surface interpreter model" section carries both rulings for
 an incoming reader; this step's rule is what was planned, not what landed.
 

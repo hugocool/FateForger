@@ -42,9 +42,12 @@ def test_the_landed_cap_is_the_bench_ruling():
     1024 truncated 3 of the 545 draws taken at that cap and 2048 truncated 4 of
     546, so spec §3's rule lands on uncapped -- and was overruled, because the
     seven truncated draws were runaways stopped, not answers lost. Every one
-    ran 6-56s against a 1-2s median, the largest legitimate uncapped answer was
-    405 tokens, 2048 cut more draws than 1024 without buying one back, and no
-    case failed on length.
+    ran 6-56s against a 1-2s median, the largest legitimate uncapped answer on
+    the pro pin -- the pin this row runs on -- was 405 tokens, 2048 cut more
+    draws than 1024 without buying one back, and no case failed on length. The
+    405 does not carry to the flash pin: `flash-minimal` completed a
+    4,839-token draw in a case it still scored 8/8, which is #406's problem to
+    re-read when it flips the pin, not this constant's today.
 
     Moving this line without a bench beside it is what this test exists to stop.
     """
@@ -57,8 +60,11 @@ def test_the_default_row_is_the_pro_pin_at_high_and_capped(openrouter, monkeypat
 
     The flash pin at `minimal` is CLAUDE.md's recorded role for routing and is
     where this row is going. The 2026-09-06 bench says the prompts as written
-    lose there -- 27/34 cases against 32/34, revision-after-commit 1/8 against
-    8/8 -- so the default follows the measurement until the prompts are fitted
+    lose there -- 4 judgement losses against the pro pin's 0, with
+    revision-after-commit at 1/8 against 8/8. (The raw case counts, 27/34
+    against 32/34, are not that comparison: they include the break-it families,
+    which assert a flip and are never judgement losses.) So the default follows
+    the measurement until the prompts are fitted
     to flash. Model and effort are asserted together because pro/high is the
     pair that was measured; half of a measured pair is not a measurement.
     """
