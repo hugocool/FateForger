@@ -110,6 +110,20 @@ class BlockerInput(BaseModel):
         description="The exact requirement id from the brief's readiness gaps."
     )
     why_needed: str = PydanticField(description="One line: why the user must decide.")
+    #: Mirrors `UserBlockerDraft.blocking`. Declared here, not just there:
+    #: neither this model nor FastMCP's generated arg model sets
+    #: `extra="forbid"`, so an undeclared field the planner sends is dropped
+    #: before `submit_planning_result`'s body -- and therefore before
+    #: `_validated` -- ever runs. A field only on the internal contract is a
+    #: field the wire never carries.
+    blocking: bool = PydanticField(
+        default=False,
+        description=(
+            "True only when proceeding would produce a plan you believe is "
+            "wrong. Leave it false to have the question ride with the "
+            "submitted artifact instead of replacing it."
+        ),
+    )
 
 
 class BlockerOptionInput(BaseModel):
@@ -158,10 +172,14 @@ def submit_planning_result(
     approved by them, and then found to be uncommittable, so this call is
     refused rather than allowed to reach them.
 
-    ``blockers`` is only for a decision that is genuinely the user's, and it
-    replaces the artifact rather than accompanying it: an artifact asks to be
-    approved and a blocker asks a question, and one turn shows the user one of
-    those. Submitting neither ends the turn with nothing to review.
+    ``blockers`` is only for a decision that is genuinely the user's, and at
+    most one per turn. The default, ``blocking: false``, rides *with* the
+    artifact you submit: the artifact is still shown for approval, the
+    question appears beside it, and the user may proceed with it unanswered.
+    Set ``blocking: true`` only when proceeding would produce a plan you
+    believe is wrong -- that one replaces the artifact instead, so submit it
+    alone, with no ``artifact``. Submitting neither an artifact nor a blocker
+    ends the turn with nothing to review.
 
     ``continuation`` is for when you cannot finish this turn but have not
     failed: ``{"reason": "..."}``, saying what is left and what you already
@@ -375,6 +393,49 @@ def _destination() -> Path:
     return Path(configured)
 
 
+def _refuse_riding_question_mismatch(
+    *, artifact: dict[str, Any] | None, blockers: list[dict[str, Any]]
+) -> None:
+    """An artifact plus blockers is refused, except exactly one riding question.
+
+    Two different failures hide behind the same combination, so they are
+    named separately rather than folded into one message.
+
+    A second blocker beside an artifact is `[too_many_questions]`, deliberately
+    duplicated from the kernel here, the same way `required_block_missing`
+    above duplicates its own kernel check: the kernel's refusal fires only
+    once `_apply_planning_result` reaches the blocker branch, and by then this
+    call has already returned `_RECORDED` -- the planner has already ended
+    its turn believing it succeeded.
+
+    A single *blocking* blocker beside an artifact gets its own name because
+    nothing downstream catches it at all. `_apply_planning_result` checks
+    `pending_question[1].blocking` before it ever looks at
+    `result.artifact_updates`, so submitting both would not fail the turn --
+    it would silently discard the artifact and ask the question instead,
+    which is the exact silent-drop shape #259 exists to rule out. Only a
+    single non-blocking blocker (`blocking: false`, the default) may ride
+    with an artifact; that is the one case below that raises nothing.
+    """
+    if artifact is None or not blockers:
+        return
+    if len(blockers) > 1:
+        raise PlanningResultRefused(
+            "[too_many_questions] at most one blocker may ride with an "
+            "artifact. A second blocker in the same turn is refused "
+            "regardless of what `blocking` is set to on either one -- hold "
+            "the second question for the next draft."
+        )
+    if blockers[0].get("blocking", False):
+        raise PlanningResultRefused(
+            "[blocking_blocker_with_artifact] this blocker sets `blocking` "
+            "true, so it replaces the artifact rather than riding with it, "
+            "and submitting both would have the artifact silently discarded "
+            "downstream instead of shown. Submit the artifact alone, or this "
+            "blocker alone with `blocking` true -- not both."
+        )
+
+
 def _validated(
     *,
     target_artifact: str,
@@ -389,11 +450,7 @@ def _validated(
             "options belong to one question, and this submission does not have "
             "exactly one. Submit the blocker they answer, with its options."
         )
-    if artifact is not None and blockers:
-        raise PlanningResultRefused(
-            "an artifact and a blocker cannot both be this turn's result. "
-            "Submit the artifact, or the blocker that stopped you making it."
-        )
+    _refuse_riding_question_mismatch(artifact=artifact, blockers=blockers)
     if artifact is None and not blockers and continuation is None:
         raise PlanningResultRefused(
             "this submission carries neither an artifact, a blocker, nor a "
