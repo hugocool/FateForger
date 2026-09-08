@@ -71,6 +71,19 @@ class JournalStore:
     def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
         self._sessionmaker = sessionmaker
 
+    @property
+    def sessionmaker(self) -> async_sessionmaker[AsyncSession]:
+        """The sessionmaker this store writes through.
+
+        Exposed for the one caller that needs the journal's *database*
+        rather than its rows: ``MaterialStore`` lives in the same file (see
+        ``init_journal``), so a service handed a journal store already knows
+        where its materials are. The alternative — a second path argument
+        threaded through every construction site — is two ways to say one
+        thing, and the day they disagree the links vanish silently.
+        """
+        return self._sessionmaker
+
     async def append(self, entry: JournalEntry) -> int:
         """Persist one row and return its id."""
         async with self._sessionmaker() as session:

@@ -119,8 +119,8 @@ def test_every_column_survives_in_the_rendered_row():
     field from ``_row`` makes one of these two lines fail.
     """
     rows = render_plan(_plan()).splitlines()[1:]
-    assert rows[0] == "DW1,tmbx,DW,Sprint,09:00,10:30,fw,PT1H30M,"
-    assert rows[1] == "LUN1,tmbx,R,Lunch,10:30,11:15,ap,PT45M,"
+    assert rows[0] == "DW1,tmbx,DW,Sprint,09:00,10:30,fw,PT1H30M,,,"
+    assert rows[1] == "LUN1,tmbx,R,Lunch,10:30,11:15,ap,PT45M,,,"
 
 
 def test_own_column_defaults_to_tmbx_when_no_foreign_uids_given():
@@ -168,32 +168,32 @@ def test_render_survives_a_plan_that_would_fail_overlap_validation():
 def test_name_containing_the_delimiter_is_quoted():
     body = render_plan(_named("Sprint, planning", FixedWindow(st=time(9, 0), et=time(10, 0))))
     assert body == (
-        "blocks[1]{H,own,type,summary,ST,ET,mode,dur,slug}:\n"
-        'XX1,tmbx,DW,"Sprint, planning",09:00,10:00,fw,PT1H,'
+        "blocks[1]{H,own,type,summary,ST,ET,mode,dur,slug,link,link_label}:\n"
+        'XX1,tmbx,DW,"Sprint, planning",09:00,10:00,fw,PT1H,,,'
     )
 
 
 def test_name_containing_a_newline_is_quoted():
     body = render_plan(_named("Lunch\nBreak", FixedWindow(st=time(9, 0), et=time(10, 0))))
     assert body == (
-        "blocks[1]{H,own,type,summary,ST,ET,mode,dur,slug}:\n"
-        'XX1,tmbx,DW,"Lunch\nBreak",09:00,10:00,fw,PT1H,'
+        "blocks[1]{H,own,type,summary,ST,ET,mode,dur,slug,link,link_label}:\n"
+        'XX1,tmbx,DW,"Lunch\nBreak",09:00,10:00,fw,PT1H,,,'
     )
 
 
 def test_name_containing_a_quote_is_escaped_by_doubling():
     body = render_plan(_named('Say "hi"', FixedWindow(st=time(9, 0), et=time(10, 0))))
     assert body == (
-        "blocks[1]{H,own,type,summary,ST,ET,mode,dur,slug}:\n"
-        'XX1,tmbx,DW,"Say ""hi""",09:00,10:00,fw,PT1H,'
+        "blocks[1]{H,own,type,summary,ST,ET,mode,dur,slug,link,link_label}:\n"
+        'XX1,tmbx,DW,"Say ""hi""",09:00,10:00,fw,PT1H,,,'
     )
 
 
 def test_empty_name_renders_as_an_empty_field_not_two_quotes():
     body = render_plan(_named("", FixedWindow(st=time(9, 0), et=time(10, 0))))
     assert body == (
-        "blocks[1]{H,own,type,summary,ST,ET,mode,dur,slug}:\n"
-        "XX1,tmbx,DW,,09:00,10:00,fw,PT1H,"
+        "blocks[1]{H,own,type,summary,ST,ET,mode,dur,slug,link,link_label}:\n"
+        "XX1,tmbx,DW,,09:00,10:00,fw,PT1H,,,"
     )
 
 
@@ -213,14 +213,16 @@ def test_a_slug_containing_the_delimiter_is_quoted_like_the_summary():
     )
     body = render_plan(plan)
     assert body == (
-        "blocks[1]{H,own,type,summary,ST,ET,mode,dur,slug}:\n"
-        'XX1,tmbx,DW,Sprint,09:00,10:00,fw,PT1H,"a,b"'
+        "blocks[1]{H,own,type,summary,ST,ET,mode,dur,slug,link,link_label}:\n"
+        'XX1,tmbx,DW,Sprint,09:00,10:00,fw,PT1H,"a,b",,'
     )
     # The escape rule is CSV quoting exactly (see `_escape`), so a CSV reader
-    # is the honest test that the row still has the nine columns the header
+    # is the honest test that the row still has every column the header
     # promises -- a naive split on the delimiter cannot tell the two apart.
     row, = csv.reader([body.splitlines()[1]])
-    assert row == ["XX1", "tmbx", "DW", "Sprint", "09:00", "10:00", "fw", "PT1H", "a,b"]
+    assert row == [
+        "XX1", "tmbx", "DW", "Sprint", "09:00", "10:00", "fw", "PT1H", "a,b", "", "",
+    ]
 
 
 # --- ISO duration edge cases ----------------------------------------------

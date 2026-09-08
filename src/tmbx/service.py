@@ -45,7 +45,7 @@ import json
 import logging
 import secrets
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import date as date_type
 from typing import Literal, get_args
 
@@ -65,12 +65,15 @@ from .core.models import (
     PlanViolation,
     Timing,
     Violation,
+    ViolationBlock,
+    ViolationKind,
 )
-from .core.ops import MoveBlock, Patch, RemoveBlock, UpdateBlock, apply_ops
+from .core.ops import AddBlock, MoveBlock, Patch, RemoveBlock, UpdateBlock, apply_ops
 from .core.render import plan_rows, render_plan
 from .core.unallocated import Gap, unallocated
 from .journal.models import EntryKind, JournalEntry, PatchOutcome
 from .journal.store import JournalStore
+from .materials import MaterialStore
 
 _logger = logging.getLogger(__name__)
 
@@ -576,11 +579,81 @@ def _foreign_touches(patch: Patch, foreign_handles: set[str]) -> list[str]:
     return sorted(touched)
 
 
+def _links_named_by(patch: Patch) -> list[str]:
+    """Every link handle the patch names, distinct, in the order named.
+
+    Adds and updates only — the two ops that can put a handle on a block.
+    An update carrying ``link: null`` names nothing: that is a removal, not
+    a reference, and there is no id to verify (see ``UpdateBlock``).
+
+    Distinct, because a day where three blocks work the same ticket is
+    ordinary and the store should be asked once. This is de-duplication of
+    identifiers this system minted, not a judgement about text.
+    """
+    named: list[str] = []
+    for op in patch.ops:
+        if not isinstance(op, (AddBlock, UpdateBlock)):
+            continue
+        if op.link is not None and op.link not in named:
+            named.append(op.link)
+    return named
+
+
+def _unknown_link_violation(
+    patch: Patch, plan: Plan, known: Collection[str]
+) -> Violation | None:
+    """The refusal for a patch naming a handle the material store lacks.
+
+    ``None`` when every named handle is known. The message names the handle
+    itself, because that is the thing the caller has to fix and the one
+    thing it cannot re-derive: a handle it hallucinated, mistyped, or wrote
+    as a url does not appear anywhere else in the refusal.
+
+    Only handles the PATCH names are checked. A handle already on the plan
+    that the store no longer holds is not a refusal — a link can outlive
+    the row it pointed at, and refusing a patch over a block it does not
+    touch would strand the whole day on a dead row.
+    """
+    unknown: list[ViolationBlock] = []
+    detail: list[str] = []
+    for op in patch.ops:
+        if not isinstance(op, (AddBlock, UpdateBlock)):
+            continue
+        if op.link is None or op.link in known:
+            continue
+        target = plan.by_handle(op.h)
+        if isinstance(op, AddBlock):
+            name = op.n
+        else:
+            name = op.n or (target.n if target is not None else op.h)
+        unknown.append(ViolationBlock(h=op.h, n=name))
+        detail.append(f"{op.h}: link {op.link!r} is not in the material store")
+    if not unknown:
+        return None
+    return Violation(
+        kind=ViolationKind.UNKNOWN_LINK,
+        blocks=unknown,
+        message=(
+            "; ".join(detail)
+            + ". A link is a handle the host recorded for a piece of work and "
+            "gave you in the brief — never a url, never a page id, and never "
+            "one you composed. Drop the link, or use a handle from the brief."
+        ),
+    )
+
+
 class PlanService:
     """Read, preview, commit and undo day plans.
 
-    Holds only a calendar port, a journal store, and a uid minter — no
-    per-snapshot cache. See the module docstring for why.
+    Holds only a calendar port, a journal store, a material store and a uid
+    minter — no per-snapshot cache. See the module docstring for why.
+
+    The material store is here because this is the layer that can refuse: a
+    ``link`` on an op is an id a model supplied, and no id a model supplied
+    reaches a write in this repo before something checks it against the
+    store it claims to come from. ``Block`` cannot do it — a model has no
+    store to ask — so the check lives where the patch is applied, once per
+    patch.
     """
 
     def __init__(
@@ -589,9 +662,16 @@ class PlanService:
         store: JournalStore,
         *,
         mint_uid: Callable[[], str] | None = None,
+        materials: MaterialStore | None = None,
     ) -> None:
         self.calendar = calendar
         self.store = store
+        # The materials share the journal's database (``init_journal``
+        # creates both tables), so the journal store already says where
+        # they are. Reading its sessionmaker beats a second path argument
+        # that could name a different file; injectable so a test can hand
+        # in its own store, and no engine is built at import time.
+        self.materials = materials or MaterialStore(store.sessionmaker)
         self._mint_uid = mint_uid or (lambda: uuid.uuid4().hex)
         self._commit_idempotency_locks: dict[str, asyncio.Lock] = {}
         self._commit_idempotency_refs: dict[str, int] = {}
@@ -629,6 +709,39 @@ class PlanService:
         plan = Plan(date=day, tz=tz, blocks=blocks)
         return plan, events, foreign_uids
 
+    async def _resolve_links(
+        self, plan: Plan, patch: Patch | None = None
+    ) -> dict[str, str]:
+        """Verify what the patch names, label what the plan carries, in one lookup.
+
+        The two questions are one query on purpose. Both are answered by the
+        same rows — is this handle real, and what is it called — and asking
+        twice would make a patch that names one ticket on three blocks cost
+        two round-trips to say one thing.
+
+        Raises ``PlanViolation`` naming the handle when ``patch`` names one
+        the store does not hold. That refusal comes before any write, in
+        both ``apply`` and ``commit``: a handle nobody stored has no url to
+        put on an event, and by write time it is far too late to guess.
+
+        A handle already on ``plan`` but absent from the store is not a
+        refusal; it simply gets no label. See ``_unknown_link_violation``.
+        """
+        named = _links_named_by(patch) if patch is not None else []
+        wanted = named + [
+            block.link
+            for block in plan.blocks
+            if block.link is not None and block.link not in named
+        ]
+        if not wanted:
+            return {}
+        materials = await self.materials.get_many(wanted)
+        if patch is not None:
+            violation = _unknown_link_violation(patch, plan, materials)
+            if violation is not None:
+                raise PlanViolation(violation)
+        return {link_id: material.label for link_id, material in materials.items()}
+
     async def read(
         self, calendar_id: str, day: date_type, tz: str = _DEFAULT_TZ
     ) -> tuple[Plan, Snapshot]:
@@ -657,7 +770,7 @@ class PlanService:
         snapshot = make_snapshot(calendar_id, day, tz, events)
         return ReadResult(
             snapshot=snapshot,
-            rendered=render_plan(plan, foreign_uids),
+            rendered=render_plan(plan, foreign_uids, await self._resolve_links(plan)),
             blocks=len(plan.blocks),
         )
 
@@ -687,6 +800,10 @@ class PlanService:
         error: str | None = None
         try:
             patched = apply_ops(plan, patch, mint_uid=self._mint_uid)
+            # Applying is pure — nothing is written until ``commit`` — so the
+            # link check runs on the patched plan, which is what needs
+            # labelling anyway. One lookup answers both.
+            link_labels = await self._resolve_links(patched, patch)
         except ValueError as exc:
             await self._journal(snapshot, patch, PatchOutcome.APPLY_FAILED, error=str(exc))
             raise
@@ -705,8 +822,8 @@ class PlanService:
         await self._journal(snapshot, patch, outcome, error=error)
         return ApplyResult(
             plan=patched,
-            rendered=render_plan(patched, foreign_uids),
-            rows=plan_rows(patched, foreign_uids),
+            rendered=render_plan(patched, foreign_uids, link_labels),
+            rows=plan_rows(patched, foreign_uids, link_labels),
             violations=violations,
             overspecified=overspecified(patched),
             unallocated=unallocated(patched),
@@ -787,6 +904,19 @@ class PlanService:
             raise ConflictError(conflicts)
 
         patched = apply_ops(plan, patch, mint_uid=self._mint_uid)
+        # Before anything is written: every handle this patch names must be
+        # one the material store holds. ``expect="force"`` does not reach
+        # this — force writes a day the user chose to accept, and nobody can
+        # choose to accept a link to a thing that does not exist. Journalled
+        # like the foreign-block refusal above it: the row is the only record
+        # of the attempt that outlives the session.
+        try:
+            await self._resolve_links(patched, patch)
+        except PlanViolation as exc:
+            await self._journal(
+                snapshot, patch, PatchOutcome.APPLY_FAILED, error=str(exc)
+            )
+            raise
 
         # Gate on the plan the caller would actually get. Without this,
         # ``apply``'s violations were advisory only and a host could read an

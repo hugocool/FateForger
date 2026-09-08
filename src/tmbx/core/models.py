@@ -203,6 +203,22 @@ config tweak: everything in it becomes both un-flaggable and un-relaxable.
 """
 
 
+LINK_FIELD_DESCRIPTION = (
+    "The piece of work this block is for, as a handle from the material "
+    "store (e.g. 'm0a1b2c3d4e'). NEVER a URL and never a page id: the host "
+    "looks the work up before the turn and gives you the handle in the "
+    "brief — that is the only place a handle comes from. A handle the store "
+    "does not hold is refused, so copy it exactly; a block that is not for "
+    "a stored piece of work carries no link."
+)
+"""One description for ``Block.link``, ``AddBlock.link`` and ``UpdateBlock.link``.
+
+The field descriptions are the schema the planner reads, and three copies
+of this one are three places the rule could drift — which is how a model
+ends up told it may write a URL on one op and not on another.
+"""
+
+
 class Block(BaseModel):
     """One timeboxed block."""
 
@@ -218,6 +234,10 @@ class Block(BaseModel):
     anchor_source: AnchorSource | None = Field(
         default=None,
         description="Why this block is pinned. Required when p is fs or fw.",
+    )
+    link: str | None = Field(
+        default=None,
+        description=LINK_FIELD_DESCRIPTION,
     )
 
     @field_validator("h")
@@ -245,12 +265,20 @@ class Block(BaseModel):
 
 
 class ViolationKind(str, Enum):
-    """Why a plan does not fit.
+    """Why a plan cannot be enacted.
 
-    A closed set with exactly one member per raise site in
-    ``Plan.resolve()`` — which is what lets a renderer switch on it
-    exhaustively instead of reading the message. Adding a way for a plan to
-    fail means adding a member here; there is no "other".
+    A closed set with exactly one raise site per member — which is what
+    lets a renderer switch on it exhaustively instead of reading the
+    message. Adding a way for a plan to fail means adding a member here;
+    there is no "other".
+
+    The first five are the ways a day does not *fit*, and every one is
+    raised by ``Plan.resolve()``. ``UNKNOWN_LINK`` is the one raised
+    elsewhere — by ``PlanService`` where a patch is applied, because only
+    the service holds the material store a link handle is checked against.
+    It is in this enum rather than an enum of its own because it reaches a
+    renderer by the same path and answers the same question the others do:
+    which blocks, and why the plan was refused.
     """
 
     OVERLAP = "overlap"
@@ -258,6 +286,7 @@ class ViolationKind(str, Enum):
     UNANCHORED_AFTER_PREV = "unanchored_after_prev"
     UNANCHORED_BEFORE_NEXT = "unanchored_before_next"
     NEGATIVE_DURATION = "negative_duration"
+    UNKNOWN_LINK = "unknown_link"
 
 
 class ViolationBlock(BaseModel):
@@ -309,7 +338,13 @@ class Violation(BaseModel):
 
 
 class PlanViolation(ValueError):
-    """``Plan.resolve()`` could not produce a day that fits.
+    """The plan cannot be enacted as it stands.
+
+    Raised by ``Plan.resolve()`` for a day that does not fit, and by
+    ``PlanService`` for a patch naming a link handle the material store
+    does not hold — an id a model supplied that nothing verified against
+    the store must never reach a write, and refusing it here puts it on the
+    same path (and in the same shape) as every other refusal.
 
     Subclasses ``ValueError`` deliberately: ``overspecified()``,
     ``PlanService.apply`` and the server's ``invalid_patch`` branch all
@@ -573,6 +608,7 @@ __all__ = [
     "ET",
     "FixedStart",
     "FixedWindow",
+    "LINK_FIELD_DESCRIPTION",
     "Plan",
     "PlanViolation",
     "Resolved",

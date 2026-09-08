@@ -293,7 +293,11 @@ def build_server(
         handle (the "H" column). Its "own" column marks each block "tmbx"
         (editable) or "foreign" (a calendar event tmbx did not create,
         such as someone else's meeting — see tmbx://policy/planning for
-        what that means for editing it). An empty day renders as the
+        what that means for editing it). Its "link"/"link_label" columns
+        name the work a block is for — the handle to reuse in a patch, and
+        what that work is called; both empty when the block is for no
+        recorded work. There is no url column: a link is only ever a handle
+        here. An empty day renders as the
         header ("blocks[0]{...}:") followed by one line in parentheses
         saying the day is empty — that is a complete answer, not a
         truncated one, and "blocks" is 0.
@@ -330,18 +334,25 @@ def build_server(
 
         `patch` = {"ops": [...]}, each op one of:
           {"op":"add","h":<new handle>,"n":<name>,"t":<type>,"p":<timing>,
-           "after"?:<handle|null|"END">,"d"?,"slug"?,"anchor_source"?}
+           "after"?:<handle|null|"END">,"d"?,"slug"?,"anchor_source"?,"link"?}
           {"op":"remove","h":<handle>}
-          {"op":"update","h":<handle>, any of n/d/t/p/slug/anchor_source}
+          {"op":"update","h":<handle>, any of n/d/t/p/slug/anchor_source/link}
           {"op":"move","h":<handle>,"after"?:<handle|null|"END">}
         `p` (timing) is one of {"a":"ap","dur":<ISO8601 duration>},
         {"a":"bn","dur":...}, {"a":"fs","st":<HH:MM:SS>,"dur":...},
         {"a":"fw","st":...,"et":...}. Full schema, including the handle
         format: tmbx://schema/ops.
         `slug` names the recurring KIND of block -- `planning`, `sleep` -- and is
-        rendered as the last column of plan_read. Set it verbatim to the kind the
+        rendered in plan_read's `slug` column. Set it verbatim to the kind the
         brief says is required; leave it out for everything else. It is a
         lowercase word with hyphens; anything else is refused.
+
+        `link` names the piece of work a block is for, as a handle the brief
+        gives you (e.g. "m0a1b2c3d4e"). Never a url and never a page id, and
+        never one you composed: a handle nothing stored is refused with
+        reason "invalid_patch" naming it. On an update, omitting `link` keeps
+        the block's current one; sending it as null detaches the block from
+        its work.
 
         Every fs/fw add requires anchor_source: "user" when the user stated
         the time, "constraint" when a standing rule pins it, or "calendar"

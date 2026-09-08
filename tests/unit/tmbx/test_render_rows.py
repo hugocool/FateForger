@@ -42,6 +42,7 @@ def test_rows_carry_the_same_facts_as_the_table():
     assert rows[0] == {
         "h": "DW1", "own": "tmbx", "type": "DW", "summary": "Serious C2F work",
         "start": "09:30", "end": "11:00", "mode": "fs", "dur": "PT1H30M", "slug": "",
+        "link": "", "link_label": "",
     }
     assert rows[1]["own"] == "foreign"
     assert rows[1]["summary"] == "Kapper"
@@ -60,7 +61,7 @@ def test_an_empty_plan_has_no_rows():
     assert plan_rows(Plan(date=DAY, blocks=[])) == []
 
 
-def test_rows_carry_the_slug_and_the_table_renders_it_last():
+def test_rows_carry_the_slug_and_the_table_renders_it():
     """#211: `Block.slug` was written to the calendar on every commit and shown to
     nobody, so a planner could not see a day already carried a `planning` block
     and would add a second. The slug is the kind a rule requires; it has to be
@@ -80,9 +81,15 @@ def test_rows_carry_the_slug_and_the_table_renders_it_last():
         ],
     )
     rows = plan_rows(plan)
-    assert COLUMNS[-1] == "slug"
+    assert "slug" in COLUMNS
     assert [r["slug"] for r in rows] == ["planning", ""]
     table = render_plan(plan).splitlines()
-    assert table[0] == "blocks[2]{H,own,type,summary,ST,ET,mode,dur,slug}:"
-    assert table[1].endswith(",planning")
-    assert table[2].endswith(",")
+    assert table[0] == (
+        "blocks[2]{H,own,type,summary,ST,ET,mode,dur,slug,link,link_label}:"
+    )
+    # The slug sits where the header says it does. Read by column index
+    # rather than off the end of the line: `link`/`link_label` follow it
+    # now, and a test pinned to the last field would have gone on passing
+    # while saying nothing about the slug.
+    assert table[1].split(",")[COLUMNS.index("slug")] == "planning"
+    assert table[2].split(",")[COLUMNS.index("slug")] == ""
