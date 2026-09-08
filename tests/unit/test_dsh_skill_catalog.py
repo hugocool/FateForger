@@ -17,6 +17,7 @@ import ast
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -86,21 +87,36 @@ def _published_tmbx_tools() -> set[str]:
     return names
 
 
-def _mounts(profile) -> dict[str, dict]:
-    """Every MCP mount in the profile, by `serverName`.
+def _mounts(tree: Any) -> dict[str, dict]:
+    """Every MCP mount anywhere in the loaded profile, by `serverName`.
 
     Parsed rather than scraped. The previous version of this read `serverName:`
     lines out of the text, which cannot see a row's `disabled` flag -- so a
-    mount that no ordinary turn can call counted as a connected backend. Same
-    row-parsing approach as `test_task_board_profile_mount.py`.
+    mount that no ordinary turn can call counted as a connected backend. The
+    version after that read the `insert:` lists only, which is where the mounts
+    sit today and not where the file says they must: a row reached by any other
+    patch op would have gone unseen, and unseen here reads as "not connected",
+    which is the answer that hides a live backend.
+
+    A mount is a mapping carrying a `config.serverName`, and it is found
+    wherever it is written.
     """
     found: dict[str, dict] = {}
-    for entry in profile.tree:
-        rows = entry.get("insert") if isinstance(entry, dict) else None
-        for row in rows or []:
-            config = row.get("config") if isinstance(row, dict) else None
-            if isinstance(config, dict) and "serverName" in config:
-                found[config["serverName"]] = row
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            config = node.get("config")
+            if isinstance(config, dict) and isinstance(
+                config.get("serverName"), str
+            ):
+                found[config["serverName"]] = node
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(tree)
     return found
 
 
@@ -284,7 +300,7 @@ def test_the_catalog_holds_no_skill_for_a_backend_that_is_not_connected(profile)
     the admonisher's routing has to be revisited rather than quietly left
     telling the model his tasks are absent while the model can read them.
     """
-    mounts = _mounts(profile)
+    mounts = _mounts(profile.tree)
     states = {
         name: _default_state(profile, row) for name, row in mounts.items()
     }
@@ -314,6 +330,40 @@ def test_the_catalog_holds_no_skill_for_a_backend_that_is_not_connected(profile)
         "the admonisher must say the task system is absent, or the model will "
         "answer from conversation and present it as his backlog"
     )
+
+
+def test_the_mount_scan_reads_the_whole_tree_not_only_insert_lists() -> None:
+    """A mount is any row carrying a `config.serverName`, wherever it is written.
+
+    The scan walked the `insert:` list of each top-level patch entry, which is
+    where today's mounts happen to live. A row added by another patch op, or one
+    level deeper, is then invisible here -- and invisible in the direction that
+    hides a live backend, so the catalog would keep telling the model a task
+    system is "not connected" while the model can call one. That is the exact
+    failure this file exists to make impossible, arriving through the check
+    meant to catch it.
+
+    Synthetic on purpose: the live profile puts every mount in an `insert:`
+    list, so nothing in the real file discriminates between the two scans.
+    """
+    hidden = [
+        {"id": "some-other-op"},
+        {
+            "update": {
+                "plugins": [
+                    {
+                        "id": "mcp-elsewhere",
+                        "config": {"serverName": "elsewhere", "transport": "stdio"},
+                    }
+                ]
+            }
+        },
+    ]
+
+    found = _mounts(hidden)
+
+    assert set(found) == {"elsewhere"}
+    assert found["elsewhere"]["id"] == "mcp-elsewhere"
 
 
 def test_profile_mounts_a_separate_progress_tool_and_instructs_bounded_use() -> None:
