@@ -574,6 +574,18 @@ Expected: three logs, three JSONL draw files with `latency_s`, `completion_token
 
 In `results-interpreter-tier-2026-09-06.md`: for each capped configuration, `finish=length` > 0 means the cap bit. Decision rule from the spec §3: `_INTENT_INTERPRETER_MAX_TOKENS` = the smaller cap with zero bites on both pins; else 2048; else 0 with the case named on #325. Also name, in the markdown's summary section: any case that fell below 7/8 on **judgement** (not transport) on the flash pin that passed on the pro pin — that is the number Hugo's pin decision needs. Edit the constant in `factory.py` and the comment above it to cite the file.
 
+**Superseded by what the bench actually returned.** The rule above lands on uncapped — both
+1024 and 2048 truncated draws (3 of 545 and 4 of 546) — and Hugo overruled it on
+`results-interpreter-tier-2026-09-06.md` and its `.reading.md` sidecar: every truncated draw
+ran 6–56s against a 1–2s median, the largest legitimate uncapped answer was 405 completion
+tokens, 2048 cut more draws than 1024 without buying one back, and no case failed on length —
+so the truncated draws were runaways stopped, not answers lost. **Ruling:
+`_INTENT_INTERPRETER_MAX_TOKENS = 1024`.** The pin, separately, landed on the pro pin at
+`high` rather than the flash pin at `minimal`: the prompts as written lose on flash (27/34
+cases against 32/34, revision-after-commit 1/8 against 8/8), and the flash pin waits on #406.
+`docs/reference/setup/llm.md`'s "Surface interpreter model" section carries both rulings for
+an incoming reader; this step's rule is what was planned, not what landed.
+
 - [ ] **Step 6: Unit suite, then commit**
 
 `PYTHONPATH=src ../../.venv/bin/python -m pytest tests/unit/test_intent_interpreter_client.py tests -m "not slow" -q` → only the pre-existing failure. `git status` must not show `.env` or the smoke artefacts.

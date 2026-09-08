@@ -38,6 +38,15 @@ the switch and the cap cost in judgement.
   `LLM_REASONING_EFFORT_INTENT_INTERPRETER` (default `minimal`), cap from
   `LLM_MAX_TOKENS_INTENT_INTERPRETER` (default set by the bench, §4). One function,
   `build_intent_interpreter_client()`. Every site above calls it; the next surface calls it too.
+
+  **Superseded by the 2026-09-06 bench (see §3's ruling).** The model and effort defaults
+  written above were the plan going in; the bench found the prompts *as written* lose on the
+  flash pin at `minimal` (27/34 cases against the pro pin's 32/34, and
+  `test_a_revision_after_commit_is_still_a_revision` at 1/8 against 8/8). Hugo's ruling landed
+  the row on the **pro pin at `high`** instead, holding the flash pin as the destination once
+  #406 fits the prompts with a discriminator. `.env` is untouched either way — see
+  `docs/reference/setup/llm.md`'s "Surface interpreter model" section and
+  `scripts/bench/results-interpreter-tier-2026-09-06.md` for the numbers.
 - **The code default is not a pin change.** The flash pin is CLAUDE.md's recorded role for routing;
   the interpreters were off it by inheritance, not by decision. What lands with the `.env` line is
   Hugo's to add (the PR checklist asks for it); the code default is what the rule already says.
@@ -128,9 +137,31 @@ answered is the cap biting; that is the number that moves the cap default up.
 
 ## Section 3 — landing the cap
 
-After the bench: `_INTENT_INTERPRETER_MAX_TOKENS` is set to the smaller cap with zero cap-bites on
+**Superseded by the 2026-09-06 bench — see the ruling below.** The rule below was the plan
+going in: `_INTENT_INTERPRETER_MAX_TOKENS` is set to the smaller cap with zero cap-bites on
 both pins; if 1024 bites anywhere, 2048; if both bite, the cap default is `0` (uncapped) and the
-finding goes on #325 with the case. The bench's markdown is the commit's evidence.
+finding goes on #325 with the case.
+
+On the actual numbers this rule lands on uncapped — both 1024 and 2048 truncated draws (3 of 545
+and 4 of 546 respectively) — and Hugo overruled it, because it counts every truncated draw as an
+answer lost. **The data says otherwise**, in `scripts/bench/results-interpreter-tier-2026-09-06.md`
+and its `.reading.md` sidecar:
+
+1. Every truncated draw was slow — 6.4s to 55.7s, against a 1.1–2.0s median across
+   configurations — not a normal answer that happened to be long.
+2. The largest legitimate uncapped answer was 405 completion tokens (pro pin; the pro pin's own
+   median was 45, the flash pin's 78). 1024 is more than twice the largest answer anything gave
+   when nothing stopped it.
+3. 2048 cut *more* draws than 1024 (four against three) — a cap that is supposed to be safer by
+   being larger did not buy a single draw back.
+4. No case failed on length: every truncated draw sat inside a case that still cleared its 7/8
+   bar.
+
+What a cap buys in production is the other half: uncapped, a runaway is one user's turn held
+open while the SDK waits 600s and retries twice — the bench watched an eleven-minute draw on
+exactly the case a 1024 cap later cut. **Ruling: `_INTENT_INTERPRETER_MAX_TOKENS = 1024`.** The
+bench's markdown, and Hugo's reading of it in the `.reading.md` sidecar beside it, are the
+commit's evidence — not the rule stated above.
 
 ## Section 4 — tests
 
