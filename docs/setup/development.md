@@ -15,7 +15,8 @@ what that means; this section is only the operational side.
   `init_journal()` (`src/tmbx/journal/store.py`) adds the `materials` table
   to the existing `data/tmbx_journal.db`. The call is idempotent — it only
   creates tables that are missing — but it only runs on startup, so the
-  server has to actually restart for the table to appear.
+  server has to actually restart for the table to appear. Under the demo
+  supervisor that is `./.venv/bin/python scripts/demo.py restart tmbx`.
 - **Expect one visible change on existing events.** `extendedProperties.private`
   merges rather than replaces on `update-event`, so a stale key from before
   this change (a removed slug, an old description) could still be sitting on
