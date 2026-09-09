@@ -34,6 +34,7 @@ from fateforger.agents.timeboxing.durable_constraint_store import (
 )
 from fateforger.agents.timeboxing.kg_constraint_client import KGConstraintMemoryClient
 from fateforger.core.config import settings
+from fateforger.referents import ReferentResolver
 from fateforger.haunt.agents import HauntingAgent, UserChannelAgent
 from fateforger.haunt.delivery import deliver_user_facing
 from fateforger.haunt.event_draft_store import (
@@ -881,6 +882,15 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     setattr(runtime, "planning_session_store", planning_session_store)
     setattr(runtime, "event_draft_store", event_draft_store)
     setattr(runtime, "timeboxing_session_store", timeboxing_session_store)
+    # The referent rung's judge (#345). It rides the same flash pin as the
+    # other Stage 1 judgements; the route reads this attribute and, finding
+    # nothing, simply does not ask -- which is what keeps a host that never
+    # wired it on exactly today's behaviour.
+    setattr(
+        runtime,
+        "referent_resolver",
+        ReferentResolver(timeboxing_judge_model_client),
+    )
     setattr(runtime, "timeboxing_constraint_store", timeboxing_constraint_store)
     # The dispatcher revalidates every required-block rung against this rule
     # before posting it (R3); without it here, those reminders are dropped.
