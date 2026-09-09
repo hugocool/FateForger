@@ -31,8 +31,13 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningSessionSnapshot,
 )
 from fateforger.agents.timeboxing.work_refs import work_refs_fact_id
+from fateforger.slack_bot.messages import SLACK_MAX_BLOCK_TEXT_CHARS
 from fateforger.slack_bot.stage_context import context_panel, shown_with_of
-from fateforger.slack_bot.timeboxing_cards import render_context_panel
+from fateforger.slack_bot.timeboxing_cards import (
+    BOARD_ROW_CAP,
+    WORK_LINE_CAP,
+    render_context_panel,
+)
 
 DAY = date(2026, 9, 8)
 FINANCE_REF = {"link": "m-page-427", "label": "Verify VPB 2024 aangifte", "task": 427}
@@ -331,7 +336,7 @@ def test_a_sprint_with_no_title_leaves_no_dangling_head() -> None:
     titled gives back an empty string. The head has to read as a sentence
     without it, the same as when the scope resolved no sprint at all."""
 
-    for sprint in ("", None):
+    for sprint in ("", " ", None):
         panel = _panel(candidates=_listing(TWO_ROWS, sprint=sprint))
         head = _head(render_context_panel(panel))
 
@@ -341,20 +346,68 @@ def test_a_sprint_with_no_title_leaves_no_dangling_head() -> None:
         _validated(render_context_panel(panel).blocks)
 
 
+def test_an_unresolved_turn_over_an_empty_board_says_it_once() -> None:
+    """Reachable through `work_lookup_failed` on an empty sprint. "Say which
+    one and I'll attach it" printed above "nothing to plan around" is an
+    instruction with nothing to point at: the sentence carries the whole fact,
+    so the section stays out of its way."""
+
+    panel = _panel(unresolved=True, candidates=_listing([]))
+    head = _head(render_context_panel(panel))
+
+    assert panel.board_read is True
+    assert "could not work out" in head
+    assert "From your board" not in head
+    assert "nothing to plan around" not in head
+
+
 # --- the cap ----------------------------------------------------------------
 
 
-def test_a_long_listing_is_cut_by_count_and_the_panel_stays_two_blocks() -> None:
-    rows = [_row(400 + i, f"Ticket number {i}") for i in range(9)]
+def test_a_whole_sprint_fits_before_the_tail_becomes_a_count() -> None:
+    """The cap is the section's own, not the work line's three: on the turn
+    that asks "say which one", showing three of twelve defeats the question."""
+
+    rows = [_row(400 + i, f"Ticket number {i}") for i in range(BOARD_ROW_CAP)]
+
+    message = _message(candidates=_listing(rows))
+    head = _head(message)
+
+    assert BOARD_ROW_CAP > WORK_LINE_CAP
+    assert f"#{400 + BOARD_ROW_CAP - 1} Ticket number {BOARD_ROW_CAP - 1}" in head
+    assert "more_" not in head
+    assert len(message.blocks) == 2
+    _validated(message.blocks)
+
+
+def test_a_listing_past_the_cap_is_cut_by_count_and_the_panel_stays_two_blocks() -> None:
+    rows = [_row(400 + i, f"Ticket number {i}") for i in range(BOARD_ROW_CAP + 2)]
 
     message = _message(candidates=_listing(rows))
     head = _head(message)
 
     assert "#400 Ticket number 0" in head
-    assert "#402 Ticket number 2" in head
-    assert "#403" not in head
-    assert "_+6 more_" in head
+    assert f"#{400 + BOARD_ROW_CAP}" not in head
+    assert "_+2 more_" in head
     assert len(message.blocks) == 2
+    _validated(message.blocks)
+
+
+def test_a_full_section_stays_inside_the_block_slack_will_render() -> None:
+    """The panel is one section block and Slack truncates it at 1600 chars.
+    A capped section of realistic rows has to fit beside the panel's other
+    lines, or the cap is silently doing the truncating in the wrong place."""
+
+    rows = [
+        _row(400 + i, f"Ticket number {i} with a name of a realistic length", due=date(2026, 9, 10))
+        for i in range(BOARD_ROW_CAP + 5)
+    ]
+
+    message = _message(refs=[FINANCE_REF], candidates=_listing(rows))
+    head = _head(message)
+
+    assert len(head) < SLACK_MAX_BLOCK_TEXT_CHARS
+    assert "_+5 more_" in head
     _validated(message.blocks)
 
 
@@ -376,3 +429,23 @@ def test_the_panel_is_redrawn_when_the_candidates_change() -> None:
     assert never_read != read_empty
     assert read_empty != read_rows
     assert read_rows != other_rows
+
+
+def test_one_row_swapped_for_another_redraws_the_panel() -> None:
+    """The property the three comparisons above do not pin.
+
+    Each of those listings differs in length as well as in identity, so a term
+    carrying only a count -- `board:read` plus `board:n=2` -- would satisfy all
+    three and still leave the panel stale for the change that actually happens:
+    a ticket closed on the board and another taking its place, which is the
+    same number of rows and a different sprint. The set has to move on
+    identity, so this listing is the same length as `TWO_ROWS` with one row
+    replaced.
+    """
+
+    same_length = shown_with_of(
+        _snapshot(candidates=_listing([TWO_ROWS[0], _row(500, "Something else")]))
+    )
+
+    assert len(TWO_ROWS) == 2
+    assert shown_with_of(_snapshot(candidates=_listing(TWO_ROWS))) != same_length

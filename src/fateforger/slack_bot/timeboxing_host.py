@@ -672,7 +672,7 @@ def work_lookup_failed(
     # real type, and `work_board_unavailable` would then carry two type
     # vocabularies under one event name. Whoever greps for one of these greps
     # for the failure, not for the layer that renamed it.
-    error_type = type(exc.__cause__ or exc).__name__
+    error_type = type(exc.__cause__ if exc.__cause__ is not None else exc).__name__
     logger.error(
         "%s: %s: %s",
         event,

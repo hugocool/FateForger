@@ -300,6 +300,17 @@ def shown_with_of(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
     # the work above: a ticket renamed or re-dated on the board keeps its id
     # and does not redraw the panel, which is one turn of a stale label and
     # never a row that is not there.
+    #
+    # **This is a set, so a re-read of the same rows in a new order does not
+    # redraw either -- and `timeboxing_cards.BOARD_ROW_CAP` is what makes that
+    # safe.** A Priority edit on Notion reorders the listing without changing
+    # what is in it; under a cap shorter than the sprint that silently dropped
+    # a row, because the panel kept the old top-N while a row that had moved
+    # into it was never drawn. At a cap of twelve -- the sprint's real size and
+    # the port's own default limit -- every row is on the card whatever the
+    # order, so a reorder can no longer lose one, and the cost of the frozenset
+    # falls back to what the paragraph above accepts: a stale order for a turn.
+    # Lower that cap below the sprint size and this becomes a bug again.
     board: set[str] = set()
     if snapshot.candidates is not None:
         board = {_BOARD_READ_MARK} | {
@@ -402,14 +413,19 @@ def _board(snapshot: PlanningSessionSnapshot) -> list[BoardCandidateItem]:
 def _board_sprint(snapshot: PlanningSessionSnapshot) -> str | None:
     """The sprint's name, or `None` when there is not one to print.
 
-    A sprint page with no title gives back an empty string, and the section's
-    head has to read as a sentence without a name either way. Emptiness, not
-    meaning: nothing here compares the title to anything.
+    A sprint page with no title gives back an empty string, and one titled with
+    a space gives back a space -- which printed a head of `From your board —  :`
+    and is the same fact for a reader: there is no name here. Emptiness, not
+    meaning: nothing here compares the title to anything, and the whitespace is
+    tested for rather than stripped off a name that has one.
     """
 
-    if snapshot.candidates is None or not snapshot.candidates.sprint:
+    if snapshot.candidates is None:
         return None
-    return snapshot.candidates.sprint
+    sprint = snapshot.candidates.sprint
+    if sprint is None or not sprint.strip():
+        return None
+    return sprint
 
 
 def context_panel(

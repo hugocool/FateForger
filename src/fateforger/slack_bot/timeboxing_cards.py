@@ -398,6 +398,24 @@ _CANDIDATE_STATE_LABEL: dict[str, str] = {
 }
 
 
+#: Candidates named before the tail becomes a count. Its own constant, and
+#: four times the work line's three, because the two lines answer different
+#: questions. The work line is a glance to catch a wrong resolution. This
+#: section has to let a reader answer "say which one" -- and showing them three
+#: of twelve defeats the one job it has on the turn where that sentence is
+#: printed.
+#:
+#: Twelve is the current sprint's real size and the port's own
+#: `DEFAULT_CANDIDATE_LIMIT`, so in practice the whole sprint is on the card.
+#: Twelve rows at roughly 60 characters is about 720, against
+#: `SLACK_MAX_BLOCK_TEXT_CHARS` of 1600 -- the panel's other four lines fit in
+#: the headroom, and anything past the cap still becomes "+N more".
+#:
+#: **The cap is load-bearing for `shown_with_of`**, not only for the copy: see
+#: the board term there.
+BOARD_ROW_CAP = 12
+
+
 def _board_row(item: BoardCandidateItem) -> str:
     """One candidate: the mark, the number and the name, then its tags.
 
@@ -446,19 +464,23 @@ def _board_section(panel: ContextPanel) -> str:
     and a second one here would say the same thing twice in a register the
     reader cannot act on differently.
 
-    The cap is the work line's, for the same reason: this is a glance before
-    approving a day, not a report, and the panel is one section block that has
-    to stay editable in place all session.
+    The same applies to an *empty* board on an unresolved turn, which
+    `work_lookup_failed` reaches on an empty sprint: "say which one and I'll
+    attach it" printed directly above "nothing to plan around" reads as an
+    instruction with nothing to point at. The sentence already carries the
+    whole fact, so the section stays out of its way.
     """
 
     if not panel.board_read:
+        return ""
+    if not panel.board and panel.work_refs_unresolved:
         return ""
     head = "From your board"
     if panel.board_sprint:
         head += f" — {panel.board_sprint}"
     if not panel.board:
         return f"\n{head}: nothing to plan around."
-    shown = panel.board[:WORK_LINE_CAP]
+    shown = panel.board[:BOARD_ROW_CAP]
     rows = "".join(f"\n{_board_row(item)}" for item in shown)
     rest = len(panel.board) - len(shown)
     return f"\n{head}:{rows}" + (f"\n_+{rest} more_" if rest > 0 else "")
