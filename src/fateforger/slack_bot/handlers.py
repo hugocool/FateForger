@@ -3341,12 +3341,45 @@ async def route_slack_event(
     if handoff_target == "timeboxing_agent":
         # Every door into timeboxing opens the same session surface. When no
         # channel is configured, or the user is already in it, the session
-        # lives where they are. Never the fall-through send below: there is
-        # nothing registered under this name to receive it.
-        await _begin_timeboxing_session_surface(
-            target_channel=_channel_for_agent("timeboxing_agent") or channel,
-            origin_key=origin_key,
-        )
+        # lives where they are -- the origin "thinking..." ack is repurposed
+        # into the root rather than left beside a second one (same reasoning
+        # as the fresh-channel-start branch above). Never the fall-through
+        # send below: there is nothing registered under this name to
+        # receive it.
+        session_channel = _channel_for_agent("timeboxing_agent") or channel
+        if session_channel != channel:
+            try:
+                await _begin_timeboxing_session_surface(
+                    target_channel=session_channel,
+                    origin_key=origin_key,
+                    existing_root=None,
+                )
+            except Exception:
+                # `open_session_surface` posts the root before this helper's
+                # own try/except, so a channel the bot cannot post into (the
+                # ordinary cause) would otherwise propagate out of
+                # `route_slack_event` -- neither caller of this function
+                # catches anything but `asyncio.TimeoutError`. Never fall
+                # through to the retired runtime send below: open the
+                # session where the user already is instead.
+                logger.warning(
+                    "timeboxing session surface failed in configured "
+                    "channel=%s; opening it in the origin channel=%s instead",
+                    session_channel,
+                    channel,
+                    exc_info=True,
+                )
+                await _begin_timeboxing_session_surface(
+                    target_channel=channel,
+                    origin_key=origin_key,
+                    existing_root=origin_processing_msg,
+                )
+        else:
+            await _begin_timeboxing_session_surface(
+                target_channel=session_channel,
+                origin_key=origin_key,
+                existing_root=origin_processing_msg,
+            )
         return
 
     if handoff_target:

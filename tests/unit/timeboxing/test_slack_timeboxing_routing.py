@@ -180,7 +180,12 @@ async def test_a_receptionist_handoff_opens_a_session_where_the_user_is(monkeypa
     )
 
     assert [r.type for _, r in runtime.calls] == ["receptionist_agent"]
-    assert any(p.get("channel") == "C1" and not p.get("thread_ts") for p in client.posted)
+    # No timeboxing channel is configured, so the session lives in C1, the
+    # channel the user is already in: the origin "thinking..." ack (posted by
+    # `_FakeClient.chat_postMessage`, which always answers with ts "p1") is
+    # repurposed into the root via `chat_update`, rather than left beside a
+    # freshly-posted second root.
+    assert any(u.get("channel") == "C1" and u.get("ts") == "p1" for u in client.updates)
 
 
 @pytest.mark.asyncio
@@ -190,6 +195,13 @@ async def test_a_thread_reply_in_a_focused_thread_is_a_kernel_turn(monkeypatch):
     focus.set_focus("C1:root", "timeboxing_agent", by_user="U1")
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
     client = _FakeClient()
+    turns: list[dict] = []
+
+    async def _fake_turn(**kwargs):
+        turns.append(kwargs)
+        return SlackBlockMessage(text="turn ran", blocks=[])
+
+    monkeypatch.setattr("fateforger.slack_bot.handlers._run_adaptive_timebox_turn", _fake_turn)
 
     await route_slack_event(
         runtime=runtime,
@@ -208,6 +220,7 @@ async def test_a_thread_reply_in_a_focused_thread_is_a_kernel_turn(monkeypatch):
     )
 
     assert runtime.calls == []
+    assert [t["session_key"] for t in turns] == ["C1:root"]
     assert client.updates, "the turn's outcome is written back into the thread"
 
 
