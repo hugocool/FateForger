@@ -3093,48 +3093,67 @@ async def route_slack_event(
         processing_payload.update(_persona_payload(persona))
         processing = await client.chat_postMessage(**processing_payload)
 
-        msg = _build_agent_message(
-            agent_type=redirect.agent_type,
-            cleaned_text=cleaned_text,
-            user=user,
-            channel=redirect.target_channel,
-            thread_ts=redirect.target_thread_ts,
-            ts=redirect.target_thread_ts,
-            force_channel=redirect.target_channel,
-            force_thread_root=redirect.target_thread_ts,
-            force_reply=True,
-        )
-        try:
-            result = await runtime.send_message(
-                msg, recipient=AgentId(redirect.agent_type, key=redirect.target_key)
+        if redirect.agent_type == "timeboxing_agent":
+            # A redirected timeboxing thread is an open session: continue it on
+            # the kernel, keyed by the redirect's own thread. There is nothing
+            # registered under "timeboxing_agent" to send to.
+            result = await _run_adaptive_timebox_turn(
+                runtime=runtime,
+                client=client,
+                logger=logger,
+                session_key=redirect.target_key,
+                actor_user_id=user,
+                interaction_id=ts,
+                progress_channel=redirect.target_channel,
+                progress_ts=processing["ts"],
+                card_channel=redirect.target_channel,
+                card_thread_ts=redirect.target_thread_ts,
+                user_text=cleaned_text,
+                focus=focus,
             )
-        except asyncio.TimeoutError:
-            record_error(component="slack_routing", error_type="stage_compute_failure")
-            await client.chat_update(
+        else:
+            msg = _build_agent_message(
+                agent_type=redirect.agent_type,
+                cleaned_text=cleaned_text,
+                user=user,
                 channel=redirect.target_channel,
-                ts=processing["ts"],
-                text=":hourglass_flowing_sand: Timed out waiting for tools/LLM. Please try again.",
+                thread_ts=redirect.target_thread_ts,
+                ts=redirect.target_thread_ts,
+                force_channel=redirect.target_channel,
+                force_thread_root=redirect.target_thread_ts,
+                force_reply=True,
             )
-            await _origin_update(
-                text=":hourglass_flowing_sand: Timed out waiting for tools/LLM. Please try again."
-            )
-            return
-        except Exception as e:
-            record_error(component="slack_routing", error_type="stage_compute_failure")
-            logger.exception(
-                "runtime.send_message failed (redirect agent=%s key=%s)",
-                redirect.agent_type,
-                redirect.target_key,
-            )
-            await client.chat_update(
-                channel=redirect.target_channel,
-                ts=processing["ts"],
-                text=":warning: Something went wrong while handling that request. Check bot logs.",
-            )
-            await _origin_update(
-                text=f":warning: {type(e).__name__}: {_safe_exc_summary(e)}"
-            )
-            return
+            try:
+                result = await runtime.send_message(
+                    msg, recipient=AgentId(redirect.agent_type, key=redirect.target_key)
+                )
+            except asyncio.TimeoutError:
+                record_error(component="slack_routing", error_type="stage_compute_failure")
+                await client.chat_update(
+                    channel=redirect.target_channel,
+                    ts=processing["ts"],
+                    text=":hourglass_flowing_sand: Timed out waiting for tools/LLM. Please try again.",
+                )
+                await _origin_update(
+                    text=":hourglass_flowing_sand: Timed out waiting for tools/LLM. Please try again."
+                )
+                return
+            except Exception as e:
+                record_error(component="slack_routing", error_type="stage_compute_failure")
+                logger.exception(
+                    "runtime.send_message failed (redirect agent=%s key=%s)",
+                    redirect.agent_type,
+                    redirect.target_key,
+                )
+                await client.chat_update(
+                    channel=redirect.target_channel,
+                    ts=processing["ts"],
+                    text=":warning: Something went wrong while handling that request. Check bot logs.",
+                )
+                await _origin_update(
+                    text=f":warning: {type(e).__name__}: {_safe_exc_summary(e)}"
+                )
+                return
 
         payload = _compact_slack_payload(**_slack_payload_from_result(result))
         update = {
@@ -3319,23 +3338,26 @@ async def route_slack_event(
         except ValueError:
             handoff_target = None
 
+    if handoff_target == "timeboxing_agent":
+        # Every door into timeboxing opens the same session surface. When no
+        # channel is configured, or the user is already in it, the session
+        # lives where they are. Never the fall-through send below: there is
+        # nothing registered under this name to receive it.
+        await _begin_timeboxing_session_surface(
+            target_channel=_channel_for_agent("timeboxing_agent") or channel,
+            origin_key=origin_key,
+        )
+        return
+
     if handoff_target:
         focus.set_user_focus(user, handoff_target)
         target_channel = _channel_for_agent(handoff_target)
         # For timeboxing, always anchor the session in the dedicated channel thread (when configured),
         # even if the user started in a DM. The DM becomes the control surface (buttons/modals),
         # and the channel thread becomes the durable workspace/log.
-        should_redirect = bool(target_channel and target_channel != channel) and (
-            (not is_dm) or handoff_target == "timeboxing_agent"
-        )
+        should_redirect = bool(target_channel and target_channel != channel) and (not is_dm)
         if should_redirect:
             try:
-                if handoff_target == "timeboxing_agent":
-                    await _begin_timeboxing_session_surface(
-                        target_channel=target_channel,
-                        origin_key=origin_key,
-                    )
-                    return
                 persona = _persona_for_agent(handoff_target)
                 root_payload = {
                     "channel": target_channel,
@@ -3467,12 +3489,8 @@ async def route_slack_event(
             channel=channel,
             thread_ts=thread_ts,
             ts=ts,
-            force_thread_root=(
-                "dm" if (is_dm and handoff_target == "timeboxing_agent") else None
-            ),
-            force_reply=(
-                True if (is_dm and handoff_target == "timeboxing_agent") else None
-            ),
+            force_thread_root=None,
+            force_reply=None,
         )
         try:
             result = await runtime.send_message(

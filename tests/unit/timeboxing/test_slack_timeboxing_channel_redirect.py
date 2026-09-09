@@ -131,6 +131,7 @@ class DummySay:
 
 @pytest.mark.asyncio
 async def test_timeboxing_handoff_redirects_into_configured_channel(monkeypatch):
+    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     monkeypatch.setattr(
         settings, "slack_timeboxing_channel_id", "C_TIMEBOX", raising=False
     )
@@ -153,11 +154,11 @@ async def test_timeboxing_handoff_redirects_into_configured_channel(monkeypatch)
         client=client,
     )
 
-    assert [r.type for _, r in runtime.calls] == [
-        "receptionist_agent",
-        "timeboxing_agent",
-    ]
-    assert runtime.calls[1][1].key == "C_TIMEBOX:tb_root"
+    assert [r.type for _, r in runtime.calls] == ["receptionist_agent"]
+    assert focus.get_redirect("C_ORIG:1").target_key == "C_TIMEBOX:tb_root"
+    assert any(
+        p.get("channel") == "C_TIMEBOX" and not p.get("thread_ts") for p in client.posted
+    )
     # Thread root + processing reply in the timeboxing channel
     assert any(
         p["channel"] == "C_TIMEBOX" and not p.get("thread_ts") for p in client.posted
@@ -166,12 +167,10 @@ async def test_timeboxing_handoff_redirects_into_configured_channel(monkeypatch)
         p["channel"] == "C_TIMEBOX" and p.get("thread_ts") == "tb_root"
         for p in client.posted
     )
-    # User gets a DM with the commit prompt (best-effort).
-    # Note: "Go to session" is NOT included initially - it appears after user clicks Confirm.
+    # User gets a DM linking back to the session thread (best-effort).
     assert client.opened and client.opened[0]["users"] == ["U1"]
     assert any(
-        p["channel"] == "D_DM"
-        and FF_TIMEBOX_COMMIT_START_ACTION_ID in str(p.get("blocks"))
+        p["channel"] == "D_DM" and "ff_open_thread" in str(p.get("blocks"))
         for p in client.posted
     )
 
@@ -189,7 +188,8 @@ async def test_timeboxing_handoff_redirects_into_configured_channel(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_timeboxing_reply_in_origin_thread_is_forwarded(monkeypatch):
+async def test_a_reply_in_the_origin_thread_continues_the_session_on_the_kernel(monkeypatch):
+    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     monkeypatch.setattr(
         settings, "slack_timeboxing_channel_id", "C_TIMEBOX", raising=False
     )
@@ -229,9 +229,8 @@ async def test_timeboxing_reply_in_origin_thread_is_forwarded(monkeypatch):
         client=client,
     )
 
-    # The last runtime call is a timeboxing_agent call keyed to the timeboxing thread
-    assert runtime.calls[-1][1].type == "timeboxing_agent"
-    assert runtime.calls[-1][1].key == "C_TIMEBOX:tb_root"
+    assert [r.type for _, r in runtime.calls] == ["receptionist_agent"]
+    assert any(u.get("channel") == "C_TIMEBOX" for u in client.updates)
 
 
 @pytest.mark.asyncio

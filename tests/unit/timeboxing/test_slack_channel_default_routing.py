@@ -7,7 +7,6 @@ from autogen_agentchat.messages import TextMessage
 from fateforger.core.config import settings
 from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.handlers import route_slack_event
-from fateforger.agents.timeboxing.messages import StartTimeboxing
 from tests.doubles.slack import RecordingSlackClient
 
 
@@ -27,7 +26,8 @@ async def _unused_say(**_kwargs):
 
 
 @pytest.mark.asyncio
-async def test_specialist_channel_routes_directly_to_timeboxing_agent(monkeypatch):
+async def test_the_specialist_channel_opens_a_session_directly(monkeypatch):
+    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     monkeypatch.setattr(settings, "slack_timeboxing_channel_id", "C_PLAN", raising=False)
     runtime = DummyRuntime()
     client = RecordingSlackClient()
@@ -43,8 +43,5 @@ async def test_specialist_channel_routes_directly_to_timeboxing_agent(monkeypatc
         client=client,
     )
 
-    assert len(runtime.calls) == 1
-    msg, recipient = runtime.calls[0]
-    assert recipient.type == "timeboxing_agent"
-    assert isinstance(msg, StartTimeboxing)
-
+    assert runtime.calls == []
+    assert any(p.get("channel") == "C_PLAN" and not p.get("thread_ts") for p in client.posted)

@@ -412,7 +412,9 @@ def test_the_handoff_interception_uses_the_redirected_thread():
     under a thread nobody continues in, and a misfiled session rehydrates as
     an empty one -- and the direct in-thread continuation later in the
     function, which never redirects and so must key off its own
-    ``recipient_key``.
+    ``recipient_key``. The redirect route is the third site: a redirected
+    thread is an open session, so it continues on the kernel keyed by
+    ``redirect.target_key``, never by a send.
 
     This used to be one call, found with ``rindex`` on the assumption that
     the handoff's call was always textually last. That broke silently when
@@ -465,8 +467,8 @@ def test_the_handoff_interception_uses_the_redirected_thread():
         for call in _calls_to(route_def, "_run_adaptive_timebox_turn")
         if call.lineno not in surface_span
     ]
-    assert len(direct_calls) == 1, direct_calls
-    assert _session_key_source(direct_calls[0]) == "recipient_key"
+    outside = sorted(_session_key_source(call) for call in direct_calls)
+    assert outside == ["recipient_key", "redirect.target_key"], outside
 
 
 def test_approval_card_stays_in_the_plan_thread_for_top_level_requests():

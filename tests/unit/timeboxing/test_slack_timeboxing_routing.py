@@ -7,7 +7,6 @@ pytest.importorskip("autogen_agentchat")
 from autogen_agentchat.messages import TextMessage
 from autogen_core import AgentId
 
-from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
 from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.handlers import _with_agent_attribution, route_slack_event
 from fateforger.slack_bot.messages import SlackBlockMessage
@@ -136,7 +135,8 @@ async def _route(*, runtime, focus, client, planning, event):
 
 
 @pytest.mark.asyncio
-async def test_routes_root_message_to_timeboxing_start_when_focused():
+async def test_a_root_message_in_a_focused_channel_opens_a_session(monkeypatch):
+    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
     focus.set_focus("C1:111", "timeboxing_agent", by_user="U1")
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
@@ -152,25 +152,19 @@ async def test_routes_root_message_to_timeboxing_start_when_focused():
         client=client,
     )
 
-    assert len(runtime.calls) == 1
-    msg, recipient = runtime.calls[0]
-    assert isinstance(msg, StartTimeboxing)
-    # Root timeboxing sessions are anchored to the bot's prompt message (not the user's message),
-    # so the session thread can start cleanly under a deterministic control surface.
-    assert msg.thread_ts == "p1"
-    assert recipient.type == "timeboxing_agent"
-    assert recipient.key == "C1:p1"
+    assert runtime.calls == []
+    assert any(p.get("channel") == "C1" and not p.get("thread_ts") for p in client.posted)
 
 
 @pytest.mark.asyncio
-async def test_handoff_from_receptionist_resends_as_timeboxing_start():
+async def test_a_receptionist_handoff_opens_a_session_where_the_user_is(monkeypatch):
+    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     focus = FocusManager(
         ttl_seconds=60, allowed_agents=["receptionist_agent", "timeboxing_agent"]
     )
     runtime = _FakeRuntime(
         [
             _FakeResult(_FakeHandoffMessage("timeboxing_agent")),
-            _FakeResult(TextMessage(content="ok", source="bot")),
         ]
     )
     client = _FakeClient()
@@ -185,20 +179,13 @@ async def test_handoff_from_receptionist_resends_as_timeboxing_start():
         client=client,
     )
 
-    assert len(runtime.calls) == 2
-    first_msg, first_recipient = runtime.calls[0]
-    second_msg, second_recipient = runtime.calls[1]
-
-    assert isinstance(first_msg, TextMessage)
-    assert first_recipient.type == "receptionist_agent"
-
-    assert isinstance(second_msg, StartTimeboxing)
-    assert second_msg.thread_ts == "222"
-    assert second_recipient.type == "timeboxing_agent"
+    assert [r.type for _, r in runtime.calls] == ["receptionist_agent"]
+    assert any(p.get("channel") == "C1" and not p.get("thread_ts") for p in client.posted)
 
 
 @pytest.mark.asyncio
-async def test_routes_thread_reply_to_timeboxing_user_reply():
+async def test_a_thread_reply_in_a_focused_thread_is_a_kernel_turn(monkeypatch):
+    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
     focus.set_focus("C1:root", "timeboxing_agent", by_user="U1")
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
@@ -220,10 +207,8 @@ async def test_routes_thread_reply_to_timeboxing_user_reply():
         client=client,
     )
 
-    assert len(runtime.calls) == 1
-    msg, _ = runtime.calls[0]
-    assert isinstance(msg, TimeboxingUserReply)
-    assert msg.thread_ts == "root"
+    assert runtime.calls == []
+    assert client.updates, "the turn's outcome is written back into the thread"
 
 
 @pytest.mark.asyncio
