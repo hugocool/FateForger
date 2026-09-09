@@ -75,13 +75,6 @@ from fateforger.slack_bot.constraint_review import (
 )
 from fateforger.slack_bot.messages import SlackBlockMessage, SlackThreadStateMessage
 from fateforger.slack_bot.timeboxing_commit import build_timebox_commit_prompt_message
-from fateforger.slack_bot.timeboxing_stage_actions import build_stage_actions_block
-from fateforger.slack_bot.timeboxing_submit import (
-    build_markdown_block,
-    build_review_submit_actions_block,
-    build_text_section_block,
-    build_undo_submit_actions_block,
-)
 from fateforger.tools.ticktick_mcp import TickTickMcpClient, get_ticktick_mcp_url
 
 from .actions import TimeboxAction
@@ -190,6 +183,122 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 _JOURNAL_STORE: JournalStore | None = None
+
+
+# The five block builders below were the legacy stage/submit cards' Slack Block
+# Kit renderers, formerly shared out of two dispatcher modules that dispatched
+# to this agent and are now retired. These stay module-private here because
+# this module is the only caller left, and it dies too (Task 5).
+
+
+def _build_text_section_block(*, text: str) -> dict[str, Any]:
+    """Render markdown text content as a Slack section block."""
+    return {
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": text or "(no response)"},
+    }
+
+
+def _build_markdown_block(*, text: str) -> dict[str, Any]:
+    """Render content using Slack's native markdown block type."""
+    return {
+        "type": "markdown",
+        "text": text or "(no response)",
+    }
+
+
+def _build_review_submit_actions_block(*, meta_value: str) -> dict[str, Any]:
+    """Return the Stage 5 review submit/cancel action block."""
+    return {
+        "type": "actions",
+        "block_id": "ff_timebox_review_actions",
+        "elements": [
+            {
+                "type": "button",
+                "action_id": "ff_timebox_confirm_submit",
+                "text": {"type": "plain_text", "text": "Submit to Calendar"},
+                "style": "primary",
+                "value": meta_value,
+            },
+            {
+                "type": "button",
+                "action_id": "ff_timebox_cancel_submit",
+                "text": {"type": "plain_text", "text": "Keep Editing"},
+                "value": meta_value,
+            },
+        ],
+    }
+
+
+def _build_undo_submit_actions_block(*, meta_value: str) -> dict[str, Any]:
+    """Return the post-submit undo action block."""
+    return {
+        "type": "actions",
+        "block_id": "ff_timebox_post_submit_actions",
+        "elements": [
+            {
+                "type": "button",
+                "action_id": "ff_timebox_undo_submit",
+                "text": {"type": "plain_text", "text": "Undo"},
+                "style": "danger",
+                "value": meta_value,
+            }
+        ],
+    }
+
+
+def _build_stage_actions_block(
+    *,
+    meta_value: str,
+    can_proceed: bool,
+    can_go_back: bool,
+    redo_label: str = "Redo",
+    include_cancel: bool = True,
+) -> dict[str, Any]:
+    """Build deterministic stage-control buttons for a timeboxing stage."""
+    elements: list[dict[str, Any]] = []
+    if can_proceed:
+        elements.append(
+            {
+                "type": "button",
+                "action_id": "ff_timebox_stage_proceed",
+                "text": {"type": "plain_text", "text": "Proceed"},
+                "style": "primary",
+                "value": meta_value,
+            }
+        )
+    if can_go_back:
+        elements.append(
+            {
+                "type": "button",
+                "action_id": "ff_timebox_stage_back",
+                "text": {"type": "plain_text", "text": "Back"},
+                "value": meta_value,
+            }
+        )
+    elements.append(
+        {
+            "type": "button",
+            "action_id": "ff_timebox_stage_redo",
+            "text": {"type": "plain_text", "text": redo_label},
+            "value": meta_value,
+        }
+    )
+    if include_cancel:
+        elements.append(
+            {
+                "type": "button",
+                "action_id": "ff_timebox_stage_cancel",
+                "text": {"type": "plain_text", "text": "Cancel"},
+                "style": "danger",
+                "value": meta_value,
+            }
+        )
+    return {
+        "type": "actions",
+        "block_id": "ff_timebox_stage_actions",
+        "elements": elements,
+    }
 
 
 def _fallback_on_parse_error(default: R) -> Callable[[Callable[P, R]], Callable[P, R]]:
@@ -4075,7 +4184,7 @@ class TimeboxingFlowAgent(RoutedAgent):
         )
         meta_value = self._build_stage_action_value(session)
         return [
-            build_stage_actions_block(
+            _build_stage_actions_block(
                 meta_value=meta_value,
                 can_proceed=can_proceed,
                 can_go_back=can_go_back,
@@ -4300,20 +4409,20 @@ class TimeboxingFlowAgent(RoutedAgent):
         """Render Slack blocks for Stage 5 confirm/cancel flow."""
         _ = text
         action_value = self._build_timeboxing_action_value(session)
-        return [build_review_submit_actions_block(meta_value=action_value)]
+        return [_build_review_submit_actions_block(meta_value=action_value)]
 
     def _render_markdown_summary_blocks(self, *, text: str) -> list[dict[str, Any]]:
         """Render a markdown summary block for Slack output."""
-        return [build_markdown_block(text=text)]
+        return [_build_markdown_block(text=text)]
 
     def _render_submit_result_blocks(
         self, *, session: Session, text: str, include_undo: bool
     ) -> list[dict[str, Any]]:
         """Render Slack blocks for post-submit result messages."""
-        blocks: list[dict[str, Any]] = [build_text_section_block(text=text)]
+        blocks: list[dict[str, Any]] = [_build_text_section_block(text=text)]
         if include_undo:
             action_value = self._build_timeboxing_action_value(session)
-            blocks.append(build_undo_submit_actions_block(meta_value=action_value))
+            blocks.append(_build_undo_submit_actions_block(meta_value=action_value))
         return blocks
 
     def _build_remote_snapshot_plan(self, session: Session) -> TBPlan:
@@ -7225,7 +7334,7 @@ class TimeboxingFlowAgent(RoutedAgent):
             )
         return SlackBlockMessage(
             text=reply.content,
-            blocks=[build_markdown_block(text=reply.content), *combined_blocks],
+            blocks=[_build_markdown_block(text=reply.content), *combined_blocks],
         )
 
     @staticmethod
@@ -7951,7 +8060,7 @@ class TimeboxingFlowAgent(RoutedAgent):
                 )
             return SlackBlockMessage(
                 text=text,
-                blocks=[build_markdown_block(text=text)],
+                blocks=[_build_markdown_block(text=text)],
             )
 
         submit_started_at = perf_counter()
@@ -8427,7 +8536,7 @@ def _wrap_with_constraint_review(
     session: Session,
 ) -> SlackBlockMessage:
     """Attach a compact constraint-review section to a stage response."""
-    blocks: list[dict[str, Any]] = [build_markdown_block(text=message.content)]
+    blocks: list[dict[str, Any]] = [_build_markdown_block(text=message.content)]
     if constraints:
         ranked = sorted(constraints, key=_constraint_priority)
         summary_line = _constraint_count_summary_line(

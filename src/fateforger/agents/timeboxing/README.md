@@ -11,14 +11,14 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | Patching (schema-in-prompt) | Implemented, Tested | 14 unit | 2025-07-22 (live LLM) |
 | GraphFlow orchestration | Implemented, Documented | graphflow state machine tests | — |
 | Skeleton pre-generation (AC1) | Implemented, Tested | `test_timeboxing_skeleton_pre_generation.py` | — |
-| Calendar sync + undo controls | Implemented, Tested (submit-time baseline refresh + deterministic reconciliation summary in Stage 5) | `test_timeboxing_submit_flow.py`, `test_slack_timebox_buttons.py` | 2026-03-07 |
+| Calendar sync + undo controls | Retired at the Slack layer (2026-09-09): pressing a Stage 5 card button now rewrites it with a "this flow is retired" message instead of dispatching to the agent -- see `retired_cards.py`. The underlying agent code stays until the agent itself is deleted. | `test_retired_cards.py` | 2026-03-07 |
 | Durable profile/date-span constraint auto-upsert + Stage 1 prefetch wait | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_constraint_memory_client_tool_name.py` | — |
 | Graphiti durable memory cutover (Neo4j-backed MCP, no Mem0/file fallback) | Implemented, Tested | `test_graphiti_constraint_memory.py`, `test_settings_mcp_endpoints.py`, `test_runtime_mcp_startup_checks.py`, `test_timeboxing_memory_backend_selection.py` | 2026-03-10 |
 | Constraint-memory MCP payload decoding hardening | Implemented, Tested | `test_timeboxing_constraint_memory_client_tool_name.py` | — |
 | Stage 1 elicitation loop (concern-floor coverage matrix, three judges, arithmetic gate) | Implemented, Tested (see [Stage 1 Elicitation](#stage-1-elicitation)) | `test_elicitation_gate.py`, `test_elicitation_judges.py`, `test_elicitation_composes.py`, `tests/evals/test_stage1_elicitation.py` | 2026-09-06 |
 | Stage 3 markdown-first skeleton overview | Implemented, Tested | `test_timeboxing_skeleton_draft_contract.py` | — |
 | Stage 4 advisory quality facts (0-4) | Implemented, Tested | `test_phase4_rewiring.py` | — |
-| Deterministic stage action buttons | Implemented, Tested | `test_timeboxing_stage_actions.py`, `test_slack_timebox_stage_buttons.py` | — |
+| Deterministic stage action buttons | Retired at the Slack layer (2026-09-09), same as the row above -- see `retired_cards.py` | `test_retired_cards.py` | — |
 | Structured-output strict tool contract | Implemented, Tested | `test_timeboxing_constraint_search_tool_strict.py`, `test_timeboxing_flow.py` | — |
 
 ## File Index

@@ -100,6 +100,7 @@ from fateforger.slack_bot.progress_events import (
 from fateforger.slack_bot.progress_events import (
     ProgressStatus as TimeboxProgressStatus,
 )
+from fateforger.slack_bot import retired_cards
 from fateforger.slack_bot.reply_guard import agent_reply_text
 from fateforger.slack_bot.stage_card_registry import StageCardRegistry, receipt_body, receipt_label
 from fateforger.slack_bot.stage_context import context_fold
@@ -138,7 +139,6 @@ from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID,
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
     TimeboxCommitMeta,
-    TimeboxingCommitCoordinator,
     day_type_action_id,
     format_relative_day_label,
 )
@@ -152,21 +152,6 @@ from fateforger.slack_bot.timeboxing_intents import (
     TimeboxActionEnvelope,
     intent_from_artifact_action,
     intent_from_date_action,
-)
-from fateforger.slack_bot.timeboxing_stage_actions import (
-    FF_TIMEBOX_STAGE_BACK_ACTION_ID,
-    FF_TIMEBOX_STAGE_CANCEL_ACTION_ID,
-    FF_TIMEBOX_STAGE_PROCEED_ACTION_ID,
-    FF_TIMEBOX_STAGE_REDO_ACTION_ID,
-    TimeboxingStageActionCoordinator,
-    TimeboxingStageActionPayload,
-)
-from fateforger.slack_bot.timeboxing_submit import (
-    FF_TIMEBOX_CANCEL_SUBMIT_ACTION_ID,
-    FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID,
-    FF_TIMEBOX_UNDO_SUBMIT_ACTION_ID,
-    TimeboxingSubmitCoordinator,
-    TimeboxSubmitActionPayload,
 )
 
 from .focus import FocusManager
@@ -3615,11 +3600,6 @@ def register_handlers(
     workspace_store: SlackWorkspaceStore | None = None
     planning = PlanningCoordinator(runtime=runtime, focus=focus, client=app.client)
     planning.attach_reconciler_dispatch()
-    timeboxing_commit = TimeboxingCommitCoordinator(runtime=runtime, client=app.client)
-    timeboxing_submit = TimeboxingSubmitCoordinator(runtime=runtime, client=app.client)
-    timeboxing_stage_actions = TimeboxingStageActionCoordinator(
-        runtime=runtime, client=app.client
-    )
     workspace_bootstrap_attempted = False
     invited_users: set[str] = set()
 
@@ -4522,12 +4502,7 @@ def register_handlers(
 
     @app.action(FF_TIMEBOX_COMMIT_START_ACTION_ID)
     async def on_timebox_commit_start_action(ack, body, client, logger):
-        """Confirm the planning day, on whichever backend owns the session.
-
-        The two backends share this one control because they share the card.
-        Which one answers is the same decision `/timebox` already made, read
-        again here rather than remembered in the button.
-        """
+        """Confirm the planning day and start the kernel session."""
         await ack()
         channel_id = (body.get("channel") or {}).get("id") or ""
         message_ts = (body.get("message") or {}).get("ts") or ""
@@ -4535,14 +4510,6 @@ def register_handlers(
         action = (body.get("actions") or [{}])[0]
         value = action.get("value") or ""
         if not (channel_id and message_ts and value):
-            return
-        if _timebox_backend() == "legacy":
-            await timeboxing_commit.handle_start_action(
-                value=value,
-                prompt_channel_id=channel_id,
-                prompt_ts=message_ts,
-                actor_user_id=actor_user_id,
-            )
             return
         await _handle_timebox_date_confirmation(
             runtime=runtime,
@@ -4656,14 +4623,6 @@ def register_handlers(
 
         if not (channel_id and message_ts and selected_date and meta_value):
             return
-        if _timebox_backend() == "legacy":
-            await timeboxing_commit.handle_day_select_action(
-                prompt_channel_id=channel_id,
-                prompt_ts=message_ts,
-                selected_date=selected_date,
-                existing_meta_value=meta_value,
-            )
-            return
         await _handle_timebox_date_reselect(
             client=client,
             logger=logger,
@@ -4673,80 +4632,12 @@ def register_handlers(
             prompt_ts=message_ts,
         )
 
-    @app.action(FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID)
-    async def on_timebox_confirm_submit_action(ack, body, client, logger):
-        """Handle Stage 5 confirm-submit button clicks."""
+    async def _on_retired_card(ack, body, client, logger):
         await ack()
-        payload = TimeboxSubmitActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_submit.handle_confirm_action(payload=payload)
+        await retired_cards.retire_card(client=client, body=body)
 
-    @app.action(FF_TIMEBOX_CANCEL_SUBMIT_ACTION_ID)
-    async def on_timebox_cancel_submit_action(ack, body, client, logger):
-        """Handle Stage 5 cancel-submit button clicks."""
-        await ack()
-        payload = TimeboxSubmitActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_submit.handle_cancel_action(payload=payload)
-
-    @app.action(FF_TIMEBOX_UNDO_SUBMIT_ACTION_ID)
-    async def on_timebox_undo_submit_action(ack, body, client, logger):
-        """Handle Stage 5 undo-submit button clicks."""
-        await ack()
-        payload = TimeboxSubmitActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_submit.handle_undo_action(payload=payload)
-
-    @app.action(FF_TIMEBOX_STAGE_PROCEED_ACTION_ID)
-    async def on_timebox_stage_proceed_action(ack, body, client, logger):
-        """Handle deterministic stage proceed button clicks."""
-        await ack()
-        payload = TimeboxingStageActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_stage_actions.handle_action(
-            payload=payload,
-            action="proceed",
-        )
-
-    @app.action(FF_TIMEBOX_STAGE_BACK_ACTION_ID)
-    async def on_timebox_stage_back_action(ack, body, client, logger):
-        """Handle deterministic stage back button clicks."""
-        await ack()
-        payload = TimeboxingStageActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_stage_actions.handle_action(
-            payload=payload,
-            action="back",
-        )
-
-    @app.action(FF_TIMEBOX_STAGE_REDO_ACTION_ID)
-    async def on_timebox_stage_redo_action(ack, body, client, logger):
-        """Handle deterministic stage redo button clicks."""
-        await ack()
-        payload = TimeboxingStageActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_stage_actions.handle_action(
-            payload=payload,
-            action="redo",
-        )
-
-    @app.action(FF_TIMEBOX_STAGE_CANCEL_ACTION_ID)
-    async def on_timebox_stage_cancel_action(ack, body, client, logger):
-        """Handle deterministic stage cancel button clicks."""
-        await ack()
-        payload = TimeboxingStageActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_stage_actions.handle_action(
-            payload=payload,
-            action="cancel",
-        )
+    for _retired_id in retired_cards.RETIRED_ACTION_IDS:
+        app.action(_retired_id)(_on_retired_card)
 
     async def _handle_constraint_review_all_action(body, client):
         action = (body.get("actions") or [{}])[0]

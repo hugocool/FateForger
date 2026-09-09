@@ -55,13 +55,13 @@
 
 - `StageReviewCommitNode` emits a `pending_submit` state; no auto-submit in the node path.
 - `PresenterNode` attaches review action blocks (confirm/cancel).
-- Slack action handlers in `handlers.py`:
-  - `ff_timebox_confirm_submit`
-  - `ff_timebox_cancel_submit`
-  - `ff_timebox_undo_submit`
-- Action bridge lives in `timeboxing_submit.py` and dispatches typed messages to `timeboxing_agent`.
-- On confirm: call `CalendarSubmitter.submit_plan()`.
-- On undo: call `CalendarSubmitter.undo_transaction()` using session-backed transaction state.
+- Retired at the Slack layer (2026-09-09): `ff_timebox_confirm_submit`, `ff_timebox_cancel_submit`
+  and `ff_timebox_undo_submit` used to reach `timeboxing_agent` through a dedicated action
+  bridge that called `CalendarSubmitter.submit_plan()` / `.undo_transaction()`. That bridge is
+  gone; `handlers.py` now answers a press on any of the seven legacy card action ids with the
+  single "this flow is retired" handler in `retired_cards.py`, so nothing in this section
+  reaches Slack any more even though the sync-engine code paths themselves still exist pending
+  the agent's own deletion.
 
 ## Testing
 
