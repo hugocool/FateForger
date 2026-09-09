@@ -221,6 +221,32 @@ async def test_classify_sends_the_rule_text_for_a_contradiction_or_an_ambiguity(
 
 
 @pytest.mark.asyncio
+async def test_classify_sends_the_clock_object() -> None:
+    """Not a model-output assertion: this is what the judge SENT, read back
+    from the same client double every other `sent[...]` assertion in this
+    file uses. `test_both_judges_are_handed_the_clock_elicit_was_given`
+    checks the stub *received* `now`; this checks the real prompt *carries*
+    it, so deleting the "clock" key from the prompt (a real regression a stub
+    cannot see) fails a test."""
+    client = _SchemaOutputClient({"why": "because", "verdict": "would_not_ask"})
+    await CoverageJudge(client).classify(
+        cell=CellRef(row="body", criterion="unclear"),
+        rules=[],
+        stated=[],
+        request=None,
+        session_key="C1:1.0",
+        now=NOW,
+        planning_day=DAY,
+    )
+    sent = json.loads(client.calls[0][0][1].content)
+    assert sent["clock"] == {
+        "now": "Tuesday 2026-09-08 10:09 Europe/Amsterdam",
+        "planning_day": "Tuesday 2026-09-08",
+        "days_until_planning_day": 0,
+    }
+
+
+@pytest.mark.asyncio
 async def test_classify_refuses_a_verdict_outside_the_schema() -> None:
     client = _SchemaOutputClient({"why": "", "verdict": "maybe"})
     with pytest.raises(ValueError):
@@ -287,6 +313,32 @@ async def test_generate_returns_a_draft_with_host_minted_option_ids() -> None:
     assert [o.effect for o in draft.options] == ["to place it", "to place it"]
     sent = json.loads(client.calls[0][0][1].content)
     assert sent["rules"][0]["description"].startswith("Eat oats")
+
+
+@pytest.mark.asyncio
+async def test_generate_sends_the_clock_object() -> None:
+    """Same shape as `test_classify_sends_the_clock_object`: what the probe
+    judge SENT, not what a stub received. This is the test that would have
+    caught fix-round-1's Step 6 gap -- deleting the "clock" key from
+    `ProbeJudge.generate`'s prompt left every deterministic test green."""
+    client = _SchemaOutputClient(
+        {"grounded": True, "question": "How long is the gym?", "why_needed": "to place it", "options": []}
+    )
+    await ProbeJudge(client).generate(
+        cell=CellRef(row="body", criterion="tacit_knowledge"),
+        rules_full=[],
+        conversation=[],
+        request=None,
+        session_key="C1:1.0",
+        now=NOW,
+        planning_day=DAY,
+    )
+    sent = json.loads(client.calls[0][0][1].content)
+    assert sent["clock"] == {
+        "now": "Tuesday 2026-09-08 10:09 Europe/Amsterdam",
+        "planning_day": "Tuesday 2026-09-08",
+        "days_until_planning_day": 0,
+    }
 
 
 @pytest.mark.asyncio
