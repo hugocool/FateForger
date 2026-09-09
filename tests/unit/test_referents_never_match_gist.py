@@ -33,6 +33,18 @@ def _gist_attribute_names(tree: ast.AST) -> list[ast.AST]:
     ]
 
 
+def _is_direct_gist_reference(node: ast.AST) -> bool:
+    """Check if node is directly self.gist or a slice of self.gist (e.g., self.gist[:N]).
+
+    Returns False if .gist appears only deeper in the expression tree.
+    """
+    if isinstance(node, ast.Attribute) and node.attr == "gist":
+        return True
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and node.value.attr == "gist":
+        return True
+    return False
+
+
 def test_no_module_in_the_package_imports_re():
     for path in PACKAGE.rglob("*.py"):
         tree = ast.parse(path.read_text())
@@ -65,9 +77,10 @@ def test_no_builtin_with_decision_logic_is_called_on_gist():
                 continue
             if func.id not in FORBIDDEN_BUILTINS:
                 continue
-            # Check if any argument reaches `.gist`
+            # Check if any argument directly reaches `.gist` or a slice of it
+            # (not when .gist appears only deeper in nested expressions)
             for arg in call.args:
-                assert not _gist_attribute_names(arg), f"{path}: {func.id}() on gist"
+                assert not _is_direct_gist_reference(arg), f"{path}: {func.id}() on gist"
 
 
 def test_the_gist_is_never_a_comparison_operand():
