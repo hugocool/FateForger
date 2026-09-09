@@ -29,11 +29,22 @@ returning `[]` for the second would erase the distinction the host's
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import BaseModel
 
-from fateforger.agents.tasks.board import Scope, TaskBoard, TaskListing, TaskRow
+if TYPE_CHECKING:  # pragma: no cover - types only, never at runtime
+    # `board` reaches out at import: it pulls the MCP streamable-http client and
+    # builds a `Settings()` at module scope, which took this module's import from
+    # 143ms to 1327ms and made a contracts module -- one the per-turn stdio
+    # children import -- transitively need the MCP client package and a
+    # constructible config to load at all (#417).
+    #
+    # Nothing here needs those names at runtime: all four appear only in
+    # signatures, `from __future__ import annotations` is on, and no pydantic
+    # field is typed by one. The adapter is handed a live `TaskBoard`; it never
+    # constructs one.
+    from fateforger.agents.tasks.board import Scope, TaskBoard, TaskListing, TaskRow
 
 Source = Literal["notion", "ticktick"]
 CandidateState = Literal["next", "waiting_for", "someday", "done"]

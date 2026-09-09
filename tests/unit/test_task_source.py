@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+import os
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -417,3 +420,37 @@ def test_the_port_uses_no_pattern_matching() -> None:
 
     assert "re" not in imported
     assert "difflib" not in imported
+
+
+def test_the_port_does_not_pull_the_board_in_at_import() -> None:
+    """`board` reaches out at import time -- it pulls the MCP streamable-http
+    client and constructs a `Settings()` at module scope -- and this module is
+    imported by `session_contracts`, which the per-turn stdio children load.
+
+    Importing it eagerly cost 1327ms against 143ms and made a pure contracts
+    module transitively require the MCP client package and a constructible
+    config in order to load at all (#417). Nothing here needs those names at
+    runtime, so they sit behind `TYPE_CHECKING`.
+
+    Asserted in a fresh interpreter over `sys.modules`, because this suite has
+    already imported `board` for its own fakes; module names are identifiers
+    this system minted, not anyone's prose.
+    """
+
+    probe = (
+        "import sys;"
+        "import fateforger.agents.tasks.task_source;"
+        "print('fateforger.agents.tasks.board' in sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "PYTHONPATH": "src"},
+    )
+
+    assert result.stdout.strip() == "False", (
+        "task_source pulled fateforger.agents.tasks.board in at import"
+    )
