@@ -130,10 +130,12 @@ def _kernel(
     )
 
 
-def _advance_request(*, expected_revision: int = 3) -> TurnRequest:
+def _advance_request(
+    *, expected_revision: int = 3, interaction_id: str = "1772.2"
+) -> TurnRequest:
     return TurnRequest(
         session_key="C1:1.0",
-        interaction_id="1772.2",
+        interaction_id=interaction_id,
         actor_user_id="U1",
         expected_revision=expected_revision,
         intent=Advance(),
