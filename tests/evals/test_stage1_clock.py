@@ -1,15 +1,25 @@
 """Does a Stage 1 probe respect the clock it was given? (#412)
 
+**This eval is informational, not the regression gate.** The regression gate
+for the clock mechanism is the two deterministic unit tests --
+`tests/unit/test_elicitation_judges.py::test_both_judges_are_handed_the_clock_elicit_was_given`
+(the judges receive `now`) and
+`::test_generate_sends_the_clock_object` / `::test_classify_sends_the_clock_object`
+(the real prompt carries it) -- which fail unconditionally and immediately if
+the clock stops reaching a prompt, with no model call and no sampling noise.
+This file hits a real model to ask a harder question -- does having the
+clock change what the probe actually SAYS -- and fix round 2 downgraded most
+of it from assertion to measurement once the arithmetic showed why (below).
+What is still asserted here: `assert relevant` (the eval is not vacuous --
+this scored 8/8 on every aware run) and `COMMITS_TO_STALE_TIME_CEILING` (the
+literal shape of the live bug -- asking the person to commit to the stale
+09:30 as though still reachable -- scored 0/56 across every resample, so
+this ceiling has negligible false-fail risk and is a real gate).
+
 Live on 2026-09-08 at 10:09 the user said "im going to my own office in 2
 hours, so thats a 30 minute commute." and the probe that came back asked
 "Will you be at your office by 9:30 AM to start work?" -- forty minutes in
-the past relative to when the person was speaking. Task 2 gives `elicit` a
-required `now` and threads it into both judges; this eval is the one
-instrument that checks the fix actually changes what the probe SAYS, not
-just what arguments it was called with (that plumbing is
-`tests/unit/test_elicitation_judges.py::test_both_judges_are_handed_the_clock_elicit_was_given`,
-and the sent-prompt content is
-`tests/unit/test_elicitation_judges.py::test_generate_sends_the_clock_object`).
+the past relative to when the person was speaking.
 
 **Fix round 1 rewrote this file twice.**
 
@@ -53,44 +63,51 @@ were still reachable -- which is what produced the live bug. Design:
    run concurrently (CLAUDE.md: independent judgements, one round trip):
    - relevance -- is this question about the tension between the 09:30 work
      start and the office trip the person just described? Only relevant
-     probes count toward the rate.
-   - the discriminator (the primary, POSITIVE gate) -- does the question
-     correctly reflect that 09:30 is no longer reachable today (by naming a
-     later moment, or by raising the conflict itself), or does it still
-     treat 09:30 as live and askable, or does it name no moment at all? At
-     least `CORRECT_TIMING_FLOOR` of the relevant probes must
-     `reflects_correct_timing`. A positive floor cannot be minimised by
-     silence: `no_moment_named` does not count toward it. Silence is not
-     rare here -- it is the majority outcome on both sides, see below -- but
-     unlike Version 2's negative metric, this floor cannot be satisfied by
-     more of it.
-   - a safety floor -- does the question ask the person to *commit to or
+     probes count toward the rate. `assert relevant` (below) is the one
+     assertion this question backs.
+   - the discriminator -- does the question correctly reflect that 09:30 is
+     no longer reachable today (by naming a later moment, or by raising the
+     conflict itself), does it still treat 09:30 as live and askable, or
+     does it name no moment at all? **Measured and printed every run, not
+     asserted (fix round 2) -- see `COMMITS_TO_STALE_TIME_CEILING`'s comment
+     below for the arithmetic that demoted it.**
+   - a safety question -- does the question ask the person to *commit to or
      assume* they can still make the 09:30 start, treating it as live?
      ("commit to or assume", not "name or refer to" -- a question can name
      09:30 correctly, to flag the conflict, without asking the person to
-     plan around it as though it still held.)
+     plan around it as though it still held.) This backs
+     `COMMITS_TO_STALE_TIME_CEILING`, the one quality assertion still gated.
 3. Never parses a time out of the probe text itself -- that is the exact
    string/keyword matching CLAUDE.md bans. All three questions go to the
    non-contender model (the pro pin, never the judges' own lineage).
 
-`CORRECT_TIMING_FLOOR = 1`: this model mostly answers this exact cell/rule
-pair with a safe, generic open question regardless of the clock ("What time
-will you arrive at the office?"), so explicit correct-timing phrasing
-("Will you still need to start work at 09:30 even though you'll arrive
-around 12:39?") is a minority behaviour on both sides. Resampled four times
-aware, three times blind (source edit, not a mock -- `"clock": _clock(now,
-planning_day)` physically removed from `ProbeJudge.generate`'s prompt for
-the blind runs and restored after): aware scored 1/8, 1/8, 2/8, **0/8**;
-blind scored 0/6, 0/7, 1/7. The true rate is roughly 12% aware, 5% blind --
-directionally real, but low enough that a binomial at n=8 has a real chance
-of landing on zero for the *correct* code too, and the fourth aware resample
-did exactly that. A floor of 1 is therefore not a guarantee this test never
-fails a correct build; it is the number that matches the honestly-measured
-rate, reported without rounding up the way CLAUDE.md's resampling section
-asks (a rate from one draw is luck, not behaviour -- and at this rate,
-neither is a rate from eight). See the fix report for all seven runs' raw
-probes and for why this residual flakiness was reported to the reviewer
-rather than hidden behind a rerun.
+**Fix round 2 demoted the discriminator's floor to a measurement.** The
+constant it used to gate (`CORRECT_TIMING_FLOOR = 1`) is gone; the finding
+that replaced it lives as a comment on `COMMITS_TO_STALE_TIME_CEILING`
+below, with the full arithmetic. Short version: resampled four times aware,
+three times blind (source edit, not a mock -- `"clock":
+_clock(now, planning_day)` physically removed from `ProbeJudge.generate`'s
+prompt for the blind runs and restored after), `reflects_correct_timing`
+measured 4/32 relevant probes aware (~12%) against 1/20 blind (~5%). At
+those rates, no sample size a CI would pay for gets both the false-fail and
+false-pass rate under 5% -- n=8/k=1 (what round 1 shipped) is 34.4%
+false-fail and 33.7% false-pass; n=200/k=16 (800 model calls a run) is the
+first pair both under 5%. Two more reasons beyond the arithmetic: only 2 of
+the 4 aware hits contain clock-derived arithmetic ("around 12:39", "at
+12:09" -- the other 2 are producible from the rule and the statement alone,
+no clock math visible in the text); and the discriminator itself
+mislabelled one blind draw ("What time will you arrive at your office?"
+scored `reflects_correct_timing` once and `no_moment_named` roughly twenty
+other times for the identical sentence) -- a labeller error rate on the
+order of the entire blind-side signal being gated on. See the fix report
+for all seven runs' raw probes.
+
+A candidate for a *future* gate, not validated this round: whether the
+probe refers to the 09:30 rule's time *at all* (mentions it, asks about it,
+proposes around it -- direction not classified), which a re-review of the
+same seven runs put at 5/32 aware vs 0/24 blind -- more promising, but it
+needs its own resampled validation and would need pairing with
+`COMMITS_TO_STALE_TIME_CEILING` to stay a positive-only signal.
 
 A comparative (paired) design was tried first, hoping a relative "which
 probe better shows the timing" judgement would be less noisy than the
@@ -142,24 +159,43 @@ from tests.fixtures.stage1.days import FixtureDay, rows_for
 pytestmark = pytest.mark.slow
 
 N = 8
-#: Lower bound: at least this many of the *relevant* probes (not all N) must
-#: correctly reflect that 09:30 is no longer reachable. This model mostly
-#: answers this cell/rule pair with a safe, generic open question ("What
-#: time will you arrive at the office?") whether or not it was given the
-#: clock -- explicit correct-timing phrasing ("Will you still need to start
-#: work at 09:30 today?") is a minority behaviour either way. But it is a
-#: *reproducible* minority: two aware runs both scored 1/8, and two blind
-#: runs (break-it-on-purpose, clock key removed from the probe prompt) both
-#: scored 0 -- 0/6 and 0/7. A floor of 1 is modest, but it is the number
-#: every aware run cleared and every blind run failed across four resamples,
-#: which is a real, resampled collapse (CLAUDE.md: a rate from one draw is
-#: luck, not behaviour) rather than a threshold picked to make one run pass.
-#: See the fix report for all four runs' raw probes.
-CORRECT_TIMING_FLOOR = 1
+#: FINDING, not a gate (fix round 2; see the fix report for the full
+#: re-review). `reflects_correct_timing` measured 4/32 relevant probes aware
+#: (p~=.125) against 1/20 blind (p~=.05) across seven resamples. At those
+#: rates no affordable n separates the conditions: n=8/k=1 is 34.4%
+#: false-fail and 33.7% false-pass; raising n while holding k=1 makes it
+#: worse (n=24/k=1 is 70.8% false-pass); n=24/k=2 is still 18%/34%; the first
+#: pair both under 5% is n=200/k=16 -- 800 model calls a run. Two more
+#: reasons this was demoted rather than tuned harder: of the 4 aware hits,
+#: only 2 contain arithmetic the clock alone can produce -- "around 12:39"
+#: and "at 12:09" (aware run 3, draws 5 and 7) -- the other 2 ("Will you
+#: still need to start work at 09:30, or will you adjust the start time
+#: given your planned office visit?", aware run 1 draw 2; "Will you still
+#: need to start work at 09:30 today?", aware run 2 draw 2) are producible
+#: from the rule and the statement alone, with no clock arithmetic in them;
+#: restricted to clock-derived output the rate is 2/32 vs 1/20, which is
+#: nothing. And the discriminator itself mislabelled one blind draw: "What
+#: time will you arrive at your office?" scored `reflects_correct_timing`
+#: once (blind run 3, draw 1) and `no_moment_named` roughly twenty other
+#: times for the identical sentence -- a labeller error rate on the order of
+#: the entire blind-side signal being gated on. The measurement stays (it is
+#: a real instrument and the print below reports it every run); only the
+#: assertion is gone. A candidate for a future gate, not validated this
+#: round: whether the probe refers to the 09:30 rule's time *at all*
+#: (mentions it, asks about it, proposes around it -- not classified by
+#: direction), which the re-review's read of the same seven runs put at
+#: 5/32 aware vs 0/24 blind. That needs its own resampled validation and
+#: would need pairing with the commits-ceiling below to stay a positive
+#: signal; out of scope for this round.
+#:
 #: At most this many of N may ask the person to commit to or assume they can
-#: still make the 09:30 start. Not zero: one borderline draw is not proof of
-#: failure the way a majority would be.
-COMMITS_TO_STALE_TIME_FLOOR = 1
+#: still make the 09:30 start -- the literal shape of the live bug ("Will
+#: you be at your office by 9:30 AM?"). This ceiling stays a real gate: 0/56
+#: across all seven resamples (four aware, three blind), so its false-fail
+#: rate is negligible, and it directly guards the harm rather than a
+#: correlate of it. Not zero: one borderline draw is not proof of failure
+#: the way a majority would be.
+COMMITS_TO_STALE_TIME_CEILING = 1
 
 #: The exact moment and statement from the live incident (#412).
 NOW = datetime(2026, 9, 8, 10, 9, tzinfo=ZoneInfo("Europe/Amsterdam"))
@@ -364,9 +400,20 @@ def test_probe_reflects_that_0930_is_no_longer_reachable(api_key) -> None:
     """The live bug (#412): a rule fixes work at 09:30; at 10:09 the person
     says they leave in 2 hours, 30-minute commute -- arrival is ~12:39, well
     past 09:30. Eight direct draws of the probe judge for exactly this
-    cell/rule pair; among the ones relevant to the conflict, most must
-    correctly reflect that 09:30 is gone, and at most one may ask the person
-    to commit to it as though it still held.
+    cell/rule pair.
+
+    Informational, not a quality gate (fix round 2): `reflects_correct_timing`
+    is measured and printed every run, but not asserted -- see the module
+    docstring and `COMMITS_TO_STALE_TIME_CEILING`'s comment for why no
+    affordable sample size separates it from the labeller's own noise at the
+    measured rate. What IS still asserted: at least one probe must be
+    relevant (the eval is not vacuous), and at most
+    `COMMITS_TO_STALE_TIME_CEILING` may ask the person to commit to the
+    stale 09:30 start as though it still held -- the literal shape of the
+    live bug, and the one property this design measured with negligible
+    false-fail risk (0/56 across every resample). The deterministic
+    `sent["clock"]` unit tests in `tests/unit/test_elicitation_judges.py`
+    are the regression gate for the clock mechanism itself.
     """
     contender = _contender()
     _refuse_shared_lineage(contender)
@@ -392,25 +439,26 @@ def test_probe_reflects_that_0930_is_no_longer_reachable(api_key) -> None:
         print(f"  draw {index}: {d}")
 
     assert relevant, "no probe was judged relevant to the 09:30 conflict across 8 draws -- the eval measured nothing"
-    assert correct >= CORRECT_TIMING_FLOOR, (
-        f"only {correct}/{len(relevant)} relevant probes correctly reflected that 09:30 "
-        f"is no longer reachable (floor {CORRECT_TIMING_FLOOR}) -- the probe judge is not "
-        "using the clock it was given"
-    )
-    assert committed <= COMMITS_TO_STALE_TIME_FLOOR, (
+    # `reflects_correct_timing` (printed above, `correct`/`len(relevant)`) is
+    # deliberately not asserted -- see the module docstring and the comment
+    # on `COMMITS_TO_STALE_TIME_CEILING` for the arithmetic (fix round 2).
+    assert committed <= COMMITS_TO_STALE_TIME_CEILING, (
         f"{committed}/{N} probes asked the person to commit to the stale 09:30 start"
     )
 
 
 def test_the_whole_loop_lands_a_probe_somewhere_sensible(store_copy) -> None:
-    """One real pass through `elicit()`, for realism -- no quality gate.
+    """One real pass through `elicit()`, for realism -- not a quality gate on
+    what the probes say.
 
     Fix round 1's first eval ran the whole loop and gated on it directly: a
     relevant probe fell out of the top `generate_for` cells in only 1 of 8
     draws, because most of the matrix's other open cells rank ahead of it.
     That made the gated measure above call the judge directly instead. This
-    is kept as an unassessed smoke check that the loop still produces
-    *something* end to end against the real store.
+    is kept as a smoke check that the loop still produces *something* end to
+    end against the real store -- unassessed on content, but not vacuous:
+    it must produce at least one probe (fix round 2), since a loop that
+    silently drafted zero would otherwise still print and pass.
     """
     rows = rows_for(store_copy, DAY)
     contender = _contender()
@@ -421,6 +469,7 @@ def test_the_whole_loop_lands_a_probe_somewhere_sensible(store_copy) -> None:
 
     result = asyncio.run(one())
     print(f"\nsmoke: {len(result.probes)} probes drafted; cells={[p.cell_id for p in result.probes]}")
+    assert result.probes, "elicit() drafted zero probes end to end -- the smoke check measured nothing"
 
 
 def _snapshot() -> PlanningSessionSnapshot:
