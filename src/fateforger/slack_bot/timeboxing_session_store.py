@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -55,6 +56,24 @@ class _StoredSessionEnvelope(BaseModel):
     envelope_version: Literal[1] = 1
     snapshot: PlanningSessionSnapshot
     outcomes: dict[str, TurnOutcome]
+
+
+class StandingSessionRow(BaseModel):
+    """One session that stands, from the indexed columns plus its plan's gist.
+
+    `gist` is the only part that reads `snapshot_json`, and it is read to be
+    *shown to a judge*, never compared. The row set is single digits, so the
+    cost of loading those snapshots is bounded.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    session_key: str
+    status: str
+    planning_date: date | None
+    updated_at: datetime
+    revision: int
+    gist: tuple[str, ...] = ()
 
 
 class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
@@ -246,6 +265,64 @@ class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
             open_session_key=open_key, committed_session_key=committed_key
         )
 
+    async def standing_rows(
+        self,
+        *,
+        owner_user_id: str,
+        as_of: datetime,
+        open_within: timedelta,
+        horizon: timedelta,
+    ) -> list[StandingSessionRow]:
+        """Which sessions stand for this owner AT `as_of`.
+
+        Same predicate family as `standing_for`, which answers this for the
+        nudger and returns keys. This returns rows a catalog can describe.
+
+        `created_at < as_of` keeps a row the current message minted out of its
+        own catalog. `updated_at` is written naive UTC by `save`, so both bounds
+        are compared in that basis.
+        """
+        moment = as_of.astimezone(UTC).replace(tzinfo=None)
+        since = moment - open_within
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(
+                    _TimeboxingSessionState.session_key,
+                    _TimeboxingSessionState.status,
+                    _TimeboxingSessionState.planning_date,
+                    _TimeboxingSessionState.updated_at,
+                    _TimeboxingSessionState.revision,
+                    _TimeboxingSessionState.snapshot_json,
+                )
+                .where(
+                    _TimeboxingSessionState.owner_user_id == owner_user_id,
+                    _TimeboxingSessionState.created_at < moment,
+                    or_(
+                        (_TimeboxingSessionState.status == "open")
+                        & (_TimeboxingSessionState.updated_at >= since),
+                        (_TimeboxingSessionState.status == "committed")
+                        & (_TimeboxingSessionState.planning_date >= moment.date())
+                        & (
+                            _TimeboxingSessionState.planning_date
+                            <= (moment + horizon).date()
+                        ),
+                    ),
+                )
+                .order_by(_TimeboxingSessionState.updated_at.desc())
+            )
+            rows = result.all()
+        return [
+            StandingSessionRow(
+                session_key=key,
+                status=status,
+                planning_date=planning_date,
+                updated_at=updated_at,
+                revision=revision,
+                gist=_plan_gist(snapshot_json),
+            )
+            for key, status, planning_date, updated_at, revision, snapshot_json in rows
+        ]
+
     async def open_sessions(self, *, owner_user_id: str) -> list[OpenSessionRow]:
         """Every open session this user holds, newest save first.
 
@@ -369,4 +446,38 @@ def _day_frame(snapshot: PlanningSessionSnapshot) -> dict | None:
     return None
 
 
-__all__ = ["SqlAlchemyTimeboxingSessionRepository"]
+def _plan_gist(snapshot_json: str) -> tuple[str, ...]:
+    """A few of the plan's own block titles, with their times.
+
+    Read from the latest validated candidate's rendered block table, whose
+    columns are `H,own,type,summary,ST,ET,mode,dur` -- a table this system
+    generated, so taking the summary and the two clocks out of it is arithmetic
+    over our own format and not a reading of anything the user wrote. Anything
+    unparseable yields no gist rather than a guess.
+    """
+    try:
+        envelope = json.loads(snapshot_json)
+        artifacts = envelope["snapshot"]["artifacts"]
+    except (ValueError, KeyError, TypeError):
+        return ()
+    rendered = next(
+        (
+            artifact.get("payload", {}).get("rendered")
+            for artifact in reversed(artifacts)
+            if artifact.get("kind") == "validated_candidate"
+        ),
+        None,
+    )
+    if not isinstance(rendered, str):
+        return ()
+    entries: list[str] = []
+    for line in rendered.splitlines()[1:]:  # first line is the column header
+        fields = line.split(",")
+        if len(fields) < 6:
+            continue
+        summary, start, end = fields[3], fields[4], fields[5]
+        entries.append(f"{summary} {start}-{end}")
+    return tuple(entries)
+
+
+__all__ = ["SqlAlchemyTimeboxingSessionRepository", "StandingSessionRow"]
