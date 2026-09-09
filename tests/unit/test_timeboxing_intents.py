@@ -125,7 +125,9 @@ async def test_proceed_during_capture_becomes_advance() -> None:
     intent = await interpreter.interpret("you plan those things", snapshot)
 
     assert intent == Advance()
-    assert client.calls[0][1] is InterpretedTimeboxTurn
+    # A narrowed rebuild, never the base itself: what this guards is that
+    # a state with nothing on offer cannot express a choice at all.
+    assert "option_id" not in client.calls[0][1].model_fields
 
 
 @pytest.mark.asyncio
@@ -520,7 +522,7 @@ async def test_a_typed_choice_can_only_name_an_option_that_was_offered() -> None
 
     schema = client.calls[0][1]
     assert schema is not InterpretedTimeboxTurn
-    assert issubclass(schema, InterpretedTimeboxTurn)
+    assert "option_id" in schema.model_fields
     with pytest.raises(ValidationError):
         schema.model_validate_json(
             json.dumps({"decision": "choose_option", "option_id": "Gym first"})
@@ -550,7 +552,9 @@ async def test_an_open_question_still_has_nothing_to_choose_from() -> None:
     with pytest.raises(ValueError):
         await interpreter.interpret("the first one", _blocker_snapshot([]))
 
-    assert client.calls[0][1] is InterpretedTimeboxTurn
+    # A narrowed rebuild, never the base itself: what this guards is that
+    # a state with nothing on offer cannot express a choice at all.
+    assert "option_id" not in client.calls[0][1].model_fields
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
         '"allowed_decisions":["provide_facts","back","cancel"]'
@@ -567,7 +571,9 @@ async def test_choosing_is_not_offered_when_no_question_is_open() -> None:
     with pytest.raises(ValueError):
         await interpreter.interpret("the first one", _capture_snapshot())
 
-    assert client.calls[0][1] is InterpretedTimeboxTurn
+    # A narrowed rebuild, never the base itself: what this guards is that
+    # a state with nothing on offer cannot express a choice at all.
+    assert "option_id" not in client.calls[0][1].model_fields
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
         '"allowed_decisions":["provide_facts","back","cancel"]'
@@ -607,7 +613,7 @@ async def test_a_typed_vacation_locks_the_day_as_a_user_override() -> None:
     """
 
     client = _SchemaOutputClient(
-        {"decision": "confirm_planning_day", "day_type": "vacation", "facts": []}
+        {"decision": "confirm_planning_day", "day_type": "vacation"}
     )
     interpreter = TimeboxingIntentInterpreter(client)
 
@@ -635,7 +641,7 @@ async def test_saying_nothing_about_the_day_keeps_the_weekday_the_host_derived()
     anything.
     """
 
-    client = _SchemaOutputClient({"decision": "confirm_planning_day", "facts": []})
+    client = _SchemaOutputClient({"decision": "confirm_planning_day"})
     interpreter = TimeboxingIntentInterpreter(client)
 
     intent = await interpreter.interpret("yes, that day", _date_stage_snapshot())
@@ -663,7 +669,7 @@ async def test_the_date_stage_offers_confirmation_and_never_the_date() -> None:
     and it drifted because a model named a date -- not because it saw one.
     """
 
-    client = _SchemaOutputClient({"decision": "confirm_planning_day", "facts": []})
+    client = _SchemaOutputClient({"decision": "confirm_planning_day"})
     interpreter = TimeboxingIntentInterpreter(client)
 
     await interpreter.interpret("go on then", _date_stage_snapshot())

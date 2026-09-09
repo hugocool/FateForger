@@ -82,28 +82,95 @@ class SurfaceView(_StrictModel):
     context: dict[str, object] = Field(default_factory=dict)
 
 
-def narrow_schema(base: type[T], options: tuple[BlockerOption, ...]) -> type[T]:
-    """Narrow one turn's schema to exactly the answers that were offered.
+#: Which fields each decision can fill. Keys are decision names this system
+#: minted, not user content -- the pattern rule exempts identifiers we own.
+#: A field claimed by no allowed decision is one the model must still emit as
+#: null on every call, because strict structured output requires every
+#: property. Measured 2026-09-06: 42% of answers were a decision and six nulls.
+_FIELDS_BY_DECISION: dict[str, frozenset[str]] = {
+    "provide_facts": frozenset({"facts"}),
+    "revise": frozenset({"facts", "revision_instruction"}),
+    "confirm_planning_day": frozenset({"day_type", "day_offset"}),
+    "steer_not_today": frozenset({"facts", "constraint_uid"}),
+    "restore": frozenset({"constraint_uid"}),
+    "deny": frozenset({"assumption_id"}),
+    "update_time": frozenset({"selected_time"}),
+    "update_time_and_add": frozenset({"selected_time"}),
+    CHOOSE_OPTION: frozenset({"option_id"}),
+}
+
+
+def _narrow_fields(base: type[T], allowed_decisions: tuple[str, ...]) -> type[T]:
+    """Drop every field no allowed decision can fill.
+
+    Rebuilt without ``__base__``: inheriting the parent would carry its fields
+    along, and removal is the whole point. Each surviving field keeps the
+    annotation and the ``FieldInfo`` ``base`` declared -- ``Clock``'s validator
+    and ``day_offset``'s bounds are correctness, not decoration -- and the new
+    model carries ``base``'s own config, so strictness travels too.
+    """
+
+    retained = {"decision"}
+    for decision in allowed_decisions:
+        # A lookup over decision names, and only over the ones `base` actually
+        # declares: a map entry for a field another surface's schema owns is a
+        # no-op here rather than an error.
+        retained |= _FIELDS_BY_DECISION.get(decision, frozenset())
+    retained &= set(base.model_fields)
+    if retained == set(base.model_fields):
+        return base
+    return create_model(  # type: ignore[call-overload]
+        f"{base.__name__}Narrowed",
+        __config__=base.model_config,
+        # Equality, not `in`: an AST test bans every membership operator in
+        # this module, because one over user text would be the banned
+        # judgement. The module's other comparisons read the same way.
+        **{
+            name: (info.annotation, info)
+            for name, info in base.model_fields.items()
+            if any(name == kept for kept in retained)
+        },
+    )
+
+
+def narrow_schema(
+    base: type[T],
+    options: tuple[BlockerOption, ...],
+    *,
+    allowed_decisions: tuple[str, ...] | None = None,
+) -> type[T]:
+    """Narrow one turn's schema to exactly what this state can express.
+
+    Two narrowings, same reason: the model should not be offered a decision the
+    state disallows, and should not be made to emit a field no allowed decision
+    can fill. `allowed_decisions=None` narrows no fields, so a caller that has
+    not opted in keeps the full schema.
 
     Where nothing was offered there is nothing to choose, and the base schema
     cannot express a choice at all.
+
+    The order matters: the option narrowing adds ``option_id``, so it runs
+    first and the field pass then sees a field ``CHOOSE_OPTION`` claims.
     """
 
-    if not options:
-        return base
-    decisions = (
-        CHOOSE_OPTION,
-        *get_args(base.model_fields["decision"].annotation),
-    )
-    return create_model(  # type: ignore[call-overload]
-        f"{base.__name__}WithOptions",
-        __base__=base,
-        decision=(Literal[decisions], ...),
-        option_id=(
-            Literal[tuple(option.option_id for option in options)] | None,
-            None,
-        ),
-    )
+    narrowed = base
+    if options:
+        decisions = (
+            CHOOSE_OPTION,
+            *get_args(base.model_fields["decision"].annotation),
+        )
+        narrowed = create_model(  # type: ignore[call-overload]
+            f"{base.__name__}WithOptions",
+            __base__=base,
+            decision=(Literal[decisions], ...),
+            option_id=(
+                Literal[tuple(option.option_id for option in options)] | None,
+                None,
+            ),
+        )
+    if allowed_decisions is None:
+        return narrowed
+    return _narrow_fields(narrowed, allowed_decisions)
 
 
 GENERIC_PREAMBLE = """You interpret one user reply against a proposal the assistant is showing.
@@ -146,12 +213,16 @@ class SurfaceIntentInterpreter:
             raise SurfaceIntentError(
                 f"the {view.surface_kind} does not accept another intent"
             )
-        narrowed = narrow_schema(schema, view.offered_options)
         allowed = tuple(view.allowed_decisions)
         if view.offered_options and not any(
             item == CHOOSE_OPTION for item in allowed
         ):
             allowed = (*allowed, CHOOSE_OPTION)
+        # After `allowed` is final: a state with options has just gained
+        # CHOOSE_OPTION, which is what keeps `option_id` in the schema.
+        narrowed = narrow_schema(
+            schema, view.offered_options, allowed_decisions=allowed
+        )
         payload: dict[str, object] = {
             "surface": view.surface_kind,
             "display_state": view.display_state,
