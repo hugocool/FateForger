@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -521,6 +521,19 @@ def test_a_naive_clock_is_refused_before_any_judge_runs() -> None:
     judges = _judges({"elicit.body.unclear": "uncovered"})
     with pytest.raises(ValueError, match="tz-aware"):
         _run(_snapshot(), judges, now=datetime(2026, 9, 8, 10, 9))
+    assert judges.coverage.asked == []
+
+
+def test_a_clock_in_the_wrong_zone_is_refused_before_any_judge_runs() -> None:
+    """Tz-aware is not the same promise as 'in the planning timezone': a
+    `now` in UTC passes the naive-clock check above and then has its wall
+    hour -- 08:09, not 10:09 -- rendered straight into both judges' prompts
+    by `_clock`, resolving 'in 2 hours' from the wrong hour silently. That
+    is the #412 regression again, just past the door instead of caught at
+    it, so the zone itself is checked, not only its presence."""
+    judges = _judges({"elicit.body.unclear": "uncovered"})
+    with pytest.raises(ValueError, match="Europe/Amsterdam"):
+        _run(_snapshot(), judges, now=datetime(2026, 9, 8, 8, 9, tzinfo=timezone.utc))
     assert judges.coverage.asked == []
 
 

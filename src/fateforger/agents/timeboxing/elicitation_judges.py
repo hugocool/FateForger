@@ -590,6 +590,20 @@ async def elicit(
         raise ValueError("elicit needs a tz-aware `now` in the planning timezone")
     if snapshot.planning_day is None:
         raise ValueError("elicit needs a locked planning day")
+    # The message above promises "in the planning timezone", not merely
+    # tz-aware: a `now` in UTC (or any other zone) passes the check above
+    # and then has its wall-clock hour rendered straight into both judges'
+    # prompts by `_clock`, so "in 2 hours" resolves from the wrong hour
+    # silently -- the exact #412 regression, just not caught at the door.
+    # `now_zone`/`planning_day.timezone` are identifiers this system minted
+    # (an IANA key from `zoneinfo.ZoneInfo`, and the string the host locked
+    # the day with), so comparing them is arithmetic, not a judgement.
+    now_zone = getattr(now.tzinfo, "key", None)
+    if now_zone != snapshot.planning_day.timezone:
+        raise ValueError(
+            "elicit needs `now` in the planning day's timezone "
+            f"({snapshot.planning_day.timezone!r}), got {now_zone!r}"
+        )
     day = snapshot.planning_day.date
     suspended = _suspended_uids(snapshot)
     live_rows = [row for row in rows if str(row.get("uid")) not in suspended]

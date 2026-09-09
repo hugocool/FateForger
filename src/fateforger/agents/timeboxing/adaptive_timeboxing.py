@@ -643,7 +643,6 @@ class AdaptiveTimeboxing:
         await progress_sink.emit(
             {"phase": "resolving_context", "status": "started"}
         )
-        readiness = self._requirements.evaluate(target, snapshot)
         try:
             resolved = await self._context.resolve(
                 snapshot,

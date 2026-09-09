@@ -491,9 +491,18 @@ async def test_no_turn_asks_the_user_for_a_planner_owned_placement() -> None:
     copy was reworded, and it would miss the regression that matters -- the
     catalog quietly reclassifying the requirement. Pinning the ownership and
     then asserting over IDs catches both halves.
+
+    `"incident"` asks nothing at all now that Stage 1 runs first (#411) --
+    its capture turn's facts already satisfy the one hard user gap, so
+    `asked` there is the empty set and `isdisjoint` against anything holds
+    unconditionally, catching nothing. `"hard_conflict"` is the one scenario
+    in this fixture where a question IS asked (`skeleton.requested_activity`,
+    user-owned), so `asked` is non-empty and this assertion has something to
+    fail against if the catalog ever reclassified that requirement, or any
+    other, as planner- or system-owned while still asking for it.
     """
 
-    run = await replay_scenario("incident")
+    run = await replay_scenario("hard_conflict")
     owners = requirement_owners(run.snapshot)
 
     assert owners["skeleton.ordinary_placement"] is RequirementOwner.PLANNER
