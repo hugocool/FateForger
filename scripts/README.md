@@ -216,11 +216,6 @@ For the active durable-memory runtime path, start Neo4j + Graphiti MCP from the 
 docker compose up -d neo4j graphiti-mcp
 ```
 
-Or use the infra-only stack:
-
-```bash
-docker compose -f infra/docker-compose.yml up -d neo4j graphiti-mcp
-```
 
 Expected local endpoints:
 

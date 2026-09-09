@@ -560,7 +560,8 @@ poetry run python scripts/dev/timebox_log_query.py llm --log-path logs/llm_io_20
 - `NOTION_TIMEBOXING_PARENT_PAGE_ID`: parent page where DBs are installed/reused.
 
 ## Local run (dev)
-- Canonical stack is `docker-compose.yml` at repo root (the `infra/docker-compose-2.yml` file is legacy).
+- The stack is `docker-compose.yml` at repo root, and it is the only compose file for it.
+  It pins `name: admonish-1`, so volumes keep one set of names no matter where you run it from.
 - VS Code tasks in `.vscode/tasks.json` start the stack (`FateForger: Compose Up (Core)` / `FateForger: Compose Up (Everything)`).
 
 ## Testing and test suite upkeep
