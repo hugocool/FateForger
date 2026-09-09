@@ -20,6 +20,10 @@ PACKAGE = Path(referents_pkg.__file__).parent
 #: passing it along. `in`/`sorted`/`.lower()` over a title is the shape.
 FORBIDDEN_METHODS = {"lower", "upper", "casefold", "strip", "split", "startswith", "endswith", "find", "index", "replace"}
 
+#: Built-in functions that make decisions about content and must not be called on gist.
+#: Excluded: list, tuple, iter (these are plumbing that pass values through unchanged).
+FORBIDDEN_BUILTINS = {"sorted", "any", "all", "max", "min", "sum", "set"}
+
 
 def _gist_attribute_names(tree: ast.AST) -> list[ast.AST]:
     return [
@@ -52,6 +56,20 @@ def test_no_string_method_is_called_on_anything_reached_through_gist():
             assert not _gist_attribute_names(func.value), f"{path}: {func.attr} on gist"
 
 
+def test_no_builtin_with_decision_logic_is_called_on_gist():
+    for path in PACKAGE.rglob("*.py"):
+        tree = ast.parse(path.read_text())
+        for call in (n for n in ast.walk(tree) if isinstance(n, ast.Call)):
+            func = call.func
+            if not isinstance(func, ast.Name):
+                continue
+            if func.id not in FORBIDDEN_BUILTINS:
+                continue
+            # Check if any argument reaches `.gist`
+            for arg in call.args:
+                assert not _gist_attribute_names(arg), f"{path}: {func.id}() on gist"
+
+
 def test_the_gist_is_never_a_comparison_operand():
     for path in PACKAGE.rglob("*.py"):
         tree = ast.parse(path.read_text())
@@ -66,10 +84,11 @@ def test_the_package_imports_no_slack():
     for path in PACKAGE.rglob("*.py"):
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
-            module = (
-                node.module
-                if isinstance(node, ast.ImportFrom)
-                else None
-            )
-            if module:
-                assert "slack" not in module.split("."), f"{path}: imports {module}"
+            if isinstance(node, ast.Import):
+                # Check plain imports like `import slack_sdk` or `import slack.client`
+                for alias in node.names:
+                    assert "slack" not in alias.name, f"{path}: imports {alias.name}"
+            if isinstance(node, ast.ImportFrom):
+                # Check from imports like `from slack_sdk import ...`
+                if node.module:
+                    assert "slack" not in node.module, f"{path}: imports from {node.module}"
