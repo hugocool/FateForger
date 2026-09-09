@@ -37,9 +37,12 @@ artifact kind.
 
 **Task marshalling** (backlog refinement — inbox zero, close-out, tomorrow preview with 1–3
 MITs, stale purge, brain dump) is a *separate step before timeboxing*. Stage 2 consumes its
-output; it does not perform it. In this spec stage 2 reads what the user types. A "from your
-board" section exists on the stage-2 card from the first increment and is empty until Notion
-and TickTick are wired (own grilling ticket on map C, filed alongside this spec).
+output; it does not perform it. In this spec stage 2 reads what the user types. This spec
+planned a "from your board" section for the stage-2 card once Notion was wired
+(own grilling ticket on map C, filed alongside this spec). **#401 puts it on the stage-1
+context panel instead**, beside the resolved `work` line: the board's candidates and the
+resolved refs are two halves of one thing — what the board offered, and what was taken from
+it — and splitting them across a card and a panel would make the reader assemble them.
 
 ## Research that shaped stage 1 and stage 2
 
@@ -373,8 +376,9 @@ them and says so in its own plan.
 `StageCard`, renderer, mappers for all kinds, receipts, `GoBack` in the kernel, `SkeletonPayload`,
 card registry, control-table `back`. Stage 2 is a thin "2/5 Priorities" card built straight from
 the `AwaitingUser` turn outcome, not from a `captured_inputs` artifact the kernel does not mint:
-`decided` = requested activities, an empty "from your board" section, Proceed/Back/Cancel. No
-drill-down yet.
+`decided` = requested activities, Proceed/Back/Cancel. No drill-down yet, and no "from your
+board" section — see *The five stages*, above: that section landed on the stage-1 context
+panel under #401, not on this card.
 
 **B — depth.** Stage 1 first (#262, #260): context section fed from `applicable_constraints`
 and `calendar_snapshot`, per-item steer controls, the "this day / always" blocker, the
@@ -390,8 +394,10 @@ Each increment is its own implementation plan.
 
 ## Out of scope
 
-- Notion and TickTick as a task backend (own grilling ticket, map C). Stage 2's "from your
-  board" section is the consumer and stays empty until then.
+- TickTick as a task backend remains out of scope; the `TaskSource` port #401 introduced
+  admits it but nothing implements it. Notion landed as the first backend under #401, and its
+  board section is on the stage-1 context panel, not on stage 2 (see *The five stages*,
+  above).
 - A revision's *quality* loop at stage 4 (diffing the redraft against the previous candidate,
   steering by block); the kernel semantics landed in increment A.
 - Task marshalling as a session.
