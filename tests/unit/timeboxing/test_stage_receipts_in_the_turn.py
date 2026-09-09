@@ -351,21 +351,14 @@ async def test_a_skeleton_older_than_its_contract_fails_the_turn(
     assert registry.shown("C1:1.0").ts == "100.1"
 
 
-# -- The root is rewritten from the focus label after every typed turn ---------
-# `_maybe_update_timeboxing_thread_constraints` runs at the end of the message
-# route and redraws the root from `focus.get_thread_label(...)`. The label was
-# minted at session start (pending, the suggested day) and nothing told it the
-# day had changed, so the relabel above was overwritten with the old title
-# milliseconds later (live session 1788429245.401169, 2026-09-03).
-
-
-class _NoConstraints:
-    async def list_constraints(self, **_):
-        return []
+# -- The root the typed turn writes is the root that stays ---------------------
+# The root used to be redrawn from the focus label by a constraints refresh
+# after every turn, which overwrote a typed day change; that refresh no longer
+# exists, and this pins that the relabel is the last write.
 
 
 @pytest.mark.asyncio
-async def test_a_typed_day_change_survives_the_constraints_redraw(monkeypatch) -> None:
+async def test_a_typed_day_change_is_what_the_root_shows(monkeypatch) -> None:
     from fateforger.slack_bot.focus import FocusManager
 
     friday = PlanningDay.lock_default(
@@ -404,20 +397,12 @@ async def test_a_typed_day_change_survives_the_constraints_redraw(monkeypatch) -
         user_text="No, tomorrow please",
         focus=focus,
     )
-    await handlers._maybe_update_timeboxing_thread_constraints(
-        client=client,
-        focus=focus,
-        thread_key="C1:1.0",
-        user_id="U1",
-        store=_NoConstraints(),
-    )
 
     root_writes = [u for u in client.updates if u.get("ts") == "1.0"]
-    assert len(root_writes) == 2
-    relabel, redraw = root_writes
-    assert redraw["text"] == relabel["text"]
-    assert redraw["text"].startswith(":large_blue_circle:")
-    assert "Thursday" not in redraw["text"]
+    assert len(root_writes) == 1
+    relabel = root_writes[0]
+    assert relabel["text"].startswith(":large_blue_circle:")
+    assert "Thursday" not in relabel["text"]
     assert focus.get_thread_label("C1:1.0").state == "in_progress"
 
 

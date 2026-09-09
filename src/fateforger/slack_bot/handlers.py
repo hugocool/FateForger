@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
@@ -29,12 +29,6 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import (
     TurnRequest,
 )
 from fateforger.agents.timeboxing.feedback import feedback_facts
-from fateforger.agents.timeboxing.preferences import (
-    Constraint,
-    ConstraintStatus,
-    ConstraintStore,
-    ensure_constraint_schema,
-)
 from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     ApproveArtifact,
@@ -50,17 +44,6 @@ from fateforger.agents.timeboxing.session_contracts import (
 from fateforger.core.config import settings
 from fateforger.core.logging_config import observe_stage_duration, record_error
 from fateforger.slack_bot.bootstrap import ensure_workspace_ready
-from fateforger.slack_bot.constraint_review import (
-    CONSTRAINT_REVIEW_VIEW_CALLBACK_ID,
-    CONSTRAINT_ROW_REVIEW_ACTION_ID,
-    FF_CONSTRAINT_REVIEW_ALL_ACTION_ID,
-    LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID,
-    build_constraint_review_list_view,
-    build_constraint_review_view,
-    build_constraint_row_blocks,
-    decode_metadata,
-    parse_constraint_review_submission,
-)
 from fateforger.slack_bot.messages import (
     SLACK_MAX_BLOCK_TEXT_CHARS,
     SLACK_MAX_BLOCKS,
@@ -137,6 +120,7 @@ from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
     TimeboxCommitMeta,
     day_type_action_id,
+    decode_metadata,
     format_relative_day_label,
 )
 from fateforger.slack_bot.timeboxing_host import (
@@ -271,97 +255,12 @@ def _timeboxing_excerpt_from_text(text: str) -> str:
     return cleaned
 
 
-def _build_timeboxing_thread_root_blocks(
-    *,
-    title: str,
-    state: str,
-    constraints: list[Constraint],
-    thread_ts: str,
-    user_id: str,
-) -> list[dict[str, object]]:
-    """Build the thread-root blocks with active constraints."""
-    blocks: list[dict[str, object]] = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": _timeboxing_thread_root_text(
-                    title=title, request_excerpt=None, state=state
-                ),
-            },
-        }
-    ]
-    active = [c for c in constraints if c.status != ConstraintStatus.DECLINED]
-    if active:
-        blocks.append({"type": "divider"})
-        blocks.extend(
-            build_constraint_row_blocks(
-                active, thread_ts=thread_ts, user_id=user_id, limit=20
-            )
-        )
-    else:
-        blocks.append(
-            {
-                "type": "context",
-                "elements": [{"type": "mrkdwn", "text": "No active constraints yet."}],
-            }
-        )
-    return blocks
-
-
 def _extract_thread_state(result) -> str | None:
     for obj in (result, getattr(result, "chat_message", None)):
         state = getattr(obj, "thread_state", None)
         if isinstance(state, str) and state.strip():
             return state.strip()
     return None
-
-
-async def _maybe_update_timeboxing_thread_constraints(
-    *,
-    client: AsyncWebClient,
-    focus: FocusManager,
-    thread_key: str,
-    user_id: str,
-    store: ConstraintStore | None,
-) -> None:
-    """Update the timeboxing thread root with the latest active constraints."""
-    if not store:
-        return
-    try:
-        channel_id, thread_root_ts = thread_key.split(":", 1)
-    except Exception:
-        return
-    if thread_root_ts == "dm":
-        return
-    label = focus.get_thread_label(thread_key)
-    if not label:
-        return
-    constraints = await store.list_constraints(
-        user_id=user_id,
-        channel_id=channel_id,
-        thread_ts=thread_root_ts,
-    )
-    blocks = _build_timeboxing_thread_root_blocks(
-        title=label.title,
-        state=label.state,
-        constraints=constraints,
-        thread_ts=thread_root_ts,
-        user_id=user_id,
-    )
-    try:
-        await client.chat_update(
-            channel=channel_id,
-            ts=thread_root_ts,
-            text=_timeboxing_thread_root_text(
-                title=label.title,
-                request_excerpt=label.request_excerpt,
-                state=label.state,
-            ),
-            blocks=blocks,
-        )
-    except Exception:
-        return
 
 
 async def _maybe_update_timeboxing_thread_header(
@@ -1544,11 +1443,8 @@ async def _run_adaptive_timebox_turn(
             tz_name=intent.planning_day.timezone,
         )
         title = f"Timeboxing session for {label}"
-        # The message route redraws the root from the focus label at the end
-        # of every turn (`_maybe_update_timeboxing_thread_constraints`), so a
-        # relabel that only wrote Slack text was overwritten with the day
-        # the session *opened* on, milliseconds later. The label is the
-        # source; the write below is the same text, drawn now.
+        # The label is the source for the thread-root text; the write below
+        # draws it now, over the day the session *opened* on.
         if focus is not None:
             focus.set_thread_label(
                 session_key,
@@ -2152,7 +2048,6 @@ async def _route_command_as_message(
     body: dict,
     text: str,
     client: AsyncWebClient,
-    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]],
 ) -> None:
     """Drive a slash command through the route a typed message already takes.
 
@@ -2187,7 +2082,6 @@ async def _route_command_as_message(
         bot_user_id=None,
         say=_noop_say,
         client=client,
-        get_constraint_store=get_constraint_store,
     )
 
 
@@ -2199,7 +2093,6 @@ async def _handle_timebox_command(
     body: dict,
     client: AsyncWebClient,
     respond: Callable | None,
-    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]],
 ) -> None:
     user_id = body.get("user_id") or ""
     channel_id = body.get("channel_id") or ""
@@ -2227,7 +2120,6 @@ async def _handle_timebox_command(
             body=body,
             text=text,
             client=client,
-            get_constraint_store=get_constraint_store,
         )
     except Exception as e:
         logger.exception("Timeboxing command route_slack_event failed")
@@ -2245,7 +2137,6 @@ async def _handle_task_refine_command(
     body: dict,
     client: AsyncWebClient,
     respond: Callable | None,
-    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]],
 ) -> None:
     user_id = body.get("user_id") or ""
     channel_id = body.get("channel_id") or ""
@@ -2273,7 +2164,6 @@ async def _handle_task_refine_command(
             body=body,
             text=text or "start guided task refinement session",
             client=client,
-            get_constraint_store=get_constraint_store,
         )
     except Exception as e:
         logger.exception("Task refinement command route_slack_event failed")
@@ -2363,7 +2253,6 @@ async def route_slack_event(
     bot_user_id: str | None,
     say: Callable,
     client: AsyncWebClient,
-    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]] | None = None,
     planning: PlanningCoordinator | None = None,
     acked: dict | None = None,
 ) -> None:
@@ -2374,30 +2263,6 @@ async def route_slack_event(
     ts = event["ts"]
     channel_type = event.get("channel_type")
     is_dm = channel_type == "im" or str(channel).startswith("D")
-
-    async def _update_constraints(thread_key: str) -> None:
-        """Refresh timeboxing constraints in the thread root message."""
-        if not get_constraint_store:
-            return
-        try:
-            store = await get_constraint_store()
-            await _maybe_update_timeboxing_thread_constraints(
-                client=client,
-                focus=focus,
-                thread_key=thread_key,
-                user_id=user,
-                store=store,
-            )
-        except Exception as exc:
-            record_error(
-                component="slack_routing", error_type="constraint_refresh_error"
-            )
-            logger.warning(
-                "Non-fatal constraint refresh failure thread_key=%s user=%s error=%s",
-                thread_key,
-                user,
-                f"{type(exc).__name__}: {_safe_exc_summary(exc)}",
-            )
 
     # Give the conversation a memory. Fired without awaiting: `observe` costs a
     # model round trip and this route has a 30s budget, and the task reports
@@ -2779,7 +2644,6 @@ async def route_slack_event(
                 thread_key=redirect.target_key,
                 state=_extract_thread_state(result) or "",
             )
-            await _update_constraints(redirect.target_key)
         except Exception:
             logger.exception(
                 "timeboxing session surface failed after the root was posted "
@@ -2941,8 +2805,6 @@ async def route_slack_event(
             thread_key=redirect.target_key,
             state=_extract_thread_state(result) or "",
         )
-        if redirect.agent_type == "timeboxing_agent":
-            await _update_constraints(redirect.target_key)
         if not is_dm:
             await _origin_link_to_thread(
                 channel_id=redirect.target_channel,
@@ -3361,8 +3223,6 @@ async def route_slack_event(
         thread_key=origin_key,
         state=_extract_thread_state(result) or "",
     )
-    if agent_type == "timeboxing_agent":
-        await _update_constraints(origin_key)
 
 
 def register_handlers(
@@ -3380,7 +3240,6 @@ def register_handlers(
       - App mention handler  : route @mentions via focus→agent
       - DM handler           : route DMs via focus→agent
     """
-    constraint_store: ConstraintStore | None = None
     workspace_store: SlackWorkspaceStore | None = None
     planning = PlanningCoordinator(runtime=runtime, focus=focus, client=app.client)
     planning.attach_reconciler_dispatch()
@@ -3430,18 +3289,6 @@ def register_handlers(
             WorkspaceRegistry.set_global(directory)
         except Exception:
             logger.debug("Failed to load workspace bindings from DB", exc_info=True)
-
-    async def _get_constraint_store() -> ConstraintStore | None:
-        nonlocal constraint_store
-        if constraint_store:
-            return constraint_store
-        if not settings.database_url:
-            return None
-        engine = create_async_engine(_coerce_async_database_url(settings.database_url))
-        await ensure_constraint_schema(engine)
-        sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
-        constraint_store = ConstraintStore(sessionmaker)
-        return constraint_store
 
     async def _get_workspace_store() -> SlackWorkspaceStore | None:
         nonlocal workspace_store
@@ -3577,7 +3424,6 @@ def register_handlers(
                 bot_user_id=bot_user_id,
                 say=say,
                 client=client,
-                get_constraint_store=_get_constraint_store,
                 planning=planning,
             )
         )
@@ -3909,7 +3755,6 @@ def register_handlers(
                 body=body,
                 client=client,
                 respond=respond,
-                get_constraint_store=_get_constraint_store,
             )
         )
 
@@ -3923,7 +3768,6 @@ def register_handlers(
                 body=body,
                 client=client,
                 respond=respond,
-                get_constraint_store=_get_constraint_store,
             )
         )
 
@@ -4416,130 +4260,6 @@ def register_handlers(
 
     for _retired_id in retired_cards.RETIRED_ACTION_IDS:
         app.action(_retired_id)(_on_retired_card)
-
-    async def _handle_constraint_review_all_action(body, client):
-        action = (body.get("actions") or [{}])[0]
-        value = action.get("value") or ""
-        metadata = decode_metadata(value)
-        thread_ts = (
-            metadata.get("thread_ts")
-            or (body.get("message") or {}).get("thread_ts")
-            or (body.get("message") or {}).get("ts")
-            or ""
-        )
-        user_id = metadata.get("user_id") or (body.get("user") or {}).get("id") or ""
-        channel_id = (
-            body.get("channel", {}).get("id") or metadata.get("channel_id") or ""
-        )
-        trigger_id = body.get("trigger_id") or ""
-        if not (thread_ts and user_id and channel_id and trigger_id):
-            return
-
-        store = await _get_constraint_store()
-        if not store:
-            return
-        constraints = await store.list_constraints(
-            user_id=user_id,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-        )
-        active_constraints = [
-            constraint
-            for constraint in constraints
-            if constraint.status != ConstraintStatus.DECLINED
-        ]
-        view = build_constraint_review_list_view(
-            active_constraints,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-            user_id=user_id,
-        )
-        await client.views_open(trigger_id=trigger_id, view=view)
-
-    @app.action(FF_CONSTRAINT_REVIEW_ALL_ACTION_ID)
-    async def on_constraint_review_all_action(ack, body, client, logger):
-        await ack()
-        await _handle_constraint_review_all_action(body, client)
-
-    @app.action(LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID)
-    async def on_constraint_review_all_action_legacy(ack, body, client, logger):
-        await ack()
-        await _handle_constraint_review_all_action(body, client)
-
-    @app.action(CONSTRAINT_ROW_REVIEW_ACTION_ID)
-    async def on_constraint_review_action(ack, body, client, logger):
-        await ack()
-        action = (body.get("actions") or [{}])[0]
-        value = action.get("value") or ""
-        metadata = decode_metadata(value)
-        constraint_id_raw = metadata.get("constraint_id") or ""
-        thread_ts = metadata.get("thread_ts") or ""
-        user_id = metadata.get("user_id") or ""
-        channel_id = body.get("channel", {}).get("id") or ""
-        if not (constraint_id_raw and user_id and channel_id):
-            return
-        try:
-            constraint_id = int(constraint_id_raw)
-        except ValueError:
-            return
-
-        store = await _get_constraint_store()
-        if not store:
-            return
-        constraint = await store.get_constraint(
-            user_id=user_id, constraint_id=constraint_id
-        )
-        if not constraint:
-            return
-        if thread_ts and constraint.thread_ts and constraint.thread_ts != thread_ts:
-            return
-        view = build_constraint_review_view(
-            constraint,
-            channel_id=channel_id,
-            thread_ts=thread_ts or (constraint.thread_ts or ""),
-            user_id=user_id,
-        )
-        await client.views_open(trigger_id=body["trigger_id"], view=view)
-
-    @app.view(CONSTRAINT_REVIEW_VIEW_CALLBACK_ID)
-    async def on_constraint_review_submit(ack, body, client, logger):
-        await ack()
-        store = await _get_constraint_store()
-        if not store:
-            return
-        state = body.get("view", {}).get("state", {}).get("values", {})
-        status, description = parse_constraint_review_submission(state)
-        metadata = body.get("view", {}).get("private_metadata") or ""
-        info = decode_metadata(metadata)
-        constraint_id_raw = info.get("constraint_id") or ""
-        user_id = info.get("user_id") or body.get("user", {}).get("id", "") or ""
-        channel_id = info.get("channel_id") or ""
-        thread_ts = info.get("thread_ts") or ""
-        if not (constraint_id_raw and user_id):
-            return
-        try:
-            constraint_id = int(constraint_id_raw)
-        except ValueError:
-            return
-        await store.update_constraint(
-            user_id=user_id,
-            constraint_id=constraint_id,
-            status=status,
-            description=description,
-        )
-        if channel_id and thread_ts:
-            await client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=thread_ts,
-                text="Saved your constraint update.",
-            )
-            await _maybe_update_timeboxing_thread_constraints(
-                client=client,
-                focus=focus,
-                thread_key=f"{channel_id}:{thread_ts}",
-                user_id=user_id,
-                store=store,
-            )
 
     # --- App Home (Command Center) ---
     @app.event("app_home_opened")

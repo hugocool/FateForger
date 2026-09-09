@@ -73,7 +73,7 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | File | Responsibility |
 |------|---------------|
 | `nlu.py` | `PlannedDateResult`, `ConstraintInterpretation`: structured LLM outputs for multilingual date/scope inference. No regex/keyword matching. |
-| `preferences.py` | `ConstraintStore`: SQLite-backed session constraint persistence. |
+| `preferences.py` | `Constraint`/`ConstraintBase` models and their enums (necessity, status, source, scope). The session-store persistence class that once lived here (`ConstraintStore`) had no writer left after the legacy agent retired (2026-09-09) and was removed. |
 | `constraint_retriever.py` | `ConstraintRetriever`: gap-driven durable constraint fetch from Notion MCP. |
 | `graphiti_constraint_memory.py` | Graphiti MCP transport for durable constraint memory (active runtime path; Neo4j-backed deployment contract). |
 | `constraint_record_memory.py` | Shared durable constraint behavior used by the Graphiti adapter. |
