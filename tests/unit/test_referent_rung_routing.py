@@ -13,6 +13,7 @@ import pytest
 pytest.importorskip("autogen_agentchat")
 
 from fateforger.referents import Referent
+from fateforger.slack_bot.handlers import PARTIAL_CATALOG_ASK
 from fateforger.referents.resolver import Ambiguous, NoReferent, Resolved
 
 
@@ -163,13 +164,16 @@ async def test_a_live_sessions_own_thread_is_claimed_before_the_judge_is_asked(
     assert resolver.calls == []
 
 
-async def test_a_partial_catalog_never_creates_through_the_handoff_door(
+async def test_a_partial_catalog_is_stopped_at_the_handoff_door_not_before_it(
     routing_harness,
 ):
     # The door the rung's first predicate could not see. Typed anywhere but the
     # planning channel, the turn goes to the receptionist -- so nothing about it
     # reads as timeboxing -- and the receptionist hands it off, and the handoff
     # builds a session surface of its own over a day the catalog could not see.
+    #
+    # The turn still runs: whether it hands off is a judgement nobody has made
+    # yet. It is stopped at the moment it tries to create, and told why.
     harness = routing_harness(
         resolver=_Resolver(NoReferent(catalog_complete=False)),
         handoff_to="timeboxing_agent",
@@ -178,6 +182,18 @@ async def test_a_partial_catalog_never_creates_through_the_handoff_door(
         "can you replan today so the gym is before dinner?", channel="C_GENERAL"
     )
     assert harness.sessions_opened == []
-    assert harness.runtime.calls == [], "nothing may be delivered, so nothing hands off"
-    assert harness.origin_messages, "the user must be told what could not be checked"
+    assert len(harness.runtime.calls) == 1, "the turn runs; only the mint is refused"
+    assert PARTIAL_CATALOG_ASK in harness.origin_messages
+
+
+async def test_a_partial_catalog_does_not_break_every_other_conversation(
+    routing_harness,
+):
+    # A store outage must not become a bot-wide outage. Nothing about this
+    # message is headed for a session, so it is answered like any other.
+    harness = routing_harness(resolver=_Resolver(NoReferent(catalog_complete=False)))
+    await harness.route_top_level("what is the weather?", channel="C_GENERAL")
+    assert harness.sessions_opened == []
+    assert len(harness.runtime.calls) == 1, "the receptionist must still answer"
+    assert PARTIAL_CATALOG_ASK not in harness.origin_messages
 
