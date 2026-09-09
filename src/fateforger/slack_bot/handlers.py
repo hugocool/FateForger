@@ -54,6 +54,7 @@ from fateforger.core.config import settings
 from fateforger.core.logging_config import observe_stage_duration, record_error
 from fateforger.referents import (
     Ambiguous,
+    NoReferent,
     Referent,
     Resolved,
     TimeboxingReferentProvider,
@@ -2740,7 +2741,14 @@ async def route_slack_event(
             # user asked for by name.
             if binding is None and agent_type == "timeboxing_agent":
                 agent_type = channel_default_agent or default_agent
-        elif agent_type != "timeboxing_agent":
+        else:
+            # Asked whatever `agent_type` already says. It used to be asked only
+            # when `agent_type` was not already `timeboxing_agent`, which in the
+            # planning channel is never -- the channel default says so before
+            # anyone has claimed anything. That left a live session's own thread
+            # with no structural claim on the `app_mention` path, where
+            # `_auto_recover_timeboxing_focus_for_thread` never runs, and a
+            # judgement could then send the turn to a different day (#310).
             session_store = getattr(runtime, "timeboxing_session_store", None)
             if session_store is not None:
                 session_key = f"{channel}:dm" if is_dm else f"{channel}:{thread_ts}"
@@ -2768,74 +2776,6 @@ async def route_slack_event(
                     else:
                         agent_type = "timeboxing_agent"
                         structurally_claimed = True
-
-    # The referent rung (#345). Last among the resolvers, and deliberately
-    # ahead of every door that can create: the catalog is drawn here, before
-    # any session exists, so it can never offer the row this very message
-    # would mint. That ordering is the guarantee; `as_of` is only the belt.
-    #
-    # It resolves and nothing more. What to do about the answer is a second
-    # judgement, and it belongs to the surface that owns the state -- so this
-    # only picks *which* standing thing, then hands the turn to it.
-    referent: Referent | None = None
-    ambiguous_candidates: tuple[Referent, ...] = ()
-    if binding is None and not structurally_claimed and text.strip():
-        resolution = await _resolve_referent(
-            runtime=runtime,
-            owner_user_id=user,
-            message=_strip_bot_mention(text, bot_user_id),
-            as_of=datetime.now(UTC),
-            current_thread=(channel, thread_ts) if thread_ts else None,
-        )
-        if isinstance(resolution, Resolved):
-            referent = resolution.referent
-        elif isinstance(resolution, Ambiguous):
-            ambiguous_candidates = resolution.candidates
-
-    if referent is not None and referent.is_current_surface:
-        # It is about the conversation it arrived in. There is nowhere to send
-        # it and nothing to point at; the surface just needs the right agent.
-        try:
-            focus.set_focus(origin_key, referent.agent_type, by_user=user, note="referent")
-        except ValueError:
-            logger.warning("focus refused the referent agent %s", referent.agent_type)
-        else:
-            agent_type = referent.agent_type
-        referent = None
-    elif referent is not None:
-        if not (referent.channel_id and referent.thread_ts):
-            # A session whose key names no thread (a DM) cannot be a redirect
-            # target: the redirect is addressed by channel and thread.
-            logger.info("referent %s has no thread to redirect to", referent.key)
-            referent = None
-        else:
-            try:
-                redirect_to_referent = focus.set_redirect(
-                    origin_key,
-                    target_channel=referent.channel_id,
-                    target_thread_ts=referent.thread_ts,
-                    agent_type=referent.agent_type,
-                    by_user=user,
-                    note="referent",
-                )
-            except ValueError:
-                logger.warning(
-                    "focus refused the referent agent %s", referent.agent_type
-                )
-                referent = None
-            else:
-                agent_type = referent.agent_type
-                # Bind the thread that takes the turn, so its own follow-ups
-                # resolve structurally instead of asking the judge again.
-                try:
-                    focus.set_focus(
-                        redirect_to_referent.target_key,
-                        referent.agent_type,
-                        by_user=user,
-                        note="referent",
-                    )
-                except ValueError:
-                    pass
 
     cleaned_text = _strip_bot_mention(text, bot_user_id)
     # The seam below may prefix `cleaned_text` with card context meant for
@@ -3210,74 +3150,195 @@ async def route_slack_event(
             # Whoever answers now knows what the card is.
             cleaned_text = f"{reply.context}\n\nThe user's reply:\n{cleaned_text}"
 
-    if ambiguous_candidates:
-        # Two standing plans fit equally well. Ask. Opening one on a coin flip
-        # is exactly the failure this rung exists to stop, and so is opening a
-        # third because neither could be picked.
-        lines: list[str] = []
-        candidate_blocks: list[dict] = [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": ":thinking_face: I'm not sure which plan you mean.",
-                },
-            }
-        ]
-        for candidate in ambiguous_candidates:
-            label = _referent_label(candidate)
-            candidate_link = (
-                await _permalink(candidate.channel_id, candidate.thread_ts)
-                if candidate.channel_id and candidate.thread_ts
-                else None
-            )
-            lines.append(f"- {label}" + (f" ({candidate_link})" if candidate_link else ""))
-            candidate_blocks.append(
+    # The referent rung (#345). Last among the resolvers: structural ownership
+    # is a fact and beats a judgement (#310), so this asks only while nothing
+    # above claimed the message.
+    #
+    # Two placements are load-bearing. It runs *after* the acknowledgement,
+    # because a model round trip before the first frame is silence a user
+    # cannot tell from a dropped message. And it runs *before* every door that
+    # can create, so the catalog can never offer the row this very message
+    # would mint -- that ordering is the guarantee, and `as_of` is only the
+    # belt.
+    #
+    # It resolves and nothing more. What to do about the answer is a second
+    # judgement, and it belongs to the surface that owns the state.
+    if binding is None and not structurally_claimed and text.strip():
+        # The one place a wrong "nothing stands" is unrecoverable: a door that
+        # creates mints a second session for a day that already has one, which
+        # is the whole of the 2026-09-05 incident. Read before the rung can
+        # move `agent_type`.
+        would_start_a_session = agent_type == "timeboxing_agent" and not thread_ts
+        resolution = await _resolve_referent(
+            runtime=runtime,
+            owner_user_id=user,
+            message=_strip_bot_mention(text, bot_user_id),
+            as_of=datetime.now(UTC),
+            current_thread=(channel, thread_ts) if thread_ts else None,
+        )
+
+        if isinstance(resolution, Resolved):
+            referent = resolution.referent
+            label = _referent_label(referent)
+            if referent.is_current_surface:
+                # It is about the conversation it arrived in. Nowhere to send
+                # it and nothing to point at; the surface needs the right agent
+                # and no more.
+                try:
+                    focus.set_focus(
+                        origin_key, referent.agent_type, by_user=user, note="referent"
+                    )
+                except ValueError:
+                    logger.warning(
+                        "focus refused the referent agent %s", referent.agent_type
+                    )
+                else:
+                    agent_type = referent.agent_type
+            else:
+                # A positive resolution that cannot be delivered may never fall
+                # through into a creating door: the judgement said this message
+                # is about a plan that already exists, and creating a second one
+                # anyway is the incident with the machinery built to catch it
+                # reporting success. Say what was understood instead.
+                reachable = bool(referent.channel_id and referent.thread_ts)
+                redirect_to_referent = None
+                if reachable:
+                    try:
+                        redirect_to_referent = focus.set_redirect(
+                            origin_key,
+                            target_channel=referent.channel_id,
+                            target_thread_ts=referent.thread_ts,
+                            agent_type=referent.agent_type,
+                            by_user=user,
+                            note="referent",
+                        )
+                    except ValueError:
+                        logger.warning(
+                            "focus refused the referent agent %s", referent.agent_type
+                        )
+                if redirect_to_referent is None:
+                    # A session key that names no thread (a DM's `{channel}:dm`)
+                    # has no address the redirect can carry, and an agent focus
+                    # refuses is not one this route may hand a turn to.
+                    logger.info(
+                        "resolved referent %s cannot be handed the turn", referent.key
+                    )
+                    record_error(
+                        component="surface_intent", error_type="referent_unreachable"
+                    )
+                    await _origin_update(
+                        text=(
+                            f":left_right_arrow: That reads as {label}, and I "
+                            "can't hand it to that conversation from here. Say "
+                            "it there and I'll pick it up."
+                        )
+                    )
+                    return
+                agent_type = referent.agent_type
+                # Bind the thread that takes the turn, so its own follow-ups
+                # resolve structurally instead of asking the judge again.
+                try:
+                    focus.set_focus(
+                        redirect_to_referent.target_key,
+                        referent.agent_type,
+                        by_user=user,
+                        note="referent",
+                    )
+                except ValueError:
+                    pass
+                # One line where the user typed, so the turn never happens
+                # somewhere they were not told about.
+                referent_link = await _permalink(
+                    referent.channel_id, referent.thread_ts
+                )
+                await _origin_update(
+                    text=(
+                        f":left_right_arrow: Reading that as {label} -- "
+                        + (
+                            f"continuing there: {referent_link}"
+                            if referent_link
+                            else "continuing in that thread."
+                        )
+                    )
+                )
+
+        elif isinstance(resolution, Ambiguous):
+            # Two standing plans fit equally well. Ask. Opening one on a coin
+            # flip is exactly the failure this rung exists to stop, and so is
+            # opening a third because neither could be picked.
+            lines: list[str] = []
+            candidate_blocks: list[dict] = [
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": (
-                            f"- <{candidate_link}|{label}>"
-                            if candidate_link
-                            else f"- {label}"
-                        ),
+                        "text": ":thinking_face: I'm not sure which plan you mean.",
                     },
                 }
+            ]
+            for candidate in resolution.candidates:
+                candidate_label = _referent_label(candidate)
+                candidate_link = (
+                    await _permalink(candidate.channel_id, candidate.thread_ts)
+                    if candidate.channel_id and candidate.thread_ts
+                    else None
+                )
+                lines.append(
+                    f"- {candidate_label}"
+                    + (f" ({candidate_link})" if candidate_link else "")
+                )
+                candidate_blocks.append(
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": (
+                                f"- <{candidate_link}|{candidate_label}>"
+                                if candidate_link
+                                else f"- {candidate_label}"
+                            ),
+                        },
+                    }
+                )
+            candidate_blocks.append(
+                {
+                    "type": "context",
+                    "elements": [
+                        {"type": "mrkdwn", "text": "Reply in the one you mean."}
+                    ],
+                }
             )
-        candidate_blocks.append(
-            {
-                "type": "context",
-                "elements": [
-                    {"type": "mrkdwn", "text": "Reply in the one you mean."}
-                ],
-            }
-        )
-        await _origin_update(
-            text=(
-                ":thinking_face: I'm not sure which plan you mean:\n"
-                + "\n".join(lines)
-                + "\nReply in the one you mean."
-            ),
-            blocks=candidate_blocks,
-        )
-        return
+            await _origin_update(
+                text=(
+                    ":thinking_face: I'm not sure which plan you mean:\n"
+                    + "\n".join(lines)
+                    + "\nReply in the one you mean."
+                ),
+                blocks=candidate_blocks,
+            )
+            return
 
-    if referent is not None:
-        # One line where the user typed, so the turn never happens somewhere
-        # they were not told about.
-        referent_link = await _permalink(referent.channel_id, referent.thread_ts)
-        label = _referent_label(referent)
-        await _origin_update(
-            text=(
-                f":left_right_arrow: Reading that as {label} -- "
-                + (
-                    f"continuing there: {referent_link}"
-                    if referent_link
-                    else "continuing in that thread."
+        elif (
+            isinstance(resolution, NoReferent)
+            and not resolution.catalog_complete
+            and would_start_a_session
+        ):
+            # A provider failed, so `none` is not evidence that nothing stands
+            # (`referents/catalog.py`'s own contract). Everywhere else that is
+            # survivable; in front of a door that creates it is the incident,
+            # so ask rather than create.
+            record_error(
+                component="surface_intent", error_type="referent_catalog_partial"
+            )
+            await _origin_update(
+                text=(
+                    ":warning: I couldn't check what you already have planned, "
+                    "so I won't start a second session over the top of it. Say "
+                    "that again and I'll retry, or open one from the day's own "
+                    "thread if there is one."
                 )
             )
-        )
+            return
 
     redirect = focus.get_redirect(origin_key)
     if redirect and agent_type == redirect.agent_type:

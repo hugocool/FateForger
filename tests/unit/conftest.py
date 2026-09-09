@@ -284,17 +284,6 @@ def routing_harness(monkeypatch: pytest.MonkeyPatch):
 
             return SlackBlockMessage(text="turn ran", blocks=[])
 
-        # The route fires `remember` as a background task. With no memory
-        # store configured -- a worktree, CI -- it posts its own loud warning
-        # into the origin, and whether it wins the race with the route's own
-        # first message then depends on the environment rather than on the
-        # rung. Isolated here for the same reason the task board is above.
-        async def _no_thread_memory(**_kwargs):
-            return None
-
-        monkeypatch.setattr(
-            "fateforger.slack_bot.thread_memory.remember", _no_thread_memory
-        )
         monkeypatch.setattr(handlers_mod, "open_session_surface", _recording_open)
         monkeypatch.setattr(handlers_mod, "_run_adaptive_timebox_turn", _fake_turn)
         monkeypatch.setattr(handlers_mod, "_timebox_backend", lambda: "harness")
