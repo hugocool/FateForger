@@ -194,6 +194,13 @@ _STRUCTURED_EXTRACT_FIELDS: frozenset[str] = frozenset(
         "channel_id",
         # The three the codebase actually passes. Their absence meant JSON
         # mode dropped every extra in use, exactly as the plain formatter did.
+        #
+        # `event` names what happened where a message would have to be parsed
+        # for it -- the work lookup's four failure causes are one log call with
+        # four names. It maps to itself in the envelope, unlike `type`; nothing
+        # passes both, and the loop keeps whichever it sees first if anything
+        # ever does.
+        "event",
         "error_type",
         "quality_snapshot",
         "reason_code",

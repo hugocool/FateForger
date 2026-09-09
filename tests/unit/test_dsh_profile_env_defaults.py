@@ -18,11 +18,11 @@ not on anything a person said, so it sits outside the no-matching rule.
 
 from __future__ import annotations
 
-from pathlib import Path
-
+import pytest
 import yaml
 
-PROFILE = Path(__file__).resolve().parents[2] / "infra" / "dsh" / "profile" / "cordis.patch.yml"
+# The profile is parsed by the `profile` fixture in `tests/unit/conftest.py`;
+# `!!js` scalars arrive as strings that `profile.is_js` recognises.
 
 
 def _env_blocks(node, path=()):
@@ -37,29 +37,12 @@ def _env_blocks(node, path=()):
             yield from _env_blocks(item, path + (str(i),))
 
 
-class _Js(str):
-    """A `!!js` scalar kept as its source text so we can inspect the expression."""
-
-
-def _js_constructor(loader, node):
-    return _Js(loader.construct_scalar(node))
-
-
-def _load_profile():
-    loader = yaml.SafeLoader
-    loader.add_constructor("!!js", _js_constructor)
-    # PyYAML resolves `!!js` to the full tag name; register both spellings.
-    loader.add_constructor("tag:yaml.org,2002:js", _js_constructor)
-    return yaml.load(PROFILE.read_text(encoding="utf-8"), Loader=loader)
-
-
-def test_every_env_entry_read_from_the_process_has_a_fallback():
+def test_every_env_entry_read_from_the_process_has_a_fallback(profile):
     """An `env:` value that can evaluate to undefined fails the profile at boot."""
-    tree = _load_profile()
     offenders: list[str] = []
-    for path, env in _env_blocks(tree):
+    for path, env in _env_blocks(profile.tree):
         for name, value in env.items():
-            if isinstance(value, _Js) and "process.env." in value and "||" not in value:
+            if profile.is_js(value) and "process.env." in value and "||" not in value:
                 offenders.append(f"{'/'.join(path)}/{name}: {value.strip()}")
     assert not offenders, (
         "these env entries become `undefined` when the variable is unset, and "
@@ -68,6 +51,39 @@ def test_every_env_entry_read_from_the_process_has_a_fallback():
     )
 
 
-def test_the_profile_actually_has_env_blocks_to_check():
+def test_the_profile_actually_has_env_blocks_to_check(profile):
     """Guards the guard: an empty scan would pass while proving nothing."""
-    assert list(_env_blocks(_load_profile())), "no env: blocks found; the scan is vacuous"
+    assert list(_env_blocks(profile.tree)), "no env: blocks found; the scan is vacuous"
+
+
+def test_loading_the_profile_leaves_the_shared_safeloader_alone(profile) -> None:
+    """A helper that registers a tag on `yaml.SafeLoader` changes every load.
+
+    The three copies of this loader all called `yaml.SafeLoader.add_constructor`,
+    which mutates the class shared by every `yaml.safe_load` in the process. A
+    `!!js` scalar in some other file then parses as a `Js` string instead of
+    failing, or not, depending on whether this module ran first -- an
+    order-dependent parser is not one anybody can reason about.
+    """
+    _ = profile.tree
+
+    # The tag PyYAML resolves `!!js` to; see the fixture's module docstring.
+    assert "tag:yaml.org,2002:js" not in yaml.SafeLoader.yaml_constructors
+
+
+def test_the_js_shorthand_alone_constructs_nothing() -> None:
+    """Why the fixture registers the resolved tag and not the `!!js` spelling.
+
+    Registering the shorthand looks like it worked and is never consulted: the
+    node reaches the constructor lookup already carrying the full tag.
+    """
+
+    class _ShorthandOnly(yaml.SafeLoader):
+        pass
+
+    _ShorthandOnly.add_constructor("!!js", lambda loader, node: node.value)
+
+    with pytest.raises(yaml.constructor.ConstructorError) as excinfo:
+        yaml.load("gate: !!js 'process.env.X'", Loader=_ShorthandOnly)
+
+    assert "tag:yaml.org,2002:js" in str(excinfo.value)

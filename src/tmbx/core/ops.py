@@ -83,6 +83,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .models import (
     BOUNDARY_ANCHOR_SOURCES,
     ET,
+    LINK_FIELD_DESCRIPTION,
     AnchorSource,
     Block,
     Plan,
@@ -174,6 +175,7 @@ class AddBlock(_OpBase):
             "records why the time is pinned"
         ),
     )
+    link: str | None = Field(default=None, description=LINK_FIELD_DESCRIPTION)
 
 
 class RemoveBlock(_OpBase):
@@ -182,7 +184,16 @@ class RemoveBlock(_OpBase):
 
 
 class UpdateBlock(_OpBase):
-    """Merge the given fields onto an existing block. Unset fields are untouched."""
+    """Merge the given fields onto an existing block. Unset fields are untouched.
+
+    ``link`` is the one field where that rule has a visible consequence, so
+    it is spelled out on the field itself: omitting it keeps whatever the
+    block already points at, and the ONLY way to detach a block from its
+    work is to send ``link`` explicitly as null. There is no "clear it by
+    leaving it out" — that is how every other field here already behaves,
+    and a link that vanished because an op did not mention it would be a
+    silent loss of the one thing the block was for.
+    """
 
     op: Literal["update"] = "update"
     h: str
@@ -192,6 +203,14 @@ class UpdateBlock(_OpBase):
     p: Timing | None = None
     slug: str | None = None
     anchor_source: AnchorSource | None = None
+    link: str | None = Field(
+        default=None,
+        description=(
+            LINK_FIELD_DESCRIPTION
+            + " Omit this field to leave the block's current link alone; send "
+            "it as null to detach the block from the work it pointed at."
+        ),
+    )
 
 
 class MoveBlock(_OpBase):
@@ -792,6 +811,13 @@ def _apply_updates(blocks: list[Block], patch: Patch) -> list[Block]:
             )
             if value is not None
         }
+        # ``link`` is the one field where null is a value rather than an
+        # absence: it is how a block is detached from the work it pointed
+        # at (see ``UpdateBlock``). "Was it sent?" is the question, not "is
+        # it None?", so this reads ``model_fields_set`` instead of joining
+        # the not-None merge above.
+        if "link" in op.model_fields_set:
+            updates["link"] = op.link
         # model_copy(update=...) does not re-run validators, so a merge that
         # would violate a Block invariant (e.g. fixed timing with no
         # anchor_source) must be checked explicitly. Use the validated
@@ -926,6 +952,7 @@ def _apply_adds(
             t=op.t,
             p=op.p,
             anchor_source=op.anchor_source,
+            link=op.link,
         )
         for op in add_ops
     }

@@ -14,8 +14,11 @@ than about planning.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import datetime
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -50,6 +53,14 @@ from .progress_events import (
     ProgressStatus as TimeboxProgressStatus,
 )
 from .timebox_candidate import PendingTimeboxCandidates, ValidatedTimeboxCandidate
+
+logger = logging.getLogger(__name__)
+
+#: How far past today the day proposal will walk looking for a day that is not
+#: already on the calendar. A week covers what produced this (one committed
+#: day, occasionally two); past it the proposal falls back to the starting day
+#: and the user flips it on the card, which is what the card is for.
+_PROPOSAL_HORIZON_DAYS = 7
 
 #: Kernel lifecycle phases worth showing. The kernel names its own phases, so
 #: this maps identifiers this system minted -- anything outside the map is
@@ -141,9 +152,73 @@ class HostPlanningContext:
     async def propose_planning_day(self, request: TurnRequest) -> PlanningDay:
         tz_name = planning_timezone()
         today = self._now().astimezone(ZoneInfo(tz_name)).date()
-        return PlanningDay.lock_default(
-            value=today, timezone=tz_name, lock_revision=1
+        value = await self._first_unplanned_day(
+            today, owner_user_id=request.actor_user_id
         )
+        return PlanningDay.lock_default(
+            value=value, timezone=tz_name, lock_revision=1
+        )
+
+    async def _first_unplanned_day(self, start: date, *, owner_user_id: str) -> date:
+        """`start`, or the first day after it carrying no committed session.
+
+        The scheduled opener has always asked this before opening a session
+        (`session_start.SessionStarter._blocked`). The `/timebox` and typed-text
+        door never did, so on 2026-09-05 a card at 18:47 proposed the Saturday
+        that had been committed at 03:40 and Hugo moved it to Sunday by hand.
+
+        This is not a judgement and must not become one: `standing_for` answers
+        it from rows this system minted, and it was answering correctly every
+        ten minutes that evening while the card ignored it. What a message
+        *means* -- a new day, or a revision of the standing one -- is the
+        judgement, and it is decided elsewhere.
+
+        Failing to read the store falls back to `start`. The day is a proposal
+        the user can flip, so a lookup that cannot be made is worth a line in
+        the log and not a session that refuses to open.
+        """
+
+        ledger = getattr(self._runtime, "timeboxing_session_store", None)
+        if ledger is None:
+            return start
+        # Only `committed_session_key` is read below, so this bound merely has
+        # to be a real datetime; the open clause it governs is another
+        # question -- whether the user is busy -- and not this one.
+        asked_at = self._now()
+        for offset in range(_PROPOSAL_HORIZON_DAYS):
+            day = start + timedelta(days=offset)
+            try:
+                standing = await ledger.standing_for(
+                    owner_user_id=owner_user_id,
+                    open_since=asked_at,
+                    planned_from=day,
+                    planned_to=day,
+                )
+            except Exception:
+                logger.warning(
+                    "propose_planning_day: could not read the session store for %s; "
+                    "proposing %s unchecked",
+                    owner_user_id,
+                    start,
+                    exc_info=True,
+                )
+                return start
+            if standing.committed_session_key is None:
+                return day
+            logger.info(
+                "propose_planning_day: %s is already committed by %s; looking past it",
+                day,
+                standing.committed_session_key,
+            )
+        logger.warning(
+            "propose_planning_day: %s days from %s are all committed for %s; "
+            "proposing %s and letting the user choose",
+            _PROPOSAL_HORIZON_DAYS,
+            start,
+            owner_user_id,
+            start,
+        )
+        return start
 
     async def resolve(
         self,
@@ -191,13 +266,91 @@ class HostPlanningContext:
                 f"the calendar {calendar_id} could not be read for {day}"
                 + (f" ({reason})" if reason else "")
             )
-        constraints = await self._active_constraints(planning_day)
+        # Both after the calendar read, deliberately: that read is what proves
+        # tmbx is up, and the material store the handles are written into lives
+        # in that same process. But neither of these needs the other's answer,
+        # and running them in sequence put the whole of `_work_refs` -- board
+        # 20s, then the judgement 45s, then the material writes 20s -- in front
+        # of the planner on top of the constraint query. The three inside
+        # `_work_refs` genuinely chain (there is nothing to judge before the
+        # board answers, and nothing to store before the judgement does); these
+        # two do not. CLAUDE.md's parallelise rule, on the one path where the
+        # user is watching a card and waiting.
+        #
+        # `return_exceptions=True` and re-raise, the same shape as
+        # `_store_materials` below and for the same reason: a bare gather
+        # propagates the first failure and leaves its sibling running detached,
+        # which here would be a half-finished lookup writing materials into a
+        # turn that has already failed. Collecting means both are awaited and
+        # the failure keeps its own traceback and its own type -- the caller
+        # catches `AdaptiveDependencyUnavailable`, not an ExceptionGroup.
+        #
+        # The constraint failure is raised first when both fail, which is the
+        # order a caller saw when these ran in sequence.
+        constraints, work = await asyncio.gather(
+            self._active_constraints(planning_day),
+            self._work_refs(snapshot, day),
+            return_exceptions=True,
+        )
+        for settled in (constraints, work):
+            if isinstance(settled, BaseException):
+                raise settled
         return PlanningContext(
-            facts=planning_facts(
-                day=day, calendar_snapshot=calendar_snapshot, constraints=constraints
-            ),
+            facts=[
+                *planning_facts(
+                    day=day,
+                    calendar_snapshot=calendar_snapshot,
+                    constraints=constraints,
+                ),
+                *work.facts,
+            ],
             applicable_constraints=constraints,
             calendar_snapshot=calendar_snapshot,
+            work_refs_unresolved=work.unresolved,
+        )
+
+    async def _work_refs(
+        self, snapshot: PlanningSessionSnapshot, day: str
+    ) -> WorkRefs:
+        """Which of the current sprint's Ready tickets this session asked for.
+
+        Runs on every candidate resolve, so a request made after the first
+        candidate reaches the next one. A session that asked for no work at all
+        costs nothing: `requested_work_text` is empty, and `work_refs_for_turn`
+        returns before it reads a board or asks a model.
+
+        The judge client is the one the Stage 1 judgements use -- the flash pin
+        at `minimal` effort, which with `json_output=True` is the request shape
+        the work-lookup eval measured. A host without one fails the turn rather
+        than quietly planning every day unlinked: that is a misconfiguration,
+        not an answer.
+        """
+        message = requested_work_text(snapshot)
+        if not message.strip():
+            return WorkRefs(facts=[], unresolved=False)
+
+        from fateforger.agents.tasks.board import TaskBoard
+
+        try:
+            board = TaskBoard.from_settings()
+        except Exception as exc:  # noqa: BLE001 - no board is one outcome
+            # `from_settings` raises on a missing token, before any request --
+            # and before a judge is asked for, since there would be nothing to
+            # ask about.
+            return work_board_unavailable(day, exc)
+
+        model_client = getattr(self._runtime, "timeboxing_judge_model_client", None)
+        if model_client is None:
+            raise AdaptiveDependencyUnavailable("no model client for the work lookup")
+
+        from .tmbx_client import TmbxClient
+
+        return await work_refs_for_turn(
+            day=day,
+            message=message,
+            board=board,
+            ask=judge_ask(model_client),
+            put_material=TmbxClient().material_put,
         )
 
     async def _frame_from_corpus(
@@ -394,6 +547,300 @@ def planning_facts(
         )
     )
     return facts
+
+
+#: The system a work ref points into. It is the material store's key alongside
+#: the page id, and both are identifiers somebody minted -- comparing them is
+#: the documented exception to CLAUDE.md's matching ban, not an opinion about
+#: what a ticket says.
+WORK_SOURCE = "notion"
+
+#: One page of the current sprint's Ready list. Notion caps a query at 100, and
+#: a sprint holding more Ready tickets than that is a different problem from
+#: this one: paging would widen a scope that is deliberately narrow, and the
+#: narrowness is what fixes what "the next one" means.
+WORK_ROW_LIMIT = 100
+
+#: The model transport `resolve_work` takes: one prompt in, one answer out.
+Ask = Callable[[str], Awaitable[str]]
+#: `MaterialStore.put` as the host reaches it -- across a process boundary in
+#: production, directly in a test. Returns the handle.
+PutMaterial = Callable[..., Awaitable[str]]
+
+
+#: How long the board read and the judgement each get. Both sit inside a
+#: planning turn the user is waiting on, so an unbounded hang is worse than
+#: either failing: a turn that never answers is a session nobody can continue,
+#: while a timeout takes the same non-blocking path as any other failure and
+#: the day is planned unlinked.
+BOARD_TIMEOUT_S = 20.0
+LOOKUP_TIMEOUT_S = 45.0
+#: The material writes cross the same MCP mount the calendar read crosses, so
+#: they can hang the same way. Bounded for the same reason as the other two: a
+#: hung write is still a dead turn, and a dead turn is the one outcome this
+#: whole path is arranged to prevent.
+MATERIAL_TIMEOUT_S = 20.0
+
+
+@dataclass(frozen=True)
+class WorkRefs:
+    """What one turn's work lookup produced, and whether it got an answer.
+
+    The two fields are not redundant, and neither is implied by the other. An
+    empty fact says "this turn resolved no handles"; the flag says why -- the
+    lookup could not be completed, rather than a message that named no ticket
+    -- and only the second changes how the planner should read the brief.
+    """
+
+    facts: list[PlanningFact]
+    unresolved: bool
+
+
+def work_lookup_failed(day: str, event: str, exc: BaseException) -> WorkRefs:
+    """A step of the lookup did not complete: say so at error, and go on.
+
+    **The fact is filed, with an empty value.** `_merge_facts` merges by
+    fact_id and never deletes, so only an empty value under the same id clears
+    the day's refs -- the same house pattern `REQUIRED_BLOCKS` uses, and for
+    the same reason. Filing nothing would leave the previous turn's handles
+    standing on the brief beside the sentence saying the work could not be
+    resolved, so the planner could attach a ticket while the card told the
+    reader the day was planned without one. That is the failure this whole
+    line exists to catch, inverted.
+
+    Clearing loses nothing. The fact records what the current message named,
+    not durable state: a link the planner already attached lives on the block
+    in the plan and in the material store, and neither is touched here. All
+    this stops is a new turn acting on an older message's intent, which is the
+    more dangerous direction.
+
+    **Every failure here is non-blocking**, decided 2026-09-08: the user asked
+    to plan a day, and whether the board timed out, the model named a ticket
+    nobody showed it, or the material store refused the write, the outcome for
+    them is the same -- nobody knows which ticket they meant, so the day is
+    planned unlinked and someone attaches one later, which is a decision this
+    plan already took. Nothing acts on a bad answer and the brief still says
+    the work could not be resolved, so the loudness lives in this log line and
+    on the brief rather than in a dead turn.
+
+    `event` distinguishes the four for whoever has to fix one --
+    `work_board_unavailable`, `work_lookup_hallucinated_id`,
+    `work_lookup_failed`, `work_material_unstorable` -- because they have four
+    different remedies even though the planner's next move is identical.
+    """
+    logger.error(
+        "%s: %s: %s",
+        event,
+        type(exc).__name__,
+        exc,
+        # The traceback, because the catch is broad. A bare
+        # "work_lookup_failed: TypeError: 'NoneType' object is not
+        # subscriptable" names neither the frame nor the layer it came from,
+        # and the thing that raised may be `resolve_work`, the MCP client or a
+        # row mapper. Loudness that survives the widening.
+        exc_info=True,
+        extra={"event": event, "error_type": type(exc).__name__},
+    )
+    from fateforger.agents.timeboxing.work_refs import work_refs_fact_id
+
+    return WorkRefs(
+        facts=[
+            PlanningFact(
+                fact_id=work_refs_fact_id(day),
+                kind=FactKind.WORK_REFS,
+                value=[],
+                source="system",
+            )
+        ],
+        unresolved=True,
+    )
+
+
+def work_board_unavailable(day: str, exc: BaseException) -> WorkRefs:
+    """The board could not be built or read, under its own event name."""
+    return work_lookup_failed(day, "work_board_unavailable", exc)
+
+
+def requested_work_text(snapshot: Any) -> str:
+    """What the user asked this day to hold, in their own words.
+
+    `requested_activity` facts are what the intent interpreter filed from what
+    they typed -- one per thing they want the day to carry. They are joined and
+    handed to the judgement whole; nothing here reads them, and no other fact
+    kind is mixed in, because a bedtime is not a request for work.
+
+    An empty string means nobody asked for anything, and the caller skips the
+    lookup entirely: no board read, no model call, nothing on the brief.
+    """
+    wanted = [
+        fact.value
+        for fact in getattr(snapshot, "facts", [])
+        if fact.kind is FactKind.REQUESTED_ACTIVITY and isinstance(fact.value, str)
+    ]
+    return "\n".join(text for text in wanted if text.strip())
+
+
+def judge_ask(model_client: Any) -> Ask:
+    """`resolve_work`'s transport, in the request shape the eval measured.
+
+    The whole prompt goes in one user turn and the answer comes back as a JSON
+    object -- `json_output=True`, not a schema. That is what
+    `tests/integration/test_eval_work_lookup.py` sampled, and it says so: a
+    system/user split or a transport without `response_format` invalidates its
+    rates. The model and the reasoning effort are the client's, and the judge
+    client is built as the flash pin at `minimal` (`llm/factory.py`), which is
+    the other half of that shape.
+    """
+
+    async def ask(prompt: str) -> str:
+        from autogen_core.models import UserMessage
+
+        result = await model_client.create(
+            [UserMessage(content=prompt, source="host")],
+            json_output=True,
+        )
+        content = result.content
+        if not isinstance(content, str):
+            raise AdaptiveDependencyUnavailable(
+                f"the work lookup answered with {type(content).__name__}, not text"
+            )
+        return content
+
+    return ask
+
+
+async def _store_materials(rows: list[Any], put_material: PutMaterial) -> list[str]:
+    """The handle for each row, all written at once and all waited for.
+
+    Concurrent because the writes are independent and this sits inside the
+    latency of a turn somebody is watching a progress card for.
+
+    `return_exceptions=True` because a bare gather propagates the first failure
+    and leaves its siblings running detached: a second failure then surfaces as
+    an unretrieved-exception warning with nothing to trace it to. Harmless for
+    correctness -- the puts are idempotent and these refs are discarded -- but
+    noise nobody owns. Collecting them means every write is awaited, and the
+    first failure is re-raised with its own traceback intact.
+
+    One failed write refuses the whole set rather than returning the handles
+    that did land: a partial list reads as "this is the work", and the ticket
+    that fell out is the one nobody would notice missing.
+
+    Bounded, because these cross the same MCP mount the calendar read crosses
+    and can hang the same way.
+    """
+    settled = await asyncio.wait_for(
+        asyncio.gather(
+            *(
+                put_material(
+                    source=WORK_SOURCE,
+                    external_id=row.page_id,
+                    url=row.url,
+                    label=row.name,
+                )
+                for row in rows
+            ),
+            return_exceptions=True,
+        ),
+        timeout=MATERIAL_TIMEOUT_S,
+    )
+    refused = next(
+        (result for result in settled if isinstance(result, BaseException)), None
+    )
+    if refused is not None:
+        raise refused
+    return list(settled)
+
+
+async def work_refs_for_turn(
+    *,
+    day: str,
+    message: str,
+    board: Any,
+    ask: Ask,
+    put_material: PutMaterial,
+) -> WorkRefs:
+    """Turn what the user asked for into handles the planner can attach.
+
+    Four steps, in this order and host-side: read the current sprint's Ready
+    rows, ask which of them the message names, record each answer in the
+    material store, and file one fact carrying the handles.
+
+    **The scope is decided here and never by the model.** `current_sprint_ready`
+    is what fixes the meaning of "the next one" -- the spike that produced this
+    plan watched a subagent choose its own scope and pass over an overdue
+    in-sprint tax filing. The rows go to `resolve_work` in the board's own
+    order, unsorted and unfiltered, because the prompt tells the model that
+    order is the person's ranking (see `build_prompt`).
+
+    **No failure here blocks the turn.** Each step is caught broadly and logged
+    under its own event name (see `work_lookup_failed`), and the caller puts
+    one sentence on the brief. Broadly, because the failures that matter are
+    not the typed ones: `TaskBoard` wraps an error envelope and a malformed
+    page, but a Notion outage arrives as an httpx or anyio error from inside
+    the MCP client, which is the single likeliest way this fails. Both waits
+    are bounded, because a planning turn that hangs is worse than one planned
+    unlinked.
+    """
+    if not message.strip():
+        # Nobody asked for anything, so there is nothing to point at: no board
+        # read, no model call, and nothing on the brief either way.
+        return WorkRefs(facts=[], unresolved=False)
+
+    from fateforger.agents.timeboxing.work_lookup import UnknownWorkId, resolve_work
+    from fateforger.agents.timeboxing.work_refs import work_refs_fact_id
+
+    try:
+        listing = await asyncio.wait_for(
+            board.list_tasks("current_sprint_ready", limit=WORK_ROW_LIMIT),
+            timeout=BOARD_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 - every board failure is one outcome
+        return work_board_unavailable(day, exc)
+
+    try:
+        rows = await asyncio.wait_for(
+            resolve_work(message, list(listing.tasks), ask=ask),
+            timeout=LOOKUP_TIMEOUT_S,
+        )
+    except UnknownWorkId as exc:
+        # Its own name: an id nobody showed the model is a prompt or a model
+        # problem, not an outage, and it is the one failure here that says
+        # something about the judgement rather than about the plumbing.
+        return work_lookup_failed(day, "work_lookup_hallucinated_id", exc)
+    except Exception as exc:  # noqa: BLE001 - transport, timeout, unparseable
+        return work_lookup_failed(day, "work_lookup_failed", exc)
+
+    if not rows:
+        # The ordinary case, and it stays silent: a message naming a topic
+        # rather than an item plans the day with no ticket attached. No fact,
+        # deliberately unlike the failure paths above: this is an answer, and
+        # the message it answered still holds every earlier request, so a ref
+        # the model named on an earlier draw and passes over on this one is a
+        # disagreement between two samples, not a retraction. Clearing on it
+        # would let sampling noise drop a ticket the user did ask for.
+        return WorkRefs(facts=[], unresolved=False)
+
+    try:
+        handles = await _store_materials(rows, put_material)
+    except Exception as exc:  # noqa: BLE001 - a handle nothing stored is no handle
+        return work_lookup_failed(day, "work_material_unstorable", exc)
+
+    refs = [
+        {"link": handle, "label": row.name, "task": row.number}
+        for handle, row in zip(handles, rows)
+    ]
+    return WorkRefs(
+        facts=[
+            PlanningFact(
+                fact_id=work_refs_fact_id(day),
+                kind=FactKind.WORK_REFS,
+                value=refs,
+                source="system",
+            )
+        ],
+        unresolved=False,
+    )
 
 
 class PendingCandidateCommitPort:
