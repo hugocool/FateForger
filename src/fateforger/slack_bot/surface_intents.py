@@ -91,6 +91,9 @@ _FIELDS_BY_DECISION: dict[str, frozenset[str]] = {
     "provide_facts": frozenset({"facts"}),
     "revise": frozenset({"facts", "revision_instruction"}),
     "confirm_planning_day": frozenset({"day_type", "day_offset"}),
+    # `facts` here is inert, not needed: the binder builds the suspension fact
+    # itself and never reads `interpreted.facts`. It costs nothing because
+    # steer_not_today is only ever offered where provide_facts already is.
     "steer_not_today": frozenset({"facts", "constraint_uid"}),
     "restore": frozenset({"constraint_uid"}),
     "deny": frozenset({"assumption_id"}),
@@ -100,14 +103,58 @@ _FIELDS_BY_DECISION: dict[str, frozenset[str]] = {
 }
 
 
+#: Everything a ``create_model`` rebuild cannot carry across. Fields and config
+#: travel; decorated behaviour does not, because the rebuild has no ``__base__``
+#: to inherit it from.
+_UNCARRIED_DECORATORS = (
+    "validators",
+    "field_validators",
+    "root_validators",
+    "model_validators",
+    "field_serializers",
+    "model_serializers",
+    "computed_fields",
+)
+
+
+def _refuse_to_drop_behaviour(base: type[T]) -> None:
+    """Raise rather than silently rebuild a schema without its validators.
+
+    The rebuild carries fields and config; a ``@model_validator`` would be
+    dropped and nothing would say so. That is not hypothetical here: the
+    sibling ``ArtifactActionMeta`` already enforces "this decision requires
+    that field" with exactly such a validator, so one arriving on a turn schema
+    is a plausible next change -- and its silent loss would let a malformed turn
+    through into the binder. Carrying it correctly means narrowing a validator's
+    own field references too; until something needs that, refusing is honest.
+    """
+
+    declared = sorted(
+        name
+        for kind in _UNCARRIED_DECORATORS
+        for name in getattr(base.__pydantic_decorators__, kind, {})
+    )
+    if declared:
+        raise TypeError(
+            f"{base.__name__} declares {', '.join(declared)}, which narrowing "
+            "cannot carry onto the rebuilt schema. Teach _narrow_fields to "
+            "carry it before narrowing this schema."
+        )
+
+
 def _narrow_fields(base: type[T], allowed_decisions: tuple[str, ...]) -> type[T]:
-    """Drop every field no allowed decision can fill.
+    """Narrow to the fields the allowed decisions can fill, and to those decisions.
 
     Rebuilt without ``__base__``: inheriting the parent would carry its fields
     along, and removal is the whole point. Each surviving field keeps the
     annotation and the ``FieldInfo`` ``base`` declared -- ``Clock``'s validator
     and ``day_offset``'s bounds are correctness, not decoration -- and the new
     model carries ``base``'s own config, so strictness travels too.
+
+    The ``decision`` Literal narrows by the same rule as the fields. A schema
+    offering a decision the state disallows is one the model can only waste a
+    turn on, and at the date stage it advertised ``revise`` while carrying no
+    ``revision_instruction`` to express it.
     """
 
     retained = {"decision"}
@@ -117,19 +164,27 @@ def _narrow_fields(base: type[T], allowed_decisions: tuple[str, ...]) -> type[T]
         # no-op here rather than an error.
         retained |= _FIELDS_BY_DECISION.get(decision, frozenset())
     retained &= set(base.model_fields)
-    if retained == set(base.model_fields):
+    offered = get_args(base.model_fields["decision"].annotation)
+    decisions_narrow = set(offered) != set(allowed_decisions)
+    if retained == set(base.model_fields) and not decisions_narrow:
+        # Nothing to drop, so nothing is rebuilt and nothing can be lost --
+        # which is why the decorator guard below belongs on this side of it.
         return base
-    return create_model(  # type: ignore[call-overload]
-        f"{base.__name__}Narrowed",
-        __config__=base.model_config,
+    _refuse_to_drop_behaviour(base)
+    fields: dict[str, object] = {
         # Equality, not `in`: an AST test bans every membership operator in
         # this module, because one over user text would be the banned
         # judgement. The module's other comparisons read the same way.
-        **{
-            name: (info.annotation, info)
-            for name, info in base.model_fields.items()
-            if any(name == kept for kept in retained)
-        },
+        name: (info.annotation, info)
+        for name, info in base.model_fields.items()
+        if any(name == kept for kept in retained)
+    }
+    if decisions_narrow:
+        fields["decision"] = (Literal[tuple(allowed_decisions)], ...)
+    return create_model(  # type: ignore[call-overload]
+        f"{base.__name__}Narrowed",
+        __config__=base.model_config,
+        **fields,
     )
 
 
@@ -273,6 +328,9 @@ class SurfaceIntentInterpreter:
             raise SurfaceIntentError(
                 f"could not read the reply against the {view.surface_kind}"
             ) from exc
+        # Defence, not the gate: the narrowed Literal already made a
+        # disallowed decision unnameable. This still stands for a host that
+        # does not enforce structured outputs.
         if not any(interpreted.decision == item for item in allowed):
             raise SurfaceIntentError(
                 f"decision {interpreted.decision!r} is not allowed in "

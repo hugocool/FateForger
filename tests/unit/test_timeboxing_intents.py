@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
@@ -126,8 +127,9 @@ async def test_proceed_during_capture_becomes_advance() -> None:
 
     assert intent == Advance()
     # A narrowed rebuild, never the base itself: what this guards is that
-    # a state with nothing on offer cannot express a choice at all.
-    assert "option_id" not in client.calls[0][1].model_fields
+    # a state with nothing on offer cannot express a choice at all, and
+    # carries exactly the fields its own decisions can fill.
+    assert set(client.calls[0][1].model_fields) == {"decision", "facts"}
 
 
 @pytest.mark.asyncio
@@ -522,7 +524,7 @@ async def test_a_typed_choice_can_only_name_an_option_that_was_offered() -> None
 
     schema = client.calls[0][1]
     assert schema is not InterpretedTimeboxTurn
-    assert "option_id" in schema.model_fields
+    assert set(schema.model_fields) == {"decision", "facts", "option_id"}
     with pytest.raises(ValidationError):
         schema.model_validate_json(
             json.dumps({"decision": "choose_option", "option_id": "Gym first"})
@@ -553,8 +555,9 @@ async def test_an_open_question_still_has_nothing_to_choose_from() -> None:
         await interpreter.interpret("the first one", _blocker_snapshot([]))
 
     # A narrowed rebuild, never the base itself: what this guards is that
-    # a state with nothing on offer cannot express a choice at all.
-    assert "option_id" not in client.calls[0][1].model_fields
+    # a state with nothing on offer cannot express a choice at all, and
+    # carries exactly the fields its own decisions can fill.
+    assert set(client.calls[0][1].model_fields) == {"decision", "facts"}
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
         '"allowed_decisions":["provide_facts","back","cancel"]'
@@ -572,8 +575,9 @@ async def test_choosing_is_not_offered_when_no_question_is_open() -> None:
         await interpreter.interpret("the first one", _capture_snapshot())
 
     # A narrowed rebuild, never the base itself: what this guards is that
-    # a state with nothing on offer cannot express a choice at all.
-    assert "option_id" not in client.calls[0][1].model_fields
+    # a state with nothing on offer cannot express a choice at all, and
+    # carries exactly the fields its own decisions can fill.
+    assert set(client.calls[0][1].model_fields) == {"decision", "facts"}
     prompt = "\n".join(message.content for message in client.calls[0][0])
     assert (  # Stage 1 decision set, spec 2026-09-04
         '"allowed_decisions":["provide_facts","back","cancel"]'
@@ -912,10 +916,17 @@ async def test_a_committed_session_does_not_offer_to_cancel_or_approve() -> None
 
     client = _SchemaOutputClient({"decision": "cancel", "facts": []})
 
-    with pytest.raises(ValueError, match="not allowed in committed"):
+    # A literal_error out of the schema, not the interpreter's after-the-fact
+    # allowed check: the narrowed Literal means the model cannot name `cancel`
+    # here at all. ValidationError is a ValueError, as the binders' callers
+    # already rely on.
+    with pytest.raises(ValueError):
         await TimeboxingIntentInterpreter(client).interpret(
             "forget it", _committed_snapshot()
         )
+
+    offered = get_args(client.calls[0][1].model_fields["decision"].annotation)
+    assert offered == ("provide_facts", "revise")
 
 
 @pytest.mark.asyncio
