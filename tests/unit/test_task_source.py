@@ -16,19 +16,23 @@ prose to decide anything.
 from __future__ import annotations
 
 import ast
+import inspect
 from datetime import date
 from pathlib import Path
 
 import pytest
 
 from fateforger.agents.tasks.board import (
+    Scope,
     SprintRef,
+    TaskBoard,
     TaskBoardError,
     TaskListing,
     TaskRow,
 )
 from fateforger.agents.tasks.task_source import (
     BoardTaskSource,
+    TaskSource,
     TaskSourceUnavailable,
 )
 
@@ -82,14 +86,20 @@ def listing(
 
 
 class FakeBoard:
-    """Answers one canned listing, or raises it, and records how it was asked."""
+    """Answers one canned listing, or raises it, and records how it was asked.
+
+    `list_tasks` carries `TaskBoard`'s signature exactly, which
+    `test_the_port_and_its_fake_match_what_they_stand_for` holds it to: a fake
+    accepting a call the real board refuses would let this file pin an
+    interface nothing implements.
+    """
 
     def __init__(self, answer: TaskListing | Exception) -> None:
         self._answer = answer
         self.calls: list[tuple[str, int]] = []
 
     async def list_tasks(
-        self, scope: str, *, limit: int = 25, cursor: str | None = None
+        self, scope: Scope, *, limit: int = 25, cursor: str | None = None
     ) -> TaskListing:
         self.calls.append((scope, limit))
         if isinstance(self._answer, Exception):
@@ -305,6 +315,53 @@ async def test_a_board_that_fails_becomes_one_named_failure_with_its_cause(
         await BoardTaskSource(fake).candidates(DAY)
 
     assert excinfo.value.__cause__ is error
+
+
+async def test_a_due_the_board_wrote_but_nobody_can_parse_fails_loudly() -> None:
+    """The mapping is inside the guard, and this is why.
+
+    Dropping a deadline that will not parse would turn an overdue ticket into
+    a ticket that is not overdue -- a silent wrong answer of exactly the shape
+    the caller's unresolved flag exists to prevent. With the mapping outside
+    the `try` this escapes as a bare `ValueError`, past every caller that
+    handles `TaskSourceUnavailable` and only that.
+    """
+    fake = FakeBoard(listing(row(due="sometime next week")))
+
+    with pytest.raises(TaskSourceUnavailable) as excinfo:
+        await BoardTaskSource(fake).candidates(DAY)
+
+    assert isinstance(excinfo.value.__cause__, ValueError)
+
+
+# --- the port's shape ---------------------------------------------------
+
+
+def test_the_port_and_its_fake_match_what_they_stand_for() -> None:
+    """Two stand-ins, held to the things they stand in for.
+
+    `BoardTaskSource` is handed around as a `TaskSource` and `FakeBoard` in
+    place of a `TaskBoard`; neither relationship is checked at runtime, so a
+    renamed method or a moved default would surface only in the host, a task
+    later. Signatures are compared whole -- names, kinds, defaults, the
+    keyword-only marker and annotations.
+
+    `eval_str=True` because the interface is the types, not how they are
+    spelled: every module here carries `from __future__ import annotations`, so
+    unevaluated the annotations are source strings and this would fail over
+    `Scope` written out as its `Literal`.
+    """
+    assert inspect.signature(
+        BoardTaskSource.candidates, eval_str=True
+    ) == inspect.signature(
+        TaskSource.candidates, eval_str=True
+    ), "BoardTaskSource has drifted from the TaskSource port"
+
+    assert inspect.signature(
+        FakeBoard.list_tasks, eval_str=True
+    ) == inspect.signature(
+        TaskBoard.list_tasks, eval_str=True
+    ), "FakeBoard has drifted from TaskBoard.list_tasks"
 
 
 # --- the standing rule --------------------------------------------------

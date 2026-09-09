@@ -37,11 +37,13 @@ from fateforger.agents.tasks.board import Scope, TaskBoard, TaskListing, TaskRow
 Source = Literal["notion", "ticktick"]
 CandidateState = Literal["next", "waiting_for", "someday", "done"]
 
-#: One page of a board, sized to be read rather than scrolled. A caller with
-#: its own budget passes it -- the planning host asks for `WORK_ROW_LIMIT` --
-#: and gets whatever the board holds; the current sprint held twelve Ready
-#: rows on 2026-09-08, when the work-lookup judgement was measured
-#: (`tests/integration/test_eval_work_lookup.py`).
+#: One page of a board, sized to be read rather than scrolled. It cannot move
+#: what the work-lookup judgement measures -- that eval runs on a frozen
+#: twelve-row snapshot (`tests/integration/test_eval_work_lookup.py`) and never
+#: reaches a board. The hazard is production: the planning host asks for
+#: `WORK_ROW_LIMIT` rows, so a caller on that path who took this default would
+#: show the judgement twelve of a hundred and silently narrow what "the next
+#: one" can name. Callers with a budget pass it.
 DEFAULT_CANDIDATE_LIMIT = 12
 
 #: The measured scope: the current sprint's `Ready` rows. Widening it to
