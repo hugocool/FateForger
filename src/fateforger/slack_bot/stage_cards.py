@@ -409,7 +409,7 @@ def _gate_line(gate: Gate) -> str:
     Grouped by row rather than listed per cell: four rows open on the same
     criterion used to read as that criterion named four times, as if it were
     four separate needs (#413). Row and criterion keys are identifiers this
-    system minted, so grouping and ordering them is arithmetic. Eight rows is
+    system minted, so grouping and ordering them is arithmetic. Nine rows is
     the whole floor, so nothing is capped.
 
     Grouping by membership in `ROWS`/`CRITERIA` would silently drop a cell

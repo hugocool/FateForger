@@ -188,8 +188,9 @@ requirement behind the blocker, and `_QUESTION_STAGE`, the hand-authored map fro
 kind to stage, is deleted. `skeleton.day_frame` and every `elicit.*` cell are stage 1;
 `skeleton.requested_activity` and `skeleton.activity_reading` are stage 2. That closes
 #276: the ladder is 1, 1, …, 2, 3 by construction. The run loop enforces the order this
-implies: it consults Stage 1 before `first_hard_user_blocker()` whenever the stage is
-still open, so the request and the frame are asked only after Stage 1 closes (#411).
+implies: it consults Stage 1 before `first_hard_user_blocker()` whenever the target
+artifact is the skeleton and the stage is still open, so the request and the frame are
+asked only after Stage 1 closes (#411).
 
 `skeleton.day_frame` stays user-owned and hard. The `bounded` row reads the `DAY_FRAME`
 fact as a stated fact. When memory supplied the frame silently, which is the defect in

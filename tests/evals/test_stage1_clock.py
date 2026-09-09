@@ -122,7 +122,7 @@ shows. Shipping that number would have overstated the effect.
 
     set -a; source .env; set +a
     STAGE1_FIXTURE_DB=data/fixtures/stage1-20260905.db \\
-      PYTHONPATH=src .venv/bin/python -m pytest tests/evals/test_stage1_clock.py -m slow -q
+      PYTHONPATH=src .venv/bin/python -m pytest tests/evals/test_stage1_clock.py -m slow -q -s
 
 The contender is `build_autogen_chat_client("timeboxing_judge")`, same as
 `test_stage1_elicitation.py`: the client the host actually builds the Stage 1
