@@ -90,7 +90,11 @@ async def test_a_decision_outside_the_allowed_set_raises() -> None:
     The `decision` Literal is narrowed to the state's own decisions, so a
     decision the surface disallows is one the model cannot name -- a
     literal_error rather than a reading the interpreter then throws away. The
-    check in `interpret` stays as defence for a host that ignores the schema.
+    runtime `allowed` check in `interpret` is therefore unreachable through
+    `interpret` today: `model_validate_json` is local validation no host can
+    bypass, so the schema always refuses first. It is kept as defence in
+    depth, against the Literal and `allowed` being derived separately in
+    future.
     """
 
     client = _SchemaOutputClient({"decision": "go"})
