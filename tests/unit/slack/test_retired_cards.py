@@ -39,7 +39,7 @@ async def test_a_press_without_a_message_is_ignored_not_raised():
     assert client.updates == []
 
 
-def test_the_seven_legacy_action_ids_are_all_covered():
+def test_the_ten_legacy_action_ids_are_all_covered():
     assert set(retired_cards.RETIRED_ACTION_IDS) == {
         "ff_timebox_confirm_submit",
         "ff_timebox_cancel_submit",
@@ -48,4 +48,7 @@ def test_the_seven_legacy_action_ids_are_all_covered():
         "ff_timebox_stage_back",
         "ff_timebox_stage_redo",
         "ff_timebox_stage_cancel",
+        "timeboxing_constraint_review",
+        "ff_timeboxing_constraint_review_all",
+        "timeboxing_constraint_review_all",
     }

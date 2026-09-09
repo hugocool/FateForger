@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from fateforger.agents.timeboxing.session_contracts import DayType
 from fateforger.slack_bot.messages import SlackBlockMessage
-from fateforger.slack_bot.workspace import WorkspaceRegistry
 
 FF_TIMEBOX_COMMIT_START_ACTION_ID = "ff_timebox_start"
 FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID = "ff_timebox_day_select"
@@ -33,22 +32,6 @@ def day_type_action_id(day_type: "DayType") -> str:
     """
 
     return f"{FF_TIMEBOX_DAY_TYPE_ACTION_ID}_{day_type.value}"
-
-
-def _persona_payload(agent_type: str) -> dict[str, Any]:
-    """Return Slack message persona overrides for a given agent type."""
-    directory = WorkspaceRegistry.get_global()
-    persona = directory.persona_for_agent(agent_type) if directory else None
-    if not persona:
-        return {}
-    payload: dict[str, Any] = {}
-    if persona.username:
-        payload["username"] = persona.username
-    if persona.icon_emoji:
-        payload["icon_emoji"] = persona.icon_emoji
-    if persona.icon_url:
-        payload["icon_url"] = persona.icon_url
-    return payload
 
 
 def _iter_days(start: date, *, count: int) -> list[date]:

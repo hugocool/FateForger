@@ -1,9 +1,11 @@
 """One answer for every button the legacy timeboxing agent left in Slack.
 
-The seven action ids below were posted by that agent's stage and submit
-cards. The agent is gone; a press must say so, not fail. The ids are
-kept verbatim because Slack will keep sending them for as long as the
-messages exist.
+The ten action ids below were posted by that agent's stage and submit
+cards, plus the constraint-review row/all buttons that
+`constraint_review.py` (deleted) rendered on the memory-tool-result blocks
+posted to legacy timeboxing session thread roots. The agent is gone; a
+press must say so, not fail. The ids are kept verbatim because Slack will
+keep sending them for as long as the messages exist.
 """
 
 from __future__ import annotations
@@ -18,6 +20,17 @@ FF_TIMEBOX_STAGE_BACK_ACTION_ID = "ff_timebox_stage_back"
 FF_TIMEBOX_STAGE_REDO_ACTION_ID = "ff_timebox_stage_redo"
 FF_TIMEBOX_STAGE_CANCEL_ACTION_ID = "ff_timebox_stage_cancel"
 
+# Rendered by constraint_review.py (deleted at 6f93212) on the
+# memory-tool-result blocks it built for legacy timeboxing session thread
+# roots: a per-row "Review" accessory button and a "Review all constraints"
+# actions-block button. Their four Bolt listeners (two of them sharing one
+# handler for the current and legacy "review all" ids) were deleted with
+# that module; the view callback they opened is not listed here because a
+# modal is unreachable once the button that opens it is inert.
+CONSTRAINT_ROW_REVIEW_ACTION_ID = "timeboxing_constraint_review"
+FF_CONSTRAINT_REVIEW_ALL_ACTION_ID = "ff_timeboxing_constraint_review_all"
+LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID = "timeboxing_constraint_review_all"
+
 RETIRED_ACTION_IDS: tuple[str, ...] = (
     FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID,
     FF_TIMEBOX_CANCEL_SUBMIT_ACTION_ID,
@@ -26,6 +39,9 @@ RETIRED_ACTION_IDS: tuple[str, ...] = (
     FF_TIMEBOX_STAGE_BACK_ACTION_ID,
     FF_TIMEBOX_STAGE_REDO_ACTION_ID,
     FF_TIMEBOX_STAGE_CANCEL_ACTION_ID,
+    CONSTRAINT_ROW_REVIEW_ACTION_ID,
+    FF_CONSTRAINT_REVIEW_ALL_ACTION_ID,
+    LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID,
 )
 
 RETIRED_CARD_TEXT = (

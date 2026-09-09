@@ -1,4 +1,7 @@
-"""Classify every test by seam and by how it builds its subject. AST only.
+"""Classify every test by seam and by how it builds its subject. Mostly AST;
+`seam_of` also does plain substring tests on source text, but only for
+identifiers this repo itself minted (`OpenRouterJudge`, `OPENROUTER`,
+`sqlite`, the `slow` marker) -- never on user content.
 
 Usage:
     python taxonomy.py [out.json]

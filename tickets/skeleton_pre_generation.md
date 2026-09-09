@@ -138,8 +138,11 @@ Matches existing codebase:
 
 ## Validation Executed
 
-- `poetry run pytest tests/unit/test_timeboxing_skeleton_pre_generation.py tests/unit/test_timeboxing_submit_flow.py tests/unit/test_timeboxing_review_submit_prompt.py tests/integration/test_slack_timebox_buttons.py -q`
-- `poetry run pytest tests/unit/test_timeboxing_graphflow_state_machine.py tests/unit/test_phase4_rewiring.py tests/unit/test_slack_timeboxing_routing.py tests/unit/test_timeboxing_commit_skips_initial_extraction.py -q`
+- ~~`poetry run pytest tests/unit/test_timeboxing_skeleton_pre_generation.py tests/unit/test_timeboxing_submit_flow.py tests/unit/test_timeboxing_review_submit_prompt.py tests/integration/test_slack_timebox_buttons.py -q`~~
+- ~~`poetry run pytest tests/unit/test_timeboxing_graphflow_state_machine.py tests/unit/test_phase4_rewiring.py tests/unit/test_slack_timeboxing_routing.py tests/unit/test_timeboxing_commit_skips_initial_extraction.py -q`~~
+- Those six files went with the 2026-09-09 legacy-agent retirement; the
+  surviving equivalents are `tests/unit/slack/test_retired_cards.py` and
+  `tests/unit/timeboxing/test_slack_timeboxing_routing.py`.
 
 ## Notes / Remaining Human Verification
 

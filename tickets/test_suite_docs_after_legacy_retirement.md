@@ -2,7 +2,7 @@
 
 ## Tracking
 
-- Status: Open — belongs to the legacy-agent retirement PR, not a follow-up
+- Status: Done in c38bf3f for items 1-5; item 6 (docs/architecture) done in this fix wave
 - Branch: `chore/retire-legacy-timeboxing-agent`
 
 ## Why
@@ -16,7 +16,7 @@ of that code as live, or describe backends it owned as still belonging to it.
 
 ## Scope
 
-**1. `tests/README.md` — "What's out of `tests/unit/`" (already partly done).**
+**1. `tests/README.md` — "What's out of `tests/unit/`" (already partly done). Done in c38bf3f.**
 
 A second paragraph naming the 2026-09-09 retirement, the 34 deleted modules,
 the ~60 test files that went with them, and the 2 that were rewired instead
@@ -26,7 +26,7 @@ count differs from what's there. The doubles list is unchanged — this
 retirement touched no shared test double.
 
 **2. `CALENDAR_QUERY_LOCATIONS.md` and `MIGRATION_ARCHIVE_TO_CALENDAR_HAUNTER.md`
-(the two root docs `tests/README.md` already marks superseded).**
+(the two root docs `tests/README.md` already marks superseded). Done in c38bf3f.**
 
 Both already carry a "Superseded (2026-09)" note pointing at
 `fateforger/haunt/` in place of `CalendarHaunter`. Add one line to each
@@ -36,7 +36,7 @@ also gone now — it left with the legacy agent — and that `src/tmbx/calendar/
 Do not rewrite anything else in either file; they stay a record of what was
 true when written.
 
-**3. `src/fateforger/agents/timeboxing/README.md` and `AGENTS.md`.**
+**3. `src/fateforger/agents/timeboxing/README.md` and `AGENTS.md`. Done in c38bf3f.**
 
 Both describe the Graphiti-backed durable memory and the `constraint_mcp`
 backend as belonging to the timeboxing agent — read the "Graphiti durable
@@ -61,14 +61,14 @@ export (it's deleted; `mcp_clients.py` now holds only `ConstraintMemoryClient`);
 `nodes/` package is deleted) as an example of `GraphFlow`/`DiGraphBuilder`
 usage — replace the citation or drop it.
 
-**4. `src/fateforger/core/README.md`.**
+**4. `src/fateforger/core/README.md`. Done in c38bf3f.**
 
 Same correction as item 3, scoped to this file's own claim: it currently
 reads as if `TIMEBOXING_MEMORY_BACKEND=graphiti` and the Graphiti startup
 checks exist for the timeboxing agent. Say they serve `runtime.py`'s startup
 checks and tasks' defaults memory now.
 
-**5. `src/fateforger/slack_bot/README.md`.**
+**5. `src/fateforger/slack_bot/README.md`. Done in c38bf3f.**
 
 Commit `6f93212` (this retirement) deleted the `constraint_review.py` file-
 index row and the `timeboxing_constraint_review` /
@@ -78,6 +78,24 @@ gone (its only writers were the legacy agent and a review modal only it
 posted). Add one line where those rows were, saying the surface is gone and
 naming why (no writer left after the retirement), rather than leaving the
 removal silent.
+
+**6. `docs/architecture/agents.md`, `docs/architecture/timeboxing_refactor.md`,
+`docs/indices/agents_timeboxing.md`. Done in the 2026-09-09 fix wave.**
+
+`agents.md` opened with `TimeboxingFlowAgent` as the primary planner (code
+pointer `agents/timeboxing/agent.py`, deleted) and named `ConstraintRetriever`
+(`constraint_retriever.py`, deleted) as a live component;
+`timeboxing_refactor.md`'s code pointers name `stage_gating.py` and other
+deleted coordinator files. Rewrote `agents.md` to the three live components —
+the adaptive kernel (`adaptive_timeboxing.py`, driven from
+`slack_bot/timeboxing_host.py`), the harness planner
+(`slack_bot/deepseek_timebox_planner.py`, reading constraints via
+`kg_constraint_client.py` → `durable_constraint_store.py`), and the tmbx
+server (`src/tmbx/server.py`) for calendar writes — with the retired sections
+marked with the retirement date and commit. Added a superseded line (not a
+rewrite) to `timeboxing_refactor.md` pointing at `agents.md` and
+`agents_timeboxing.md`; `agents_timeboxing.md` already carried a full
+retirement note and needed no change.
 
 ## Out of scope
 
@@ -102,6 +120,9 @@ in them.
   checks, not the (deleted) timeboxing coordinator;
 - `src/fateforger/slack_bot/README.md` explains, rather than silently
   omits, the two rows Task 6 removed;
-- `grep -rn "TimeboxingFlowAgent\|McpCalendarClient\|constraint_review\|timeboxing_submit\|nodes/nodes" --include="*.md" src tests README_CALENDAR_MCP.md GOOGLE_CALENDAR_MCP_GUIDE.md`
+- `docs/architecture/agents.md` names the three live components, not the
+  deleted coordinator, as the primary planner; `docs/architecture/timeboxing_refactor.md`
+  carries a superseded line rather than dead code pointers;
+- `grep -rn "TimeboxingFlowAgent\|McpCalendarClient\|constraint_review\|timeboxing_submit\|nodes/nodes" --include="*.md" src tests docs/architecture docs/indices README_CALENDAR_MCP.md GOOGLE_CALENDAR_MCP_GUIDE.md`
   returns only lines that say the thing is gone;
 - the docs commit is part of this PR.

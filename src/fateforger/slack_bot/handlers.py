@@ -3016,9 +3016,6 @@ async def route_slack_event(
     if handoff_target:
         focus.set_user_focus(user, handoff_target)
         target_channel = _channel_for_agent(handoff_target)
-        # For timeboxing, always anchor the session in the dedicated channel thread (when configured),
-        # even if the user started in a DM. The DM becomes the control surface (buttons/modals),
-        # and the channel thread becomes the durable workspace/log.
         should_redirect = bool(target_channel and target_channel != channel) and (not is_dm)
         if should_redirect:
             try:

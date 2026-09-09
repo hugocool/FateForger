@@ -2,66 +2,55 @@
 title: Agents
 ---
 
-## TimeboxingFlowAgent
+> **Retired (2026-09-09).** `TimeboxingFlowAgent` (`agents/timeboxing/agent.py`),
+> `ConstraintRetriever` (`agents/timeboxing/constraint_retriever.py`), and the
+> Notion-backed `ConstraintExtractorAgent` are deleted with the coordinator
+> that owned them — `refactor: retire TimeboxingFlowAgent and the 34 modules
+> only it reached` (commit `67489cd`). The sections below described those
+> three; see `docs/indices/agents_timeboxing.md` for the file-by-file
+> retirement note. What follows is the three components that actually plan
+> and write a day now.
 
-Primary day-planning agent that runs the GraphFlow timeboxing workflow and coordinates:
-- Stage-gated planning for day schedule drafts (typed JSON contexts per stage)
-- Patch-based refinement (`TimeboxPatcher`)
-- Constraint extraction + persistence (background, non-blocking)
+## Adaptive timeboxing kernel
 
-Code: `src/fateforger/agents/timeboxing/agent.py`
+Artifact-led planning-session orchestration: the Stage 1 elicitation loop
+(coverage matrix, arithmetic gate, three judges) plus the newer
+artifact-led session state (`session_contracts.py`, `readiness.py`,
+`required_blocks.py`, `day_frame.py`, `feedback.py`). The kernel decides
+what a planning turn does but takes timezone, calendar, and constraint-store
+access as ports; it is driven from the Slack host, which supplies those
+ports and does the actual Slack routing.
+
+Code:
+- `src/fateforger/agents/timeboxing/adaptive_timeboxing.py`
+- `src/fateforger/slack_bot/timeboxing_host.py` (the host that supplies the kernel's ports and calls it per Stage 1 turn)
 
 Related docs:
-
 - `docs/indices/agents_timeboxing.md`
-- `docs/architecture/timeboxing_refactor.md`
-- `docs/architecture/constraint-flow.md`
-- `docs/architecture/proposal_object_contract.md`
+- `docs/superpowers/specs/2026-09-05-stage1-elicitation-loop-design.md`
 
-## ConstraintExtractorAgent (Notion-backed)
+## Harness planner (DeepSeek)
 
-Extractor agent that turns user preference corrections into a deterministic constraint record and
-upserts it into Notion for durable future reuse.
-
-- Output schema: `ConstraintExtractionOutput` (JSON, structured)
-- Persistence: `NotionConstraintStore.upsert_constraint(...)` + `TB Constraint Events` audit log
-- Timeboxing agents can call the tool `extract_and_upsert_constraint` (Agent-as-Tool under the hood).
-- Notion access is via the constraint-memory MCP server (`scripts/constraint_mcp_server.py`).
+Host-owned context boundary for adaptive planning turns: refreshes the
+constraint and calendar read models for the locked day and hands one
+complete brief to a fresh harness run. Reads durable constraints via
+`kg_constraint_client.py`, the read-only client onto the standalone memory
+server's own store (`data/memory.db`), speaking the `DurableConstraintStore`
+protocol `durable_constraint_store.py` defines.
 
 Code:
-- `src/fateforger/agents/timeboxing/notion_constraint_extractor.py`
-- `src/fateforger/adapters/notion/timeboxing_preferences.py`
+- `src/fateforger/slack_bot/deepseek_timebox_planner.py`
+- `src/fateforger/agents/timeboxing/kg_constraint_client.py`
+- `src/fateforger/agents/timeboxing/durable_constraint_store.py`
 
-## ConstraintRetriever
+## tmbx server (calendar writes)
 
-Gap-driven retriever for durable constraints that:
-- derives a small query plan from stage + day context (gaps/blocks/immovables)
-- uses `constraint_query_types` to select relevant `type_id`s
-- then queries constraints via `constraint_query_constraints` with those `type_id`s
+MCP server exposing the level 1 timebox tools (`plan_read`, `plan_apply`,
+`plan_commit`, `plan_undo`, `plan_history`) that read and write the day's
+Google Calendar events. A write path can refuse (reported as a normal JSON
+result with a `"reason"` code, never raised as an exception) rather than
+silently applying a stale or conflicting patch.
 
-Code:
-- `src/fateforger/agents/timeboxing/constraint_retriever.py`
-- `src/fateforger/agents/timeboxing/mcp_clients.py`
-- `src/fateforger/agents/timeboxing/agent.py`
+Code: `src/tmbx/server.py`
 
-## (Next) ConstraintRetriever Improvements
-
-Planned improvements:
-- loads global/profile constraints first (high precedence)
-- then queries only what is needed for remaining planning gaps ("degrees of freedom")
-- uses structured Notion properties (no embeddings requirement)
-
-Status: partially implemented; tracked in `lattice_ticket.md`.
-
-## SlackBot Router + Review
-
-Slack-facing routing + constraint review UI:
-- Extracted constraints can be reviewed and accepted/declined via a Slack modal.
-- Current implementation updates the local SQLite-backed constraint statuses.
-- Proposal interactions should follow the shared contract in
-  `docs/architecture/proposal_object_contract.md`:
-  UI actions and NL replies must converge to the same typed intent + submit path.
-
-Code:
-- `src/fateforger/slack_bot/handlers.py`
-- `src/fateforger/slack_bot/constraint_review.py`
+Related docs: `src/tmbx/` module docstrings; `tickets/` entries under `tmbx`.
