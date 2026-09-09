@@ -17,6 +17,7 @@ from .resolver import (
     Resolution,
     Resolved,
 )
+from .timeboxing import TimeboxingReferentProvider
 
 __all__ = [
     "GIST_LIMIT",
@@ -31,5 +32,6 @@ __all__ = [
     "Resolution",
     "Resolved",
     "StandingThing",
+    "TimeboxingReferentProvider",
     "build_catalog",
 ]
