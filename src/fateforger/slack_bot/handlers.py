@@ -2175,6 +2175,12 @@ async def _handle_show_rules(runtime, client, logger, *, body) -> None:
             runtime, session_key=meta.session_key, actor_user_id=actor_user_id, logger=logger
         )
         await client.views_open(trigger_id=trigger_id, view=view)
+        # Every open is a scan: the user went looking for a rule the session
+        # did not surface. Map #382's destination is that this line stops
+        # appearing; #391 counts it, so it is logged at info, not debug.
+        logger.info(
+            "rules panel opened session_key=%s actor=%s", meta.session_key, actor_user_id
+        )
     except Exception as exc:  # noqa: BLE001 - a modal that did not open is not a failed session
         logger.warning(
             "could not open the context fold session_key=%s error_type=%s error=%s",
