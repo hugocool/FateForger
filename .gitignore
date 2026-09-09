@@ -253,3 +253,6 @@ data/memory.db*
 # demo stack supervisor: pids, git sha and source fingerprints of the
 # processes this checkout started. Machine-local by definition.
 .demo/
+
+# written beside taxonomy.py when scripts/dev/tests runs; machine-local
+scripts/dev/tests/per_test.json
