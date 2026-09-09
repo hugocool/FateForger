@@ -8,12 +8,28 @@ cannot tell. It never says what to *do* -- that is the consumer's own judgement.
 from .catalog import Catalog, build_catalog
 from .descriptor import GIST_LIMIT, Referent, StandingThing
 from .provider import ReferentProvider
+from .resolver import (
+    RESOLVER_PROMPT,
+    Ambiguous,
+    NoReferent,
+    ReferentResolutionError,
+    ReferentResolver,
+    Resolution,
+    Resolved,
+)
 
 __all__ = [
     "GIST_LIMIT",
+    "RESOLVER_PROMPT",
+    "Ambiguous",
     "Catalog",
+    "NoReferent",
     "Referent",
     "ReferentProvider",
+    "ReferentResolutionError",
+    "ReferentResolver",
+    "Resolution",
+    "Resolved",
     "StandingThing",
     "build_catalog",
 ]
