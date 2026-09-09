@@ -155,7 +155,6 @@ async def test_a_failed_root_post_in_the_configured_channel_falls_back_to_the_or
     """The bot not being in #timeboxing must not lose the session, or fall
     through to the retired runtime send.
     """
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     monkeypatch.setattr(
         settings, "slack_timeboxing_channel_id", "C_TIMEBOX", raising=False
     )
@@ -197,7 +196,6 @@ async def test_a_failed_root_post_in_the_configured_channel_falls_back_to_the_or
 
 @pytest.mark.asyncio
 async def test_timeboxing_handoff_redirects_into_configured_channel(monkeypatch):
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     monkeypatch.setattr(
         settings, "slack_timeboxing_channel_id", "C_TIMEBOX", raising=False
     )
@@ -255,7 +253,6 @@ async def test_timeboxing_handoff_redirects_into_configured_channel(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_a_reply_in_the_origin_thread_continues_the_session_on_the_kernel(monkeypatch):
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     monkeypatch.setattr(
         settings, "slack_timeboxing_channel_id", "C_TIMEBOX", raising=False
     )
@@ -316,6 +313,13 @@ async def test_timeboxing_done_updates_thread_header_emoji(monkeypatch):
     runtime = DoneRuntime()
     client = RecordingSlackClient(root_ts="tb_root", reply_ts="tb_proc", dm_channel="D_DM")
     say = DummySay()
+
+    async def _fake_turn(**_kwargs):
+        return SlackThreadStateMessage(text="Finalized.", thread_state="done")
+
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers._run_adaptive_timebox_turn", _fake_turn
+    )
     focus = FocusManager(
         ttl_seconds=3600, allowed_agents=["receptionist_agent", "timeboxing_agent"]
     )
@@ -443,7 +447,6 @@ async def test_harness_redirect_offers_the_owned_approval_in_the_timeboxing_thre
     monkeypatch.setattr(
         settings, "slack_timeboxing_channel_id", "C_TIMEBOX", raising=False
     )
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     monkeypatch.setattr(
         handlers, "_pending_candidates", PendingTimeboxCandidates()
     )

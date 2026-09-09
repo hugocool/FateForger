@@ -144,7 +144,6 @@ async def test_timebox_on_the_harness_backend_asks_for_the_day_not_deepseek(
     fresh process pick its own planning day before anybody confirmed one.
     Both backends now enter through the same thread/redirect machinery.
     """
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
 
     timebox_calls: list[dict[str, Any]] = []
 

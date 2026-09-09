@@ -136,7 +136,6 @@ async def _route(*, runtime, focus, client, planning, event):
 
 @pytest.mark.asyncio
 async def test_a_root_message_in_a_focused_channel_opens_a_session(monkeypatch):
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
     focus.set_focus("C1:111", "timeboxing_agent", by_user="U1")
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
@@ -158,7 +157,6 @@ async def test_a_root_message_in_a_focused_channel_opens_a_session(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_receptionist_handoff_opens_a_session_where_the_user_is(monkeypatch):
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     focus = FocusManager(
         ttl_seconds=60, allowed_agents=["receptionist_agent", "timeboxing_agent"]
     )
@@ -190,7 +188,6 @@ async def test_a_receptionist_handoff_opens_a_session_where_the_user_is(monkeypa
 
 @pytest.mark.asyncio
 async def test_a_thread_reply_in_a_focused_thread_is_a_kernel_turn(monkeypatch):
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
     focus.set_focus("C1:root", "timeboxing_agent", by_user="U1")
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
@@ -270,9 +267,16 @@ async def test_route_slack_event_compacts_payload_after_msg_too_long(monkeypatch
 
 @pytest.mark.asyncio
 async def test_route_slack_event_records_stage_compute_failure(monkeypatch):
-    class _FailingRuntime:
+    """A turn that blows up is recorded and named back into the thread.
+
+    The failing call is the kernel turn: timeboxing has not gone through
+    ``runtime.send_message`` since the legacy agent was retired, and this
+    asserts the handler's own except arm, which is shared by both.
+    """
+
+    class _UnusedRuntime:
         async def send_message(self, *_args, **_kwargs):
-            raise RuntimeError("compute blew up")
+            raise AssertionError("timeboxing does not go through the runtime")
 
     focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
     focus.set_focus("C1:root", "timeboxing_agent", by_user="U1")
@@ -283,8 +287,15 @@ async def test_route_slack_event_records_stage_compute_failure(monkeypatch):
         lambda *, component, error_type: errors.append((component, error_type)),
     )
 
+    async def _failing_turn(**_kwargs):
+        raise RuntimeError("compute blew up")
+
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers._run_adaptive_timebox_turn", _failing_turn
+    )
+
     await route_slack_event(
-        runtime=_FailingRuntime(),
+        runtime=_UnusedRuntime(),
         focus=focus,
         default_agent="receptionist_agent",
         event={
@@ -330,6 +341,13 @@ async def test_route_slack_event_constraint_refresh_failure_is_non_fatal(monkeyp
 
     async def _get_constraint_store():
         return _ExplodingConstraintStore()
+
+    async def _fake_turn(**_kwargs):
+        return SlackBlockMessage(text="ok", blocks=[])
+
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers._run_adaptive_timebox_turn", _fake_turn
+    )
 
     await route_slack_event(
         runtime=runtime,
@@ -440,7 +458,6 @@ async def test_a_dm_timeboxing_thread_is_found_in_the_store_after_focus_is_gone(
         return SlackBlockMessage(text="turn ran", blocks=[])
 
     monkeypatch.setattr("fateforger.slack_bot.handlers._run_adaptive_timebox_turn", _fake_turn)
-    monkeypatch.setattr("fateforger.slack_bot.handlers._timebox_backend", lambda: "harness")
 
     await _route(runtime=runtime, focus=focus, client=client, planning=planning, event=_dm_reply_event("move gym to 19:00"))
 

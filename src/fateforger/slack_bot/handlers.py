@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -31,7 +29,6 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import (
     TurnRequest,
 )
 from fateforger.agents.timeboxing.feedback import feedback_facts
-from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
 from fateforger.agents.timeboxing.preferences import (
     Constraint,
     ConstraintStatus,
@@ -516,36 +513,6 @@ def _extract_handoff_target(chat_message) -> str | None:
     )
 
 
-def _build_timeboxing_message(
-    *,
-    cleaned_text: str,
-    user: str,
-    channel: str,
-    thread_ts: str | None,
-    ts: str,
-    force_channel: str | None = None,
-    force_thread_root: str | None = None,
-    force_reply: bool | None = None,
-) -> StartTimeboxing | TimeboxingUserReply:
-    resolved_channel = force_channel or channel
-    resolved_thread_root = force_thread_root or (thread_ts or ts)
-    is_reply = force_reply if force_reply is not None else bool(thread_ts)
-
-    if is_reply:
-        return TimeboxingUserReply(
-            thread_ts=resolved_thread_root,
-            channel_id=resolved_channel,
-            user_id=user,
-            text=cleaned_text,
-        )
-    return StartTimeboxing(
-        thread_ts=resolved_thread_root,
-        channel_id=resolved_channel,
-        user_id=user,
-        user_input=cleaned_text,
-    )
-
-
 def _build_agent_message(
     *,
     agent_type: str,
@@ -558,17 +525,6 @@ def _build_agent_message(
     force_thread_root: str | None = None,
     force_reply: bool | None = None,
 ) -> object:
-    if agent_type == "timeboxing_agent":
-        return _build_timeboxing_message(
-            cleaned_text=cleaned_text,
-            user=user,
-            channel=channel,
-            thread_ts=thread_ts,
-            ts=ts,
-            force_channel=force_channel,
-            force_thread_root=force_thread_root,
-            force_reply=force_reply,
-        )
     return TextMessage(content=cleaned_text, source=user)
 
 
@@ -877,92 +833,6 @@ def _plan_sessions_channel_id() -> str | None:
     return None
 
 
-async def _harness_turn(
-    *,
-    text: str,
-    thread_key: str,
-    owner_user_id: str,
-    on_phase,
-    session_id: str | None = None,
-    history: list[tuple[str, str]] | None = None,
-    proposed_timebox: str | None = None,
-    proposed_calendar_id: str | None = None,
-    proposed_day: str | None = None,
-) -> TextMessage:
-    """One Slack turn through the harness, shaped like a runtime reply.
-
-    Returned as a TextMessage so every renderer downstream -- personas, block
-    compaction, thread updates -- keeps working untouched. The migration
-    changes which system thinks, not how the answer reaches Slack.
-
-    The harness call is a blocking subprocess and a planning turn runs for tens
-    of seconds, so it goes to a worker thread; leaving it on the loop would
-    stall every other Slack event in the workspace.
-    """
-    from .harness_bridge import PLANNING_MODEL, HarnessError
-    from .thread_approval import approval_path, revoke
-
-    # Prefer the exact current process-owned rendering. Slack thread recovery
-    # supplies the same baseline after a restart, when this store is empty.
-    previous_candidate = _pending_candidates.peek(thread_key)
-    if previous_candidate is not None and previous_candidate.rendered.strip():
-        proposed_timebox = previous_candidate.rendered
-        raw_calendar_id = previous_candidate.snapshot.get("calendar_id")
-        raw_day = previous_candidate.snapshot.get("day")
-        proposed_calendar_id = (
-            raw_calendar_id if isinstance(raw_calendar_id, str) else None
-        )
-        proposed_day = raw_day if isinstance(raw_day, str) else None
-
-    # Any material new request invalidates the approval card it supersedes.
-    _pending_candidates.invalidate(thread_key)
-    revoke(thread_key)
-
-    try:
-        reply = await _owned_harness_ask(
-            text,
-            thread_key=thread_key,
-            on_event=on_phase,
-            approval_file=str(approval_path(thread_key)),
-            # Without this the harness starts every turn with no idea the
-            # thread has a past. `thread_key` was already threaded here for the
-            # approval file; the conversation's own identity was not.
-            session_id=session_id,
-            history=history,
-            proposed_timebox=proposed_timebox,
-            proposed_calendar_id=proposed_calendar_id,
-            proposed_day=proposed_day,
-            # Every turn that reaches here is a planning turn: this function is
-            # the timeboxing path. The receptionist and the fast conversational
-            # replies do not come through it.
-            model=PLANNING_MODEL,
-        )
-    except HarnessError as exc:
-        # Surfaced, not swallowed. A harness that could not be reached and a
-        # planner that declined to act must not read the same in the thread.
-        return TextMessage(
-            content=(f":warning: The harness did not answer.\n```{exc}```"),
-            source="timeboxing_agent",
-        )
-    if reply.validated_candidate is not None:
-        # A clean tmbx candidate is approvable whether or not the model tried
-        # plan_commit. In particular, obeying "do not commit" must still show
-        # the one control that can later submit this exact displayed payload.
-        _pending_candidates.replace(
-            thread_key, reply.validated_candidate, owner_user_id=owner_user_id
-        )
-    return TextMessage(content=reply.text, source="timeboxing_agent")
-
-
-@dataclass
-class _HarnessTurnControl:
-    cancel_event: threading.Event
-    on_phase: Callable[[object], None]
-    finished: asyncio.Event
-
-
-_harness_turn_controls: dict[str, _HarnessTurnControl] = {}
-_harness_turn_handoffs: dict[str, asyncio.Lock] = {}
 _thread_commit_locks: dict[str, asyncio.Lock] = {}
 _approval_tasks: set[asyncio.Task[None]] = set()
 
@@ -973,66 +843,6 @@ def _thread_lock(registry: dict[str, asyncio.Lock], thread_key: str) -> asyncio.
         lock = asyncio.Lock()
         registry[thread_key] = lock
     return lock
-
-
-async def _owned_harness_ask(
-    text: str,
-    *,
-    thread_key: str,
-    on_event: Callable[[object], None],
-    **ask_kwargs,
-):
-    """Run one cancellable child, superseding any older turn in the thread."""
-    from .harness_bridge import HarnessCancelled, ask
-
-    async with _thread_lock(_harness_turn_handoffs, thread_key):
-        previous = _harness_turn_controls.get(thread_key)
-        if previous is not None:
-            try:
-                previous.on_phase(
-                    TimeboxProgressEvent(
-                        session_key=thread_key,
-                        sequence=0,
-                        source=ProgressSource.RUNTIME,
-                        phase=TimeboxProgressPhase.OTHER,
-                        status=TimeboxProgressStatus.SUPERSEDED,
-                    )
-                )
-            except Exception:
-                pass
-            previous.cancel_event.set()
-            await previous.finished.wait()
-        async with _thread_lock(_thread_commit_locks, thread_key):
-            control = _HarnessTurnControl(
-                cancel_event=threading.Event(),
-                on_phase=on_event,
-                finished=asyncio.Event(),
-            )
-            _harness_turn_controls[thread_key] = control
-            worker = asyncio.create_task(
-                asyncio.to_thread(
-                    ask,
-                    text,
-                    on_event=on_event,
-                    cancel_event=control.cancel_event,
-                    **ask_kwargs,
-                )
-            )
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        control.cancel_event.set()
-        try:
-            await worker
-        except HarnessCancelled:
-            pass
-        raise
-    except HarnessCancelled as exc:
-        raise asyncio.CancelledError from exc
-    finally:
-        control.finished.set()
-        if _harness_turn_controls.get(thread_key) is control:
-            _harness_turn_controls.pop(thread_key, None)
 
 
 def _note_harness_phase(
@@ -1402,11 +1212,6 @@ def _timebox_start_button_value(blocks) -> str:
             ):
                 return str(element.get("value") or "")
     return ""
-
-
-def _timebox_backend() -> str:
-    """Which system answers /timebox. "harness" unless told otherwise."""
-    return (os.environ.get("FF_TIMEBOX_BACKEND") or "harness").strip().lower()
 
 
 def _timebox_body_for_harness(body: dict) -> dict:
@@ -1966,7 +1771,7 @@ async def _handle_timebox_candidate_approval(
     `AwaitingApproval` with a calendar that disagreed with it.
 
     Returns False when this thread has no planning session to tell, which is
-    the legacy route's answer and its cue to commit the way it always has.
+    the caller's cue to write the candidate directly instead.
     """
     repository = getattr(runtime, "timeboxing_session_store", None)
     if approval.expected_revision is None or repository is None:
@@ -2853,39 +2658,20 @@ async def route_slack_event(
             processing = await client.chat_postMessage(**processing_payload)
 
             try:
-                if _timebox_backend() != "legacy":
-                    result = await _run_adaptive_timebox_turn(
-                        runtime=runtime,
-                        client=client,
-                        logger=logger,
-                        session_key=redirect.target_key,
-                        actor_user_id=user,
-                        interaction_id=ts,
-                        progress_channel=processing["channel"],
-                        progress_ts=processing["ts"],
-                        card_channel=target_channel,
-                        card_thread_ts=root_ts,
-                        user_text=cleaned_text,
-                        focus=focus,
-                    )
-                else:
-                    handoff_msg = _build_agent_message(
-                        agent_type="timeboxing_agent",
-                        cleaned_text=cleaned_text,
-                        user=user,
-                        channel=target_channel,
-                        thread_ts=root_ts,
-                        ts=root_ts,
-                        force_channel=target_channel,
-                        force_thread_root=root_ts,
-                        force_reply=False,
-                    )
-                    result = await runtime.send_message(
-                        handoff_msg,
-                        recipient=AgentId(
-                            "timeboxing_agent", key=redirect.target_key
-                        ),
-                    )
+                result = await _run_adaptive_timebox_turn(
+                    runtime=runtime,
+                    client=client,
+                    logger=logger,
+                    session_key=redirect.target_key,
+                    actor_user_id=user,
+                    interaction_id=ts,
+                    progress_channel=processing["channel"],
+                    progress_ts=processing["ts"],
+                    card_channel=target_channel,
+                    card_thread_ts=root_ts,
+                    user_text=cleaned_text,
+                    focus=focus,
+                )
             except asyncio.TimeoutError:
                 await client.chat_update(
                     channel=target_channel,
@@ -3168,15 +2954,15 @@ async def route_slack_event(
     # The fresh channel start used to root the session at the origin ack and
     # then use that same message as progress card and outcome card -- the
     # aliased layout that let a root relabel erase the Stage-0 card
-    # (2026-08-31 22:57). The harness path now builds the one real surface;
-    # only the legacy backend still takes the fallback below.
+    # (2026-08-31 22:57). The session surface below builds the one real
+    # surface instead.
     would_alias_root = (
         agent_type == "timeboxing_agent"
         and not is_dm
         and not thread_ts
         and not origin_thread_root_ts
     )
-    if would_alias_root and _timebox_backend() != "legacy":
+    if would_alias_root:
         session_channel = _channel_for_agent("timeboxing_agent") or channel
         await _begin_timeboxing_session_surface(
             target_channel=session_channel,
@@ -3253,9 +3039,7 @@ async def route_slack_event(
                 # reply still goes out through _origin_update.
                 return
 
-    primary_harness_turn = (
-        agent_type == "timeboxing_agent" and _timebox_backend() != "legacy"
-    )
+    primary_harness_turn = agent_type == "timeboxing_agent"
     heartbeat_task = (
         None if primary_harness_turn else asyncio.create_task(_turn_heartbeat())
     )
@@ -4056,25 +3840,24 @@ def register_handlers(
             logger.warning("approve candidate thread did not match message thread")
             return
 
-        if _timebox_backend() != "legacy":
-            # A planning session exists for this thread, so the commit belongs
-            # inside it: the kernel is what decides a commit is allowed and
-            # what stores the receipt afterwards. The write itself is the same
-            # one either way -- same candidate, same idempotency digest.
-            handled = await _handle_timebox_candidate_approval(
-                runtime=runtime,
-                client=client,
-                logger=logger,
-                approval=approval,
-                channel_id=channel,
-                thread_ts=thread_root,
-                actor_user_id=actor_user_id,
-                interaction_id=_card_interaction_id(
-                    action, FF_HARNESS_APPROVE_ACTION_ID, thread_root
-                ),
-            )
-            if handled:
-                return
+        # A planning session exists for this thread, so the commit belongs
+        # inside it: the kernel is what decides a commit is allowed and what
+        # stores the receipt afterwards. The write itself is the same one
+        # either way -- same candidate, same idempotency digest.
+        handled = await _handle_timebox_candidate_approval(
+            runtime=runtime,
+            client=client,
+            logger=logger,
+            approval=approval,
+            channel_id=channel,
+            thread_ts=thread_root,
+            actor_user_id=actor_user_id,
+            interaction_id=_card_interaction_id(
+                action, FF_HARNESS_APPROVE_ACTION_ID, thread_root
+            ),
+        )
+        if handled:
+            return
 
         task = asyncio.create_task(
             _execute_harness_approval(
@@ -4109,17 +3892,12 @@ def register_handlers(
 
     @app.command("/timebox")
     async def cmd_timebox(ack, body, respond, client, logger):
-        """Plan a day. Both backends start the same way: by asking which day.
+        """Plan a day, which starts by asking which day.
 
-        Neither backend launches a planner here any more. `/timebox` creates or
-        reuses the plan-session thread and renders the date card; the harness
-        backend then continues through the adaptive session kernel and the
-        legacy backend through the five-stage machine. Forking a second thread
-        creation for the harness is what once gave the two backends different
-        session identities for the same conversation.
-
-        FF_TIMEBOX_BACKEND=legacy routes back to the AutoGen flow, which stays
-        wired and reachable. A migration nobody can reverse is a rewrite.
+        No planner is launched here. `/timebox` creates or reuses the
+        plan-session thread and renders the date card; the adaptive session
+        kernel continues from there. Forking a second thread creation for the
+        kernel is what once gave one conversation two session identities.
         """
         await ack()
         # Fire off in background to avoid blocking Slack's 3-second timeout

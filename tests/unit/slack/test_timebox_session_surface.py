@@ -74,19 +74,6 @@ def _writes_to(client: _FakeClient, ts: str) -> list[dict]:
     return born + edits
 
 
-@pytest.fixture(autouse=True)
-def _harness_backend(monkeypatch):
-    """This suite exercises the harness surface specifically.
-
-    tests/conftest.py pins every test to `FF_TIMEBOX_BACKEND=legacy` by
-    default so route_slack_event never shells out unasked; the session
-    surface under test only exists on the harness path, so reaching it here
-    is deliberate, same as test_slack_timeboxing_channel_redirect.py and
-    test_harness_approval_action.py already do for the same reason.
-    """
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
-
-
 @pytest.fixture
 def focus() -> FocusManager:
     return FocusManager(

@@ -52,7 +52,6 @@ class DummySay:
 
 @pytest.mark.asyncio
 async def test_timeboxing_handoff_does_not_redirect_from_dm(monkeypatch):
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     monkeypatch.setattr(settings, "slack_timeboxing_channel_id", "C_TIMEBOX", raising=False)
 
     runtime = DummyRuntime()

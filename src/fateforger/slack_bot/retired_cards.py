@@ -1,7 +1,7 @@
 """One answer for every button the legacy timeboxing agent left in Slack.
 
-The seven action ids below were posted by ``TimeboxingFlowAgent``'s stage and
-submit cards. The agent is gone; a press must say so, not fail. The ids are
+The seven action ids below were posted by that agent's stage and submit
+cards. The agent is gone; a press must say so, not fail. The ids are
 kept verbatim because Slack will keep sending them for as long as the
 messages exist.
 """

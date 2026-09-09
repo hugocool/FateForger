@@ -27,7 +27,6 @@ async def _unused_say(**_kwargs):
 
 @pytest.mark.asyncio
 async def test_the_specialist_channel_opens_a_session_directly(monkeypatch):
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     monkeypatch.setattr(settings, "slack_timeboxing_channel_id", "C_PLAN", raising=False)
     runtime = DummyRuntime()
     client = RecordingSlackClient()
