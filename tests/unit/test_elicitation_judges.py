@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -184,6 +185,8 @@ async def test_classify_sends_names_only_for_a_criterion_that_does_not_need_the_
         stated=["gym at 18:00"],
         request="deep work in the morning, gym at 18:00",
         session_key="C1:1.0",
+        now=NOW,
+        planning_day=DAY,
     )
     assert state == "uncovered"
     assert why == "no duration"
@@ -208,6 +211,8 @@ async def test_classify_sends_the_rule_text_for_a_contradiction_or_an_ambiguity(
             stated=["deep work runs 08:00 to 09:30 today"],
             request=None,
             session_key="C1:1.0",
+            now=NOW,
+            planning_day=DAY,
         )
         sent = json.loads(client.calls[0][0][1].content)
         assert sent["rules"] == [
@@ -220,7 +225,8 @@ async def test_classify_refuses_a_verdict_outside_the_schema() -> None:
     client = _SchemaOutputClient({"why": "", "verdict": "maybe"})
     with pytest.raises(ValueError):
         await CoverageJudge(client).classify(
-            cell=CellRef(row="body", criterion="unclear"), rules=[], stated=[], request=None, session_key="C1:1.0"
+            cell=CellRef(row="body", criterion="unclear"), rules=[], stated=[], request=None, session_key="C1:1.0",
+            now=NOW, planning_day=DAY,
         )
 
 
@@ -229,7 +235,8 @@ async def test_each_verdict_maps_to_the_matrix_state_it_means() -> None:
     for verdict, state in (("would_ask", "uncovered"), ("would_not_ask", "covered"), ("nothing_here", "not_applicable")):
         client = _SchemaOutputClient({"why": "because", "verdict": verdict})
         got, why = await CoverageJudge(client).classify(
-            cell=CellRef(row="body", criterion="unclear"), rules=[], stated=[], request=None, session_key="C1:1.0"
+            cell=CellRef(row="body", criterion="unclear"), rules=[], stated=[], request=None, session_key="C1:1.0",
+            now=NOW, planning_day=DAY,
         )
         assert got == state, verdict
         assert why == "because"
@@ -241,7 +248,8 @@ async def test_the_matrix_words_are_not_a_legal_verdict() -> None:
     client = _SchemaOutputClient({"why": "because", "verdict": "covered"})
     with pytest.raises(ValueError):
         await CoverageJudge(client).classify(
-            cell=CellRef(row="body", criterion="unclear"), rules=[], stated=[], request=None, session_key="C1:1.0"
+            cell=CellRef(row="body", criterion="unclear"), rules=[], stated=[], request=None, session_key="C1:1.0",
+            now=NOW, planning_day=DAY,
         )
 
 
@@ -264,6 +272,8 @@ async def test_generate_returns_a_draft_with_host_minted_option_ids() -> None:
         conversation=["deep work in the morning, gym at 18:00"],
         request="deep work in the morning, gym at 18:00",
         session_key="C1:1.0",
+        now=NOW,
+        planning_day=DAY,
     )
     assert draft is not None
     assert draft.cell_id == cell.id
@@ -283,7 +293,8 @@ async def test_generate_returns_a_draft_with_host_minted_option_ids() -> None:
 async def test_generate_may_return_nothing() -> None:
     client = _SchemaOutputClient({"grounded": False, "question": None, "why_needed": None, "options": []})
     draft = await ProbeJudge(client).generate(
-        cell=CellRef(row="movement", criterion="unclear"), rules_full=[], conversation=[], request=None, session_key="C1:1.0"
+        cell=CellRef(row="movement", criterion="unclear"), rules_full=[], conversation=[], request=None, session_key="C1:1.0",
+        now=NOW, planning_day=DAY,
     )
     assert draft is None
 
@@ -293,7 +304,8 @@ async def test_generate_refuses_grounded_without_a_question() -> None:
     client = _SchemaOutputClient({"grounded": True, "question": None, "why_needed": None, "options": []})
     with pytest.raises(ValueError, match="grounded"):
         await ProbeJudge(client).generate(
-            cell=CellRef(row="movement", criterion="unclear"), rules_full=[], conversation=[], request=None, session_key="C1:1.0"
+            cell=CellRef(row="movement", criterion="unclear"), rules_full=[], conversation=[], request=None, session_key="C1:1.0",
+            now=NOW, planning_day=DAY,
         )
 
 
@@ -302,7 +314,8 @@ async def test_generate_refuses_more_than_four_options() -> None:
     client = _SchemaOutputClient({"grounded": True, "question": "Which?", "why_needed": "w", "options": ["a", "b", "c", "d", "e"]})
     with pytest.raises(ValueError, match="at most four"):
         await ProbeJudge(client).generate(
-            cell=CellRef(row="body", criterion="unclear"), rules_full=[], conversation=[], request=None, session_key="C1:1.0"
+            cell=CellRef(row="body", criterion="unclear"), rules_full=[], conversation=[], request=None, session_key="C1:1.0",
+            now=NOW, planning_day=DAY,
         )
 
 
@@ -317,7 +330,8 @@ async def test_a_blank_option_is_dropped_and_the_question_survives() -> None:
     )
     cell = CellRef(row="body", criterion="tacit_knowledge")
     draft = await ProbeJudge(client).generate(
-        cell=cell, rules_full=[], conversation=[], request=None, session_key="C1:1.0"
+        cell=cell, rules_full=[], conversation=[], request=None, session_key="C1:1.0",
+        now=NOW, planning_day=DAY,
     )
     assert draft is not None
     assert draft.question == "How long is the gym?"
@@ -336,6 +350,7 @@ async def test_options_that_are_all_blank_leave_a_free_text_probe() -> None:
     draft = await ProbeJudge(client).generate(
         cell=CellRef(row="body", criterion="tacit_knowledge"), rules_full=[], conversation=[],
         request=None, session_key="C1:1.0",
+        now=NOW, planning_day=DAY,
     )
     assert draft is not None and draft.options == []
 
@@ -352,6 +367,7 @@ async def test_the_four_option_cap_counts_what_survives_not_what_was_returned() 
     draft = await ProbeJudge(client).generate(
         cell=CellRef(row="body", criterion="tacit_knowledge"), rules_full=[], conversation=[],
         request=None, session_key="C1:1.0",
+        now=NOW, planning_day=DAY,
     )
     assert draft is not None
     assert [o.label for o in draft.options] == ["60 min", "75 min", "90 min", "105 min"]
@@ -370,15 +386,20 @@ class _StubPlacement:
         return Placement(anchors=self._placement, rules=self._rules)
 
 
+NOW = datetime(2026, 9, 8, 10, 9, tzinfo=ZoneInfo("Europe/Amsterdam"))
+
+
 class _StubCoverage:
     """`table` maps cell id -> state; anything else answers `covered`."""
 
     def __init__(self, table: dict[str, str]) -> None:
         self.table = table
         self.asked: list[str] = []
+        self.clocks: list[datetime] = []
 
-    async def classify(self, *, cell, rules, stated, request, session_key):  # noqa: ANN001
+    async def classify(self, *, cell, rules, stated, request, session_key, now, planning_day):  # noqa: ANN001
         self.asked.append(cell.id)
+        self.clocks.append(now)
         return self.table.get(cell.id, "covered"), "stub"
 
 
@@ -390,11 +411,13 @@ class _StubProbe:
         self.asked: list[str] = []
         #: (cell id, the conversation handed over, the uids of the row's rules)
         self.seen: list[tuple[str, list[str], list[str]]] = []
+        self.clocks: list[datetime] = []
 
-    async def generate(self, *, cell, rules_full, conversation, request, session_key):  # noqa: ANN001
+    async def generate(self, *, cell, rules_full, conversation, request, session_key, now, planning_day):  # noqa: ANN001
         from fateforger.agents.timeboxing.session_contracts import ProbeDraft
 
         self.asked.append(cell.id)
+        self.clocks.append(now)
         self.seen.append((cell.id, list(conversation), [str(r["uid"]) for r in rules_full]))
         if cell.id not in self.grounded:
             return None
@@ -426,8 +449,27 @@ def _judges(coverage: dict[str, str], grounded: set[str] | None = None, placemen
     )
 
 
-def _run(snapshot, judges, rows=ROWS_FIXTURE) -> ElicitationResult:
-    return asyncio.run(elicit(snapshot, rows, judges, session_key="C1:1.0"))
+def _run(snapshot, judges, rows=ROWS_FIXTURE, now=NOW) -> ElicitationResult:
+    return asyncio.run(elicit(snapshot, rows, judges, session_key="C1:1.0", now=now))
+
+
+def test_both_judges_are_handed_the_clock_elicit_was_given() -> None:
+    """'in 2 hours' at 10:09 became 'by 9:30 AM' because the judges knew the
+    day and not the time (#412). Every classify and every generate sees the
+    same tz-aware moment."""
+    judges = _judges({"elicit.body.unclear": "uncovered"}, grounded={"elicit.body.unclear"})
+    _run(_snapshot(), judges)
+    assert judges.coverage.clocks and all(c == NOW for c in judges.coverage.clocks)
+    assert judges.probe.clocks == [NOW]
+
+
+def test_a_naive_clock_is_refused_before_any_judge_runs() -> None:
+    """A clock with no zone cannot be placed against a planning day in
+    Europe/Amsterdam; failing loudly beats a probe about the wrong hour."""
+    judges = _judges({"elicit.body.unclear": "uncovered"})
+    with pytest.raises(ValueError, match="tz-aware"):
+        _run(_snapshot(), judges, now=datetime(2026, 9, 8, 10, 9))
+    assert judges.coverage.asked == []
 
 
 def test_rows_with_no_rules_and_nothing_stated_are_not_applicable_without_a_call() -> None:
@@ -469,7 +511,7 @@ def test_placement_is_reused_when_the_uid_set_is_unchanged_and_redone_when_it_mo
     matrix = CoverageMatrix.model_validate(again.matrix_fact.value)
     assert matrix.placement == PLACED
     fewer = [row for row in ROWS_FIXTURE if row["uid"] != "c-exit"]
-    asyncio.run(elicit(_snapshot(first.matrix_fact), fewer, judges, session_key="C1:1.0"))
+    asyncio.run(elicit(_snapshot(first.matrix_fact), fewer, judges, session_key="C1:1.0", now=NOW))
     assert judges.placement.calls == 2
 
 
@@ -534,9 +576,17 @@ def test_stated_facts_reach_the_classifier_and_the_generator() -> None:
             super().__init__(table or {})
             self.stated: list[list[str]] = []
 
-        async def classify(self, *, cell, rules, stated, request, session_key):  # noqa: ANN001
+        async def classify(self, *, cell, rules, stated, request, session_key, now, planning_day):  # noqa: ANN001
             self.stated.append(list(stated))
-            return await super().classify(cell=cell, rules=rules, stated=stated, request=request, session_key=session_key)
+            return await super().classify(
+                cell=cell,
+                rules=rules,
+                stated=stated,
+                request=request,
+                session_key=session_key,
+                now=now,
+                planning_day=planning_day,
+            )
 
     # `said` answers `elicit.body.unclear`. The classifier still calls that cell
     # uncovered -- it is in the table below -- and it is still not asked, because
@@ -571,7 +621,7 @@ def test_a_suspended_rule_is_not_placed_or_counted() -> None:
 
 def test_one_failing_classify_fails_the_turn_and_writes_nothing() -> None:
     class _Broken(_StubCoverage):
-        async def classify(self, *, cell, rules, stated, request, session_key):  # noqa: ANN001
+        async def classify(self, *, cell, rules, stated, request, session_key, now, planning_day):  # noqa: ANN001
             if cell.id == "elicit.body.unclear":
                 raise ValueError("model returned garbage")
             return "covered", "stub"

@@ -8,6 +8,8 @@ different schedules, which is what makes a growing anchor layer safe.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fateforger.agents.timeboxing.elicitation import CoverageMatrix, stage1_gate
 from fateforger.agents.timeboxing.elicitation_judges import Judges, Placement, elicit
@@ -30,23 +32,26 @@ class _Placement:
         return Placement(anchors={"a-gym": "body"}, rules={"c-exit": "method"})
 
 
+NOW = datetime(2026, 9, 8, 10, 9, tzinfo=ZoneInfo("Europe/Amsterdam"))
+
+
 class _Coverage:
     def __init__(self, table: dict[str, str]) -> None:
         self.table = table
 
-    async def classify(self, *, cell, rules, stated, request, session_key):  # noqa: ANN001
+    async def classify(self, *, cell, rules, stated, request, session_key, now, planning_day):  # noqa: ANN001
         return self.table.get(cell.id, "covered"), "stub"
 
 
 class _FixedWords:
     """The words half, stubbed to one string for every cell."""
 
-    async def generate(self, *, cell, rules_full, conversation, request, session_key):  # noqa: ANN001
+    async def generate(self, *, cell, rules_full, conversation, request, session_key, now, planning_day):  # noqa: ANN001
         return ProbeDraft(cell_id=cell.id, question="Tell me more?", why_needed="fixed")
 
 
 class _NoWords:
-    async def generate(self, *, cell, rules_full, conversation, request, session_key):  # noqa: ANN001
+    async def generate(self, *, cell, rules_full, conversation, request, session_key, now, planning_day):  # noqa: ANN001
         return None
 
 
@@ -55,7 +60,7 @@ def _with_matrix(snapshot: PlanningSessionSnapshot, fact: PlanningFact) -> Plann
 
 
 def _run(snapshot, judges):
-    return asyncio.run(elicit(snapshot, ROWS, judges, session_key=snapshot.session_key))
+    return asyncio.run(elicit(snapshot, ROWS, judges, session_key=snapshot.session_key, now=NOW))
 
 
 def test_swap_one_the_open_set_is_the_same_with_the_words_stubbed() -> None:

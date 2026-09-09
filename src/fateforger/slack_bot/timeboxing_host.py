@@ -406,7 +406,13 @@ class HostPlanningContext:
             else snapshot.model_copy(update={"facts": [*snapshot.facts, frame]})
         )
         result = await elicit(
-            seen, constraints, build_judges(model_client), session_key=snapshot.session_key
+            seen,
+            constraints,
+            build_judges(model_client),
+            session_key=snapshot.session_key,
+            # The bot's clock is UTC; the day is planned in its own zone, and
+            # "in 2 hours" means two hours from the local time (#412).
+            now=self._now().astimezone(ZoneInfo(planning_day.timezone)),
         )
         return PlanningContext(
             facts=([frame] if frame is not None else []) + [result.matrix_fact],

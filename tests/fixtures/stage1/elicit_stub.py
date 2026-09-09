@@ -14,6 +14,7 @@ drift.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from fateforger.agents.timeboxing.elicitation import ALL_CELLS, CoverageMatrix
@@ -28,7 +29,7 @@ from fateforger.agents.timeboxing.session_contracts import (
 
 
 class StubElicit:
-    """Stands in for `elicit`, recording the `(snapshot, rows)` of every call.
+    """Stands in for `elicit`, recording the `(snapshot, rows, now)` of every call.
 
     Answers the same shape every time: a matrix at the day's stable id with
     every cell `not_applicable`, and one probe. A test that cares which cells
@@ -36,7 +37,7 @@ class StubElicit:
     """
 
     def __init__(self) -> None:
-        self.calls: list[tuple[PlanningSessionSnapshot, list[dict[str, Any]]]] = []
+        self.calls: list[tuple[PlanningSessionSnapshot, list[dict[str, Any]], datetime]] = []
 
     async def __call__(
         self,
@@ -45,9 +46,10 @@ class StubElicit:
         judges: Judges,
         *,
         session_key: str,
+        now: datetime,
         **_: Any,
     ) -> ElicitationResult:
-        self.calls.append((snapshot, rows))
+        self.calls.append((snapshot, rows, now))
         matrix = CoverageMatrix(cells={cell.id: "not_applicable" for cell in ALL_CELLS})
         fact = PlanningFact(
             fact_id=coverage_fact_id(snapshot.planning_day.date),
