@@ -1,8 +1,10 @@
+import json
 from datetime import date
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+from fateforger.agents.tasks.task_source import TaskCandidate, TaskCandidates
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactApproval,
     ArtifactKind,
@@ -321,3 +323,72 @@ def test_a_snapshot_without_the_new_fields_still_loads() -> None:
     assert snapshot.stage1 == "open"
     assert snapshot.applicable_constraints == []
     assert snapshot.suspended_constraint_count == 0
+
+
+def _candidates() -> TaskCandidates:
+    return TaskCandidates(
+        day=date(2026, 9, 8),
+        sprint="Sprint 8 - product",
+        rows=[
+            TaskCandidate(
+                source="notion",
+                external_id="page-427",
+                number=427,
+                label="Verify VPB 2024 aangifte",
+                summary="Check the corporate tax return.",
+                state="next",
+                due=date(2026, 9, 10),
+                overdue=False,
+                blocked_by=[],
+                url="https://www.notion.so/page-427",
+            )
+        ],
+        truncated=False,
+    )
+
+
+def test_snapshot_round_trip_keeps_the_days_candidates() -> None:
+    """The snapshot is persisted as JSON, so a nested model has to survive it.
+
+    `PlanningSessionSnapshot` is strict and forbids extras, and the store
+    writes it with `model_dump_json` and reads it back with
+    `model_validate_json` -- so a typed field added here is a change to a
+    durable format, not only to an in-process object. The dates are the part
+    worth pinning: they leave as strings and have to come back as dates.
+    """
+    snapshot = PlanningSessionSnapshot(
+        session_key="C1:1.0",
+        revision=1,
+        owner_user_id="U1",
+        candidates=_candidates(),
+    )
+
+    restored = PlanningSessionSnapshot.model_validate_json(snapshot.model_dump_json())
+
+    assert restored.candidates is not None
+    assert restored.candidates.day == date(2026, 9, 8)
+    assert restored.candidates.sprint == "Sprint 8 - product"
+    assert [row.external_id for row in restored.candidates.rows] == ["page-427"]
+    assert restored.candidates.rows[0].due == date(2026, 9, 10)
+
+
+def test_a_session_stored_before_the_candidates_existed_still_loads() -> None:
+    """Sessions outlive deploys, and a live store predates this field.
+
+    The snapshot forbids unknown keys but must tolerate a *missing* one, or
+    every session open at the moment this ships fails to load -- and the field
+    it is missing means exactly what its absence should mean: no board was
+    read on that resolve.
+    """
+    written_before = json.loads(
+        PlanningSessionSnapshot(
+            session_key="C1:1.0", revision=1, owner_user_id="U1"
+        ).model_dump_json()
+    )
+    del written_before["candidates"]
+
+    restored = PlanningSessionSnapshot.model_validate_json(
+        json.dumps(written_before)
+    )
+
+    assert restored.candidates is None

@@ -51,6 +51,8 @@ def row(
     ticket_status: str | None = "Ready",
     due: str | None = None,
     blocked_by: list[str] | None = None,
+    summary: str = "",
+    url: str | None = None,
 ) -> TaskRow:
     """A board row, with only the fields the port reads left to vary."""
     return TaskRow(
@@ -61,9 +63,9 @@ def row(
         ticket_status=ticket_status,
         due=due,
         blocked_by=list(blocked_by or []),
-        summary="",
+        summary=summary,
         dod="",
-        url=f"https://www.notion.so/{page_id}",
+        url=url if url is not None else f"https://www.notion.so/{page_id}",
         last_edited="2026-09-08T09:14:00.000Z",
     )
 
@@ -247,6 +249,36 @@ async def test_identity_comes_from_the_board_and_is_never_minted_here() -> None:
     assert candidate.number == 500
     assert candidate.label == "Ship the board facade"
     assert candidate.blocked_by == ["blocked-page-1", "blocked-page-2"]
+
+
+async def test_the_summary_and_the_url_are_carried_for_their_one_reader_each() -> None:
+    """Two board facts the port carries because a downstream half needs them.
+
+    The summary is the tail of the line `work_lookup.build_prompt` renders,
+    and the eval's measured rates were taken with it there
+    (`tests/integration/test_eval_work_lookup.py`): a candidate without one
+    would silently change the prompt text and move a measured judgement. The
+    url is what the material store is given when a resolved ticket is written
+    (`timeboxing_host._store_materials`); deriving one from a page id here
+    would be minting, and a handle backed by a link nobody can follow is worse
+    than no handle.
+
+    Neither is read by anything in this module, and neither decides anything.
+    """
+    fake = FakeBoard(
+        listing(
+            row(
+                summary="Check the corporate tax return before it is filed.",
+                url="https://www.notion.so/Ship-the-board-facade-30828174",
+            )
+        )
+    )
+
+    result = await BoardTaskSource(fake).candidates(DAY)
+
+    candidate = result.rows[0]
+    assert candidate.summary == "Check the corporate tax return before it is filed."
+    assert candidate.url == "https://www.notion.so/Ship-the-board-facade-30828174"
 
 
 async def test_a_ticket_with_no_number_keeps_none() -> None:

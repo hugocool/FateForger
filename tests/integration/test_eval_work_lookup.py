@@ -9,7 +9,15 @@ The candidate rows below are the live board's 12 current-sprint Ready tickets
 as `TaskBoard.list_tasks("current_sprint_ready")` returned them on 2026-09-08,
 in that order — the order is part of the question (see `build_prompt`), so
 they are stored in it rather than sorted here. Only the four fields the prompt
-renders are kept; the rest of `TaskRow` is filler that never reaches a model.
+renders are kept; the rest of a candidate is filler that never reaches a model.
+
+Since #401 `resolve_work` takes `TaskCandidate` rows off the `TaskSource` port
+rather than `TaskRow` rows off the board, so this file builds candidates from
+the same four facts under the port's names — `external_id`, `number`, `label`,
+`summary`. **The prompt text and the request shape did not change**, which is
+what makes the rates below still describe the current prompt:
+`tests/unit/test_work_lookup.py` pins the rendered line byte for byte, and the
+snapshot here is the same twelve rows in the same order it always was.
 
 Measured 2026-09-08 on the flash pin at `reasoning: minimal`, 8 draws per case.
 The fourth case is why this file exists. Before the prompt distinguished
@@ -75,7 +83,7 @@ from collections import Counter
 import httpx
 import pytest
 
-from fateforger.agents.tasks.board import TaskRow
+from fateforger.agents.tasks.task_source import TaskCandidate
 from fateforger.agents.timeboxing.work_lookup import resolve_work
 
 pytestmark = [
@@ -172,21 +180,30 @@ BOARD: list[tuple[str, int, str, str]] = [
 ]
 
 
-def _rows() -> list[TaskRow]:
-    """The board rows as the prompt sees them, in the order the board gave."""
+def _rows() -> list[TaskCandidate]:
+    """The board rows as the prompt sees them, in the order the board gave.
+
+    Four fields reach the model — the external id, the number, the label and
+    the summary — and they are the same four facts this file has always
+    carried, under the names `TaskSource` gives them. The rest is filler that
+    `TaskCandidate` requires and `build_prompt` never renders; `state` and
+    `overdue` are what the scope and the day would have produced for these
+    rows on 2026-09-08, so nothing here is a claim the board did not make.
+    """
     return [
-        TaskRow(
-            page_id=page_id,
+        TaskCandidate(
+            source="notion",
+            external_id=page_id,
             number=number,
-            name=name,
+            label=name,
             summary=summary,
-            # Never rendered into the prompt; present because TaskRow requires it.
-            status="Not started",
-            ticket_status="Ready",
-            priority="High",
-            dod="",
+            # Never rendered into the prompt; present because the model
+            # requires every field and defaults nothing.
+            state="next",
+            due=None,
+            overdue=False,
+            blocked_by=[],
             url=f"https://www.notion.so/{page_id}",
-            last_edited="2026-09-08T00:00:00.000Z",
         )
         for page_id, number, name, summary in BOARD
     ]

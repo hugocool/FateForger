@@ -16,7 +16,8 @@ Notion's own structured filter, decided by the scope; which GTD state a row
 lands in is equality against Notion's own enum values -- `Done`, `Blocked`,
 `Ready` -- vocabulary the board minted, which is the identifier case CLAUDE.md
 holds outside the no-matching rule. Overdue is arithmetic on two dates. A
-ticket's prose is carried through as a label and read by nobody here.
+ticket's prose is carried through as a label and a summary, and read by
+nobody here.
 
 **Every failure is loud and carries its cause.** An empty listing means the
 board was read and had nothing to offer; a board that could not be read raises
@@ -80,11 +81,27 @@ class TaskCandidate(BaseModel):
     #: The integer the person says out loud ("do 500 first"), when there is one.
     number: int | None
     label: str
+    #: What the ticket is about, in the board's words. Carried for exactly one
+    #: reader: `work_lookup.build_prompt` renders it after the em dash, and the
+    #: work-lookup eval measured its rates with it there
+    #: (`tests/integration/test_eval_work_lookup.py`). It is what lets "the
+    #: next finance ticket" reach a row whose title says only "Verify VPB 2024
+    #: aangifte", so a candidate without one would not merely shorten the
+    #: prompt -- it would move a measured judgement, silently. Nothing here
+    #: reads it.
+    summary: str
     state: CandidateState
     due: date | None
     overdue: bool
     #: External ids, so the edges stay over identifiers rather than over text.
     blocked_by: list[str]
+    #: The backend's own link, for the one place a link is needed: the material
+    #: store is given it when a resolved ticket is written, and tmbx resolves a
+    #: handle back to it at apply. Carried rather than derived from
+    #: `external_id`, for the reason that field says -- a url this system made
+    #: up is a link nobody can follow, and everything downstream believes it.
+    #: The planner never sees one (`test_work_refs_on_the_brief`).
+    url: str
 
 
 class TaskCandidates(BaseModel):
@@ -156,10 +173,12 @@ def _candidate(row: TaskRow, day: date, source: Source) -> TaskCandidate:
         external_id=row.page_id,
         number=row.number,
         label=row.name,
+        summary=row.summary,
         state=_state_of(row),
         due=due,
         overdue=due is not None and due < day,
         blocked_by=list(row.blocked_by),
+        url=row.url,
     )
 
 

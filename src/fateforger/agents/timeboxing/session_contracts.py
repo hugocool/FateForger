@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from fateforger.agents.tasks.task_source import TaskCandidates
+
 
 class _StrictModel(BaseModel):
     """Reject coercion and undeclared transport fields at this boundary."""
@@ -366,6 +368,19 @@ class PlanningSessionSnapshot(_StrictModel):
     #: `PlanningBrief.work_refs_unresolved`, which carries the same bool to
     #: the planner.
     work_refs_unresolved: bool = False
+    #: What the day's board offered on the last resolve that read one, from
+    #: the single read the work lookup made -- so the surface that shows the
+    #: person their candidates and the judgement that decided which of them
+    #: they named are looking at one list, by construction (#401). Mirrored
+    #: from `PlanningContext` for the reason the flag above is: the cards read
+    #: the snapshot, and a listing that stopped at the host would be invisible
+    #: to the person approving the day.
+    #:
+    #: `None` means no board was read on that resolve. It is never a stand-in
+    #: for a board that answered with nothing, which is an empty `rows`; the
+    #: two are different sentences for the reader, and `work_refs_unresolved`
+    #: is what tells a failed read from a turn that never looked.
+    candidates: TaskCandidates | None = None
     #: Where Stage 1 stands. `open`: eliciting or not yet evaluated. `proposed`:
     #: the kernel emitted GateMet and is waiting for consent. `closed`: the user
     #: consented, or a Stage 2 fact arrived, and planning may proceed.

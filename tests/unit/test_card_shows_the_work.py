@@ -19,6 +19,7 @@ from datetime import date
 
 from blockkit import Button, Context, Message, Section, Text
 
+from fateforger.agents.tasks.task_source import TaskCandidate, TaskCandidates
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
     AdaptiveTimeboxing,
     InMemoryPlanningSessionRepository,
@@ -279,9 +280,15 @@ class _Context:
     files nothing at all on a turn that never ran the lookup.
     """
 
-    def __init__(self, unresolved: bool, facts: list[PlanningFact] | None = None) -> None:
+    def __init__(
+        self,
+        unresolved: bool,
+        facts: list[PlanningFact] | None = None,
+        candidates: TaskCandidates | None = None,
+    ) -> None:
         self.unresolved = unresolved
         self.facts = facts or []
+        self.candidates = candidates
 
     async def propose_planning_day(self, request):
         raise AssertionError("the day is locked in this test")
@@ -291,6 +298,7 @@ class _Context:
             facts=list(self.facts),
             applicable_constraints=_rows(),
             work_refs_unresolved=self.unresolved,
+            candidates=self.candidates,
         )
 
 
@@ -347,6 +355,91 @@ def _advance(kernel, snapshot) -> None:
     asyncio.run(_advance_async(kernel, snapshot))
 
 
+def _candidates() -> TaskCandidates:
+    """One board read, as the `TaskSource` port hands it back."""
+    return TaskCandidates(
+        day=DAY,
+        sprint="Sprint 8 - product",
+        rows=[
+            TaskCandidate(
+                source="notion",
+                external_id="page-427",
+                number=427,
+                label="Verify VPB 2024 aangifte",
+                summary="",
+                state="next",
+                due=None,
+                overdue=False,
+                blocked_by=[],
+                url="https://www.notion.so/page-427",
+            )
+        ],
+        truncated=False,
+    )
+
+
+def test_the_kernel_mirrors_the_days_candidates_onto_the_snapshot() -> None:
+    """The listing the judgement saw has to reach the surface that shows it.
+
+    Every card reads the snapshot, so a listing that stopped at
+    `PlanningContext` would be invisible to the person approving the day --
+    and the point of reading the board once is that what they are shown and
+    what was judged over are the same list (#401).
+
+    It clears on a turn that read no board, for the reason the unresolved flag
+    clears: the field describes the last resolve, never the session. A listing
+    left standing after a turn that never looked is a card presenting stale
+    rows as today's candidates, on the authority of a read two turns old.
+    """
+    repository = InMemoryPlanningSessionRepository([_kernel_session()])
+    context = _Context(unresolved=False, candidates=_candidates())
+    kernel = AdaptiveTimeboxing(
+        repository=repository,
+        requirements=TimeboxRequirements(),
+        planner=_Planner(),
+        context=context,
+        commit=_Commit(),
+    )
+
+    _advance(kernel, _kernel_session())
+    after = asyncio.run(repository.load_or_create("C1:1.0", owner_user_id="U1"))
+    assert after.candidates is not None
+    assert after.candidates.sprint == "Sprint 8 - product"
+    assert [row.number for row in after.candidates.rows] == [427]
+
+    context.candidates = None
+    _advance(kernel, after)
+    cleared = asyncio.run(repository.load_or_create("C1:1.0", owner_user_id="U1"))
+    assert cleared.candidates is None
+
+
+def test_a_board_that_answered_with_nothing_survives_the_mirror() -> None:
+    """Empty rows are an answer; `None` is the absence of one.
+
+    The mirror must not flatten the first into the second -- the card says
+    "your sprint has no ready tickets" for one and "the board could not be
+    read" for the other, and a snapshot that cannot tell them apart makes the
+    wrong sentence unavoidable.
+    """
+    empty = TaskCandidates(
+        day=DAY, sprint="Sprint 8 - product", rows=[], truncated=False
+    )
+    repository = InMemoryPlanningSessionRepository([_kernel_session()])
+    kernel = AdaptiveTimeboxing(
+        repository=repository,
+        requirements=TimeboxRequirements(),
+        planner=_Planner(),
+        context=_Context(unresolved=False, candidates=empty),
+        commit=_Commit(),
+    )
+
+    _advance(kernel, _kernel_session())
+    after = asyncio.run(repository.load_or_create("C1:1.0", owner_user_id="U1"))
+
+    assert after.candidates is not None
+    assert after.candidates.rows == []
+
+
 def test_the_kernel_mirrors_the_unresolved_flag_onto_the_snapshot() -> None:
     """The card reads the snapshot and the flag travels on `PlanningContext`,
     so without this the unresolved case is invisible to every card."""
@@ -382,6 +475,7 @@ async def test_a_failed_lookup_then_a_later_turn_names_no_ticket_at_all() -> Non
     #427 back onto the panel as this turn's answer, with nothing marking it.
     """
 
+    from fateforger.agents.tasks.task_source import BoardTaskSource
     from fateforger.slack_bot.timeboxing_host import work_refs_for_turn
 
     class _RefusingBoard:
@@ -397,11 +491,14 @@ async def test_a_failed_lookup_then_a_later_turn_names_no_ticket_at_all() -> Non
     failed = await work_refs_for_turn(
         day=DAY.isoformat(),
         message="finish the next finance ticket",
-        board=_RefusingBoard(),
+        source=BoardTaskSource(_RefusingBoard()),
         ask=_unused_ask,
         put_material=_unused_store,
     )
     assert failed.unresolved is True
+    # Nothing was offered, which is a different sentence from a board that
+    # offered nothing: the panel must not be able to draw an empty list here.
+    assert failed.candidates is None
 
     started = _kernel_session().model_copy(
         update={"facts": [*_kernel_session().facts, _work_fact([FINANCE])]}
