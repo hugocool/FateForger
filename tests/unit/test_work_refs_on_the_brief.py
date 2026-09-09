@@ -808,17 +808,38 @@ async def test_a_failure_carries_its_traceback_and_its_event_name(
     assert record.exc_info is not None
     assert record.event == "work_board_unavailable"
     # Since #401 the board is read through `TaskSource`, which turns every way
-    # a board can fail into one named exception -- so the *type* on the record
-    # is that name, and what actually broke is the cause it carries. Both have
-    # to survive: the structured type alone no longer identifies the fault, and
-    # a wrapper that dropped its cause would leave nothing that does.
+    # a board can fail into one named exception -- so the exception on the
+    # record is that wrapper, and what actually broke is the cause it carries.
+    # Both have to survive: a wrapper that dropped its cause would leave
+    # nothing naming the fault.
     raised = record.exc_info[1]
     assert isinstance(raised, TaskSourceUnavailable)
     assert type(raised.__cause__) is TypeError
-    assert record.error_type == "TaskSourceUnavailable"
+    # The structured type is the cause, not the wrapper. Reading the wrapper
+    # filed a Notion outage, a missing token and a malformed page under one
+    # label -- and the sibling catch on `TaskBoard.from_settings` logs the real
+    # type, so one event name would have carried two type vocabularies.
+    assert record.error_type == "TypeError"
     # The traceback is what a person reads, and it still names the real fault.
     assert "TypeError" in caplog.text
     assert "'NoneType' object is not subscriptable" in caplog.text
+
+
+async def test_a_failure_with_no_cause_is_logged_under_its_own_type(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The sibling path: `TaskBoard.from_settings` raises before any request
+    and there is no wrapper around it, so the exception *is* the fault. One
+    event name, one type vocabulary, whichever of the two paths filed it."""
+
+    with caplog.at_level(logging.ERROR):
+        timeboxing_host.work_board_unavailable(
+            "2026-09-08", TaskBoardUnavailable("no notion token")
+        )
+
+    record = caplog.records[-1]
+    assert record.event == "work_board_unavailable"
+    assert record.error_type == "TaskBoardUnavailable"
 
 
 async def test_the_rows_are_stored_concurrently() -> None:

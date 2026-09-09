@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from fateforger.agents.tasks.board import TaskBoard
 from fateforger.agents.tasks.task_source import (
     BoardTaskSource,
     TaskCandidate,
@@ -335,8 +336,6 @@ class HostPlanningContext:
         message = requested_work_text(snapshot)
         if not message.strip():
             return WorkRefs(facts=[], unresolved=False)
-
-        from fateforger.agents.tasks.board import TaskBoard
 
         try:
             board = TaskBoard.from_settings()
@@ -665,10 +664,19 @@ def work_lookup_failed(
     the surface can still show the day's list with nothing marked taken from
     it; only `work_board_unavailable` has nothing to carry, and passes None.
     """
+    # The type that actually broke, not the wrapper around it.
+    # `BoardTaskSource` turns every board failure into one
+    # `TaskSourceUnavailable` carrying the original as `__cause__`, so reading
+    # the wrapper here would file a Notion 503, a missing token and a malformed
+    # page under one label -- while the sibling catch in `_work_refs` logs the
+    # real type, and `work_board_unavailable` would then carry two type
+    # vocabularies under one event name. Whoever greps for one of these greps
+    # for the failure, not for the layer that renamed it.
+    error_type = type(exc.__cause__ or exc).__name__
     logger.error(
         "%s: %s: %s",
         event,
-        type(exc).__name__,
+        error_type,
         exc,
         # The traceback, because the catch is broad. A bare
         # "work_lookup_failed: TypeError: 'NoneType' object is not
@@ -676,7 +684,7 @@ def work_lookup_failed(
         # and the thing that raised may be `resolve_work`, the MCP client or a
         # row mapper. Loudness that survives the widening.
         exc_info=True,
-        extra={"event": event, "error_type": type(exc).__name__},
+        extra={"event": event, "error_type": error_type},
     )
     from fateforger.agents.timeboxing.work_refs import work_refs_fact_id
 
