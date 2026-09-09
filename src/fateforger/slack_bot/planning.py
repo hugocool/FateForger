@@ -186,7 +186,9 @@ class PlanningCoordinator:
 
         try:
             interpreted = await self._ensure_intent_interpreter().interpret(
-                view=planning_view(draft),
+                # The card proposes one day; "tomorrow" is only readable
+                # against today's date, so the interpreter is told it.
+                view=planning_view(draft, now=datetime.now(UTC)),
                 user_text=text,
                 schema=schema_for(draft),
                 prompt_fragment=PLANNING_PROMPT_FRAGMENT,

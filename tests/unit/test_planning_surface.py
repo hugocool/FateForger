@@ -20,6 +20,12 @@ from fateforger.slack_bot.planning_surface import (
 from fateforger.slack_bot.surface_intents import CHOOSE_OPTION, narrow_schema
 
 
+#: The card's own day, an hour and a half before the slot it proposes. Fixed,
+#: because a view that read the clock would make these assertions depend on
+#: the weekday the suite happens to run on.
+_NOW = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
+
+
 def _draft(
     status: DraftStatus = DraftStatus.DRAFT, event_url: str | None = None
 ) -> EventDraftPayload:
@@ -42,7 +48,7 @@ def _draft(
 
 
 def test_a_draft_offers_add_and_the_time_decisions() -> None:
-    view = planning_view(_draft())
+    view = planning_view(_draft(), now=_NOW)
 
     assert view.surface_kind == "planning_card"
     assert view.display_state == "draft"
@@ -57,14 +63,14 @@ def test_a_draft_offers_add_and_the_time_decisions() -> None:
 
 
 def test_a_failed_draft_offers_retry_instead_of_add() -> None:
-    view = planning_view(_draft(DraftStatus.FAILURE))
+    view = planning_view(_draft(DraftStatus.FAILURE), now=_NOW)
 
     assert [o.option_id for o in view.offered_options] == [RETRY_OPTION_ID]
 
 
 @pytest.mark.parametrize("status", [DraftStatus.PENDING, DraftStatus.SUCCESS])
 def test_a_settled_draft_offers_nothing(status: DraftStatus) -> None:
-    view = planning_view(_draft(status))
+    view = planning_view(_draft(status), now=_NOW)
 
     assert view.offered_options == ()
     assert view.allowed_decisions == ("none",)
@@ -80,7 +86,7 @@ def test_describe_names_the_card_its_time_and_its_controls() -> None:
 
 
 def test_bind_maps_the_add_option_to_the_add_press() -> None:
-    schema = narrow_schema(InterpretedPlanningTurn, planning_view(_draft()).offered_options)
+    schema = narrow_schema(InterpretedPlanningTurn, planning_view(_draft(), now=_NOW).offered_options)
     turn = schema.model_validate({"decision": CHOOSE_OPTION, "option_id": ADD_OPTION_ID})
 
     assert bind(turn) == PlanningPress(kind="add", selected_time=None)
@@ -104,14 +110,14 @@ def test_bind_none_is_no_press() -> None:
 
 
 def test_bind_maps_the_retry_option_to_the_retry_press() -> None:
-    schema = narrow_schema(InterpretedPlanningTurn, planning_view(_draft(DraftStatus.FAILURE)).offered_options)
+    schema = narrow_schema(InterpretedPlanningTurn, planning_view(_draft(DraftStatus.FAILURE), now=_NOW).offered_options)
     turn = schema.model_validate({"decision": CHOOSE_OPTION, "option_id": RETRY_OPTION_ID})
 
     assert bind(turn) == PlanningPress(kind="retry", selected_time=None)
 
 
 def test_bind_raises_for_choose_option_with_unoffered_option_id() -> None:
-    schema = narrow_schema(InterpretedPlanningTurn, planning_view(_draft()).offered_options)
+    schema = narrow_schema(InterpretedPlanningTurn, planning_view(_draft(), now=_NOW).offered_options)
     # Use model_construct to bypass validation, since the schema rejects it
     turn = schema.model_construct(decision=CHOOSE_OPTION, option_id="cancel")
 
@@ -120,7 +126,7 @@ def test_bind_raises_for_choose_option_with_unoffered_option_id() -> None:
 
 
 def test_a_failed_draft_offers_the_full_decision_set() -> None:
-    view = planning_view(_draft(DraftStatus.FAILURE))
+    view = planning_view(_draft(DraftStatus.FAILURE), now=_NOW)
 
     assert view.allowed_decisions == (
         "update_time",
@@ -158,3 +164,24 @@ def test_an_added_card_describes_its_calendar_link() -> None:
 
 def test_a_draft_has_no_calendar_link_to_describe() -> None:
     assert "Calendar link" not in describe(_draft())
+
+
+def test_the_view_carries_the_time_it_was_given_in_the_drafts_timezone() -> None:
+    # 23:30 UTC on 2 Sep is already 3 Sep in Amsterdam. The block names the
+    # user's day, not UTC's -- and it names the instant passed in, never one
+    # the view read from the clock, which is what keeps the eval's answer the
+    # same on a Wednesday and on a Thursday.
+    view = planning_view(_draft(), now=datetime(2026, 9, 2, 23, 30, tzinfo=timezone.utc))
+
+    assert view.context["now"] == {
+        "date": "2026-09-03",
+        "weekday": "Thursday",
+        "time": "01:30",
+    }
+
+
+def test_the_view_will_not_read_the_clock_for_itself() -> None:
+    # No default: a caller that forgets `now` must fail here, loudly, rather
+    # than silently getting whatever day the process happens to be running on.
+    with pytest.raises(TypeError):
+        planning_view(_draft())  # type: ignore[call-arg]
