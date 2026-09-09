@@ -47,7 +47,7 @@ from .stage_cards import (
     UndoControl,
     map_outcome,
 )
-from .stage_context import ContextFold, ContextPanel, FoldRow
+from .stage_context import BoardCandidateItem, ContextFold, ContextPanel, FoldRow
 from .timebox_candidate import PendingTimeboxCandidates
 from .timeboxing_commit import build_timebox_date_card
 from .timeboxing_intents import ArtifactActionMeta
@@ -383,6 +383,87 @@ def _work_line(panel: ContextPanel) -> str:
     return f"\nPlanning around {named}" + (f" _+{rest} more_" if rest > 0 else "")
 
 
+#: The board's own GTD buckets, as words. A mapping over enum values the
+#: source minted, the way `_APPLIES_LABEL` maps the store's -- nothing here
+#: reads a ticket's prose. `next` maps to nothing on purpose: the measured
+#: scope returns Ready rows only, so tagging every row "next" would spend a
+#: column on the case that carries no information and push the due date, which
+#: does, off the readable part of the line. The buckets that are exceptions
+#: are the ones a reader has to see before planning around a row.
+_CANDIDATE_STATE_LABEL: dict[str, str] = {
+    "next": "",
+    "waiting_for": "waiting for",
+    "someday": "someday",
+    "done": "done",
+}
+
+
+def _board_row(item: BoardCandidateItem) -> str:
+    """One candidate: the mark, the number and the name, then its tags.
+
+    The mark is a tick or a bullet, never bold or an emoji: the reader is
+    scanning a short list for which row this day was planned around, and one
+    glyph in one column is the fastest way to answer that. The tick means the
+    day's work came from this row -- `BoardCandidateItem.chosen`, joined on the
+    board number, never on the name.
+
+    The date is ISO. A month name would come from the process locale unless
+    this file carried its own table (`elicitation._WEEKDAYS` exists for exactly
+    that reason), and a due date read as the wrong month is worse than one read
+    as a plain number.
+    """
+
+    mark = "✓" if item.chosen else "•"
+    named = f"#{item.number} {item.label}" if item.number is not None else item.label
+    tags = [_CANDIDATE_STATE_LABEL.get(item.state, item.state)]
+    if item.due is not None:
+        tags.append(f"due {item.due.isoformat()}")
+    if item.overdue:
+        tags.append("overdue")
+    trailing = "".join(f" · {tag}" for tag in tags if tag)
+    return f"{mark} {named}{trailing}"
+
+
+def _board_section(panel: ContextPanel) -> str:
+    """What the board offered this turn, under the line saying what was taken.
+
+    Three states, three sentences, and the difference between them is the
+    whole point of the section:
+
+    * **No board was read** -- either nobody asked this day to hold any work,
+      or the resolve that would have read one is two turns back and the mirror
+      has since cleared it. Nothing is drawn. A section here would be the
+      previous read's rows presented as today's offer, which is the stale
+      panel this section exists to avoid.
+    * **A board was read and offered nothing** -- one line saying so. The
+      sprint being empty is worth knowing; going quiet would leave it looking
+      like the board was never asked.
+    * **A board was read and offered rows** -- the head and the rows.
+
+    A board that could not be read falls in the first state and is *not*
+    silent: `_work_line` above has already said the day has no ticket attached
+    and named the way back. That sentence is the one vocabulary for that fact,
+    and a second one here would say the same thing twice in a register the
+    reader cannot act on differently.
+
+    The cap is the work line's, for the same reason: this is a glance before
+    approving a day, not a report, and the panel is one section block that has
+    to stay editable in place all session.
+    """
+
+    if not panel.board_read:
+        return ""
+    head = "From your board"
+    if panel.board_sprint:
+        head += f" — {panel.board_sprint}"
+    if not panel.board:
+        return f"\n{head}: nothing to plan around."
+    shown = panel.board[:WORK_LINE_CAP]
+    rows = "".join(f"\n{_board_row(item)}" for item in shown)
+    rest = len(panel.board) - len(shown)
+    return f"\n{head}:{rows}" + (f"\n_+{rest} more_" if rest > 0 else "")
+
+
 def _off_today_line(count: int, reason: str) -> str:
     if count == 0:
         return ""
@@ -412,6 +493,7 @@ def render_context_panel(panel: ContextPanel, done: str | None = None) -> SlackB
         f"{panel.rule_count - panel.must_count} should)"
         f"{_off_today_line(panel.off_today_count, panel.off_today_reason)}\n{summary}"
         f"{_work_line(panel)}"
+        f"{_board_section(panel)}"
     )
     section: dict = {
         "type": "section",

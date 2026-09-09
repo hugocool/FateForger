@@ -7,17 +7,20 @@ model, no store -- and both order rows the same way, through `rank_rows`,
 so the panel's summary and the fold never disagree.
 
 Every comparison here is over identifiers this system minted: constraint
-uids, anchor uids, fact ids, enum values. Anchor names are displayed and
-never compared (CLAUDE.md).
+uids, anchor uids, fact ids, enum values, and -- for the board section -- the
+integer number and the row id the board itself minted. Anchor names, ticket
+names and sprint names are displayed and never compared (CLAUDE.md).
 """
 
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from fateforger.agents.tasks.task_source import CandidateState
 from fateforger.agents.timeboxing.elicitation import ALL_CELLS, coverage_matrix, day_label
 from fateforger.agents.timeboxing.session_contracts import (
     FactKind,
@@ -195,6 +198,29 @@ class WorkItem(_Frozen):
     label: str
 
 
+class BoardCandidateItem(_Frozen):
+    """One row the day's board offered, as a person reads it.
+
+    The board's own facts, and one derived flag. No `external_id` and no url:
+    a page id says nothing to somebody deciding whether the day is about the
+    right ticket, for the same reason `WorkItem` drops the material handle.
+    """
+
+    #: `TaskCandidate.number` is optional; a ticket nobody numbered is still
+    #: on the board.
+    number: int | None
+    label: str
+    state: CandidateState
+    due: date | None
+    #: Derived by the port from `due` and the day, never re-derived here.
+    overdue: bool
+    #: True when one of the day's resolved refs points at this row. The join
+    #: is on the board number -- see `_chosen_numbers`. No default, the way
+    #: `TaskCandidate.overdue` has none: a derived flag that defaults to False
+    #: is a wrong answer waiting for the first item somebody builds by hand.
+    chosen: bool
+
+
 class ContextPanel(_Frozen):
     session_key: str
     expected_revision: int
@@ -213,6 +239,21 @@ class ContextPanel(_Frozen):
     work: list[WorkItem] = Field(default_factory=list)
     #: The last resolve that looked could not work out which ticket was meant.
     work_refs_unresolved: bool = False
+    #: What the board offered on the last resolve that read one, in the order
+    #: the board returned them -- capped by the renderer, not here, so the
+    #: count the panel names is a count of what was on offer. Empty whenever
+    #: no board was read; `board_read` is what tells that from a board that
+    #: was read and offered nothing.
+    board: list[BoardCandidateItem] = Field(default_factory=list)
+    #: The sprint's name, for the section's head. `None` when the scope
+    #: resolved no sprint *and* when the sprint page carries no title, which
+    #: are the same fact for a reader: there is no name to print.
+    board_sprint: str | None = None
+    #: Whether the last resolve read a board at all. Not derivable from
+    #: `board`: an empty listing is an answer ("your sprint has nothing"), and
+    #: no listing is the absence of one, and the panel says something
+    #: different for each.
+    board_read: bool = False
     suspended: list[SuspendedRow]
     #: Row uids and suspension fact ids the panel was drawn from. A snapshot
     #: whose set differs needs the panel edited; equal means nothing to do.
@@ -225,6 +266,11 @@ class ContextPanel(_Frozen):
 #: `shown_with_of`. Minted here, and shaped so it cannot collide with a
 #: constraint uid, a suspension fact id or a material handle.
 _WORK_UNRESOLVED_MARK = "work-refs:unresolved"
+
+#: The mark that stands for "a board was read this turn". Without it a board
+#: that answered with nothing would compare equal to no board at all, and the
+#: turn that first read an empty sprint would never redraw the panel to say so.
+_BOARD_READ_MARK = "board:read"
 
 
 def shown_with_of(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
@@ -247,7 +293,19 @@ def shown_with_of(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
         if isinstance(ref.get("link"), str)
     }
     marks = {_WORK_UNRESOLVED_MARK} if snapshot.work_refs_unresolved else set()
-    return frozenset(uids | facts | work | marks)
+    # And the board, for the same reason: the section is drawn from the day's
+    # candidates, so a turn that changed what the board offered and left the
+    # rules alone has to move this set or the section is written and never
+    # seen. By external id -- the board's own handle for the row -- following
+    # the work above: a ticket renamed or re-dated on the board keeps its id
+    # and does not redraw the panel, which is one turn of a stale label and
+    # never a row that is not there.
+    board: set[str] = set()
+    if snapshot.candidates is not None:
+        board = {_BOARD_READ_MARK} | {
+            f"board:{row.external_id}" for row in snapshot.candidates.rows
+        }
+    return frozenset(uids | facts | work | marks | board)
 
 
 def _row_uids(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
@@ -287,6 +345,73 @@ def _work(snapshot: PlanningSessionSnapshot) -> list[WorkItem]:
     ]
 
 
+def _chosen_numbers(snapshot: PlanningSessionSnapshot) -> frozenset[int]:
+    """The board numbers this day's work was taken from.
+
+    **The join is on `task`, and on nothing else.** A ref carries a material
+    handle, a label and the board number; the handle is minted per ticket by
+    the host and has no counterpart on a candidate, and the label is the
+    ticket's prose, which two rows can share and which no comparison here is
+    allowed to decide anything by (CLAUDE.md). The number is an integer the
+    board minted, so `427 == 427` decides nothing about what anyone meant.
+
+    A ref with no number joins nothing and marks nothing. That understates --
+    a ticket nobody numbered can still be the one that was taken -- and
+    understating is the right way to be wrong here: an unmarked row reads as
+    "not taken from the board", while a wrongly marked one tells the reader
+    the day is about a ticket it is not.
+
+    Empty on an unresolved turn, for the reason `_work` returns nothing there:
+    the ref standing on the snapshot may be an earlier turn's, and a mark
+    beside the sentence saying this turn resolved nothing is the combination
+    that could get a day approved against the wrong ticket.
+    """
+
+    if snapshot.work_refs_unresolved:
+        return frozenset()
+    return frozenset(
+        ref["task"]
+        for ref in work_refs_on(snapshot.facts)
+        if isinstance(ref.get("task"), int)
+    )
+
+
+def _board(snapshot: PlanningSessionSnapshot) -> list[BoardCandidateItem]:
+    """What the board offered, in the order it offered it.
+
+    No board read is an empty list -- and `board_read` beside it is what keeps
+    that from reading as a board that offered nothing.
+    """
+
+    if snapshot.candidates is None:
+        return []
+    chosen = _chosen_numbers(snapshot)
+    return [
+        BoardCandidateItem(
+            number=row.number,
+            label=row.label,
+            state=row.state,
+            due=row.due,
+            overdue=row.overdue,
+            chosen=row.number is not None and row.number in chosen,
+        )
+        for row in snapshot.candidates.rows
+    ]
+
+
+def _board_sprint(snapshot: PlanningSessionSnapshot) -> str | None:
+    """The sprint's name, or `None` when there is not one to print.
+
+    A sprint page with no title gives back an empty string, and the section's
+    head has to read as a sentence without a name either way. Emptiness, not
+    meaning: nothing here compares the title to anything.
+    """
+
+    if snapshot.candidates is None or not snapshot.candidates.sprint:
+        return None
+    return snapshot.candidates.sprint
+
+
 def context_panel(
     snapshot: PlanningSessionSnapshot, first_shown_with: frozenset[str] | None
 ) -> ContextPanel:
@@ -306,6 +431,9 @@ def context_panel(
         groups=group_rows(rows),
         work=_work(snapshot),
         work_refs_unresolved=snapshot.work_refs_unresolved,
+        board=_board(snapshot),
+        board_sprint=_board_sprint(snapshot),
+        board_read=snapshot.candidates is not None,
         suspended=[
             SuspendedRow(uid=r.uid, name=r.name, reason=r.suspended_reason)
             for r in rows
@@ -450,6 +578,7 @@ def context_fold(
 
 __all__ = [
     "AnchorGroup",
+    "BoardCandidateItem",
     "ContextFold",
     "ContextPanel",
     "FoldGroup",
