@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -454,6 +455,14 @@ def _plan_gist(snapshot_json: str) -> tuple[str, ...]:
     generated, so taking the summary and the two clocks out of it is arithmetic
     over our own format and not a reading of anything the user wrote. Anything
     unparseable yields no gist rather than a guess.
+
+    Parsed with `csv.reader`, not `line.split(",")`: `render_plan`'s `_escape`
+    CSV-quotes a summary that contains the table's own delimiter (its
+    docstring's own example is `"Sprint, planning"`), and a naive split breaks
+    a quoted field into two, shifting every column after it -- the end time
+    comes back as the start time, and the summary carries a stray quote. Using
+    `csv.reader` is still reading our own format by its own rules, just more
+    faithfully than a hand-rolled split.
     """
     try:
         envelope = json.loads(snapshot_json)
@@ -471,8 +480,11 @@ def _plan_gist(snapshot_json: str) -> tuple[str, ...]:
     if not isinstance(rendered, str):
         return ()
     entries: list[str] = []
-    for line in rendered.splitlines()[1:]:  # first line is the column header
-        fields = line.split(",")
+    try:
+        data_rows = list(csv.reader(rendered.splitlines()[1:]))
+    except csv.Error:
+        return ()
+    for fields in data_rows:  # first line was already dropped: column header
         if len(fields) < 6:
             continue
         summary, start, end = fields[3], fields[4], fields[5]
