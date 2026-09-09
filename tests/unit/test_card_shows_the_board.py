@@ -449,3 +449,39 @@ def test_one_row_swapped_for_another_redraws_the_panel() -> None:
 
     assert len(TWO_ROWS) == 2
     assert shown_with_of(_snapshot(candidates=_listing(TWO_ROWS))) != same_length
+
+
+def test_the_same_rows_in_a_new_order_redraw_the_panel() -> None:
+    """The property identity alone does not pin, and the one production hits.
+
+    `timeboxing_host.WORK_ROW_LIMIT` is a hundred, so the port hands back the
+    whole sprint and this section shows `BOARD_ROW_CAP` of it. A Priority edit
+    on Notion promotes a row from below the cap to above it: same rows, same
+    count, new order. Under a term that is a bare set of ids nothing moves, the
+    registry skips the edit, and the reader goes on seeing the old top-N in the
+    old order while the judgement already judged over the new one -- which is
+    exactly the invariant this section exists to hold, leaking on the ordering
+    axis rather than the membership one.
+
+    So the listing here is a twenty-row sprint with row thirteen promoted to
+    the front, and the assertions are both halves: the panel content genuinely
+    differs, and the set the registry compares by says so.
+    """
+
+    ordered = [_row(400 + i, f"Ticket number {i}") for i in range(20)]
+    promoted = [ordered[BOARD_ROW_CAP], *ordered[:BOARD_ROW_CAP], *ordered[BOARD_ROW_CAP + 1 :]]
+
+    # Same rows, same count: only the order moved.
+    assert len(ordered) == len(promoted)
+    assert sorted(row.external_id for row in ordered) == sorted(
+        row.external_id for row in promoted
+    )
+
+    # The reader is shown a different list, so a skipped redraw is a stale panel.
+    promoted_row = f"#{400 + BOARD_ROW_CAP} Ticket number {BOARD_ROW_CAP}"
+    assert promoted_row not in _head(_message(candidates=_listing(ordered)))
+    assert promoted_row in _head(_message(candidates=_listing(promoted)))
+
+    assert shown_with_of(_snapshot(candidates=_listing(ordered))) != shown_with_of(
+        _snapshot(candidates=_listing(promoted))
+    )

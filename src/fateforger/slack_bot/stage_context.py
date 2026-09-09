@@ -301,20 +301,29 @@ def shown_with_of(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
     # and does not redraw the panel, which is one turn of a stale label and
     # never a row that is not there.
     #
-    # **This is a set, so a re-read of the same rows in a new order does not
-    # redraw either -- and `timeboxing_cards.BOARD_ROW_CAP` is what makes that
-    # safe.** A Priority edit on Notion reorders the listing without changing
-    # what is in it; under a cap shorter than the sprint that silently dropped
-    # a row, because the panel kept the old top-N while a row that had moved
-    # into it was never drawn. At a cap of twelve -- the sprint's real size and
-    # the port's own default limit -- every row is on the card whatever the
-    # order, so a reorder can no longer lose one, and the cost of the frozenset
-    # falls back to what the paragraph above accepts: a stale order for a turn.
-    # Lower that cap below the sprint size and this becomes a bug again.
+    # **Each row's position is part of its term, so the same rows re-read in a
+    # new order redraw.** A Priority edit on Notion reorders the listing
+    # without changing what is in it, and the section shows only the first
+    # `timeboxing_cards.BOARD_ROW_CAP` rows -- so a row promoted into that
+    # window would be judged over and never drawn, while the panel went on
+    # showing the old top-N in the old order.
+    #
+    # The cap does not make an unordered term safe, which is what this comment
+    # used to claim. The cap bounds what is *shown*; it does not bound what is
+    # read. The only production caller asks the port for
+    # `timeboxing_host.WORK_ROW_LIMIT` rows -- a hundred, not twelve -- so a
+    # twenty-row sprint whose thirteenth row is promoted is the ordinary case,
+    # not the exotic one, and under a set of bare ids nothing moves.
+    #
+    # The cost is a panel edit on a turn where only the order changed. The
+    # cost of the other choice was the reader looking at a different list from
+    # the one the judgement judged over, which is the invariant this section
+    # exists to hold.
     board: set[str] = set()
     if snapshot.candidates is not None:
         board = {_BOARD_READ_MARK} | {
-            f"board:{row.external_id}" for row in snapshot.candidates.rows
+            f"board:{position}:{row.external_id}"
+            for position, row in enumerate(snapshot.candidates.rows)
         }
     return frozenset(uids | facts | work | marks | board)
 

@@ -295,6 +295,18 @@ read, but nothing is marked chosen, for the same reason the work line above
 it names no ticket: a ref left over from an earlier turn must never be
 shown as this turn's answer.
 
+The panel is only edited when `shown_with_of` moves, so the set it returns
+carries each candidate's **position** alongside its external id
+(`board:{position}:{external_id}`). The cap is not what makes that safe. It
+bounds what is *shown*, not what is read: the planning host asks the port for
+`WORK_ROW_LIMIT` (100) rows against a cap of twelve. A Priority edit on Notion
+that promotes a row into the shown window changes the list the reader sees
+without changing what is in the listing, so a term over bare ids would leave
+the panel showing the old top-N in the old order while the judgement had
+already judged over the new one — the one thing this section exists to
+prevent, leaking on the ordering axis instead of the membership one. The cost
+is a panel edit on a turn where only the order moved.
+
 ## Operator notes
 
 See [Setup: Development](../setup/development.md#material-links) for what

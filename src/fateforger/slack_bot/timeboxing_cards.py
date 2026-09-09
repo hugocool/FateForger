@@ -405,14 +405,25 @@ _CANDIDATE_STATE_LABEL: dict[str, str] = {
 #: of twelve defeats the one job it has on the turn where that sentence is
 #: printed.
 #:
-#: Twelve is the current sprint's real size and the port's own
-#: `DEFAULT_CANDIDATE_LIMIT`, so in practice the whole sprint is on the card.
-#: Twelve rows at roughly 60 characters is about 720, against
-#: `SLACK_MAX_BLOCK_TEXT_CHARS` of 1600 -- the panel's other four lines fit in
-#: the headroom, and anything past the cap still becomes "+N more".
+#: Twelve is the current sprint's size on the day this was measured, and the
+#: port's own `DEFAULT_CANDIDATE_LIMIT` -- but it is not what production asks
+#: for. `timeboxing_host.WORK_ROW_LIMIT` is 100, so the port returns up to a
+#: hundred rows and this section shows twelve of them. **The cap bounds what
+#: is shown and never what the judgement saw.**
 #:
-#: **The cap is load-bearing for `shown_with_of`**, not only for the copy: see
-#: the board term there.
+#: Twelve rows at roughly 60 characters is about 720, against
+#: `SLACK_MAX_BLOCK_TEXT_CHARS` of 1600; measured against the real twelve-row
+#: board the section is 918 characters and the whole panel 1087, so the
+#: panel's other lines fit in the headroom. **Past that character budget the
+#: "+N more" line does not survive to say so**: `render_context_panel` cuts
+#: the head at `SLACK_MAX_BLOCK_TEXT_CHARS`, and the cut takes the tail rows
+#: and the count line with them, silently. The count line reports only the
+#: rows this cap dropped, never the ones the character budget did.
+#:
+#: **The cap is not load-bearing for `shown_with_of`.** It was once claimed to
+#: be -- a cap at or above the sprint size was said to make an unordered board
+#: term safe -- and that was wrong, because the cap does not bound the read.
+#: The term there carries each row's position and stands on its own.
 BOARD_ROW_CAP = 12
 
 
