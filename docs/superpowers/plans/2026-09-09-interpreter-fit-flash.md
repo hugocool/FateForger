@@ -21,6 +21,8 @@ The four cases flash loses sit across two unmerged branches:
 
 `tests/integration/test_eval_timebox_question.py` exists only on `feat/asked-not-started` (PR #328, open), and it imports `AskQuestion`/`Asked`/the `no_session` state that also exist only there — so its cases cannot be measured against a prompt change made here. **Do not edit `_TIMEBOX_PROMPT_FRAGMENT_BASE` in this plan**: changing a prompt you cannot measure is the thing CLAUDE.md's resampling rule exists to stop. The timebox half is a follow-up once #328 merges.
 
+**Their 2026-09-06 baseline is stale, though — re-baseline before comparing (noted 2026-09-09).** Both cases sit in the `committed` state, and Task 1 narrowed that state's schema: it now offers only `provide_facts` and `revise`, and carries only the fields those two claim. A schema is part of the request the model answers, so the numbers taken before this branch describe a different request. Whoever picks the timebox half up after #328 merges re-baselines the two cases on this branch's schema first; comparing a fitted prompt against the 2026-09-06 figures would attribute the narrowing's effect to the prompt.
+
 This branch is stacked on `feat/336-interpreter-tier-one` (PR #409, open), which is where the `intent_interpreter` row lives.
 
 ## Global Constraints
@@ -214,6 +216,15 @@ Is `Thu 3 Sep` tomorrow? Nothing here says. If today is Wednesday the user and t
 The timeboxing surface dodged this deliberately: it passes the proposed day and asks for a `day_offset` measured *from that day*, so it never needs to know today (`_proposed_day_context`, and the comment there explaining why a model naming a date directly was the 2026-08-29 incident). The planning card has no such dodge and was simply never given the fact.
 
 **So: give it the fact first, and only add prose if the fact is not enough.** Adding a clause to compensate for a missing input would be teaching the model to guess well rather than letting it know.
+
+> **Superseded by measurement, 2026-09-09.** The first half held; the second half is wrong for the headline case, and the plan is left as written above so the correction is legible as one. Measured on the flash pin at n=8, base fragment / `now` added / `now` + `_DAY_CLAUSE`:
+>
+> | case | before | `now` only | `now` + clause |
+> |---|---|---|---|
+> | `test_a_non_press_is_none[plan tomorrow for me]` | 6/8 | **1/8** | **8/8** |
+> | `test_a_non_press_is_none[later]` | 6/8 | **8/8** | 8/8 |
+>
+> `later` is what this passage predicted: the fact alone carried it, no prose. `plan tomorrow for me` went the other way — the fact made it **worse**, 6/8 to 1/8 — and only the clause reached 8/8. The reason is that the fact resolved an ambiguity *into* agreement rather than out of it: told that today is Thursday and that the card proposes Thursday, "plan tomorrow for me" reads as consent to the very session the card is for, and 5 of 8 draws pressed *add*. So a clause is not always "guessing well instead of knowing"; when a newly-supplied fact makes two readings coincide, the clause is what names the relation the model now has the inputs to check. Prose still comes second, and only against a measured gap — Steps 3 and 4 below are unchanged and are what produced these columns. Full run: `.superpowers/sdd/2026-09-09-interpreter-fit-flash/task-2-report.md`.
 
 - [ ] **Step 1: Baseline the two cases on the flash pin, before any change**
 

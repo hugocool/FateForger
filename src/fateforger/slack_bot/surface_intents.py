@@ -328,9 +328,13 @@ class SurfaceIntentInterpreter:
             raise SurfaceIntentError(
                 f"could not read the reply against the {view.surface_kind}"
             ) from exc
-        # Defence, not the gate: the narrowed Literal already made a
-        # disallowed decision unnameable. This still stands for a host that
-        # does not enforce structured outputs.
+        # Defence in depth, not the gate, and unreachable through `interpret`
+        # today: the `decision` Literal on `narrowed` is exactly `allowed`, and
+        # `model_validate_json` above is local validation no host can bypass --
+        # so a disallowed decision fails there as a `ValidationError` and never
+        # arrives here. Kept because the two would have to be derived
+        # separately for that to stop being true, and a decision the session
+        # cannot honour must not reach a binder silently.
         if not any(interpreted.decision == item for item in allowed):
             raise SurfaceIntentError(
                 f"decision {interpreted.decision!r} is not allowed in "

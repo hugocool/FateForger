@@ -62,11 +62,21 @@ def test_omitting_the_argument_narrows_nothing_away() -> None:
     )
 
 
-def test_every_field_is_claimed_by_some_decision() -> None:
+@pytest.mark.parametrize(
+    "base",
+    [InterpretedTimeboxTurn, InterpretedPlanningTurn, InterpretedSettledPlanningTurn],
+    ids=lambda base: base.__name__,
+)
+def test_every_field_is_claimed_by_some_decision(base: type[BaseModel]) -> None:
     """The guard: a field no decision claims would be silently dropped from
-    every state, and a decision that gains a field must claim it here."""
+    every state, and a decision that gains a field must claim it here.
+
+    Every base `narrow_schema` is asked to narrow, not just timeboxing's: the
+    planning card binds its own two schemas through the same table, so a new
+    field on a planning turn would be dropped from every planning state with
+    nothing failing unless this runs over those too."""
     claimed = {"decision"} | {f for fields in _FIELDS_BY_DECISION.values() for f in fields}
-    assert set(InterpretedTimeboxTurn.model_fields) <= claimed
+    assert set(base.model_fields) <= claimed
 
 
 def test_the_day_offset_bounds_survive_the_rebuild() -> None:

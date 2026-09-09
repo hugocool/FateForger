@@ -12,6 +12,7 @@ import asyncio
 import os
 import traceback
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -34,6 +35,10 @@ def _report(results: list) -> str:
     return "\n---\n".join(lines)
 
 
+#: The draft's timezone. `planning_view` renders `now` in it, so it is the
+#: timezone "the same day" has to be read in.
+_TZ = ZoneInfo("Europe/Amsterdam")
+
 #: The slot the card proposes: Thursday 3 September, 10:38 Amsterdam.
 _START = datetime(2026, 9, 3, 8, 38, tzinfo=timezone.utc)
 
@@ -44,6 +49,21 @@ _START = datetime(2026, 9, 3, 8, 38, tzinfo=timezone.utc)
 #: view that fetched today's date would make this case pass on a Wednesday and
 #: fail on a Thursday.
 _NOW = _START - timedelta(hours=1, minutes=38)
+
+# Subtracting 98 minutes from an instant is not the same as staying on its
+# local day, and the gap is silent: any `_START` whose *local* clock reads
+# earlier than 01:38 puts `_NOW` on the previous local date, at which point
+# "plan tomorrow for me" names the card's own day -- agreement, not a
+# non-press -- and both `test_a_non_press_is_none[plan tomorrow for me]` and
+# the break-it case invert their meaning with nothing turning red. Compared as
+# local dates rather than as a UTC bound, because the offset that decides it
+# is the zone's and moves with DST. Asserted at import, so it is checked even
+# on a run that skips these evals for want of a key.
+assert _NOW.astimezone(_TZ).date() == _START.astimezone(_TZ).date(), (
+    "`now` must land on the draft's own local day, else the cases that turn on "
+    f"'tomorrow' change meaning: now={_NOW.astimezone(_TZ)} "
+    f"start={_START.astimezone(_TZ)}"
+)
 
 
 def _draft(status_name: str = "DRAFT"):
@@ -58,7 +78,7 @@ def _draft(status_name: str = "DRAFT"):
         event_id="ffplanningeval",
         title="Daily planning session",
         description="Plan tomorrow's priorities and prep for shutdown.",
-        timezone="Europe/Amsterdam",
+        timezone=_TZ.key,
         start_at_utc=_START.isoformat(),  # 10:38 local
         duration_min=30,
         status=DraftStatus[status_name],

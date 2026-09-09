@@ -918,9 +918,11 @@ async def test_a_committed_session_does_not_offer_to_cancel_or_approve() -> None
 
     # A literal_error out of the schema, not the interpreter's after-the-fact
     # allowed check: the narrowed Literal means the model cannot name `cancel`
-    # here at all. ValidationError is a ValueError, as the binders' callers
-    # already rely on.
-    with pytest.raises(ValueError):
+    # here at all. Raised as `ValidationError`, which is a `ValueError` -- so
+    # the binders' callers still catch it -- and named here as the narrower
+    # type, because a bare `ValueError` would not distinguish the two
+    # mechanisms and this test exists to say which one refused.
+    with pytest.raises(ValidationError):
         await TimeboxingIntentInterpreter(client).interpret(
             "forget it", _committed_snapshot()
         )

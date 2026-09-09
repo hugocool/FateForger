@@ -96,7 +96,11 @@ async def test_a_decision_outside_the_allowed_set_raises() -> None:
     client = _SchemaOutputClient({"decision": "go"})
     interpreter = SurfaceIntentInterpreter(client)
 
-    with pytest.raises(ValueError):
+    # `ValidationError`, not bare `ValueError`: the point of the narrowing is
+    # *which* mechanism refuses. A ValueError would also be satisfied by the
+    # interpreter's after-the-fact allowed check, which is what this test is
+    # asserting the schema got in front of.
+    with pytest.raises(ValidationError):
         await interpreter.interpret(
             view=_view(allowed_decisions=("none",)),
             user_text="go",
