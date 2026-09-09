@@ -161,3 +161,23 @@ async def test_a_live_sessions_own_thread_is_claimed_before_the_judge_is_asked(
         "C0AA6HC1RJL:1788599000.000100"
     ]
     assert resolver.calls == []
+
+
+async def test_a_partial_catalog_never_creates_through_the_handoff_door(
+    routing_harness,
+):
+    # The door the rung's first predicate could not see. Typed anywhere but the
+    # planning channel, the turn goes to the receptionist -- so nothing about it
+    # reads as timeboxing -- and the receptionist hands it off, and the handoff
+    # builds a session surface of its own over a day the catalog could not see.
+    harness = routing_harness(
+        resolver=_Resolver(NoReferent(catalog_complete=False)),
+        handoff_to="timeboxing_agent",
+    )
+    await harness.route_top_level(
+        "can you replan today so the gym is before dinner?", channel="C_GENERAL"
+    )
+    assert harness.sessions_opened == []
+    assert harness.runtime.calls == [], "nothing may be delivered, so nothing hands off"
+    assert harness.origin_messages, "the user must be told what could not be checked"
+

@@ -354,6 +354,39 @@ def _referent_label(referent: Referent) -> str:
     return f"{referent.kind} for {day} ({referent.status})"
 
 
+def _turn_can_mint_a_session(
+    *, agent_type: str, is_dm: bool, thread_ts: str | None
+) -> bool:
+    """Could this turn still end at a door that mints a timeboxing session?
+
+    One reading, asked once before the turn runs. There were three separate
+    re-derivations of this condition and they had already drifted apart; the
+    one the referent rung carried missed the handoff door entirely, which is
+    the door a plain "can you replan today so the gym is before dinner?" goes
+    through when it is typed anywhere but the planning channel.
+
+    `open_session_surface` is the thing that actually mints, and it has two
+    callers -- the fresh-channel start and the handoff. The legacy backend
+    reaches the same place by sending `StartTimeboxing` instead. This answers
+    for all of them:
+
+    * already on `timeboxing_agent`: a message with no thread to continue is a
+      fresh start whichever backend takes it. A DM reaches the session by its
+      `{channel}:dm` key instead, and mints nothing.
+    * on any other agent: that agent can hand the turn off, and a handoff to
+      timeboxing builds a surface of its own -- from a thread reply as readily
+      as from a root message, and in a DM as readily as in a channel.
+
+    It over-answers on purpose. Nobody can know before the turn whether the
+    model will hand off, and the two mistakes are not symmetric: asking when
+    nothing would have been created costs a retry, while creating over a day
+    that already stands is the incident this whole rung exists to prevent.
+    """
+    if agent_type == "timeboxing_agent":
+        return not is_dm and not thread_ts
+    return True
+
+
 async def _resolve_referent(
     *,
     runtime,
@@ -2777,6 +2810,12 @@ async def route_slack_event(
                         agent_type = "timeboxing_agent"
                         structurally_claimed = True
 
+    # Read once, before the rung can move `agent_type`, and consulted both by
+    # the rung and by the door that mints. One reading, two users, no drift.
+    turn_can_mint_a_session = _turn_can_mint_a_session(
+        agent_type=agent_type, is_dm=is_dm, thread_ts=thread_ts
+    )
+
     cleaned_text = _strip_bot_mention(text, bot_user_id)
     # The seam below may prefix `cleaned_text` with card context meant for
     # whichever agent answers. `user_reply_text` stays the user's own words,
@@ -2906,6 +2945,24 @@ async def route_slack_event(
         one builder for every door. What stays here is what only a Slack event
         can supply: the origin link, the working card, and the turn.
         """
+        if not turn_can_mint_a_session:
+            # The rung was told this turn could not mint one, and here it is
+            # minting one. That means `_turn_can_mint_a_session` has stopped
+            # covering every door, and a partial catalog can now reach this
+            # line believing nothing stands. Loud and metered at the site,
+            # rather than inherited in silence by whatever reads the store
+            # next -- which is exactly how the 2026-09-05 duplicate happened.
+            logger.error(
+                "a session is being minted at a door the rung did not foresee "
+                "(agent=%s is_dm=%s thread_ts=%s channel=%s)",
+                agent_type,
+                is_dm,
+                thread_ts,
+                channel,
+            )
+            record_error(
+                component="surface_intent", error_type="unforeseen_session_mint"
+            )
         surface = await open_session_surface(
             client,
             focus,
@@ -3164,11 +3221,6 @@ async def route_slack_event(
     # It resolves and nothing more. What to do about the answer is a second
     # judgement, and it belongs to the surface that owns the state.
     if binding is None and not structurally_claimed and text.strip():
-        # The one place a wrong "nothing stands" is unrecoverable: a door that
-        # creates mints a second session for a day that already has one, which
-        # is the whole of the 2026-09-05 incident. Read before the rung can
-        # move `agent_type`.
-        would_start_a_session = agent_type == "timeboxing_agent" and not thread_ts
         resolution = await _resolve_referent(
             runtime=runtime,
             owner_user_id=user,
@@ -3226,11 +3278,21 @@ async def route_slack_event(
                     record_error(
                         component="surface_intent", error_type="referent_unreachable"
                     )
+                    # Name where, at least. A DM channel id has no `<#...>`
+                    # rendering, and telling someone their message went nowhere
+                    # without saying where to put it is the whole dead end.
+                    # (`D...` is Slack's own prefix, not a reading of anything
+                    # the user wrote -- the same test the route opens with.)
+                    where = (
+                        "our DM"
+                        if str(referent.channel_id or "").startswith("D")
+                        else f"<#{referent.channel_id}>"
+                    )
                     await _origin_update(
                         text=(
-                            f":left_right_arrow: That reads as {label}, and I "
-                            "can't hand it to that conversation from here. Say "
-                            "it there and I'll pick it up."
+                            f":left_right_arrow: That reads as {label}, which "
+                            f"lives in {where} -- and I can't hand a message to "
+                            "it from here. Say it there and I'll pick it up."
                         )
                     )
                     return
@@ -3321,12 +3383,19 @@ async def route_slack_event(
         elif (
             isinstance(resolution, NoReferent)
             and not resolution.catalog_complete
-            and would_start_a_session
+            and turn_can_mint_a_session
         ):
             # A provider failed, so `none` is not evidence that nothing stands
             # (`referents/catalog.py`'s own contract). Everywhere else that is
             # survivable; in front of a door that creates it is the incident,
             # so ask rather than create.
+            #
+            # `catalog_complete` rides every outcome and is acted on only here,
+            # deliberately. The flag changes what a *weak* answer licenses, and
+            # the other two outcomes license nothing that a partial catalog
+            # could make dangerous: `Resolved` hands the turn to a session that
+            # demonstrably exists, and `Ambiguous` already asks. `NoReferent` is
+            # the only one whose answer is "so go ahead and create".
             record_error(
                 component="surface_intent", error_type="referent_catalog_partial"
             )

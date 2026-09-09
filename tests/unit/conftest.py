@@ -110,15 +110,25 @@ class _HarnessClient:
 class _HarnessRuntime:
     """The adapter bag the route reads, plus a record of every delivery."""
 
-    def __init__(self, *, session_store, resolver) -> None:
+    def __init__(self, *, session_store, resolver, handoff_to=None) -> None:
         self.timeboxing_session_store = session_store
         self.referent_resolver = resolver
         self.calls: list[tuple[object, object]] = []
+        self._handoff_to = handoff_to
 
     async def send_message(self, message, recipient):
         self.calls.append((message, recipient))
         from autogen_agentchat.messages import TextMessage
 
+        if self._handoff_to is not None:
+            # `_extract_handoff_target` reads `.target`; a plain string is one
+            # of the shapes it accepts. This is how the receptionist reaches
+            # the door that mints a session without any channel default.
+            return SimpleNamespace(
+                chat_message=SimpleNamespace(
+                    target=self._handoff_to, content="handing off", source="bot"
+                )
+            )
         return SimpleNamespace(chat_message=TextMessage(content="ok", source="bot"))
 
 
@@ -216,10 +226,10 @@ class _RoutingHarness:
         if posted and self._origin_ts is None:
             self._origin_ts = posted[0]["ts"]
 
-    async def route_top_level(self, text: str) -> None:
+    async def route_top_level(self, text: str, *, channel: str | None = None) -> None:
         await self._route(
             {
-                "channel": PLAN_SESSIONS_CHANNEL,
+                "channel": channel or PLAN_SESSIONS_CHANNEL,
                 "user": "U_HUGO",
                 "text": text,
                 "ts": "1788600060.000100",
@@ -255,6 +265,7 @@ def routing_harness(monkeypatch: pytest.MonkeyPatch):
         planning_owns_thread: bool = False,
         rows=None,
         sessions=None,
+        handoff_to: str | None = None,
     ) -> _RoutingHarness:
         event_order: list[str] = []
         opened: list[str] = []
@@ -268,7 +279,9 @@ def routing_harness(monkeypatch: pytest.MonkeyPatch):
             sessions=sessions or {},
             event_order=event_order,
         )
-        runtime = _HarnessRuntime(session_store=store, resolver=resolver)
+        runtime = _HarnessRuntime(
+            session_store=store, resolver=resolver, handoff_to=handoff_to
+        )
         client = _HarnessClient()
         planning = _HarnessPlanning(owns=planning_owns_thread)
 
