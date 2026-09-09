@@ -7,7 +7,7 @@ nudger -- which sessions stand -- and returns descriptors instead of keys.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from .descriptor import StandingThing
@@ -83,7 +83,9 @@ class TimeboxingReferentProvider:
             never_used=(
                 row.status == "open" and row.revision <= UNTOUCHED_REVISION
             ),
-            last_activity=row.updated_at.replace(tzinfo=as_of.tzinfo),
+            # row.updated_at is written naive UTC by the store's save method,
+            # so we tag it with UTC (not as_of.tzinfo) to preserve its true instant.
+            last_activity=row.updated_at.replace(tzinfo=UTC),
             accepts=_COMMITTED_ACCEPTS if committed else _OPEN_ACCEPTS,
             gist=tuple(row.gist),
             channel_id=channel_id,

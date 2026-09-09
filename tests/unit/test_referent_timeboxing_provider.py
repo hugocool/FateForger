@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
@@ -116,3 +117,27 @@ async def test_the_agent_type_travels_onto_every_descriptor():
     )
     (thing,) = await provider.standing(owner_user_id="U1", as_of=AS_OF)
     assert thing.agent_type == "timeboxing_agent" == provider.agent_type
+
+
+async def test_last_activity_is_correctly_zoned_when_as_of_is_not_utc():
+    # row.updated_at is naive UTC (10:51). as_of is 13:51+02:00 (which equals 11:51 UTC).
+    # True elapsed time is 1 hour. The bug was tagging the naive UTC value with as_of.tzinfo,
+    # making it 10:51+02:00 (which equals 08:51 UTC). That would compute 3 hours elapsed instead of 1.
+    naive_utc_time = datetime(2026, 9, 5, 10, 51)  # naive UTC
+    amsterdam_tz = ZoneInfo("Europe/Amsterdam")
+    as_of_in_amsterdam = datetime(2026, 9, 5, 13, 51, tzinfo=amsterdam_tz)  # 11:51 UTC
+
+    row = _Row(
+        session_key="C1:111.0",
+        status="open",
+        planning_date=date(2026, 9, 5),
+        updated_at=naive_utc_time,
+        revision=7,
+        gist=(),
+    )
+    provider = TimeboxingReferentProvider(_Repo([row]))
+    (thing,) = await provider.standing(owner_user_id="U1", as_of=as_of_in_amsterdam)
+
+    # The elapsed time should be 1 hour (true UTC difference)
+    elapsed = as_of_in_amsterdam - thing.last_activity
+    assert abs(elapsed.total_seconds() - 3600) < 1  # Allow 1 second tolerance for rounding
