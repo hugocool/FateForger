@@ -203,7 +203,15 @@ def _rows() -> list[TaskCandidate]:
             due=None,
             overdue=False,
             blocked_by=[],
-            url=f"https://www.notion.so/{page_id}",
+            # Empty rather than minted. This snapshot captured the page id and
+            # not the board's link, and `TaskCandidate.url` says why those are
+            # not the same thing: a url this system made up is one nobody can
+            # follow, and here it would sit in the file that documents the
+            # measurement looking exactly like a fact the board supplied.
+            # `build_prompt` renders no url, so nothing measured depends on it
+            # -- verified by hashing the prompt over these rows before and
+            # after this line changed.
+            url="",
         )
         for page_id, number, name, summary in BOARD
     ]
