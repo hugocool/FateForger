@@ -1,5 +1,14 @@
-"""Classify every test by seam and by how it builds its subject. AST only."""
-import ast, pathlib, collections, json
+"""Classify every test by seam and by how it builds its subject. AST only.
+
+Usage:
+    python taxonomy.py [out.json]
+
+Run from the repository root -- it walks `tests/` relative to the cwd.
+The seam summary always prints to stdout; `out.json` (default:
+`per_test.json`, written beside this script) additionally gets the
+per-test `(file, test_name, seam)` rows for downstream tooling.
+"""
+import ast, pathlib, collections, json, sys
 
 files = sorted(pathlib.Path("tests").rglob("test_*.py"))
 
@@ -80,4 +89,6 @@ for f, c in new_usage.most_common(8): print(f"    {c:3d}  {f}")
 print("\n=== files assigning private attrs (obj._x = ...) ===")
 print(f"  {len(private_sets)} files, {sum(private_sets.values())} sites; top:")
 for f, c in private_sets.most_common(8): print(f"    {c:3d}  {f}")
-json.dump(per_test, open("/private/tmp/claude-501/-Users-hugoevers-VScode-projects-admonish-1/8947bec9-0516-4f69-85cd-89dd1fed17f3/scratchpad/per_test.json","w"))
+out_path = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else pathlib.Path(__file__).parent / "per_test.json"
+json.dump(per_test, open(out_path, "w"))
+print(f"\nper-test rows written to {out_path}")

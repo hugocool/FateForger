@@ -129,8 +129,6 @@ KEPT_DESPITE_UNREACHABLE = {
     "fateforger.slack_bot.thread_approval",
     # Last read by the legacy agent's calendar client. Has its own live test.
     "fateforger.core.calendar_preferences",
-    # Ditto, and it sits on the calendar adapter boundary with an open ticket.
-    "fateforger.adapters.calendar.models",
 }
 
 missing = sorted(m for m in NAMED_ENTRIES if m not in files)
