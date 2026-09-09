@@ -425,6 +425,15 @@ async def test_confirming_the_card_locks_saturday_as_a_weekend_the_host_derived(
     assert snapshot.planning_day.day_type is DayType.WEEKEND
     assert snapshot.planning_day.classification_basis == "calendar"
 
+    # Stage 1 runs before the hard blocker (#411) and this corpus is empty,
+    # so the confirm turn above already proposed to close; nothing was planned
+    # until this consent, and the day's facts are still unstated.
+    assert planner.briefs == []
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
+    )
+    assert planner.briefs == []
+
     await handlers.route_slack_event(
         runtime=runtime,
         focus=_focus(),
@@ -439,13 +448,6 @@ async def test_confirming_the_card_locks_saturday_as_a_weekend_the_host_derived(
         bot_user_id=None,
         say=None,
         client=client,
-    )
-
-    # Stage 1 stands between the facts and the plan: this turn proposed to
-    # close, and nothing was planned until the consent below.
-    assert planner.briefs == []
-    await _take_the_stage_one_proposal(
-        runtime=runtime, client=client, interaction_id="next-1"
     )
 
     assert planner.briefs, "the first planner brief was never built"
@@ -480,6 +482,9 @@ async def test_a_fresh_repository_rehydrates_the_session_without_the_transcript(
     session_key = await _start_and_confirm_saturday(
         runtime=runtime, client=client, repository=repository
     )
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
+    )
     await handlers.route_slack_event(
         runtime=runtime,
         focus=_focus(),
@@ -494,9 +499,6 @@ async def test_a_fresh_repository_rehydrates_the_session_without_the_transcript(
         bot_user_id=None,
         say=None,
         client=client,
-    )
-    await _take_the_stage_one_proposal(
-        runtime=runtime, client=client, interaction_id="next-1"
     )
 
     # The process that knew any of this is gone.
@@ -551,13 +553,17 @@ async def _take_the_stage_one_proposal(
     channel: str = "C1",
     interaction_id: str,
 ) -> None:
-    """Consent to close Stage 1, which now stands between the day and the plan.
+    """Consent to close Stage 1, which now stands before the day's facts.
 
-    The turn that supplies the day's facts ends on `GateMet`: the kernel
-    offering to close the stage, with the planner not yet run. Next is the
-    consent, and it is a press rather than a sentence so the interpreter script
-    of every scenario below is left alone. These scenarios were written before
-    the stage existed and are about what follows it.
+    Stage 1 runs before the hard-blocker check (#411), and this file's corpus
+    is empty, so the turn that confirms the day already ends on `GateMet`: the
+    kernel offering to close the stage, nothing yet asked and the planner not
+    yet run. This press is the consent, and it belongs right after confirming
+    the day, before the message that states the day's facts -- that message is
+    what the (now later) hard blocker reads, and what sends the turn on to the
+    planner. It is a press rather than a sentence so the interpreter script of
+    every scenario below is left alone. These scenarios were written before the
+    stage existed and are about what follows it.
     """
 
     proposal = _blocks_with_actions(client.updates)[-1]
@@ -639,6 +645,9 @@ async def test_a_skeleton_turn_touches_no_calendar_and_stores_no_candidate(
     session_key = await _start_and_confirm_saturday(
         runtime=runtime, client=client, repository=repository
     )
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
+    )
     await handlers.route_slack_event(
         runtime=runtime,
         focus=_focus(),
@@ -653,10 +662,6 @@ async def test_a_skeleton_turn_touches_no_calendar_and_stores_no_candidate(
         bot_user_id=None,
         say=None,
         client=client,
-    )
-
-    await _take_the_stage_one_proposal(
-        runtime=runtime, client=client, interaction_id="next-1"
     )
 
     assert planner.briefs[-1].target_artifact is ArtifactKind.SKELETON
@@ -710,6 +715,9 @@ async def test_only_an_approved_skeleton_unlocks_the_first_validated_candidate(
     session_key = await _start_and_confirm_saturday(
         runtime=runtime, client=client, repository=repository
     )
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
+    )
     await handlers.route_slack_event(
         runtime=runtime,
         focus=_focus(),
@@ -724,10 +732,6 @@ async def test_only_an_approved_skeleton_unlocks_the_first_validated_candidate(
         bot_user_id=None,
         say=None,
         client=client,
-    )
-
-    await _take_the_stage_one_proposal(
-        runtime=runtime, client=client, interaction_id="next-1"
     )
 
     skeleton_blocks = _blocks_with_actions(client.updates)[-1]["blocks"]
@@ -775,6 +779,12 @@ async def test_a_failed_turn_says_one_stable_thing_and_leaks_no_payload(
     await _start_and_confirm_saturday(
         runtime=runtime, client=client, repository=repository
     )
+    # Stage 1 proposes to close first, with an empty corpus and no facts yet
+    # stated; the planner -- and its failure -- is on the message that states
+    # them, after this consent.
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
+    )
     await handlers.route_slack_event(
         runtime=runtime,
         focus=_focus(),
@@ -789,11 +799,6 @@ async def test_a_failed_turn_says_one_stable_thing_and_leaks_no_payload(
         bot_user_id=None,
         say=None,
         client=client,
-    )
-    # Stage 1 proposes to close first; the planner -- and its failure -- is on
-    # the consent's turn.
-    await _take_the_stage_one_proposal(
-        runtime=runtime, client=client, interaction_id="next-1"
     )
 
     rendered = " ".join(
@@ -1018,6 +1023,15 @@ async def _drive_to_a_failed_turn(
         actor_user_id="U1",
         interaction_id=f"confirm-{channel}",
     )
+    # The confirm turn above proposed to close Stage 1 (an empty corpus, no
+    # facts yet); this consent is what lets the day's facts, next, reach the
+    # planner -- and it is that turn that falls over.
+    await _take_the_stage_one_proposal(
+        runtime=runtime,
+        client=client,
+        channel=channel,
+        interaction_id=f"next-{channel}",
+    )
     await handlers.route_slack_event(
         runtime=runtime,
         focus=_focus(),
@@ -1032,14 +1046,6 @@ async def _drive_to_a_failed_turn(
         bot_user_id=None,
         say=None,
         client=client,
-    )
-    # That turn proposed to close Stage 1; the planner is reached by the
-    # consent, and it is the consent's turn that falls over.
-    await _take_the_stage_one_proposal(
-        runtime=runtime,
-        client=client,
-        channel=channel,
-        interaction_id=f"next-{channel}",
     )
     return meta.session_key
 
@@ -1208,6 +1214,12 @@ async def test_an_open_question_is_asked_without_a_button_row(
     session_key = await _start_and_confirm_saturday(
         runtime=runtime, client=client, repository=repository
     )
+    # Stage 1 runs first and, on an empty corpus, has nothing to probe: the
+    # confirm turn already proposes to close. This is the Priorities question
+    # asked once that consent is given, not the confirm turn's own card.
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
+    )
 
     asked = [update for update in client.updates if update.get("blocks")][-1]
     snapshot = await repository.load_or_create(session_key, owner_user_id="U1")
@@ -1257,6 +1269,9 @@ async def test_approving_a_superseded_skeleton_plans_nothing(
     session_key = await _start_and_confirm_saturday(
         runtime=runtime, client=client, repository=repository
     )
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-1"
+    )
     await handlers.route_slack_event(
         runtime=runtime,
         focus=_focus(),
@@ -1271,9 +1286,6 @@ async def test_approving_a_superseded_skeleton_plans_nothing(
         bot_user_id=None,
         say=None,
         client=client,
-    )
-    await _take_the_stage_one_proposal(
-        runtime=runtime, client=client, interaction_id="next-1"
     )
     superseded = ArtifactActionMeta.model_validate_json(
         _artifact_action_value(
@@ -1346,6 +1358,9 @@ async def _drive_to_the_validated_candidate(
     session_key = await _start_and_confirm_saturday(
         runtime=runtime, client=client, repository=repository
     )
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="next-skeleton"
+    )
     await handlers.route_slack_event(
         runtime=runtime,
         focus=_focus(),
@@ -1360,9 +1375,6 @@ async def _drive_to_the_validated_candidate(
         bot_user_id=None,
         say=None,
         client=client,
-    )
-    await _take_the_stage_one_proposal(
-        runtime=runtime, client=client, interaction_id="next-skeleton"
     )
     await handlers._handle_timebox_artifact_action(
         runtime=runtime,
@@ -1605,6 +1617,18 @@ async def test_every_rendered_control_names_its_session_and_revision(
         actor_user_id="U1",
         interaction_id="sweep-confirm",
     )
+    # Stage 1 runs first and, on an empty corpus, the confirm turn above
+    # already proposed to close. That card is a reviewable surface in its own
+    # right, so it is swept like the rest before its Next is pressed.
+    await _record()
+
+    await _take_the_stage_one_proposal(
+        runtime=runtime, client=client, interaction_id="sweep-next"
+    )
+    # The consent's own turn is the Priorities question -- the day's facts are
+    # still unstated -- and it is stamped and reviewable too.
+    await _record()
+
     await handlers.route_slack_event(
         runtime=runtime,
         focus=_focus(),
@@ -1619,13 +1643,6 @@ async def test_every_rendered_control_names_its_session_and_revision(
         bot_user_id=None,
         say=None,
         client=client,
-    )
-    # The Stage 1 proposal card is a reviewable surface in its own right, so
-    # it is swept like the rest before its Next is pressed.
-    await _record()
-
-    await _take_the_stage_one_proposal(
-        runtime=runtime, client=client, interaction_id="sweep-next"
     )
     await _record()
 
@@ -1644,7 +1661,7 @@ async def test_every_rendered_control_names_its_session_and_revision(
     )
     await _record()
 
-    assert len(surfaces) == 4
+    assert len(surfaces) == 5
     for surface, revision in zip(surfaces, revisions, strict=True):
         assert surface, "a reviewable surface rendered no control at all"
         assert surface == {(session_key, revision)}

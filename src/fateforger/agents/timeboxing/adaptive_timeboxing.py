@@ -696,6 +696,28 @@ class AdaptiveTimeboxing:
             update={"work_refs_unresolved": resolved.work_refs_unresolved}
         )
         readiness = self._requirements.evaluate(target, snapshot)
+
+        # Stage 1 before the hard-blocker check, deliberately. The catalog's
+        # user-owned hard requirements -- the request, the frame -- are still
+        # guaranteed before a skeleton is drafted, because this branch is
+        # skipped once `stage1 == "closed"` and the check below then runs as
+        # it always did. What changes is the order: the shape of the day is
+        # elicited first, and "what do you want out of the day" is asked when
+        # the stage closes. The other order asked the Priorities question on
+        # every auto-started session before a single probe, and the ladder
+        # read 1 -> 2 -> 1 (#411, #276). The Stage 1 spec states this ladder
+        # as `1, 1, ..., 2, 3 by construction`; the loop now matches it.
+        if target is ArtifactKind.SKELETON and snapshot.stage1 != "closed":
+            stage1_snapshot, stage1_outcome = self._stage1_outcome(
+                snapshot, readiness, list(resolved.probes)
+            )
+            return await self._save(
+                stage1_snapshot,
+                base_revision=base_revision,
+                request=request,
+                outcome=stage1_outcome,
+            )
+
         blocker = readiness.first_hard_user_blocker()
         if blocker is not None:
             # No options. The catalog knows what it needs, not what today's
@@ -711,17 +733,6 @@ class AdaptiveTimeboxing:
                     question=blocker.question,
                     why_needed=blocker.why_needed,
                 ),
-            )
-
-        if target is ArtifactKind.SKELETON and snapshot.stage1 != "closed":
-            stage1_snapshot, stage1_outcome = self._stage1_outcome(
-                snapshot, readiness, list(resolved.probes)
-            )
-            return await self._save(
-                stage1_snapshot,
-                base_revision=base_revision,
-                request=request,
-                outcome=stage1_outcome,
             )
 
         if readiness.system_owned_gaps():
@@ -1097,10 +1108,11 @@ class AdaptiveTimeboxing:
         """What Stage 1 shows right now: the top open cell, or a proposal to close.
 
         The one place `stage1_gate` becomes a `TurnOutcome`, and the run
-        loop -- after resolving context and holding any hard user blocker --
-        is its only caller: `FileAssumption` and `GoBack` fall through to it
-        rather than answering for it, so `GateMet` and the `stage1 ==
-        "proposed"` transition happen exactly once per turn, in one place.
+        loop -- after resolving context, and before it ever consults the hard
+        user blocker -- is its only caller: `FileAssumption` and `GoBack` fall
+        through to it rather than answering for it, so `GateMet` and the
+        `stage1 == "proposed"` transition happen exactly once per turn, in
+        one place.
         `stage1_gate` itself already subtracts any cell a filed assumption
         answers, so the `Gate` read back here needs no further narrowing.
 

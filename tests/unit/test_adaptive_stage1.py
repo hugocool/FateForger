@@ -294,34 +294,76 @@ def test_file_assumption_is_recorded_as_the_users_and_closes_the_question() -> N
     assert len(planner.briefs) == 1
 
 
-def test_file_assumption_for_a_cell_still_holds_a_missing_hard_blocker() -> None:
-    """`FileAssumption` always falls through now: the run loop holds a hard
-    user blocker before it ever reaches Stage 1, same as any other turn."""
+def test_file_assumption_for_the_last_open_cell_proposes_to_close_before_any_blocker() -> None:
+    """`FileAssumption` falls through to Stage 1, which now runs before the
+    hard-blocker check: forcing past the last open cell proposes to close,
+    and the missing request is asked after consent, not instead of the stage."""
     cell = ALL_CELLS[0]
     snapshot = _snapshot(
         facts=[
-            PlanningFact(
-                fact_id="frame-1",
-                kind=FactKind.DAY_FRAME,
-                value={"wake": "07:00", "sleep": "23:30"},
-                source="user",
-            ),
+            PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME,
+                         value={"wake": "07:00", "sleep": "23:30"}, source="user"),
             _matrix_fact(cell.id),
         ]
     )
     kernel, repository, planner = _kernel(snapshot)
-    outcome = _turn(
-        kernel, snapshot,
-        FileAssumption(
-            requirement_id=cell.id,
-            value="assume a normal day",
-            why_needed="user forced past",
-        ),
+    outcome = _turn(kernel, snapshot,
+                    FileAssumption(requirement_id=cell.id, value="assume a normal day", why_needed="user forced past"))
+    assert isinstance(outcome, GateMet)
+    assert _load(repository).stage1 == "proposed"
+    assert planner.briefs == []
+
+
+def test_the_shape_of_the_day_is_asked_before_the_priorities_question() -> None:
+    """An auto-started session has said nothing. Stage 1 asks about the day's
+    shape first; "what do you want out of the day" waits until it closes.
+    Ruled 2026-09-09 (#411): the ladder is 1, 1, …, 2, 3 by construction."""
+    cell = ALL_CELLS[0]
+    snapshot = _snapshot(
+        facts=[
+            PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME,
+                         value={"wake": "07:00", "sleep": "23:30"}, source="user"),
+            _matrix_fact(cell.id),          # one Stage 1 cell open, no request
+        ]
     )
+    kernel, repository, planner = _kernel(snapshot)
+    outcome = _turn(kernel, snapshot, Advance())
+    assert isinstance(outcome, AwaitingUser)
+    assert outcome.requirement_id == cell.id
+    assert outcome.gate is not None
+    assert planner.briefs == []
+
+
+def test_the_priorities_question_is_still_asked_once_stage_one_closes() -> None:
+    """The hard user blocker is guaranteed before a skeleton; it is only asked
+    later, not never."""
+    snapshot = _snapshot(
+        stage1="closed",
+        facts=[
+            PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME,
+                         value={"wake": "07:00", "sleep": "23:30"}, source="user"),
+        ],
+    )
+    kernel, repository, planner = _kernel(snapshot)
+    outcome = _turn(kernel, snapshot, Advance())
     assert isinstance(outcome, AwaitingUser)
     assert outcome.requirement_id == "skeleton.requested_activity"
     assert outcome.gate is None
     assert planner.briefs == []
+
+
+def test_a_missing_frame_with_no_rule_to_probe_it_is_asked_after_stage_one_closes() -> None:
+    """With nothing on record about the frame and no request, Stage 1 has no
+    row to ground a probe in; it proposes to close, and the frame question
+    comes from the catalog after consent rather than being lost."""
+    snapshot = _snapshot(facts=[_matrix_fact(None)])   # nothing open, no frame, no request
+    kernel, repository, planner = _kernel(snapshot)
+    outcome = _turn(kernel, snapshot, Advance())
+    assert isinstance(outcome, GateMet)
+    assert _load(repository).stage1 == "proposed"
+    outcome = _turn(kernel, _load(repository), Advance())       # consent
+    assert isinstance(outcome, AwaitingUser)
+    assert outcome.requirement_id == "skeleton.requested_activity"
 
 
 def test_deny_removes_the_assumption_and_reopens_the_stage() -> None:
@@ -382,8 +424,9 @@ def test_a_day_frame_assumption_does_not_skip_the_hard_activity_blocker() -> Non
     five-rung card grouping); membership in the cell ids is what tells
     them apart. Get that wrong and this assumption skips straight past a
     still-missing hard blocker to a Stage 1 verdict it has no business
-    making."""
-    snapshot = _snapshot(facts=[])
+    making. `stage1="closed"` so this exercises the blocker path itself,
+    not Stage 1's own (now-earlier) gate."""
+    snapshot = _snapshot(stage1="closed", facts=[])
     kernel, repository, planner = _kernel(snapshot)
     outcome = _turn(
         kernel, snapshot,

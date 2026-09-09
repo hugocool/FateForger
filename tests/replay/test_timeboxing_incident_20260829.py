@@ -513,19 +513,24 @@ async def test_the_only_question_asked_is_hard_and_user_owned() -> None:
 
     Every question costs a round trip in a chat thread, so the invariant is not
     just "do not ask the wrong thing" but "ask only what genuinely blocks the
-    next artifact".
+    next artifact". Stage 1 runs first now (#411), and its own gate is empty
+    on this corpus, so the capture turn's facts satisfy the one hard user gap
+    -- `skeleton.requested_activity` -- before it is ever raised as a
+    question: nothing was asked at all, which is the strongest form of "only
+    what genuinely blocks", not a weaker one.
     """
 
     run = await replay_scenario("incident")
     requirements = TimeboxRequirements()
 
     asked = asked_requirement_ids(run.outcomes)
-    assert asked == {"skeleton.requested_activity"}
+    assert asked == set()
     gap = requirements.evaluate(ArtifactKind.SKELETON, run.snapshot).by_id(
         "skeleton.requested_activity"
     )
     assert gap.owner is RequirementOwner.USER
     assert gap.hard is True
+    assert gap.satisfied is True
 
 
 async def test_the_advance_ends_on_a_skeleton_not_another_recap() -> None:
@@ -547,23 +552,27 @@ async def test_the_advance_ends_on_a_skeleton_not_another_recap() -> None:
 async def test_the_captured_day_proposes_to_close_stage_one_before_it_plans() -> None:
     """The turn Stage 1 interposed, asserted where every scenario now takes it.
 
-    Before the stage existed, the reply that named the day's activities went
-    straight to the planner. It now ends on `GateMet` -- nothing is uncovered,
-    so the card offers Next -- and the harness run happens on the consent. The
-    incident's own assertions all sit after that turn; this is the one that
-    pins the turn itself, so a regression that skipped the consent would fail
-    here rather than quietly restoring the old shape everywhere else.
+    Before the stage existed, confirming the day went straight to asking for
+    the day's activities. Stage 1 now runs first (#411), and this corpus gives
+    it nothing to ask, so the confirm turn itself ends on `GateMet` -- nothing
+    is uncovered, so the card offers Next. Nothing is planned by that
+    proposal; the reply naming the day's activities is both the consent and
+    the hard blocker's answer, so it is the one turn that plans. This is the
+    one that pins the turn itself, so a regression that skipped the consent
+    would fail here rather than quietly restoring the old shape everywhere
+    else.
     """
 
     run = await replay_scenario("incident")
 
-    proposal = run.outcomes[1]
+    proposal = run.outcomes[0]
     assert isinstance(proposal, GateMet)
     assert proposal.gate.open_cells == []
     assert proposal.gate.day_label == "weekend Saturday"
-    # Nothing was planned by the proposal, and the consent after it planned once.
-    assert run.planner_calls_after_turn[1] == 0
-    assert run.planner_calls_after_turn[2] == 1
+    # Nothing was planned by the proposal, and the very next turn -- the one
+    # that both consents and states the day's facts -- planned once.
+    assert run.planner_calls_after_turn[0] == 0
+    assert run.planner_calls_after_turn[1] == 1
     assert run.snapshot.stage1 == "closed"
 
 
@@ -635,18 +644,23 @@ async def test_a_hard_user_owned_blocker_is_asked_once_before_any_planner_runs()
 
     A day with nothing the user wants out of it is the genuine conflict: no
     placement the planner could choose resolves it, and one answer unblocks
-    every downstream artifact. So it is asked, exactly once, before a planner
-    is consulted -- and once answered the same session proceeds without asking
-    again.
+    every downstream artifact. Stage 1 runs first now (#411): the confirm turn
+    proposes to close on this empty corpus, and the frame the user states next
+    still leaves the request unanswered, so the blocker is the *second*
+    question this replay reaches -- but it is still asked exactly once, before
+    a planner is consulted, and once answered the same session proceeds
+    without asking again.
     """
 
     run = await replay_scenario("hard_conflict")
 
-    assert isinstance(run.outcomes[0], AwaitingUser)
-    assert run.outcomes[0].requirement_id == "skeleton.requested_activity"
-    assert run.outcomes[0].why_needed
+    assert isinstance(run.outcomes[0], GateMet)
+    blocker_turn = run.outcomes[1]
+    assert isinstance(blocker_turn, AwaitingUser)
+    assert blocker_turn.requirement_id == "skeleton.requested_activity"
+    assert blocker_turn.why_needed
     # Nothing was planned before the question, and nothing was asked after it.
-    assert run.planner_calls_after_turn[0] == 0
+    assert run.planner_calls_after_turn[1] == 0
     assert len(asked_requirement_ids(run.outcomes)) == 1
     assert isinstance(run.outcomes[-1], AwaitingApproval)
     assert run.outcomes[-1].artifact.kind is ArtifactKind.SKELETON
@@ -668,9 +682,11 @@ async def test_the_planner_may_not_hand_a_planner_owned_gap_back_as_a_question()
     failure = run.outcomes[-1]
     assert isinstance(failure, TurnFailed)
     assert failure.code == "illegal_user_blocker"
-    # The refusal is total: nothing was asked, and no half-built skeleton was
-    # kept from a result the kernel rejected.
-    assert asked_requirement_ids(run.outcomes) == {"skeleton.requested_activity"}
+    # The refusal is total: Stage 1 runs first now (#411) and this corpus's
+    # facts already carry the request, so nothing was ever asked -- not the
+    # request, and never the planner-owned placement -- and no half-built
+    # skeleton was kept from a result the kernel rejected.
+    assert asked_requirement_ids(run.outcomes) == set()
     assert "skeleton.ordinary_placement" not in asked_requirement_ids(run.outcomes)
     assert not [
         artifact
@@ -724,9 +740,10 @@ async def test_a_duplicate_slack_delivery_replays_its_outcome_and_plans_once() -
 
     run = await replay_scenario("duplicate_delivery")
 
-    # The redelivered turn is the Stage 1 consent, because that is the turn
-    # that now spends a harness run: the capture before it only proposes.
-    assert run.outcomes[2] == run.outcomes[3]
+    # The redelivered turn is the capture, because Stage 1 runs first now
+    # (#411) and this corpus's confirm turn already proposes to close on
+    # nothing: the capture is what both consents and spends the harness run.
+    assert run.outcomes[1] == run.outcomes[2]
     assert run.planner.calls == 1
     assert run.revisions["after_first_delivery"] == run.revisions["after_duplicate"]
     assert (
@@ -813,7 +830,10 @@ async def test_an_unreachable_planner_fails_the_turn_without_asking_anything() -
     assert isinstance(failure, TurnFailed)
     assert failure.code == "dependency_unavailable"
     assert artifact_kinds(run.outcomes) == []
-    assert asked_requirement_ids(run.outcomes) == {"skeleton.requested_activity"}
+    # Stage 1 runs first now (#411) and this corpus's facts already carry the
+    # request, so nothing was ever asked -- the outage is the only thing this
+    # replay reports.
+    assert asked_requirement_ids(run.outcomes) == set()
     assert run.commit.calls == []
 
 
