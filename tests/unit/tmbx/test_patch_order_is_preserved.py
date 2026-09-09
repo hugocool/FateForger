@@ -62,7 +62,6 @@ from tmbx.calendar.fake import FakeCalendar
 from tmbx.calendar.port import CalendarEvent
 from tmbx.core.models import Plan
 from tmbx.core.ops import Patch, apply_ops
-from tmbx.journal.instrument import _ops_json
 from tmbx.journal.store import JournalStore, init_journal
 from tmbx.server import _candidate_digest as _tmbx_candidate_digest
 from tmbx.server import build_server
@@ -377,14 +376,13 @@ def test_a_resubmission_in_a_different_order_is_a_different_submission(
 
 @SHAPES
 def test_the_journalled_ops_replay_into_the_day_that_was_applied(ops):
-    """`ops_json` is `patch.model_dump_json()`, and the journal is a
-    training record — a row whose ops disagree with the day they produced
-    teaches the wrong thing forever, and nothing would ever contradict it.
-    Both serialisers on that path are exercised: `PlanService._journal`
-    uses the model's own dump, `JournalingPatcher` goes through `_ops_json`.
+    """The journal is a training record — a row whose ops disagree with the
+    day they produced teaches the wrong thing forever, and nothing would
+    ever contradict it. `PlanService._journal` serialises through the
+    model's own `model_dump_json()`, which is what this replays.
     """
     patch = Patch.model_validate({"ops": ops()})
-    for serialised in (patch.model_dump_json(), _ops_json(patch)):
+    for serialised in (patch.model_dump_json(),):
         replayed = Patch.model_validate_json(serialised)
         assert _handles(replayed.ops) == LISTED
 

@@ -1,9 +1,18 @@
-"""Every surviving src file that still imports a module I deleted."""
-import ast, pathlib, subprocess
+"""Every surviving src file that still imports a module I deleted.
+
+Usage:
+    python dangling.py                # deleted files staged (--cached)
+    python dangling.py 42d9eb2..HEAD  # deleted files over a revision range
+"""
+import ast, pathlib, subprocess, sys
+
+if len(sys.argv) > 1:
+    diff_cmd = ["git", "diff", "--diff-filter=D", "--name-only", sys.argv[1]]
+else:
+    diff_cmd = ["git", "diff", "--cached", "--name-only", "--diff-filter=D"]
 
 deleted_files = subprocess.run(
-    ["git", "diff", "--cached", "--name-only", "--diff-filter=D"],
-    capture_output=True, text=True).stdout.split()
+    diff_cmd, capture_output=True, text=True).stdout.split()
 gone = set()
 for f in deleted_files:
     if not f.startswith("src/") or not f.endswith(".py"):

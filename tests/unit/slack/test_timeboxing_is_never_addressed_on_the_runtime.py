@@ -77,7 +77,6 @@ def harness_turns(monkeypatch):
         return timebox_failure_message()
 
     monkeypatch.setattr(handlers, "_run_adaptive_timebox_turn", _turn)
-    # The conftest pins the suite to legacy until Task 5 deletes the flag.
     return turns
 
 
