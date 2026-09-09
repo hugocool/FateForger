@@ -264,8 +264,15 @@ than alongside it.
 - **The second judgement** (what the message *does* to the referent) — #352.
 - **`none` → escalate** as a general rung — #337.
 - **The `/timebox` day-proposal door** — #346, landed 2026-09-05 (`cb4d9e5`).
-- **Focus manager and receptionist changes.** The rung reads focus as context; it does not
-  rewrite it.
+- **Focus manager and receptionist changes.** No change to the focus manager itself, and none
+  to the receptionist. The rung does write focus state, which an earlier draft of this line
+  denied: on a positive resolution it sets a redirect on the origin key and binds the target
+  thread to the referent's agent, because delivering a turn is what a redirect *is*. It also
+  clears that redirect when it later answers `none` — without which its own hour-old pointer
+  silently outvotes it on the next message, and a DM's origin key (`{channel}:dm`) is stable
+  enough for that to happen for the whole focus TTL. What the rung never does is bind focus on
+  the origin key itself: every other redirect setter does, and a bound key never reaches the
+  rung, which is what keeps this clearing confined to the rung's own leftovers.
 - **Recycling the empty auto-opened session** rather than inserting a new row. Deterministic store
   housekeeping, invisible to the user, and on the code side of the clause. Keeping it out of the
   resolver is the point: asking a model to link *"plan tomorrow"* to a day-less shell is a

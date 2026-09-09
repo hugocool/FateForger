@@ -28,6 +28,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningSessionSnapshot,
     TurnOutcome,
 )
+from tmbx.core.render import COLUMNS
 
 
 class _Base(DeclarativeBase):
@@ -450,45 +451,94 @@ def _day_frame(snapshot: PlanningSessionSnapshot) -> dict | None:
 def _plan_gist(snapshot_json: str) -> tuple[str, ...]:
     """A few of the plan's own block titles, with their times.
 
-    Read from the latest validated candidate's rendered block table, whose
-    columns are `H,own,type,summary,ST,ET,mode,dur` -- a table this system
-    generated, so taking the summary and the two clocks out of it is arithmetic
-    over our own format and not a reading of anything the user wrote. Anything
-    unparseable yields no gist rather than a guess.
+    **From the rows, never from the table when the rows are there.** That
+    ruling is already this repo's (`schedule_render.py`): *"A comma in a
+    summary, a block crossing midnight, a column renamed on the server -- each
+    is a way a parser here would go quietly wrong, and the rows already carry
+    every field the table does."* `candidate_display_text` follows it and so
+    does `required_blocks.slugs_on_candidate` (*"the authoritative record when
+    the capture has them"*). The rows sit in the same `validated_candidate`
+    payload as the rendered table, carrying `summary`, `start` and `end` as
+    fields (`validated_timebox_draft.py`), so this reads those.
 
-    Parsed with `csv.reader`, not `line.split(",")`: `render_plan`'s `_escape`
-    CSV-quotes a summary that contains the table's own delimiter (its
-    docstring's own example is `"Sprint, planning"`), and a naive split breaks
-    a quoted field into two, shifting every column after it -- the end time
-    comes back as the start time, and the summary carries a stray quote. Using
-    `csv.reader` is still reading our own format by its own rules, just more
-    faithfully than a hand-rolled split.
+    The table is the fallback and nothing else: an artifact captured before
+    `plan_apply` returned rows beside the table carries only `rendered`, and a
+    table is still better than no gist at all. It is a format this system
+    generated, so taking three fields out of it is arithmetic over our own
+    columns and not a reading of anything the user wrote -- but the columns are
+    located by name in `tmbx.core.render.COLUMNS` rather than by hardcoded
+    position, because a column inserted before `summary` would otherwise shift
+    every field silently. Parsed with `csv.reader`, not `line.split(",")`:
+    `render_plan`'s `_escape` CSV-quotes a summary containing the table's own
+    delimiter (its docstring's own example is `"Sprint, planning"`), and a naive
+    split breaks a quoted field into two, shifting every column after it.
+    Anything unparseable yields no gist rather than a guess.
     """
     try:
         envelope = json.loads(snapshot_json)
         artifacts = envelope["snapshot"]["artifacts"]
     except (ValueError, KeyError, TypeError):
         return ()
-    rendered = next(
+    payload = next(
         (
-            artifact.get("payload", {}).get("rendered")
+            artifact.get("payload")
             for artifact in reversed(artifacts)
-            if artifact.get("kind") == "validated_candidate"
+            if isinstance(artifact, dict)
+            and artifact.get("kind") == "validated_candidate"
         ),
         None,
     )
+    if not isinstance(payload, dict):
+        return ()
+    rows = payload.get("rows")
+    if isinstance(rows, list) and rows:
+        return _gist_from_rows(rows)
+    return _gist_from_rendered(payload.get("rendered"))
+
+
+def _gist_from_rows(rows: list) -> tuple[str, ...]:
+    """The resolved rows as the model reads them, in the plan's own order."""
+    entries: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        summary, start, end = (
+            row.get("summary"),
+            row.get("start"),
+            row.get("end"),
+        )
+        if not (
+            isinstance(summary, str)
+            and isinstance(start, str)
+            and isinstance(end, str)
+        ):
+            continue
+        entries.append(f"{summary} {start}-{end}")
+    return tuple(entries)
+
+
+def _gist_from_rendered(rendered: object) -> tuple[str, ...]:
+    """The pre-rows fallback: the handle table, read by column name."""
     if not isinstance(rendered, str):
         return ()
-    entries: list[str] = []
+    try:
+        summary_at = COLUMNS.index("summary")
+        start_at = COLUMNS.index("ST")
+        end_at = COLUMNS.index("ET")
+    except ValueError:  # pragma: no cover - the render module renamed a column
+        return ()
+    width = max(summary_at, start_at, end_at) + 1
     try:
         data_rows = list(csv.reader(rendered.splitlines()[1:]))
     except csv.Error:
         return ()
+    entries: list[str] = []
     for fields in data_rows:  # first line was already dropped: column header
-        if len(fields) < 6:
+        if len(fields) < width:
             continue
-        summary, start, end = fields[3], fields[4], fields[5]
-        entries.append(f"{summary} {start}-{end}")
+        entries.append(
+            f"{fields[summary_at]} {fields[start_at]}-{fields[end_at]}"
+        )
     return tuple(entries)
 
 

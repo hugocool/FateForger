@@ -3,6 +3,9 @@
 Nothing in this package imports Slack. A provider takes an owner and a clock;
 the catalog names what comes back; the resolver picks one, or none, or says it
 cannot tell. It never says what to *do* -- that is the consumer's own judgement.
+
+Where this interface strains, and what the second provider will hit before it
+writes a line: `docs/superpowers/notes/2026-09-referent-interface-strain.md`.
 """
 
 from .catalog import Catalog, build_catalog

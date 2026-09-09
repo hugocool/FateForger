@@ -83,9 +83,18 @@ class TimeboxingReferentProvider:
             never_used=(
                 row.status == "open" and row.revision <= UNTOUCHED_REVISION
             ),
-            # row.updated_at is written naive UTC by the store's save method,
-            # so we tag it with UTC (not as_of.tzinfo) to preserve its true instant.
-            last_activity=row.updated_at.replace(tzinfo=UTC),
+            # `row.updated_at` is written naive UTC by the store's `save`, so a
+            # naive value is tagged UTC (not `as_of.tzinfo`) to keep its true
+            # instant. An aware one is converted, never overwritten: a blanket
+            # `.replace(tzinfo=UTC)` would silently discard a real offset the
+            # day some repository starts returning one -- the same silent-offset
+            # class this repo has already paid for once. Pattern taken from
+            # `haunt/reconcile.py`'s `_is_recent_local_stored_session`.
+            last_activity=(
+                row.updated_at.replace(tzinfo=UTC)
+                if row.updated_at.tzinfo is None
+                else row.updated_at.astimezone(UTC)
+            ),
             accepts=_COMMITTED_ACCEPTS if committed else _OPEN_ACCEPTS,
             gist=tuple(row.gist),
             channel_id=channel_id,

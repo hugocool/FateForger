@@ -371,13 +371,28 @@ async def _resolve_referent(
     as_of: datetime,
     current_thread: tuple[str, str] | None,
 ):
-    """Which standing thing is this message about? `None` when nobody answered.
+    """Which standing thing is this message about? `None` when nobody was asked.
 
-    `None` means "fall through unchanged" and covers every way this can decline:
-    a runtime with no resolver wired, no session store to draw a catalog from,
-    or a judgement that failed. There is deliberately no pattern fallback -- a
-    resolver this route cannot reach leaves today's behaviour exactly as it was,
-    loudly metered rather than quietly guessed.
+    Two failures, and they are not the same failure.
+
+    **Declined to ask** -- no resolver wired on the runtime, no session store to
+    draw a catalog from -- returns `None`, meaning "fall through unchanged".
+    That is a host that never opted in, and it must keep today's behaviour
+    exactly (`core/runtime.py`: *"the route reads this attribute and, finding
+    nothing, simply does not ask"*). There is deliberately no pattern fallback.
+
+    **Asked and failed over a catalog that was not empty** returns
+    `NoReferent(catalog_complete=False)`. The system demonstrably *saw* the
+    standing day and merely could not judge it, so the answer it did not get is
+    at least as weak as one drawn from a short catalog -- and `catalog_complete`
+    already models "too weak to license creating something". The asymmetry it
+    replaces was unprincipled: a provider failure refused while a model failure
+    minted, which is the 2026-09-05 incident with the outage in the middle.
+
+    The empty-catalog short-circuit keeps the blast radius tight. With nothing
+    standing there is nothing a second session could be opened over, so a model
+    outage falls through as before and only refuses when something really does
+    stand.
     """
     resolver = getattr(runtime, "referent_resolver", None)
     if resolver is None:
@@ -392,11 +407,21 @@ async def _resolve_referent(
             as_of=as_of,
             current_thread=current_thread,
         )
+    except Exception:
+        # `build_catalog` swallows a provider's own failure into
+        # `complete=False`; reaching here means nothing was drawn at all, so
+        # there is no standing thing this could be refusing on behalf of.
+        logger.exception("referent catalog failed for %s", owner_user_id)
+        record_error(component="surface_intent", error_type="referent_failure")
+        return None
+    try:
         return await resolver.resolve(catalog=catalog, message=message, as_of=as_of)
     except Exception:
         logger.exception("referent resolution failed for %s", owner_user_id)
         record_error(component="surface_intent", error_type="referent_failure")
-        return None
+        if not catalog.referents:
+            return None
+        return NoReferent(catalog_complete=False)
 
 
 async def _maybe_update_timeboxing_thread_constraints(
@@ -2792,6 +2817,19 @@ async def route_slack_event(
     # the turn to timeboxing asks `_a_partial_catalog_forbids_this_turn` first.
     catalog_was_partial = False
 
+    # Which standing thing the rung read this message as, in the rung's own
+    # words, kept for whatever message finally lands on the origin ts.
+    #
+    # The rung *delivers* -- it does not post a card and wait for a press -- so
+    # this label is the whole remaining protection against a confidently wrong
+    # referent: it is the only place the user is told which day was chosen, and
+    # it has to be readable after the turn, not during it. The redirect path
+    # below ends in `_origin_link_to_thread`, a `chat_update` on that same ts,
+    # so a label written by the rung and left there survives in a DM and is
+    # overwritten in a channel -- including the incident's own #plan-sessions.
+    # It is carried into that final line instead.
+    chosen_referent_label: str | None = None
+
     cleaned_text = _strip_bot_mention(text, bot_user_id)
     # The seam below may prefix `cleaned_text` with card context meant for
     # whichever agent answers. `user_reply_text` stays the user's own words,
@@ -2937,20 +2975,31 @@ async def route_slack_event(
     async def _origin_link_to_thread(
         *, channel_id: str, thread_ts: str, agent_label: str
     ) -> None:
+        """The last word on the origin ts, carrying the rung's reading with it.
+
+        This is a `chat_update` on the message the rung already wrote to, so
+        anything it does not repeat is erased. When a referent was chosen, the
+        line that names it is repeated here -- otherwise the one protection
+        against a confidently wrong referent lives for part of one turn and
+        only in a DM.
+        """
+        lead = (
+            f"Reading that as {chosen_referent_label} -- continuing"
+            if chosen_referent_label
+            else "Continuing"
+        )
         link = await _permalink(channel_id, thread_ts)
         if not link:
-            await _origin_update(
-                text=f":left_right_arrow: Continuing in <#{channel_id}>."
-            )
+            await _origin_update(text=f":left_right_arrow: {lead} in <#{channel_id}>.")
             return
         blocks = open_link_blocks(
-            text=f":left_right_arrow: Continuing in <#{channel_id}> (agent: *{agent_label}*).",
+            text=f":left_right_arrow: {lead} in <#{channel_id}> (agent: *{agent_label}*).",
             url=link,
             button_text="Go to Thread",
             action_id="ff_open_thread",
         )
         await _origin_update(
-            text=f":left_right_arrow: Continuing in <#{channel_id}>.", blocks=blocks
+            text=f":left_right_arrow: {lead} in <#{channel_id}>.", blocks=blocks
         )
 
     async def _begin_timeboxing_session_surface(
@@ -3248,6 +3297,9 @@ async def route_slack_event(
         if isinstance(resolution, Resolved):
             referent = resolution.referent
             label = _referent_label(referent)
+            # Named once, and it has to outlive the branch: the redirect path
+            # below rewrites this same origin message on its way out.
+            chosen_referent_label = label
             if referent.is_current_surface:
                 # It is about the conversation it arrived in. Nowhere to send
                 # it and nothing to point at; the surface needs the right agent
@@ -3396,27 +3448,44 @@ async def route_slack_event(
             )
             return
 
-        elif isinstance(resolution, NoReferent) and not resolution.catalog_complete:
-            # A provider failed, so `none` is not evidence that nothing stands
-            # (`referents/catalog.py`'s own contract). Everywhere else that is
-            # survivable; in front of a door that creates it is the incident,
-            # so ask rather than create.
+        elif isinstance(resolution, NoReferent):
+            # The rung ran and pointed at nothing, so a redirect *the rung
+            # itself* set on an earlier turn must not quietly carry this turn
+            # anyway. It can: a DM's `origin_key` is the stable `{channel}:dm`,
+            # the rung sets a redirect on it and (unlike every other setter --
+            # `open_session_surface`, the handoff) no focus binding beside it,
+            # so the rung runs again an hour later and `get_redirect` below
+            # still answers with the old session. Clearing here is what makes
+            # `none` mean `none`; without it the rung's judgement is overridden
+            # by its own stale pointer, and the design's "the rung reads focus
+            # as context" is only half true.
             #
-            # `catalog_complete` rides every outcome and is acted on only here,
-            # deliberately. The flag changes what a *weak* answer licenses, and
-            # the other two outcomes license nothing that a partial catalog
-            # could make dangerous: `Resolved` hands the turn to a session that
-            # demonstrably exists, and `Ambiguous` already asks. `NoReferent` is
-            # the only one whose answer is "so go ahead and create".
-            #
-            # Recorded here and nothing more. Whether this turn ever reaches
-            # timeboxing is a judgement nobody has made yet -- the model may or
-            # may not hand off -- so pre-empting here would answer "I couldn't
-            # check what you have planned" to someone asking what the weather
-            # is, and a rare store outage would become a bot-wide one. Every
-            # door that hands the turn to timeboxing refuses instead, and the
-            # ones that mint without a model call refuse before spending one.
-            catalog_was_partial = True
+            # Nothing else loses a redirect to this: every other setter binds
+            # focus on the same key, and a bound key never reaches the rung.
+            focus.clear_redirect(origin_key)
+
+            if not resolution.catalog_complete:
+                # A provider failed, or the judge could not be asked over a catalog
+                # that was not empty, so `none` is not evidence that nothing stands
+                # (`referents/catalog.py`'s own contract). Everywhere else that is
+                # survivable; in front of a door that creates it is the incident,
+                # so ask rather than create.
+                #
+                # `catalog_complete` rides every outcome and is acted on only here,
+                # deliberately. The flag changes what a *weak* answer licenses, and
+                # the other two outcomes license nothing that a partial catalog
+                # could make dangerous: `Resolved` hands the turn to a session that
+                # demonstrably exists, and `Ambiguous` already asks. `NoReferent` is
+                # the only one whose answer is "so go ahead and create".
+                #
+                # Recorded here and nothing more. Whether this turn ever reaches
+                # timeboxing is a judgement nobody has made yet -- the model may or
+                # may not hand off -- so pre-empting here would answer "I couldn't
+                # check what you have planned" to someone asking what the weather
+                # is, and a rare store outage would become a bot-wide one. Every
+                # door that hands the turn to timeboxing refuses instead, and the
+                # ones that mint without a model call refuse before spending one.
+                catalog_was_partial = True
 
     redirect = focus.get_redirect(origin_key)
     if redirect and agent_type == redirect.agent_type:

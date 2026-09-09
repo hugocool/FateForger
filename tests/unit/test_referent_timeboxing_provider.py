@@ -141,3 +141,28 @@ async def test_last_activity_is_correctly_zoned_when_as_of_is_not_utc():
     # The elapsed time should be 1 hour (true UTC difference)
     elapsed = as_of_in_amsterdam - thing.last_activity
     assert abs(elapsed.total_seconds() - 3600) < 1  # Allow 1 second tolerance for rounding
+
+
+async def test_an_aware_updated_at_keeps_its_own_offset():
+    # The store writes naive UTC today, so this is the future case: a repository
+    # that starts returning an aware value. A blanket `.replace(tzinfo=UTC)`
+    # overwrites rather than asserts naivety, and the true instant is silently
+    # discarded -- 10:51+02:00 (08:51 UTC) would be read as 10:51 UTC, and a
+    # session last touched three hours ago would describe itself as one hour old.
+    amsterdam_tz = ZoneInfo("Europe/Amsterdam")
+    aware = datetime(2026, 9, 5, 10, 51, tzinfo=amsterdam_tz)  # 08:51 UTC
+
+    row = _Row(
+        session_key="C1:111.0",
+        status="open",
+        planning_date=date(2026, 9, 5),
+        updated_at=aware,
+        revision=7,
+        gist=(),
+    )
+    provider = TimeboxingReferentProvider(_Repo([row]))
+    (thing,) = await provider.standing(owner_user_id="U1", as_of=AS_OF)
+
+    assert thing.last_activity == aware
+    # AS_OF is 11:51 UTC, so the true gap is three hours, not one.
+    assert abs((AS_OF - thing.last_activity).total_seconds() - 3 * 3600) < 1

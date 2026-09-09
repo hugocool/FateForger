@@ -121,7 +121,9 @@ async def test_a_row_created_after_the_asked_moment_is_excluded(repo):
     assert rows == []
 
 
-async def test_the_gist_comes_from_the_candidates_rendered_blocks(repo):
+async def test_a_pre_rows_candidate_falls_back_to_the_rendered_table(repo):
+    # An artifact captured before `plan_apply` returned rows beside the table
+    # carries only `rendered`. A table is better than no gist at all.
     repository, maker = repo
     snapshot = {
         "envelope_version": 1,
@@ -132,9 +134,11 @@ async def test_the_gist_comes_from_the_candidates_rendered_blocks(repo):
                     "revision": 1,
                     "payload": {
                         "rendered": (
-                            "blocks[2]{H,own,type,summary,ST,ET,mode,dur}:\n"
-                            "PR1,tmbx,C,Serious C2F work,10:30,12:00,fs,PT1H30M\n"
-                            "GYM1,tmbx,H,Gym (chest),18:00,19:00,fs,PT1H"
+                            "blocks[2]{H,own,type,summary,ST,ET,mode,"
+                            "dur,slug,link,link_label}:\n"
+                            "PR1,tmbx,C,Serious C2F work,10:30,12:00,fs,"
+                            "PT1H30M,,,\n"
+                            "GYM1,tmbx,H,Gym (chest),18:00,19:00,fs,PT1H,,,"
                         )
                     },
                 }
@@ -196,8 +200,10 @@ async def test_the_gist_keeps_a_comma_inside_a_quoted_summary_whole(repo):
                     "revision": 1,
                     "payload": {
                         "rendered": (
-                            "blocks[1]{H,own,type,summary,ST,ET,mode,dur}:\n"
-                            'PR1,tmbx,C,"Serious C2F work, prep",10:30,12:00,fs,PT1H30M'
+                            "blocks[1]{H,own,type,summary,ST,ET,mode,"
+                            "dur,slug,link,link_label}:\n"
+                            'PR1,tmbx,C,"Serious C2F work, prep",10:30,'
+                            "12:00,fs,PT1H30M,,,"
                         )
                     },
                 }
@@ -230,8 +236,10 @@ async def test_a_malformed_row_yields_no_gist_entry(repo):
                     "revision": 1,
                     "payload": {
                         "rendered": (
-                            "blocks[1]{H,own,type,summary,ST,ET,mode,dur}:\n"
-                            'PR1,tmbx,C,"Unterminated summary,10:30,12:00,fs,PT1H30M'
+                            "blocks[1]{H,own,type,summary,ST,ET,mode,"
+                            "dur,slug,link,link_label}:\n"
+                            'PR1,tmbx,C,"Unterminated summary,10:30,'
+                            "12:00,fs,PT1H30M,,,"
                         )
                     },
                 }
@@ -247,3 +255,101 @@ async def test_a_malformed_row_yields_no_gist_entry(repo):
         open_within=timedelta(hours=12), horizon=timedelta(days=7),
     )
     assert rows[0].gist == ()
+
+
+async def test_the_gist_comes_from_the_rows_and_not_the_table_beside_them(repo):
+    # `schedule_render.py`'s ruling, which `candidate_display_text` and
+    # `required_blocks.slugs_on_candidate` both already follow: never from the
+    # table when the rows are there. The two disagree here on purpose -- the
+    # table is what a stale or reshuffled render would say, the rows are what
+    # `plan_apply` resolved -- so which one the gist came from is visible.
+    repository, maker = repo
+    snapshot = {
+        "envelope_version": 1,
+        "snapshot": {
+            "artifacts": [
+                {
+                    "kind": "validated_candidate",
+                    "revision": 1,
+                    "payload": {
+                        "rows": [
+                            {
+                                "summary": "Serious C2F work",
+                                "start": "10:30",
+                                "end": "12:00",
+                            },
+                            {
+                                "summary": "Gym (chest)",
+                                "start": "18:00",
+                                "end": "19:00",
+                            },
+                        ],
+                        "rendered": (
+                            "blocks[1]{H,own,type,summary,ST,ET,mode,"
+                            "dur,slug,link,link_label}:\n"
+                            "PR1,tmbx,C,what the table says,08:00,09:00,fs,"
+                            "PT1H,,,"
+                        ),
+                    },
+                }
+            ]
+        },
+        "outcomes": {},
+    }
+    import json
+
+    await _insert(maker, snapshot_json=json.dumps(snapshot))
+    rows = await repository.standing_rows(
+        owner_user_id="U1", as_of=AS_OF,
+        open_within=timedelta(hours=12), horizon=timedelta(days=7),
+    )
+    assert rows[0].gist == (
+        "Serious C2F work 10:30-12:00",
+        "Gym (chest) 18:00-19:00",
+    )
+
+
+async def test_the_fallback_locates_its_columns_by_name(repo):
+    # The columns are read out of `tmbx.core.render.COLUMNS`, not hardcoded at
+    # 3/4/5. This row is written positionally against the COLUMNS of the day,
+    # so inserting a column before `summary` breaks it loudly instead of
+    # shifting the gist by one field in silence.
+    repository, maker = repo
+    from tmbx.core.render import COLUMNS
+
+    values = {
+        "H": "PR1",
+        "own": "tmbx",
+        "type": "C",
+        "summary": "Serious C2F work",
+        "ST": "10:30",
+        "ET": "12:00",
+        "mode": "fs",
+        "dur": "PT1H30M",
+    }
+    line = ",".join(values.get(column, "") for column in COLUMNS)
+    snapshot = {
+        "envelope_version": 1,
+        "snapshot": {
+            "artifacts": [
+                {
+                    "kind": "validated_candidate",
+                    "revision": 1,
+                    "payload": {
+                        "rendered": (
+                            "blocks[1]{" + ",".join(COLUMNS) + "}:\n" + line
+                        )
+                    },
+                }
+            ]
+        },
+        "outcomes": {},
+    }
+    import json
+
+    await _insert(maker, snapshot_json=json.dumps(snapshot))
+    rows = await repository.standing_rows(
+        owner_user_id="U1", as_of=AS_OF,
+        open_within=timedelta(hours=12), horizon=timedelta(days=7),
+    )
+    assert rows[0].gist == ("Serious C2F work 10:30-12:00",)

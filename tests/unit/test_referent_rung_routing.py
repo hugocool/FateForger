@@ -60,6 +60,22 @@ async def test_the_origin_gets_a_pointer_to_the_thread_that_took_it(routing_harn
     assert any("1788571682" in text for text in harness.origin_messages)
 
 
+async def test_the_line_naming_the_chosen_day_survives_the_turn_in_a_channel(
+    routing_harness,
+):
+    # The rung delivers; it does not post a card and wait for a press. So the
+    # line naming which day was chosen is the whole remaining protection
+    # against a confidently wrong referent -- and it has to still be there when
+    # the user reads it. The redirect path ends in `_origin_link_to_thread`, a
+    # `chat_update` on the very message the rung wrote to, which used to
+    # replace it with a generic "Continuing in <#...>": the label survived in a
+    # DM and was erased in #plan-sessions, the incident's own channel.
+    harness = routing_harness(resolver=_Resolver(Resolved(referent=_ref())))
+    await harness.route_top_level("can you replan today so the gym is before dinner?")
+    assert harness.origin_messages
+    assert "05 September" in harness.origin_messages[-1]
+
+
 async def test_ambiguity_asks_and_opens_nothing(routing_harness):
     harness = routing_harness(
         resolver=_Resolver(
@@ -78,10 +94,45 @@ async def test_none_falls_through_to_todays_behaviour(routing_harness):
     assert harness.sessions_opened == ["C0AA6HC1RJL"]
 
 
-async def test_a_resolver_failure_falls_through_rather_than_guessing(routing_harness):
+async def test_a_resolver_failure_over_a_day_that_stands_refuses_rather_than_minting(
+    routing_harness,
+):
+    # The committed 2026-09-05 row is in the catalog and the judge is down. The
+    # system demonstrably *saw* the day and only failed to judge it, so the
+    # answer it did not get is at least as weak as one drawn from a short
+    # catalog -- and falling through here lands on the minting door, which is
+    # the incident itself. A provider failure refusing while a model failure
+    # mints is an asymmetry with nothing behind it.
     harness = routing_harness(resolver=_Resolver(RuntimeError("model down")))
     await harness.route_top_level("replan today")
+    assert harness.sessions_opened == []
+    assert harness.sessions_created == []
+    assert PARTIAL_CATALOG_ASK in harness.origin_messages
+
+
+async def test_a_resolver_failure_with_nothing_standing_still_falls_through(
+    routing_harness,
+):
+    # The short-circuit that keeps the blast radius tight: with an empty
+    # catalog there is nothing a second session could be opened over, so a
+    # model outage costs nobody a turn.
+    harness = routing_harness(resolver=_Resolver(RuntimeError("model down")), rows=[])
+    await harness.route_top_level("replan today")
     assert harness.sessions_opened == ["C0AA6HC1RJL"]
+    assert PARTIAL_CATALOG_ASK not in harness.origin_messages
+
+
+async def test_a_host_that_wired_no_resolver_keeps_todays_behaviour_exactly(
+    routing_harness,
+):
+    # Declined to ask, which is not the same failure as asked-and-failed. The
+    # route reads `runtime.referent_resolver` and, finding nothing, does not
+    # ask (`core/runtime.py`); a host that never opted in must not start being
+    # refused turns.
+    harness = routing_harness(resolver=None)
+    await harness.route_top_level("replan today")
+    assert harness.sessions_opened == ["C0AA6HC1RJL"]
+    assert PARTIAL_CATALOG_ASK not in harness.origin_messages
 
 
 async def test_the_catalog_is_built_before_any_session_is_opened(routing_harness):
@@ -294,3 +345,42 @@ async def test_a_redirect_that_outlived_its_focus_does_not_mint_over_a_partial_c
     await harness.route_dm("move the gym earlier")
     assert harness.sessions_created == []
     assert PARTIAL_CATALOG_ASK in harness.origin_messages
+
+
+class _EachTurn:
+    """A resolver whose answer changes from one turn to the next."""
+
+    def __init__(self, *outcomes):
+        self._outcomes = list(outcomes)
+        self.calls = []
+
+    async def resolve(self, *, catalog, message, as_of):
+        self.calls.append((catalog, message, as_of))
+        index = min(len(self.calls) - 1, len(self._outcomes) - 1)
+        return self._outcomes[index]
+
+
+async def test_a_later_none_in_a_dm_is_not_overridden_by_the_rungs_own_redirect(
+    routing_harness,
+):
+    # A DM's `origin_key` is the stable `{channel}:dm`, not a one-shot
+    # `{channel}:{ts}`, so the redirect the rung sets there lives for the focus
+    # TTL (an hour by default). The rung sets no focus binding beside it, which
+    # is exactly why it runs again on the next DM message -- and answering
+    # `none` used to change nothing, because `get_redirect` further down still
+    # pointed at the session an hour-old judgement had chosen. The rung's own
+    # answer was silently overridden by the rung's own stale pointer.
+    session = "C0AA6HC1RJL:1788571682.407949"
+    resolver = _EachTurn(Resolved(referent=_ref()), NoReferent())
+    harness = routing_harness(resolver=resolver)
+
+    await harness.route_dm("can you replan today so the gym is before dinner?")
+    assert harness.delivered_to == session
+
+    await harness.route_dm("what is the weather tomorrow?")
+    assert len(resolver.calls) == 2, "the rung must run again on the next DM turn"
+    assert harness.focus.get_redirect("D_HUGO:dm") is None
+    # The turn still happens -- it lands on the DM's own key, and only the
+    # first message ever reached the session the first judgement chose.
+    assert [call[1].key for call in harness.runtime.calls] == [session]
+    assert harness.sessions_created[-1] == "D_HUGO:dm"

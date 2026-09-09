@@ -14,7 +14,23 @@ same direction: the model reading state and the label reading an assumption.
 consumer's judgement, not this one's), and "move the gym to the morning"
 resolves to the only plan that contains a gym.
 
-n = 8 draws per case, asserted on the rate.
+**The probes are the instrument; the rate is a watch number.** Task 8 measured
+this directly: with the load-bearing last sentence of `RESOLVER_PROMPT` deleted,
+the two fixtures still scored 87.5% and 90% -- both above the 85% floor. A rate
+over 21 mixed cases cannot discriminate a known prompt regression, so do not
+edit `RESOLVER_PROMPT`, watch the percentage, and ship. What holds the line is
+the unanimity gate on `PROBES`: four messages naming a block that exists in no
+listed plan, each required to draw `none` on all 8 samples. A wrong answer to
+one of those is a duplicate session at a door that creates, which is the failure
+this whole rung exists to stop, so anything short of 8/8 fails the run outright.
+
+The rate assertion below is a floor against wholesale collapse and nothing more.
+Two per-case results already draw badly with the prompt intact and are not
+regressions: `remind me to pay taxes` (2-3/8; `r3`'s gist really does contain
+`"Pay taxes 14:15-15:15"`) and `move PR1 later` (0/8; only `r2`'s gist mentions
+a PR). Read the printed per-case counts, not the percentage.
+
+n = 8 draws per case.
 
     set -a; source .env; set +a
     PYTHONPATH=src .venv/bin/python -m pytest tests/evals/test_eval_referent_resolver.py -m slow -q
@@ -212,5 +228,13 @@ async def test_resolution_quality(rows, cases, at):
     total = len(cases) * DRAWS
     rate = hits / total
     print(f"  == {hits}/{total} draws ({rate:.0%})")
+    # The gate. A probe that is not unanimous is a session opened over a plan
+    # nobody named, whatever the rate says.
     assert not failures, "\n".join(failures)
-    assert rate >= 0.85, f"{hits}/{total} draws correct; the measured arm scored ~0.85+"
+    # A floor against wholesale collapse, not a prompt check: a deliberately
+    # broken prompt still scored 87.5-90% here (see the module docstring).
+    assert rate >= 0.85, (
+        f"{hits}/{total} draws correct, below the 0.85 collapse floor; "
+        "read the per-case counts above -- this number does not detect a "
+        "prompt regression, the probe gate does"
+    )
