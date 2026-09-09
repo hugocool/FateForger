@@ -143,6 +143,13 @@ modules themselves is a separate, out-of-scope change with its own PR (the
 evidence for each is in that PR's body); this one only removed the tests
 that had nothing left to guard.
 
+The legacy `TimeboxingFlowAgent` was retired on 2026-09-09 with the 34
+modules only it reached; 60 test files went with it because their subject
+was that code (the list is in the retirement PR); two were rewired to the
+harness's readers instead. The rule that decided each: *if the subject is
+deleted code, the test goes; if the subject is live and the deleted module
+was only a fixture, the test is rewired.*
+
 `CALENDAR_QUERY_LOCATIONS.md` and `MIGRATION_ARCHIVE_TO_CALENDAR_HAUNTER.md`
 at the repo root document the pre-AutoGen `CalendarHaunter` (`admonisher.calendar`)
 as production; nothing has constructed it since haunting moved to

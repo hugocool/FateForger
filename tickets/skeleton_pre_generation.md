@@ -2,7 +2,14 @@
 
 ## Tracking
 
-- Status: Implemented, Tested (2026-02-13)
+- Status: Implemented, Tested (2026-02-13). **The confirm/undo wiring this
+  ticket describes (AC2/AC3, `ff_timebox_confirm_submit`,
+  `ff_timebox_undo_submit`) was retired with the legacy agent on
+  `chore/retire-legacy-timeboxing-agent` (2026-09-09)** — a press on one of
+  those buttons now just rewrites the card to say the flow is retired
+  (`retired_cards.py`). Undo lives on the harness now: the Slack action is
+  `ff_harness_undo`, handled by `handlers.act_harness_undo`, which reverses
+  the reported tmbx transaction directly.
 - System of record issue: https://github.com/hugocool/FateForger/issues/7
 - Issue branch: `issue/7-skeleton-pre-generation`
 - PR: https://github.com/hugocool/FateForger/pull/8
