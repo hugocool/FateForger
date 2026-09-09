@@ -7,8 +7,12 @@
 > `src/fateforger/haunt/reconcile.py` and `src/fateforger/haunt/service.py`
 > are where calendar reconciliation and reminder orchestration live now. The
 > `CalendarHaunter` tests were removed in the 2026-09 test-suite prune
-> (`tests/README.md`, "What's out of `tests/unit/`"). Everything below is
-> left as written, as a record of what was true then.
+> (`tests/README.md`, "What's out of `tests/unit/`"). `McpCalendarClient`
+> (`fateforger.agents.timeboxing.mcp_clients`) is also gone now — it left
+> with the legacy timeboxing agent on 2026-09-09; `src/tmbx/calendar/`
+> (`port.py`, `gcal.py`, `fake.py`) is the calendar port on the surviving
+> path. Everything below is left as written, as a record of what was true
+> then.
 
 If you have code using the old `CalendarMcpClient` from the archive, here's how to migrate to the mature `CalendarHaunter` implementation.
 

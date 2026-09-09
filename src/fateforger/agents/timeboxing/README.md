@@ -2,93 +2,75 @@
 
 Stage-gated timeboxing workflow that builds daily schedules via conversational refinement and syncs to Google Calendar.
 
+> **Retired (2026-09-09).** The coordinator this file describes
+> (`agent.py`'s `PlanningCoordinator`), its `GraphFlow` orchestration
+> (`flow_graph.py`, `nodes/`), the sync engine (`sync_engine.py`,
+> `calendar_reconciliation.py`, `submitter.py`), the schema-in-prompt patcher
+> (`patching.py`), the LLM-facing plan/patch models (`tb_models.py`,
+> `tb_ops.py`, `timebox.py`), the Notion-backed constraint plumbing
+> (`constraint_retriever.py`, `constraint_search_tool.py`,
+> `notion_constraint_extractor.py`), and the calendar MCP client
+> (`McpCalendarClient`, formerly in `mcp_clients.py`) are all deleted —
+> `refactor: retire TimeboxingFlowAgent and the 34 modules only it reached`
+> (commit `67489cd`). Slack may still carry buttons from cards that flow
+> posted; `slack_bot/retired_cards.py` rewrites a press to say the flow is
+> retired instead of dispatching here. What remains in this directory is a
+> different, newer path: the Stage 1 elicitation loop (`elicitation.py`,
+> `elicitation_judges.py`, driven from `slack_bot/timeboxing_host.py`) and
+> the durable constraint-memory backends (`graphiti_constraint_memory.py`,
+> `constraint_record_memory.py`, `kg_constraint_client.py`,
+> `durable_constraint_store.py`, and `mcp_clients.py`'s surviving
+> `ConstraintMemoryClient`), which are now read by
+> `fateforger.agents.tasks.defaults_memory` (tasks' defaults memory) and by
+> `runtime.py`'s startup checks — not by any timeboxing coordinator, which no
+> longer exists. The Status table, File Index, and Architecture sections
+> below have been corrected in place, not kept as a historical record like
+> the two root calendar docs, because most of this file described modules
+> that no longer exist.
+
 ## Status
 
 | Subsystem | Status | Tests | Confirmed |
 |-----------|--------|-------|-----------|
-| Domain models (tb_models, tb_ops) | Implemented, Tested | 62 unit | 2025-07-22 |
-| Sync engine (sync_engine, submitter, calendar_reconciliation) | Implemented, Tested | 37 + 10 unit | 2026-02-14 (duplicate-prevention reconciliation) |
-| Patching (schema-in-prompt) | Implemented, Tested | 14 unit | 2025-07-22 (live LLM) |
-| GraphFlow orchestration | Implemented, Documented | graphflow state machine tests | — |
-| Skeleton pre-generation (AC1) | Implemented, Tested | `test_timeboxing_skeleton_pre_generation.py` | — |
-| Calendar sync + undo controls | Retired at the Slack layer (2026-09-09): pressing a Stage 5 card button now rewrites it with a "this flow is retired" message instead of dispatching to the agent -- see `retired_cards.py`. The underlying agent code stays until the agent itself is deleted. | `test_retired_cards.py` | 2026-03-07 |
-| Durable profile/date-span constraint auto-upsert + Stage 1 prefetch wait | Implemented, Tested | `test_timeboxing_durable_constraints.py`, `test_timeboxing_constraint_memory_client_tool_name.py` | — |
-| Graphiti durable memory cutover (Neo4j-backed MCP, no Mem0/file fallback) | Implemented, Tested | `test_graphiti_constraint_memory.py`, `test_settings_mcp_endpoints.py`, `test_runtime_mcp_startup_checks.py`, `test_timeboxing_memory_backend_selection.py` | 2026-03-10 |
-| Constraint-memory MCP payload decoding hardening | Implemented, Tested | `test_timeboxing_constraint_memory_client_tool_name.py` | — |
+| Domain models (tb_models, tb_ops) | Retired 2026-09-09 — `tb_models.py`/`tb_ops.py` deleted with the coordinator | — | `67489cd` |
+| Sync engine (sync_engine, submitter, calendar_reconciliation) | Retired 2026-09-09 — deleted with the coordinator | — | `67489cd` |
+| Patching (schema-in-prompt) | Retired 2026-09-09 — `patching.py` deleted with the coordinator | — | `67489cd` |
+| GraphFlow orchestration | Retired 2026-09-09 — `flow_graph.py` and the `nodes/` package deleted with the coordinator | — | `67489cd` |
+| Skeleton pre-generation (AC1) | Retired 2026-09-09 — deleted with the coordinator; its test (`test_timeboxing_skeleton_pre_generation.py`) went with it | — | `67489cd` |
+| Calendar sync + undo controls | Retired at the Slack layer (2026-09-09): pressing a Stage 5 card button rewrites it with a "this flow is retired" message instead of dispatching to the agent -- see `retired_cards.py`. The agent code itself (`agent.py`) is deleted too, in the same day's follow-up retirement commit. | `test_retired_cards.py` | `67489cd` |
+| Durable profile/date-span constraint auto-upsert + Stage 1 prefetch wait | Retired 2026-09-09 — the write path (`agent.py`'s `_upsert_constraints_to_durable_store`) is deleted; its test (`test_timeboxing_durable_constraints.py`) went with it. `mcp_clients.py`'s payload decoding still has its own test (row below). | — | `67489cd` |
+| Graphiti durable memory cutover (Neo4j-backed MCP, no Mem0/file fallback) | Implemented, Tested — read via `settings.timeboxing_memory_backend`, now by `runtime.py`'s startup checks and `fateforger.agents.tasks.defaults_memory` (tasks' defaults memory), not by the deleted coordinator | `test_graphiti_constraint_memory.py`, `test_settings_mcp_endpoints.py`, `test_runtime_mcp_startup_checks.py` | 2026-03-10 |
+| Constraint-memory MCP payload decoding hardening | Implemented, Tested — `mcp_clients.py`'s `ConstraintMemoryClient`, read by tasks' defaults memory | `test_timeboxing_constraint_memory_client_tool_name.py` | — |
 | Stage 1 elicitation loop (concern-floor coverage matrix, three judges, arithmetic gate) | Implemented, Tested (see [Stage 1 Elicitation](#stage-1-elicitation)) | `test_elicitation_gate.py`, `test_elicitation_judges.py`, `test_elicitation_composes.py`, `tests/evals/test_stage1_elicitation.py` | 2026-09-06 |
-| Stage 3 markdown-first skeleton overview | Implemented, Tested | `test_timeboxing_skeleton_draft_contract.py` | — |
-| Stage 4 advisory quality facts (0-4) | Implemented, Tested | `test_phase4_rewiring.py` | — |
+| Stage 3 markdown-first skeleton overview | Retired 2026-09-09 — deleted with the coordinator; its test (`test_timeboxing_skeleton_draft_contract.py`) went with it | — | `67489cd` |
+| Stage 4 advisory quality facts (0-4) | Retired 2026-09-09 — deleted with the coordinator; its test (`test_phase4_rewiring.py`) went with it | — | `67489cd` |
 | Deterministic stage action buttons | Retired at the Slack layer (2026-09-09), same as the row above -- see `retired_cards.py` | `test_retired_cards.py` | — |
-| Structured-output strict tool contract | Implemented, Tested | `test_timeboxing_constraint_search_tool_strict.py`, `test_timeboxing_flow.py` | — |
+| Structured-output strict tool contract | Retired 2026-09-09 — `constraint_search_tool.py` and the `TimeboxingFlow` it validated are deleted; both tests (`test_timeboxing_constraint_search_tool_strict.py`, `test_timeboxing_flow.py`) went with it | — | `67489cd` |
 
 ## File Index
 
-### Orchestration
+Everything the coordinator owned (orchestration, domain models, calendar
+sync, patching, prompt engineering, the Notion-backed NLU/constraint
+plumbing, Slack routing utilities, and the `nodes/` subfolder) was deleted
+2026-09-09 with `TimeboxingFlowAgent` — see the retirement note above for the
+file list and the commit. What is left in this directory is the durable
+constraint-memory backends and the Stage 1 elicitation loop, both of which
+now live and are called from elsewhere (tasks' defaults memory,
+`runtime.py`, and `slack_bot/timeboxing_host.py`), plus a newer,
+undocumented-here artifact-led planning-session module
+(`adaptive_timeboxing.py`, `session_contracts.py`, `readiness.py`,
+`required_blocks.py`, `day_frame.py`, `feedback.py`).
+
+### Durable Constraint Memory
 
 | File | Responsibility |
 |------|---------------|
-| `agent.py` | `PlanningCoordinator`: owns Session, routes Slack messages, runs background tasks, manages stage transitions. Entry points: `on_start()`, `on_commit_date()`, `on_user_reply()`. |
-| `flow_graph.py` | `build_timeboxing_graphflow()`: constructs the AutoGen GraphFlow DAG. Single source of truth for stage transitions and edge conditions. |
-| `stage_gating.py` | `TimeboxingStage` enum, `StageGateOutput` model, LLM prompt templates for each stage gate. |
-| `contracts.py` | Typed stage-context contracts (`SkeletonContext`, `ConstraintContext`, etc.): what each stage receives as input. |
-| `constants.py` | Orchestration timeouts, limits, and fallback values. No magic numbers. |
-
-### Domain Models (LLM-Facing)
-
-| File | Responsibility |
-|------|---------------|
-| `tb_models.py` | `ET` (event type enum), `TBEvent`, `TBPlan`, `Timing` union (`AfterPrev`, `BeforeNext`, `FixedStart`, `FixedWindow`), `_ET_COLOR_MAP`. Calendar-native, sync-friendly. |
-| `tb_ops.py` | `TBPatch`, `TBOp` union (`AddEvents`, `RemoveEvent`, `UpdateEvent`, `MoveEvent`, `ReplaceAll`), `apply_tb_ops()`. Pure-function ops engine: deterministic plan mutation. |
-| `timebox.py` | Legacy `Timebox` schema + `schedule_and_validate()`. Conversion: `timebox_to_tb_plan()`, `tb_plan_to_timebox()`. Kept for backward compat with Stage 3 drafting and Slack display. |
-
-### Calendar Sync
-
-| File | Responsibility |
-|------|---------------|
-| `sync_engine.py` | `plan_sync()`, `execute_sync()`, `undo_sync()`, `gcal_response_to_tb_plan()`. Deterministic, incremental, reversible diff-and-apply via MCP. Uses reconciliation-first matching and DeepDiff only for matched update decisions. |
-| `calendar_reconciliation.py` | Deterministic desired-vs-remote matching (`id -> canonical -> fuzzy`) and op-bucket planning (`create/update/delete/noop/skip`). |
-| `submitter.py` | `CalendarSubmitter`: high-level `submit_plan()`, `undo_last()`, and `undo_transaction()` over the sync engine. |
-| `mcp_clients.py` | `McpCalendarClient` (list/create/update/delete events via MCP), `McpConstraintMemoryClient` (Notion constraint MCP). Internal to coordinator. |
-| `graphiti_constraint_memory.py` | Active Graphiti durable-memory adapter. Uses Graphiti MCP in runtime and requires Neo4j-backed deployment config. |
-| `constraint_record_memory.py` | Backend-neutral durable constraint serialization/query/update contract used by the active Graphiti adapter. |
-
-### LLM Patching
-
-| File | Responsibility |
-|------|---------------|
-| `patching.py` | `TimeboxPatcher`: sends `TBPlan` + user feedback to the pinned pro model (`OPENROUTER_DEFAULT_MODEL_PRO`, DeepSeek V4 Pro `:nitro`) via `AssistantAgent`. Injects `TBPatch` JSON schema into system prompt (not `output_content_type`, which breaks on `oneOf`). `_extract_patch()` strips markdown fences. |
-
-### Prompt Engineering
-
-| File | Responsibility |
-|------|---------------|
-| `skeleton_draft_system_prompt.j2` | Jinja2 template for skeleton drafting (consumes TOON tables). |
-| `prompt_rendering.py` | `render_skeleton_draft_system_prompt()`: Jinja renderer. |
-| `planning_policy.py` | Shared Stage 3/4 planning policy text + quality rubric constants. |
-| `toon_views.py` | Timeboxing-specific TOON table views (minimal columns for events, constraints, tasks). |
-| `prompts.py` | Legacy prompt strings (being migrated to `stage_gating.py`). |
-
-### NLU and Constraints
-
-| File | Responsibility |
-|------|---------------|
-| `nlu.py` | `PlannedDateResult`, `ConstraintInterpretation`: structured LLM outputs for multilingual date/scope inference. No regex/keyword matching. |
+| `mcp_clients.py` | `ConstraintMemoryClient` (the constraint-memory MCP stdio workbench client). `McpCalendarClient` used to live here too; it was deleted with the coordinator. Read by `fateforger.agents.tasks.defaults_memory`, not by any timeboxing coordinator. |
+| `graphiti_constraint_memory.py` | Graphiti durable-memory adapter (Graphiti MCP transport; Neo4j-backed deployment config). Read via `settings.timeboxing_memory_backend` by `runtime.py`'s startup checks and by `fateforger.agents.tasks.defaults_memory`. |
+| `constraint_record_memory.py` | Backend-neutral durable constraint serialization/query/update contract used by the Graphiti adapter. |
+| `kg_constraint_client.py` | Read-only client onto the standalone memory server's own store (`data/memory.db`), speaking the same `DurableConstraintStore` contract as the Graphiti adapter — the replacement for the Notion-backed `constraint_mcp` reads that used to 404. |
+| `durable_constraint_store.py` | The `DurableConstraintStore` protocol: one small backend-neutral interface the concrete durable-memory clients above implement, so `runtime.py` and tasks' defaults memory stay backend-neutral. |
 | `preferences.py` | `Constraint`/`ConstraintBase` models and their enums (necessity, status, source, scope). The session-store persistence class that once lived here (`ConstraintStore`) had no writer left after the legacy agent retired (2026-09-09) and was removed. |
-| `constraint_retriever.py` | `ConstraintRetriever`: gap-driven durable constraint fetch from Notion MCP. |
-| `graphiti_constraint_memory.py` | Graphiti MCP transport for durable constraint memory (active runtime path; Neo4j-backed deployment contract). |
-| `constraint_record_memory.py` | Shared durable constraint behavior used by the Graphiti adapter. |
-| `constraint_search_tool.py` | Stage-gating Notion search tool (`search_constraints`) with strict FunctionTool schema for structured-output compatibility. |
-| `notion_constraint_extractor.py` | **TODO(deprecate)** — dead code. The Notion-MCP extraction path is never reached; the live write path is `_upsert_constraints_to_durable_store`. Do not import from new code. |
-
-### Utilities
-
-| File | Responsibility |
-|------|---------------|
-| `pydantic_parsing.py` | Tolerant parsing helpers for LLM outputs and mixed payloads. |
-| `messages.py` | `StartTimeboxing`, `TimeboxingUserReply`, `TimeboxingCommitDate`: typed Slack-to-agent routing messages. |
-| `actions.py` | Slack action/button payload models and helpers (planning cards). |
-| `state.py` | Session persistence helpers. |
-| `flow.py` | Legacy flow logic (being replaced by GraphFlow). |
 
 ### Stage 1 Elicitation
 
@@ -100,106 +82,58 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 Design: `docs/superpowers/specs/2026-09-05-stage1-elicitation-loop-design.md`.
 Measurements: `docs/superpowers/research/2026-09-06-stage1-loop-evals.md`.
 
-### Subfolders
-
-| Folder | Responsibility |
-|--------|---------------|
-| `nodes/` | GraphFlow node agents (TurnInit, Decision, Transition, Stage nodes, Presenter). See `nodes/README.md`. |
-
 ## Architecture
 
-### Coordinator + Stage Agents
+The Coordinator + Stage Agents / GraphFlow / Stage Pipeline / Session State /
+Model Hierarchy / Event Identity / Patching (Schema-in-Prompt) / TOON Prompt
+Injection sections that used to sit here described `agent.py`'s
+`PlanningCoordinator`, `flow_graph.py`'s GraphFlow DAG, and the `nodes/`
+stage agents — all deleted 2026-09-09 (`67489cd`, see the retirement note at
+the top of this file). Slack's `/timebox` slash command and the button flow
+it drove now dead-end at `retired_cards.py` rather than reaching an agent in
+this directory; `src/fateforger/slack_bot/planning.py` has its own,
+unrelated `PlanningCoordinator` for the Planning/Scheduling UI card flow
+(see `slack_bot/README.md`'s "Proposal Object Interaction Contract"), and is
+not a continuation of this module's coordinator. What that architecture
+looked like is in git history at `67489cd^`, not repeated here as a
+historical record, because the two root calendar docs already show that
+pattern and a second copy would invite editing a description of dead code
+instead of reading the commit.
 
-- **Coordinator** (`agent.py`): owns Session state, merges facts/constraints, runs background tool work (calendar, Notion), and decides which stage runs next.
-- **Stage agents** (in `nodes/`): pure functions over typed JSON input returning typed JSON output. No direct tool IO.
-- **GraphFlow** (`flow_graph.py`): runs the stage machine as a directed graph; transitions are testable and explicit.
-
-### Stage Pipeline
-
-```
-Stage 0: Date Confirmation (Slack buttons)
-    background: calendar prefetch + Notion constraint retrieval (with short await before first Stage 1 render)
-Stage 1: Constraints -> elicitation loop (elicitation.py, elicitation_judges.py): three judges
-    (PlacementJudge, CoverageJudge, ProbeJudge) fill a CoverageMatrix over the concern floor each
-    turn; stage1_gate asks the top open cell and proposes to close only once every cell is
-    covered, not applicable, or already answered -- locking the day does not, by itself, close it
-Stage 2: CaptureInputs -> StageGateOutput (input_facts)
-Stage 3: Skeleton -> pre-generated draft if available, else synchronous draft -> markdown overview (presentation-first) + carry-forward seed `TBPlan` (no Stage 3 patch loop)
-Stage 4: Refine -> prompt-guided tool orchestration (`timebox_patch_and_sync` primary, `memory_extract_and_upsert` optional background) -> advisory quality facts (0-4) -> sync to Google Calendar with explicit changed/unchanged reporting
-Stage 5: ReviewCommit -> final summary; user corrections route back to Stage 4 Refine in the same turn
-Undo action: undo latest sync transaction via session-backed state -> return to Refine
-Each stage response also includes deterministic Slack actions (Back/Redo/Cancel, plus Proceed when ready). After a local Refine update is applied, the control row swaps Proceed for "Undo last update" so users can immediately revert without an extra stage-advance click.
-```
-
-### Session State
-
-Session dataclass lives in `agent.py`. Core fields:
-
-| Field | Purpose |
-|-------|---------|
-| `thread_ts`, `channel_id`, `user_id` | Slack anchors |
-| `frame_facts`, `input_facts` | Accumulated LLM outputs per stage |
-| `timebox` | Legacy Timebox (Stage 3+) |
-| `tb_plan` | Current TBPlan, sync-engine model (prepared by Stage 2 draft and/or Stage 4 preflight) |
-| `base_snapshot` | Remote-baseline snapshot for diff-based sync (prepared in Stage 4 preflight) |
-| `event_id_map` | Dict mapping event key to GCal event ID |
-| `prefetched_remote_snapshots_by_date` | Rich remote baseline snapshots (from list-events) keyed by date |
-| `remote_event_ids_by_index` | Ordered remote event IDs aligned with `base_snapshot.resolve_times()` |
-| `pre_generated_skeleton` | Background Stage 2 draft consumed by Stage 3 when fresh |
-| `skeleton_overview_markdown` | Stage 3 markdown summary rendered to Slack |
-| `last_quality_level`, `last_quality_label`, `last_quality_next_step` | Latest Refine quality snapshot carried into next patch context |
-| `last_sync_transaction` | Session-backed transaction used for deterministic undo |
-| `last_refine_undo_tb_plan`, `last_refine_undo_timebox` | Session-backed local draft snapshot used by "Undo last update" in Refine |
-| `active_constraints` | Merged constraint state |
-| `stage` | Current TimeboxingStage enum |
-| `graphflow` | Per-session GraphFlow instance |
-
-### Model Hierarchy
-
-```
-LLM-facing:      TBEvent -> TBPlan -> TBPatch -> apply_tb_ops()
-Sync engine:     TBPlan -> plan_sync() -> SyncOp[] -> execute_sync()
-Calendar MCP:    SyncOp -> create-event / update-event / delete-event
-Persistence:     CalendarEvent (SQLModel) for DB + Slack display
-Conversion:      timebox_to_tb_plan() / tb_plan_to_timebox()
-```
-
-### Event Identity
-
-- Agent-created events get deterministic base32hex IDs: `fftb` + SHA1(date|name|start|index).
-- `fftb*` prefix = owned, eligible for update/delete.
-- No prefix = foreign (user calendar), read-only FixedWindow constraints.
-
-### Patching (Schema-in-Prompt)
-
-`output_content_type=TBPatch` is intentionally NOT used because OpenAI `response_format` rejects `oneOf` from Pydantic discriminated unions and OpenRouter structured output hung on complex schemas on the hosts this was measured on. Instead: inject `TBPatch.model_json_schema()` into the system prompt and parse the raw JSON text response.
-
-Runtime guard: `TimeboxPatcher.apply_patch(...)` is Refine-only (`stage='Refine'`) and rejects any non-Refine invocation.
-
-### TOON Prompt Injection
-
-List-shaped data (constraints, tasks, immovables, events) uses TOON tabular format, not JSON arrays. Encoder: `src/fateforger/llm/toon.py`.
+What survives here is the Stage 1 elicitation loop (`elicitation.py`,
+`elicitation_judges.py` — see [Stage 1 Elicitation](#stage-1-elicitation)
+above and the design/measurement docs it links), the durable
+constraint-memory backends (see the File Index above), and a newer
+artifact-led planning-session module (`adaptive_timeboxing.py`,
+`session_contracts.py`, `readiness.py`, `required_blocks.py`,
+`day_frame.py`, `feedback.py`) that this README does not yet document in
+architectural terms.
 
 ## Related Files (Outside This Folder)
 
 | File | Role |
 |------|------|
-| `src/fateforger/slack_bot/handlers.py` | Routes Slack events to coordinator |
-| `src/fateforger/slack_bot/timeboxing_commit.py` | Stage 0 Slack UI (day picker + confirm button) |
-| `src/fateforger/llm/toon.py` | TOON tabular encoder |
-| `TICKET_SYNC_ENGINE.md` | Implementation ticket (repo root) |
-| `notebooks/phase5_integration_test.ipynb` | Live MCP + LLM integration tests |
+| `src/fateforger/slack_bot/handlers.py` | Central Slack event/action router. No longer routes to a coordinator in this directory (see the Architecture note above); still owns `/timebox` and dispatches retired-card presses to `retired_cards.py`. |
+| `src/fateforger/slack_bot/timeboxing_commit.py` | Stage 0 Slack UI (day picker + confirm button). Its target coordinator is deleted; see `slack_bot/README.md`'s Timeboxing UI file index. |
+| `TICKET_SYNC_ENGINE.md` | Implementation ticket (repo root) for the now-deleted sync engine — historical. |
+| `notebooks/phase5_integration_test.ipynb` | Live MCP + LLM integration tests written against the deleted coordinator — not verified against current code. |
+
+`src/fateforger/llm/toon.py`, the TOON tabular encoder this section used to
+cite, is deleted too; no surviving module in this directory imports it.
 
 ## How to Run Tests
 
 ```bash
-# Sync engine suite (115 tests)
-poetry run pytest tests/unit/test_tb_models.py tests/unit/test_tb_ops.py \
-  tests/unit/test_sync_engine.py tests/unit/test_phase4_rewiring.py \
-  tests/unit/test_patching.py -v
+# Durable constraint-memory backends
+poetry run pytest tests/unit/constraints/test_graphiti_constraint_memory.py \
+  tests/unit/constraints/test_timeboxing_constraint_memory_client_tool_name.py \
+  tests/unit/core/test_settings_mcp_endpoints.py \
+  tests/unit/core/test_runtime_mcp_startup_checks.py -v
 
-# GraphFlow state machine
-poetry run pytest tests/unit/test_timeboxing_graphflow_state_machine.py -v
+# Stage 1 elicitation loop
+poetry run pytest tests/unit/timeboxing/test_elicitation_gate.py \
+  tests/unit/timeboxing/test_elicitation_judges.py \
+  tests/unit/timeboxing/test_elicitation_composes.py -v
 
 # All timeboxing-related tests
 poetry run pytest tests/unit/ -k timeboxing -v
