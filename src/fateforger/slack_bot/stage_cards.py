@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from fateforger.agents.timeboxing.elicitation import (
     CRITERIA,
+    CRITERION_BY_KEY,
     ROWS,
     criterion_label,
     row_label,
@@ -410,12 +411,25 @@ def _gate_line(gate: Gate) -> str:
     four separate needs (#413). Row and criterion keys are identifiers this
     system minted, so grouping and ordering them is arithmetic. Eight rows is
     the whole floor, so nothing is capped.
+
+    Grouping by membership in `ROWS`/`CRITERIA` would silently drop a cell
+    keyed outside either catalog instead of raising -- a gate line that
+    claims less is open than actually is is the exact failure shape #342
+    exists to prevent one layer up, so every key is checked before anything
+    is composed.
     """
     if not gate.open_cells:
         return (
             f"That's what I know to ask about a {gate.day_label}. "
             "Anything else, or shall I plan?"
         )
+    bad = [
+        cell.id
+        for cell in gate.open_cells
+        if cell.row not in ROWS or cell.criterion not in CRITERION_BY_KEY
+    ]
+    if bad:
+        raise ValueError(f"gate.open_cells names cells outside the catalog: {', '.join(bad)}")
     open_by_row: dict[str, set[str]] = {}
     for cell in gate.open_cells:
         open_by_row.setdefault(cell.row, set()).add(cell.criterion)

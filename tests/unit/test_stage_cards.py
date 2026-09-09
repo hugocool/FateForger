@@ -559,6 +559,40 @@ def test_the_gate_line_groups_open_cells_by_row() -> None:
     )
 
 
+def test_the_gate_line_raises_on_a_row_outside_the_catalog() -> None:
+    """The grouping loop filters by membership in ROWS; a key outside it must
+    raise, not silently vanish from the line (reviewer finding, task-3 fix 1)."""
+    from fateforger.slack_bot.stage_cards import _gate_line
+
+    gate = Gate(open_cells=[CellRef(row="not_a_row", criterion="unclear")], day_label="working Tuesday")
+    with pytest.raises(ValueError, match="elicit.not_a_row.unclear"):
+        _gate_line(gate)
+
+
+def test_the_gate_line_raises_on_a_criterion_outside_the_catalog() -> None:
+    from fateforger.slack_bot.stage_cards import _gate_line
+
+    gate = Gate(open_cells=[CellRef(row="body", criterion="not_a_criterion")], day_label="working Tuesday")
+    with pytest.raises(ValueError, match="elicit.body.not_a_criterion"):
+        _gate_line(gate)
+
+
+def test_the_gate_line_raises_even_when_a_valid_cell_shares_the_row() -> None:
+    """A bogus cell must not render the valid cell on its row alone -- the
+    line would then claim less is open than the gate actually says."""
+    from fateforger.slack_bot.stage_cards import _gate_line
+
+    gate = Gate(
+        open_cells=[
+            CellRef(row="body", criterion="unclear"),
+            CellRef(row="body", criterion="not_a_criterion"),
+        ],
+        day_label="working Tuesday",
+    )
+    with pytest.raises(ValueError, match="elicit.body.not_a_criterion"):
+        _gate_line(gate)
+
+
 def test_the_gate_line_for_every_cell_names_each_row_once_and_fits_a_section() -> None:
     """Turn one is when the most cells are open. All 45 grouped come to a few
     hundred characters; nothing is capped or sliced on the way out."""
@@ -619,5 +653,3 @@ def test_map_outcome_reads_the_stage_from_the_requirements_it_is_given() -> None
         session_key="C1:1.0", channel_id="C1", thread_ts="1.0", requirements=requirements,
     )
     assert card is not None and card.stage.index == 4
-
-
