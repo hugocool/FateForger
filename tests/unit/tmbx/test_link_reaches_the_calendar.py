@@ -467,7 +467,12 @@ def test_max_description_chars_is_exported_by_the_port():
 
 
 def _foreign_event(
-    eid: str, start_h: int, end_h: int, *, link_id: str | None = None
+    eid: str,
+    start_h: int,
+    end_h: int,
+    *,
+    link_id: str | None = None,
+    description: str = "",
 ) -> CalendarEvent:
     """A calendar event tmbx did not write: no ``uid``, so no ownership.
 
@@ -479,6 +484,7 @@ def _foreign_event(
     return CalendarEvent(
         event_id=eid,
         summary="Standup",
+        description=description,
         start=datetime(2026, 8, 17, start_h, 0),
         end=datetime(2026, 8, 17, end_h, 0),
         etag="v1",
@@ -565,6 +571,104 @@ async def test_an_owned_blocks_dead_handle_still_refuses(tmp_path, materials):
         await service.commit(snapshot, Patch(ops=[UpdateBlock(h="DW1", d="focus")]))
 
     assert DEAD_HANDLE in str(excinfo.value)
+
+
+async def test_a_foreign_blocks_long_description_does_not_refuse_the_day(
+    tmp_path, materials, known
+):
+    """The same deadlock, one screen below the one that was fixed.
+
+    ``_dead_link_violation`` learned to skip a foreign block; the refusal
+    directly after it did not. So a foreign block carrying a *live* handle and
+    an over-long description refused every commit of the day, and the two
+    remedies the message offers -- shorten the description, or drop the link --
+    are both writes to a foreign event, which ``_foreign_touches`` refuses.
+    Nothing tmbx owns is broken and the day cannot be planned: the deadlock
+    ``test_a_foreign_blocks_dead_handle_does_not_refuse_the_day`` describes,
+    reached by the other door.
+
+    Live handle, not ``DEAD_HANDLE``, so the dead-link check passes it through
+    and this refusal is the only one left that can fire.
+    """
+    calendar = RecordingCalendar(
+        {
+            "primary": [
+                _foreign_event(
+                    "f1", 9, 10, link_id=known, description="x" * (MAX_DESCRIPTION_CHARS + 1)
+                ),
+                _event("e2", "DW1", 10, 12, description="focus block"),
+            ]
+        }
+    )
+    service = await _service(tmp_path, materials, calendar)
+    _plan, snapshot = await service.read("primary", DAY)
+
+    result = await service.commit(
+        snapshot, Patch(ops=[UpdateBlock(h="DW1", d="deep focus")])
+    )
+
+    assert result.committed is True
+
+
+async def test_neither_remedy_for_a_foreign_long_description_is_available(
+    tmp_path, materials, known
+):
+    """Why the filter, and not a message telling the caller to fix it.
+
+    The half that makes it a deadlock rather than an inconvenience: both
+    remedies the refusal names are updates to a foreign handle, and both are
+    refused before they reach the calendar.
+    """
+    calendar = RecordingCalendar(
+        {
+            "primary": [
+                _foreign_event(
+                    "f1", 9, 10, link_id=known, description="x" * (MAX_DESCRIPTION_CHARS + 1)
+                ),
+                _event("e2", "DW1", 10, 12),
+            ]
+        }
+    )
+    service = await _service(tmp_path, materials, calendar)
+    plan, snapshot = await service.read("primary", DAY)
+    foreign = next(block.h for block in plan.blocks if block.link == known)
+
+    for remedy in ({"d": "short"}, {"link": None}):
+        with pytest.raises(ForeignBlockError):
+            await service.commit(
+                snapshot,
+                Patch.model_validate(
+                    {"ops": [{"op": "update", "h": foreign, **remedy}]}
+                ),
+            )
+
+
+async def test_an_owned_blocks_long_description_still_refuses(
+    tmp_path, materials, known
+):
+    """The filter narrows the check to what tmbx owns; it does not remove it."""
+    calendar = RecordingCalendar(
+        {
+            "primary": [
+                _foreign_event("f1", 9, 10),
+                _event(
+                    "e2",
+                    "DW1",
+                    10,
+                    12,
+                    link_id=known,
+                    description="x" * (MAX_DESCRIPTION_CHARS + 1),
+                ),
+            ]
+        }
+    )
+    service = await _service(tmp_path, materials, calendar)
+    _plan, snapshot = await service.read("primary", DAY)
+
+    with pytest.raises(PlanViolation) as excinfo:
+        await service.commit(snapshot, Patch(ops=[UpdateBlock(h="DW1", n="Focus")]))
+
+    assert excinfo.value.violation.kind is ViolationKind.DESCRIPTION_TOO_LONG
 
 
 # ---------------------------------------------------------------------------
