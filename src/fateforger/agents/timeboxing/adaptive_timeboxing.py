@@ -973,12 +973,12 @@ class AdaptiveTimeboxing:
                     else pending,
                 }
             )
-            # Always fall through. The run loop evaluates readiness fresh,
-            # holds a hard user blocker before it ever reaches Stage 1, and
-            # arrives at `_stage1_outcome` itself once Stage 1 is open --
-            # `stage1_gate` already subtracts any cell this assumption
-            # answers, so the run loop's own gate agrees with this turn
-            # rather than needing this branch to pre-empt it.
+            # Always fall through. The run loop evaluates readiness fresh and
+            # reaches Stage 1 first while it is open, arriving at
+            # `_stage1_outcome` itself; a hard user blocker is only held once
+            # the stage has closed. `stage1_gate` already subtracts any cell
+            # this assumption answers, so the run loop's own gate agrees with
+            # this turn rather than needing this branch to pre-empt it.
             return updated, None
         if isinstance(intent, DenyAssumption):
             kept = [a for a in snapshot.assumptions if a.assumption_id != intent.assumption_id]
