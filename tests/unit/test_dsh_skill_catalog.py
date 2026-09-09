@@ -17,14 +17,14 @@ import ast
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / ".dsh" / "skills"
 TMBX_SERVER = ROOT / "src" / "tmbx" / "server.py"
-PROFILE = ROOT / "infra" / "dsh" / "profile" / "cordis.patch.yml"
+# The profile itself is parsed by the `profile` fixture in `conftest.py`.
 MEMORY_LAUNCHER = ROOT / "infra" / "dsh" / "profile" / "memory-allowlisted-server.py"
 HOOKS = ROOT / "infra" / "dsh" / "hooks.json"
 
@@ -87,39 +87,52 @@ def _published_tmbx_tools() -> set[str]:
     return names
 
 
-class _Js(str):
-    """A `!!js` scalar kept as its source text so we can inspect the expression."""
-
-
-def _js_constructor(loader, node):
-    return _Js(loader.construct_scalar(node))
-
-
-def _mounts() -> dict[str, dict]:
-    """Every MCP mount in the profile, by `serverName`.
+def _mounts(tree: Any) -> dict[str, dict]:
+    """Every MCP mount anywhere in the loaded profile, by `serverName`.
 
     Parsed rather than scraped. The previous version of this read `serverName:`
     lines out of the text, which cannot see a row's `disabled` flag -- so a
-    mount that no ordinary turn can call counted as a connected backend. Same
-    row-parsing approach as `test_task_board_profile_mount.py`.
-    """
-    loader = yaml.SafeLoader
-    loader.add_constructor("!!js", _js_constructor)
-    # PyYAML resolves `!!js` to the full tag name; register both spellings.
-    loader.add_constructor("tag:yaml.org,2002:js", _js_constructor)
-    tree = yaml.load(PROFILE.read_text(encoding="utf-8"), Loader=loader)
+    mount that no ordinary turn can call counted as a connected backend. The
+    version after that read the `insert:` lists only, which is where the mounts
+    sit today and not where the file says they must: a row reached by any other
+    patch op would have gone unseen, and unseen here reads as "not connected",
+    which is the answer that hides a live backend.
 
+    A mount is a mapping carrying a `config.serverName`, and it is found
+    wherever it is written. Two rows claiming one name raise rather than
+    overwrite: keyed by name, the survivor would be whichever the walk reached
+    last, so an enabled mount shadowed by a gated one would report as "off" --
+    the direction that hides a live backend, which is the whole point of the
+    check downstream.
+    """
     found: dict[str, dict] = {}
-    for entry in tree:
-        rows = entry.get("insert") if isinstance(entry, dict) else None
-        for row in rows or []:
-            config = row.get("config") if isinstance(row, dict) else None
-            if isinstance(config, dict) and "serverName" in config:
-                found[config["serverName"]] = row
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            config = node.get("config")
+            if isinstance(config, dict) and isinstance(
+                config.get("serverName"), str
+            ):
+                name = config["serverName"]
+                previous = found.get(name)
+                assert previous is None, (
+                    f"two rows mount serverName {name!r}: {previous.get('id')!r} "
+                    f"and {node.get('id')!r}. Which one governs is a question "
+                    "this scan cannot answer; give them distinct names or "
+                    "delete one"
+                )
+                found[name] = node
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(tree)
     return found
 
 
-def _default_state(row: dict) -> str:
+def _default_state(profile, row: dict) -> str:
     """`"on"`, `"off"` or `"unknown"` for a mount, evaluating no JavaScript.
 
     A row with no `disabled` key boots. A row gated on `FF_TASK_TOOLS` does not,
@@ -133,7 +146,7 @@ def _default_state(row: dict) -> str:
         return "on"
     if disabled is True:
         return "off"
-    if isinstance(disabled, _Js) and disabled.strip() == GATED_OFF:
+    if profile.is_js(disabled) and disabled.strip() == GATED_OFF:
         return "off"
     return "unknown"
 
@@ -282,7 +295,7 @@ def test_the_mount_is_read_from_source_and_not_hardcoded() -> None:
     assert {"memory_classify_day"} - (tmbx | allowed) == {"memory_classify_day"}
 
 
-def test_the_catalog_holds_no_skill_for_a_backend_that_is_not_connected() -> None:
+def test_the_catalog_holds_no_skill_for_a_backend_that_is_not_connected(profile) -> None:
     """TickTick and Notion are not mounted on this host.
 
     `src/fateforger/agents/tasks/` talks to both, but that is the legacy
@@ -299,8 +312,10 @@ def test_the_catalog_holds_no_skill_for_a_backend_that_is_not_connected() -> Non
     the admonisher's routing has to be revisited rather than quietly left
     telling the model his tasks are absent while the model can read them.
     """
-    mounts = _mounts()
-    states = {name: _default_state(row) for name, row in mounts.items()}
+    mounts = _mounts(profile.tree)
+    states = {
+        name: _default_state(profile, row) for name, row in mounts.items()
+    }
 
     ungoverned = sorted(name for name, state in states.items() if state == "unknown")
     assert not ungoverned, (
@@ -327,6 +342,70 @@ def test_the_catalog_holds_no_skill_for_a_backend_that_is_not_connected() -> Non
         "the admonisher must say the task system is absent, or the model will "
         "answer from conversation and present it as his backlog"
     )
+
+
+def test_the_mount_scan_reads_the_whole_tree_not_only_insert_lists() -> None:
+    """A mount is any row carrying a `config.serverName`, wherever it is written.
+
+    The scan walked the `insert:` list of each top-level patch entry, which is
+    where today's mounts happen to live. A row added by another patch op, or one
+    level deeper, is then invisible here -- and invisible in the direction that
+    hides a live backend, so the catalog would keep telling the model a task
+    system is "not connected" while the model can call one. That is the exact
+    failure this file exists to make impossible, arriving through the check
+    meant to catch it.
+
+    Synthetic on purpose: the live profile puts every mount in an `insert:`
+    list, so nothing in the real file discriminates between the two scans.
+    """
+    hidden = [
+        {"id": "some-other-op"},
+        {
+            "update": {
+                "plugins": [
+                    {
+                        "id": "mcp-elsewhere",
+                        "config": {"serverName": "elsewhere", "transport": "stdio"},
+                    }
+                ]
+            }
+        },
+    ]
+
+    found = _mounts(hidden)
+
+    assert set(found) == {"elsewhere"}
+    assert found["elsewhere"]["id"] == "mcp-elsewhere"
+
+
+def test_two_rows_mounting_one_server_name_are_refused() -> None:
+    """Last-wins here would answer the question backwards.
+
+    The scan keys by `serverName`, so two rows claiming one name overwrite each
+    other in tree order. If one of them is enabled and the other gated, the
+    state this file reports is whichever the walk reached last -- and a live
+    mount reading as "off" is exactly the direction the connected-backend check
+    exists to rule out. Neither row is more authoritative than the other, so the
+    scan refuses to pick and names both.
+    """
+    twice = [
+        {
+            "insert": [
+                {"id": "mcp-board-live", "config": {"serverName": "task_board"}},
+                {
+                    "id": "mcp-board-gated",
+                    "disabled": True,
+                    "config": {"serverName": "task_board"},
+                },
+            ]
+        }
+    ]
+
+    with pytest.raises(AssertionError) as excinfo:
+        _mounts(twice)
+
+    assert "mcp-board-live" in str(excinfo.value)
+    assert "mcp-board-gated" in str(excinfo.value)
 
 
 def test_profile_mounts_a_separate_progress_tool_and_instructs_bounded_use() -> None:

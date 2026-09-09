@@ -10,6 +10,7 @@ call rather than as prose it would read as success.
 from __future__ import annotations
 
 import ast
+import inspect
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from fateforger.agents.tasks.board import (
     NoCurrentSprint,
+    Scope,
     SprintRef,
     TaskBoard,
     TaskListing,
@@ -60,14 +62,18 @@ def _row() -> TaskRow:
 
 
 class StubBoard:
-    """Records what the tools asked for and answers with canned models."""
+    """Records what the tools asked for and answers with canned models.
+
+    The two methods carry `TaskBoard`'s signatures exactly, which
+    `test_the_stub_stands_in_for_the_board_it_replaces` holds them to.
+    """
 
     def __init__(self, *, error: Exception | None = None) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self._error = error
 
     async def list_tasks(
-        self, scope: str, *, limit: int = 25, cursor: str | None = None
+        self, scope: Scope, *, limit: int = 25, cursor: str | None = None
     ) -> TaskListing:
         self.calls.append(
             ("list_tasks", {"scope": scope, "limit": limit, "cursor": cursor})
@@ -124,11 +130,45 @@ async def test_the_scope_vocabulary_reaches_the_model_in_the_schema() -> None:
     assert set(scope.get("enum", [])) == set(SCOPES)
 
 
-def test_the_instructions_say_the_ids_are_the_identity() -> None:
+def test_the_stub_stands_in_for_the_board_it_replaces() -> None:
+    """Every delegation test below runs against the stub, never the facade.
+
+    `_board()` is the only seam, so a stub whose methods take different
+    arguments from `TaskBoard`'s would let this file pin a call the real board
+    refuses -- a green suite over an interface nothing implements. Signatures
+    are compared whole: names, kinds, defaults, keyword-only marker and
+    annotations.
+
+    `eval_str=True` because the interface is the types, not how they are
+    spelled. Both modules carry `from __future__ import annotations`, so
+    unevaluated the annotations are source strings and this would fail over
+    `Scope` written out as its `Literal`, or over either module dropping the
+    future import -- neither of which changes what the board accepts.
+    """
+    for name in ("list_tasks", "get_task"):
+        stub = inspect.signature(getattr(StubBoard, name), eval_str=True)
+        real = inspect.signature(getattr(TaskBoard, name), eval_str=True)
+
+        assert stub == real, f"StubBoard.{name} has drifted from TaskBoard.{name}"
+
+
+def test_the_instructions_carry_the_three_clauses_the_schema_cannot() -> None:
+    """The tool schemas say what the arguments are; only this says what binds.
+
+    Three clauses, and each answers a way the child goes wrong on its own: that
+    nothing here writes, so it may call freely; that the identity to carry
+    forward is the page id rather than the number or the title; and that a
+    ticket it cannot find is reported missing rather than reconstructed from a
+    title, which is the pattern-matching failure this whole package refuses.
+    The third has never been pinned -- prompt text is edited for length, and
+    losing it costs a fabricated ticket, silently.
+    """
     instructions = task_board_mcp.mcp.instructions or ""
 
-    assert "Notion page id" in instructions
     assert "read-only" in instructions
+    assert "Notion page id" in instructions
+    assert "the only identity to pass onward" in instructions
+    assert "never guess a ticket from its title" in instructions
 
 
 # --- delegation ---------------------------------------------------------

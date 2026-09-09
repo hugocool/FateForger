@@ -241,9 +241,8 @@ def _rollup_select_name(properties: dict[str, Any], name: str) -> str | None:
     return None
 
 
-def row_from_page(page: Any) -> TaskRow:
-    """One Tasks row, with the two long text fields cut to a readable length."""
-    properties = _properties(page)
+def _row(page: dict[str, Any], properties: dict[str, Any]) -> TaskRow:
+    """The row mapping, off a page whose shape has already been checked."""
     return TaskRow(
         page_id=page["id"],
         number=_unique_number(properties, PROP_TASK_ID),
@@ -265,12 +264,21 @@ def row_from_page(page: Any) -> TaskRow:
     )
 
 
+def row_from_page(page: Any) -> TaskRow:
+    """One Tasks row, with the two long text fields cut to a readable length."""
+    return _row(page, _properties(page))
+
+
 def page_from_page(page: Any) -> TaskPage:
-    """One ticket in full: the row, plus the summary and DoD uncut."""
-    row = row_from_page(page)
+    """One ticket in full: the row, plus the summary and DoD uncut.
+
+    The page is checked once and its properties handed to both halves; checking
+    it again for the untruncated fields was work the row mapping had already
+    done.
+    """
     properties = _properties(page)
     return TaskPage(
-        row=row,
+        row=_row(page, properties),
         summary=_plain_text(properties, PROP_SUMMARY, "rich_text"),
         dod=_plain_text(properties, PROP_DOD, "rich_text"),
     )
@@ -442,7 +450,14 @@ class TaskBoard:
             return READY_FILTER
         if scope == "open":
             return OPEN_FILTER
-        assert sprint is not None  # _sprint_for resolved it or raised
+        if sprint is None:
+            # `_sprint_for` resolves a sprint for these two scopes or raises, so
+            # this is unreachable -- and it stays a raise rather than an assert
+            # because `python -O` strips an assert and would leave the next line
+            # reading `page_id` off None.
+            raise TaskBoardError(
+                f"scope {scope!r} needs the current sprint and none was resolved"
+            )
         in_sprint = {
             "property": PROP_SPRINT,
             "relation": {"contains": sprint.page_id},
