@@ -185,3 +185,12 @@ def test_the_view_will_not_read_the_clock_for_itself() -> None:
     # than silently getting whatever day the process happens to be running on.
     with pytest.raises(TypeError):
         planning_view(_draft())  # type: ignore[call-arg]
+
+
+def test_the_view_refuses_a_now_that_names_no_timezone() -> None:
+    # The no-default rule stops a view from inventing the instant; this stops
+    # it from inventing the offset. A naive datetime reads as the host's local
+    # time, so the same call would answer differently on a machine in another
+    # zone -- the host-dependent answer, one layer down.
+    with pytest.raises(ValueError, match="timezone"):
+        planning_view(_draft(), now=datetime(2026, 9, 3, 7, 0))

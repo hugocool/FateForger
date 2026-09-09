@@ -142,8 +142,15 @@ def planning_view(draft: EventDraftPayload, *, now: datetime) -> SurfaceView:
     different day is answerable only against today's date, and a view that
     fetched that date itself would make the same reply read one way on a
     Wednesday and another on a Thursday -- in the tests as much as in Slack.
+
+    It must carry a timezone. A naive datetime reads as whatever zone the
+    process is in, which is the same host-dependent answer the missing default
+    exists to prevent -- the signature guards the instant's absence, this
+    guards its shape.
     """
 
+    if now.tzinfo is None:
+        raise ValueError("planning_view needs a timezone-aware `now`; a naive one reads as the host's local time")
     day, start, end = _local_window(draft)
     options, decisions = _controls(draft)
     local_now = now.astimezone(ZoneInfo(draft.timezone or _DEFAULT_TZ))
@@ -215,7 +222,6 @@ __all__ = [
     "InterpretedPlanningTurn",
     "InterpretedSettledPlanningTurn",
     "PLANNING_PROMPT_FRAGMENT",
-    "_PLANNING_PROMPT_FRAGMENT_BASE",
     "PlanningPress",
     "RETRY_OPTION_ID",
     "SURFACE_KIND",

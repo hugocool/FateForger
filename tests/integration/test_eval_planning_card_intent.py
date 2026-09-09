@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -34,12 +34,16 @@ def _report(results: list) -> str:
     return "\n---\n".join(lines)
 
 
-#: 09:00 on the card's own day, Thursday 3 September, an hour and a half
-#: before the slot it proposes. Fixed against the draft rather than read from
-#: the clock: "plan tomorrow for me" means Friday here on every day of the
-#: week, and a view that fetched today's date would make this case pass on a
-#: Wednesday and fail on a Thursday.
-_NOW = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
+#: The slot the card proposes: Thursday 3 September, 10:38 Amsterdam.
+_START = datetime(2026, 9, 3, 8, 38, tzinfo=timezone.utc)
+
+#: An hour and a half before that slot, on its own day -- derived from it, so
+#: moving the draft moves `now` with it and cannot silently change which day
+#: "tomorrow" names. Fixed against the draft rather than read from the clock:
+#: "plan tomorrow for me" means Friday here on every day of the week, and a
+#: view that fetched today's date would make this case pass on a Wednesday and
+#: fail on a Thursday.
+_NOW = _START - timedelta(hours=1, minutes=38)
 
 
 def _draft(status_name: str = "DRAFT"):
@@ -55,7 +59,7 @@ def _draft(status_name: str = "DRAFT"):
         title="Daily planning session",
         description="Plan tomorrow's priorities and prep for shutdown.",
         timezone="Europe/Amsterdam",
-        start_at_utc=datetime(2026, 9, 3, 8, 38, tzinfo=timezone.utc).isoformat(),  # 10:38 local
+        start_at_utc=_START.isoformat(),  # 10:38 local
         duration_min=30,
         status=DraftStatus[status_name],
         event_url=None,
@@ -139,26 +143,7 @@ async def test_try_again_on_a_failed_card_is_retry() -> None:
     assert _count(results, kind="retry") >= THRESHOLD, _report(results)
 
 
-def _on_the_flash_pin() -> bool:
-    """Whether this run's interpreter resolves to the flash pin.
-
-    Two model ids this project minted, compared for equality -- the pattern
-    ban is about the user's words, not about which row a client landed on.
-    """
-
-    from fateforger.core.config import settings
-    from fateforger.llm.factory import INTENT_INTERPRETER, _model_for_agent
-
-    flash = (getattr(settings, "openrouter_default_model_flash", "") or "").strip()
-    return bool(flash) and _model_for_agent(INTENT_INTERPRETER) == flash
-
-
 @pytest.mark.asyncio
-@pytest.mark.skipif(
-    not _on_the_flash_pin(),
-    reason="the day clause is load-bearing on the flash pin; the pro pin reaches "
-    "`none` from the date alone, so the flip this asserts is a flash-pin claim",
-)
 async def test_break_it_without_the_day_clause_a_non_press_becomes_a_press(monkeypatch) -> None:
     """A discriminator that passes without its discriminating sentence is not one.
 
@@ -166,10 +151,15 @@ async def test_break_it_without_the_day_clause_a_non_press_becomes_a_press(monke
     with `now` in the payload it went 6/8 to 8/8 on the base fragment alone,
     so claiming the clause carries it would be asserting something the
     measurement says is false. This case is the one the clause is for -- 1/8
-    on flash with the date available and the base fragment, 8/8 with it. On
-    the pro pin the same stripped fragment still answered `none` 7/8, which is
-    the paragraph not being load-bearing there rather than a quality loss
-    (`INVERTED_ASSERTION_PREFIX` in scripts/bench/interpreter_tier.py).
+    on flash with the date available and the base fragment, 8/8 with it.
+
+    It runs on every pin, and on the pro pin it fails: with `now` present and
+    the clause stripped, pro still answered `none` 7/8, so the paragraph is
+    not load-bearing there. That is the flip not happening, not a quality
+    loss, and the bench already tells the two apart -- `interpreter_tier.py`
+    matches this function's `test_break_it_` name and buckets the outcome as
+    `unbroken` in its own column. Skipping instead would hide the case from
+    the very table the pin decision reads, on the pin that table defaults to.
     """
 
     import fateforger.slack_bot.planning_surface as ps
