@@ -57,6 +57,10 @@ from types import SimpleNamespace  # noqa: E402
 #: hardcoded "open a new session" door the rung has to get in front of.
 PLAN_SESSIONS_CHANNEL = "C0AA6HC1RJL"
 
+#: Hugo's DM with the bot. Its session key is `{channel}:dm`, and no structural
+#: resolver ever runs there: the store lookup above is guarded by `thread_ts`.
+DM_CHANNEL = "D_HUGO"
+
 
 class _HarnessClient:
     """Enough Slack to run the route, with every message recorded."""
@@ -120,6 +124,16 @@ class _HarnessRuntime:
         self.calls.append((message, recipient))
         from autogen_agentchat.messages import TextMessage
 
+        if recipient.type == "timeboxing_agent":
+            # What the real agent does with either message it can be sent:
+            # `on_start` establishes a session, and `on_user_reply` establishes
+            # one too when the key names none (`_ensure_uncommitted_session`,
+            # debug event `session_started_from_reply`). Delivering to
+            # timeboxing IS minting, whichever message carried the turn.
+            await self.timeboxing_session_store.load_or_create(
+                recipient.key, owner_user_id="U_HUGO"
+            )
+
         if self._handoff_to is not None:
             # `_extract_handoff_target` reads `.target`; a plain string is one
             # of the shapes it accepts. This is how the receptionist reaches
@@ -140,10 +154,23 @@ class _HarnessSessionStore:
         self._sessions = sessions
         self._event_order = event_order
         self.asked: list[str] = []
+        #: Every key this store had to write a row for. The invariant under
+        #: test is about rows, not about Slack messages, so this is what the
+        #: partial-catalog tests assert on.
+        self.created: list[str] = []
 
     async def load(self, session_key: str):
         self.asked.append(session_key)
         return self._sessions.get(session_key)
+
+    async def load_or_create(self, session_key: str, *, owner_user_id: str):
+        existing = self._sessions.get(session_key)
+        if existing is not None:
+            return existing
+        self.created.append(session_key)
+        session = SimpleNamespace(status="open", session_key=session_key)
+        self._sessions[session_key] = session
+        return session
 
     async def standing_rows(
         self, *, owner_user_id: str, as_of, open_within, horizon
@@ -193,6 +220,18 @@ class _RoutingHarness:
         self._origin_ts: str | None = None
 
     @property
+    def sessions_created(self) -> list[str]:
+        """Session keys a row was written for -- the thing the invariant is about.
+
+        `sessions_opened` only sees `open_session_surface`. Two doors mint
+        without going anywhere near it: the kernel route writes at
+        `load_or_create`, and delivering either timeboxing message to the agent
+        writes at `_ensure_uncommitted_session`.
+        """
+
+        return self.runtime.timeboxing_session_store.created
+
+    @property
     def delivered_to(self) -> str | None:
         if not self.runtime.calls:
             return None
@@ -236,14 +275,27 @@ class _RoutingHarness:
             }
         )
 
-    async def route_thread_reply(self, text: str) -> None:
+    async def route_thread_reply(self, text: str, *, channel: str | None = None) -> None:
         await self._route(
             {
-                "channel": PLAN_SESSIONS_CHANNEL,
+                "channel": channel or PLAN_SESSIONS_CHANNEL,
                 "user": "U_HUGO",
                 "text": text,
                 "thread_ts": "1788599000.000100",
                 "ts": "1788600060.000200",
+            }
+        )
+
+    async def route_dm(self, text: str) -> None:
+        """A DM, whose session key is `{channel}:dm` and never names a thread."""
+
+        await self._route(
+            {
+                "channel": DM_CHANNEL,
+                "channel_type": "im",
+                "user": "U_HUGO",
+                "text": text,
+                "ts": "1788600060.000300",
             }
         )
 
@@ -266,6 +318,7 @@ def routing_harness(monkeypatch: pytest.MonkeyPatch):
         rows=None,
         sessions=None,
         handoff_to: str | None = None,
+        timeboxing_channel: str | None = PLAN_SESSIONS_CHANNEL,
     ) -> _RoutingHarness:
         event_order: list[str] = []
         opened: list[str] = []
@@ -292,9 +345,16 @@ def routing_harness(monkeypatch: pytest.MonkeyPatch):
             opened.append(kwargs["target_channel"])
             return await real_open(*args, **kwargs)
 
-        async def _fake_turn(**_kwargs):
+        async def _fake_turn(**kwargs):
             from fateforger.slack_bot.messages import SlackBlockMessage
 
+            # The real turn opens with `repository.load_or_create(session_key)`,
+            # which writes a revision-zero row when the key names nothing. A
+            # stub that skipped that made the kernel route look like it never
+            # created anything, which is how this door stayed invisible.
+            await store.load_or_create(
+                kwargs["session_key"], owner_user_id=kwargs["actor_user_id"]
+            )
             return SlackBlockMessage(text="turn ran", blocks=[])
 
         monkeypatch.setattr(handlers_mod, "open_session_surface", _recording_open)
@@ -311,7 +371,7 @@ def routing_harness(monkeypatch: pytest.MonkeyPatch):
             handlers_mod,
             "_channel_for_agent",
             lambda agent_type: (
-                PLAN_SESSIONS_CHANNEL if agent_type == "timeboxing_agent" else None
+                timeboxing_channel if agent_type == "timeboxing_agent" else None
             ),
         )
 

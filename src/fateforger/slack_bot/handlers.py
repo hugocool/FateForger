@@ -354,59 +354,13 @@ def _referent_label(referent: Referent) -> str:
     return f"{referent.kind} for {day} ({referent.status})"
 
 
-#: This turn ends at a door that mints a session. There is nothing else it can
-#: do with itself.
-MINT_CERTAIN = "certain"
-#: It might. The turn goes to some other agent, and that agent can hand it off
-#: to timeboxing, which builds a session surface of its own.
-MINT_POSSIBLE = "possible"
-#: It cannot. There is a thread to continue, or a DM whose `{channel}:dm` key
-#: names a session that already exists.
-MINT_NO = "no"
-
-#: Said in every place a partial catalog stops a session being created: up front
-#: when the turn was certainly headed for one, and at the door when a handoff
-#: turned out to be. The same words in both, so which internal path the turn
-#: took is not something a user has to model.
+#: Said in every place a partial catalog stops a session being created, so which
+#: internal door the turn reached is not something a user has to model.
 PARTIAL_CATALOG_ASK = (
     ":warning: I couldn't check what you already have planned, so I won't start "
     "a second session over the top of it. Say that again and I'll retry, or open "
     "one from the day's own thread if there is one."
 )
-
-
-def _session_mint_prospect(
-    *, agent_type: str, is_dm: bool, thread_ts: str | None
-) -> str:
-    """Will this turn mint a timeboxing session -- certainly, possibly, or not?
-
-    One reading, asked once before the turn runs. There were three separate
-    re-derivations of this and they had already drifted apart; the one the
-    referent rung carried missed the handoff door entirely, which is the door a
-    plain "can you replan today so the gym is before dinner?" goes through when
-    it is typed anywhere but the planning channel.
-
-    `open_session_surface` is the thing that actually mints, and it has two
-    callers -- the fresh-channel start and the handoff. The legacy backend
-    reaches the same place by sending `StartTimeboxing` instead.
-
-    The distinction between `certain` and `possible` is what keeps a rare store
-    outage from becoming a bot-wide one. On `certain` the turn has nothing else
-    to do, so a caller may refuse up front. On `possible` it depends on a
-    judgement that has not been made yet -- whether the model hands off -- so a
-    caller must let the turn run and refuse at the door, if it comes to one.
-    Refusing up front there would answer "I couldn't check your calendar" to
-    someone asking what the weather is.
-    """
-    if agent_type == "timeboxing_agent":
-        # A message with no thread to continue is a fresh start whichever
-        # backend takes it. A DM reaches its session by the `{channel}:dm` key
-        # and mints nothing.
-        return MINT_CERTAIN if (not is_dm and not thread_ts) else MINT_NO
-    # Any other agent can hand the turn off, and a handoff to timeboxing builds
-    # a surface of its own -- from a thread reply as readily as from a root
-    # message, and in a DM as readily as in a channel.
-    return MINT_POSSIBLE
 
 
 async def _resolve_referent(
@@ -2832,14 +2786,10 @@ async def route_slack_event(
                         agent_type = "timeboxing_agent"
                         structurally_claimed = True
 
-    # Read once, before the rung can move `agent_type`, and consulted by the
-    # rung and by every door that mints. One reading, several users, no drift.
-    mint_prospect = _session_mint_prospect(
-        agent_type=agent_type, is_dm=is_dm, thread_ts=thread_ts
-    )
-    # Set when the rung found the catalog short and let the turn run anyway
-    # because nothing was certain to be created. Whatever door then turns out to
-    # create refuses instead, in the rung's own words.
+    # Set when the rung found the catalog short. The turn still runs -- whether
+    # it ever reaches timeboxing is a judgement nobody has made yet, and a store
+    # outage must not become a bot-wide one -- and every door that would hand
+    # the turn to timeboxing asks `_a_partial_catalog_forbids_this_turn` first.
     catalog_was_partial = False
 
     cleaned_text = _strip_bot_mention(text, bot_user_id)
@@ -2938,6 +2888,52 @@ async def route_slack_event(
         )
         await _origin_update(text=PARTIAL_CATALOG_ASK)
 
+    async def _a_session_already_stands(session_key: str) -> bool:
+        """Is there a session at this key already? Asked, never created.
+
+        Fails closed. "I could not tell" and "there is nothing there" have to
+        answer the same way here, because the caller turns this answer into
+        permission to write, and a store that cannot be read is exactly the
+        condition that made the catalog short in the first place.
+        """
+        store = getattr(runtime, "timeboxing_session_store", None)
+        if store is None:
+            return False
+        try:
+            return await store.load(session_key) is not None
+        except Exception:
+            logger.exception("session lookup failed for %s", session_key)
+            record_error(component="surface_intent", error_type="resolver_failure")
+            return False
+
+    async def _a_partial_catalog_forbids_this_turn(
+        session_key: str, *, target_agent: str
+    ) -> bool:
+        """May this turn be handed to `target_agent` at `session_key`? Refuses aloud.
+
+        One question, asked at every door that hands a turn to timeboxing, and
+        it is the store's question rather than the message builder's.
+        **Creation is decided by whether the session key is already known, not
+        by which message type the route happens to build.** Three separate
+        readings of "this turn creates" have now been wrong here:
+        `StartTimeboxing` is not the only creating message --
+        `TimeboxingUserReply` mints one through `on_user_reply`'s
+        `_ensure_uncommitted_session` (`session_started_from_reply`) -- and on
+        the kernel backend the route sends no message at all, minting at
+        `load_or_create` instead. All three converge on one fact the store can
+        answer directly: does a row exist at the key this turn will use?
+
+        Returns True when the caller must stop; the user has already been told.
+        """
+        if not catalog_was_partial or target_agent != "timeboxing_agent":
+            return False
+        if await _a_session_already_stands(session_key):
+            # Continuing something that demonstrably stands is not creating a
+            # second one, so a short catalog says nothing against it.
+            return False
+        await _refuse_to_mint_over_a_partial_catalog()
+        return True
+
     async def _origin_link_to_thread(
         *, channel_id: str, thread_ts: str, agent_label: str
     ) -> None:
@@ -2978,27 +2974,11 @@ async def route_slack_event(
         one builder for every door. What stays here is what only a Slack event
         can supply: the origin link, the working card, and the turn.
         """
+        # This door has no key to ask about: `open_session_surface` mints the
+        # root the key is made of, so it is a creation every single time.
         if catalog_was_partial:
             await _refuse_to_mint_over_a_partial_catalog()
             return
-        if mint_prospect == MINT_NO:
-            # The rung was told this turn could not mint one, and here it is
-            # minting one. That means `_session_mint_prospect` has stopped
-            # covering every door, and a partial catalog can now reach this
-            # line believing nothing stands. Loud and metered at the site,
-            # rather than inherited in silence by whatever reads the store
-            # next -- which is exactly how the 2026-09-05 duplicate happened.
-            logger.error(
-                "a session is being minted at a door the rung did not foresee "
-                "(agent=%s is_dm=%s thread_ts=%s channel=%s)",
-                agent_type,
-                is_dm,
-                thread_ts,
-                channel,
-            )
-            record_error(
-                component="surface_intent", error_type="unforeseen_session_mint"
-            )
         surface = await open_session_surface(
             client,
             focus,
@@ -3428,19 +3408,26 @@ async def route_slack_event(
             # could make dangerous: `Resolved` hands the turn to a session that
             # demonstrably exists, and `Ambiguous` already asks. `NoReferent` is
             # the only one whose answer is "so go ahead and create".
-            if mint_prospect == MINT_CERTAIN:
-                # Nothing else this turn could do. Refusing at the end would
-                # spend a model call and a card to say the same thing later.
-                await _refuse_to_mint_over_a_partial_catalog()
-                return
-            # It only *might* create, by a handoff nobody has decided on yet.
-            # Let it answer -- someone asking what the weather is must not be
-            # told the planner could not read their calendar -- and refuse at
-            # the door, if the turn reaches one.
+            #
+            # Recorded here and nothing more. Whether this turn ever reaches
+            # timeboxing is a judgement nobody has made yet -- the model may or
+            # may not hand off -- so pre-empting here would answer "I couldn't
+            # check what you have planned" to someone asking what the weather
+            # is, and a rare store outage would become a bot-wide one. Every
+            # door that hands the turn to timeboxing refuses instead, and the
+            # ones that mint without a model call refuse before spending one.
             catalog_was_partial = True
 
     redirect = focus.get_redirect(origin_key)
     if redirect and agent_type == redirect.agent_type:
+        # A redirect outliving the focus binding it was set beside (`/ff-clear`
+        # drops one and not the other; they are separate TTL caches) puts this
+        # turn on a target key nothing has to have created yet -- and the reply
+        # built below is a `TimeboxingUserReply`, which mints one.
+        if await _a_partial_catalog_forbids_this_turn(
+            redirect.target_key, target_agent=redirect.agent_type
+        ):
+            return
         focus.set_user_focus(user, redirect.agent_type)
         persona = _persona_for_agent(redirect.agent_type)
         processing_payload = {
@@ -3566,16 +3553,19 @@ async def route_slack_event(
             else None
         ),
     )
-    if catalog_was_partial and isinstance(msg, StartTimeboxing):
-        # The legacy backend's own creating door. Asked of the message that was
-        # actually built rather than of the event shape all over again --
-        # `StartTimeboxing` *is* the decision to create, `TimeboxingUserReply`
-        # is not -- so this cannot drift from the builder that made it.
-        await _refuse_to_mint_over_a_partial_catalog()
-        return
     recipient_key = origin_key
     if forced_thread_root:
         recipient_key = f"{channel}:{forced_thread_root}"
+    # The route's own door, and it creates on both backends: the kernel path
+    # below mints at `load_or_create(recipient_key)` without sending `msg` at
+    # all, and the legacy path's `TimeboxingUserReply` mints at
+    # `_ensure_uncommitted_session`. Asking the message type here answered
+    # "nothing to refuse" for a DM and for a first-touch thread reply, both of
+    # which write a row.
+    if await _a_partial_catalog_forbids_this_turn(
+        recipient_key, target_agent=agent_type
+    ):
+        return
     # The turn behind this call runs for tens of seconds -- measured at 43-54s
     # of graph on a real Refine turn, with prefetch and stage decision before
     # it. The ack posted above then sits unchanged for that whole minute, which
@@ -3839,13 +3829,16 @@ async def route_slack_event(
                 True if (is_dm and handoff_target == "timeboxing_agent") else None
             ),
         )
-        if catalog_was_partial and isinstance(handoff_msg, StartTimeboxing):
-            # The door `_begin_timeboxing_session_surface` never sees: the
-            # in-thread fallback taken when the session channel is not
-            # reachable. Asked of the message that was actually built, not of
-            # the event shape all over again -- `StartTimeboxing` *is* the
-            # decision to create, and `TimeboxingUserReply` is not.
-            await _refuse_to_mint_over_a_partial_catalog()
+        # The door `_begin_timeboxing_session_surface` never sees: the in-thread
+        # fallback, taken whenever `_channel_for_agent("timeboxing_agent")` is
+        # unset or is the channel the user is already in, and whenever the
+        # redirecting handoff above raised. A DM builds a `TimeboxingUserReply`
+        # here (`force_reply=True`) and so does any thread reply, and both mint
+        # a session at `origin_key` -- which is why reading the message type
+        # here let the exact 2026-09-05 shape straight through.
+        if await _a_partial_catalog_forbids_this_turn(
+            origin_key, target_agent=handoff_target
+        ):
             return
         try:
             result = await runtime.send_message(

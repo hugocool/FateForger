@@ -132,6 +132,7 @@ async def test_a_partial_catalog_never_creates_over_a_day_it_could_not_see(
     harness = routing_harness(resolver=_Resolver(NoReferent(catalog_complete=False)))
     await harness.route_top_level("can you replan today so the gym is before dinner?")
     assert harness.sessions_opened == []
+    assert harness.sessions_created == []
     assert harness.origin_messages, "the user must be told what could not be checked"
 
 
@@ -182,6 +183,7 @@ async def test_a_partial_catalog_is_stopped_at_the_handoff_door_not_before_it(
         "can you replan today so the gym is before dinner?", channel="C_GENERAL"
     )
     assert harness.sessions_opened == []
+    assert harness.sessions_created == []
     assert len(harness.runtime.calls) == 1, "the turn runs; only the mint is refused"
     assert PARTIAL_CATALOG_ASK in harness.origin_messages
 
@@ -197,3 +199,98 @@ async def test_a_partial_catalog_does_not_break_every_other_conversation(
     assert len(harness.runtime.calls) == 1, "the receptionist must still answer"
     assert PARTIAL_CATALOG_ASK not in harness.origin_messages
 
+
+
+# ---------------------------------------------------------------------------
+# Creation is decided by whether the session key is already known.
+#
+# Not by the message type. `StartTimeboxing` is one creating message; so is
+# `TimeboxingUserReply`, through `on_user_reply`'s `_ensure_uncommitted_session`
+# (`agent.py`, debug event `session_started_from_reply`). And the kernel backend
+# sends neither -- it mints at `timeboxing_session_store.load_or_create`. Each
+# of the four doors below writes a row, and each was reachable with a catalog
+# that could not see what already stood.
+# ---------------------------------------------------------------------------
+
+
+async def test_a_dm_on_the_planner_does_not_mint_over_a_day_it_could_not_see(
+    routing_harness,
+):
+    # No structural resolver ever runs in a DM -- the store lookup is guarded by
+    # `thread_ts` -- so the rung is the only thing between this message and
+    # `load_or_create("D_HUGO:dm")`. The message built here is a
+    # `TimeboxingUserReply`, which is why reading the type said "nothing to
+    # refuse" while a row was being written.
+    harness = routing_harness(resolver=_Resolver(NoReferent(catalog_complete=False)))
+    harness.focus.set_user_focus("U_HUGO", "timeboxing_agent")
+    await harness.route_dm("can you replan today so the gym is before dinner?")
+    assert harness.sessions_created == []
+    assert PARTIAL_CATALOG_ASK in harness.origin_messages
+
+
+async def test_a_dm_that_continues_a_session_that_stands_is_not_refused(
+    routing_harness,
+):
+    # The other half of the same guard, and the reason it asks the store rather
+    # than the flag: continuing something that demonstrably exists is not
+    # creating a second one, so a short catalog says nothing against it.
+    harness = routing_harness(
+        resolver=_Resolver(NoReferent(catalog_complete=False)),
+        sessions={"D_HUGO:dm": SimpleNamespace(status="open")},
+    )
+    harness.focus.set_user_focus("U_HUGO", "timeboxing_agent")
+    await harness.route_dm("move the gym earlier")
+    assert harness.sessions_created == []
+    assert PARTIAL_CATALOG_ASK not in harness.origin_messages
+
+
+async def test_a_first_touch_thread_reply_does_not_mint_over_a_partial_catalog(
+    routing_harness,
+):
+    # A reply in a thread the store knows nothing about: the structural lookup
+    # answers `None`, so nothing claims it, and the turn goes to the kernel with
+    # this thread's own key -- where `load_or_create` writes the row.
+    harness = routing_harness(resolver=_Resolver(NoReferent(catalog_complete=False)))
+    await harness.route_thread_reply("can you move the gym before dinner?")
+    assert harness.sessions_created == []
+    assert PARTIAL_CATALOG_ASK in harness.origin_messages
+
+
+async def test_the_in_thread_handoff_fallback_does_not_mint_over_a_partial_catalog(
+    routing_harness,
+):
+    # `_channel_for_agent("timeboxing_agent")` unset (or naming the channel the
+    # user is already in) makes `should_redirect` false, and the handoff falls
+    # through to the in-thread path -- the one door
+    # `_begin_timeboxing_session_surface` never sees. In a DM it builds a
+    # `TimeboxingUserReply`, so a guard reading the message type let it past.
+    harness = routing_harness(
+        resolver=_Resolver(NoReferent(catalog_complete=False)),
+        handoff_to="timeboxing_agent",
+        timeboxing_channel=None,
+    )
+    await harness.route_dm("can you replan today so the gym is before dinner?")
+    assert harness.sessions_created == []
+    assert len(harness.runtime.calls) == 1, "the receptionist turn still runs"
+    assert PARTIAL_CATALOG_ASK in harness.origin_messages
+
+
+async def test_a_redirect_that_outlived_its_focus_does_not_mint_over_a_partial_catalog(
+    routing_harness,
+):
+    # Focus and redirects are two TTL caches, and `/ff-clear` drops one without
+    # the other. With the binding gone the rung runs again, and the surviving
+    # redirect then carries this turn to a target key that need not have been
+    # created -- as a `TimeboxingUserReply`, which creates it.
+    harness = routing_harness(resolver=_Resolver(NoReferent(catalog_complete=False)))
+    harness.focus.set_user_focus("U_HUGO", "timeboxing_agent")
+    harness.focus.set_redirect(
+        "D_HUGO:dm",
+        target_channel="C0AA6HC1RJL",
+        target_thread_ts="1788599000.000100",
+        agent_type="timeboxing_agent",
+        by_user="U_HUGO",
+    )
+    await harness.route_dm("move the gym earlier")
+    assert harness.sessions_created == []
+    assert PARTIAL_CATALOG_ASK in harness.origin_messages
