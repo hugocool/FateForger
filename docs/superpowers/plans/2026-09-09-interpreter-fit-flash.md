@@ -188,19 +188,34 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 2: The planning card learns what "not a press" looks like (#406, planning half)
+## Task 2: The planning card is told what day it is (#406, planning half)
 
 **Files:**
-- Modify: `src/fateforger/slack_bot/planning_surface.py` (`PLANNING_PROMPT_FRAGMENT`)
-- Test: `tests/integration/test_eval_planning_card_intent.py` (add a break-it case only)
+- Modify: `src/fateforger/slack_bot/planning_surface.py` (`planning_view`; possibly `PLANNING_PROMPT_FRAGMENT`, but only if Step 4 proves it necessary)
+- Modify: `src/fateforger/slack_bot/planning.py` (the one caller of `planning_view`)
+- Test: `tests/unit/test_planning_surface.py`, `tests/integration/test_eval_planning_card_intent.py`
 
-**Interfaces:** consumes Task 1's narrowed schema (the planning states keep `selected_time` and `option_id`, and drop nothing else — confirm this in the report).
+**Interfaces:** consumes Task 1's narrowed schema (planning states keep `selected_time` and `option_id` and drop nothing else — confirm in the report).
 
-**The defect.** `PLANNING_PROMPT_FRAGMENT` says what acceptance is, what a clock time is, and what makes a time-change `update_time` instead of `update_time_and_add`. It never says what `none` is. So a reply that is *about* planning but presses nothing — "plan tomorrow for me" under a planning-session card — reads as agreement, and the flash pin answers `choose_option`/`add_to_calendar`. Measured: fails all three flash configurations, 5/8 at best; passes all three pro ones. This is the `project`-versus-`permanent` shape from CLAUDE.md — a category named with nothing to key off.
+**The defect, corrected 2026-09-09.** An earlier draft of this task blamed the prompt for never defining `none`. That is true but it is not the cause. The cause is that **the request contains no current date or time**, so the question is not answerable from what the model is given. This is the entire payload for the failing case:
 
-- [ ] **Step 1: Confirm the failure before changing anything**
+```json
+{"surface":"planning_card","display_state":"draft",
+ "allowed_decisions":["update_time","update_time_and_add","none","choose_option"],
+ "offered_options":[{"option_id":"add_to_calendar","label":"Add to calendar",
+   "effect":"adds the session to the calendar at Thu 3 Sep 10:38–11:08 as shown"}],
+ "open_question":null,"user_text":"plan tomorrow for me",
+ "proposal":{"title":"Daily planning session","day":"Thu 3 Sep","start":"10:38",
+   "end":"11:08","timezone":"Europe/Amsterdam","status":"not added yet"}}
+```
 
-The eval already carries both cases (`test_a_non_press_is_none`). Establish the baseline on the flash pin, n=8:
+Is `Thu 3 Sep` tomorrow? Nothing here says. If today is Wednesday the user and the card agree and pressing *add* is defensible; if today is Thursday the user is naming a different day and it is plainly not a press. The pro pin defaults to caution and the flash pin defaults to agreement — **neither is reasoning, because the evidence is absent.** The same fact is missing for "later", "tonight", "saturday" and "not today".
+
+The timeboxing surface dodged this deliberately: it passes the proposed day and asks for a `day_offset` measured *from that day*, so it never needs to know today (`_proposed_day_context`, and the comment there explaining why a model naming a date directly was the 2026-08-29 incident). The planning card has no such dodge and was simply never given the fact.
+
+**So: give it the fact first, and only add prose if the fact is not enough.** Adding a clause to compensate for a missing input would be teaching the model to guess well rather than letting it know.
+
+- [ ] **Step 1: Baseline the two cases on the flash pin, before any change**
 
 ```
 cp ../../.env .env   # if absent
@@ -210,68 +225,72 @@ LLM_REASONING_EFFORT_INTENT_INTERPRETER=minimal \
 PYTHONPATH=src ../../.venv/bin/python -m pytest \
   tests/integration/test_eval_planning_card_intent.py -m slow -q -s -p no:cacheprovider
 ```
-Record the per-case counts for both `test_a_non_press_is_none` cases. Expected: below the 7/8 bar. **If they pass, stop and report** — the premise is wrong and the prompt should not be changed.
 
-- [ ] **Step 2: Add the discriminator**
+Record every case's count. Expect both `test_a_non_press_is_none` cases below 7/8. **If they pass, stop and report** — the premise is wrong.
 
-Append to `PLANNING_PROMPT_FRAGMENT` in `planning_surface.py`:
+- [ ] **Step 2: `now` becomes an argument, never a clock read**
+
+`planning_view(draft)` gains a keyword-only `now: datetime` with **no default**. It must be passed in, not read from `datetime.now()` inside the view: a view that reads the clock produces an eval that passes on Wednesdays and fails on Thursdays, which is precisely the weekday-dependent failure that sat red in `test_planning_reminder_suppression.py` for this whole line of work.
+
+Add to the context dict, rendered in the draft's own timezone:
 
 ```python
-A reply that presses none of the controls is `none`, and this is the common
-case: the card offers one event at one time, so only a reply about *that*
-event is a press. Asking why the time is what it is, saying "later" or "not
-now" without naming one, talking about the day the session is for rather than
-the session itself, or asking for planning in general -- none of these accept
-the proposal, and "plan tomorrow" said to a card that already proposes a
-planning session is a request, not agreement with the time shown. Answer
-`none` and let an agent reply. Only an explicit acceptance, or a clock time,
-is a press.
+"now": {
+    "date": local_now.date().isoformat(),
+    "weekday": local_now.strftime("%A"),
+    "time": local_now.strftime("%H:%M"),
+},
 ```
 
-Write it as one appended clause so it can be stripped for the break-it check; keep the existing text unchanged.
+Update `PlanningCoordinator._interpret_reply` (the one production caller) to pass `now=datetime.now(timezone.utc)`. Update existing unit tests in `tests/unit/test_planning_surface.py` that call `planning_view` to pass a fixed `now`, and add one asserting the rendered `now` block is in the draft's timezone and matches the datetime given — not the wall clock.
 
-- [ ] **Step 3: Resample on the flash pin**
+- [ ] **Step 3: Resample on the flash pin, with the fact and no new prose**
 
-Re-run Step 1's command. Both `test_a_non_press_is_none` cases must reach **≥ 7/8**, and every other case in the file must hold its previous count. Record every case's count, before and after.
+Re-run Step 1's command. Record every case. **This is the measurement the task exists for:** if both `test_a_non_press_is_none` cases now reach ≥ 7/8, the fix is the fact and the task is done — go to Step 5. Note in the report what the counts were before and after.
 
-If a case regresses — particularly `test_consent_is_the_add_press`, which the new clause is most likely to over-correct — the clause is too broad. Narrow it and resample; do not accept a trade.
+- [ ] **Step 4: Only if Step 3 falls short — the smallest clause that closes the gap**
 
-- [ ] **Step 4: Prove the clause is load-bearing**
+If a case is still below 7/8 *with* the date available, then and only then add prose, and make it about the relation the model now has the inputs to check, not a list of phrasings:
 
-Add to the eval file, mirroring the break-it pattern already in `test_eval_timebox_question.py` on the peer branch:
+```python
+The card proposes one event on one day. A reply naming a different day from
+the proposal's -- compare it against `now` -- is a request, not agreement with
+what is shown; answer `none`. Only an explicit acceptance, or a clock time, is
+a press.
+```
+
+Split the fragment as the timebox one was — `_PLANNING_PROMPT_FRAGMENT_BASE` plus the clause — and add the break-it case below. Resample; every other case must hold its Step 3 count. If `test_consent_is_the_add_press` regresses, the clause is too broad: narrow and resample, never trade one case for another.
 
 ```python
 @pytest.mark.parametrize("text", ["plan tomorrow for me", "later"])
-async def test_break_it_without_the_none_clause_a_non_press_becomes_a_press(text, monkeypatch):
-    """Strip the clause and the model presses a control it was never offered
-    a reason to press. A discriminator that passes without its discriminating
-    sentence is not one."""
+async def test_break_it_without_the_day_clause_a_non_press_becomes_a_press(text, monkeypatch):
+    """A discriminator that passes without its discriminating sentence is not one."""
     import fateforger.slack_bot.planning_surface as ps
     monkeypatch.setattr(ps, "PLANNING_PROMPT_FRAGMENT", ps._PLANNING_PROMPT_FRAGMENT_BASE)
     results = await _presses(text)
     assert _count(results, kind=None) < THRESHOLD, _report(results)
 ```
 
-This requires splitting the fragment as the timebox one was: `_PLANNING_PROMPT_FRAGMENT_BASE` (the existing text) and `PLANNING_PROMPT_FRAGMENT = _PLANNING_PROMPT_FRAGMENT_BASE + _NONE_CLAUSE`. Confirm `_presses` reads `PLANNING_PROMPT_FRAGMENT` as a module global at call time so the monkeypatch lands; if it imports the name directly, patch where it is used.
-
-Run it. It must **fail** the threshold (i.e. pass the test) with the clause stripped.
+Confirm `_presses` reads `PLANNING_PROMPT_FRAGMENT` as a module global at call time so the monkeypatch lands.
 
 - [ ] **Step 5: Confirm the pro pin did not regress**
 
-The prompt is shared. Re-run the file on the pro pin (omit the two env overrides so the row's default applies) and confirm every case holds. Record the counts.
+Both the context and any clause are shared. Re-run the file with the row's defaults (omit the two env overrides) and confirm every case holds its pre-change count.
 
 - [ ] **Step 6: Package suite, then commit**
 
-```bash
-git add src/fateforger/slack_bot/planning_surface.py tests/integration/test_eval_planning_card_intent.py
-git commit -m "feat(slack): the planning card's prompt says what 'not a press' is, so the cheap pin can tell (#406)
+Message depends on which step fixed it. If Step 3 alone:
 
-The fragment said what acceptance is and what a clock time is, and never what
-none is -- so 'plan tomorrow for me' under a planning-session card read as
-agreement and the flash pin pressed add. Fails all three flash configurations
-at 5/8 or worse, passes all three pro ones: a category named with nothing to
-key off. One appended clause, resampled at n=8, with a break-it case proving
-the clause and not luck is doing the work.
+```bash
+git add src/fateforger/slack_bot/planning_surface.py src/fateforger/slack_bot/planning.py tests/unit/test_planning_surface.py
+git commit -m "feat(slack): the planning card tells the interpreter what day it is (#406)
+
+'plan tomorrow for me' under a card proposing Thu 3 Sep was unanswerable: the
+payload carried the proposal's day and no current date, so nothing in the
+request said whether Thursday was tomorrow. The pro pin defaulted to caution
+and the flash pin to agreement; neither was reasoning. now is passed in, never
+read from the clock inside the view, so the eval cannot start depending on the
+weekday it runs on.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
