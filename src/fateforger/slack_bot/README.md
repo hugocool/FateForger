@@ -193,11 +193,46 @@ Use this reusable pattern for Slack proposal cards/modals:
 
 Canonical baseline implementation:
 - Planning card flow in `planning.py`:
-  - typed NL interpretation: `SurfaceIntentInterpreter` reads the reply against `planning_surface.planning_view(draft)`, producing `InterpretedPlanningTurn` -> `bind()` -> `PlanningPress | None`; `maybe_handle_thread_reply` returns `ThreadReply(outcome=NOT_A_SURFACE | HANDLED | NO_PRESS, context)`
+  - typed NL interpretation: `SurfaceIntentInterpreter` reads the reply against `planning_surface.planning_view(draft, now=now)`, producing `InterpretedPlanningTurn` -> `bind()` -> `PlanningPress | None`; `maybe_handle_thread_reply` returns `ThreadReply(outcome=NOT_A_SURFACE | HANDLED | NO_PRESS, context)`
   - shared submit path (`start_add_to_calendar` -> `_add_to_calendar_async`)
+
+`now` is keyword-only and has no default; `planning_view` raises `ValueError` on a naive
+datetime rather than guess a timezone. It is passed in and never read from the clock inside the
+view: a view that called `datetime.now()` itself would give an eval that passes on Wednesdays
+and fails on Thursdays, since the same reply reads differently depending on what day it is
+compared against.
+
+The payload the interpreter sees carries `now` (`date`, `weekday`, `time`, rendered in the
+draft's own timezone) alongside the existing `proposal` block. Without it, "plan tomorrow for
+me" against a card proposing `Thu 3 Sep` was unanswerable — nothing in the request said whether
+Thursday was tomorrow. Once `now` was added, `later` went from 6/8 to 8/8 correct on the date
+alone; `plan tomorrow for me` went from 6/8 to *1/8* — the fact resolved the ambiguity into
+agreement rather than out of it, since a reply to "plan tomorrow for me" reads as consent to the
+very session a Thursday card is already proposing. A day-naming clause added on top of the fact
+(`_DAY_CLAUSE` in `planning_surface.py`) then reached 8/8. This is the shape to reach for
+whenever a surface's replies are time-relative ("later", "tonight", "saturday"): supply the fact
+first and measure, then add prose only against a gap the fact alone doesn't close.
 
 Reference spec:
 - `docs/architecture/proposal_object_contract.md`
+
+### Narrowing a surface's schema to what its state can express
+
+`narrow_schema(base, options, *, allowed_decisions=None)` in `surface_intents.py` rebuilds a
+turn schema down to `decision` plus only the fields the state's allowed decisions can populate,
+intersected with what `base` actually declares. It also narrows the `decision` Literal itself to
+that same allowed set. `allowed_decisions=None` narrows nothing, so a caller that hasn't opted
+in keeps the full schema. `_FIELDS_BY_DECISION` is the map to update when a decision gains a
+field — a field no allowed decision claims is a null the model must still emit on every call,
+because strict structured output requires every property to be present: measured over 1,624
+bench draws, 42% of answers were a decision and six nulls. Narrowing takes the timeboxing stage
+card's states from 7 declared fields down to between 2 and 4 each; the `planning_day` state's
+JSON Schema alone drops from 3,037 to 641 characters, because dropping the unclaimed `facts`
+field takes its discriminated-union `$defs` tree with it.
+
+The rebuild refuses rather than silently drops behaviour: if `base` carries a `@model_validator`
+or other decorator the rebuild can't carry across (it isn't built with `__base__`, so nothing
+inherits), `narrow_schema` raises `TypeError` instead of handing back a schema missing the rule.
 
 ## How to Run
 
