@@ -234,6 +234,13 @@ The rebuild refuses rather than silently drops behaviour: if `base` carries a `@
 or other decorator the rebuild can't carry across (it isn't built with `__base__`, so nothing
 inherits), `narrow_schema` raises `TypeError` instead of handing back a schema missing the rule.
 
+A narrowed schema still accepts the fields it dropped when they arrive as padding: `null` or
+`[]`. The timeboxing prompt names every field, and a provider that does not enforce the schema
+strictly sends `{"decision":"advance","facts":[],"day_type":null}`. Refusing that shape would
+fail the user's turn for nothing. A dropped field with any other value, or a key the base never
+declared, is still refused as `extra_forbidden`. A non-empty value there means the model tried
+to say something the state cannot hold, and that failure has to stay visible.
+
 ## How to Run
 
 ```bash

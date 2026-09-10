@@ -617,7 +617,7 @@ async def test_a_typed_vacation_locks_the_day_as_a_user_override() -> None:
     """
 
     client = _SchemaOutputClient(
-        {"decision": "confirm_planning_day", "day_type": "vacation"}
+        {"decision": "confirm_planning_day", "day_type": "vacation", "facts": []}
     )
     interpreter = TimeboxingIntentInterpreter(client)
 
@@ -645,7 +645,7 @@ async def test_saying_nothing_about_the_day_keeps_the_weekday_the_host_derived()
     anything.
     """
 
-    client = _SchemaOutputClient({"decision": "confirm_planning_day"})
+    client = _SchemaOutputClient({"decision": "confirm_planning_day", "facts": []})
     interpreter = TimeboxingIntentInterpreter(client)
 
     intent = await interpreter.interpret("yes, that day", _date_stage_snapshot())
@@ -673,7 +673,7 @@ async def test_the_date_stage_offers_confirmation_and_never_the_date() -> None:
     and it drifted because a model named a date -- not because it saw one.
     """
 
-    client = _SchemaOutputClient({"decision": "confirm_planning_day"})
+    client = _SchemaOutputClient({"decision": "confirm_planning_day", "facts": []})
     interpreter = TimeboxingIntentInterpreter(client)
 
     await interpreter.interpret("go on then", _date_stage_snapshot())

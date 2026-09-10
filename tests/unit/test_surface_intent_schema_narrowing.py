@@ -7,6 +7,7 @@ answers in the 2026-09-06 bench were a decision and six nulls.
 
 from __future__ import annotations
 
+import json
 from typing import Literal, get_args
 
 import pytest
@@ -228,3 +229,103 @@ def test_a_state_with_options_offers_choose_option_and_nothing_else() -> None:
         CHOOSE_OPTION,
     )
     assert set(narrowed.model_fields) == {"decision", "facts", "option_id"}
+
+
+# -- A lenient provider pads the reply with fields the narrowing dropped -------
+#
+# The timeboxing prompt still names every field, and a host that does not
+# enforce the schema answers the shape it was taught: the dropped fields,
+# emptied. Refusing that fails the user's turn over nothing. A dropped field
+# carrying anything real is still refused -- the model tried to say something
+# this state cannot hold.
+
+
+@pytest.mark.parametrize(
+    "allowed, payload",
+    [
+        (
+            ("confirm_planning_day", "cancel"),
+            '{"decision":"confirm_planning_day","day_type":"vacation","facts":[],'
+            '"revision_instruction":null,"constraint_uid":null,"assumption_id":null}',
+        ),
+        (
+            ("advance", "cancel"),
+            '{"decision":"advance","facts":[],"day_type":null}',
+        ),
+        (
+            ("provide_facts", "cancel"),
+            '{"decision":"provide_facts",'
+            '"facts":[{"kind":"requested_activity","value":"gym"}],'
+            '"day_type":null,"day_offset":null}',
+        ),
+    ],
+    ids=["date-stage", "classify-only", "facts-retained"],
+)
+def test_a_padded_old_shape_reply_validates(allowed, payload) -> None:
+    narrowed = narrow_schema(InterpretedTimeboxTurn, (), allowed_decisions=allowed)
+    read = narrowed.model_validate_json(payload)
+    assert set(read.model_fields_set) <= set(narrowed.model_fields)
+
+
+def test_the_padding_leaves_retained_fields_as_the_model_wrote_them() -> None:
+    narrowed = narrow_schema(
+        InterpretedTimeboxTurn, (), allowed_decisions=("provide_facts", "cancel")
+    )
+    read = narrowed.model_validate_json(
+        '{"decision":"provide_facts","facts":[{"kind":"requested_activity","value":"gym"}],'
+        '"revision_instruction":null}'
+    )
+    assert len(read.facts) == 1
+
+
+def test_padding_tolerance_travels_with_options() -> None:
+    narrowed = narrow_schema(
+        InterpretedTimeboxTurn,
+        (BlockerOption(option_id="opt_a", label="A", effect="does a"),),
+        allowed_decisions=("advance", CHOOSE_OPTION),
+    )
+    read = narrowed.model_validate_json(
+        '{"decision":"choose_option","option_id":"opt_a","facts":[],"day_type":null}'
+    )
+    assert read.option_id == "opt_a"
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("revision_instruction", "move it later"),
+        ("facts", [{"kind": "requested_activity", "value": "gym"}]),
+        # Falsy is not empty: a zero offset is a real answer.
+        ("day_offset", 0),
+        ("assumption_id", ""),
+    ],
+)
+def test_a_dropped_field_carrying_a_value_is_still_refused(key, value) -> None:
+    narrowed = narrow_schema(InterpretedTimeboxTurn, (), allowed_decisions=("advance", "cancel"))
+    with pytest.raises(ValidationError) as refused:
+        narrowed.model_validate_json(json.dumps({"decision": "advance", key: value}))
+    assert [(e["type"], e["loc"]) for e in refused.value.errors()] == [
+        ("extra_forbidden", (key,))
+    ]
+
+
+@pytest.mark.parametrize("value", [None, []])
+def test_a_key_the_base_never_declared_is_still_refused(value) -> None:
+    narrowed = narrow_schema(InterpretedTimeboxTurn, (), allowed_decisions=("advance", "cancel"))
+    with pytest.raises(ValidationError) as refused:
+        narrowed.model_validate_json(json.dumps({"decision": "advance", "mood": value}))
+    assert [(e["type"], e["loc"]) for e in refused.value.errors()] == [
+        ("extra_forbidden", ("mood",))
+    ]
+
+
+def test_the_tolerance_never_reaches_the_schema_the_model_is_sent() -> None:
+    """The narrowing exists to shrink what the model is asked for; accepting
+    padding must not put the dropped fields back into it."""
+
+    narrowed = narrow_schema(
+        InterpretedTimeboxTurn, (), allowed_decisions=("confirm_planning_day", "cancel")
+    )
+    schema = narrowed.model_json_schema()
+    assert set(schema["properties"]) == {"decision", "day_type", "day_offset"}
+    assert schema["additionalProperties"] is False

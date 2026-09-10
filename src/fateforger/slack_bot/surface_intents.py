@@ -25,6 +25,7 @@ from pydantic import (
     Field,
     ValidationError,
     create_model,
+    model_validator,
 )
 
 from fateforger.agents.timeboxing.session_contracts import BlockerOption
@@ -142,6 +143,40 @@ def _refuse_to_drop_behaviour(base: type[T]) -> None:
         )
 
 
+def _is_padding(value: object) -> bool:
+    """The two shapes a lenient provider fills a dropped field with."""
+
+    return value is None or (isinstance(value, list) and len(value) == 0)
+
+
+def _tolerate_padding(dropped: frozenset[str]) -> object:
+    """A before-validator that removes dropped fields sent empty, and nothing else.
+
+    The timeboxing prompt still names every field, and a provider that does not
+    enforce the schema strictly answers the shape it was taught:
+    ``{"decision":"advance","facts":[],"day_type":null}``. Refusing that fails
+    the user's turn over nothing. So a key ``base`` declared and the narrowing
+    dropped is removed when it carries ``None`` or ``[]``. Any other value stays
+    and ``extra="forbid"`` refuses it: the model tried to say something this
+    state cannot hold, and that must stay loud. A key ``base`` never declared is
+    never in ``dropped``, so it is refused whatever it carries.
+
+    The keys compared are field names this system declared, not user content --
+    outside the pattern-matching ban.
+    """
+
+    def drop_empty_padding(cls: type[BaseModel], data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        return {
+            key: value
+            for key, value in data.items()
+            if not (any(key == name for name in dropped) and _is_padding(value))
+        }
+
+    return model_validator(mode="before")(drop_empty_padding)
+
+
 def _narrow_fields(base: type[T], allowed_decisions: tuple[str, ...]) -> type[T]:
     """Narrow to the fields the allowed decisions can fill, and to those decisions.
 
@@ -155,6 +190,11 @@ def _narrow_fields(base: type[T], allowed_decisions: tuple[str, ...]) -> type[T]
     offering a decision the state disallows is one the model can only waste a
     turn on, and at the date stage it advertised ``revise`` while carrying no
     ``revision_instruction`` to express it.
+
+    The rebuilt model accepts the fields it dropped only as empty padding (see
+    ``_tolerate_padding``). That validator lives on the rebuilt model, never on
+    ``base``, so the decorator guard below never sees it -- and narrowing an
+    already-narrowed schema would be refused by that guard, which nothing does.
     """
 
     retained = {"decision"}
@@ -181,9 +221,11 @@ def _narrow_fields(base: type[T], allowed_decisions: tuple[str, ...]) -> type[T]
     }
     if decisions_narrow:
         fields["decision"] = (Literal[tuple(allowed_decisions)], ...)
+    dropped = frozenset(base.model_fields) - retained
     return create_model(  # type: ignore[call-overload]
         f"{base.__name__}Narrowed",
         __config__=base.model_config,
+        __validators__={"drop_empty_padding": _tolerate_padding(dropped)},
         **fields,
     )
 

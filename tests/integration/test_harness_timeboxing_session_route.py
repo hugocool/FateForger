@@ -1659,7 +1659,7 @@ async def test_a_typed_vacation_gets_past_the_date_card_without_a_press(
     planner = RecordedPlanner()
     runtime = Runtime(repository=repository, planner=planner)
     model = ScriptedModel(
-        {"decision": "confirm_planning_day", "day_type": "vacation"}
+        {"decision": "confirm_planning_day", "day_type": "vacation", "facts": []}
     )
     runtime.timeboxing_intent_interpreter = TimeboxingIntentInterpreter(model)
     client = Client()
