@@ -163,8 +163,26 @@ async def test_try_again_on_a_failed_card_is_retry() -> None:
     assert _count(results, kind="retry") >= THRESHOLD, _report(results)
 
 
+def _expected_unbroken_here() -> bool:
+    """Whether this run is a plain one on a pin where the clause is not load-bearing.
+
+    Resolved at test time, never at import: a module-level production import
+    would load settings before the key-less skip could decide anything. Both
+    sides of the comparison are model ids this project pinned, not user text.
+    """
+
+    if os.environ.get("INTERPRETER_TIER_CONFIG"):
+        # The bench reads the raw outcome and buckets a failure as `unbroken`
+        # itself; an xfail here would move the case out of that column.
+        return False
+    from fateforger.core.config import settings
+    from fateforger.llm.factory import INTENT_INTERPRETER, _model_for_agent
+
+    return _model_for_agent(INTENT_INTERPRETER) != settings.openrouter_default_model_flash
+
+
 @pytest.mark.asyncio
-async def test_break_it_without_the_day_clause_a_non_press_becomes_a_press(monkeypatch) -> None:
+async def test_break_it_without_the_day_clause_a_non_press_becomes_a_press(monkeypatch, request) -> None:
     """A discriminator that passes without its discriminating sentence is not one.
 
     Only "plan tomorrow for me" is asserted here. "later" needed no clause:
@@ -180,7 +198,20 @@ async def test_break_it_without_the_day_clause_a_non_press_becomes_a_press(monke
     matches this function's `test_break_it_` name and buckets the outcome as
     `unbroken` in its own column. Skipping instead would hide the case from
     the very table the pin decision reads, on the pin that table defaults to.
+
+    So off the flash pin it is an expected failure, except under the bench:
+    a plain `pytest -m slow` on the default pin reports xfail instead of red,
+    and the bench, which sets `INTERPRETER_TIER_CONFIG`, still sees the raw
+    failure. Not strict -- pro's 7/8 is a rate, and the eighth draw can land.
     """
+
+    if _expected_unbroken_here():
+        request.applymarker(
+            pytest.mark.xfail(
+                reason="off the flash pin the stripped prompt still answers none (pro: 7/8)",
+                strict=False,
+            )
+        )
 
     import fateforger.slack_bot.planning_surface as ps
 
