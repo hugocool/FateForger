@@ -65,6 +65,12 @@ assert _NOW.astimezone(_TZ).date() == _START.astimezone(_TZ).date(), (
     f"start={_START.astimezone(_TZ)}"
 )
 
+# "friday at 14:00" is asserted as another day. Move the draft onto a Friday
+# and it names the proposal's own day, where a time is a press -- the case
+# would invert with nothing turning red. Weekday numbers are the calendar's,
+# not the user's words.
+assert _START.astimezone(_TZ).weekday() != 4, "the draft moved onto a Friday"
+
 
 def _draft(status_name: str = "DRAFT"):
     from fateforger.haunt.event_draft_store import DraftStatus, EventDraftPayload
@@ -155,6 +161,29 @@ async def test_a_time_without_consent_only_updates() -> None:
 async def test_a_non_press_is_none(text: str) -> None:
     results = await _presses(text)
     assert _count(results, kind=None) >= THRESHOLD, _report(results)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["tomorrow at 9", "friday at 14:00"])
+async def test_another_day_with_a_time_is_none(text: str) -> None:
+    """A time does not make a reply about a different day a press.
+
+    `planning.py` applies `selected_time` to the draft's own date, so reading
+    "tomorrow at 9" as a time press writes 09:00 on the day the user just
+    turned down, possibly in the past. Friday is the day after this draft.
+    """
+
+    results = await _presses(text)
+    assert _count(results, kind=None) >= THRESHOLD, _report(results)
+
+
+@pytest.mark.asyncio
+async def test_the_proposals_own_day_with_a_time_updates_and_adds() -> None:
+    """The guard against over-correcting: naming the card's own day with a
+    time is still the time press."""
+
+    results = await _presses("today at 14:00")
+    assert _count(results, kind="update_time_and_add", time="14:00") >= THRESHOLD, _report(results)
 
 
 @pytest.mark.asyncio

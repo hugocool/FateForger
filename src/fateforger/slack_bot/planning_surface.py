@@ -75,10 +75,21 @@ explicit wish not to add yet, or a question, makes it update_time instead.
 #: not enough for "plan tomorrow for me", which a card that exists to plan
 #: tomorrow reads as agreement unless it is told the day is what is being
 #: named. Measured 8 draws on the flash pin: 1/8 with the fact alone.
+#:
+#: The sentences about a clock time settle a day *and* a time together.
+#: `planning.py` applies `selected_time` to the draft's own date, so reading
+#: "tomorrow at 9" as a time press writes the event on the day the user turned
+#: down. Measured 2026-09-10 on the flash pin, two samples of 8 each: without
+#: those sentences "tomorrow at 9" answered `none` 13/16 and pressed at 09:00
+#: 3/16; with them, 16/16, while "today at 14:00" and "13:45" still pressed
+#: 16/16. On the pro pin every draw that answered was right under both texts;
+#: its misses were the 1024-token cap truncating `high` reasoning (#325).
 _DAY_CLAUSE = """The card proposes one event on one day. A reply naming a different day from
 the proposal's -- compare it against `now` -- is a request, not agreement with
-what is shown; answer `none`. Only an explicit acceptance, or a clock time, is
-a press.
+what is shown; answer `none`. That holds even when the reply also names a clock
+time: a time on another day is not a time for this card, so it is still `none`.
+A clock time with no day, or with the proposal's own day, is a time press.
+Only an explicit acceptance, or such a clock time, is a press.
 """
 
 PLANNING_PROMPT_FRAGMENT = _PLANNING_PROMPT_FRAGMENT_BASE + _DAY_CLAUSE
