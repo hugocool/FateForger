@@ -494,27 +494,34 @@ def _write_event_args(event: CalendarEvent, *, tz: str) -> dict[str, Any]:
     not a nested ``{dateTime, timeZone}`` object; that nested shape shows
     up only in this repo's throwaway dev seed scripts, not the tool's
     actual schema. ``extendedProperties.private`` carries identity plus
-    ``block_type``/``timing_mode``/``anchor_source``/``link``/``desc`` —
-    see the module docstring — and is included only when at least one of
-    those eight is set, since a foreign event is never written here at all
-    (the service never calls create/update for one).
+    ``block_type``/``timing_mode``/``anchor_source``/``link``/``desc`` — see
+    the module docstring — and is sent **always, with all eight keys**, even
+    when every one of them is empty.
+
+    That last part is the correction, not a detail. This said the map was
+    "included only when at least one of those eight is set", and a guard here
+    implemented it. Both stopped being true when ``_private_properties`` began
+    writing ``None`` as an empty string rather than dropping the key: it now
+    returns a fixed eight-entry map that is never falsy, so the guard could
+    not fail and the sentence described a behaviour nothing performed. An
+    event whose identity was cleared is precisely the one that must say so on
+    the wire — the server *merges* this map, so a key left out keeps its last
+    value — and ``test_an_event_with_no_identity_sends_every_key_empty`` is
+    what holds that.
 
     The description sent is not ``event.description`` verbatim: a linked
     event's url is appended to it (``_description_for``), and the authored
     text goes into ``tmbx.desc`` so the composition can be reversed on the
     way back (``_private_properties``).
     """
-    private = _private_properties(event)
-    args: dict[str, Any] = {
+    return {
         "summary": event.summary,
         "description": _description_for(event),
         "start": event.start.isoformat(timespec="seconds"),
         "end": event.end.isoformat(timespec="seconds"),
         "timeZone": tz,
+        "extendedProperties": {"private": _private_properties(event)},
     }
-    if private:
-        args["extendedProperties"] = {"private": private}
-    return args
 
 
 def _normalize_events(payload: Any) -> list[dict[str, Any]]:
