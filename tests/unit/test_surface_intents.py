@@ -4,6 +4,7 @@ import ast
 import inspect
 import json
 from types import SimpleNamespace
+from typing import get_args
 from typing import Literal
 
 import pytest
@@ -84,10 +85,26 @@ async def test_interpret_hands_the_model_the_options_and_returns_the_schema() ->
 
 @pytest.mark.asyncio
 async def test_a_decision_outside_the_allowed_set_raises() -> None:
+    """Refused by the narrowed schema now, not by the check after it.
+
+    The `decision` Literal is narrowed to the state's own decisions, so a
+    decision the surface disallows is one the model cannot name -- a
+    literal_error rather than a reading the interpreter then throws away. The
+    runtime `allowed` check in `interpret` is therefore unreachable through
+    `interpret` today: `model_validate_json` is local validation no host can
+    bypass, so the schema always refuses first. It is kept as defence in
+    depth, against the Literal and `allowed` being derived separately in
+    future.
+    """
+
     client = _SchemaOutputClient({"decision": "go"})
     interpreter = SurfaceIntentInterpreter(client)
 
-    with pytest.raises(SurfaceIntentError, match="not allowed"):
+    # `ValidationError`, not bare `ValueError`: the point of the narrowing is
+    # *which* mechanism refuses. A ValueError would also be satisfied by the
+    # interpreter's after-the-fact allowed check, which is what this test is
+    # asserting the schema got in front of.
+    with pytest.raises(ValidationError):
         await interpreter.interpret(
             view=_view(allowed_decisions=("none",)),
             user_text="go",
@@ -95,6 +112,9 @@ async def test_a_decision_outside_the_allowed_set_raises() -> None:
             prompt_fragment="",
             attribution=("test_intent", "test_intent", "k"),
         )
+
+    offered = get_args(client.calls[0][1].model_fields["decision"].annotation)
+    assert offered == ("none",)
 
 
 @pytest.mark.asyncio

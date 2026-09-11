@@ -58,7 +58,7 @@ from fateforger.haunt.reconcile import (
 from fateforger.haunt.required_block_rule import REQUIRED_BLOCK_KIND
 from fateforger.haunt.session_start import SESSION_EXPIRE_KIND, SESSION_START_KIND
 from fateforger.haunt.timeboxing_activity import timeboxing_activity
-from fateforger.llm import build_autogen_chat_client
+from fateforger.llm import build_intent_interpreter_client
 from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.planning_surface import (
     PLANNING_PROMPT_FRAGMENT,
@@ -170,7 +170,7 @@ class PlanningCoordinator:
         if self._intent_interpreter is None:
             # No temperature pin: CLAUDE.md retired it on measurement.
             self._intent_interpreter = SurfaceIntentInterpreter(
-                build_autogen_chat_client("planner_agent")
+                build_intent_interpreter_client()
             )
         return self._intent_interpreter
 
@@ -186,7 +186,9 @@ class PlanningCoordinator:
 
         try:
             interpreted = await self._ensure_intent_interpreter().interpret(
-                view=planning_view(draft),
+                # The card proposes one day; "tomorrow" is only readable
+                # against today's date, so the interpreter is told it.
+                view=planning_view(draft, now=datetime.now(UTC)),
                 user_text=text,
                 schema=schema_for(draft),
                 prompt_fragment=PLANNING_PROMPT_FRAGMENT,

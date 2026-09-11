@@ -8,7 +8,7 @@ no model in here -- the coordinator owns those.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -58,7 +58,7 @@ def schema_for(draft: EventDraftPayload) -> type[BaseModel]:
     return InterpretedPlanningTurn
 
 
-PLANNING_PROMPT_FRAGMENT = """The proposal is a calendar event with a start time shown to the user.
+_PLANNING_PROMPT_FRAGMENT_BASE = """The proposal is a calendar event with a start time shown to the user.
 Accepting, confirming, or agreeing with the proposal as shown is picking its
 primary option.
 If the user names a clock time (17:00, 5pm, half past one), give it as
@@ -69,6 +69,30 @@ alone ("13:45") or alongside a correction to the shown time ("no, let's do
 13:45") -- both replace the proposal and accept it at once. Only an
 explicit wish not to add yet, or a question, makes it update_time instead.
 """
+
+#: Split out because it is the discriminator, and a break-it test runs the
+#: fragment without it. Giving the model `now` was enough for "later"; it was
+#: not enough for "plan tomorrow for me", which a card that exists to plan
+#: tomorrow reads as agreement unless it is told the day is what is being
+#: named. Measured 8 draws on the flash pin: 1/8 with the fact alone.
+#:
+#: The sentences about a clock time settle a day *and* a time together.
+#: `planning.py` applies `selected_time` to the draft's own date, so reading
+#: "tomorrow at 9" as a time press writes the event on the day the user turned
+#: down. Measured 2026-09-10 on the flash pin, two samples of 8 each: without
+#: those sentences "tomorrow at 9" answered `none` 13/16 and pressed at 09:00
+#: 3/16; with them, 16/16, while "today at 14:00" and "13:45" still pressed
+#: 16/16. On the pro pin every draw that answered was right under both texts;
+#: its misses were the 1024-token cap truncating `high` reasoning (#325).
+_DAY_CLAUSE = """The card proposes one event on one day. A reply naming a different day from
+the proposal's -- compare it against `now` -- is a request, not agreement with
+what is shown; answer `none`. That holds even when the reply also names a clock
+time: a time on another day is not a time for this card, so it is still `none`.
+A clock time with no day, or with the proposal's own day, is a time press.
+Only an explicit acceptance, or such a clock time, is a press.
+"""
+
+PLANNING_PROMPT_FRAGMENT = _PLANNING_PROMPT_FRAGMENT_BASE + _DAY_CLAUSE
 
 
 @dataclass(frozen=True)
@@ -94,35 +118,64 @@ def _status_line(draft: EventDraftPayload) -> str:
     return "not added yet"
 
 
-def planning_view(draft: EventDraftPayload) -> SurfaceView:
+def _controls(draft: EventDraftPayload) -> tuple[tuple[BlockerOption, ...], tuple[str, ...]]:
+    """The options and decisions this card's state offers.
+
+    Split out of the view so `describe` can name the controls without being
+    handed a `now` it has no use for.
+    """
+
     day, start, end = _local_window(draft)
     if draft.status is DraftStatus.DRAFT:
-        options = (
+        return (
             BlockerOption(
                 option_id=ADD_OPTION_ID,
                 label="Add to calendar",
                 effect=f"adds the session to the calendar at {day} {start}–{end} as shown",
             ),
-        )
-        decisions: tuple[str, ...] = ("update_time", "update_time_and_add", "none", CHOOSE_OPTION)
-    elif draft.status is DraftStatus.FAILURE:
-        options = (
+        ), ("update_time", "update_time_and_add", "none", CHOOSE_OPTION)
+    if draft.status is DraftStatus.FAILURE:
+        return (
             BlockerOption(
                 option_id=RETRY_OPTION_ID,
                 label="Try again",
                 effect=f"retries adding the session at {day} {start}–{end}",
             ),
-        )
-        decisions = ("update_time", "update_time_and_add", "none", CHOOSE_OPTION)
-    else:
-        options = ()
-        decisions = ("none",)
+        ), ("update_time", "update_time_and_add", "none", CHOOSE_OPTION)
+    return (), ("none",)
+
+
+def planning_view(draft: EventDraftPayload, *, now: datetime) -> SurfaceView:
+    """What the interpreter is shown for this card, as of `now`.
+
+    `now` is passed in and never read from the clock here. The card proposes
+    one day; whether a reply naming "tomorrow" agrees with it or asks for a
+    different day is answerable only against today's date, and a view that
+    fetched that date itself would make the same reply read one way on a
+    Wednesday and another on a Thursday -- in the tests as much as in Slack.
+
+    It must carry a timezone. A naive datetime reads as whatever zone the
+    process is in, which is the same host-dependent answer the missing default
+    exists to prevent -- the signature guards the instant's absence, this
+    guards its shape.
+    """
+
+    if now.tzinfo is None:
+        raise ValueError("planning_view needs a timezone-aware `now`; a naive one reads as the host's local time")
+    day, start, end = _local_window(draft)
+    options, decisions = _controls(draft)
+    local_now = now.astimezone(ZoneInfo(draft.timezone or _DEFAULT_TZ))
     return SurfaceView(
         surface_kind=SURFACE_KIND,
         display_state=draft.status.value.lower(),
         allowed_decisions=decisions,
         offered_options=options,
         context={
+            "now": {
+                "date": local_now.date().isoformat(),
+                "weekday": local_now.strftime("%A"),
+                "time": local_now.strftime("%H:%M"),
+            },
             "proposal": {
                 "title": draft.title,
                 "day": day,
@@ -130,7 +183,7 @@ def planning_view(draft: EventDraftPayload) -> SurfaceView:
                 "end": end,
                 "timezone": draft.timezone or _DEFAULT_TZ,
                 "status": _status_line(draft),
-            }
+            },
         },
     )
 
@@ -139,7 +192,7 @@ def describe(draft: EventDraftPayload) -> str:
     """What an agent is told about the card before it reads the user's words."""
 
     day, start, end = _local_window(draft)
-    controls = [o.label + " (" + o.effect + ")" for o in planning_view(draft).offered_options]
+    controls = [o.label + " (" + o.effect + ")" for o in _controls(draft)[0]]
     if draft.status in (DraftStatus.DRAFT, DraftStatus.FAILURE):
         controls.append("a time picker (changes the start time)")
     lines = [
