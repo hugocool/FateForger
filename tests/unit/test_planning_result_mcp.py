@@ -58,7 +58,21 @@ def _gym_assumption() -> dict[str, Any]:
 
 
 def _skeleton() -> dict[str, Any]:
-    return {"markdown": "## Saturday\n- 17:00 Gym"}
+    return {
+        "day_label": "Saturday",
+        "groups": [
+            {"name": "Evening", "items": [{"text": "17:00 Gym", "source": "user"}]}
+        ],
+    }
+
+
+def _skeleton_with_gym_at(text: str) -> dict[str, Any]:
+    """A valid, differently-shaped skeleton -- for tests that need two."""
+
+    return {
+        "day_label": "Saturday",
+        "groups": [{"name": "Evening", "items": [{"text": text, "source": "user"}]}],
+    }
 
 
 @pytest.fixture()
@@ -292,15 +306,46 @@ def test_a_refusal_never_echoes_what_the_planner_sent(result_file):
     assert "17:00" not in str(refusal.value)
 
 
-def test_a_blocker_beside_an_artifact_is_refused(result_file):
-    """One turn, one user-facing result.
+def test_a_non_blocking_blocker_rides_with_an_artifact(result_file):
+    """The default, `blocking: false`, is a question beside the artifact.
 
-    An artifact asks to be approved and a blocker asks a question. Sent
-    together, the host must guess which one to render, and either choice
-    silently discards the other.
+    Both are the turn's result: the artifact is still shown for approval, and
+    the question rides with it instead of replacing it (#259). This used to
+    be refused outright -- an artifact and *any* blocker were mutually
+    exclusive -- which made the riding-question feature unreachable through
+    this tool even though the kernel already supported it.
     """
 
-    with pytest.raises(PlanningResultRefused):
+    answer = submit_planning_result(
+        target_artifact="skeleton",
+        artifact=_skeleton(),
+        assumptions=[],
+        blockers=[
+            {
+                "requirement_id": "skeleton.requested_activity",
+                "why_needed": "nothing was requested",
+            }
+        ],
+    )
+
+    result = PlanningResult.model_validate_json(result_file.read_text(encoding="utf-8"))
+    assert answer == "Planning result recorded. End this turn."
+    assert result.artifact_updates[0].payload == _skeleton()
+    assert result.blockers[0].requirement_id == "skeleton.requested_activity"
+    assert result.blockers[0].blocking is False
+
+
+def test_a_blocking_blocker_beside_an_artifact_is_refused(result_file):
+    """A *blocking* blocker still replaces the artifact, never rides with it.
+
+    Not stylistic: `_apply_planning_result` checks `pending_question[1].blocking`
+    before it ever looks at `result.artifact_updates`, so this exact submission
+    reaching the kernel would silently discard the artifact rather than fail
+    the turn. Refusing it here, by name, is the only place the planner learns
+    why.
+    """
+
+    with pytest.raises(PlanningResultRefused) as refusal:
         submit_planning_result(
             target_artifact="skeleton",
             artifact=_skeleton(),
@@ -309,10 +354,43 @@ def test_a_blocker_beside_an_artifact_is_refused(result_file):
                 {
                     "requirement_id": "skeleton.requested_activity",
                     "why_needed": "nothing was requested",
+                    "blocking": True,
                 }
             ],
         )
 
+    assert "blocking_blocker_with_artifact" in str(refusal.value)
+    assert result_file.read_text(encoding="utf-8") == ""
+
+
+def test_two_blockers_beside_an_artifact_are_refused_at_the_tool(result_file):
+    """Caught here, not only at apply time.
+
+    The kernel already refuses two blockers as `too_many_questions` (#259),
+    but only once `_apply_planning_result` reaches that branch -- and by then
+    this call would already have returned `_RECORDED`, so the planner would
+    end its turn believing it had succeeded. Duplicated at this boundary for
+    the same reason `required_block_missing` is duplicated above.
+    """
+
+    with pytest.raises(PlanningResultRefused) as refusal:
+        submit_planning_result(
+            target_artifact="skeleton",
+            artifact=_skeleton(),
+            assumptions=[],
+            blockers=[
+                {
+                    "requirement_id": "skeleton.requested_activity",
+                    "why_needed": "nothing was requested",
+                },
+                {
+                    "requirement_id": "skeleton.day_shape",
+                    "why_needed": "the afternoon has two workable shapes",
+                },
+            ],
+        )
+
+    assert "too_many_questions" in str(refusal.value)
     assert result_file.read_text(encoding="utf-8") == ""
 
 
@@ -353,7 +431,7 @@ def test_a_second_differing_submission_is_refused_and_the_first_stands(result_fi
     with pytest.raises(PlanningResultRefused):
         submit_planning_result(
             target_artifact="skeleton",
-            artifact={"markdown": "## Saturday\n- 19:00 Gym"},
+            artifact=_skeleton_with_gym_at("19:00 Gym"),
             assumptions=[_gym_assumption()],
             blockers=[],
         )
@@ -759,7 +837,7 @@ async def test_a_refusal_reaches_the_model_as_a_tool_error(result_file):
             "submit_planning_result",
             {
                 "target_artifact": "skeleton",
-                "artifact": {"markdown": "## Saturday\n- 19:00 Gym"},
+                "artifact": _skeleton_with_gym_at("19:00 Gym"),
                 "assumptions": [],
                 "blockers": [],
             },
@@ -779,13 +857,13 @@ def test_a_retry_reordering_keys_is_the_same_submission(tmp_path, monkeypatch) -
 
     first = submit_planning_result(
         target_artifact="skeleton",
-        artifact={"markdown": "## Saturday", "reasoning": "Saturday"},
+        artifact={**_skeleton(), "reasoning": "Saturday"},
         assumptions=[],
         blockers=[],
     )
     second = submit_planning_result(
         target_artifact="skeleton",
-        artifact={"reasoning": "Saturday", "markdown": "## Saturday"},
+        artifact={"reasoning": "Saturday", **_skeleton()},
         assumptions=[],
         blockers=[],
     )
@@ -941,6 +1019,149 @@ async def test_the_tool_schema_names_the_fields_it_requires() -> None:
 
     for field in ("requirement_id", "why_needed", "value"):
         assert field in rendered, f"the schema never mentions {field!r}"
+
+
+async def test_the_wire_schema_carries_blocking() -> None:
+    """The generated arg model, not the hand-written dict tests, is the gate.
+
+    Every other test in this file calls `submit_planning_result` as a plain
+    Python function with dicts, which bypasses FastMCP's schema coercion
+    entirely -- a green suite there proves nothing about what a real tool
+    call carries. `BlockerInput` declared no `blocking` field until this
+    change, and neither it nor FastMCP's generated arg model sets
+    `extra="forbid"`, so a `blocking: true` a planner actually sent over MCP
+    was silently dropped before `submit_planning_result`'s body ever ran.
+    This reads the schema FastMCP itself built for the tool, the same way
+    `test_the_tool_schema_names_the_fields_it_requires` does above.
+    """
+
+    tools = {tool.name: tool for tool in await planning_result_mcp.mcp.list_tools()}
+    blocker_schema = tools["submit_planning_result"].inputSchema["$defs"]["BlockerInput"]
+
+    assert "blocking" in blocker_schema["properties"]
+    assert blocker_schema["properties"]["blocking"]["type"] == "boolean"
+    assert blocker_schema["properties"]["blocking"]["default"] is False
+
+
+async def test_blocking_survives_a_real_tool_call(result_file):
+    """`blocking` reaches `UserBlockerDraft`, over the wire, not just in Python.
+
+    Calls through `mcp.call_tool`, the same entry point the model actually
+    uses, rather than through the bare function -- so this exercises the
+    exact FastMCP arg-coercion step that used to drop `blocking` silently.
+    """
+
+    await planning_result_mcp.mcp.call_tool(
+        "submit_planning_result",
+        {
+            "target_artifact": "skeleton",
+            "artifact": _skeleton(),
+            "assumptions": [],
+            "blockers": [
+                {
+                    "requirement_id": "skeleton.requested_activity",
+                    "why_needed": "nothing was requested",
+                    "blocking": False,
+                }
+            ],
+        },
+    )
+
+    result = PlanningResult.model_validate_json(result_file.read_text(encoding="utf-8"))
+    assert result.blockers[0].blocking is False
+    assert result.artifact_updates[0].payload == _skeleton()
+
+
+async def test_a_blocking_blocker_is_refused_over_the_real_wire(result_file):
+    """The tool-boundary refusal fires on a real call, not only on a dict.
+
+    Proves `blocking: true` is not dropped en route to `_validated`: if it
+    were, this submission would be indistinguishable from the non-blocking
+    case above and would be wrongly accepted.
+    """
+
+    with pytest.raises(ToolError) as caught:
+        await planning_result_mcp.mcp.call_tool(
+            "submit_planning_result",
+            {
+                "target_artifact": "skeleton",
+                "artifact": _skeleton(),
+                "assumptions": [],
+                "blockers": [
+                    {
+                        "requirement_id": "skeleton.requested_activity",
+                        "why_needed": "nothing was requested",
+                        "blocking": True,
+                    }
+                ],
+            },
+        )
+
+    assert "blocking_blocker_with_artifact" in str(caught.value)
+    assert result_file.read_text(encoding="utf-8") == ""
+
+
+async def test_an_undeclared_blocker_field_is_refused_not_dropped(result_file):
+    """`extra="forbid"` closes the exact hazard that hid `blocking` itself.
+
+    Before `BlockerInput` declared `blocking`, an unknown field a planner
+    sent over MCP was silently coerced away and never reached `_validated`
+    -- the failure mode Gap 2 was. This must be exercised through
+    `mcp.call_tool`, not the bare-dict path every other test in this module
+    uses: a dict passed directly to `submit_planning_result` skips FastMCP's
+    argument model entirely, which is exactly what let the original hazard
+    go uncaught.
+    """
+
+    with pytest.raises(ToolError) as caught:
+        await planning_result_mcp.mcp.call_tool(
+            "submit_planning_result",
+            {
+                "target_artifact": "skeleton",
+                "artifact": None,
+                "assumptions": [],
+                "blockers": [
+                    {
+                        "requirement_id": "skeleton.requested_activity",
+                        "why_needed": "nothing was requested",
+                        "urgent": True,
+                    }
+                ],
+            },
+        )
+
+    assert "extra_forbidden" in str(caught.value) or "urgent" in str(caught.value)
+    assert result_file.read_text(encoding="utf-8") == ""
+
+
+async def test_an_undeclared_assumption_field_is_refused_not_dropped(result_file):
+    """`AssumptionInput` gets the same treatment for the same reason.
+
+    `value` staying `Any` (the docstring's "loose on purpose") is about the
+    field's *type*, not about tolerating a field it does not declare -- an
+    unknown name is refused here exactly like on `BlockerInput`.
+    """
+
+    with pytest.raises(ToolError) as caught:
+        await planning_result_mcp.mcp.call_tool(
+            "submit_planning_result",
+            {
+                "target_artifact": "skeleton",
+                "artifact": _skeleton(),
+                "assumptions": [
+                    {
+                        "requirement_id": "skeleton.ordinary_placement",
+                        "value": {"start": "17:00"},
+                        "why_needed": "the day names gym without a fixed time",
+                        "confidence": "high",
+                    }
+                ],
+                "blockers": [],
+            },
+        )
+
+    assert "extra_forbidden" in str(caught.value) or "confidence" in str(caught.value)
+    assert result_file.read_text(encoding="utf-8") == ""
 
 
 def test_a_refusal_names_the_field_that_was_wrong(tmp_path, monkeypatch) -> None:

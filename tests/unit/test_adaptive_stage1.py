@@ -63,7 +63,12 @@ class _Planner:
             artifact_updates=[
                 ArtifactDraft(
                     kind=ArtifactKind.SKELETON,
-                    payload={"markdown": "## Tuesday"},
+                    payload={
+                        "day_label": "Tuesday",
+                        "groups": [
+                            {"name": "Day", "items": [{"text": "memo", "source": "user"}]}
+                        ],
+                    },
                     dependency_revisions={"planning_day": 1},
                 )
             ]
@@ -501,7 +506,10 @@ def _approved_skeleton_snapshot() -> PlanningSessionSnapshot:
         artifact_id="skeleton-1",
         kind=ArtifactKind.SKELETON,
         revision=1,
-        payload={"markdown": "## Tuesday"},
+        payload={
+            "day_label": "Tuesday",
+            "groups": [{"name": "Day", "items": [{"text": "memo", "source": "user"}]}],
+        },
         dependency_revisions={"planning_day": 1},
     )
     return _snapshot(

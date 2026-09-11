@@ -84,7 +84,12 @@ async def test_work_already_done_is_kept() -> None:
         artifact_updates=[
             ArtifactDraft(
                 kind=ArtifactKind.SKELETON,
-                payload={"markdown": "## Monday\n- 10:00 Deep work"},
+                payload={
+                    "day_label": "Monday",
+                    "groups": [
+                        {"name": "Morning", "items": [{"text": "10:00 Deep work", "source": "user"}]}
+                    ],
+                },
                 dependency_revisions={"planning_day": 1},
             )
         ]

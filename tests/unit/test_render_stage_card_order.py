@@ -1,0 +1,210 @@
+# tests/unit/test_render_stage_card_order.py
+"""The day leads the card: a `header` block for `artifact_day` precedes one
+`section` per `artifact_group`, and Context/Decided fold to the end as small
+grey text -- measured live across nine variants on 2026-09-07: a single long
+section holding the whole day collapses behind Slack's "Show more"."""
+
+from __future__ import annotations
+
+import html
+import json
+
+from fateforger.agents.timeboxing.session_contracts import (
+    BlockerOption,
+    SkeletonGroup,
+    SkeletonItem,
+    SkeletonPayload,
+)
+from fateforger.slack_bot.schedule_render import render_schedule
+from fateforger.slack_bot.stage_cards import (
+    ApproveControl,
+    Asking,
+    CardGroup,
+    ContextItem,
+    DecidedItem,
+    StageCard,
+    _artifact_groups,
+    stage,
+)
+from fateforger.slack_bot.timeboxing_cards import render_stage_card
+
+
+def _rendered(*, asking=None, controls=None, group_name="Morning",
+              lines=("• Pay taxes in the morning hours",)) -> list[dict]:
+    """Render one StageCard directly; no kernel, no mapper."""
+    card = StageCard(
+        stage=stage(3), session_key="C1:1.0", expected_revision=1,
+        artifact_day="Sunday 6 September",
+        artifact_groups=[CardGroup(name=group_name, lines=list(lines))],
+        context=[ContextItem(text="Context sentence.", source="planner")],
+        decided=[DecidedItem(text="hockey at 12:15", kind="fact", ref="f1")],
+        asking=asking,
+        controls=list(controls or []),
+    )
+    return render_stage_card(card).blocks
+
+
+def test_the_day_is_a_header_block_before_every_group():
+    blocks = _rendered()
+    header = next(i for i, b in enumerate(blocks) if b["type"] == "header")
+    first_group = next(i for i, b in enumerate(blocks)
+                       if b["type"] == "section" and "Morning" in b["text"]["text"])
+    assert header < first_group
+
+
+def test_the_artifact_precedes_context_and_decided():
+    blocks = _rendered()
+    idx = lambda needle: next(i for i, b in enumerate(blocks)
+                              if needle in json.dumps(b))
+    assert idx("Morning") < idx("Context") < idx("Decided")
+
+
+def test_context_and_decided_are_context_blocks():
+    """Small grey text, so the card stays under Slack's collapse threshold."""
+    blocks = _rendered()
+    for b in blocks:
+        if "Decided" in json.dumps(b):
+            assert b["type"] == "context"
+
+
+def test_a_riding_question_is_drawn_beside_proceed_not_instead_of_it():
+    """Proceed means 'approve, question unanswered' — the question and its
+    own option buttons must appear *and* leave Proceed live.
+
+    The half this replaced asserted "Proceed" was absent from a card handed
+    no `ApproveControl`, which is true however the question renders: nothing
+    draws that button but that control. It proved the fixture, not the card.
+    """
+    asking = Asking(
+        requirement_id="skeleton.activity_reading",
+        question="Which did you mean?",
+        why_needed="the name as typed is not one I can read",
+        options=[
+            BlockerOption(
+                option_id="read-1",
+                label="Agent analysis",
+                effect="titles the block 'Agent analysis'",
+            )
+        ],
+    )
+    # `artifact_digest` round-trips through `ArtifactActionMeta`, which
+    # pins it to a 64-char hex digest; "d" alone fails that pattern.
+    approve = ApproveControl(artifact_id="a", artifact_revision=1, artifact_digest="d" * 64)
+    blocks = _rendered(asking=asking, controls=[approve])
+    rendered = json.dumps(blocks)
+    assert "Which did you mean?" in rendered
+    assert "Agent analysis" in rendered
+    assert "Proceed" in rendered
+    # And it rides *below* the day rather than replacing it: the group is
+    # still on the card, and it comes first.
+    day = next(i for i, b in enumerate(blocks) if b["type"] == "header")
+    question = next(i for i, b in enumerate(blocks)
+                    if "Which did you mean?" in json.dumps(b))
+    assert day < question
+
+
+def test_reserved_characters_are_escaped_exactly_once_by_the_real_pipeline():
+    """`&`, `<` and `>` are Slack's reserved three; the 4/5 card already
+    neutralises them via html.escape and both card paths must agree.
+
+    `*` and `_` are deliberately NOT handled: Slack mrkdwn has no escape for
+    them, so a rule literally named "Deep *work*" renders half-bold. Accepted
+    (2026-09-07) rather than wrapping the day in code spans.
+
+    `_artifact_groups` (`stage_cards.py`) is the sole escaper for a
+    `CardGroup` -- both `name` and `lines`, one `html.escape` call each,
+    since it is incoherent for one field of the same struct to arrive
+    pre-escaped and the other not. This goes through that real seam rather
+    than constructing a `CardGroup` directly, because a raw, unescaped
+    `CardGroup` is not a shape `render_stage_card` is ever actually handed
+    -- constructing one directly is what let a double-escape (`render_
+    stage_card` escaping `group.name` a second time) hide behind a passing
+    test before (2026-09-08 review)."""
+    payload = SkeletonPayload(
+        day_label="Sunday 6 September",
+        groups=[
+            SkeletonGroup(
+                name="R&D <urgent>",
+                items=[SkeletonItem(text="Ship A & B", source="user")],
+            )
+        ],
+    )
+    groups = _artifact_groups(payload, names={})
+    card = StageCard(
+        stage=stage(3), session_key="C1:1.0", expected_revision=1,
+        artifact_day=payload.day_label,
+        artifact_groups=groups,
+    )
+    text = json.dumps(render_stage_card(card).blocks)
+    assert "R&amp;D &lt;urgent&gt;" in text
+    assert "Ship A &amp; B" in text
+    # Escaped exactly once: neither the raw form nor a double-escape survived.
+    assert "R&D <urgent>" not in text
+    assert "&amp;amp;" not in text
+
+
+def test_a_pre_escaped_group_is_passed_through_byte_identical():
+    """The renderer treats `group.name` exactly as it already treats
+    `group.lines` and `card.body`: verbatim. A name `_artifact_groups`
+    already escaped must not be escaped again on the way out."""
+    escaped_name = html.escape("R&D <urgent>", quote=False)
+    escaped_line = "• " + html.escape("Ship A & B", quote=False)
+    blocks = _rendered(group_name=escaped_name, lines=[escaped_line])
+    group_section = next(
+        b for b in blocks if b["type"] == "section" and escaped_name in b["text"]["text"]
+    )
+    assert group_section["text"]["text"] == f"*{escaped_name}*\n{escaped_line}"
+
+
+def test_a_candidate_body_is_passed_through_byte_identical():
+    """render_schedule already emits mrkdwn; converting it would corrupt it."""
+    body = render_schedule(
+        [{"summary": "Hockey", "start": "12:15", "end": "13:45",
+          "own": "self", "type": "M"}], day="2026-09-06")
+    card = StageCard(stage=stage(4), session_key="C1:1.0",
+                     expected_revision=1, body=body)
+    blocks = render_stage_card(card).blocks
+    assert any(b.get("text", {}).get("text") == body for b in blocks)
+
+
+def test_a_folded_list_too_long_for_slack_says_how_many_it_dropped():
+    """Silent truncation on the card the user approves is disqualifying.
+
+    `_ctx` used to slice the join at `SLACK_MAX_BLOCK_TEXT_CHARS` with no
+    indication, so a long Decided list lost its tail — and its last visible
+    line was cut mid-word. It now drops whole items and counts them.
+    """
+    from fateforger.slack_bot.messages import SLACK_MAX_BLOCK_TEXT_CHARS
+
+    # Each item is long enough that a few dozen overflow the block cap.
+    items = [DecidedItem(text=f"decided item {i} " + "x" * 200, kind="fact",
+                         ref=f"f{i}") for i in range(40)]
+    card = StageCard(
+        stage=stage(3), session_key="C1:1.0", expected_revision=1,
+        artifact_day="Sunday 6 September",
+        artifact_groups=[CardGroup(name="Morning", lines=["• Pay taxes"])],
+        decided=items,
+    )
+    blocks = render_stage_card(card).blocks
+    folded = next(b for b in blocks
+                  if b["type"] == "context" and "Decided" in json.dumps(b))
+    text = folded["elements"][0]["text"]
+
+    assert len(text) <= SLACK_MAX_BLOCK_TEXT_CHARS
+    # It says how many it could not fit, and the number is the real one.
+    dropped = sum(1 for item in items if item.text not in text)
+    assert dropped > 0, "fixture no longer overflows; make the items longer"
+    assert f"_+{dropped} more_" in text
+
+
+def test_a_folded_list_that_fits_says_nothing_about_dropping():
+    """The counter is not a decoration: a list under the cap carries no tail."""
+    card = StageCard(
+        stage=stage(3), session_key="C1:1.0", expected_revision=1,
+        artifact_day="Sunday 6 September",
+        artifact_groups=[CardGroup(name="Morning", lines=["• Pay taxes"])],
+        decided=[DecidedItem(text="hockey at 12:15", kind="fact", ref="f1")],
+    )
+    folded = next(b for b in render_stage_card(card).blocks
+                  if b["type"] == "context" and "Decided" in json.dumps(b))
+    assert "more_" not in folded["elements"][0]["text"]

@@ -92,7 +92,10 @@ def test_candidate_requires_approved_skeleton() -> None:
         artifact_id="skeleton-1",
         kind=ArtifactKind.SKELETON,
         revision=2,
-        payload={"markdown": "- Gym at 17:00"},
+        payload={
+            "day_label": "Day",
+            "groups": [{"name": "Evening", "items": [{"text": "Gym at 17:00", "source": "user"}]}],
+        },
         dependency_revisions={"planning_day": 1},
     )
     snapshot = _locked_snapshot().model_copy(update={"artifacts": [skeleton]})
@@ -114,7 +117,10 @@ def test_candidate_keeps_missing_system_context_and_placement_with_their_owners(
         artifact_id="skeleton-1",
         kind=ArtifactKind.SKELETON,
         revision=2,
-        payload={"markdown": "- Gym at 17:00"},
+        payload={
+            "day_label": "Day",
+            "groups": [{"name": "Evening", "items": [{"text": "Gym at 17:00", "source": "user"}]}],
+        },
         dependency_revisions={"planning_day": 1},
     )
     approval = ArtifactApproval(
@@ -393,7 +399,10 @@ def test_the_matrix_is_parsed_once_per_evaluation(monkeypatch: pytest.MonkeyPatc
 def _candidate_ready_snapshot(*extra: PlanningFact) -> PlanningSessionSnapshot:
     skeleton = PlanningArtifact.create(
         artifact_id="skeleton-1", kind=ArtifactKind.SKELETON, revision=1,
-        payload={"markdown": "- Gym at 17:00"}, dependency_revisions={"planning_day": 1},
+        payload={
+            "day_label": "Day",
+            "groups": [{"name": "Evening", "items": [{"text": "Gym at 17:00", "source": "user"}]}],
+        }, dependency_revisions={"planning_day": 1},
     )
     snapshot = _locked_snapshot(
         _fact(fact_id="cal", kind=FactKind.CALENDAR_SNAPSHOT, value={"fetched": True, "blocks": 0}),

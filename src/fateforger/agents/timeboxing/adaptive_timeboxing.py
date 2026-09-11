@@ -11,7 +11,7 @@ from datetime import UTC, date, datetime, timezone
 from typing import Callable, Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from .elicitation import stage1_gate
 from .readiness import (
@@ -27,6 +27,7 @@ from .session_contracts import (
     ArtifactApproval,
     ArtifactKind,
     ArtifactSnapshot,
+    Asking,
     AwaitingApproval,
     AwaitingUser,
     BlockerOption,
@@ -56,6 +57,7 @@ from .session_contracts import (
     ProvidePlanningFacts,
     RestoreConstraint,
     ReviseArtifact,
+    SkeletonPayload,
     StartSession,
     TimeboxIntent,
     TurnFailed,
@@ -311,6 +313,16 @@ class TimeboxingSessionLedger(Protocol):
 
 class StaleSessionRevision(RuntimeError):
     """The persisted session no longer matches the expected revision."""
+
+
+class UnknownRuleUid(RuntimeError):
+    """A skeleton item cites a rule_uid that memory did not return for this day.
+
+    Internal signal only: raised and caught inside `_apply_planning_result`,
+    beside the same function's other inline refusals, and never crosses that
+    boundary -- the caller sees `TurnFailed(code="unknown_rule_uid")`, not
+    this exception.
+    """
 
 
 class InMemoryPlanningSessionRepository:
@@ -584,11 +596,22 @@ class AdaptiveTimeboxing:
 
         pending = self._pending_approval(snapshot)
         if pending is not None:
+            # The question comes with it. Re-presenting used to answer
+            # `AwaitingApproval(artifact=pending)` with no question, and
+            # `_release_question` -- seeing none -- cleared the held blocker:
+            # the card was redrawn without the question, the card that had it
+            # was receipted with its buttons stripped, and a press on that one
+            # refused as `stale_blocker_choice`. Silently, on any `Advance`
+            # ("Try that again"), `NextControl` or `StartSession`. A question
+            # that can vanish is the thing #259 exists to stop.
             return await self._save(
                 snapshot,
                 base_revision=base_revision,
                 request=request,
-                outcome=AwaitingApproval(artifact=pending),
+                outcome=AwaitingApproval(
+                    artifact=pending,
+                    question=self._still_asking(snapshot, pending),
+                ),
             )
 
         target = self._derive_target(snapshot)
@@ -751,7 +774,7 @@ class AdaptiveTimeboxing:
             )
         else:
             snapshot, outcome = self._apply_planning_result(
-                snapshot, target, readiness, result, request.actor_user_id
+                snapshot, target, readiness, result, request.actor_user_id, resolved
             )
 
         saved_outcome = await self._save(
@@ -1145,6 +1168,50 @@ class AdaptiveTimeboxing:
                 return artifact
         return None
 
+    def _still_asking(
+        self, snapshot: PlanningSessionSnapshot, artifact: PlanningArtifact
+    ) -> Asking | None:
+        """The riding question this artifact is still waiting on, if any.
+
+        Re-attached rather than merely kept: a question the user cannot see is
+        not being asked, so leaving `pending_blocker` standing while drawing a
+        card without it would only trade a vanished question for an invisible
+        one. Answering with it puts it back below the day and makes
+        `_release_question` leave the record alone, so the fresh card's option
+        buttons bind exactly as the original's did.
+
+        The text is re-read from the catalog, which is where `_asking` gets the
+        question in the first place -- so the re-presented question is the same
+        sentence, not a paraphrase. Only `why_needed` differs: the planner's
+        day-specific phrasing is not on the snapshot, and the catalog's reason
+        is the honest stand-in. What is *not* re-derived is `options`: a press
+        binds against the set that was offered, so that comes from the held
+        record, never from the catalog.
+
+        Silence is correct in three cases, and each is a real state rather than
+        a fallback: nothing is held; what is held belongs to a different
+        artifact (so this card is not where it rides); or the requirement has
+        since been satisfied, which is the question being answered.
+        """
+
+        pending = snapshot.pending_blocker
+        if pending is None:
+            return None
+        target = self._requirements.target_of(pending.requirement_id)
+        if target is not artifact.kind:
+            return None
+        gap = self._requirements.evaluate(target, snapshot).by_id(
+            pending.requirement_id
+        )
+        if gap.satisfied:
+            return None
+        return Asking(
+            requirement_id=gap.requirement_id,
+            question=gap.question,
+            why_needed=gap.why_needed,
+            options=list(pending.options),
+        )
+
     def _derive_target(
         self, snapshot: PlanningSessionSnapshot
     ) -> ArtifactKind | None:
@@ -1263,7 +1330,14 @@ class AdaptiveTimeboxing:
         readiness: ReadinessReport,
         result: PlanningResult,
         actor_user_id: str,
+        context: PlanningContext | None = None,
     ) -> tuple[PlanningSessionSnapshot, TurnOutcome]:
+        # Two call sites in tests/unit/test_adaptive_timeboxing.py exercise
+        # only the blocker branches below and never reach the skeleton
+        # provenance check, so they predate this parameter. An empty context
+        # reads as "no known rules" there, which is correct: those turns
+        # never get far enough to ask.
+        context = context if context is not None else PlanningContext()
         gaps = {gap.requirement_id: gap for gap in readiness.gaps}
         user_blockers: list[tuple[ReadinessGap, UserBlockerDraft]] = []
         for blocker in result.blockers:
@@ -1371,19 +1445,37 @@ class AdaptiveTimeboxing:
                 )
             )
 
-        if user_blockers:
-            gap, blocker = user_blockers[0]
-            return self._hold_question(snapshot, gap, blocker.options), AwaitingUser(
-                requirement_id=gap.requirement_id,
-                question=gap.question,
-                why_needed=blocker.why_needed,
-                options=blocker.options,
+        if len(user_blockers) > 1:
+            # At most one question per turn, whether or not either blocks --
+            # a second one waits for the next draft rather than picking a
+            # winner between two things the user did not ask to choose.
+            logger.error(
+                "planner result refused reason=%s count=%s requirement_ids=%s",
+                "too_many_questions",
+                len(user_blockers),
+                sorted(gap.requirement_id for gap, _ in user_blockers),
             )
+            return snapshot, TurnFailed(
+                code="too_many_questions",
+                message="The planner raised more than one question this turn.",
+            )
+
+        pending_question = user_blockers[0] if user_blockers else None
+        if pending_question is not None and pending_question[1].blocking:
+            gap, blocker = pending_question
+            return self._awaiting_user(snapshot, gap, blocker)
 
         matching = [
             update for update in result.artifact_updates if update.kind is target
         ]
         if not matching:
+            if pending_question is not None:
+                # A non-blocking question rides with the artifact it is
+                # about; with no artifact produced this turn there is
+                # nothing to attach it to, so it must block instead of
+                # silently vanishing.
+                gap, blocker = pending_question
+                return self._awaiting_user(snapshot, gap, blocker)
             if result.continuation is not None:
                 # Nothing to approve yet, but nothing went wrong either: the
                 # planner is mid-fix and said so. Keep its assumptions and let
@@ -1432,6 +1524,39 @@ class AdaptiveTimeboxing:
                     ),
                 )
 
+        if target is ArtifactKind.SKELETON:
+            try:
+                skeleton_payload = SkeletonPayload.model_validate(draft.payload)
+            except ValidationError as exc:
+                logger.error(
+                    "planner result refused reason=%s target=%s error=%s",
+                    "invalid_skeleton_payload",
+                    target.value,
+                    exc,
+                )
+                return snapshot, TurnFailed(
+                    code="invalid_planner_result",
+                    message="The planner returned a skeleton that does not match its contract.",
+                )
+            try:
+                self._verify_rule_uids(skeleton_payload, context)
+            except UnknownRuleUid as exc:
+                uid = exc.args[0]
+                known = self._known_rule_uids(context)
+                logger.error(
+                    "planner result refused reason=%s uid=%s known=%s",
+                    "unknown_rule_uid",
+                    uid,
+                    len(known),
+                )
+                return snapshot, TurnFailed(
+                    code="unknown_rule_uid",
+                    message=(
+                        f"the skeleton cites rule {uid!r}, which is not among "
+                        f"the {len(known)} rules active on this day"
+                    ),
+                )
+
         updated = self._invalidate(snapshot, target)
         updated = updated.model_copy(
             update={
@@ -1458,10 +1583,89 @@ class AdaptiveTimeboxing:
             # It produced something *and* wants to keep going. The artifact is
             # kept -- it is real work -- but it is not offered for approval,
             # because the planner has just said it is not finished.
+            if pending_question is not None:
+                # Nothing renders `NeedsAnotherTurn` with a card -- the
+                # question has nowhere to be answered from this turn either
+                # -- but it must not depend on the planner happening to raise
+                # the same blocker again next turn. Held (like the riding
+                # case below) so a press against it still binds if a future
+                # surface reads `pending_blocker`, and attached to the typed
+                # outcome so it cannot be dropped between here and whatever
+                # renders `NeedsAnotherTurn` (#259).
+                gap, blocker = pending_question
+                held = self._hold_question(updated, gap, blocker.options)
+                return held, self._another_turn(
+                    result, question=self._asking(gap, blocker)
+                )
             return updated, self._another_turn(result)
+        if pending_question is not None:
+            gap, blocker = pending_question
+            # Held so a `ChooseBlockerOption` press against the riding
+            # question can bind (`_offered_option` reads `pending_blocker`);
+            # `_release_question` knows to leave it standing for exactly this
+            # outcome shape rather than clearing it the way it would for a
+            # plain approval (#259).
+            held = self._hold_question(updated, gap, blocker.options)
+            return held, AwaitingApproval(
+                artifact=artifact, question=self._asking(gap, blocker)
+            )
         return updated, AwaitingApproval(artifact=artifact)
 
-    def _another_turn(self, result: PlanningResult) -> NeedsAnotherTurn:
+    @staticmethod
+    def _asking(gap: ReadinessGap, blocker: UserBlockerDraft) -> Asking:
+        return Asking(
+            requirement_id=gap.requirement_id,
+            question=gap.question,
+            why_needed=blocker.why_needed,
+            options=blocker.options,
+        )
+
+    def _known_rule_uids(self, context: PlanningContext) -> set[str]:
+        """The uids memory returned for this day -- identifiers this system
+        minted, not user content, so set membership over them is exactly what
+        the no-matching rule carves out as fine.
+
+        `applicable_constraints` is `JsonValue`: a host that has not looked
+        leaves it at the default empty dict, and iterating a dict yields its
+        keys (plain strings), which the `isinstance(row, dict)` guard drops.
+        Either shape lands on "no known uids", never a crash.
+
+        A row counts only if it carries a string `name` as well as a string
+        `uid`, because that is exactly what `stage_cards._rule_names` requires
+        to draw the citation. Admitting a nameless row here would let a
+        skeleton pass verification and then fail to render -- and the render
+        happens *after* the artifact is stored, so the turn would die on a
+        `ValueError` inside `_artifact_groups` with the citation already
+        committed. The two agree by construction instead.
+        """
+
+        return {
+            row["uid"]
+            for row in (context.applicable_constraints or [])
+            if isinstance(row, dict)
+            and isinstance(row.get("uid"), str)
+            and isinstance(row.get("name"), str)
+        }
+
+    def _verify_rule_uids(
+        self, payload: SkeletonPayload, context: PlanningContext
+    ) -> None:
+        """Every cited rule must be one memory returned for this day.
+
+        A uid the model invented would put a rule on the card that does not
+        exist, and the user would have no way to tell (#330: a judge mistyped
+        one by a single character).
+        """
+
+        known = self._known_rule_uids(context)
+        for group in payload.groups:
+            for item in group.items:
+                if item.rule_uid is not None and item.rule_uid not in known:
+                    raise UnknownRuleUid(item.rule_uid)
+
+    def _another_turn(
+        self, result: PlanningResult, *, question: Asking | None = None
+    ) -> NeedsAnotherTurn:
         """Log it and type it.
 
         Logged at warning because a planner that asks every turn is a bug, and
@@ -1473,7 +1677,7 @@ class AdaptiveTimeboxing:
         logger.warning(
             "planner asked for another turn reason=%s", result.continuation.reason
         )
-        return NeedsAnotherTurn(reason=result.continuation.reason)
+        return NeedsAnotherTurn(reason=result.continuation.reason, question=question)
 
     def _continue_later(
         self,
@@ -1623,6 +1827,22 @@ class AdaptiveTimeboxing:
             }
         )
 
+    def _awaiting_user(
+        self,
+        snapshot: PlanningSessionSnapshot,
+        gap: ReadinessGap,
+        blocker: UserBlockerDraft,
+    ) -> tuple[PlanningSessionSnapshot, AwaitingUser]:
+        """The one channel a question has when nothing is on screen for it to
+        ride with: it blocks the turn, and a press later answers it."""
+
+        return self._hold_question(snapshot, gap, blocker.options), AwaitingUser(
+            requirement_id=gap.requirement_id,
+            question=gap.question,
+            why_needed=blocker.why_needed,
+            options=blocker.options,
+        )
+
     @staticmethod
     def _offered_option(
         snapshot: PlanningSessionSnapshot, intent: ChooseBlockerOption
@@ -1657,9 +1877,31 @@ class AdaptiveTimeboxing:
         against whatever replaced it. A ``TurnFailed`` is the exception: a
         refused press means nothing happened, and clearing here would turn one
         recoverable refusal into live-looking buttons with no way to answer.
+
+        An ``AwaitingApproval`` or ``NeedsAnotherTurn`` carrying a riding
+        ``question`` is a second exception, and a new one: `_apply_planning_result`
+        just held this same question via `_hold_question` so a
+        `ChooseBlockerOption` press against it can bind. Clearing it back out
+        here on the very save that set it would make holding it pointless --
+        the riding question's option buttons would refuse every press as
+        `stale_blocker_choice`, same as if it had never been held at all
+        (#259). The two outcomes without a question keep clearing as before:
+        Proceed still works with it unanswered, and the *next* turn's outcome
+        -- whatever it is -- releases a question this one did not re-raise.
+
+        Re-presenting an unapproved artifact goes through the same exemption:
+        `_still_asking` puts the open question back on the outcome, so the
+        redrawn card carries it and the record survives to bind the press. A
+        re-present that answers no question is one whose requirement is closed
+        or whose record belongs elsewhere, and clearing there is right.
         """
 
         if isinstance(outcome, (AwaitingUser, TurnFailed)):
+            return snapshot
+        if (
+            isinstance(outcome, (AwaitingApproval, NeedsAnotherTurn))
+            and outcome.question is not None
+        ):
             return snapshot
         if snapshot.pending_blocker is None:
             return snapshot
