@@ -162,16 +162,20 @@ day`, so a ticket due on the day itself is not late.
 for any work, so there was nothing to look up, or the read itself raised
 `TaskSourceUnavailable` — and it never stands in for an empty result. A
 board that was read and had nothing to offer is a `TaskCandidates` with an
-empty `rows` list. These are different facts and the panel renders them
-differently: no read draws no board section at all; a read that found
-nothing prints one line saying so. Losing that distinction would make a
-misconfigured board indistinguishable from a sprint that is genuinely
-empty.
+empty `rows` list. Losing that distinction would make a misconfigured board
+indistinguishable from a sprint that is genuinely empty.
+
+The **card** no longer draws either case — since the ruling below, neither
+an unread board nor an empty one renders anything — but the distinction is
+not the card's to keep or drop. It is what the judgement was handed, it is
+what `shown_with_of` compares the panel by (a first read that comes back
+empty has to move the redraw key), and it is what a log line about a
+misconfigured board can be read against later.
 
 A turn whose read succeeded but whose judgement then failed keeps its
-candidates on `WorkRefs`: the list that was on offer is still shown to the
-person, with nothing marked as taken from it. Only `work_board_unavailable`
-— the read itself failing — carries no candidates at all.
+candidates on `WorkRefs`: that is the one turn whose rows the person is
+shown. Only `work_board_unavailable` — the read itself failing — carries no
+candidates at all.
 
 ### The deferred `Refined` widening
 
@@ -264,36 +268,48 @@ not work out which ticket you meant — say which one and I'll attach it."*
 The two lines are never shown together, so a ticket resolved on an earlier
 turn is never named beside a sentence disowning the current one.
 
-### The board section, beside the resolved refs
+### The board section: shown only when the lookup could not decide
 
-Below that line, the panel also shows what the board offered this turn.
-`ContextPanel.board`, `ContextPanel.board_sprint` and `ContextPanel.board_read`
-carry the last read's rows, the sprint's name, and whether a board was read
-at all — see *`candidates=None` is not an empty board*, above, for why the
-third field exists. `timeboxing_cards.py`'s `_board_section` renders them
-under the work line, capped at `BOARD_ROW_CAP` rows, each with its number,
-label, due date, state and whether it is overdue:
+**The board is never shown unprompted.** Hugo's ruling, 2026-09-11. A sprint
+listing is not a constraint, and this panel is headed *"1/5 · Constraints —
+what I know about a working Friday"*; a dozen raw rows posted there before
+the person has said anything about the day claim a standing they have not
+got. The listing is also unrefined — it is whatever the board holds at that
+moment, closed rows included. What would make a shown board mean something
+is a task-marshalling session in front of it, deciding what is actually
+live; that is work-family increment 2, and until it exists the rows have no
+business on a context panel as context. Mapping *what the user said* to a
+ticket is a different thing and is unaffected.
+
+So `timeboxing_cards.py`'s `_board_section` renders in **exactly one state**:
+the work lookup could not work out which ticket was meant
+(`work_refs_unresolved`) **and** the board was read and offered rows. On that
+turn the work line above has just printed *"I could not work out which ticket
+you meant — say which one and I'll attach it"*, and these rows are the list it
+was choosing from — so they are what lets the person answer. It draws
+`ContextPanel.board` (capped at `BOARD_ROW_CAP`) under
+`ContextPanel.board_sprint`, each row with its number, label, state, due date
+and whether it is overdue:
 
 ```text
+I could not work out which ticket you meant — say which one and I'll attach it.
 From your board — Sprint 8 - product:
-✓ #427 Verify VPB 2024 aangifte · due 2026-09-10
+• #427 Verify VPB 2024 aangifte · due 2026-09-10
 • #431 Move the DNS records
+• #444 Retire the legacy agent · waiting for · due 2026-09-03 · overdue
 ```
 
-The tick marks the row the day's work was taken from. The join is on the
-ticket number alone (`task` on the resolved ref, compared against
-`BoardCandidateItem.number`) — never on the label, since two rows can share
-a name and nothing here is allowed to decide anything by comparing prose
-(CLAUDE.md). A ref carrying no number joins nothing rather than guessing, so
-the failure understates what was taken rather than marking the wrong row.
+Every other state draws nothing at all: no work was named; the lookup
+succeeded, and the *"Planning around"* line already names the ticket; the
+board was read and offered nothing; the board could not be read, which the
+unresolved sentence has already said in the one vocabulary that fact gets; or
+the turn read no board, so there is nothing this turn to describe.
 
-No board read at all draws no section — drawing one from a stale listing
-would present an earlier turn's rows as this turn's offer. A board that was
-read and offered nothing draws one line saying so instead of going quiet.
-On a turn whose judgement failed, the section still renders the rows it
-read, but nothing is marked chosen, for the same reason the work line above
-it names no ticket: a ref left over from an earlier turn must never be
-shown as this turn's answer.
+There is no tick. A mark for "the day's work came from this row" was removed
+with the always-on section rather than left as dead code: the only state that
+draws rows is the one where nothing was resolved, so the flag would be false
+on every row a reader could ever see. `BoardCandidateItem` carries no
+`chosen`, and nothing joins refs to rows.
 
 The panel is only edited when `shown_with_of` moves, so the set it returns
 carries each candidate's **position** alongside its external id
@@ -305,7 +321,10 @@ without changing what is in the listing, so a term over bare ids would leave
 the panel showing the old top-N in the old order while the judgement had
 already judged over the new one — the one thing this section exists to
 prevent, leaking on the ordering axis instead of the membership one. The cost
-is a panel edit on a turn where only the order moved.
+is a panel edit on a turn where only the order moved — and, now that the
+section renders in one state, a panel edit on turns whose text is unchanged.
+That is the cheap failure; the expensive one is a person answering *"say which
+one"* about rows that are no longer on offer.
 
 ## Operator notes
 
