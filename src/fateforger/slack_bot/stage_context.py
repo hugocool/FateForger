@@ -201,9 +201,14 @@ class WorkItem(_Frozen):
 class BoardCandidateItem(_Frozen):
     """One row the day's board offered, as a person reads it.
 
-    The board's own facts, and one derived flag. No `external_id` and no url:
-    a page id says nothing to somebody deciding whether the day is about the
-    right ticket, for the same reason `WorkItem` drops the material handle.
+    The board's own facts. No `external_id` and no url: a page id says nothing
+    to somebody deciding whether the day is about the right ticket, for the
+    same reason `WorkItem` drops the material handle.
+
+    There is no "this is the one the day took" flag. The only turn that draws
+    these rows is the one whose lookup could not decide, and on that turn
+    nothing was taken by definition -- so a flag would be False on every item
+    the reader can ever see, and dead the rest of the time.
     """
 
     #: `TaskCandidate.number` is optional; a ticket nobody numbered is still
@@ -214,11 +219,6 @@ class BoardCandidateItem(_Frozen):
     due: date | None
     #: Derived by the port from `due` and the day, never re-derived here.
     overdue: bool
-    #: True when one of the day's resolved refs points at this row. The join
-    #: is on the board number -- see `_chosen_numbers`. No default, the way
-    #: `TaskCandidate.overdue` has none: a derived flag that defaults to False
-    #: is a wrong answer waiting for the first item somebody builds by hand.
-    chosen: bool
 
 
 class ContextPanel(_Frozen):
@@ -242,18 +242,15 @@ class ContextPanel(_Frozen):
     #: What the board offered on the last resolve that read one, in the order
     #: the board returned them -- capped by the renderer, not here, so the
     #: count the panel names is a count of what was on offer. Empty whenever
-    #: no board was read; `board_read` is what tells that from a board that
-    #: was read and offered nothing.
+    #: no board was read, and empty whenever the board was read and offered
+    #: nothing: the renderer draws neither case, so the two need not be told
+    #: apart here. They still are on the snapshot (`candidates is None` versus
+    #: an empty `rows`), which is where the distinction earns its keep.
     board: list[BoardCandidateItem] = Field(default_factory=list)
     #: The sprint's name, for the section's head. `None` when the scope
     #: resolved no sprint *and* when the sprint page carries no title, which
     #: are the same fact for a reader: there is no name to print.
     board_sprint: str | None = None
-    #: Whether the last resolve read a board at all. Not derivable from
-    #: `board`: an empty listing is an answer ("your sprint has nothing"), and
-    #: no listing is the absence of one, and the panel says something
-    #: different for each.
-    board_read: bool = False
     suspended: list[SuspendedRow]
     #: Row uids and suspension fact ids the panel was drawn from. A snapshot
     #: whose set differs needs the panel edited; equal means nothing to do.
@@ -319,6 +316,14 @@ def shown_with_of(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
     # cost of the other choice was the reader looking at a different list from
     # the one the judgement judged over, which is the invariant this section
     # exists to hold.
+    #
+    # Since 2026-09-11 the section renders in one state only -- the lookup
+    # could not decide -- so on most turns this term moves a key whose panel
+    # text is unchanged, and the registry edits a panel that reads the same.
+    # That is the cheap failure. The expensive one is the other direction: the
+    # state that does render is the turn the reader is being asked "say which
+    # one", and a stale list there is a person answering about rows that are
+    # no longer on offer.
     board: set[str] = set()
     if snapshot.candidates is not None:
         board = {_BOARD_READ_MARK} | {
@@ -365,47 +370,18 @@ def _work(snapshot: PlanningSessionSnapshot) -> list[WorkItem]:
     ]
 
 
-def _chosen_numbers(snapshot: PlanningSessionSnapshot) -> frozenset[int]:
-    """The board numbers this day's work was taken from.
-
-    **The join is on `task`, and on nothing else.** A ref carries a material
-    handle, a label and the board number; the handle is minted per ticket by
-    the host and has no counterpart on a candidate, and the label is the
-    ticket's prose, which two rows can share and which no comparison here is
-    allowed to decide anything by (CLAUDE.md). The number is an integer the
-    board minted, so `427 == 427` decides nothing about what anyone meant.
-
-    A ref with no number joins nothing and marks nothing. That understates --
-    a ticket nobody numbered can still be the one that was taken -- and
-    understating is the right way to be wrong here: an unmarked row reads as
-    "not taken from the board", while a wrongly marked one tells the reader
-    the day is about a ticket it is not.
-
-    Empty on an unresolved turn, for the reason `_work` returns nothing there:
-    the ref standing on the snapshot may be an earlier turn's, and a mark
-    beside the sentence saying this turn resolved nothing is the combination
-    that could get a day approved against the wrong ticket.
-    """
-
-    if snapshot.work_refs_unresolved:
-        return frozenset()
-    return frozenset(
-        ref["task"]
-        for ref in work_refs_on(snapshot.facts)
-        if isinstance(ref.get("task"), int)
-    )
-
-
 def _board(snapshot: PlanningSessionSnapshot) -> list[BoardCandidateItem]:
     """What the board offered, in the order it offered it.
 
-    No board read is an empty list -- and `board_read` beside it is what keeps
-    that from reading as a board that offered nothing.
+    No board read is an empty list, and so is a board that offered nothing.
+    The renderer draws the rows in one state only -- the lookup could not
+    decide -- and both of those are the absence of rows, so nothing downstream
+    needs to tell them apart. `shown_with_of` still does, on the snapshot,
+    because a first read that comes back empty has to move the redraw key.
     """
 
     if snapshot.candidates is None:
         return []
-    chosen = _chosen_numbers(snapshot)
     return [
         BoardCandidateItem(
             number=row.number,
@@ -413,7 +389,6 @@ def _board(snapshot: PlanningSessionSnapshot) -> list[BoardCandidateItem]:
             state=row.state,
             due=row.due,
             overdue=row.overdue,
-            chosen=row.number is not None and row.number in chosen,
         )
         for row in snapshot.candidates.rows
     ]
@@ -458,7 +433,6 @@ def context_panel(
         work_refs_unresolved=snapshot.work_refs_unresolved,
         board=_board(snapshot),
         board_sprint=_board_sprint(snapshot),
-        board_read=snapshot.candidates is not None,
         suspended=[
             SuspendedRow(uid=r.uid, name=r.name, reason=r.suspended_reason)
             for r in rows

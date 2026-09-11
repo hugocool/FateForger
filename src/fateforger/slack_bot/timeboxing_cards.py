@@ -401,9 +401,8 @@ _CANDIDATE_STATE_LABEL: dict[str, str] = {
 #: Candidates named before the tail becomes a count. Its own constant, and
 #: four times the work line's three, because the two lines answer different
 #: questions. The work line is a glance to catch a wrong resolution. This
-#: section has to let a reader answer "say which one" -- and showing them three
-#: of twelve defeats the one job it has on the turn where that sentence is
-#: printed.
+#: section has to let a reader answer "say which one" -- the only turn it is
+#: drawn at all -- and showing them three of twelve defeats the one job it has.
 #:
 #: Twelve is the current sprint's size on the day this was measured, and the
 #: port's own `DEFAULT_CANDIDATE_LIMIT` -- but it is not what production asks
@@ -428,13 +427,13 @@ BOARD_ROW_CAP = 12
 
 
 def _board_row(item: BoardCandidateItem) -> str:
-    """One candidate: the mark, the number and the name, then its tags.
+    """One candidate: a bullet, the number and the name, then its tags.
 
-    The mark is a tick or a bullet, never bold or an emoji: the reader is
-    scanning a short list for which row this day was planned around, and one
-    glyph in one column is the fastest way to answer that. The tick means the
-    day's work came from this row -- `BoardCandidateItem.chosen`, joined on the
-    board number, never on the name.
+    A bullet and nothing else. There was a tick here for the row the day's
+    work was taken from, and it can no longer occur: the only state that draws
+    these rows is the one where the lookup could not decide which ticket was
+    meant, so no row is taken. A glyph that is always the same glyph is not a
+    column a reader learns to read.
 
     The date is ISO. A month name would come from the process locale unless
     this file carried its own table (`elicitation._WEEKDAYS` exists for exactly
@@ -442,7 +441,6 @@ def _board_row(item: BoardCandidateItem) -> str:
     as a plain number.
     """
 
-    mark = "✓" if item.chosen else "•"
     named = f"#{item.number} {item.label}" if item.number is not None else item.label
     tags = [_CANDIDATE_STATE_LABEL.get(item.state, item.state)]
     if item.due is not None:
@@ -450,47 +448,43 @@ def _board_row(item: BoardCandidateItem) -> str:
     if item.overdue:
         tags.append("overdue")
     trailing = "".join(f" · {tag}" for tag in tags if tag)
-    return f"{mark} {named}{trailing}"
+    return f"• {named}{trailing}"
 
 
 def _board_section(panel: ContextPanel) -> str:
-    """What the board offered this turn, under the line saying what was taken.
+    """The rows the lookup was choosing between, when it could not choose.
 
-    Three states, three sentences, and the difference between them is the
-    whole point of the section:
+    **One state draws this section, and it is the one where the reader has
+    been asked a question they need the list to answer**: the work lookup
+    could not work out which ticket was meant, and the board it was reading
+    offered rows. `_work_line` above has just printed "I could not work out
+    which ticket you meant -- say which one and I'll attach it", and these are
+    the rows it was choosing from. Nothing is marked as taken, because on this
+    turn nothing was.
 
-    * **No board was read** -- either nobody asked this day to hold any work,
-      or the resolve that would have read one is two turns back and the mirror
-      has since cleared it. Nothing is drawn. A section here would be the
-      previous read's rows presented as today's offer, which is the stale
-      panel this section exists to avoid.
-    * **A board was read and offered nothing** -- one line saying so. The
-      sprint being empty is worth knowing; going quiet would leave it looking
-      like the board was never asked.
-    * **A board was read and offered rows** -- the head and the rows.
+    **Every other state draws nothing at all.** No work was named; the lookup
+    succeeded, and the "Planning around" line above already names the ticket;
+    the board was read and offered nothing; the board could not be read, which
+    the unresolved sentence has already said in the one vocabulary that fact
+    gets; or the turn read no board, so there is nothing this turn to describe.
 
-    A board that could not be read falls in the first state and is *not*
-    silent: `_work_line` above has already said the day has no ticket attached
-    and named the way back. That sentence is the one vocabulary for that fact,
-    and a second one here would say the same thing twice in a register the
-    reader cannot act on differently.
-
-    The same applies to an *empty* board on an unresolved turn, which
-    `work_lookup_failed` reaches on an empty sprint: "say which one and I'll
-    attach it" printed directly above "nothing to plan around" reads as an
-    instruction with nothing to point at. The sentence already carries the
-    whole fact, so the section stays out of its way.
+    Hugo's ruling, 2026-09-11, and it is about what a sprint listing *is*
+    rather than about clutter. **The board is never shown unprompted.** These
+    rows are not constraints, and this panel is headed "what I know about a
+    working Friday"; a raw sprint posted there before the person has said
+    anything about the day claims a standing it has not got. The listing is
+    also unrefined -- it is whatever the board holds right now, closed rows
+    included. What would make a shown board mean something is a task-marshalling
+    session in front of it, deciding what is actually live. That is a later
+    increment (work-family increment 2), and until it exists the rows earn
+    their place only as the answer set to a question already on screen.
     """
 
-    if not panel.board_read:
-        return ""
-    if not panel.board and panel.work_refs_unresolved:
+    if not panel.work_refs_unresolved or not panel.board:
         return ""
     head = "From your board"
     if panel.board_sprint:
         head += f" — {panel.board_sprint}"
-    if not panel.board:
-        return f"\n{head}: nothing to plan around."
     shown = panel.board[:BOARD_ROW_CAP]
     rows = "".join(f"\n{_board_row(item)}" for item in shown)
     rest = len(panel.board) - len(shown)

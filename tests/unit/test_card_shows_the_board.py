@@ -1,14 +1,20 @@
 # tests/unit/test_card_shows_the_board.py
-"""The "from your board" section: what was on offer, and what was taken.
+"""The "from your board" section: the list the lookup could not choose from.
+
+The section renders in exactly one state -- the work lookup could not work out
+which ticket was meant, and the board it read offered rows -- and in every
+other state it is absent. Hugo's ruling, 2026-09-11: the board is never shown
+unprompted. Half of this file is the one state; the other half is the states
+that draw nothing, one test each, because "absent" is the assertion that rots
+silently if nobody pins it.
 
 Structure and wording only, plus Block Kit validity through `blockkit`, the
 way `test_card_shows_the_work.py` checks the line above it: a block Slack
 would refuse fails here, not as a 400 in the thread.
 
-Nothing here judges text. The chosen mark is a join on the board number -- an
-integer the board minted -- and every other assertion is over what the host
-already resolved: a state enum, two dates, one bool, and the sentences this
-module owns.
+Nothing here judges text. Every assertion is over what the host already
+resolved -- a state enum, two dates, one bool -- or over the sentences this
+module itself owns.
 """
 
 from __future__ import annotations
@@ -41,7 +47,6 @@ from fateforger.slack_bot.timeboxing_cards import (
 
 DAY = date(2026, 9, 8)
 FINANCE_REF = {"link": "m-page-427", "label": "Verify VPB 2024 aangifte", "task": 427}
-UNNUMBERED_REF = {"link": "m-page-x", "label": "Rename the repo", "task": None}
 
 
 def _day() -> PlanningDay:
@@ -169,11 +174,11 @@ TWO_ROWS = [
 ]
 
 
-# --- what the section says --------------------------------------------------
+# --- the one state that renders: the lookup could not decide ----------------
 
 
 def test_the_section_names_the_sprint_and_every_row_it_shows() -> None:
-    message = _message(candidates=_listing(TWO_ROWS))
+    message = _message(unresolved=True, candidates=_listing(TWO_ROWS))
     head = _head(message)
 
     assert "From your board — Sprint 8 - product:" in head
@@ -185,12 +190,13 @@ def test_the_section_names_the_sprint_and_every_row_it_shows() -> None:
 
 def test_a_row_carries_its_due_date_and_says_when_it_is_late() -> None:
     message = _message(
+        unresolved=True,
         candidates=_listing(
             [
                 _row(427, "Verify VPB 2024 aangifte", due=date(2026, 9, 10)),
                 _row(431, "Move the DNS records", due=date(2026, 9, 3)),
             ]
-        )
+        ),
     )
     head = _head(message)
 
@@ -203,12 +209,13 @@ def test_a_row_that_is_not_next_says_which_bucket_it_is_in() -> None:
     the exception a reader needs to see before planning around the row."""
 
     message = _message(
+        unresolved=True,
         candidates=_listing(
             [
                 _row(427, "Verify VPB 2024 aangifte"),
                 _row(431, "Move the DNS records", state="waiting_for"),
             ]
-        )
+        ),
     )
     head = _head(message)
 
@@ -220,7 +227,7 @@ def test_the_section_never_shows_the_ids_the_board_minted() -> None:
     """A page id and a url say nothing to the person approving a day, the same
     reason the work line never shows the material handle."""
 
-    message = _message(candidates=_listing(TWO_ROWS))
+    message = _message(unresolved=True, candidates=_listing(TWO_ROWS))
     rendered = json.dumps(message.blocks)
 
     assert "page-427" not in rendered
@@ -228,7 +235,9 @@ def test_the_section_never_shows_the_ids_the_board_minted() -> None:
 
 
 def test_a_row_with_no_number_is_named_by_its_label_alone() -> None:
-    message = _message(candidates=_listing([_row(None, "Rename the repo")]))
+    message = _message(
+        unresolved=True, candidates=_listing([_row(None, "Rename the repo")])
+    )
     head = _head(message)
 
     assert "Rename the repo" in head
@@ -236,54 +245,61 @@ def test_a_row_with_no_number_is_named_by_its_label_alone() -> None:
     assert "#" not in head.splitlines()[-1]
 
 
-# --- the chosen mark --------------------------------------------------------
+# --- nothing is ever marked as taken ----------------------------------------
 
 
-def test_the_row_the_day_took_is_marked_and_the_others_are_not() -> None:
-    panel = _panel(refs=[FINANCE_REF], candidates=_listing(TWO_ROWS))
-    head = _head(render_context_panel(panel))
-
-    assert [(item.number, item.chosen) for item in panel.board] == [
-        (427, True),
-        (431, False),
-    ]
-    assert "✓ #427 Verify VPB 2024 aangifte" in head
-    assert "• #431 Move the DNS records" in head
-
-
-def test_a_ref_with_no_number_marks_nothing() -> None:
-    """The join is on the board number, never on the label: a ref carrying a
-    ticket's name and no number is not evidence about which row was taken,
-    and two rows can share a name."""
-
-    panel = _panel(
-        refs=[UNNUMBERED_REF],
-        candidates=_listing([_row(427, "Verify VPB 2024 aangifte"), _row(None, "Rename the repo")]),
-    )
-
-    assert [item.chosen for item in panel.board] == [False, False]
-    assert "✓" not in _head(render_context_panel(panel))
-
-
-def test_an_unresolved_turn_shows_the_rows_with_nothing_marked() -> None:
-    """The board was read, so the person is still shown what was on offer --
-    but this turn worked out nothing, so no row may be marked as taken. The
+def test_no_row_is_marked_as_the_one_the_day_took() -> None:
+    """There is no tick, and there is no state left in which one could mean
+    anything. The section renders only where the lookup could not decide, so
+    no ref resolved this turn and no row was taken from this list -- and the
     ref standing on the snapshot may be an earlier turn's, which is exactly
-    why `_work` names no ticket there either."""
+    why `_work` names no ticket beside it either."""
 
-    panel = _panel(
-        refs=[FINANCE_REF], unresolved=True, candidates=_listing(TWO_ROWS)
-    )
+    panel = _panel(refs=[FINANCE_REF], unresolved=True, candidates=_listing(TWO_ROWS))
     head = _head(render_context_panel(panel))
 
-    assert [item.chosen for item in panel.board] == [False, False]
-    assert "could not work out" in head
-    assert "#427 Verify VPB 2024 aangifte" in head
+    assert not any(hasattr(item, "chosen") for item in panel.board)
     assert "✓" not in head
+    assert "could not work out" in head
+    assert "• #427 Verify VPB 2024 aangifte" in head
+    assert "• #431 Move the DNS records" in head
     _validated(render_context_panel(panel).blocks)
 
 
-# --- read, not read, and read with nothing on it ----------------------------
+# --- every other state draws nothing ----------------------------------------
+
+
+def test_a_board_read_with_a_ticket_resolved_shows_no_section() -> None:
+    """The ruling's core case, and the one the old code got wrong.
+
+    The board was read and offered rows, and the lookup worked out which one
+    was meant. The "Planning around" line above says which ticket the day is
+    being planned around, and there is no question outstanding for a list of
+    twelve sprint rows to answer -- so the rows are not a help, they are the
+    sprint database posted under a heading that says "what I know about a
+    working Friday". Hugo's ruling: the board is never shown unprompted.
+    """
+
+    panel = _panel(refs=[FINANCE_REF], candidates=_listing(TWO_ROWS))
+    head = _head(render_context_panel(panel))
+
+    assert panel.board != []  # the rows reached the panel; the renderer drops them
+    assert "Planning around #427 Verify VPB 2024 aangifte" in head
+    assert "From your board" not in head
+    assert "#431 Move the DNS records" not in head
+
+
+def test_a_board_read_with_no_work_named_shows_no_section() -> None:
+    """Nobody asked the day to hold any work, and the board was read anyway.
+    There is no work line and no question, so there is nothing the rows would
+    be answering -- which is the unprompted case in its plainest form."""
+
+    panel = _panel(candidates=_listing(TWO_ROWS))
+    head = _head(render_context_panel(panel))
+
+    assert "Planning around" not in head
+    assert "could not work out" not in head
+    assert "From your board" not in head
 
 
 def test_a_board_that_could_not_be_read_says_so_once_and_shows_no_rows() -> None:
@@ -296,7 +312,6 @@ def test_a_board_that_could_not_be_read_says_so_once_and_shows_no_rows() -> None
     head = _head(render_context_panel(panel))
 
     assert panel.board == []
-    assert panel.board_read is False
     assert "could not work out" in head
     assert "From your board" not in head
 
@@ -305,60 +320,48 @@ def test_a_turn_that_read_no_board_shows_no_section_beside_resolved_work() -> No
     """The mirror is unconditional: any turn whose target is not a candidate
     clears `candidates` while the merged `WORK_REFS` fact survives. The work
     line still names the ticket -- it is a fact about the day -- and the
-    section is simply absent, because there is no read of the board this turn
-    for it to describe. Drawing the previous read's rows here would present
-    them as today's offer on the authority of a read two turns old."""
+    section is simply absent."""
 
     panel = _panel(refs=[FINANCE_REF])
     head = _head(render_context_panel(panel))
 
     assert panel.board == []
-    assert panel.board_read is False
     assert "Planning around #427 Verify VPB 2024 aangifte" in head
     assert "From your board" not in head
 
 
-def test_a_board_that_offered_nothing_says_so_rather_than_going_quiet() -> None:
-    """An empty listing is an answer, and a different one from no listing at
-    all: the sprint is empty, which is worth a line, and the reader learns the
-    board was read."""
+def test_a_board_that_offered_nothing_draws_no_section_at_all() -> None:
+    """An empty sprint used to get a line of its own -- "nothing to plan
+    around" -- on the reasoning that a read which found nothing is an answer
+    worth printing. It is only an answer to a question nobody asked: the
+    section is not a status display for the board, and with the rows gone from
+    the unprompted states there is no reason for a sentence about their
+    absence to stay behind. Both halves, resolved and unresolved."""
 
-    panel = _panel(candidates=_listing([]))
-    head = _head(render_context_panel(panel))
+    for kwargs in ({}, {"refs": [FINANCE_REF]}, {"unresolved": True}):
+        panel = _panel(candidates=_listing([]), **kwargs)
+        head = _head(render_context_panel(panel))
 
-    assert panel.board == []
-    assert panel.board_read is True
-    assert "From your board — Sprint 8 - product: nothing to plan around." in head
+        assert panel.board == []
+        assert "From your board" not in head
+        assert "nothing to plan around" not in head
 
 
 def test_a_sprint_with_no_title_leaves_no_dangling_head() -> None:
     """`TaskCandidates.sprint` is the sprint page's title, and a page nobody
     titled gives back an empty string. The head has to read as a sentence
-    without it, the same as when the scope resolved no sprint at all."""
+    without it, the same as when the scope resolved no sprint at all. Still
+    reachable: the sprint's title has nothing to do with whether the lookup
+    could decide."""
 
     for sprint in ("", " ", None):
-        panel = _panel(candidates=_listing(TWO_ROWS, sprint=sprint))
+        panel = _panel(unresolved=True, candidates=_listing(TWO_ROWS, sprint=sprint))
         head = _head(render_context_panel(panel))
 
         assert panel.board_sprint is None
         assert "From your board:" in head
-        assert "—" not in head.splitlines()[3]
+        assert "From your board —" not in head
         _validated(render_context_panel(panel).blocks)
-
-
-def test_an_unresolved_turn_over_an_empty_board_says_it_once() -> None:
-    """Reachable through `work_lookup_failed` on an empty sprint. "Say which
-    one and I'll attach it" printed above "nothing to plan around" is an
-    instruction with nothing to point at: the sentence carries the whole fact,
-    so the section stays out of its way."""
-
-    panel = _panel(unresolved=True, candidates=_listing([]))
-    head = _head(render_context_panel(panel))
-
-    assert panel.board_read is True
-    assert "could not work out" in head
-    assert "From your board" not in head
-    assert "nothing to plan around" not in head
 
 
 # --- the cap ----------------------------------------------------------------
@@ -370,7 +373,7 @@ def test_a_whole_sprint_fits_before_the_tail_becomes_a_count() -> None:
 
     rows = [_row(400 + i, f"Ticket number {i}") for i in range(BOARD_ROW_CAP)]
 
-    message = _message(candidates=_listing(rows))
+    message = _message(unresolved=True, candidates=_listing(rows))
     head = _head(message)
 
     assert BOARD_ROW_CAP > WORK_LINE_CAP
@@ -383,7 +386,7 @@ def test_a_whole_sprint_fits_before_the_tail_becomes_a_count() -> None:
 def test_a_listing_past_the_cap_is_cut_by_count_and_the_panel_stays_two_blocks() -> None:
     rows = [_row(400 + i, f"Ticket number {i}") for i in range(BOARD_ROW_CAP + 2)]
 
-    message = _message(candidates=_listing(rows))
+    message = _message(unresolved=True, candidates=_listing(rows))
     head = _head(message)
 
     assert "#400 Ticket number 0" in head
@@ -403,7 +406,7 @@ def test_a_full_section_stays_inside_the_block_slack_will_render() -> None:
         for i in range(BOARD_ROW_CAP + 5)
     ]
 
-    message = _message(refs=[FINANCE_REF], candidates=_listing(rows))
+    message = _message(unresolved=True, candidates=_listing(rows))
     head = _head(message)
 
     assert len(head) < SLACK_MAX_BLOCK_TEXT_CHARS
@@ -479,8 +482,12 @@ def test_the_same_rows_in_a_new_order_redraw_the_panel() -> None:
 
     # The reader is shown a different list, so a skipped redraw is a stale panel.
     promoted_row = f"#{400 + BOARD_ROW_CAP} Ticket number {BOARD_ROW_CAP}"
-    assert promoted_row not in _head(_message(candidates=_listing(ordered)))
-    assert promoted_row in _head(_message(candidates=_listing(promoted)))
+    assert promoted_row not in _head(
+        _message(unresolved=True, candidates=_listing(ordered))
+    )
+    assert promoted_row in _head(
+        _message(unresolved=True, candidates=_listing(promoted))
+    )
 
     assert shown_with_of(_snapshot(candidates=_listing(ordered))) != shown_with_of(
         _snapshot(candidates=_listing(promoted))
