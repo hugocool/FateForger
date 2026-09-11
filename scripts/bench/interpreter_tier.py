@@ -300,6 +300,24 @@ def _price_for(model: str | None, prices: dict) -> tuple[float, float]:
     return prices.get(model.split(":")[0], (0.0, 0.0))
 
 
+def _committed_prices(path: Path) -> dict[str, tuple[float, float]] | None:
+    """The per-token prices a committed record was costed at; None if it carries none.
+
+    A rebuild has to reproduce the record it rebuilds. Catalogue prices move, so
+    re-fetching them on ``--summarise-only`` would silently re-cost every draw
+    that carries no billed ``usage.cost`` -- all of 2026-09-06's -- under a record
+    whose draws did not change. The prices are only fetched when the record has
+    never been written, or was written before it kept them.
+    """
+
+    if not path.exists():
+        return None
+    prices = json.loads(path.read_text(encoding="utf-8")).get("pricing_per_token")
+    if not isinstance(prices, dict):
+        return None
+    return {model: (float(p[0]), float(p[1])) for model, p in prices.items()}
+
+
 def _tokens(draw: dict, key: str) -> int | None:
     """A token count, from the returned result or else the raw completion.
 
@@ -797,6 +815,34 @@ def _config_totals(summary: dict, prices: dict) -> dict:
     return totals
 
 
+def _runs_by_eval(rows: list[dict]) -> dict[str, int]:
+    """How many runs each eval contributed to a group of main rows, read off the rows.
+
+    A run is a distinct run label; a record taken without ``--run`` counts as one.
+    """
+
+    runs: dict[str, set] = defaultdict(set)
+    for row in rows:
+        runs[row["eval"]].add(row["run"])
+    return {name: len(runs[name]) for name in EVALS if name in runs}
+
+
+def _runs_note(rows: list[dict]) -> str:
+    """The run count a pooled group stands on, or nothing for an unrepeated record.
+
+    One number when every eval ran the same number of times; otherwise the
+    count per eval, so a pooled figure mixing one- and two-run evals says so.
+    """
+
+    if all(row["run"] is None for row in rows):
+        return ""
+    counts = _runs_by_eval(rows)
+    if len(set(counts.values())) == 1:
+        n = next(iter(counts.values()))
+        return f"{n} run" if n == 1 else f"{n} runs"
+    return "runs per eval: " + ", ".join(f"`{name}` {n}" for name, n in counts.items())
+
+
 def _pooled_by_config(summary: dict, prices: dict) -> dict:
     """Every run of a configuration together, overall and by host."""
 
@@ -811,6 +857,9 @@ def _pooled_by_config(summary: dict, prices: dict) -> dict:
         draws = [d for r in rows for d in r["_draws"]]
         out[config] = {
             "runs": sorted({r["run"] for r in rows if r["run"] is not None}),
+            # Not every eval runs in every repetition (2026-09-11 ran one eval
+            # once), so a pooled row can mix one- and two-run evals.
+            "runs_by_eval": _runs_by_eval(rows),
             **_stats(draws, prices),
             "by_provider": _by_provider(draws, prices),
             "by_eval": {
@@ -982,6 +1031,13 @@ def _host_table(prefix_headers: list[str], groups: list[tuple[list[str], dict, d
 
 
 def _hosts_section(summary: dict, totals: dict, pooled: dict, prices: dict) -> list[str]:
+    def rows_of(config: str, name: str | None = None) -> list[dict]:
+        return [r for r in _main_rows(summary) if r["config"] == config and (name is None or r["eval"] == name)]
+
+    def pooled_cell(config: str, name: str | None = None) -> str:
+        note = _runs_note(rows_of(config, name))
+        return f"`{name if name else config}`" + (f" ({note})" if note else "")
+
     lines = [
         "## Hosts — which provider served each draw",
         "",
@@ -993,9 +1049,12 @@ def _hosts_section(summary: dict, totals: dict, pooled: dict, prices: dict) -> l
         "",
         "### By configuration, runs pooled",
         "",
+        "Pooled over every run of the configuration. Where the evals did not all run the same number",
+        "of times, the configuration cell says how many runs each eval contributed.",
+        "",
         *_host_table(
             ["configuration"],
-            [([f"`{c}`"], {k: v for k, v in p.items() if k not in ("by_provider", "by_eval", "runs")}, p["by_provider"])
+            [([pooled_cell(c)], {k: v for k, v in p.items() if k not in ("by_provider", "by_eval", "runs", "runs_by_eval")}, p["by_provider"])
              for c, p in pooled.items()],
         ),
         "",
@@ -1022,7 +1081,7 @@ def _hosts_section(summary: dict, totals: dict, pooled: dict, prices: dict) -> l
         *_host_table(
             ["configuration", "eval"],
             [
-                ([f"`{c}`", f"`{name}`"], {k: v for k, v in e.items() if k != "by_provider"}, e["by_provider"])
+                ([f"`{c}`", pooled_cell(c, name)], {k: v for k, v in e.items() if k != "by_provider"}, e["by_provider"])
                 for c, p in pooled.items()
                 for name, e in p["by_eval"].items()
             ],
@@ -1223,17 +1282,19 @@ def _per_eval_sections(summary: dict) -> list[str]:
     return lines
 
 
-def _configurations_line(totals: dict) -> str:
-    runs: dict[str, list] = defaultdict(list)
-    for t in totals.values():
-        runs[t["config"]].append(t["run"])
+def _configurations_line(summary: dict) -> str:
+    """Each configuration with its run count -- per eval, where the evals' counts differ."""
+
+    rows: dict[str, list[dict]] = defaultdict(list)
+    for row in _main_rows(summary):
+        rows[row["config"]].append(row)
     parts = []
     for config in CONFIGS:
-        if config not in runs:
+        if config not in rows:
             continue
         pin, effort, cap = CONFIGS[config]
-        repeated = [r for r in runs[config] if r is not None]
-        times = f", {len(repeated)} runs" if repeated else ""
+        note = _runs_note(rows[config])
+        times = f", {note}" if note else ""
         parts.append(f"`{config}` ({pin.lower()} pin, `{effort}`, {'cap ' + str(cap) if cap else 'uncapped'}{times})")
     return "; ".join(parts) or "none"
 
@@ -1246,7 +1307,7 @@ def _markdown(
         "",
         "The surface interpreters' client row, `intent_interpreter` (#336, #325).",
         "",
-        f"Configurations in this record: {_configurations_line(totals)}. The three interpreter evals,",
+        f"Configurations in this record: {_configurations_line(summary)}. The three interpreter evals,",
         "n=8 per case, no temperature pin. Every draw records its latency, tokens (reasoning included),",
         "finish reason and error class, the model/cap/effort the client was actually built with, the",
         "factory row that built it, and the host that served it; `config verified` is that read-back",
@@ -1431,7 +1492,11 @@ def main() -> int:
         help="rebuild the result files from the draw files already in the run directory",
     )
     args = parser.parse_args()
-    if not os.environ.get("OPENROUTER_API_KEY"):
+    results_json = HERE / f"results-interpreter-tier-{args.date}.json"
+    committed_prices = _committed_prices(results_json) if args.summarise_only else None
+    # A rebuild at the record's own prices never calls OpenRouter; everything
+    # else does -- the evals, or the catalogue fetch.
+    if committed_prices is None and not os.environ.get("OPENROUTER_API_KEY"):
         print("OPENROUTER_API_KEY not set; source .env first", file=sys.stderr)
         return 2
 
@@ -1468,18 +1533,23 @@ def main() -> int:
         runs += [r for r in _discover(out_dir) if (r["config"], r["run"], r["eval"]) not in seen]
 
     runs.sort(key=lambda r: (*_order(r["config"], r["run"]), list(EVALS).index(r["eval"])))
-    sys.path.insert(0, str(HERE))
-    from report import pricing  # scripts/bench/report.py
+    if committed_prices is not None:
+        prices = committed_prices
+        print(f"[bench] prices: the committed record's, from {results_json.name}", file=sys.stderr)
+    else:
+        sys.path.insert(0, str(HERE))
+        from report import pricing  # scripts/bench/report.py
 
-    models = {
-        json.loads(line).get("model")
-        for run in runs
-        if Path(run["draws"]).exists()
-        for line in Path(run["draws"]).read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    } - {None}
-    # The catalogue lists the unsuffixed id; ask for both.
-    prices = pricing(models | {m.split(":")[0] for m in models})
+        models = {
+            json.loads(line).get("model")
+            for run in runs
+            if Path(run["draws"]).exists()
+            for line in Path(run["draws"]).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        } - {None}
+        # The catalogue lists the unsuffixed id; ask for both.
+        prices = pricing(models | {m.split(":")[0] for m in models})
+        print("[bench] prices: the live OpenRouter catalogue", file=sys.stderr)
 
     summary = _summarise(runs, prices, base_env)
     totals = _config_totals(summary, prices)
@@ -1502,9 +1572,7 @@ def main() -> int:
         # Everything this record's draws cost, controls included: the spend.
         "total_cost_usd": round(sum(r["cost_usd"] for r in summary.values()), 4),
     }
-    (HERE / f"results-interpreter-tier-{args.date}.json").write_text(
-        json.dumps(payload, indent=2), encoding="utf-8"
-    )
+    results_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     markdown = _markdown(summary, totals, pooled, caps, pins, comparison, prices, args.date)
     (HERE / f"results-interpreter-tier-{args.date}.md").write_text(markdown, encoding="utf-8")
     print(markdown)

@@ -122,18 +122,36 @@ def _openrouter_extra(obj: object, name: str) -> object | None:
 
 
 def _raw_fields(completion: object | None) -> dict[str, object | None]:
+    """What the raw completion says about the draw. Never raises.
+
+    The capture is an observer: whatever shape the completion arrives in, a
+    failure here must not become the draw's outcome. It runs inside the SDK
+    wrapper, where raising would fail a draw that answered or replace the
+    exception a draw really raised. So any failure reading these fields
+    records them as missing (an empty dict, which the summariser reads as
+    null) instead.
+    """
+
     if completion is None:
         return {}
+    try:
+        return _read_raw_fields(completion)
+    except Exception:  # noqa: BLE001 - the capture must never change a draw's outcome
+        return {}
+
+
+def _read_raw_fields(completion: object) -> dict[str, object | None]:
     usage = getattr(completion, "usage", None)
     details = getattr(usage, "completion_tokens_details", None) if usage is not None else None
     choices = getattr(completion, "choices", None) or []
-    message = choices[0].message if choices else None
+    first = choices[0] if choices else None
+    message = getattr(first, "message", None)
     content = getattr(message, "content", None) if message is not None else None
     return {
         "gen_id": getattr(completion, "id", None),
         "provider": _openrouter_extra(completion, "provider"),
         "served_model": getattr(completion, "model", None),
-        "raw_finish_reason": choices[0].finish_reason if choices else None,
+        "raw_finish_reason": getattr(first, "finish_reason", None),
         "raw_prompt_tokens": getattr(usage, "prompt_tokens", None) if usage is not None else None,
         "raw_completion_tokens": getattr(usage, "completion_tokens", None) if usage is not None else None,
         "reasoning_tokens": getattr(details, "reasoning_tokens", None) if details is not None else None,
