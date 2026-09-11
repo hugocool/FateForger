@@ -84,9 +84,12 @@ PYTHON = str(WORKTREE.parents[1] / ".venv" / "bin" / "python")
 #: ``timebox_question`` is #328's, unmerged; the bench runs it from that
 #: worktree read-only, under the timeboxing agent's env overrides, because that
 #: is the client it builds until #328 merges and its one line changes.
+#: ``day_frame`` takes the interpreter's knobs: since #336 its interpreter
+#: cases build on the interpreter row, and its judge cases stay on the judge
+#: row at production default as a control (``CONTROL_ROWS``).
 EVALS = {
     "planning_card": (WORKTREE, "tests/integration/test_eval_planning_card_intent.py", "interpreter"),
-    "day_frame": (WORKTREE, "tests/integration/test_eval_day_frame.py", "judge"),
+    "day_frame": (WORKTREE, "tests/integration/test_eval_day_frame.py", "interpreter"),
     "timebox_question": (PEER_WORKTREE, "tests/integration/test_eval_timebox_question.py", "timeboxing"),
 }
 
