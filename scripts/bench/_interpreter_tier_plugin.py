@@ -12,6 +12,28 @@ reach the factory would produce a full table of numbers for the wrong client,
 and nothing in the output would say so. Those three fields are how the runner
 proves each configuration was the configuration it claims.
 
+**Which host served the draw.** OpenRouter routes one model id to several
+hosts, and on 2026-09-10 that routing *was* the finding: CoreWeave reasoned at
+`high` and sometimes spent the whole 1024-token cap doing it, Together did not
+reason at all, and a bench that did not record the host could not tell drift
+from effect (#325). So the plugin also wraps the OpenAI SDK's own
+``AsyncCompletions.parse``/``create`` one layer down, where the raw
+``ChatCompletion`` is still in hand, and reads off it: the ``provider`` field
+OpenRouter adds, the ``gen-`` generation id, the served model, the raw finish
+reason and usage, ``completion_tokens_details.reasoning_tokens``, and
+``usage.cost``. A truncated structured-output call raises
+``LengthFinishReasonError`` instead of returning, but the completion rides on
+the exception as ``exc.completion`` -- so a truncated draw carries its host and
+its token counts too, which is the draw the question is about.
+
+**Which client row built the client.** ``build_autogen_chat_client`` is
+wrapped to tag each client with the factory row (``agent_type``) it was built
+for. One eval can build on two rows -- the day-frame eval runs its interpreter
+cases on ``intent_interpreter`` and its ``DayFrameJudge`` cases on
+``timeboxing_judge`` -- and only one of them is the row a configuration moves.
+The tag is an identifier the factory minted; the runner splits on it instead of
+on a hand-kept list of test names.
+
 Output file from ``INTERPRETER_TIER_BENCH_OUT``; the configuration name it is
 labelling from ``INTERPRETER_TIER_CONFIG``. With neither set the plugin does
 nothing, so it is harmless to leave loaded.
@@ -20,6 +42,7 @@ nothing, so it is harmless to leave loaded.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import time
@@ -43,7 +66,16 @@ _CONFIG = os.environ.get("INTERPRETER_TIER_CONFIG", "")
 _DRAW_TIMEOUT_S = float(os.environ.get("INTERPRETER_TIER_DRAW_TIMEOUT_S", "180"))
 TIMEOUT_ERROR = "BenchDrawTimeout"
 
+#: Attribute the factory wrapper parks the row name on.
+_ROW_ATTR = "_interpreter_tier_row"
+
 _current_node: dict[str, str] = {"id": ""}
+
+#: The per-draw dict the SDK-level wrapper fills in. Set inside the wrapped
+#: ``create``; the eight concurrent draws of a case are separate tasks, so each
+#: sees its own. An SDK retry overwrites it, so the row describes the attempt
+#: that finally answered (or raised).
+_raw: contextvars.ContextVar[dict | None] = contextvars.ContextVar("_interpreter_tier_raw", default=None)
 
 
 def pytest_runtest_setup(item: pytest.Item) -> None:
@@ -51,7 +83,7 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 
 
 def _built_with(client: object) -> dict[str, object | None]:
-    """Model, cap and effort as the client was constructed, not as intended.
+    """Model, cap, effort and row as the client was constructed, not as intended.
 
     ``_create_args`` is where ``OpenAIChatCompletionClient.__init__`` parks the
     validated kwargs (``autogen_ext.models.openai._openai_client``, line 482);
@@ -61,16 +93,82 @@ def _built_with(client: object) -> dict[str, object | None]:
     minted, so comparing them is comparing identity, not meaning.
     """
 
+    row = getattr(client, _ROW_ATTR, None)
     args = getattr(client, "_create_args", None)
     if not isinstance(args, dict):
-        return {"model": None, "max_tokens": None, "reasoning_effort": None}
+        return {"row": row, "model": None, "max_tokens": None, "reasoning_effort": None}
     extra_body = args.get("extra_body")
     reasoning = extra_body.get("reasoning") if isinstance(extra_body, dict) else None
     return {
+        "row": row,
         "model": args.get("model"),
         "max_tokens": args.get("max_tokens"),
         "reasoning_effort": reasoning.get("effort") if isinstance(reasoning, dict) else None,
     }
+
+
+def _openrouter_extra(obj: object, name: str) -> object | None:
+    """A field OpenRouter adds that the OpenAI types do not declare.
+
+    The SDK's pydantic models keep undeclared keys in ``model_extra``;
+    ``provider`` on the completion and ``cost`` on the usage block both land
+    there.
+    """
+
+    value = getattr(obj, name, None)
+    if value is None:
+        value = (getattr(obj, "model_extra", None) or {}).get(name)
+    return value
+
+
+def _raw_fields(completion: object | None) -> dict[str, object | None]:
+    if completion is None:
+        return {}
+    usage = getattr(completion, "usage", None)
+    details = getattr(usage, "completion_tokens_details", None) if usage is not None else None
+    choices = getattr(completion, "choices", None) or []
+    message = choices[0].message if choices else None
+    content = getattr(message, "content", None) if message is not None else None
+    return {
+        "gen_id": getattr(completion, "id", None),
+        "provider": _openrouter_extra(completion, "provider"),
+        "served_model": getattr(completion, "model", None),
+        "raw_finish_reason": choices[0].finish_reason if choices else None,
+        "raw_prompt_tokens": getattr(usage, "prompt_tokens", None) if usage is not None else None,
+        "raw_completion_tokens": getattr(usage, "completion_tokens", None) if usage is not None else None,
+        "reasoning_tokens": getattr(details, "reasoning_tokens", None) if details is not None else None,
+        "cost": _openrouter_extra(usage, "cost") if usage is not None else None,
+        "raw_content_len": len(content) if isinstance(content, str) else None,
+    }
+
+
+def _wrap_sdk_call(fn):  # type: ignore[no-untyped-def]
+    async def call(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        holder = _raw.get()
+        try:
+            completion = await fn(self, *args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - read, then re-raised unchanged
+            if holder is not None:
+                # `LengthFinishReasonError` carries the truncated completion.
+                holder.update(_raw_fields(getattr(exc, "completion", None)))
+            raise
+        if holder is not None:
+            holder.update(_raw_fields(completion))
+        return completion
+
+    return call
+
+
+def _wrap_factory(fn):  # type: ignore[no-untyped-def]
+    def build(agent_type, *args, **kwargs):  # type: ignore[no-untyped-def]
+        client = fn(agent_type, *args, **kwargs)
+        try:
+            setattr(client, _ROW_ATTR, agent_type)
+        except AttributeError:
+            pass
+        return client
+
+    return build
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -80,11 +178,27 @@ def _wrap_create():
         return
 
     from autogen_ext.models.openai import OpenAIChatCompletionClient
+    from openai.resources.chat.completions.completions import AsyncCompletions
+
+    import fateforger.llm.factory as factory
+
+    # The evals import the factory function-locally, and
+    # `build_intent_interpreter_client` looks `build_autogen_chat_client` up in
+    # the module's globals, so replacing the module attribute reaches both.
+    original_build = factory.build_autogen_chat_client
+    factory.build_autogen_chat_client = _wrap_factory(original_build)
+
+    original_parse = AsyncCompletions.parse
+    original_sdk_create = AsyncCompletions.create
+    AsyncCompletions.parse = _wrap_sdk_call(original_parse)  # type: ignore[method-assign]
+    AsyncCompletions.create = _wrap_sdk_call(original_sdk_create)  # type: ignore[method-assign]
 
     original = OpenAIChatCompletionClient.create
 
     async def create(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         started = time.perf_counter()
+        raw: dict[str, object | None] = {}
+        _raw.set(raw)
         row: dict[str, object | None] = {
             "config": _CONFIG,
             "node": _current_node["id"],
@@ -130,6 +244,7 @@ def _wrap_create():
             )
             return result
         finally:
+            row.update(raw)
             with open(_OUT, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(row) + "\n")
 
@@ -138,3 +253,6 @@ def _wrap_create():
         yield
     finally:
         OpenAIChatCompletionClient.create = original  # type: ignore[method-assign]
+        AsyncCompletions.parse = original_parse  # type: ignore[method-assign]
+        AsyncCompletions.create = original_sdk_create  # type: ignore[method-assign]
+        factory.build_autogen_chat_client = original_build
