@@ -540,7 +540,6 @@ async def test_top_level_mention_routes_card_and_approval_through_actual_root(
     focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
     commits: list[tuple[dict, dict, str | None]] = []
 
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     monkeypatch.setattr(
         settings, "slack_timeboxing_channel_id", "C1", raising=False
     )

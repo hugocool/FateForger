@@ -166,10 +166,9 @@ in the spike: **51 source files, 17,584 lines**, in four groups.
   `scheduler_prefetch_capability`, `task_marshalling_capability`,
   `tool_result_presenter`, `toon_views`, `llm/toon`, `shared/handoff_policy`).
 - **Found by the stores spike, not by reachability:**
-  - `mcp_clients.py` whole. `ConstraintMemoryClient` is imported by
-    `tasks/defaults_memory.py` but never constructed (`TASKS_DEFAULTS_MEMORY_BACKEND=disabled`
-    returns first); `McpCalendarClient`'s only importer is `agent.py`. Cut the
-    `defaults_memory.py:21` import with it.
+  - `McpCalendarClient` and `CalendarDaySnapshot` leave `mcp_clients.py`;
+    `ConstraintMemoryClient` stays — it is the default
+    `tasks_defaults_memory_backend` with tests of its own.
   - `preferences.ConstraintStore`, `ensure_constraint_schema`,
     `handlers._update_constraints` / `_maybe_update_timeboxing_thread_constraints`,
     and the `constraint_review.py` handler set. Their only writers are the
@@ -177,10 +176,9 @@ in the spike: **51 source files, 17,584 lines**, in four groups.
     table is permanently empty and the harness-side reads are no-ops. Keep
     the `Constraint` / `ConstraintStatus` / `ConstraintScope` types —
     `messages.py` types against them.
-  - `settings.timeboxing_memory_backend` and its validator (`config.py:223,
-    300-309`): read only by `agent.py:1089`. The harness hardcodes
-    `KGConstraintMemoryClient(settings.memory_db_path)`. Remove the setting
-    and the `TIMEBOXING_MEMORY_BACKEND` line from `.env.template`.
+  - `settings.timeboxing_memory_backend`: Kept. It is also read by
+    `runtime.py`'s graphiti startup checks and by tasks' defaults memory;
+    only `agent.py`'s branch on it goes.
 - The already-dead set PR #396 flagged: `admonisher/{base,calendar,commitment}`,
   `schedular/diffing_agent`, `timeboxing/{flow,prompts,state,notebook_entrypoints}`,
   `slack_bot/{relay_agent,topics}`, `tools_config/`. **Not deletable as
@@ -364,8 +362,11 @@ The rule from #396 stands: a double used by two modules lives here.
 The draft proposed a `workbench=` keyword on four constructors. The spike
 implemented it, mutation-tested it, and found:
 
-- `ConstraintMemoryClient` and `McpCalendarClient` — the two where the seam
-  would have earned its keep — **are deleted in project 1**.
+- `McpCalendarClient` — one of the two where the seam would have earned its
+  keep — **is deleted in project 1**.
+- `ConstraintMemoryClient` — the other one — survives; its `workbench=` seam
+  is the one the spike found earns its keep (0.5s → 17.9s without it) —
+  project 2 adds it.
 - `TickTickMcpClient` and `NotionMcpClient` **have no workbench**. Their
   constructor is already pure (URL validation is parsing; the network probe
   is in `probe()`, which every test monkeypatches). Their three `__new__`
@@ -395,7 +396,9 @@ found five times in one converted file and which a rule scoped to production
 classes would miss — a double's state belongs in its `__init__`. An allowlist
 exists for the legitimate case, each entry naming why; `TBPlan.__new__` is
 the first entry. Lands in project 1's PR with whatever allowlist the cut
-leaves, then shrinks.
+leaves, then shrinks. Measured starting point (project 1's guard, per-file
+rather than per-line): 34 files, 149 offences (24 `__new__`, 125 private
+writes).
 
 ### `tests/contracts/`
 
@@ -423,7 +426,9 @@ directory.
 
 One PR, after project 1 merges: the builders and the conversion of the
 literal-heavy files, the four gratuitous `__new__` conversions, the
-`tests/contracts/` moves, and the allowlist shrunk to `TBPlan`.
+`tests/contracts/` moves, and the allowlist shrunk from its measured
+starting point (34 files, 149 offences) toward `TBPlan`, the one entry the
+table above says stays legitimate.
 
 ### Gate
 

@@ -1,8 +1,8 @@
 """A DeepSeek Harness ``PreToolUse`` hook that will not let a plan reach the
 calendar unless a human said so.
 
-The harness path has no review stage — unlike the legacy flow, which lost its
-gate in one commit, ``/dsh`` was born without one. Every plan it commits is
+The harness gate denies by default; stages 4 and 5 are the review and commit
+cards, and only an explicit approval press opens it. Every plan it commits is
 recorded in the journal as ``ACCEPTED``, and that disposition is a training
 label feeding the constraint memory server. So an unattended commit does not
 merely change a calendar: it teaches the system that Hugo approved a day nobody

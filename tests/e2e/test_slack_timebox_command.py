@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
@@ -23,7 +22,6 @@ async def test_timebox_command_routes_to_timeboxing_agent(monkeypatch: pytest.Mo
         bot_user_id: str,
         say: Any,
         client: Any,
-        get_constraint_store: Callable[[], Awaitable[Any]],
     ) -> None:
         """Capture the routed event args."""
         captured["default_agent"] = default_agent
@@ -37,10 +35,6 @@ async def test_timebox_command_routes_to_timeboxing_agent(monkeypatch: pytest.Mo
         """Capture ephemeral responses."""
         responses.append(payload)
 
-    async def _get_constraint_store() -> Any:
-        """Return no constraint store for this test."""
-        return None
-
     await handlers_mod._handle_timebox_command(
         runtime=object(),
         focus=object(),
@@ -48,7 +42,6 @@ async def test_timebox_command_routes_to_timeboxing_agent(monkeypatch: pytest.Mo
         body={"user_id": "U1", "channel_id": "C1", "text": "tomorrow"},
         client=object(),
         respond=_respond,
-        get_constraint_store=_get_constraint_store,
     )
 
     assert captured["default_agent"] == "timeboxing_agent"
@@ -71,16 +64,11 @@ async def test_timebox_command_sets_channel_type_for_dm(monkeypatch: pytest.Monk
         bot_user_id: str,
         say: Any,
         client: Any,
-        get_constraint_store: Callable[[], Awaitable[Any]],
     ) -> None:
         """Capture the routed event args."""
         captured["event"] = event
 
     monkeypatch.setattr(handlers_mod, "route_slack_event", _fake_route_slack_event)
-
-    async def _get_constraint_store() -> Any:
-        """Return no constraint store for this test."""
-        return None
 
     await handlers_mod._handle_timebox_command(
         runtime=object(),
@@ -89,7 +77,6 @@ async def test_timebox_command_sets_channel_type_for_dm(monkeypatch: pytest.Monk
         body={"user_id": "U1", "channel_id": "D123", "text": "today"},
         client=object(),
         respond=None,
-        get_constraint_store=_get_constraint_store,
     )
 
     assert captured["event"]["channel_type"] == "im"
@@ -144,7 +131,6 @@ async def test_timebox_on_the_harness_backend_asks_for_the_day_not_deepseek(
     fresh process pick its own planning day before anybody confirmed one.
     Both backends now enter through the same thread/redirect machinery.
     """
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
 
     timebox_calls: list[dict[str, Any]] = []
 

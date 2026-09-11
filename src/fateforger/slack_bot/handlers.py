@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
@@ -31,13 +29,6 @@ from fateforger.agents.timeboxing.adaptive_timeboxing import (
     TurnRequest,
 )
 from fateforger.agents.timeboxing.feedback import feedback_facts
-from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
-from fateforger.agents.timeboxing.preferences import (
-    Constraint,
-    ConstraintStatus,
-    ConstraintStore,
-    ensure_constraint_schema,
-)
 from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     ApproveArtifact,
@@ -53,17 +44,6 @@ from fateforger.agents.timeboxing.session_contracts import (
 from fateforger.core.config import settings
 from fateforger.core.logging_config import observe_stage_duration, record_error
 from fateforger.slack_bot.bootstrap import ensure_workspace_ready
-from fateforger.slack_bot.constraint_review import (
-    CONSTRAINT_REVIEW_VIEW_CALLBACK_ID,
-    CONSTRAINT_ROW_REVIEW_ACTION_ID,
-    FF_CONSTRAINT_REVIEW_ALL_ACTION_ID,
-    LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID,
-    build_constraint_review_list_view,
-    build_constraint_review_view,
-    build_constraint_row_blocks,
-    decode_metadata,
-    parse_constraint_review_submission,
-)
 from fateforger.slack_bot.messages import (
     SLACK_MAX_BLOCK_TEXT_CHARS,
     SLACK_MAX_BLOCKS,
@@ -100,6 +80,7 @@ from fateforger.slack_bot.progress_events import (
 from fateforger.slack_bot.progress_events import (
     ProgressStatus as TimeboxProgressStatus,
 )
+from fateforger.slack_bot import retired_cards
 from fateforger.slack_bot.reply_guard import agent_reply_text
 from fateforger.slack_bot.stage_card_registry import StageCardRegistry, receipt_body, receipt_label
 from fateforger.slack_bot.stage_context import context_fold
@@ -138,8 +119,8 @@ from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID,
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
     TimeboxCommitMeta,
-    TimeboxingCommitCoordinator,
     day_type_action_id,
+    decode_metadata,
     format_relative_day_label,
 )
 from fateforger.slack_bot.timeboxing_host import (
@@ -152,21 +133,6 @@ from fateforger.slack_bot.timeboxing_intents import (
     TimeboxActionEnvelope,
     intent_from_artifact_action,
     intent_from_date_action,
-)
-from fateforger.slack_bot.timeboxing_stage_actions import (
-    FF_TIMEBOX_STAGE_BACK_ACTION_ID,
-    FF_TIMEBOX_STAGE_CANCEL_ACTION_ID,
-    FF_TIMEBOX_STAGE_PROCEED_ACTION_ID,
-    FF_TIMEBOX_STAGE_REDO_ACTION_ID,
-    TimeboxingStageActionCoordinator,
-    TimeboxingStageActionPayload,
-)
-from fateforger.slack_bot.timeboxing_submit import (
-    FF_TIMEBOX_CANCEL_SUBMIT_ACTION_ID,
-    FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID,
-    FF_TIMEBOX_UNDO_SUBMIT_ACTION_ID,
-    TimeboxingSubmitCoordinator,
-    TimeboxSubmitActionPayload,
 )
 
 from .focus import FocusManager
@@ -289,97 +255,12 @@ def _timeboxing_excerpt_from_text(text: str) -> str:
     return cleaned
 
 
-def _build_timeboxing_thread_root_blocks(
-    *,
-    title: str,
-    state: str,
-    constraints: list[Constraint],
-    thread_ts: str,
-    user_id: str,
-) -> list[dict[str, object]]:
-    """Build the thread-root blocks with active constraints."""
-    blocks: list[dict[str, object]] = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": _timeboxing_thread_root_text(
-                    title=title, request_excerpt=None, state=state
-                ),
-            },
-        }
-    ]
-    active = [c for c in constraints if c.status != ConstraintStatus.DECLINED]
-    if active:
-        blocks.append({"type": "divider"})
-        blocks.extend(
-            build_constraint_row_blocks(
-                active, thread_ts=thread_ts, user_id=user_id, limit=20
-            )
-        )
-    else:
-        blocks.append(
-            {
-                "type": "context",
-                "elements": [{"type": "mrkdwn", "text": "No active constraints yet."}],
-            }
-        )
-    return blocks
-
-
 def _extract_thread_state(result) -> str | None:
     for obj in (result, getattr(result, "chat_message", None)):
         state = getattr(obj, "thread_state", None)
         if isinstance(state, str) and state.strip():
             return state.strip()
     return None
-
-
-async def _maybe_update_timeboxing_thread_constraints(
-    *,
-    client: AsyncWebClient,
-    focus: FocusManager,
-    thread_key: str,
-    user_id: str,
-    store: ConstraintStore | None,
-) -> None:
-    """Update the timeboxing thread root with the latest active constraints."""
-    if not store:
-        return
-    try:
-        channel_id, thread_root_ts = thread_key.split(":", 1)
-    except Exception:
-        return
-    if thread_root_ts == "dm":
-        return
-    label = focus.get_thread_label(thread_key)
-    if not label:
-        return
-    constraints = await store.list_constraints(
-        user_id=user_id,
-        channel_id=channel_id,
-        thread_ts=thread_root_ts,
-    )
-    blocks = _build_timeboxing_thread_root_blocks(
-        title=label.title,
-        state=label.state,
-        constraints=constraints,
-        thread_ts=thread_root_ts,
-        user_id=user_id,
-    )
-    try:
-        await client.chat_update(
-            channel=channel_id,
-            ts=thread_root_ts,
-            text=_timeboxing_thread_root_text(
-                title=label.title,
-                request_excerpt=label.request_excerpt,
-                state=label.state,
-            ),
-            blocks=blocks,
-        )
-    except Exception:
-        return
 
 
 async def _maybe_update_timeboxing_thread_header(
@@ -531,36 +412,6 @@ def _extract_handoff_target(chat_message) -> str | None:
     )
 
 
-def _build_timeboxing_message(
-    *,
-    cleaned_text: str,
-    user: str,
-    channel: str,
-    thread_ts: str | None,
-    ts: str,
-    force_channel: str | None = None,
-    force_thread_root: str | None = None,
-    force_reply: bool | None = None,
-) -> StartTimeboxing | TimeboxingUserReply:
-    resolved_channel = force_channel or channel
-    resolved_thread_root = force_thread_root or (thread_ts or ts)
-    is_reply = force_reply if force_reply is not None else bool(thread_ts)
-
-    if is_reply:
-        return TimeboxingUserReply(
-            thread_ts=resolved_thread_root,
-            channel_id=resolved_channel,
-            user_id=user,
-            text=cleaned_text,
-        )
-    return StartTimeboxing(
-        thread_ts=resolved_thread_root,
-        channel_id=resolved_channel,
-        user_id=user,
-        user_input=cleaned_text,
-    )
-
-
 def _build_agent_message(
     *,
     agent_type: str,
@@ -573,17 +424,6 @@ def _build_agent_message(
     force_thread_root: str | None = None,
     force_reply: bool | None = None,
 ) -> object:
-    if agent_type == "timeboxing_agent":
-        return _build_timeboxing_message(
-            cleaned_text=cleaned_text,
-            user=user,
-            channel=channel,
-            thread_ts=thread_ts,
-            ts=ts,
-            force_channel=force_channel,
-            force_thread_root=force_thread_root,
-            force_reply=force_reply,
-        )
     return TextMessage(content=cleaned_text, source=user)
 
 
@@ -892,92 +732,6 @@ def _plan_sessions_channel_id() -> str | None:
     return None
 
 
-async def _harness_turn(
-    *,
-    text: str,
-    thread_key: str,
-    owner_user_id: str,
-    on_phase,
-    session_id: str | None = None,
-    history: list[tuple[str, str]] | None = None,
-    proposed_timebox: str | None = None,
-    proposed_calendar_id: str | None = None,
-    proposed_day: str | None = None,
-) -> TextMessage:
-    """One Slack turn through the harness, shaped like a runtime reply.
-
-    Returned as a TextMessage so every renderer downstream -- personas, block
-    compaction, thread updates -- keeps working untouched. The migration
-    changes which system thinks, not how the answer reaches Slack.
-
-    The harness call is a blocking subprocess and a planning turn runs for tens
-    of seconds, so it goes to a worker thread; leaving it on the loop would
-    stall every other Slack event in the workspace.
-    """
-    from .harness_bridge import PLANNING_MODEL, HarnessError
-    from .thread_approval import approval_path, revoke
-
-    # Prefer the exact current process-owned rendering. Slack thread recovery
-    # supplies the same baseline after a restart, when this store is empty.
-    previous_candidate = _pending_candidates.peek(thread_key)
-    if previous_candidate is not None and previous_candidate.rendered.strip():
-        proposed_timebox = previous_candidate.rendered
-        raw_calendar_id = previous_candidate.snapshot.get("calendar_id")
-        raw_day = previous_candidate.snapshot.get("day")
-        proposed_calendar_id = (
-            raw_calendar_id if isinstance(raw_calendar_id, str) else None
-        )
-        proposed_day = raw_day if isinstance(raw_day, str) else None
-
-    # Any material new request invalidates the approval card it supersedes.
-    _pending_candidates.invalidate(thread_key)
-    revoke(thread_key)
-
-    try:
-        reply = await _owned_harness_ask(
-            text,
-            thread_key=thread_key,
-            on_event=on_phase,
-            approval_file=str(approval_path(thread_key)),
-            # Without this the harness starts every turn with no idea the
-            # thread has a past. `thread_key` was already threaded here for the
-            # approval file; the conversation's own identity was not.
-            session_id=session_id,
-            history=history,
-            proposed_timebox=proposed_timebox,
-            proposed_calendar_id=proposed_calendar_id,
-            proposed_day=proposed_day,
-            # Every turn that reaches here is a planning turn: this function is
-            # the timeboxing path. The receptionist and the fast conversational
-            # replies do not come through it.
-            model=PLANNING_MODEL,
-        )
-    except HarnessError as exc:
-        # Surfaced, not swallowed. A harness that could not be reached and a
-        # planner that declined to act must not read the same in the thread.
-        return TextMessage(
-            content=(f":warning: The harness did not answer.\n```{exc}```"),
-            source="timeboxing_agent",
-        )
-    if reply.validated_candidate is not None:
-        # A clean tmbx candidate is approvable whether or not the model tried
-        # plan_commit. In particular, obeying "do not commit" must still show
-        # the one control that can later submit this exact displayed payload.
-        _pending_candidates.replace(
-            thread_key, reply.validated_candidate, owner_user_id=owner_user_id
-        )
-    return TextMessage(content=reply.text, source="timeboxing_agent")
-
-
-@dataclass
-class _HarnessTurnControl:
-    cancel_event: threading.Event
-    on_phase: Callable[[object], None]
-    finished: asyncio.Event
-
-
-_harness_turn_controls: dict[str, _HarnessTurnControl] = {}
-_harness_turn_handoffs: dict[str, asyncio.Lock] = {}
 _thread_commit_locks: dict[str, asyncio.Lock] = {}
 _approval_tasks: set[asyncio.Task[None]] = set()
 
@@ -988,66 +742,6 @@ def _thread_lock(registry: dict[str, asyncio.Lock], thread_key: str) -> asyncio.
         lock = asyncio.Lock()
         registry[thread_key] = lock
     return lock
-
-
-async def _owned_harness_ask(
-    text: str,
-    *,
-    thread_key: str,
-    on_event: Callable[[object], None],
-    **ask_kwargs,
-):
-    """Run one cancellable child, superseding any older turn in the thread."""
-    from .harness_bridge import HarnessCancelled, ask
-
-    async with _thread_lock(_harness_turn_handoffs, thread_key):
-        previous = _harness_turn_controls.get(thread_key)
-        if previous is not None:
-            try:
-                previous.on_phase(
-                    TimeboxProgressEvent(
-                        session_key=thread_key,
-                        sequence=0,
-                        source=ProgressSource.RUNTIME,
-                        phase=TimeboxProgressPhase.OTHER,
-                        status=TimeboxProgressStatus.SUPERSEDED,
-                    )
-                )
-            except Exception:
-                pass
-            previous.cancel_event.set()
-            await previous.finished.wait()
-        async with _thread_lock(_thread_commit_locks, thread_key):
-            control = _HarnessTurnControl(
-                cancel_event=threading.Event(),
-                on_phase=on_event,
-                finished=asyncio.Event(),
-            )
-            _harness_turn_controls[thread_key] = control
-            worker = asyncio.create_task(
-                asyncio.to_thread(
-                    ask,
-                    text,
-                    on_event=on_event,
-                    cancel_event=control.cancel_event,
-                    **ask_kwargs,
-                )
-            )
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        control.cancel_event.set()
-        try:
-            await worker
-        except HarnessCancelled:
-            pass
-        raise
-    except HarnessCancelled as exc:
-        raise asyncio.CancelledError from exc
-    finally:
-        control.finished.set()
-        if _harness_turn_controls.get(thread_key) is control:
-            _harness_turn_controls.pop(thread_key, None)
 
 
 def _note_harness_phase(
@@ -1419,11 +1113,6 @@ def _timebox_start_button_value(blocks) -> str:
     return ""
 
 
-def _timebox_backend() -> str:
-    """Which system answers /timebox. "harness" unless told otherwise."""
-    return (os.environ.get("FF_TIMEBOX_BACKEND") or "harness").strip().lower()
-
-
 def _timebox_body_for_harness(body: dict) -> dict:
     """Give a bare /timebox something to plan.
 
@@ -1754,11 +1443,8 @@ async def _run_adaptive_timebox_turn(
             tz_name=intent.planning_day.timezone,
         )
         title = f"Timeboxing session for {label}"
-        # The message route redraws the root from the focus label at the end
-        # of every turn (`_maybe_update_timeboxing_thread_constraints`), so a
-        # relabel that only wrote Slack text was overwritten with the day
-        # the session *opened* on, milliseconds later. The label is the
-        # source; the write below is the same text, drawn now.
+        # The label is the source for the thread-root text; the write below
+        # draws it now, over the day the session *opened* on.
         if focus is not None:
             focus.set_thread_label(
                 session_key,
@@ -1981,7 +1667,7 @@ async def _handle_timebox_candidate_approval(
     `AwaitingApproval` with a calendar that disagreed with it.
 
     Returns False when this thread has no planning session to tell, which is
-    the legacy route's answer and its cue to commit the way it always has.
+    the caller's cue to write the candidate directly instead.
     """
     repository = getattr(runtime, "timeboxing_session_store", None)
     if approval.expected_revision is None or repository is None:
@@ -2362,7 +2048,6 @@ async def _route_command_as_message(
     body: dict,
     text: str,
     client: AsyncWebClient,
-    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]],
 ) -> None:
     """Drive a slash command through the route a typed message already takes.
 
@@ -2397,7 +2082,6 @@ async def _route_command_as_message(
         bot_user_id=None,
         say=_noop_say,
         client=client,
-        get_constraint_store=get_constraint_store,
     )
 
 
@@ -2409,7 +2093,6 @@ async def _handle_timebox_command(
     body: dict,
     client: AsyncWebClient,
     respond: Callable | None,
-    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]],
 ) -> None:
     user_id = body.get("user_id") or ""
     channel_id = body.get("channel_id") or ""
@@ -2437,7 +2120,6 @@ async def _handle_timebox_command(
             body=body,
             text=text,
             client=client,
-            get_constraint_store=get_constraint_store,
         )
     except Exception as e:
         logger.exception("Timeboxing command route_slack_event failed")
@@ -2455,7 +2137,6 @@ async def _handle_task_refine_command(
     body: dict,
     client: AsyncWebClient,
     respond: Callable | None,
-    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]],
 ) -> None:
     user_id = body.get("user_id") or ""
     channel_id = body.get("channel_id") or ""
@@ -2483,7 +2164,6 @@ async def _handle_task_refine_command(
             body=body,
             text=text or "start guided task refinement session",
             client=client,
-            get_constraint_store=get_constraint_store,
         )
     except Exception as e:
         logger.exception("Task refinement command route_slack_event failed")
@@ -2573,7 +2253,6 @@ async def route_slack_event(
     bot_user_id: str | None,
     say: Callable,
     client: AsyncWebClient,
-    get_constraint_store: Callable[[], Awaitable[ConstraintStore | None]] | None = None,
     planning: PlanningCoordinator | None = None,
     acked: dict | None = None,
 ) -> None:
@@ -2584,30 +2263,6 @@ async def route_slack_event(
     ts = event["ts"]
     channel_type = event.get("channel_type")
     is_dm = channel_type == "im" or str(channel).startswith("D")
-
-    async def _update_constraints(thread_key: str) -> None:
-        """Refresh timeboxing constraints in the thread root message."""
-        if not get_constraint_store:
-            return
-        try:
-            store = await get_constraint_store()
-            await _maybe_update_timeboxing_thread_constraints(
-                client=client,
-                focus=focus,
-                thread_key=thread_key,
-                user_id=user,
-                store=store,
-            )
-        except Exception as exc:
-            record_error(
-                component="slack_routing", error_type="constraint_refresh_error"
-            )
-            logger.warning(
-                "Non-fatal constraint refresh failure thread_key=%s user=%s error=%s",
-                thread_key,
-                user,
-                f"{type(exc).__name__}: {_safe_exc_summary(exc)}",
-            )
 
     # Give the conversation a memory. Fired without awaiting: `observe` costs a
     # model round trip and this route has a 30s budget, and the task reports
@@ -2868,39 +2523,20 @@ async def route_slack_event(
             processing = await client.chat_postMessage(**processing_payload)
 
             try:
-                if _timebox_backend() != "legacy":
-                    result = await _run_adaptive_timebox_turn(
-                        runtime=runtime,
-                        client=client,
-                        logger=logger,
-                        session_key=redirect.target_key,
-                        actor_user_id=user,
-                        interaction_id=ts,
-                        progress_channel=processing["channel"],
-                        progress_ts=processing["ts"],
-                        card_channel=target_channel,
-                        card_thread_ts=root_ts,
-                        user_text=cleaned_text,
-                        focus=focus,
-                    )
-                else:
-                    handoff_msg = _build_agent_message(
-                        agent_type="timeboxing_agent",
-                        cleaned_text=cleaned_text,
-                        user=user,
-                        channel=target_channel,
-                        thread_ts=root_ts,
-                        ts=root_ts,
-                        force_channel=target_channel,
-                        force_thread_root=root_ts,
-                        force_reply=False,
-                    )
-                    result = await runtime.send_message(
-                        handoff_msg,
-                        recipient=AgentId(
-                            "timeboxing_agent", key=redirect.target_key
-                        ),
-                    )
+                result = await _run_adaptive_timebox_turn(
+                    runtime=runtime,
+                    client=client,
+                    logger=logger,
+                    session_key=redirect.target_key,
+                    actor_user_id=user,
+                    interaction_id=ts,
+                    progress_channel=processing["channel"],
+                    progress_ts=processing["ts"],
+                    card_channel=target_channel,
+                    card_thread_ts=root_ts,
+                    user_text=cleaned_text,
+                    focus=focus,
+                )
             except asyncio.TimeoutError:
                 await client.chat_update(
                     channel=target_channel,
@@ -3008,7 +2644,6 @@ async def route_slack_event(
                 thread_key=redirect.target_key,
                 state=_extract_thread_state(result) or "",
             )
-            await _update_constraints(redirect.target_key)
         except Exception:
             logger.exception(
                 "timeboxing session surface failed after the root was posted "
@@ -3093,48 +2728,67 @@ async def route_slack_event(
         processing_payload.update(_persona_payload(persona))
         processing = await client.chat_postMessage(**processing_payload)
 
-        msg = _build_agent_message(
-            agent_type=redirect.agent_type,
-            cleaned_text=cleaned_text,
-            user=user,
-            channel=redirect.target_channel,
-            thread_ts=redirect.target_thread_ts,
-            ts=redirect.target_thread_ts,
-            force_channel=redirect.target_channel,
-            force_thread_root=redirect.target_thread_ts,
-            force_reply=True,
-        )
-        try:
-            result = await runtime.send_message(
-                msg, recipient=AgentId(redirect.agent_type, key=redirect.target_key)
+        if redirect.agent_type == "timeboxing_agent":
+            # A redirected timeboxing thread is an open session: continue it on
+            # the kernel, keyed by the redirect's own thread. There is nothing
+            # registered under "timeboxing_agent" to send to.
+            result = await _run_adaptive_timebox_turn(
+                runtime=runtime,
+                client=client,
+                logger=logger,
+                session_key=redirect.target_key,
+                actor_user_id=user,
+                interaction_id=ts,
+                progress_channel=redirect.target_channel,
+                progress_ts=processing["ts"],
+                card_channel=redirect.target_channel,
+                card_thread_ts=redirect.target_thread_ts,
+                user_text=cleaned_text,
+                focus=focus,
             )
-        except asyncio.TimeoutError:
-            record_error(component="slack_routing", error_type="stage_compute_failure")
-            await client.chat_update(
+        else:
+            msg = _build_agent_message(
+                agent_type=redirect.agent_type,
+                cleaned_text=cleaned_text,
+                user=user,
                 channel=redirect.target_channel,
-                ts=processing["ts"],
-                text=":hourglass_flowing_sand: Timed out waiting for tools/LLM. Please try again.",
+                thread_ts=redirect.target_thread_ts,
+                ts=redirect.target_thread_ts,
+                force_channel=redirect.target_channel,
+                force_thread_root=redirect.target_thread_ts,
+                force_reply=True,
             )
-            await _origin_update(
-                text=":hourglass_flowing_sand: Timed out waiting for tools/LLM. Please try again."
-            )
-            return
-        except Exception as e:
-            record_error(component="slack_routing", error_type="stage_compute_failure")
-            logger.exception(
-                "runtime.send_message failed (redirect agent=%s key=%s)",
-                redirect.agent_type,
-                redirect.target_key,
-            )
-            await client.chat_update(
-                channel=redirect.target_channel,
-                ts=processing["ts"],
-                text=":warning: Something went wrong while handling that request. Check bot logs.",
-            )
-            await _origin_update(
-                text=f":warning: {type(e).__name__}: {_safe_exc_summary(e)}"
-            )
-            return
+            try:
+                result = await runtime.send_message(
+                    msg, recipient=AgentId(redirect.agent_type, key=redirect.target_key)
+                )
+            except asyncio.TimeoutError:
+                record_error(component="slack_routing", error_type="stage_compute_failure")
+                await client.chat_update(
+                    channel=redirect.target_channel,
+                    ts=processing["ts"],
+                    text=":hourglass_flowing_sand: Timed out waiting for tools/LLM. Please try again.",
+                )
+                await _origin_update(
+                    text=":hourglass_flowing_sand: Timed out waiting for tools/LLM. Please try again."
+                )
+                return
+            except Exception as e:
+                record_error(component="slack_routing", error_type="stage_compute_failure")
+                logger.exception(
+                    "runtime.send_message failed (redirect agent=%s key=%s)",
+                    redirect.agent_type,
+                    redirect.target_key,
+                )
+                await client.chat_update(
+                    channel=redirect.target_channel,
+                    ts=processing["ts"],
+                    text=":warning: Something went wrong while handling that request. Check bot logs.",
+                )
+                await _origin_update(
+                    text=f":warning: {type(e).__name__}: {_safe_exc_summary(e)}"
+                )
+                return
 
         payload = _compact_slack_payload(**_slack_payload_from_result(result))
         update = {
@@ -3151,8 +2805,6 @@ async def route_slack_event(
             thread_key=redirect.target_key,
             state=_extract_thread_state(result) or "",
         )
-        if redirect.agent_type == "timeboxing_agent":
-            await _update_constraints(redirect.target_key)
         if not is_dm:
             await _origin_link_to_thread(
                 channel_id=redirect.target_channel,
@@ -3164,15 +2816,15 @@ async def route_slack_event(
     # The fresh channel start used to root the session at the origin ack and
     # then use that same message as progress card and outcome card -- the
     # aliased layout that let a root relabel erase the Stage-0 card
-    # (2026-08-31 22:57). The harness path now builds the one real surface;
-    # only the legacy backend still takes the fallback below.
+    # (2026-08-31 22:57). The session surface below builds the one real
+    # surface instead.
     would_alias_root = (
         agent_type == "timeboxing_agent"
         and not is_dm
         and not thread_ts
         and not origin_thread_root_ts
     )
-    if would_alias_root and _timebox_backend() != "legacy":
+    if would_alias_root:
         session_channel = _channel_for_agent("timeboxing_agent") or channel
         await _begin_timeboxing_session_surface(
             target_channel=session_channel,
@@ -3249,9 +2901,7 @@ async def route_slack_event(
                 # reply still goes out through _origin_update.
                 return
 
-    primary_harness_turn = (
-        agent_type == "timeboxing_agent" and _timebox_backend() != "legacy"
-    )
+    primary_harness_turn = agent_type == "timeboxing_agent"
     heartbeat_task = (
         None if primary_harness_turn else asyncio.create_task(_turn_heartbeat())
     )
@@ -3319,23 +2969,56 @@ async def route_slack_event(
         except ValueError:
             handoff_target = None
 
+    if handoff_target == "timeboxing_agent":
+        # Every door into timeboxing opens the same session surface. When no
+        # channel is configured, or the user is already in it, the session
+        # lives where they are -- the origin "thinking..." ack is repurposed
+        # into the root rather than left beside a second one (same reasoning
+        # as the fresh-channel-start branch above). Never the fall-through
+        # send below: there is nothing registered under this name to
+        # receive it.
+        session_channel = _channel_for_agent("timeboxing_agent") or channel
+        if session_channel != channel:
+            try:
+                await _begin_timeboxing_session_surface(
+                    target_channel=session_channel,
+                    origin_key=origin_key,
+                    existing_root=None,
+                )
+            except Exception:
+                # `open_session_surface` posts the root before this helper's
+                # own try/except, so a channel the bot cannot post into (the
+                # ordinary cause) would otherwise propagate out of
+                # `route_slack_event` -- neither caller of this function
+                # catches anything but `asyncio.TimeoutError`. Never fall
+                # through to the retired runtime send below: open the
+                # session where the user already is instead.
+                logger.warning(
+                    "timeboxing session surface failed in configured "
+                    "channel=%s; opening it in the origin channel=%s instead",
+                    session_channel,
+                    channel,
+                    exc_info=True,
+                )
+                await _begin_timeboxing_session_surface(
+                    target_channel=channel,
+                    origin_key=origin_key,
+                    existing_root=origin_processing_msg,
+                )
+        else:
+            await _begin_timeboxing_session_surface(
+                target_channel=session_channel,
+                origin_key=origin_key,
+                existing_root=origin_processing_msg,
+            )
+        return
+
     if handoff_target:
         focus.set_user_focus(user, handoff_target)
         target_channel = _channel_for_agent(handoff_target)
-        # For timeboxing, always anchor the session in the dedicated channel thread (when configured),
-        # even if the user started in a DM. The DM becomes the control surface (buttons/modals),
-        # and the channel thread becomes the durable workspace/log.
-        should_redirect = bool(target_channel and target_channel != channel) and (
-            (not is_dm) or handoff_target == "timeboxing_agent"
-        )
+        should_redirect = bool(target_channel and target_channel != channel) and (not is_dm)
         if should_redirect:
             try:
-                if handoff_target == "timeboxing_agent":
-                    await _begin_timeboxing_session_surface(
-                        target_channel=target_channel,
-                        origin_key=origin_key,
-                    )
-                    return
                 persona = _persona_for_agent(handoff_target)
                 root_payload = {
                     "channel": target_channel,
@@ -3467,12 +3150,8 @@ async def route_slack_event(
             channel=channel,
             thread_ts=thread_ts,
             ts=ts,
-            force_thread_root=(
-                "dm" if (is_dm and handoff_target == "timeboxing_agent") else None
-            ),
-            force_reply=(
-                True if (is_dm and handoff_target == "timeboxing_agent") else None
-            ),
+            force_thread_root=None,
+            force_reply=None,
         )
         try:
             result = await runtime.send_message(
@@ -3541,8 +3220,6 @@ async def route_slack_event(
         thread_key=origin_key,
         state=_extract_thread_state(result) or "",
     )
-    if agent_type == "timeboxing_agent":
-        await _update_constraints(origin_key)
 
 
 def register_handlers(
@@ -3560,15 +3237,9 @@ def register_handlers(
       - App mention handler  : route @mentions via focus→agent
       - DM handler           : route DMs via focus→agent
     """
-    constraint_store: ConstraintStore | None = None
     workspace_store: SlackWorkspaceStore | None = None
     planning = PlanningCoordinator(runtime=runtime, focus=focus, client=app.client)
     planning.attach_reconciler_dispatch()
-    timeboxing_commit = TimeboxingCommitCoordinator(runtime=runtime, client=app.client)
-    timeboxing_submit = TimeboxingSubmitCoordinator(runtime=runtime, client=app.client)
-    timeboxing_stage_actions = TimeboxingStageActionCoordinator(
-        runtime=runtime, client=app.client
-    )
     workspace_bootstrap_attempted = False
     invited_users: set[str] = set()
 
@@ -3615,18 +3286,6 @@ def register_handlers(
             WorkspaceRegistry.set_global(directory)
         except Exception:
             logger.debug("Failed to load workspace bindings from DB", exc_info=True)
-
-    async def _get_constraint_store() -> ConstraintStore | None:
-        nonlocal constraint_store
-        if constraint_store:
-            return constraint_store
-        if not settings.database_url:
-            return None
-        engine = create_async_engine(_coerce_async_database_url(settings.database_url))
-        await ensure_constraint_schema(engine)
-        sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
-        constraint_store = ConstraintStore(sessionmaker)
-        return constraint_store
 
     async def _get_workspace_store() -> SlackWorkspaceStore | None:
         nonlocal workspace_store
@@ -3762,7 +3421,6 @@ def register_handlers(
                 bot_user_id=bot_user_id,
                 say=say,
                 client=client,
-                get_constraint_store=_get_constraint_store,
                 planning=planning,
             )
         )
@@ -4025,25 +3683,24 @@ def register_handlers(
             logger.warning("approve candidate thread did not match message thread")
             return
 
-        if _timebox_backend() != "legacy":
-            # A planning session exists for this thread, so the commit belongs
-            # inside it: the kernel is what decides a commit is allowed and
-            # what stores the receipt afterwards. The write itself is the same
-            # one either way -- same candidate, same idempotency digest.
-            handled = await _handle_timebox_candidate_approval(
-                runtime=runtime,
-                client=client,
-                logger=logger,
-                approval=approval,
-                channel_id=channel,
-                thread_ts=thread_root,
-                actor_user_id=actor_user_id,
-                interaction_id=_card_interaction_id(
-                    action, FF_HARNESS_APPROVE_ACTION_ID, thread_root
-                ),
-            )
-            if handled:
-                return
+        # A planning session exists for this thread, so the commit belongs
+        # inside it: the kernel is what decides a commit is allowed and what
+        # stores the receipt afterwards. The write itself is the same one
+        # either way -- same candidate, same idempotency digest.
+        handled = await _handle_timebox_candidate_approval(
+            runtime=runtime,
+            client=client,
+            logger=logger,
+            approval=approval,
+            channel_id=channel,
+            thread_ts=thread_root,
+            actor_user_id=actor_user_id,
+            interaction_id=_card_interaction_id(
+                action, FF_HARNESS_APPROVE_ACTION_ID, thread_root
+            ),
+        )
+        if handled:
+            return
 
         task = asyncio.create_task(
             _execute_harness_approval(
@@ -4078,17 +3735,12 @@ def register_handlers(
 
     @app.command("/timebox")
     async def cmd_timebox(ack, body, respond, client, logger):
-        """Plan a day. Both backends start the same way: by asking which day.
+        """Plan a day, which starts by asking which day.
 
-        Neither backend launches a planner here any more. `/timebox` creates or
-        reuses the plan-session thread and renders the date card; the harness
-        backend then continues through the adaptive session kernel and the
-        legacy backend through the five-stage machine. Forking a second thread
-        creation for the harness is what once gave the two backends different
-        session identities for the same conversation.
-
-        FF_TIMEBOX_BACKEND=legacy routes back to the AutoGen flow, which stays
-        wired and reachable. A migration nobody can reverse is a rewrite.
+        No planner is launched here. `/timebox` creates or reuses the
+        plan-session thread and renders the date card; the adaptive session
+        kernel continues from there. Forking a second thread creation for the
+        kernel is what once gave one conversation two session identities.
         """
         await ack()
         # Fire off in background to avoid blocking Slack's 3-second timeout
@@ -4100,7 +3752,6 @@ def register_handlers(
                 body=body,
                 client=client,
                 respond=respond,
-                get_constraint_store=_get_constraint_store,
             )
         )
 
@@ -4114,7 +3765,6 @@ def register_handlers(
                 body=body,
                 client=client,
                 respond=respond,
-                get_constraint_store=_get_constraint_store,
             )
         )
 
@@ -4471,12 +4121,7 @@ def register_handlers(
 
     @app.action(FF_TIMEBOX_COMMIT_START_ACTION_ID)
     async def on_timebox_commit_start_action(ack, body, client, logger):
-        """Confirm the planning day, on whichever backend owns the session.
-
-        The two backends share this one control because they share the card.
-        Which one answers is the same decision `/timebox` already made, read
-        again here rather than remembered in the button.
-        """
+        """Confirm the planning day and start the kernel session."""
         await ack()
         channel_id = (body.get("channel") or {}).get("id") or ""
         message_ts = (body.get("message") or {}).get("ts") or ""
@@ -4484,14 +4129,6 @@ def register_handlers(
         action = (body.get("actions") or [{}])[0]
         value = action.get("value") or ""
         if not (channel_id and message_ts and value):
-            return
-        if _timebox_backend() == "legacy":
-            await timeboxing_commit.handle_start_action(
-                value=value,
-                prompt_channel_id=channel_id,
-                prompt_ts=message_ts,
-                actor_user_id=actor_user_id,
-            )
             return
         await _handle_timebox_date_confirmation(
             runtime=runtime,
@@ -4605,14 +4242,6 @@ def register_handlers(
 
         if not (channel_id and message_ts and selected_date and meta_value):
             return
-        if _timebox_backend() == "legacy":
-            await timeboxing_commit.handle_day_select_action(
-                prompt_channel_id=channel_id,
-                prompt_ts=message_ts,
-                selected_date=selected_date,
-                existing_meta_value=meta_value,
-            )
-            return
         await _handle_timebox_date_reselect(
             client=client,
             logger=logger,
@@ -4622,204 +4251,12 @@ def register_handlers(
             prompt_ts=message_ts,
         )
 
-    @app.action(FF_TIMEBOX_CONFIRM_SUBMIT_ACTION_ID)
-    async def on_timebox_confirm_submit_action(ack, body, client, logger):
-        """Handle Stage 5 confirm-submit button clicks."""
+    async def _on_retired_card(ack, body, client, logger):
         await ack()
-        payload = TimeboxSubmitActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_submit.handle_confirm_action(payload=payload)
+        await retired_cards.retire_card(client=client, body=body)
 
-    @app.action(FF_TIMEBOX_CANCEL_SUBMIT_ACTION_ID)
-    async def on_timebox_cancel_submit_action(ack, body, client, logger):
-        """Handle Stage 5 cancel-submit button clicks."""
-        await ack()
-        payload = TimeboxSubmitActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_submit.handle_cancel_action(payload=payload)
-
-    @app.action(FF_TIMEBOX_UNDO_SUBMIT_ACTION_ID)
-    async def on_timebox_undo_submit_action(ack, body, client, logger):
-        """Handle Stage 5 undo-submit button clicks."""
-        await ack()
-        payload = TimeboxSubmitActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_submit.handle_undo_action(payload=payload)
-
-    @app.action(FF_TIMEBOX_STAGE_PROCEED_ACTION_ID)
-    async def on_timebox_stage_proceed_action(ack, body, client, logger):
-        """Handle deterministic stage proceed button clicks."""
-        await ack()
-        payload = TimeboxingStageActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_stage_actions.handle_action(
-            payload=payload,
-            action="proceed",
-        )
-
-    @app.action(FF_TIMEBOX_STAGE_BACK_ACTION_ID)
-    async def on_timebox_stage_back_action(ack, body, client, logger):
-        """Handle deterministic stage back button clicks."""
-        await ack()
-        payload = TimeboxingStageActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_stage_actions.handle_action(
-            payload=payload,
-            action="back",
-        )
-
-    @app.action(FF_TIMEBOX_STAGE_REDO_ACTION_ID)
-    async def on_timebox_stage_redo_action(ack, body, client, logger):
-        """Handle deterministic stage redo button clicks."""
-        await ack()
-        payload = TimeboxingStageActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_stage_actions.handle_action(
-            payload=payload,
-            action="redo",
-        )
-
-    @app.action(FF_TIMEBOX_STAGE_CANCEL_ACTION_ID)
-    async def on_timebox_stage_cancel_action(ack, body, client, logger):
-        """Handle deterministic stage cancel button clicks."""
-        await ack()
-        payload = TimeboxingStageActionPayload.from_action_body(body)
-        if not payload:
-            return
-        await timeboxing_stage_actions.handle_action(
-            payload=payload,
-            action="cancel",
-        )
-
-    async def _handle_constraint_review_all_action(body, client):
-        action = (body.get("actions") or [{}])[0]
-        value = action.get("value") or ""
-        metadata = decode_metadata(value)
-        thread_ts = (
-            metadata.get("thread_ts")
-            or (body.get("message") or {}).get("thread_ts")
-            or (body.get("message") or {}).get("ts")
-            or ""
-        )
-        user_id = metadata.get("user_id") or (body.get("user") or {}).get("id") or ""
-        channel_id = (
-            body.get("channel", {}).get("id") or metadata.get("channel_id") or ""
-        )
-        trigger_id = body.get("trigger_id") or ""
-        if not (thread_ts and user_id and channel_id and trigger_id):
-            return
-
-        store = await _get_constraint_store()
-        if not store:
-            return
-        constraints = await store.list_constraints(
-            user_id=user_id,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-        )
-        active_constraints = [
-            constraint
-            for constraint in constraints
-            if constraint.status != ConstraintStatus.DECLINED
-        ]
-        view = build_constraint_review_list_view(
-            active_constraints,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-            user_id=user_id,
-        )
-        await client.views_open(trigger_id=trigger_id, view=view)
-
-    @app.action(FF_CONSTRAINT_REVIEW_ALL_ACTION_ID)
-    async def on_constraint_review_all_action(ack, body, client, logger):
-        await ack()
-        await _handle_constraint_review_all_action(body, client)
-
-    @app.action(LEGACY_CONSTRAINT_REVIEW_ALL_ACTION_ID)
-    async def on_constraint_review_all_action_legacy(ack, body, client, logger):
-        await ack()
-        await _handle_constraint_review_all_action(body, client)
-
-    @app.action(CONSTRAINT_ROW_REVIEW_ACTION_ID)
-    async def on_constraint_review_action(ack, body, client, logger):
-        await ack()
-        action = (body.get("actions") or [{}])[0]
-        value = action.get("value") or ""
-        metadata = decode_metadata(value)
-        constraint_id_raw = metadata.get("constraint_id") or ""
-        thread_ts = metadata.get("thread_ts") or ""
-        user_id = metadata.get("user_id") or ""
-        channel_id = body.get("channel", {}).get("id") or ""
-        if not (constraint_id_raw and user_id and channel_id):
-            return
-        try:
-            constraint_id = int(constraint_id_raw)
-        except ValueError:
-            return
-
-        store = await _get_constraint_store()
-        if not store:
-            return
-        constraint = await store.get_constraint(
-            user_id=user_id, constraint_id=constraint_id
-        )
-        if not constraint:
-            return
-        if thread_ts and constraint.thread_ts and constraint.thread_ts != thread_ts:
-            return
-        view = build_constraint_review_view(
-            constraint,
-            channel_id=channel_id,
-            thread_ts=thread_ts or (constraint.thread_ts or ""),
-            user_id=user_id,
-        )
-        await client.views_open(trigger_id=body["trigger_id"], view=view)
-
-    @app.view(CONSTRAINT_REVIEW_VIEW_CALLBACK_ID)
-    async def on_constraint_review_submit(ack, body, client, logger):
-        await ack()
-        store = await _get_constraint_store()
-        if not store:
-            return
-        state = body.get("view", {}).get("state", {}).get("values", {})
-        status, description = parse_constraint_review_submission(state)
-        metadata = body.get("view", {}).get("private_metadata") or ""
-        info = decode_metadata(metadata)
-        constraint_id_raw = info.get("constraint_id") or ""
-        user_id = info.get("user_id") or body.get("user", {}).get("id", "") or ""
-        channel_id = info.get("channel_id") or ""
-        thread_ts = info.get("thread_ts") or ""
-        if not (constraint_id_raw and user_id):
-            return
-        try:
-            constraint_id = int(constraint_id_raw)
-        except ValueError:
-            return
-        await store.update_constraint(
-            user_id=user_id,
-            constraint_id=constraint_id,
-            status=status,
-            description=description,
-        )
-        if channel_id and thread_ts:
-            await client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=thread_ts,
-                text="Saved your constraint update.",
-            )
-            await _maybe_update_timeboxing_thread_constraints(
-                client=client,
-                focus=focus,
-                thread_key=f"{channel_id}:{thread_ts}",
-                user_id=user_id,
-                store=store,
-            )
+    for _retired_id in retired_cards.RETIRED_ACTION_IDS:
+        app.action(_retired_id)(_on_retired_card)
 
     # --- App Home (Command Center) ---
     @app.event("app_home_opened")

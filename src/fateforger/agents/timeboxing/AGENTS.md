@@ -3,127 +3,46 @@
 **Scope:** Operational rules for the `src/fateforger/agents/timeboxing/` subtree.
 For file index, architecture, and status, see `README.md` in this folder.
 
-## Goals
+> **Retired (2026-09-09).** Most of what this file used to say rules for —
+> the coordinator (`agent.py`), GraphFlow orchestration (`flow_graph.py`,
+> `nodes/`), the LLM-facing plan/patch models (`tb_models.py`, `tb_ops.py`),
+> the sync engine (`sync_engine.py`, `submitter.py`), the schema-in-prompt
+> patcher (`patching.py`), and the Notion-backed NLU/constraint plumbing
+> (`nlu.py`, `constraint_retriever.py`, `constraint_search_tool.py`,
+> `notion_constraint_extractor.py`) — is deleted code
+> (`refactor: retire TimeboxingFlowAgent and the 34 modules only it
+> reached`, commit `67489cd`; see the top of `README.md` for the full list).
+> Below are the rules that still apply to what remains: the Stage 1
+> elicitation loop and the durable constraint-memory backends. Everything
+> those old sections said about the deleted subsystems is not repeated here
+> as a historical record — read `67489cd^` for that, the way the two root
+> calendar docs point at their own predecessor code instead of re-describing
+> it.
 
-- Keep the timeboxing flow responsive; never block user replies on durable preference writes.
-- Extract session-scoped constraints from user replies (not from generic "start timeboxing" requests).
-- Prefetch durable constraints from Notion (via constraint-memory MCP) before Stage 1 so the cache is warm (uses the gap-driven `ConstraintRetriever`).
-- Stage-gating LLMs must not call tools; the coordinator handles all tool IO in background tasks.
-- Intent classification and natural-language interpretation must use LLMs (AutoGen agents) or explicit Slack slash commands; do not use regex/keyword matching.
-- Handoffs are gated by typed intent fields (`assist_target`, `assist_confidence`): if unclear, stay in the current agent/stage by default.
-- Plan in block-based terms (deep/shallow blocks, energy windows); time estimates are optional.
-- Each stage agent has a single responsibility and a typed input/output contract; avoid prompt overlap.
-- The coordinator is the only place that assembles context (facts + constraints + immovables) and passes it forward.
+## Stage 1 Elicitation (elicitation.py, elicitation_judges.py)
 
-## Invariants
-
-- Keep orchestration constants out of `agent.py`; use `constants.py` (timeouts/limits/fallbacks).
-- Keep parsing/validation DRY; use `pydantic_parsing.py` helpers for LLM outputs and mixed payloads.
-- Prefer Pydantic validation for Slack/MCP/Notion payloads; avoid try/except parsing and manual dict probing.
-- Legacy/back-compat code must be marked with `# TODO(refactor):` and removed after migration.
-- Keep MCP wiring out of `agent.py`; use `mcp_clients.py` for calendar/constraint-memory clients.
-- Durable constraint retrieval is centralized in `constraint_retriever.py` (query_types -> type_ids -> query_constraints).
-- Inject list-shaped prompt data via TOON tables (not JSON arrays); see `src/fateforger/llm/toon.py` and `toon_views.py`.
-- Stage 5 submit parity is mandatory: NL submit intent and button submit must converge to the same submission executor path (currently `_submit_pending_plan`).
-- Stage 1's gate (`stage1_gate` in `elicitation.py`) is arithmetic over the session snapshot and never calls a model; only the three judges in `elicitation_judges.py` (via `elicit()`) touch a model client, and only from the Slack host's `resolve()`.
+- Stage 1's gate (`stage1_gate` in `elicitation.py`) is arithmetic over the session snapshot and never calls a model; only the three judges in `elicitation_judges.py` (via `elicit()`) touch a model client, and only from the Slack host's `resolve()` in `slack_bot/timeboxing_host.py`.
 - A cell whose probe was answered (an `ELICITED_STATEMENT` fact carrying that cell id) or assumed past (a `PlannerAssumption`) is never asked again. `closed_cells` is the single source of that subtraction; read it there rather than re-deriving "closed" at a call site, or the gate could disagree with itself about whether a cell is still open depending on who asked.
 - A Stage 1 judge failure (a bad schema, an index the model was not offered, an empty option label) propagates out of `elicit()` rather than degrading to a smaller matrix or a silently skipped cell. A host that cannot judge fails the turn instead of proposing to close a stage it never opened.
 - `elicit()`'s classify batch runs every open cell concurrently and completes in full -- via `asyncio.gather`, so any one failure fails the whole batch -- before the coverage matrix is assembled and written to the snapshot. Nothing reads a matrix that is still being built.
 
-## Framework First (Don't Reinvent It)
+## Durable Constraint Memory (mcp_clients.py, graphiti_constraint_memory.py, constraint_record_memory.py, kg_constraint_client.py, durable_constraint_store.py)
 
-- Prefer AutoGen capabilities for workflow control and routing:
-  - `GraphFlow` / `DiGraphBuilder` for stage machines (see `flow_graph.py`, `nodes/nodes.py`).
-  - Termination conditions (one user-facing message per Slack turn).
-  - Typed outputs via `output_content_type` where the schema has no `oneOf` / discriminated unions.
-  - Tools via `FunctionTool` / MCP clients (tool IO stays in the coordinator).
-- Prefer structured message types over bespoke dict protocols (Pydantic models + `StructuredMessage`).
+- These backends are read by `fateforger.agents.tasks.defaults_memory` (tasks' defaults memory) and by `fateforger.core.runtime`'s startup checks via `settings.timeboxing_memory_backend` — not by any coordinator in this directory, which no longer exists.
+- `mcp_clients.py` now holds only `ConstraintMemoryClient` (the constraint-memory MCP stdio client); `McpCalendarClient` was deleted with the coordinator.
+- `kg_constraint_client.py` is read-only, deliberately: a constraint in the standalone memory server's store (`data/memory.db`) is L2 -- never authored directly, always projected from the immutable observation log -- so writing a row straight into that store would bypass the projection that makes re-projection-on-judgement-improvement possible.
+- `durable_constraint_store.py` defines the backend-neutral `DurableConstraintStore` protocol the concrete clients above implement; keep new durable-memory backends behind that same interface rather than special-casing a backend name at a call site.
 
 ## Forbidden: Deterministic NLU
 
 - Do not add deterministic extraction/interpretation of user intent from free-form text (scope/date/intent classification).
-  - Example anti-pattern: `_infer_explicit_constraint_scope`-style keyword scans.
-- Use multilingual structured LLM outputs instead:
-  - `nlu.py` (`PlannedDateResult`, `ConstraintInterpretation`).
-- Deterministic parsing is only acceptable for explicitly structured values (ISO timestamps, Slack IDs, known schema fields).
 - Never post-process LLM prose with phrase/substring/regex filters to drive behavior or suppress content. If behavior needs control, put it in typed schema fields and state transitions.
-
-## LLM-Facing Models (tb_models.py, tb_ops.py)
-
-- `TBEvent` / `TBPlan` are the **sole LLM-facing models** for timebox generation.
-- `CalendarEvent` (SQLModel) stays for DB persistence + Slack display; never pass it to an LLM.
-- All event types use the compact `ET` enum (`M`, `C`, `DW`, `SW`, `PR`, `H`, `R`, `BU`, `BG`).
-- Timing is a discriminated union on field `a`: `ap` (after_previous), `bn` (before_next), `fs` (fixed_start), `fw` (fixed_window).
-- `TBPatch` uses typed domain ops (`ae`, `re`, `ue`, `me`, `ra`) — never generic JSON Patch.
-- `apply_tb_ops()` is the deterministic applicator; the LLM never directly mutates state.
-
-## Sync Engine (sync_engine.py, submitter.py)
-
-- Uses DeepDiff for semantic change detection (summary, start, end, description, colorId).
-- Only mutates **agent-owned events** (identified by `fftb*` event ID prefix).
-- Foreign calendar events are read-only FixedWindow constraints.
-- Every remote op is logged in a `SyncTransaction` with `before_payload` for undo.
-- Sync flow: `fetch_remote -> plan_sync(R, D) -> execute_sync -> log transaction`.
-- Undo flow: `load transaction -> apply compensating ops in reverse`.
-- `CalendarSubmitter` wraps the sync engine for coordinator use (`submit_plan()`, `undo_last()`).
-
-## Patcher (patching.py)
-
-- Uses AutoGen `AssistantAgent` with **schema-in-system-prompt** pattern.
-- `TBPatch.model_json_schema()` is injected into the system prompt; the LLM returns raw JSON text.
-- `_extract_patch()` strips markdown fences and parses the JSON.
-- `output_content_type=TBPatch` is intentionally **NOT** used because `oneOf` from Pydantic discriminated unions breaks both OpenAI `response_format` and OpenRouter structured output on the hosts this was measured on.
-- **No trustcall** in the patching path.
-- Patcher takes current `TBPlan` + user message + constraints -> returns `TBPatch`.
-- `apply_tb_ops()` applies the patch deterministically.
-
-## Background Work
-
-- Local constraint extraction + persistence should run in background tasks.
-- Durable (Notion) preference upserts should be fire-and-forget with dedupe + timeout.
-- Durable semantic dedupe must batch candidate retrieval/matching; avoid per-constraint equivalent lookups.
-- Durable constraint reads should run in the background and be merged with session-scoped constraints.
-- Use a separate LLM client for background extraction/intent so it cannot block stage responses.
-- MCP tool names are sanitized to OpenAI-safe versions (e.g., `constraint_query_constraints`).
-- Only await pending background tasks if a downstream step strictly needs them (use short timeouts).
-- If skeleton drafting times out, fall back to a minimal timebox so the flow keeps moving.
-- Calendar meetings are treated as immovables (fixed start/end) and must be included before gap-filling.
-
-## Stage Parallelism
-
-- Stage 0: background-kick calendar prefetch + constraint retrieval (existing).
-- Stage 2: **pre-generate skeleton** in background (assumes user proceeds) using immovables + constraints + inputs-so-far.
-- Stage 3: use pre-generated skeleton if available; else draft synchronously and present a markdown overview.
-- Stage 4: LLM -> `TBPatch` -> `apply_tb_ops()` -> sync current `TBPlan` to calendar.
-- Stage 5: review summary + optional undo follow-up (no additional submit-confirm gate).
-- Slack stage controls are deterministic and click-driven:
-  - default controls are `Back`/`Redo`/`Cancel`, with `Proceed` shown only when the current stage is ready and there is no pending local Refine undo snapshot.
-  - after a Stage 4 local update is applied, the control row must swap `Proceed` for `Undo last update` (wired through the existing `Redo` action path) so the user can immediately revert without an extra advance click.
-  - readiness is enforced server-side when `Proceed` is clicked.
-
-## Stage 3/4 Contract (Hard Constraint)
-
-- Stage 3 is **presentation-only** for users:
-  - Output must be markdown overview text (rendered through Slack `markdown` block).
-  - Stage 3 must not fail on `Timebox` materialization/validation.
-  - Stage 3 may prepare/carry a draft `TBPlan` for Stage 4, but it must not require a fully validated `Timebox`.
-- Stage 4 is the first stage allowed to materialize/validate `Timebox`:
-  - `Timebox` objects must come from the patch loop validator path (not one-off conversion outside retry loop).
-  - Validation failures must be fed back into patch retry context so the LLM can repair.
-  - Keep retry-driven repair bounded but robust (default max attempts is 5 unless explicitly overridden).
-- Do not add hardcoded event-shape "fixup" shortcuts that bypass patch-loop repair logic.
-
-## UX Status
-
-- When background work is queued, include a short, friendly status note in stage responses.
-- Status notes should reassure the user they can continue without waiting.
+- This rule outlives any one module: it applied to the deleted `nlu.py` and applies equally to the elicitation judges and any future module in this directory.
 
 ## Task Sources
 
-- If TickTick MCP is configured (`TICKTICK_MCP_URL`), stage agents may use TickTick tools to pull tasks.
-- Treat task fetch failures as non-blocking; continue the flow with user-provided inputs.
+- TickTick MCP task-fetching (`TICKTICK_MCP_URL`) has moved to `fateforger/agents/tasks/` (see `agents/tasks/README.md`); it is not this directory's concern any more.
 
 ## Implementation Ticket
 
-- **Read `TICKET_SYNC_ENGINE.md` (repo root) before making changes to this module.**
-- Follow the phased checklist; update checkboxes as items complete.
+- `TICKET_SYNC_ENGINE.md` (repo root) is the retired sync engine's implementation ticket -- historical, not a live checklist for this directory.

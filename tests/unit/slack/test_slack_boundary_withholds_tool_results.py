@@ -20,15 +20,6 @@ from autogen_agentchat.messages import (
 
 from fateforger.slack_bot.handlers import _slack_payload_from_result
 from fateforger.slack_bot.messages import SlackBlockMessage, SlackThreadStateMessage
-from fateforger.slack_bot.timeboxing_commit import (
-    _slack_payload_from_result as _commit_payload,
-)
-from fateforger.slack_bot.timeboxing_stage_actions import (
-    _slack_payload_from_result as _stage_payload,
-)
-from fateforger.slack_bot.timeboxing_submit import (
-    _slack_payload_from_result as _submit_payload,
-)
 
 
 # The shape that actually reached Slack: autogen's MCP adapter json.dumps()es the
@@ -153,13 +144,14 @@ def test_absent_content_still_reads_as_no_response():
     assert _slack_payload_from_result(_Response(None)) == {"text": "(no response)"}
 
 
-# Four modules build Slack payloads from agent results. All of them ended in the same two lines
-# before #180, so all of them could post the same leak; they now share one guard, and this
-# parametrisation is what keeps a future fifth copy from drifting back.
+# Four modules built Slack payloads from agent results before #180, and all of them ended in
+# the same two lines, so all of them could post the same leak. Three of the four copies left
+# with the legacy dispatchers that owned them once those retired; the parametrisation stays on
+# the one that remains so a second copy is caught if one is ever added back.
 @pytest.mark.parametrize(
     "build_payload",
-    [_slack_payload_from_result, _commit_payload, _stage_payload, _submit_payload],
-    ids=["handlers", "timeboxing_commit", "timeboxing_stage_actions", "timeboxing_submit"],
+    [_slack_payload_from_result],
+    ids=["handlers"],
 )
 def test_every_slack_payload_builder_withholds_tool_results(build_payload):
     withheld = build_payload(_Response(_tool_summary(LEAKED_PAYLOAD)))["text"]

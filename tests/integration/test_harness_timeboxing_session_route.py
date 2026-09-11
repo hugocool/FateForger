@@ -184,11 +184,6 @@ class Client:
 
 
 @pytest.fixture(autouse=True)
-def _harness_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
-
-
-@pytest.fixture(autouse=True)
 def _fresh_pending_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pending candidates live in a module global keyed by session.
 

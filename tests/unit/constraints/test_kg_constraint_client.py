@@ -165,29 +165,23 @@ async def test_it_satisfies_the_contract_the_agent_adapts(tmp_path):
     assert rows and rows[0]["name"] == "Work start time"
 
 
-def test_the_rows_survive_the_reconciliation_the_agent_runs(tmp_path):
-    """The real integration risk: rows shaped wrongly are dropped in silence.
-
-    `reconcile_constraint_rows` is what the agent puts the prefetch through, and
-    a row it cannot read disappears without an error -- the same failure mode
-    the Notion backend had, arriving from a different direction.
-    """
+def test_the_rows_survive_the_reader_the_harness_runs(tmp_path):
+    """Rows shaped wrongly are dropped in silence -- the failure mode the
+    Notion backend had. The harness reads through the durable store adapter,
+    so that is the reader that must see every row."""
     import asyncio
 
-    from fateforger.agents.timeboxing.constraint_reconciliation import (
-        reconcile_constraint_rows,
+    from fateforger.agents.timeboxing.durable_constraint_store import (
+        build_durable_constraint_store,
     )
 
     db = _store_with(tmp_path, _constraint(), _constraint(name="Commute duration"))
-    rows = asyncio.run(KGConstraintMemoryClient(db).query_constraints(filters={}))
+    store = build_durable_constraint_store(KGConstraintMemoryClient(db))
+    rows = asyncio.run(store.query_constraints(filters={}, limit=50))
 
-    result = reconcile_constraint_rows(
-        rows=rows, planned_day=date(2026, 8, 24), stage="Refine"
+    assert sorted(r["name"] for r in rows) == sorted(
+        [_constraint().name, "Commute duration"]
     )
-    assert result.raw_count == 2
-    assert result.canonical_count == 2
-    # The one that matters: they must still be applicable after reconciliation.
-    assert result.applicable_count == 2
 
 
 # -- anchors and suspension -------------------------------------------------

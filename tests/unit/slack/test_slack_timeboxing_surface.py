@@ -78,11 +78,9 @@ async def test_timeboxing_handoff_does_not_redirect_from_dm(monkeypatch):
         client=client,
     )
 
-    assert [r.type for _, r in runtime.calls] == ["receptionist_agent", "timeboxing_agent"]
+    assert [r.type for _, r in runtime.calls] == ["receptionist_agent"]
     # Timeboxing always anchors the session in #timeboxing (even when initiated via DM)
-    assert runtime.calls[1][1].key == "C_TIMEBOX:dm_root"
     assert any(p.get("channel") == "C_TIMEBOX" and not p.get("thread_ts") for p in client.posted)
-    assert any(p.get("channel") == "C_TIMEBOX" and p.get("thread_ts") == "dm_root" for p in client.posted)
 
 
 # ── recovering focus ──────────────────────────────────────────────────────────

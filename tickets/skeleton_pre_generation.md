@@ -2,7 +2,14 @@
 
 ## Tracking
 
-- Status: Implemented, Tested (2026-02-13)
+- Status: Implemented, Tested (2026-02-13). **The confirm/undo wiring this
+  ticket describes (AC2/AC3, `ff_timebox_confirm_submit`,
+  `ff_timebox_undo_submit`) was retired with the legacy agent on
+  `chore/retire-legacy-timeboxing-agent` (2026-09-09)** — a press on one of
+  those buttons now just rewrites the card to say the flow is retired
+  (`retired_cards.py`). Undo lives on the harness now: the Slack action is
+  `ff_harness_undo`, handled by `handlers.act_harness_undo`, which reverses
+  the reported tmbx transaction directly.
 - System of record issue: https://github.com/hugocool/FateForger/issues/7
 - Issue branch: `issue/7-skeleton-pre-generation`
 - PR: https://github.com/hugocool/FateForger/pull/8
@@ -131,8 +138,11 @@ Matches existing codebase:
 
 ## Validation Executed
 
-- `poetry run pytest tests/unit/test_timeboxing_skeleton_pre_generation.py tests/unit/test_timeboxing_submit_flow.py tests/unit/test_timeboxing_review_submit_prompt.py tests/integration/test_slack_timebox_buttons.py -q`
-- `poetry run pytest tests/unit/test_timeboxing_graphflow_state_machine.py tests/unit/test_phase4_rewiring.py tests/unit/test_slack_timeboxing_routing.py tests/unit/test_timeboxing_commit_skips_initial_extraction.py -q`
+- ~~`poetry run pytest tests/unit/test_timeboxing_skeleton_pre_generation.py tests/unit/test_timeboxing_submit_flow.py tests/unit/test_timeboxing_review_submit_prompt.py tests/integration/test_slack_timebox_buttons.py -q`~~
+- ~~`poetry run pytest tests/unit/test_timeboxing_graphflow_state_machine.py tests/unit/test_phase4_rewiring.py tests/unit/test_slack_timeboxing_routing.py tests/unit/test_timeboxing_commit_skips_initial_extraction.py -q`~~
+- Those six files went with the 2026-09-09 legacy-agent retirement; the
+  surviving equivalents are `tests/unit/slack/test_retired_cards.py` and
+  `tests/unit/timeboxing/test_slack_timeboxing_routing.py`.
 
 ## Notes / Remaining Human Verification
 

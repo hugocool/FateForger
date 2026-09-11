@@ -7,7 +7,6 @@ pytest.importorskip("autogen_agentchat")
 from autogen_agentchat.messages import TextMessage
 from autogen_core import AgentId
 
-from fateforger.agents.timeboxing.messages import StartTimeboxing, TimeboxingUserReply
 from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.handlers import _with_agent_attribution, route_slack_event
 from fateforger.slack_bot.messages import SlackBlockMessage
@@ -136,7 +135,7 @@ async def _route(*, runtime, focus, client, planning, event):
 
 
 @pytest.mark.asyncio
-async def test_routes_root_message_to_timeboxing_start_when_focused():
+async def test_a_root_message_in_a_focused_channel_opens_a_session(monkeypatch):
     focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
     focus.set_focus("C1:111", "timeboxing_agent", by_user="U1")
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
@@ -152,25 +151,18 @@ async def test_routes_root_message_to_timeboxing_start_when_focused():
         client=client,
     )
 
-    assert len(runtime.calls) == 1
-    msg, recipient = runtime.calls[0]
-    assert isinstance(msg, StartTimeboxing)
-    # Root timeboxing sessions are anchored to the bot's prompt message (not the user's message),
-    # so the session thread can start cleanly under a deterministic control surface.
-    assert msg.thread_ts == "p1"
-    assert recipient.type == "timeboxing_agent"
-    assert recipient.key == "C1:p1"
+    assert runtime.calls == []
+    assert any(p.get("channel") == "C1" and not p.get("thread_ts") for p in client.posted)
 
 
 @pytest.mark.asyncio
-async def test_handoff_from_receptionist_resends_as_timeboxing_start():
+async def test_a_receptionist_handoff_opens_a_session_where_the_user_is(monkeypatch):
     focus = FocusManager(
         ttl_seconds=60, allowed_agents=["receptionist_agent", "timeboxing_agent"]
     )
     runtime = _FakeRuntime(
         [
             _FakeResult(_FakeHandoffMessage("timeboxing_agent")),
-            _FakeResult(TextMessage(content="ok", source="bot")),
         ]
     )
     client = _FakeClient()
@@ -185,24 +177,28 @@ async def test_handoff_from_receptionist_resends_as_timeboxing_start():
         client=client,
     )
 
-    assert len(runtime.calls) == 2
-    first_msg, first_recipient = runtime.calls[0]
-    second_msg, second_recipient = runtime.calls[1]
-
-    assert isinstance(first_msg, TextMessage)
-    assert first_recipient.type == "receptionist_agent"
-
-    assert isinstance(second_msg, StartTimeboxing)
-    assert second_msg.thread_ts == "222"
-    assert second_recipient.type == "timeboxing_agent"
+    assert [r.type for _, r in runtime.calls] == ["receptionist_agent"]
+    # No timeboxing channel is configured, so the session lives in C1, the
+    # channel the user is already in: the origin "thinking..." ack (posted by
+    # `_FakeClient.chat_postMessage`, which always answers with ts "p1") is
+    # repurposed into the root via `chat_update`, rather than left beside a
+    # freshly-posted second root.
+    assert any(u.get("channel") == "C1" and u.get("ts") == "p1" for u in client.updates)
 
 
 @pytest.mark.asyncio
-async def test_routes_thread_reply_to_timeboxing_user_reply():
+async def test_a_thread_reply_in_a_focused_thread_is_a_kernel_turn(monkeypatch):
     focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
     focus.set_focus("C1:root", "timeboxing_agent", by_user="U1")
     runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
     client = _FakeClient()
+    turns: list[dict] = []
+
+    async def _fake_turn(**kwargs):
+        turns.append(kwargs)
+        return SlackBlockMessage(text="turn ran", blocks=[])
+
+    monkeypatch.setattr("fateforger.slack_bot.handlers._run_adaptive_timebox_turn", _fake_turn)
 
     await route_slack_event(
         runtime=runtime,
@@ -220,10 +216,9 @@ async def test_routes_thread_reply_to_timeboxing_user_reply():
         client=client,
     )
 
-    assert len(runtime.calls) == 1
-    msg, _ = runtime.calls[0]
-    assert isinstance(msg, TimeboxingUserReply)
-    assert msg.thread_ts == "root"
+    assert runtime.calls == []
+    assert [t["session_key"] for t in turns] == ["C1:root"]
+    assert client.updates, "the turn's outcome is written back into the thread"
 
 
 @pytest.mark.asyncio
@@ -272,9 +267,16 @@ async def test_route_slack_event_compacts_payload_after_msg_too_long(monkeypatch
 
 @pytest.mark.asyncio
 async def test_route_slack_event_records_stage_compute_failure(monkeypatch):
-    class _FailingRuntime:
+    """A turn that blows up is recorded and named back into the thread.
+
+    The failing call is the kernel turn: timeboxing has not gone through
+    ``runtime.send_message`` since the legacy agent was retired, and this
+    asserts the handler's own except arm, which is shared by both.
+    """
+
+    class _UnusedRuntime:
         async def send_message(self, *_args, **_kwargs):
-            raise RuntimeError("compute blew up")
+            raise AssertionError("timeboxing does not go through the runtime")
 
     focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
     focus.set_focus("C1:root", "timeboxing_agent", by_user="U1")
@@ -285,8 +287,15 @@ async def test_route_slack_event_records_stage_compute_failure(monkeypatch):
         lambda *, component, error_type: errors.append((component, error_type)),
     )
 
+    async def _failing_turn(**_kwargs):
+        raise RuntimeError("compute blew up")
+
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers._run_adaptive_timebox_turn", _failing_turn
+    )
+
     await route_slack_event(
-        runtime=_FailingRuntime(),
+        runtime=_UnusedRuntime(),
         focus=focus,
         default_agent="receptionist_agent",
         event={
@@ -304,55 +313,6 @@ async def test_route_slack_event_records_stage_compute_failure(monkeypatch):
     assert ("slack_routing", "stage_compute_failure") in errors
     assert client.updates
     assert "RuntimeError" in (client.updates[-1].get("text") or "")
-
-
-@pytest.mark.asyncio
-async def test_route_slack_event_constraint_refresh_failure_is_non_fatal(monkeypatch):
-    class _ExplodingConstraintStore:
-        async def list_constraints(self, **_kwargs):
-            raise RuntimeError("constraint store unavailable")
-
-    focus = FocusManager(ttl_seconds=60, allowed_agents=["timeboxing_agent"])
-    key = "C1:root"
-    focus.set_focus(key, "timeboxing_agent", by_user="U1")
-    focus.set_thread_label(
-        key,
-        title="Timeboxing session",
-        request_excerpt=None,
-        state="pending",
-        by_user="U1",
-    )
-    runtime = _FakeRuntime([_FakeResult(TextMessage(content="ok", source="bot"))])
-    client = _FakeClient()
-    errors: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        "fateforger.slack_bot.handlers.record_error",
-        lambda *, component, error_type: errors.append((component, error_type)),
-    )
-
-    async def _get_constraint_store():
-        return _ExplodingConstraintStore()
-
-    await route_slack_event(
-        runtime=runtime,
-        focus=focus,
-        default_agent="timeboxing_agent",
-        event={
-            "channel": "C1",
-            "user": "U1",
-            "text": "reply",
-            "thread_ts": "root",
-            "ts": "555",
-        },
-        bot_user_id=None,
-        say=_unused_say,
-        client=client,
-        get_constraint_store=_get_constraint_store,
-    )
-
-    assert client.updates
-    assert str(client.updates[-1].get("text") or "").endswith("ok")
-    assert ("slack_routing", "constraint_refresh_error") in errors
 
 
 @pytest.mark.asyncio
@@ -442,7 +402,6 @@ async def test_a_dm_timeboxing_thread_is_found_in_the_store_after_focus_is_gone(
         return SlackBlockMessage(text="turn ran", blocks=[])
 
     monkeypatch.setattr("fateforger.slack_bot.handlers._run_adaptive_timebox_turn", _fake_turn)
-    monkeypatch.setattr("fateforger.slack_bot.handlers._timebox_backend", lambda: "harness")
 
     await _route(runtime=runtime, focus=focus, client=client, planning=planning, event=_dm_reply_event("move gym to 19:00"))
 

@@ -26,7 +26,8 @@ This blocks root-cause analysis when patching fails or drifts from user preferen
 3. Timebox audit script can answer “selected/extracted/persisted/applied” for one session without manual grep.
 
 ## Notes
-- This repo now includes the missing runtime events in `TimeboxingFlowAgent`.
+- This repo now includes the missing runtime events in `TimeboxingFlowAgent`
+  (retired 2026-09-09; the events now live on the adaptive kernel path).
 - Remaining work is operational:
   - restore GitHub auth
   - open upstream issue

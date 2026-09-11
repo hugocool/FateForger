@@ -6,11 +6,10 @@ session is in progress:
     if timeboxing_activity.is_active(reminder.user_id):
         ... "timeboxing active for %s; skipping"
 
-But every `mark_active` call in the tree is in `agents/timeboxing/agent.py` --
-the legacy `TimeboxingFlowAgent`, which Slack only reaches when
-`FF_TIMEBOX_BACKEND=legacy`, and nothing sets that. The adaptive kernel that
-actually serves every turn never marked anyone active, so `is_active` was
-permanently False and the guard could not fire.
+But every `mark_active` call in the tree was in the legacy timeboxing agent,
+which Slack had stopped routing to. The adaptive kernel that actually serves
+every turn never marked anyone active, so `is_active` was permanently False
+and the guard could not fire.
 
 Measured on 2026-08-31: 12 user messages produced 12 reconciles that nudged and
 12 identical "No planning session on the calendar yet" cards, several four

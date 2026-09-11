@@ -68,6 +68,11 @@ from .session_contracts import (
 
 logger = logging.getLogger(__name__)
 
+#: How many times in a row the planner may ask for another turn before the
+#: session says it is looping. Legacy's `_REFINE_NO_CHANGE_LIMIT` (9eb333e):
+#: a real session once ran nine identical passes before anyone noticed.
+MAX_CONSECUTIVE_CONTINUATIONS = 3
+
 
 class TurnRequest(BaseModel):
     """One idempotent, revision-aware planning-session interaction."""
@@ -1373,7 +1378,7 @@ class AdaptiveTimeboxing:
                 # could not finish inside one.
                 return (
                     self._continue_later(snapshot, assumptions),
-                    self._another_turn(result),
+                    self._another_turn(snapshot, result),
                 )
             return snapshot, TurnFailed(
                 code="missing_required_artifact",
@@ -1440,22 +1445,43 @@ class AdaptiveTimeboxing:
             # It produced something *and* wants to keep going. The artifact is
             # kept -- it is real work -- but it is not offered for approval,
             # because the planner has just said it is not finished.
-            return updated, self._another_turn(result)
+            return updated, self._another_turn(snapshot, result)
         return updated, AwaitingApproval(artifact=artifact)
 
-    def _another_turn(self, result: PlanningResult) -> NeedsAnotherTurn:
-        """Log it and type it.
+    def _another_turn(
+        self, snapshot: PlanningSessionSnapshot, result: PlanningResult
+    ) -> NeedsAnotherTurn | TurnFailed:
+        """Let the planner continue, until continuing is all it does.
 
-        Logged at warning because a planner that asks every turn is a bug, and
-        a silent continuation is indistinguishable from slow progress -- which
-        is how a loop would hide.
+        Logged at warning because a planner that asks every turn is a bug,
+        and a silent continuation is indistinguishable from slow progress --
+        which is how a loop would hide. The streak is the run of
+        ``needs_another_turn`` outcomes at the tail of the session's handled
+        interactions; this turn would be one more.
         """
 
         assert result.continuation is not None
-        logger.warning(
-            "planner asked for another turn reason=%s", result.continuation.reason
-        )
-        return NeedsAnotherTurn(reason=result.continuation.reason)
+        reason = result.continuation.reason
+        streak = 1
+        for handled in reversed(snapshot.handled_interactions):
+            if handled.outcome_kind != "needs_another_turn":
+                break
+            streak += 1
+        if streak >= MAX_CONSECUTIVE_CONTINUATIONS:
+            logger.warning(
+                "planner asked for another turn %d times in a row; failing the turn reason=%s",
+                streak,
+                reason,
+            )
+            return TurnFailed(
+                code="no_progress",
+                message=(
+                    f"The planner asked for another turn {streak} times in a row "
+                    f"without finishing. Last reason: {reason}"
+                ),
+            )
+        logger.warning("planner asked for another turn reason=%s", reason)
+        return NeedsAnotherTurn(reason=reason)
 
     def _continue_later(
         self,

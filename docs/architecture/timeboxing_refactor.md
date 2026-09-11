@@ -4,6 +4,14 @@ title: Timeboxing Refactor
 
 # Timeboxing Refactor
 
+> **Superseded (2026-09-09).** This page describes `TimeboxingFlowAgent`'s
+> coordinator + stage-gating design, retired with the agent itself (commit
+> `67489cd`); every code pointer below except `mcp_clients.py` names a
+> deleted file. Of the tests listed below only
+> `tests/e2e/test_slack_timebox_command.py` survives. See
+> `docs/architecture/agents.md` for the live components and
+> `docs/indices/agents_timeboxing.md` for the retirement note and file index.
+
 This page summarizes the “prompt-splitting + typed stage contexts + background constraints” refactor for timeboxing.
 
 For the detailed repo-level report, see `TIMEBOXING_REFACTOR_REPORT.md`.

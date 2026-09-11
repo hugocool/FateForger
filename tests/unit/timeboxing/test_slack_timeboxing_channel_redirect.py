@@ -129,6 +129,71 @@ class DummySay:
         return {"channel": "C_ORIG", "ts": f"orig_proc_{len(self.calls)}"}
 
 
+class _FailsForChannelClient(RecordingSlackClient):
+    """Raises on `chat_postMessage` for one channel.
+
+    The bot not being a member of the configured session channel is the
+    ordinary cause: `open_session_surface` posts its root before
+    `_begin_timeboxing_session_surface`'s own try/except, so this is what
+    that failure looks like from the caller's side.
+    """
+
+    def __init__(self, *, fails_for: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._fails_for = fails_for
+
+    async def chat_postMessage(self, **payload):
+        if payload.get("channel") == self._fails_for:
+            raise RuntimeError("channel_not_found")
+        return await super().chat_postMessage(**payload)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_root_post_in_the_configured_channel_falls_back_to_the_origin_channel(
+    monkeypatch,
+):
+    """The bot not being in #timeboxing must not lose the session, or fall
+    through to the retired runtime send.
+    """
+    monkeypatch.setattr(
+        settings, "slack_timeboxing_channel_id", "C_TIMEBOX", raising=False
+    )
+
+    runtime = DummyRuntime()
+    client = _FailsForChannelClient(
+        fails_for="C_TIMEBOX", root_ts="orig_root", reply_ts="orig_proc", dm_channel="D_DM"
+    )
+    say = DummySay()
+    focus = FocusManager(
+        ttl_seconds=3600, allowed_agents=["receptionist_agent", "timeboxing_agent"]
+    )
+    turns: list[dict] = []
+
+    async def _fake_turn(**kwargs):
+        turns.append(kwargs)
+        return SlackBlockMessage(text="turn ran", blocks=[])
+
+    monkeypatch.setattr(handlers, "_run_adaptive_timebox_turn", _fake_turn)
+
+    event = {"channel": "C_ORIG", "user": "U1", "text": "timebox tomorrow", "ts": "1"}
+    await route_slack_event(
+        runtime=runtime,
+        focus=focus,
+        default_agent="receptionist_agent",
+        event=event,
+        bot_user_id=None,
+        say=say,
+        client=client,
+    )
+
+    assert [r.type for _, r in runtime.calls] == ["receptionist_agent"]
+    assert not any(p.get("channel") == "C_TIMEBOX" for p in client.posted)
+    assert any(
+        u.get("channel") == "C_ORIG" and u.get("ts") == "orig_root" for u in client.updates
+    )
+    assert turns and turns[0]["session_key"] == "C_ORIG:orig_root"
+
+
 @pytest.mark.asyncio
 async def test_timeboxing_handoff_redirects_into_configured_channel(monkeypatch):
     monkeypatch.setattr(
@@ -153,11 +218,11 @@ async def test_timeboxing_handoff_redirects_into_configured_channel(monkeypatch)
         client=client,
     )
 
-    assert [r.type for _, r in runtime.calls] == [
-        "receptionist_agent",
-        "timeboxing_agent",
-    ]
-    assert runtime.calls[1][1].key == "C_TIMEBOX:tb_root"
+    assert [r.type for _, r in runtime.calls] == ["receptionist_agent"]
+    assert focus.get_redirect("C_ORIG:1").target_key == "C_TIMEBOX:tb_root"
+    assert any(
+        p.get("channel") == "C_TIMEBOX" and not p.get("thread_ts") for p in client.posted
+    )
     # Thread root + processing reply in the timeboxing channel
     assert any(
         p["channel"] == "C_TIMEBOX" and not p.get("thread_ts") for p in client.posted
@@ -166,12 +231,10 @@ async def test_timeboxing_handoff_redirects_into_configured_channel(monkeypatch)
         p["channel"] == "C_TIMEBOX" and p.get("thread_ts") == "tb_root"
         for p in client.posted
     )
-    # User gets a DM with the commit prompt (best-effort).
-    # Note: "Go to session" is NOT included initially - it appears after user clicks Confirm.
+    # User gets a DM linking back to the session thread (best-effort).
     assert client.opened and client.opened[0]["users"] == ["U1"]
     assert any(
-        p["channel"] == "D_DM"
-        and FF_TIMEBOX_COMMIT_START_ACTION_ID in str(p.get("blocks"))
+        p["channel"] == "D_DM" and "ff_open_thread" in str(p.get("blocks"))
         for p in client.posted
     )
 
@@ -189,7 +252,7 @@ async def test_timeboxing_handoff_redirects_into_configured_channel(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_timeboxing_reply_in_origin_thread_is_forwarded(monkeypatch):
+async def test_a_reply_in_the_origin_thread_continues_the_session_on_the_kernel(monkeypatch):
     monkeypatch.setattr(
         settings, "slack_timeboxing_channel_id", "C_TIMEBOX", raising=False
     )
@@ -200,6 +263,13 @@ async def test_timeboxing_reply_in_origin_thread_is_forwarded(monkeypatch):
     focus = FocusManager(
         ttl_seconds=3600, allowed_agents=["receptionist_agent", "timeboxing_agent"]
     )
+    turns: list[dict] = []
+
+    async def _fake_turn(**kwargs):
+        turns.append(kwargs)
+        return SlackBlockMessage(text="turn ran", blocks=[])
+
+    monkeypatch.setattr(handlers, "_run_adaptive_timebox_turn", _fake_turn)
 
     # First message creates redirect + focus
     await route_slack_event(
@@ -212,7 +282,7 @@ async def test_timeboxing_reply_in_origin_thread_is_forwarded(monkeypatch):
         client=client,
     )
 
-    # Reply in the original thread should be forwarded to the timeboxing thread
+    # Reply in the original thread should continue the session on the kernel
     await route_slack_event(
         runtime=runtime,
         focus=focus,
@@ -229,9 +299,9 @@ async def test_timeboxing_reply_in_origin_thread_is_forwarded(monkeypatch):
         client=client,
     )
 
-    # The last runtime call is a timeboxing_agent call keyed to the timeboxing thread
-    assert runtime.calls[-1][1].type == "timeboxing_agent"
-    assert runtime.calls[-1][1].key == "C_TIMEBOX:tb_root"
+    assert [r.type for _, r in runtime.calls] == ["receptionist_agent"]
+    assert [t["session_key"] for t in turns] == ["C_TIMEBOX:tb_root", "C_TIMEBOX:tb_root"]
+    assert any(u.get("channel") == "C_TIMEBOX" for u in client.updates)
 
 
 @pytest.mark.asyncio
@@ -243,6 +313,13 @@ async def test_timeboxing_done_updates_thread_header_emoji(monkeypatch):
     runtime = DoneRuntime()
     client = RecordingSlackClient(root_ts="tb_root", reply_ts="tb_proc", dm_channel="D_DM")
     say = DummySay()
+
+    async def _fake_turn(**_kwargs):
+        return SlackThreadStateMessage(text="Finalized.", thread_state="done")
+
+    monkeypatch.setattr(
+        "fateforger.slack_bot.handlers._run_adaptive_timebox_turn", _fake_turn
+    )
     focus = FocusManager(
         ttl_seconds=3600, allowed_agents=["receptionist_agent", "timeboxing_agent"]
     )
@@ -370,7 +447,6 @@ async def test_harness_redirect_offers_the_owned_approval_in_the_timeboxing_thre
     monkeypatch.setattr(
         settings, "slack_timeboxing_channel_id", "C_TIMEBOX", raising=False
     )
-    monkeypatch.setenv("FF_TIMEBOX_BACKEND", "harness")
     monkeypatch.setattr(
         handlers, "_pending_candidates", PendingTimeboxCandidates()
     )

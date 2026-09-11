@@ -4,19 +4,13 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
+from urllib.parse import parse_qs, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from autogen_core import AgentId
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
-from slack_sdk.web.async_client import AsyncWebClient
 
-from fateforger.agents.timeboxing.messages import TimeboxingCommitDate
 from fateforger.agents.timeboxing.session_contracts import DayType
-from fateforger.slack_bot.constraint_review import decode_metadata, encode_metadata
 from fateforger.slack_bot.messages import SlackBlockMessage
-from fateforger.slack_bot.reply_guard import agent_reply_text
-from fateforger.slack_bot.ui import link_button
-from fateforger.slack_bot.workspace import WorkspaceRegistry
 
 FF_TIMEBOX_COMMIT_START_ACTION_ID = "ff_timebox_start"
 FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID = "ff_timebox_day_select"
@@ -38,22 +32,6 @@ def day_type_action_id(day_type: "DayType") -> str:
     """
 
     return f"{FF_TIMEBOX_DAY_TYPE_ACTION_ID}_{day_type.value}"
-
-
-def _persona_payload(agent_type: str) -> dict[str, Any]:
-    """Return Slack message persona overrides for a given agent type."""
-    directory = WorkspaceRegistry.get_global()
-    persona = directory.persona_for_agent(agent_type) if directory else None
-    if not persona:
-        return {}
-    payload: dict[str, Any] = {}
-    if persona.username:
-        payload["username"] = persona.username
-    if persona.icon_emoji:
-        payload["icon_emoji"] = persona.icon_emoji
-    if persona.icon_url:
-        payload["icon_url"] = persona.icon_url
-    return payload
 
 
 def _iter_days(start: date, *, count: int) -> list[date]:
@@ -161,6 +139,19 @@ def build_timebox_commit_prompt_message(
         text=f"Confirm timeboxing day: {display_day}",
         blocks=blocks,
     )
+
+
+def encode_metadata(values: dict[str, str]) -> str:
+    """Encode modal metadata into a querystring value."""
+    return urlencode(values)
+
+
+def decode_metadata(payload: str) -> dict[str, str]:
+    """Decode modal metadata from a querystring payload."""
+    if not payload:
+        return {}
+    parsed = parse_qs(payload, keep_blank_values=True)
+    return {key: value[0] for key, value in parsed.items()}
 
 
 class TimeboxCommitMeta(BaseModel):
@@ -359,208 +350,14 @@ def build_day_type_override_blocks(meta: TimeboxCommitMeta) -> list[dict[str, An
     ]
 
 
-class TimeboxingCommitCoordinator:
-    def __init__(self, *, runtime, client: AsyncWebClient) -> None:
-        """Create the coordinator that bridges Slack actions to the timeboxing agent."""
-        self._runtime = runtime
-        self._client = client
-
-    async def handle_start_action(
-        self,
-        *,
-        value: str,
-        prompt_channel_id: str,
-        prompt_ts: str,
-        actor_user_id: str | None,
-    ) -> None:
-        """Handle the 'Confirm' button and dispatch `TimeboxingCommitDate` to the agent."""
-        meta = TimeboxCommitMeta.from_value(value)
-        if not meta:
-            return
-
-        planned_date = meta.date
-        tz_name = meta.tz or "UTC"
-        thread_key = f"{meta.channel_id}:{meta.thread_ts}"
-
-        # Immediately update the prompt message to show loading state
-        display_day = format_relative_day_label(
-            planned_date=planned_date, tz_name=tz_name
-        )
-        loading_blocks: list[dict[str, Any]] = [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"⏳ Starting timeboxing for *{display_day}*...",
-                },
-            }
-        ]
-        try:
-            await self._client.chat_update(
-                channel=prompt_channel_id,
-                ts=prompt_ts,
-                text=f"Starting timeboxing for {display_day}...",
-                blocks=loading_blocks,
-            )
-        except Exception:
-            pass
-
-        processing_payload: dict[str, Any] = {
-            "channel": meta.channel_id,
-            "text": ":hourglass_flowing_sand: *timeboxing_agent* is thinking...",
-            **_persona_payload("timeboxing_agent"),
-        }
-        # Only include thread_ts if it's a real message timestamp (not "dm")
-        if meta.thread_ts and meta.thread_ts != "dm":
-            processing_payload["thread_ts"] = meta.thread_ts
-        processing = await self._client.chat_postMessage(**processing_payload)
-
-        try:
-            result = await self._runtime.send_message(
-                TimeboxingCommitDate(
-                    channel_id=meta.channel_id,
-                    thread_ts=meta.thread_ts,
-                    user_id=meta.user_id or (actor_user_id or ""),
-                    planned_date=planned_date,
-                    timezone=tz_name,
-                ),
-                recipient=AgentId("timeboxing_agent", key=thread_key),
-            )
-        except Exception:
-            await self._client.chat_update(
-                channel=meta.channel_id,
-                ts=processing["ts"],
-                text=":warning: Something went wrong while starting timeboxing. Check bot logs.",
-            )
-            return
-
-        payload = _slack_payload_from_result(result)
-        update = {
-            "channel": meta.channel_id,
-            "ts": processing["ts"],
-            "text": payload.get("text", "") or "",
-        }
-        if payload.get("blocks"):
-            update["blocks"] = payload["blocks"]
-        await self._client.chat_update(**update)
-
-        # Mark the session thread root as "in progress" once the user confirms.
-        # Skip if thread_ts is "dm" (not a real message)
-        display_day = format_relative_day_label(
-            planned_date=planned_date, tz_name=tz_name
-        )
-        if meta.thread_ts and meta.thread_ts != "dm":
-            try:
-                await self._client.chat_update(
-                    channel=meta.channel_id,
-                    ts=meta.thread_ts,
-                    text=f":large_blue_circle: Timeboxing session for {display_day}",
-                )
-            except Exception:
-                pass
-
-        # Update the prompt message (DM/channel) with a "Go to session" link for convenience.
-        # Only show the link if the session is in a different channel (redirect case).
-        link = ""
-        is_redirect = prompt_channel_id != meta.channel_id
-        if is_redirect and meta.thread_ts and meta.thread_ts != "dm":
-            try:
-                perma = await self._client.chat_getPermalink(
-                    channel=meta.channel_id, message_ts=meta.thread_ts
-                )
-                link = perma.get("permalink") or ""
-            except Exception:
-                pass
-        blocks: list[dict[str, Any]] = [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"Timeboxing for *{display_day}* started.",
-                },
-            }
-        ]
-        if link:
-            blocks.append(
-                {
-                    "type": "actions",
-                    "elements": [
-                        link_button(
-                            text="Go to session",
-                            url=link,
-                            action_id="ff_open_thread",
-                        )
-                    ],
-                }
-            )
-        try:
-            await self._client.chat_update(
-                channel=prompt_channel_id,
-                ts=prompt_ts,
-                text=f"Timeboxing for {display_day} started.",
-                blocks=blocks,
-            )
-        except Exception:
-            pass
-
-    async def handle_day_select_action(
-        self,
-        *,
-        prompt_channel_id: str,
-        prompt_ts: str,
-        selected_date: str,
-        existing_meta_value: str,
-    ) -> None:
-        meta = TimeboxCommitMeta.from_value(existing_meta_value)
-        if not meta:
-            return
-        try:
-            updated_meta = meta.with_selected_date(selected_date)
-        except (TypeError, ValueError, ValidationError):
-            return
-        value = updated_meta.to_value()
-        prompt = build_timebox_commit_prompt_message(
-            planned_date=selected_date, tz_name=meta.tz, meta_value=value
-        )
-        # Keep the session thread title aligned with the currently selected day.
-        try:
-            label = format_relative_day_label(
-                planned_date=selected_date, tz_name=meta.tz
-            )
-            await self._client.chat_update(
-                channel=meta.channel_id,
-                ts=meta.thread_ts,
-                text=f":large_yellow_circle: Timeboxing session for {label}",
-            )
-        except Exception:
-            pass
-        await self._client.chat_update(
-            channel=prompt_channel_id,
-            ts=prompt_ts,
-            text=prompt.text,
-            blocks=prompt.blocks,
-        )
-
-
-def _slack_payload_from_result(result: Any) -> dict[str, Any]:
-    chat_message = getattr(result, "chat_message", None) or result
-    if hasattr(chat_message, "blocks") and hasattr(chat_message, "text"):
-        blocks = getattr(chat_message, "blocks", None)
-        text = getattr(chat_message, "text", None)
-        if blocks is not None:
-            return {"text": text or "", "blocks": blocks}
-        return {"text": text or ""}
-    # `chat_message` already collapsed to `result` above, so this is the whole non-Slack case.
-    return {"text": agent_reply_text(chat_message)}
-
-
 __all__ = [
     "FF_TIMEBOX_COMMIT_START_ACTION_ID",
     "FF_TIMEBOX_COMMIT_DAY_SELECT_ACTION_ID",
     "FF_TIMEBOX_DAY_TYPE_ACTION_ID",
     "day_type_action_id",
+    "decode_metadata",
+    "encode_metadata",
     "TimeboxCommitMeta",
-    "TimeboxingCommitCoordinator",
     "build_day_type_override_blocks",
     "build_timebox_commit_prompt_message",
     "build_timebox_date_card",

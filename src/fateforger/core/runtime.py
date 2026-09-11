@@ -28,7 +28,6 @@ from fateforger.agents.receptionist import HandoffBase, ReceptionistAgent
 from fateforger.agents.revisor.agent import RevisorAgent
 from fateforger.agents.schedular.agent import PlannerAgent
 from fateforger.agents.tasks import TasksAgent
-from fateforger.agents.timeboxing.agent import TimeboxingFlowAgent
 from fateforger.agents.timeboxing.durable_constraint_store import (
     build_durable_constraint_store,
 )
@@ -794,11 +793,6 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
         runtime,
         "planner_agent",
         lambda: PlannerAgent("planner_agent", haunt=haunt),
-    )
-    await TimeboxingFlowAgent.register(
-        runtime,
-        "timeboxing_agent",
-        lambda: TimeboxingFlowAgent("timeboxing_agent"),
     )
     await RevisorAgent.register(
         runtime,

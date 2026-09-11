@@ -45,8 +45,8 @@ Socket Mode Slack bot that routes user interactions to specialist agents. Built 
 | File | Responsibility |
 |------|---------------|
 | `timeboxing_commit.py` | Stage 0 "commit day" Slack UI: day picker + start button. Handles user day-selection before a timeboxing session begins. Action IDs: `FF_TIMEBOX_COMMIT_*`. |
-| `timeboxing_submit.py` | Stage 5 submit/cancel/undo Slack action bridge. Parses button metadata and dispatches typed submit/undo messages to `timeboxing_agent`. |
-| `constraint_review.py` | Block Kit modals and action payloads for reviewing/editing timeboxing constraints extracted from conversations. |
+| `retired_cards.py` | One handler for the seven legacy card action IDs (Stage 5 submit/cancel/undo, deterministic stage proceed/back/redo/cancel). The two modules that used to dispatch these to `timeboxing_agent` are gone (retired 2026-09-09); a press now just rewrites the card to say the flow is retired. |
+| ~~`constraint_review.py`~~ | Removed (`6f93212`): its Block Kit modals had no writer left after the legacy agent retired — its only writers were `agent.py` and a review modal only it posted — so the constraint store it read from sat permanently empty; the surface is gone rather than left dispatching to a dead table. |
 | `stage_context.py` | Stage 1 context surfaces as typed values: `ContextPanel` (two blocks, counts by anchor group) and `ContextFold` (the rules modal), built from the session snapshot alone; ranking by what changed and what is uncertain first. |
 | `stage_card_registry.py` | Remembers each session's live stage card and context panel; receipts the card on transition, edits the panel in place, retires it when the session ends. |
 
@@ -171,11 +171,8 @@ Button/action callbacks registered in `handlers.py`:
 | `FF_EVENT_*` | `planning.py` | Calendar slot editing |
 | `ff_tasks_*` | `handlers.py` + `task_cards.py` | Due-task overview/view-all, per-task details modal, modal-driven task title updates |
 | `ff_open_google_calendar_event` / `open_event_url` | `handlers.py` | Ack URL-button clicks so Slack opens event links without action errors |
-| `timeboxing_constraint_review` | `handlers.py` + `constraint_review.py` | Open single-constraint deny/edit modal |
-| `ff_timeboxing_constraint_review_all` (legacy: `timeboxing_constraint_review_all`) | `handlers.py` + `constraint_review.py` | Open full constraint list modal |
-| `ff_timebox_confirm_submit` | `timeboxing_submit.py` | Submit Stage 5 plan to calendar |
-| `ff_timebox_cancel_submit` | `timeboxing_submit.py` | Cancel pending Stage 5 submit and return to refine |
-| `ff_timebox_undo_submit` | `timeboxing_submit.py` | Undo latest Stage 5 submission |
+| ~~`timeboxing_constraint_review`~~ / ~~`ff_timeboxing_constraint_review_all`~~ (legacy: `timeboxing_constraint_review_all`) | — | Removed (`6f93212`): opened `constraint_review.py`'s single-constraint and full-list modals, which are gone for the same reason — no writer left after the legacy agent retired |
+| `ff_timebox_confirm_submit`, `ff_timebox_cancel_submit`, `ff_timebox_undo_submit`, `ff_timebox_stage_proceed`, `ff_timebox_stage_back`, `ff_timebox_stage_redo`, `ff_timebox_stage_cancel` | `retired_cards.py` | Retired (2026-09-09): these seven ids only appear on cards the legacy agent posted; a press rewrites the card in place rather than dispatching anywhere |
 | `ff_harness_approve` | `handlers.py` + `timebox_candidate.py` | Commit the exact user-owned harness candidate once |
 | `ff_harness_undo` | `handlers.py` + `tmbx_client.py` | Reverse the reported tmbx transaction directly |
 | `ff_timebox_show_rules` | `handlers.py` + `timeboxing_cards.py` | Open the Stage 1 rules modal from the context panel (reads state, changes nothing) |

@@ -8,8 +8,11 @@
 > access it uses instead. `admonisher/base.py` and `admonisher/calendar.py`
 > have no caller in `src/` or `scripts/`; their tests were removed in the
 > 2026-09 test-suite prune (`tests/README.md`, "What's out of `tests/unit/`").
-> Everything below is left as written, as a record of what was true then —
-> it is not a guide to the current architecture.
+> `McpCalendarClient` (`fateforger.agents.timeboxing.mcp_clients`) is also
+> gone now — it left with the legacy timeboxing agent on 2026-09-09;
+> `src/tmbx/calendar/` (`port.py`, `gcal.py`, `fake.py`) is the calendar port
+> on the surviving path. Everything below is left as written, as a record of
+> what was true then — it is not a guide to the current architecture.
 
 ## 🎯 Summary
 
