@@ -89,13 +89,43 @@ per linked block:
   itself.
 
 `_dead_link_violation` (`src/tmbx/service.py`) refuses the whole commit if
-any block's handle is not in the material store, naming the block and the
-handle. This is stricter than the check at `apply` time, which lets a block
-the patch never touched keep a handle whose row is already gone — refusing
-there would hide the rest of the day from whoever has to fix it. At commit
-there is nothing left to guess from: a handle with no row means no URL to
-write, so the commit is refused until that block's link is cleared with an
-explicit null.
+a linked block's handle is not in the material store, naming the block and
+the handle — unless the block is one tmbx does not own, which this check
+skips (see below). This is stricter than the check at `apply` time, which
+lets a block the patch never touched keep a handle whose row is already
+gone — refusing there would hide the rest of the day from whoever has to
+fix it. At commit there is nothing left to guess from: a handle with no row
+means no URL to write, so the commit is refused until that block's link is
+cleared with an explicit null.
+
+`_long_description_violation` (`src/tmbx/service.py`) refuses the whole
+commit if a linked block's description is over `MAX_DESCRIPTION_CHARS`
+(`src/tmbx/calendar/port.py`). The limit falls out of the composition
+above: a linked event's *displayed* description has the material's URL
+appended to it, so the text a person actually wrote has to survive
+somewhere else — the `tmbx.desc` private property covered below — and that
+property is length-capped by the provider. Over the limit there is nowhere
+left to put the authored text, so the commit refuses rather than
+truncating it: silently shortening a description loses what somebody
+wrote, and the loss would only surface the next time the day was read
+back. The check sits here, in the service, before anything is written,
+rather than in the adapter that owns the limit (`_private_properties` in
+`src/tmbx/calendar/gcal.py`) — the adapter can only raise from inside the
+commit's event loop, past the journal and with some events already
+written, which would leave a half-committed day with no journal entry to
+explain it. The adapter keeps its own raise as a backstop for any caller
+that reaches it without going through the service.
+
+**Neither refusal checks a block tmbx does not own.** The remedy each one
+names — clear the link, or shorten the description — is a write to the
+foreign event, and `_foreign_touches` refuses exactly that: tmbx must
+never write an event it doesn't own. Checking a foreign block here would
+refuse every commit of that day forever, with no way to comply. #398
+added the skip to `_dead_link_violation`; #399, a release later, added
+the identical skip to `_long_description_violation`, for the same reason.
+The two refusals sit one screen apart in `service.py` and share this
+deadlock, so a filter added to either belongs on both — worth checking
+for, whoever adds a third commit-time refusal next.
 
 ## The private map merges, so a cleared key is sent empty, not omitted
 
@@ -108,6 +138,11 @@ back as absence. This applies to every key that predates links as much as
 to `tmbx.link` itself: a required-kind slug removed from a block, or an
 authored description that had changed, previously stayed on the event under
 the old value and could silently win over what the user actually wrote.
+`_write_event_args` (`src/tmbx/calendar/gcal.py`) used to guard this map
+behind `if private:`, which read as though the map were sometimes left
+out; it never was, since `_private_properties` returns a fixed eight-entry
+dict that is never empty, so the guard could not fail. The guard is gone
+now and the code matches what this section has always described.
 
 ## Undo restores the link, not just the block
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+import html
 import json
 from typing import Annotated, Literal, Union
 
@@ -26,9 +27,9 @@ from fateforger.agents.timeboxing.elicitation import criterion_label, row_label
 from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactKind,
+    Asking,
     AwaitingApproval,
     AwaitingUser,
-    BlockerOption,
     Committed,
     FactKind,
     Gate,
@@ -84,11 +85,16 @@ class DecidedItem(_Frozen):
     controls: list["Control"] = Field(default_factory=list)
 
 
-class Asking(_Frozen):
-    requirement_id: str
-    question: str
-    why_needed: str
-    options: list[BlockerOption] = Field(default_factory=list)
+class CardGroup(_Frozen):
+    """One stretch of the day, with its lines already composed as mrkdwn."""
+
+    name: str
+    lines: list[str]
+
+
+#: Label for a source that is not "user" and not "rule" -- those two are
+#: composed directly, since a rule's marker names the rule, not the category.
+_SOURCE_LABEL: dict[str, str] = {"assumed": "my guess", "calendar": "on your calendar"}
 
 
 class ApproveControl(_Frozen):
@@ -170,9 +176,15 @@ class StageCard(_Frozen):
     #: The gate line, always present on a Stage 1 card: what is still needed,
     #: or the proposal to close. Rendered from typed fields; nothing reads it.
     gate: str | None = None
-    #: The stage's own text: the skeleton markdown, the rendered candidate,
-    #: the commit sentence. Empty on the date card, whose body is its controls.
+    #: The stage's own text: the rendered candidate, the commit sentence.
+    #: Empty on the date card, whose body is its controls, and empty on the
+    #: skeleton card, whose content is `artifact_day`/`artifact_groups`.
     body: str = ""
+    #: The skeleton's day label and its groups, already composed as mrkdwn
+    #: lines with per-line provenance. Set only on a Stage 3 card; Task 6
+    #: renders these and composes nothing itself.
+    artifact_day: str = ""
+    artifact_groups: list[CardGroup] = Field(default_factory=list)
     controls: list[Control] = Field(default_factory=list)
     #: Set only on a receipt: what happened to this card.
     done: str | None = None
@@ -287,7 +299,23 @@ _FACT_LABELS: dict[FactKind, str] = {
 }
 
 
-def _decided(snapshot: PlanningSessionSnapshot) -> list[DecidedItem]:
+def _decided(
+    snapshot: PlanningSessionSnapshot, *, include_assumptions: bool = True
+) -> list[DecidedItem]:
+    """Facts, and -- on every card except the skeleton -- assumptions too.
+
+    The skeleton is the one card that marks an assumption inline, on the
+    artifact line it decided (a rule-less item's `_(my guess)_` marker in
+    `_artifact_groups`), so listing it again in Decided there would be the
+    same decision said twice. Every other card, including the stage-4
+    candidate approval -- the last human gate before the calendar is
+    written -- has no such inline marker, so an assumption behind it has to
+    surface here, with its `DenyControl`, or it cannot be retracted at all.
+    Scoped by Hugo's ruling after #267's review flagged the global cut as a
+    regression: the "inline only" call was about the sketch card
+    specifically, never about stripping deny from the rest of the ladder.
+    """
+
     facts = [
         DecidedItem(
             text=f"{_FACT_LABELS[fact.kind]}: {_as_text(fact.value)}",
@@ -315,6 +343,8 @@ def _decided(snapshot: PlanningSessionSnapshot) -> list[DecidedItem]:
         for fact in snapshot.facts
         if fact.kind is FactKind.ELICITED_STATEMENT
     )
+    if not include_assumptions:
+        return facts
     assumptions = [
         DecidedItem(
             text=f"{_as_text(assumption.value)} — {assumption.why_needed}",
@@ -392,6 +422,66 @@ def _gate_line(gate: Gate) -> str:
     if rest > 0:
         return f"Still need: {needs}. _+{rest} more_"
     return f"Still need: {needs}."
+
+
+def _rule_names(snapshot: PlanningSessionSnapshot) -> dict[str, str]:
+    """uid -> name for the day's rules.
+
+    Read from `applicable_constraints` -- the rows the host resolved for this
+    day, in the planner's order (#202) -- never from the `ACTIVE_CONSTRAINTS`
+    fact, which carries only a count and no names.
+    """
+
+    return {
+        row["uid"]: row["name"]
+        for row in snapshot.applicable_constraints
+        if isinstance(row, dict)
+        and isinstance(row.get("uid"), str)
+        and isinstance(row.get("name"), str)
+    }
+
+
+def _artifact_groups(
+    payload: SkeletonPayload, names: dict[str, str]
+) -> list[CardGroup]:
+    """Compose each line, marking only what did not come from the user.
+
+    A rule's marker names the rule -- its stored name, never a paraphrase --
+    so "drop Sci-Fi Reading before bed today" is actionable where "drop from
+    memory" would not be. Group names and item text are model-authored, so
+    both are escaped exactly as `render_schedule` escapes a block summary:
+    `&`, `<` and `>` only. `*` and `_` are deliberately left alone -- Slack
+    mrkdwn has no escape for them, so a rule literally named "Deep *work*"
+    renders half-bold. Decided and accepted 2026-09-07; do not "fix" this.
+
+    A `rule_uid` the kernel already verified but whose name is missing here
+    means the artifact and the snapshot disagree; that raises rather than
+    drawing a rule with no name.
+    """
+
+    groups: list[CardGroup] = []
+    for group in payload.groups:
+        lines: list[str] = []
+        for item in group.items:
+            text = html.escape(item.text, quote=False)
+            if item.source == "user":
+                lines.append(f"• {text}")
+                continue
+            if item.source == "rule":
+                name = names.get(item.rule_uid or "")
+                if name is None:
+                    raise ValueError(
+                        f"skeleton cites rule {item.rule_uid!r} which the "
+                        f"day's applicable constraints do not name"
+                    )
+                label = html.escape(name, quote=False)
+            else:
+                label = _SOURCE_LABEL[item.source]
+            lines.append(f"• {text}  _({label})_")
+        groups.append(
+            CardGroup(name=html.escape(group.name, quote=False), lines=lines)
+        )
+    return groups
 
 
 def map_outcome(
@@ -474,8 +564,15 @@ def map_outcome(
                 session_key=session_key,
                 expected_revision=snapshot.revision,
                 context=context,
-                decided=_decided(snapshot),
-                body=skeleton.markdown,
+                # Assumptions are suppressed here only: this card already
+                # marks a rule-less item inline with `_(my guess)_` in
+                # `artifact_groups`, so listing the same assumption again in
+                # Decided would say it twice. No other card has that inline
+                # marker -- do not extend this suppression to them.
+                decided=_decided(snapshot, include_assumptions=False),
+                asking=outcome.question,
+                artifact_day=skeleton.day_label,
+                artifact_groups=_artifact_groups(skeleton, _rule_names(snapshot)),
                 controls=[
                     ApproveControl(
                         artifact_id=artifact.artifact_id,
@@ -505,6 +602,13 @@ def map_outcome(
                 stage=stage(4),
                 session_key=session_key,
                 expected_revision=snapshot.revision,
+                # No `asking=`, and that is not an oversight. A stage-4
+                # question is impossible by construction: every user-owned
+                # requirement targets SKELETON, so a blocker on a candidate
+                # turn is refused and takes the candidate with it -- which is
+                # why `_planning_obligation` never invites one here. If a
+                # user-owned requirement ever targets VALIDATED_CANDIDATE,
+                # that gate opens and this line has to be added with it.
                 decided=_decided(snapshot),
                 body=body,
                 controls=[
@@ -565,6 +669,7 @@ __all__ = [
     "Asking",
     "BackControl",
     "CancelControl",
+    "CardGroup",
     "CommitControl",
     "ContextItem",
     "Control",

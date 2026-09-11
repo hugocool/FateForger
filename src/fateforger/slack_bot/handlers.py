@@ -1681,7 +1681,11 @@ async def _run_adaptive_timebox_turn(
             exc,
             exc_info=True,
         )
-        return timebox_failure_message(snapshot=current)
+        # Named, not generic. This is the one failure Retry cannot clear --
+        # the next turn re-presents the same stored artifact and lands right
+        # back here -- so the sentence has to point at Back or Proceed
+        # instead, and it can only do that if it knows which failure this is.
+        return timebox_failure_message("unpresentable_artifact", snapshot=current)
 
     # Close the card the user just acted on, then register this one. A failed
     # turn keeps the previous card live: its Retry is the way back.

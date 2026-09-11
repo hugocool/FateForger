@@ -20,6 +20,7 @@ from dateutil import parser as date_parser
 
 from fateforger.adapters.calendar.models import GCalEventsResponse
 from fateforger.core.logging_config import record_error, record_tool_call
+from fateforger.core.mcp_transport import is_recoverable_transport_error
 from fateforger.tools.constraint_mcp import (
     build_constraint_server_env,
     resolve_constraint_repo_root,
@@ -323,14 +324,6 @@ class ConstraintMemoryClient:
 class McpCalendarClient:
     """Client for Google Calendar MCP server (streamable HTTP workbench)."""
 
-    _RECOVERABLE_ERROR_MARKERS = (
-        "mcp actor not running",
-        "all connection attempts failed",
-        "timed out while waiting for response to clientrequest",
-        "connection refused",
-        "server disconnected",
-    )
-
     def __init__(self, *, server_url: str, timeout: float = 10.0) -> None:
         """Initialize the calendar MCP workbench.
 
@@ -357,11 +350,12 @@ class McpCalendarClient:
 
     @classmethod
     def _is_recoverable_transport_error(cls, exc: Exception) -> bool:
-        """Return True when the exception is a known transient MCP transport failure."""
-        text = str(exc or "").strip().lower()
-        if not text:
-            return False
-        return any(marker in text for marker in cls._RECOVERABLE_ERROR_MARKERS)
+        """Return True when the exception is a known transient MCP transport failure.
+
+        Delegates to the shared classifier in `fateforger.core.mcp_transport` so this
+        client and `PlannerAgent` cannot drift apart on what counts as recoverable.
+        """
+        return is_recoverable_transport_error(exc)
 
     async def _reset_workbench(self) -> None:
         """Close the current workbench and create a fresh one for retry."""

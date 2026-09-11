@@ -13,6 +13,30 @@ from fateforger.core.config import settings
 
 ReasoningEffort = Literal["minimal", "low", "medium", "high"]
 
+INTENT_INTERPRETER = "intent_interpreter"
+
+#: Hugo's ruling on the bench, 2026-09-06
+#: (scripts/bench/results-interpreter-tier-2026-09-06.md, six configurations
+#: over three evals at n=8 per case; the reading is in the `.reading.md`
+#: sidecar beside it).
+#:
+#: 1024 truncated 3 of the 545 draws taken at that cap and 2048 truncated 4 of
+#: 546 -- so spec §3's rule ("the smaller cap that bites nowhere, else 2048,
+#: else uncapped") lands on uncapped. The rule was overruled, because it counts
+#: a truncated draw as an answer lost and these were runaways stopped: every
+#: one of the seven ran 6-56s against a 1-2s median, the largest legitimate
+#: uncapped answer on *this row's pin* was 405 tokens (median 45 on the pro
+#: pin, 78 on the flash pin), 2048 cut *more* draws than 1024 without buying
+#: one back, and no case failed on length. The 405 is the pro pin's number, not
+#: the whole bench's: `flash-minimal` returned a *completed* 4,839-token draw
+#: inside a case it still scored 8/8 on -- a right answer this cap would have
+#: cut -- so #406 has to re-read the cap when it flips the pin.
+#: Uncapped, the runaway is one user's turn held open while
+#: the SDK waits 600s and retries twice -- the bench watched an eleven-minute
+#: draw on exactly the case a 1024 cap later cut. 1024 turns that into a fast,
+#: loud failure; what the seam then says is still #325's question.
+_INTENT_INTERPRETER_MAX_TOKENS = 1024
+
 logger = logging.getLogger(__name__)
 
 
@@ -142,6 +166,34 @@ def _model_for_agent(agent_type: str) -> str:
         # The Stage 1 judgements (placement, coverage, probe) and the day-frame
         # judgement: every one is term typing on the flash pin, per CLAUDE.md.
         return pick(settings.llm_model_timeboxing_judge, openai=openai_default, openrouter=openrouter_flash)
+    if agent_type == INTENT_INTERPRETER:
+        # Every surface interpreter, on one row of its own so it stops
+        # inheriting whatever its host agent runs on -- which is how the
+        # routing seam ended up on the pro pin at high, uncapped, and ran away
+        # (#325). The row's effort is `low` since Hugo's ruling on the
+        # 2026-09-11 bench (see `_reasoning_effort_for_agent`); the pin below
+        # is still the 2026-09-06 ruling.
+        #
+        # The row resolves to the *pro* pin, not the flash one, on Hugo's
+        # ruling over the 2026-09-06 bench
+        # (scripts/bench/results-interpreter-tier-2026-09-06.md). Choosing
+        # among listed options is term typing and the flash pin is CLAUDE.md's
+        # recorded role for it -- and the destination for this row. What the
+        # bench measured is that the prompts *as written* lose there: 4
+        # judgement losses against the pro pin's 0, and revision-after-commit
+        # at 1/8 against 8/8, the flash pin reading a revision as a fact. (The
+        # raw case counts are 27/34 against 32/34, but those include the
+        # break-it families, which assert a flip and are never judgement
+        # losses -- 3 of flash's 7 failures and both of pro's 2. Quoting the
+        # mixed number is the conflation the bench file forbids.) The prompts
+        # need a discriminator before the pin moves, exactly as the
+        # project-versus-permanent judgement did -- #406. Until that lands
+        # this default follows the measurement rather than the intention.
+        return pick(
+            settings.llm_model_intent_interpreter,
+            openai=openai_default,
+            openrouter=openrouter_pro,
+        )
     if agent_type == "revisor_agent":
         return pick(settings.llm_model_revisor, openai="gpt-4o", openrouter=openrouter_pro)
     if agent_type == "tasks_agent":
@@ -187,6 +239,18 @@ def _reasoning_effort_for_agent(agent_type: str) -> ReasoningEffort | None:
         return normalize(settings.llm_reasoning_effort_timeboxing_draft) or "high"
     if agent_type == "timeboxing_judge":
         return normalize(settings.llm_reasoning_effort_timeboxing_judge) or "minimal"
+    if agent_type == INTENT_INTERPRETER:
+        # `low`, on Hugo's ruling over the 2026-09-11 bench
+        # (scripts/bench/results-interpreter-tier-2026-09-11.md, its reading in
+        # the `.reading.md` sidecar): pro/`low` against pro/`high`, both capped
+        # at 1024. `low` lost no judgement `high` held in any run, truncated 0
+        # of 384 production draws against `high`'s 3 of 386, and cost about 18%
+        # less -- so `high` is not justified. The bench built pro/`low`/1024
+        # through this row and read it back off the client, so this default is
+        # the measured configuration. (The ruling does not rest on the
+        # draw-level p-values in that record.) `minimal` returns with the flash
+        # pin once the prompts are fitted to it (#406).
+        return normalize(settings.llm_reasoning_effort_intent_interpreter) or "low"
     if agent_type == "revisor_agent":
         return normalize(settings.llm_reasoning_effort_revisor) or "medium"
     if agent_type == "tasks_agent":
@@ -212,6 +276,11 @@ def _max_tokens_for_agent(agent_type: str) -> int | None:
         # Stage 4 patch prompts are large. Keep patcher uncapped by default to
         # avoid truncating JSON patches; allow explicit env override when set.
         return normalize(settings.llm_max_tokens_timebox_patcher)
+    if agent_type == INTENT_INTERPRETER:
+        configured = settings.llm_max_tokens_intent_interpreter
+        if configured == -1:
+            return _INTENT_INTERPRETER_MAX_TOKENS
+        return normalize(configured)
 
     return normalize(settings.llm_max_tokens)
 
@@ -294,6 +363,17 @@ def build_autogen_chat_client(
     return OpenAIChatCompletionClient(**kwargs)
 
 
+def build_intent_interpreter_client() -> OpenAIChatCompletionClient:
+    """The one client every surface interpreter is built on.
+
+    Tier one: choosing among listed options is term typing, not deliberation
+    (CLAUDE.md "Every route is a judgement"). One row, one function, so the
+    next surface gets the same client for free and no interpreter inherits
+    whatever its host agent happens to run on.
+    """
+    return build_autogen_chat_client(INTENT_INTERPRETER)
+
+
 def build_langchain_chat_openai(
     agent_type: str,
     *,
@@ -323,4 +403,10 @@ def build_langchain_chat_openai(
     return ChatOpenAI(**kwargs)
 
 
-__all__ = ["build_autogen_chat_client", "build_langchain_chat_openai", "ReasoningEffort"]
+__all__ = [
+    "INTENT_INTERPRETER",
+    "ReasoningEffort",
+    "build_autogen_chat_client",
+    "build_intent_interpreter_client",
+    "build_langchain_chat_openai",
+]

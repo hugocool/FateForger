@@ -349,11 +349,50 @@ def _planning_obligation(brief: PlanningBrief) -> str:
     # field by field, and nothing used to say what those fields were: the
     # planner shipped `blocks`, the host stored it, the card was blank (#267).
     payload_shape = (
-        "\nThe `skeleton` payload is exactly {\"markdown\": ..., \"reasoning\": "
-        "...}: `markdown` is the day as loose markdown -- a `# heading` per "
-        "anchor, `-` bullets under it, no times you were not given -- and "
+        "\nThe `skeleton` payload is exactly {\"day_label\": ..., \"groups\": "
+        "[...], \"reasoning\": ...}: `day_label` names the day (e.g. \"Sunday "
+        "6 September\"); `groups` is a list of {\"name\": ..., \"items\": "
+        "[...]}, one per named stretch of the day -- Morning, Hockey, Evening "
+        "-- and each item is {\"text\": ..., \"source\": \"user\"|\"rule\"|"
+        "\"assumed\"|\"calendar\", \"rule_uid\": <only when source is "
+        "\"rule\", and only a uid from the day's applicable constraints>}; "
         "`reasoning` is one short paragraph on why it is shaped that way. Any "
         "other key is refused."
+        if brief.target_artifact is ArtifactKind.SKELETON
+        else ""
+    )
+    # A blocker used to be the only channel for a question, and it always
+    # replaced the artifact it was about -- so a question that needed the day
+    # on screen to make sense of ("does the party end by 22:00?") had nowhere
+    # to go. Nothing here said the option existed, and #259 is what that cost:
+    # the planner invented an `open_questions` field the kernel never read,
+    # and the host discarded it in silence. `_apply_planning_result` accepts
+    # a riding question for whichever artifact the planner just submitted.
+    #
+    # Skeleton only, and it must stay that way. A blocker names a requirement,
+    # and `_apply_planning_result` refuses one whose gap is not open and
+    # user-owned -- discarding the artifact submitted with it. Every
+    # user-owned requirement in the catalog targets SKELETON (the three named
+    # ones plus all forty-five elicitation cells), and `evaluate` only ever
+    # returns gaps whose `target_artifact` is this turn's, so on a candidate
+    # turn there is no gap a blocker could legally name: every open gap is
+    # `system` or `planner` owned. Inviting a question there would refuse the
+    # turn as `invalid_planner_result` and throw away the finished candidate
+    # with it -- the most expensive turn in the session, destroyed by taking
+    # the host at its word. Widen this only after a user-owned requirement
+    # actually targets VALIDATED_CANDIDATE.
+    question_channel = (
+        "\nYou may raise one question as a blocker. At most one: a second "
+        "blocker in the same turn is refused as `too_many_questions` no "
+        "matter what either one sets `blocking` to, so hold the second "
+        "question for the next draft. Set `blocking` only when proceeding "
+        "would produce a plan you believe is wrong. Otherwise leave it "
+        "false, which is the ordinary case: the question is shown below the "
+        "day, the user answers it with a button, and Proceed stays live, "
+        "meaning \"approve, question unanswered\". A question about a "
+        "placement is unanswerable without the placement on screen, which is "
+        "why a non-blocking question rides with the artifact instead of "
+        "replacing it."
         if brief.target_artifact is ArtifactKind.SKELETON
         else ""
     )
@@ -385,7 +424,7 @@ def _planning_obligation(brief: PlanningBrief) -> str:
         f"`submit_planning_result` once, with target_artifact `{target}`. Your "
         "final message is presentation only: it records nothing, and a turn "
         f"that ends without that call has produced nothing.{apply_first}{payload_shape}"
-        f"{required_lines}{work_lines}"
+        f"{question_channel}{required_lines}{work_lines}"
         "\nIf you cannot finish but have not failed -- a retry budget spent "
         "mid-fix, say -- submit a `continuation` saying what is left and what "
         "you already worked out. What you produced is kept and you resume from "

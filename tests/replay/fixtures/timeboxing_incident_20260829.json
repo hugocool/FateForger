@@ -131,7 +131,42 @@
         {
           "kind": "skeleton",
           "payload": {
-            "markdown": "## Saturday 2026-08-29\n- 09:30 Slow start\n- 11:30 Supermarket\n- 13:00 Deep work\n- 15:00 Shallow work\n- 16:00 Planning review\n- 17:00 Gym\n- 19:30 Dinner"
+            "day_label": "Saturday 2026-08-29",
+            "groups": [
+              {
+                "name": "Plan",
+                "items": [
+                  {
+                    "text": "09:30 Slow start",
+                    "source": "user"
+                  },
+                  {
+                    "text": "11:30 Supermarket",
+                    "source": "user"
+                  },
+                  {
+                    "text": "13:00 Deep work",
+                    "source": "user"
+                  },
+                  {
+                    "text": "15:00 Shallow work",
+                    "source": "user"
+                  },
+                  {
+                    "text": "16:00 Planning review",
+                    "source": "user"
+                  },
+                  {
+                    "text": "17:00 Gym",
+                    "source": "user"
+                  },
+                  {
+                    "text": "19:30 Dinner",
+                    "source": "user"
+                  }
+                ]
+              }
+            ]
           },
           "dependency_revisions": {
             "planning_day": 1
@@ -169,7 +204,38 @@
         {
           "kind": "skeleton",
           "payload": {
-            "markdown": "## Monday 2026-08-31\n- 08:30 Workday start\n- 12:30 Supermarket\n- 13:30 Deep work\n- 16:00 Shallow work\n- 17:30 Gym\n- 19:30 Dinner"
+            "day_label": "Monday 2026-08-31",
+            "groups": [
+              {
+                "name": "Plan",
+                "items": [
+                  {
+                    "text": "08:30 Workday start",
+                    "source": "user"
+                  },
+                  {
+                    "text": "12:30 Supermarket",
+                    "source": "user"
+                  },
+                  {
+                    "text": "13:30 Deep work",
+                    "source": "user"
+                  },
+                  {
+                    "text": "16:00 Shallow work",
+                    "source": "user"
+                  },
+                  {
+                    "text": "17:30 Gym",
+                    "source": "user"
+                  },
+                  {
+                    "text": "19:30 Dinner",
+                    "source": "user"
+                  }
+                ]
+              }
+            ]
           },
           "dependency_revisions": {
             "planning_day": 2
@@ -205,7 +271,42 @@
         {
           "kind": "skeleton",
           "payload": {
-            "markdown": "## Saturday 2026-08-29\n- 09:30 Slow start\n- 11:30 Supermarket\n- 13:00 Deep work\n- 14:30 Laundry\n- 15:30 Shallow work\n- 17:00 Gym\n- 19:30 Dinner"
+            "day_label": "Saturday 2026-08-29",
+            "groups": [
+              {
+                "name": "Plan",
+                "items": [
+                  {
+                    "text": "09:30 Slow start",
+                    "source": "user"
+                  },
+                  {
+                    "text": "11:30 Supermarket",
+                    "source": "user"
+                  },
+                  {
+                    "text": "13:00 Deep work",
+                    "source": "user"
+                  },
+                  {
+                    "text": "14:30 Laundry",
+                    "source": "user"
+                  },
+                  {
+                    "text": "15:30 Shallow work",
+                    "source": "user"
+                  },
+                  {
+                    "text": "17:00 Gym",
+                    "source": "user"
+                  },
+                  {
+                    "text": "19:30 Dinner",
+                    "source": "user"
+                  }
+                ]
+              }
+            ]
           },
           "dependency_revisions": {
             "planning_day": 1

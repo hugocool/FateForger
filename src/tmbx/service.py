@@ -678,7 +678,9 @@ def _unknown_link_violation(
     )
 
 
-def _long_description_violation(plan: Plan) -> Violation | None:
+def _long_description_violation(
+    plan: Plan, foreign_handles: Collection[str]
+) -> Violation | None:
     """The refusal for a linked block whose description cannot be round-tripped.
 
     ``None`` when every linked block fits. A provider keeps a linked block's
@@ -695,6 +697,17 @@ def _long_description_violation(plan: Plan) -> Violation | None:
     committing. So this is a cost of attaching a ticket, and the message says
     which block to shorten.
 
+    **A foreign block is not checked**, for the reason ``_dead_link_violation``
+    skips one directly above: ``_write`` never touches a foreign event, so
+    there is no description to round-trip and nothing is half-answered — and
+    both remedies this message offers, shortening the description and dropping
+    the link, are updates to a foreign handle, which ``_foreign_touches``
+    refuses. Checking one would refuse every commit of that day forever with
+    no way out. The filter arrived here a release after the one below it,
+    which is the whole reason this paragraph is here: the two refusals sit one
+    screen apart and share a deadlock, so a filter added to either belongs on
+    both.
+
     It lives here, before the write, rather than in the adapter that owns the
     limit, because the adapter can only raise from inside the commit's event
     loop — past the journal, with some events already written and the delete
@@ -706,7 +719,9 @@ def _long_description_violation(plan: Plan) -> Violation | None:
     too_long = [
         block
         for block in plan.blocks
-        if block.link is not None and len(block.d) > MAX_DESCRIPTION_CHARS
+        if block.link is not None
+        and len(block.d) > MAX_DESCRIPTION_CHARS
+        and block.h not in foreign_handles
     ]
     if not too_long:
         return None
@@ -1082,7 +1097,7 @@ class PlanService:
             dead = _dead_link_violation(patched, materials, foreign_handles)
             if dead is not None:
                 raise PlanViolation(dead)
-            too_long = _long_description_violation(patched)
+            too_long = _long_description_violation(patched, foreign_handles)
             if too_long is not None:
                 raise PlanViolation(too_long)
         except PlanViolation as exc:

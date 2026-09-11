@@ -23,6 +23,7 @@ from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
 from pydantic import TypeAdapter, ValidationError
 
 from fateforger.core.config import settings
+from fateforger.core.mcp_transport import is_recoverable_transport_error
 from fateforger.debug.diag import with_timeout
 from fateforger.haunt.mixins import HauntAwareAgentMixin
 from fateforger.haunt.models import FollowUpPlan, HauntTone
@@ -139,6 +140,69 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
         params = StreamableHttpServerParams(url=SERVER_URL, timeout=10.0)
         self._workbench = McpWorkbench(params)
         return self._workbench
+
+    async def _reset_workbench(self) -> None:
+        """Discard the cached workbench so the next call builds a fresh one.
+
+        AutoGen's `McpWorkbench.call_tool` only calls `start()` when its actor
+        is falsy; once an actor exists but its session has died, every later
+        call raises "MCP Actor not running" forever. Dropping the cached
+        instance here is what lets one bad call recover on the very next
+        press instead of requiring a process restart -- which is exactly what
+        stayed broken in production on 2026-09-09.
+        """
+        current = self._workbench
+        self._workbench = None
+        stop = getattr(current, "stop", None)
+        if callable(stop):
+            try:
+                maybe = stop()
+                if hasattr(maybe, "__await__"):
+                    await maybe
+            except Exception:
+                # Best-effort cleanup only -- a dead actor may already be
+                # unstoppable, and that must never block the reset.
+                pass
+
+    async def _call_tool_with_retry(
+        self,
+        tool_name: str,
+        arguments: dict,
+        *,
+        retry: bool,
+    ) -> object:
+        """Call an MCP tool, resetting the workbench once on a recoverable
+        transport failure.
+
+        `retry=True` additionally resends the call once after the reset --
+        safe only for calls whose failure mode cannot leave a duplicate
+        side effect behind (reads, and idempotent writes like delete). Any
+        non-recoverable error propagates immediately, untouched: it means
+        the server was reachable and said no, which a reset cannot fix.
+
+        `retry=False` still resets the workbench on a recoverable error (so
+        the *next* call -- a fresh "Try again" press -- gets a working
+        workbench), but re-raises without resending this call. Use this for
+        anything that mutates the calendar: "MCP Actor not running" is
+        raised locally, before any request reaches the server, so the first
+        attempt is known not to have happened server-side -- but a retry
+        would still be a *second* request, and other recoverable markers
+        (a response timeout, a dropped connection) cover cases where the
+        first request may already have reached the server. Resending a
+        create in that state risks writing a duplicate event to a real
+        calendar, which is worse than the bug this exists to fix.
+        """
+        workbench = self._ensure_workbench()
+        try:
+            return await workbench.call_tool(tool_name, arguments=arguments)
+        except Exception as exc:
+            if not is_recoverable_transport_error(exc):
+                raise
+            await self._reset_workbench()
+            if not retry:
+                raise
+            workbench = self._ensure_workbench()
+            return await workbench.call_tool(tool_name, arguments=arguments)
 
     @staticmethod
     def _extract_tool_payload(
@@ -415,7 +479,6 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
     async def handle_suggest_next_slot(
         self, message: SuggestNextSlot, ctx: MessageContext
     ) -> SuggestedSlot:
-        workbench = self._ensure_workbench()
         try:
             tz = ZoneInfo(message.time_zone)
         except Exception:
@@ -475,7 +538,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             if window_end <= window_start:
                 continue
 
-            result = await workbench.call_tool(
+            result = await self._call_tool_with_retry(
                 "list-events",
                 arguments={
                     "calendarId": message.calendar_id,
@@ -484,6 +547,7 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                     "singleEvents": True,
                     "orderBy": "startTime",
                 },
+                retry=True,  # read-only: safe to resend after a dead-actor reset
             )
             payload = self._extract_tool_payload(result)
             tool_error = self._extract_tool_error(payload)
@@ -522,19 +586,19 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             message.event_id,
             message.summary,
         )
-        workbench = self._ensure_workbench()
         tz = ZoneInfo(message.time_zone or "UTC")
         preexisting_cancelled = False
 
         # Prefer deterministic upsert (get → update|create) over LLM tool-routing.
         exists = False
         try:
-            fetched = await workbench.call_tool(
+            fetched = await self._call_tool_with_retry(
                 "get-event",
                 arguments={
                     "calendarId": message.calendar_id,
                     "eventId": message.event_id,
                 },
+                retry=True,  # read-only: safe to resend after a dead-actor reset
             )
             event = self._normalize_event(self._extract_tool_payload(fetched))
             event_status = self._event_status(event)
@@ -545,12 +609,16 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                     message.event_id,
                 )
                 try:
-                    await workbench.call_tool(
+                    await self._call_tool_with_retry(
                         "delete-event",
                         arguments={
                             "calendarId": message.calendar_id,
                             "eventId": message.event_id,
                         },
+                        # Deleting is idempotent -- retrying a delete cannot
+                        # produce a duplicate, only a harmless not-found on
+                        # an already-deleted event.
+                        retry=True,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -597,9 +665,19 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             upsert_action = "update-event" if exists else "create-event"
             if upsert_action == "create-event" and preexisting_cancelled:
                 upsert_arguments["allowDuplicates"] = True
-            upsert_result = await workbench.call_tool(
+            upsert_result = await self._call_tool_with_retry(
                 upsert_action,
                 arguments=upsert_arguments,
+                # create-event/update-event write to a real calendar. "MCP
+                # Actor not running" is raised locally before any request
+                # reaches the server, so it is safe to know the first
+                # attempt never happened -- but the other recoverable
+                # markers (a response timeout, a dropped connection) can
+                # fire *after* the request left the client, when a retry
+                # would be a genuine second write. Never resend a mutating
+                # call automatically; the reset below still happens so the
+                # next user press gets a working workbench.
+                retry=False,
             )
         except Exception as e:
             logger.error("Failed to upsert calendar event: %s", e, exc_info=True)
@@ -629,9 +707,12 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
                 target_event_id,
             )
             try:
-                fallback_result = await workbench.call_tool(
+                fallback_result = await self._call_tool_with_retry(
                     "update-event",
                     arguments=upsert_arguments,
+                    # Same write-safety reasoning as the primary upsert call
+                    # above: never auto-resend a mutating call.
+                    retry=False,
                 )
             except Exception as exc:
                 return UpsertCalendarEventResult(
@@ -666,12 +747,13 @@ class PlannerAgent(HauntAwareAgentMixin, RoutedAgent):
             )
 
         try:
-            fetched = await workbench.call_tool(
+            fetched = await self._call_tool_with_retry(
                 "get-event",
                 arguments={
                     "calendarId": message.calendar_id,
                     "eventId": target_event_id,
                 },
+                retry=True,  # read-only: safe to resend after a dead-actor reset
             )
             event = self._normalize_event(self._extract_tool_payload(fetched)) or {}
         except Exception as exc:

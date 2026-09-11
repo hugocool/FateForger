@@ -6,8 +6,10 @@ user just state it?). Their unit tests stub the model and prove the plumbing;
 this is what proves the prompts. Every case resamples -- a single draw tests
 the model's luck -- and the rate is the assertion.
 
-Runs on the client production builds for the interpreter, so what is measured
-is what runs.
+Each case runs on the client production builds for its own judgement, so what
+is measured is what runs: the corpus judge on the judge row, the intent
+interpreter on the interpreter row. They are different rows (#336), and a bench
+that moves one of them must not quietly move the other.
 """
 
 from __future__ import annotations
@@ -49,10 +51,22 @@ NO_LATE_MEETINGS = {"uid": "c-meet", "name": "No late meetings", "description": 
 BEDTIME = {"uid": "c-bed", "name": "Bedtime", "description": "In bed by 00:30 on weekdays, up at 08:30.", "necessity": "must"}
 
 
-def _client():
+def _judge_client():
     from fateforger.llm.factory import build_autogen_chat_client
 
-    return build_autogen_chat_client("timeboxing_agent")
+    # Production runs this judge on `timeboxing_judge_model_client`
+    # (`timeboxing_host.py:~223`); the eval measures that client.
+    return build_autogen_chat_client("timeboxing_judge")
+
+
+def _interpreter_client():
+    from fateforger.llm.factory import build_intent_interpreter_client
+
+    # Production builds the timebox interpreter on the interpreter row
+    # (`core.runtime._build_timeboxing_intent_interpreter`, since #336), not on
+    # the judge's. Measuring it on the judge client would leave an effort
+    # change on the row unable to reach these cases.
+    return build_intent_interpreter_client()
 
 
 def _day():
@@ -66,7 +80,7 @@ def _day():
 async def _frame_rate(rows: list[dict]) -> list:
     from fateforger.agents.timeboxing.day_frame import DayFrameJudge
 
-    judge = DayFrameJudge(_client())
+    judge = DayFrameJudge(_judge_client())
     return await asyncio.gather(
         *(
             judge.frame_on_record(day=_day(), constraints=rows, session_key="eval")
@@ -126,7 +140,7 @@ def _capture_snapshot(*, pending_frame_question: bool = False):
 async def _interpretations(text: str, snapshot) -> list:
     from fateforger.slack_bot.timeboxing_intents import TimeboxingIntentInterpreter
 
-    interpreter = TimeboxingIntentInterpreter(_client())
+    interpreter = TimeboxingIntentInterpreter(_interpreter_client())
     return await asyncio.gather(
         *(interpreter.interpret(text, snapshot) for _ in range(SAMPLES)),
         return_exceptions=True,
