@@ -97,6 +97,9 @@ EVALS = {
 CONFIGS = {
     "pro-high": ("PRO", "high", None),
     "pro-high-1024": ("PRO", "high", 1024),
+    # 2026-09-11: `low` against `high` at the same cap, on today's routing --
+    # the planning card ran the pro pin at `low` before #336 raised it (#325).
+    "pro-low-1024": ("PRO", "low", 1024),
     "pro-high-2048": ("PRO", "high", 2048),
     "flash-minimal": ("FLASH", "minimal", None),
     "flash-minimal-1024": ("FLASH", "minimal", 1024),

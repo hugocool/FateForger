@@ -1,0 +1,3437 @@
+{
+  "date": "2026-09-11",
+  "runs": [
+    {
+      "config": "pro-high-1024",
+      "run": 1,
+      "eval": "planning_card",
+      "draws": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run1--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run1--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run1--planning_card.log"
+    },
+    {
+      "config": "pro-high-1024",
+      "run": 1,
+      "eval": "day_frame",
+      "draws": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run1--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run1--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run1--day_frame.log"
+    },
+    {
+      "config": "pro-high-1024",
+      "run": 1,
+      "eval": "timebox_question",
+      "draws": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run1--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run1--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run1--timebox_question.log"
+    },
+    {
+      "config": "pro-high-1024",
+      "run": 2,
+      "eval": "planning_card",
+      "draws": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run2--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run2--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run2--planning_card.log"
+    },
+    {
+      "config": "pro-high-1024",
+      "run": 2,
+      "eval": "day_frame",
+      "draws": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run2--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run2--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-11/pro-high-1024--run2--day_frame.log"
+    },
+    {
+      "config": "pro-low-1024",
+      "run": 1,
+      "eval": "planning_card",
+      "draws": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run1--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run1--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run1--planning_card.log"
+    },
+    {
+      "config": "pro-low-1024",
+      "run": 1,
+      "eval": "day_frame",
+      "draws": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run1--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run1--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run1--day_frame.log"
+    },
+    {
+      "config": "pro-low-1024",
+      "run": 1,
+      "eval": "timebox_question",
+      "draws": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run1--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run1--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run1--timebox_question.log"
+    },
+    {
+      "config": "pro-low-1024",
+      "run": 2,
+      "eval": "planning_card",
+      "draws": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run2--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run2--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run2--planning_card.log"
+    },
+    {
+      "config": "pro-low-1024",
+      "run": 2,
+      "eval": "day_frame",
+      "draws": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run2--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run2--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-11/pro-low-1024--run2--day_frame.log"
+    }
+  ],
+  "summary": {
+    "pro-high-1024 \u00b7 run 1::planning_card": {
+      "config": "pro-high-1024",
+      "run": 1,
+      "label": "pro-high-1024 \u00b7 run 1",
+      "eval": "planning_card",
+      "control_row": null,
+      "rows_seen": [
+        "intent_interpreter"
+      ],
+      "started": "2026-09-11T14:19:02.989425+02:00",
+      "duration_s": 24.886,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 112,
+      "cases_passed": 13,
+      "cases_total": 14,
+      "case_outcomes": {
+        "test_consent_is_the_add_press[Okay!]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_consent_is_the_add_press[yes]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_consent_is_the_add_press[sure, do it]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_time_with_consent_updates_and_adds[no, let's do 13:45]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_time_with_consent_updates_and_adds[13:45]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_time_without_consent_only_updates": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 1,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_non_press_is_none[why 10:38?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_non_press_is_none[plan tomorrow for me]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_non_press_is_none[later]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_another_day_with_a_time_is_none[tomorrow at 9]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_another_day_with_a_time_is_none[friday at 14:00]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_the_proposals_own_day_with_a_time_updates_and_adds": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_try_again_on_a_failed_card_is_retry": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_break_it_without_the_day_clause_a_non_press_becomes_a_press": {
+          "outcome": "break-it unbroken",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        {
+          "case": "test_break_it_without_the_day_clause_a_non_press_becomes_a_press",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "tests/integration/test_eval_planning_card_intent.py:251: in test_break_it_without_the_day_clause_a_non_press_becomes_a_press\n    assert _count(results, kind=None) < THRESHOLD, _report(results)\nE   AssertionError: None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE   assert 8 < 7\nE    +  where 8 = _count([None, None, None, None, None, None, ...], kind=None)"
+        }
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 1,
+      "length_draw_cases": [
+        "test_a_time_without_consent_only_updates"
+      ],
+      "truncated_draws": [
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "planning_card",
+          "case": "test_a_time_without_consent_only_updates",
+          "provider": "Together",
+          "gen_id": "gen-1789129149-kn6uA1MJi0ia3lLamoTa",
+          "latency_s": 5.366598874999909,
+          "prompt_tokens": 512,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 0,
+          "content_chars": 2067,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
+      "cap_bites": 1,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 111
+      },
+      "latency_median_s": 1.1016827709972858,
+      "latency_p90_s": 1.658053374994779,
+      "latency_max_s": 5.366598874999909,
+      "completion_tokens_median": 21,
+      "completion_tokens_p90": 26.0,
+      "completion_tokens_max": 33,
+      "completion_tokens_max_case": "test_the_proposals_own_day_with_a_time_updates_and_adds",
+      "reasoning_tokens_median": 0,
+      "prompt_tokens_total": 55784,
+      "completion_tokens_total": 3374,
+      "by_provider": {
+        "Together": {
+          "draws": 112,
+          "truncated": 1,
+          "other_errors": {},
+          "reasoning_tokens_median": 0,
+          "reasoning_tokens_reported": 111,
+          "completion_tokens_median": 21,
+          "latency_median_s": 1.1016827709972858,
+          "latency_p90_s": 1.658053374994779,
+          "cost_usd": 0.0268
+        }
+      },
+      "cost_usd": 0.0268,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-high-1024 \u00b7 run 1::day_frame": {
+      "config": "pro-high-1024",
+      "run": 1,
+      "label": "pro-high-1024 \u00b7 run 1",
+      "eval": "day_frame",
+      "control_row": null,
+      "rows_seen": [
+        "intent_interpreter"
+      ],
+      "started": "2026-09-11T14:19:32.033314+02:00",
+      "duration_s": 6.833,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 24,
+      "cases_passed": 3,
+      "cases_total": 3,
+      "case_outcomes": {
+        "test_the_2026_09_02_correction_is_a_frame_fact": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_the_2026_09_02_opening_message_states_no_frame": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_bare_times_answer_the_open_frame_question": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 24
+      },
+      "latency_median_s": 0.9088398750027409,
+      "latency_p90_s": 1.929564083024161,
+      "latency_max_s": 1.943258249986684,
+      "completion_tokens_median": 33.0,
+      "completion_tokens_p90": 76.0,
+      "completion_tokens_max": 76,
+      "completion_tokens_max_case": "test_the_2026_09_02_opening_message_states_no_frame",
+      "reasoning_tokens_median": 0.0,
+      "prompt_tokens_total": 14216,
+      "completion_tokens_total": 1136,
+      "by_provider": {
+        "Together": {
+          "draws": 24,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0.0,
+          "reasoning_tokens_reported": 24,
+          "completion_tokens_median": 33.0,
+          "latency_median_s": 0.9088398750027409,
+          "latency_p90_s": 1.929564083024161,
+          "cost_usd": 0.0064
+        }
+      },
+      "cost_usd": 0.0064,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-high-1024 \u00b7 run 1::day_frame [timeboxing_judge]": {
+      "config": "pro-high-1024",
+      "run": 1,
+      "label": "pro-high-1024 \u00b7 run 1",
+      "eval": "day_frame",
+      "control_row": "timeboxing_judge",
+      "rows_seen": [
+        "timeboxing_judge"
+      ],
+      "started": "2026-09-11T14:19:32.033314+02:00",
+      "duration_s": 6.833,
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "None"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 16,
+      "cases_passed": 2,
+      "cases_total": 2,
+      "case_outcomes": {
+        "test_a_bedtime_rule_is_read_as_the_frame": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Cerebras": 8
+          }
+        },
+        "test_evening_rules_are_not_a_bedtime": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Cerebras": 8
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 16
+      },
+      "latency_median_s": 0.49003641650779173,
+      "latency_p90_s": 0.7673201670113485,
+      "latency_max_s": 1.0444268750143237,
+      "completion_tokens_median": 93.5,
+      "completion_tokens_p90": 118.0,
+      "completion_tokens_max": 121,
+      "completion_tokens_max_case": "test_a_bedtime_rule_is_read_as_the_frame",
+      "reasoning_tokens_median": 61.0,
+      "prompt_tokens_total": 9680,
+      "completion_tokens_total": 1555,
+      "by_provider": {
+        "Cerebras": {
+          "draws": 16,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 61.0,
+          "reasoning_tokens_reported": 16,
+          "completion_tokens_median": 93.5,
+          "latency_median_s": 0.49003641650779173,
+          "latency_p90_s": 0.7673201670113485,
+          "cost_usd": 0.0046
+        }
+      },
+      "cost_usd": 0.0046,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-high-1024 \u00b7 run 1::timebox_question": {
+      "config": "pro-high-1024",
+      "run": 1,
+      "label": "pro-high-1024 \u00b7 run 1",
+      "eval": "timebox_question",
+      "control_row": null,
+      "rows_seen": [
+        "timeboxing_agent"
+      ],
+      "started": "2026-09-11T14:20:00.479937+02:00",
+      "duration_s": 197.927,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 165,
+      "cases_passed": 18,
+      "cases_total": 19,
+      "case_outcomes": {
+        "test_a_question_before_a_day_is_asked[has it been scheduled?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 3,
+            "Together": 5
+          }
+        },
+        "test_a_question_before_a_day_is_asked[did you put the gym in?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 7,
+            "CoreWeave": 1
+          }
+        },
+        "test_a_question_before_a_day_is_asked[what's on my calendar tomorrow?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 3,
+            "CoreWeave": 5
+          }
+        },
+        "test_a_question_before_a_day_is_asked[is there a planning session today?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 3,
+            "CoreWeave": 5
+          }
+        },
+        "test_a_start_before_a_day_starts[plan my day tomorrow]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 3,
+            "CoreWeave": 5
+          }
+        },
+        "test_a_start_before_a_day_starts[let's timebox saturday]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 2,
+            "CoreWeave": 6
+          }
+        },
+        "test_a_start_before_a_day_starts[kick it off]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_start_before_a_day_starts[right, let's begin]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 3,
+            "CoreWeave": 5
+          }
+        },
+        "test_a_cancel_before_a_day_cancels[cancel this]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_cancel_before_a_day_cancels[never mind, not today]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 2,
+            "CoreWeave": 6
+          }
+        },
+        "test_a_question_after_commit_is_asked_not_revised[what did we decide about lunch?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 1,
+            "CoreWeave": 7
+          }
+        },
+        "test_a_question_after_commit_is_asked_not_revised[when's the deep-work block?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_fact_after_commit_is_still_a_fact[I sleep 00:30\\u201308:30]": {
+          "outcome": "passed",
+          "draws": 10,
+          "length_draws": 2,
+          "providers": {
+            "CoreWeave": 10
+          }
+        },
+        "test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_revision_after_commit_is_still_a_revision[move the work two hours later]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]": {
+          "outcome": "break-it unbroken",
+          "draws": 10,
+          "length_draws": 3,
+          "providers": {
+            "CoreWeave": 10
+          }
+        },
+        "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]": {
+          "outcome": "passed",
+          "draws": 13,
+          "length_draws": 9,
+          "providers": {
+            "CoreWeave": 13
+          }
+        },
+        "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]": {
+          "outcome": "passed",
+          "draws": 12,
+          "length_draws": 8,
+          "providers": {
+            "CoreWeave": 12
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        {
+          "case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "draws": 10,
+          "draws_raised": 3,
+          "errors": {
+            "LengthFinishReasonError": 3
+          },
+          "length_draws": 3,
+          "detail": "se response content as the length limit was reached - CompletionUsage(completion_tokens=1024, prompt_tokens=1647, total_tokens=2671, completion_tokens_details=CompletionTokensDetails(accepted_prediction_tokens=None, audio_tokens=0, reasoning_tokens=1197, rejected_prediction_tokens=None, image_tokens=0), prompt_tokens_details=PromptTokensDetails(audio_tokens=0, cache_write_tokens=0, cached_tokens=512, video_tokens=0), cost=0.005564418, is_byok=False, cost_details={'upstream_inference_cost': 0.005564418, 'upstream_inference_prompt_cost': 0.001509378, 'upstream_inference_completions_cost': 0.00405504})\nE     \nE     The above exception was the direct cause of the following exception:\nE     \nE     Traceback (most recent call last):\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/asked-not-started/tests/integration/test_eval_timebox_question.py\", line 183, in one\nE         return await interpreter.interpret(text, snapshot)\nE                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/asked-not-started/src/fateforger/slack_bot/timeboxing_intents.py\", line 456, in interpret\nE         interpreted = await self._core.interpret(\nE                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/asked-not-started/src/fateforger/slack_bot/surface_intents.py\", line 202, in interpret\nE         raise SurfaceIntentError(\nE     fateforger.slack_bot.surface_intents.SurfaceIntentError: could not read the reply against the timebox_session\nE   assert 0 > 6"
+        }
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 22,
+      "length_draw_cases": [
+        "test_a_fact_after_commit_is_still_a_fact[I sleep 00:30\\u201308:30]",
+        "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+        "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+        "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "truncated_draws": [
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_a_fact_after_commit_is_still_a_fact[I sleep 00:30\\u201308:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129247-5BKniFM0jer4YH0fRrlp",
+          "latency_s": 13.030953542009229,
+          "prompt_tokens": 1806,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1017,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_a_fact_after_commit_is_still_a_fact[I sleep 00:30\\u201308:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129247-KyRjLM9fd6RE2sIHfgsm",
+          "latency_s": 13.039739500003634,
+          "prompt_tokens": 1806,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 974,
+          "content_chars": 41,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129299-5w5AN6lYrB1fiuizsCaE",
+          "latency_s": 11.685538958001416,
+          "prompt_tokens": 1647,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1165,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129299-fdUG7mvIdnKfsF0aOzZc",
+          "latency_s": 18.378896417008946,
+          "prompt_tokens": 1647,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1208,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129318-fx1GTXS3gmSLo6WJfT8Q",
+          "latency_s": 11.825674749998143,
+          "prompt_tokens": 1647,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1197,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129330-oHo4X7S6Ac7EJ4KdGiON",
+          "latency_s": 10.464296874997672,
+          "prompt_tokens": 1661,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1148,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129330-UOjjTS7wUtCmfnsyO7jX",
+          "latency_s": 16.086240583012113,
+          "prompt_tokens": 1661,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1115,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129330-pvkD2YJwDOWLFkiUUt6b",
+          "latency_s": 18.6768968749966,
+          "prompt_tokens": 1661,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1100,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129330-UrJXfzJ0EySm5raH8DO7",
+          "latency_s": 19.55113233299926,
+          "prompt_tokens": 1661,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1047,
+          "content_chars": 66,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129330-VjVXw0l9GXAUQqxQWP8w",
+          "latency_s": 21.426144957978977,
+          "prompt_tokens": 1661,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1153,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129346-v6oyuPpT5DrjYn1cINah",
+          "latency_s": 11.312512000004062,
+          "prompt_tokens": 1661,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1082,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129349-c1SJZm56Qiec3vSECO1f",
+          "latency_s": 9.172789749980439,
+          "prompt_tokens": 1661,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1088,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129348-BtRbY43ccZ22YPyFfQlK",
+          "latency_s": 12.765391082997667,
+          "prompt_tokens": 1661,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1135,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129340-PCjg91u8Avhg5QiHO7Sa",
+          "latency_s": 22.894915542012313,
+          "prompt_tokens": 1661,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1176,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129363-ZQhMDgx70UZadBF3Uy3n",
+          "latency_s": 10.799194040999282,
+          "prompt_tokens": 1663,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1168,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129363-Xv3vvSKCfLFxuiXn9XVu",
+          "latency_s": 11.097031624987721,
+          "prompt_tokens": 1663,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1164,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129363-rbQpcN8PxPj9cRWArerk",
+          "latency_s": 22.612193250010023,
+          "prompt_tokens": 1663,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1149,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129374-rmrI5Lr14OmRooMnZ1X2",
+          "latency_s": 12.81077800001367,
+          "prompt_tokens": 1663,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1111,
+          "content_chars": 3,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129374-5UDkvu7ms13OeSD0UhI8",
+          "latency_s": 13.442197500000475,
+          "prompt_tokens": 1663,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1137,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129363-5mdJEAZc70pFK2Wh2Rez",
+          "latency_s": 24.836721375002526,
+          "prompt_tokens": 1663,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1167,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129386-x5yLIW49ediLKCHonviU",
+          "latency_s": 9.351000333001139,
+          "prompt_tokens": 1663,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1212,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-high-1024",
+          "run": 1,
+          "label": "pro-high-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129388-UtVcfTpWET4C2Xe6g11I",
+          "latency_s": 8.712627291009994,
+          "prompt_tokens": 1663,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1157,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
+      "cap_bites": 22,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 143
+      },
+      "latency_median_s": 2.7044342909939587,
+      "latency_p90_s": 12.0571688330092,
+      "latency_max_s": 24.836721375002526,
+      "completion_tokens_median": 153,
+      "completion_tokens_p90": 493.0,
+      "completion_tokens_max": 1021,
+      "completion_tokens_max_case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+      "reasoning_tokens_median": 117,
+      "prompt_tokens_total": 260950,
+      "completion_tokens_total": 56351,
+      "by_provider": {
+        "CoreWeave": {
+          "draws": 136,
+          "truncated": 22,
+          "other_errors": {},
+          "reasoning_tokens_median": 175.0,
+          "reasoning_tokens_reported": 114,
+          "completion_tokens_median": 204.0,
+          "latency_median_s": 3.2988754794787383,
+          "latency_p90_s": 13.030953542009229,
+          "cost_usd": 0.2919
+        },
+        "Together": {
+          "draws": 29,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0,
+          "reasoning_tokens_reported": 29,
+          "completion_tokens_median": 45,
+          "latency_median_s": 1.3263755000079982,
+          "latency_p90_s": 2.126409499993315,
+          "cost_usd": 0.0092
+        }
+      },
+      "cost_usd": 0.3011,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [
+        "[eval] AskQuestion 8/8 <- 'has it been scheduled?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'did you put the gym in?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'is there a planning session today?' :: {'AskQuestion': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'plan my day tomorrow' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"let's timebox saturday\" :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'kick it off' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"right, let's begin\" :: {'StartSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'cancel this' :: {'CancelSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'never mind, not today' :: {'CancelSession': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'what did we decide about lunch?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"when's the deep-work block?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'I sleep 00:30\u201308:30' :: {'ProvidePlanningFacts': 8} retries=2",
+        "[eval] ProvidePlanningFacts 8/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ReviseArtifact 8/8 <- 'move the work two hours later' :: {'ReviseArtifact': 8} retries=0",
+        "[eval] AskQuestion 6/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 6, 'ValidationError': 1, 'LengthFinishReasonError': 1} retries=2",
+        "[eval] StartSession 0/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 6, 'ValidationError': 1, 'LengthFinishReasonError': 1} retries=2",
+        "[eval] ProvidePlanningFacts 1/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'LengthFinishReasonError': 4, 'AskQuestion': 3, 'ProvidePlanningFacts': 1} retries=5",
+        "[eval] AskQuestion 3/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'LengthFinishReasonError': 4, 'AskQuestion': 3, 'ProvidePlanningFacts': 1} retries=5",
+        "[eval] ProvidePlanningFacts 0/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'LengthFinishReasonError': 4, 'AskQuestion': 4} retries=4",
+        "[eval] AskQuestion 4/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'LengthFinishReasonError': 4, 'AskQuestion': 4} retries=4"
+      ],
+      "eval_reported_failures": {
+        "ValidationError": 1,
+        "LengthFinishReasonError": 9
+      },
+      "failures_after_create": {
+        "ValidationError": 1
+      },
+      "failures_after_create_by_case": {
+        "what's on my calendar tomorrow?": {
+          "ValidationError": 1,
+          "LengthFinishReasonError": 1
+        }
+      },
+      "prints_breakdown": true
+    },
+    "pro-high-1024 \u00b7 run 2::planning_card": {
+      "config": "pro-high-1024",
+      "run": 2,
+      "label": "pro-high-1024 \u00b7 run 2",
+      "eval": "planning_card",
+      "control_row": null,
+      "rows_seen": [
+        "intent_interpreter"
+      ],
+      "started": "2026-09-11T14:27:25.027734+02:00",
+      "duration_s": 19.193,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 112,
+      "cases_passed": 13,
+      "cases_total": 14,
+      "case_outcomes": {
+        "test_consent_is_the_add_press[Okay!]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_consent_is_the_add_press[yes]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_consent_is_the_add_press[sure, do it]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_time_with_consent_updates_and_adds[no, let's do 13:45]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_time_with_consent_updates_and_adds[13:45]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_time_without_consent_only_updates": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_non_press_is_none[why 10:38?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 7,
+            "CoreWeave": 1
+          }
+        },
+        "test_a_non_press_is_none[plan tomorrow for me]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_non_press_is_none[later]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_another_day_with_a_time_is_none[tomorrow at 9]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_another_day_with_a_time_is_none[friday at 14:00]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_the_proposals_own_day_with_a_time_updates_and_adds": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_try_again_on_a_failed_card_is_retry": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_break_it_without_the_day_clause_a_non_press_becomes_a_press": {
+          "outcome": "break-it unbroken",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        {
+          "case": "test_break_it_without_the_day_clause_a_non_press_becomes_a_press",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "tests/integration/test_eval_planning_card_intent.py:251: in test_break_it_without_the_day_clause_a_non_press_becomes_a_press\n    assert _count(results, kind=None) < THRESHOLD, _report(results)\nE   AssertionError: None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE   assert 8 < 7\nE    +  where 8 = _count([None, None, None, None, None, None, ...], kind=None)"
+        }
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 112
+      },
+      "latency_median_s": 1.1377389374974882,
+      "latency_p90_s": 1.4177212920039892,
+      "latency_max_s": 1.9482117499865126,
+      "completion_tokens_median": 21.0,
+      "completion_tokens_p90": 26.0,
+      "completion_tokens_max": 74,
+      "completion_tokens_max_case": "test_a_non_press_is_none[why 10:38?]",
+      "reasoning_tokens_median": 0.0,
+      "prompt_tokens_total": 56072,
+      "completion_tokens_total": 2412,
+      "by_provider": {
+        "Together": {
+          "draws": 111,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0,
+          "reasoning_tokens_reported": 111,
+          "completion_tokens_median": 21,
+          "latency_median_s": 1.1369928329950199,
+          "latency_p90_s": 1.4177212920039892,
+          "cost_usd": 0.0166
+        },
+        "CoreWeave": {
+          "draws": 1,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 65,
+          "reasoning_tokens_reported": 1,
+          "completion_tokens_median": 74,
+          "latency_median_s": 1.2878590000036638,
+          "latency_p90_s": 1.2878590000036638,
+          "cost_usd": 0.0013
+        }
+      },
+      "cost_usd": 0.0179,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-high-1024 \u00b7 run 2::day_frame": {
+      "config": "pro-high-1024",
+      "run": 2,
+      "label": "pro-high-1024 \u00b7 run 2",
+      "eval": "day_frame",
+      "control_row": null,
+      "rows_seen": [
+        "intent_interpreter"
+      ],
+      "started": "2026-09-11T14:27:48.099881+02:00",
+      "duration_s": 11.015,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 24,
+      "cases_passed": 3,
+      "cases_total": 3,
+      "case_outcomes": {
+        "test_the_2026_09_02_correction_is_a_frame_fact": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 7,
+            "CoreWeave": 1
+          }
+        },
+        "test_the_2026_09_02_opening_message_states_no_frame": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_bare_times_answer_the_open_frame_question": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 24
+      },
+      "latency_median_s": 1.4562301459955052,
+      "latency_p90_s": 1.7424344159953762,
+      "latency_max_s": 4.8368040840141475,
+      "completion_tokens_median": 33.0,
+      "completion_tokens_p90": 76.0,
+      "completion_tokens_max": 465,
+      "completion_tokens_max_case": "test_the_2026_09_02_correction_is_a_frame_fact",
+      "reasoning_tokens_median": 0.0,
+      "prompt_tokens_total": 15002,
+      "completion_tokens_total": 1568,
+      "by_provider": {
+        "Together": {
+          "draws": 23,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0,
+          "reasoning_tokens_reported": 23,
+          "completion_tokens_median": 33,
+          "latency_median_s": 1.4470980830083136,
+          "latency_p90_s": 1.7327139590051956,
+          "cost_usd": 0.0062
+        },
+        "CoreWeave": {
+          "draws": 1,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 367,
+          "reasoning_tokens_reported": 1,
+          "completion_tokens_median": 465,
+          "latency_median_s": 4.8368040840141475,
+          "latency_p90_s": 4.8368040840141475,
+          "cost_usd": 0.0036
+        }
+      },
+      "cost_usd": 0.0098,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-high-1024 \u00b7 run 2::day_frame [timeboxing_judge]": {
+      "config": "pro-high-1024",
+      "run": 2,
+      "label": "pro-high-1024 \u00b7 run 2",
+      "eval": "day_frame",
+      "control_row": "timeboxing_judge",
+      "rows_seen": [
+        "timeboxing_judge"
+      ],
+      "started": "2026-09-11T14:27:48.099881+02:00",
+      "duration_s": 11.015,
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "None"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 16,
+      "cases_passed": 2,
+      "cases_total": 2,
+      "case_outcomes": {
+        "test_a_bedtime_rule_is_read_as_the_frame": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Cerebras": 5,
+            "Groq": 3
+          }
+        },
+        "test_evening_rules_are_not_a_bedtime": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Cerebras": 8
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 16
+      },
+      "latency_median_s": 0.6672347915009595,
+      "latency_p90_s": 0.8791327910148539,
+      "latency_max_s": 0.9163950000074692,
+      "completion_tokens_median": 107.0,
+      "completion_tokens_p90": 122.0,
+      "completion_tokens_max": 123,
+      "completion_tokens_max_case": "test_a_bedtime_rule_is_read_as_the_frame",
+      "reasoning_tokens_median": 65.0,
+      "prompt_tokens_total": 9383,
+      "completion_tokens_total": 1604,
+      "by_provider": {
+        "Cerebras": {
+          "draws": 13,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 56,
+          "reasoning_tokens_reported": 13,
+          "completion_tokens_median": 85,
+          "latency_median_s": 0.6525237500027288,
+          "latency_p90_s": 0.7386107080092188,
+          "cost_usd": 0.0037
+        },
+        "Groq": {
+          "draws": 3,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 68,
+          "reasoning_tokens_reported": 3,
+          "completion_tokens_median": 120,
+          "latency_median_s": 0.8785222079895902,
+          "latency_p90_s": 0.8791327910148539,
+          "cost_usd": 0.0004
+        }
+      },
+      "cost_usd": 0.0041,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-low-1024 \u00b7 run 1::planning_card": {
+      "config": "pro-low-1024",
+      "run": 1,
+      "label": "pro-low-1024 \u00b7 run 1",
+      "eval": "planning_card",
+      "control_row": null,
+      "rows_seen": [
+        "intent_interpreter"
+      ],
+      "started": "2026-09-11T14:23:48.748630+02:00",
+      "duration_s": 19.757,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "low"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 112,
+      "cases_passed": 13,
+      "cases_total": 14,
+      "case_outcomes": {
+        "test_consent_is_the_add_press[Okay!]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_consent_is_the_add_press[yes]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_consent_is_the_add_press[sure, do it]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_time_with_consent_updates_and_adds[no, let's do 13:45]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_time_with_consent_updates_and_adds[13:45]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_time_without_consent_only_updates": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 7,
+            "CoreWeave": 1
+          }
+        },
+        "test_a_non_press_is_none[why 10:38?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_non_press_is_none[plan tomorrow for me]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_non_press_is_none[later]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_another_day_with_a_time_is_none[tomorrow at 9]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 7,
+            "CoreWeave": 1
+          }
+        },
+        "test_another_day_with_a_time_is_none[friday at 14:00]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_the_proposals_own_day_with_a_time_updates_and_adds": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_try_again_on_a_failed_card_is_retry": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_break_it_without_the_day_clause_a_non_press_becomes_a_press": {
+          "outcome": "break-it unbroken",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        {
+          "case": "test_break_it_without_the_day_clause_a_non_press_becomes_a_press",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "tests/integration/test_eval_planning_card_intent.py:251: in test_break_it_without_the_day_clause_a_non_press_becomes_a_press\n    assert _count(results, kind=None) < THRESHOLD, _report(results)\nE   AssertionError: None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE   assert 8 < 7\nE    +  where 8 = _count([None, None, None, None, None, None, ...], kind=None)"
+        }
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 112
+      },
+      "latency_median_s": 1.0089116255112458,
+      "latency_p90_s": 1.3313947080168873,
+      "latency_max_s": 3.456825082976138,
+      "completion_tokens_median": 21.0,
+      "completion_tokens_p90": 29.0,
+      "completion_tokens_max": 118,
+      "completion_tokens_max_case": "test_another_day_with_a_time_is_none[tomorrow at 9]",
+      "reasoning_tokens_median": 0.0,
+      "prompt_tokens_total": 56202,
+      "completion_tokens_total": 2433,
+      "by_provider": {
+        "Together": {
+          "draws": 110,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0.0,
+          "reasoning_tokens_reported": 110,
+          "completion_tokens_median": 21.0,
+          "latency_median_s": 1.0053045420208946,
+          "latency_p90_s": 1.2996249590069056,
+          "cost_usd": 0.0162
+        },
+        "CoreWeave": {
+          "draws": 2,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 64.5,
+          "reasoning_tokens_reported": 2,
+          "completion_tokens_median": 81.5,
+          "latency_median_s": 2.3304818749893457,
+          "latency_p90_s": 3.456825082976138,
+          "cost_usd": 0.0025
+        }
+      },
+      "cost_usd": 0.0188,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-low-1024 \u00b7 run 1::day_frame": {
+      "config": "pro-low-1024",
+      "run": 1,
+      "label": "pro-low-1024 \u00b7 run 1",
+      "eval": "day_frame",
+      "control_row": null,
+      "rows_seen": [
+        "intent_interpreter"
+      ],
+      "started": "2026-09-11T14:24:12.971564+02:00",
+      "duration_s": 9.028,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "low"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 24,
+      "cases_passed": 3,
+      "cases_total": 3,
+      "case_outcomes": {
+        "test_the_2026_09_02_correction_is_a_frame_fact": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 7,
+            "CoreWeave": 1
+          }
+        },
+        "test_the_2026_09_02_opening_message_states_no_frame": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_bare_times_answer_the_open_frame_question": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 24
+      },
+      "latency_median_s": 0.9461137920152396,
+      "latency_p90_s": 1.3751236250100192,
+      "latency_max_s": 2.835843583015958,
+      "completion_tokens_median": 33.0,
+      "completion_tokens_p90": 76.0,
+      "completion_tokens_max": 262,
+      "completion_tokens_max_case": "test_the_2026_09_02_correction_is_a_frame_fact",
+      "reasoning_tokens_median": 0.0,
+      "prompt_tokens_total": 14923,
+      "completion_tokens_total": 1365,
+      "by_provider": {
+        "Together": {
+          "draws": 23,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0,
+          "reasoning_tokens_reported": 23,
+          "completion_tokens_median": 33,
+          "latency_median_s": 0.9452305420127232,
+          "latency_p90_s": 1.3640902090119198,
+          "cost_usd": 0.0062
+        },
+        "CoreWeave": {
+          "draws": 1,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 192,
+          "reasoning_tokens_reported": 1,
+          "completion_tokens_median": 262,
+          "latency_median_s": 2.835843583015958,
+          "latency_p90_s": 2.835843583015958,
+          "cost_usd": 0.0027
+        }
+      },
+      "cost_usd": 0.0089,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-low-1024 \u00b7 run 1::day_frame [timeboxing_judge]": {
+      "config": "pro-low-1024",
+      "run": 1,
+      "label": "pro-low-1024 \u00b7 run 1",
+      "eval": "day_frame",
+      "control_row": "timeboxing_judge",
+      "rows_seen": [
+        "timeboxing_judge"
+      ],
+      "started": "2026-09-11T14:24:12.971564+02:00",
+      "duration_s": 9.028,
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "None"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 16,
+      "cases_passed": 2,
+      "cases_total": 2,
+      "case_outcomes": {
+        "test_a_bedtime_rule_is_read_as_the_frame": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Cerebras": 8
+          }
+        },
+        "test_evening_rules_are_not_a_bedtime": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Cerebras": 8
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 16
+      },
+      "latency_median_s": 0.7820475420012372,
+      "latency_p90_s": 1.4942176660115365,
+      "latency_max_s": 1.5325962909846567,
+      "completion_tokens_median": 88.0,
+      "completion_tokens_p90": 119.0,
+      "completion_tokens_max": 124,
+      "completion_tokens_max_case": "test_a_bedtime_rule_is_read_as_the_frame",
+      "reasoning_tokens_median": 56.0,
+      "prompt_tokens_total": 9680,
+      "completion_tokens_total": 1523,
+      "by_provider": {
+        "Cerebras": {
+          "draws": 16,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 56.0,
+          "reasoning_tokens_reported": 16,
+          "completion_tokens_median": 88.0,
+          "latency_median_s": 0.7820475420012372,
+          "latency_p90_s": 1.4942176660115365,
+          "cost_usd": 0.0045
+        }
+      },
+      "cost_usd": 0.0045,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-low-1024 \u00b7 run 1::timebox_question": {
+      "config": "pro-low-1024",
+      "run": 1,
+      "label": "pro-low-1024 \u00b7 run 1",
+      "eval": "timebox_question",
+      "control_row": null,
+      "rows_seen": [
+        "timeboxing_agent"
+      ],
+      "started": "2026-09-11T14:24:26.158416+02:00",
+      "duration_s": 139.909,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "low"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 160,
+      "cases_passed": 19,
+      "cases_total": 19,
+      "case_outcomes": {
+        "test_a_question_before_a_day_is_asked[has it been scheduled?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_question_before_a_day_is_asked[did you put the gym in?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 7,
+            "CoreWeave": 1
+          }
+        },
+        "test_a_question_before_a_day_is_asked[what's on my calendar tomorrow?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_question_before_a_day_is_asked[is there a planning session today?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_start_before_a_day_starts[plan my day tomorrow]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 1,
+            "CoreWeave": 7
+          }
+        },
+        "test_a_start_before_a_day_starts[let's timebox saturday]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_start_before_a_day_starts[kick it off]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_start_before_a_day_starts[right, let's begin]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_cancel_before_a_day_cancels[cancel this]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_cancel_before_a_day_cancels[never mind, not today]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_question_after_commit_is_asked_not_revised[what did we decide about lunch?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_question_after_commit_is_asked_not_revised[when's the deep-work block?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_fact_after_commit_is_still_a_fact[I sleep 00:30\\u201308:30]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_a_revision_after_commit_is_still_a_revision[move the work two hours later]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "CoreWeave": 8
+          }
+        },
+        "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]": {
+          "outcome": "passed",
+          "draws": 10,
+          "length_draws": 3,
+          "providers": {
+            "CoreWeave": 10
+          }
+        },
+        "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]": {
+          "outcome": "passed",
+          "draws": 12,
+          "length_draws": 6,
+          "providers": {
+            "CoreWeave": 12
+          }
+        },
+        "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]": {
+          "outcome": "passed",
+          "draws": 10,
+          "length_draws": 2,
+          "providers": {
+            "CoreWeave": 10
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 11,
+      "length_draw_cases": [
+        "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+        "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+        "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "truncated_draws": [
+        {
+          "config": "pro-low-1024",
+          "run": 1,
+          "label": "pro-low-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129533-ZbDWa9A0KYA9uHNWcC2n",
+          "latency_s": 8.605533333000494,
+          "prompt_tokens": 1568,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1186,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-low-1024",
+          "run": 1,
+          "label": "pro-low-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129532-5ggtBFO9GOqaynyjkE9g",
+          "latency_s": 10.971051708998857,
+          "prompt_tokens": 1568,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1215,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-low-1024",
+          "run": 1,
+          "label": "pro-low-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129541-RYijl8aF10TChdc2CBrM",
+          "latency_s": 9.044875665975269,
+          "prompt_tokens": 1568,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1226,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-low-1024",
+          "run": 1,
+          "label": "pro-low-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129550-mEyk08UtVXxi1qbFxXyt",
+          "latency_s": 11.76829620799981,
+          "prompt_tokens": 1582,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1107,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-low-1024",
+          "run": 1,
+          "label": "pro-low-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129550-nl7F11PaN46KqddJIU9X",
+          "latency_s": 12.983622708998155,
+          "prompt_tokens": 1582,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1197,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-low-1024",
+          "run": 1,
+          "label": "pro-low-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129550-sGb831KnEOvRFzWLISSm",
+          "latency_s": 14.781338333006715,
+          "prompt_tokens": 1582,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1139,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-low-1024",
+          "run": 1,
+          "label": "pro-low-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129550-V0xFNJLm9Y3NV5BmrzRt",
+          "latency_s": 15.074185999983456,
+          "prompt_tokens": 1582,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1103,
+          "content_chars": 69,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-low-1024",
+          "run": 1,
+          "label": "pro-low-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129563-MG0WPZMJ04n7YnSmYin5",
+          "latency_s": 10.749102208006661,
+          "prompt_tokens": 1582,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1191,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-low-1024",
+          "run": 1,
+          "label": "pro-low-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129565-XIDu33EVi4r7QctOcPTN",
+          "latency_s": 11.000075874995673,
+          "prompt_tokens": 1582,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1100,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-low-1024",
+          "run": 1,
+          "label": "pro-low-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129585-bbv22jr4t0Dt2LQOW1b2",
+          "latency_s": 10.823005624988582,
+          "prompt_tokens": 1584,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1202,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "pro-low-1024",
+          "run": 1,
+          "label": "pro-low-1024 \u00b7 run 1",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "provider": "CoreWeave",
+          "gen_id": "gen-1789129585-Rr9h9WMwDZouZj2umSd2",
+          "latency_s": 13.671059499989497,
+          "prompt_tokens": 1584,
+          "completion_tokens": 1024,
+          "reasoning_tokens": 1185,
+          "content_chars": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
+      "cap_bites": 11,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 149
+      },
+      "latency_median_s": 2.079378167007235,
+      "latency_p90_s": 9.044875665975269,
+      "latency_max_s": 19.92529166699387,
+      "completion_tokens_median": 143,
+      "completion_tokens_p90": 454.0,
+      "completion_tokens_max": 983,
+      "completion_tokens_max_case": "test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+      "reasoning_tokens_median": 110,
+      "prompt_tokens_total": 254872,
+      "completion_tokens_total": 43381,
+      "by_provider": {
+        "CoreWeave": {
+          "draws": 144,
+          "truncated": 11,
+          "other_errors": {},
+          "reasoning_tokens_median": 126,
+          "reasoning_tokens_reported": 133,
+          "completion_tokens_median": 155,
+          "latency_median_s": 2.3262258539907634,
+          "latency_p90_s": 9.917218500020681,
+          "cost_usd": 0.2394
+        },
+        "Together": {
+          "draws": 16,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0.0,
+          "reasoning_tokens_reported": 16,
+          "completion_tokens_median": 45.0,
+          "latency_median_s": 1.169397250007023,
+          "latency_p90_s": 1.3915362499828916,
+          "cost_usd": 0.0043
+        }
+      },
+      "cost_usd": 0.2437,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [
+        "[eval] AskQuestion 8/8 <- 'has it been scheduled?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'did you put the gym in?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'is there a planning session today?' :: {'AskQuestion': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'plan my day tomorrow' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"let's timebox saturday\" :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'kick it off' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"right, let's begin\" :: {'StartSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'cancel this' :: {'CancelSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'never mind, not today' :: {'CancelSession': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'what did we decide about lunch?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"when's the deep-work block?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'I sleep 00:30\u201308:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ReviseArtifact 8/8 <- 'move the work two hours later' :: {'ReviseArtifact': 8} retries=0",
+        "[eval] AskQuestion 2/8 <- \"what's on my calendar tomorrow?\" :: {'StartSession': 5, 'AskQuestion': 2, 'LengthFinishReasonError': 1} retries=2",
+        "[eval] StartSession 5/8 <- \"what's on my calendar tomorrow?\" :: {'StartSession': 5, 'AskQuestion': 2, 'LengthFinishReasonError': 1} retries=2",
+        "[eval] ProvidePlanningFacts 2/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 2, 'AskQuestion': 4, 'LengthFinishReasonError': 2} retries=4",
+        "[eval] AskQuestion 4/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 2, 'AskQuestion': 4, 'LengthFinishReasonError': 2} retries=4",
+        "[eval] ProvidePlanningFacts 1/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'AskQuestion': 7, 'ProvidePlanningFacts': 1} retries=2",
+        "[eval] AskQuestion 7/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'AskQuestion': 7, 'ProvidePlanningFacts': 1} retries=2"
+      ],
+      "eval_reported_failures": {
+        "LengthFinishReasonError": 3
+      },
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": true
+    },
+    "pro-low-1024 \u00b7 run 2::planning_card": {
+      "config": "pro-low-1024",
+      "run": 2,
+      "label": "pro-low-1024 \u00b7 run 2",
+      "eval": "planning_card",
+      "control_row": null,
+      "rows_seen": [
+        "intent_interpreter"
+      ],
+      "started": "2026-09-11T14:28:29.675769+02:00",
+      "duration_s": 21.075,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "low"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 112,
+      "cases_passed": 13,
+      "cases_total": 14,
+      "case_outcomes": {
+        "test_consent_is_the_add_press[Okay!]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_consent_is_the_add_press[yes]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_consent_is_the_add_press[sure, do it]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_time_with_consent_updates_and_adds[no, let's do 13:45]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_time_with_consent_updates_and_adds[13:45]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_time_without_consent_only_updates": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_non_press_is_none[why 10:38?]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_non_press_is_none[plan tomorrow for me]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_a_non_press_is_none[later]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_another_day_with_a_time_is_none[tomorrow at 9]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_another_day_with_a_time_is_none[friday at 14:00]": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_the_proposals_own_day_with_a_time_updates_and_adds": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 7,
+            "CoreWeave": 1
+          }
+        },
+        "test_try_again_on_a_failed_card_is_retry": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_break_it_without_the_day_clause_a_non_press_becomes_a_press": {
+          "outcome": "break-it unbroken",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        {
+          "case": "test_break_it_without_the_day_clause_a_non_press_becomes_a_press",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "tests/integration/test_eval_planning_card_intent.py:251: in test_break_it_without_the_day_clause_a_non_press_becomes_a_press\n    assert _count(results, kind=None) < THRESHOLD, _report(results)\nE   AssertionError: None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE   assert 8 < 7\nE    +  where 8 = _count([None, None, None, None, None, None, ...], kind=None)"
+        }
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 112
+      },
+      "latency_median_s": 1.1878102295013377,
+      "latency_p90_s": 1.528248042013729,
+      "latency_max_s": 2.8271952499926556,
+      "completion_tokens_median": 21.0,
+      "completion_tokens_p90": 26.0,
+      "completion_tokens_max": 145,
+      "completion_tokens_max_case": "test_the_proposals_own_day_with_a_time_updates_and_adds",
+      "reasoning_tokens_median": 0.0,
+      "prompt_tokens_total": 55993,
+      "completion_tokens_total": 2430,
+      "by_provider": {
+        "Together": {
+          "draws": 111,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0,
+          "reasoning_tokens_reported": 111,
+          "completion_tokens_median": 21,
+          "latency_median_s": 1.1857299169932958,
+          "latency_p90_s": 1.5115784580120817,
+          "cost_usd": 0.0164
+        },
+        "CoreWeave": {
+          "draws": 1,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 109,
+          "reasoning_tokens_reported": 1,
+          "completion_tokens_median": 145,
+          "latency_median_s": 1.601160374993924,
+          "latency_p90_s": 1.601160374993924,
+          "cost_usd": 0.0015
+        }
+      },
+      "cost_usd": 0.0179,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-low-1024 \u00b7 run 2::day_frame": {
+      "config": "pro-low-1024",
+      "run": 2,
+      "label": "pro-low-1024 \u00b7 run 2",
+      "eval": "day_frame",
+      "control_row": null,
+      "rows_seen": [
+        "intent_interpreter"
+      ],
+      "started": "2026-09-11T14:28:54.724297+02:00",
+      "duration_s": 12.324,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "low"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 24,
+      "cases_passed": 3,
+      "cases_total": 3,
+      "case_outcomes": {
+        "test_the_2026_09_02_correction_is_a_frame_fact": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_the_2026_09_02_opening_message_states_no_frame": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        },
+        "test_bare_times_answer_the_open_frame_question": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Together": 8
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 24
+      },
+      "latency_median_s": 1.5742191874887794,
+      "latency_p90_s": 3.7784124999889173,
+      "latency_max_s": 4.1436322089866735,
+      "completion_tokens_median": 33.0,
+      "completion_tokens_p90": 76.0,
+      "completion_tokens_max": 76,
+      "completion_tokens_max_case": "test_the_2026_09_02_opening_message_states_no_frame",
+      "reasoning_tokens_median": 0.0,
+      "prompt_tokens_total": 14216,
+      "completion_tokens_total": 1136,
+      "by_provider": {
+        "Together": {
+          "draws": 24,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0.0,
+          "reasoning_tokens_reported": 24,
+          "completion_tokens_median": 33.0,
+          "latency_median_s": 1.5742191874887794,
+          "latency_p90_s": 3.7784124999889173,
+          "cost_usd": 0.0064
+        }
+      },
+      "cost_usd": 0.0064,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-low-1024 \u00b7 run 2::day_frame [timeboxing_judge]": {
+      "config": "pro-low-1024",
+      "run": 2,
+      "label": "pro-low-1024 \u00b7 run 2",
+      "eval": "day_frame",
+      "control_row": "timeboxing_judge",
+      "rows_seen": [
+        "timeboxing_judge"
+      ],
+      "started": "2026-09-11T14:28:54.724297+02:00",
+      "duration_s": 12.324,
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "None"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 16,
+      "cases_passed": 2,
+      "cases_total": 2,
+      "case_outcomes": {
+        "test_a_bedtime_rule_is_read_as_the_frame": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Cerebras": 8
+          }
+        },
+        "test_evening_rules_are_not_a_bedtime": {
+          "outcome": "passed",
+          "draws": 8,
+          "length_draws": 0,
+          "providers": {
+            "Cerebras": 6,
+            "Groq": 2
+          }
+        }
+      },
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 16
+      },
+      "latency_median_s": 0.5653103334916523,
+      "latency_p90_s": 0.903418458008673,
+      "latency_max_s": 1.148093833005987,
+      "completion_tokens_median": 104.0,
+      "completion_tokens_p90": 120.0,
+      "completion_tokens_max": 125,
+      "completion_tokens_max_case": "test_a_bedtime_rule_is_read_as_the_frame",
+      "reasoning_tokens_median": 71.5,
+      "prompt_tokens_total": 9482,
+      "completion_tokens_total": 1634,
+      "by_provider": {
+        "Cerebras": {
+          "draws": 14,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 73.0,
+          "reasoning_tokens_reported": 14,
+          "completion_tokens_median": 107.5,
+          "latency_median_s": 0.5566343545069685,
+          "latency_p90_s": 0.903418458008673,
+          "cost_usd": 0.0041
+        },
+        "Groq": {
+          "draws": 2,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 56.5,
+          "reasoning_tokens_reported": 2,
+          "completion_tokens_median": 100.5,
+          "latency_median_s": 0.7850010624970309,
+          "latency_p90_s": 0.8312900419987272,
+          "cost_usd": 0.0003
+        }
+      },
+      "cost_usd": 0.0043,
+      "cost_source": "usage.cost",
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    }
+  },
+  "config_totals": {
+    "pro-high-1024 \u00b7 run 1": {
+      "label": "pro-high-1024 \u00b7 run 1",
+      "config": "pro-high-1024",
+      "run": 1,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "evals": 3,
+      "draws": 301,
+      "cases_passed": 34,
+      "cases_total": 36,
+      "judgement_loss_cases": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        "planning_card::test_break_it_without_the_day_clause_a_non_press_becomes_a_press",
+        "timebox_question::test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]"
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "failures_after_create": {
+        "ValidationError": 1
+      },
+      "failures_after_create_by_case": [
+        "timebox_question::what's on my calendar tomorrow?"
+      ],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
+      "cap_bites": 23,
+      "runaway_draws": 0,
+      "length_draws": 23,
+      "length_draw_cases": [
+        "planning_card::test_a_time_without_consent_only_updates",
+        "timebox_question::test_a_fact_after_commit_is_still_a_fact[I sleep 00:30\\u201308:30]",
+        "timebox_question::test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "latency_median_s": 1.8047882499813568,
+      "latency_p90_s": 8.956927916995483,
+      "latency_max_s": 24.836721375002526,
+      "reasoning_tokens_median": 0.0,
+      "completion_tokens_median": 44.0,
+      "completion_tokens_max": 1021,
+      "longest_case": "timebox_question::test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+      "by_provider": {
+        "Together": {
+          "draws": 165,
+          "truncated": 1,
+          "other_errors": {},
+          "reasoning_tokens_median": 0.0,
+          "reasoning_tokens_reported": 164,
+          "completion_tokens_median": 23.0,
+          "latency_median_s": 1.1080785839876626,
+          "latency_p90_s": 1.929564083024161,
+          "cost_usd": 0.0423
+        },
+        "CoreWeave": {
+          "draws": 136,
+          "truncated": 22,
+          "other_errors": {},
+          "reasoning_tokens_median": 175.0,
+          "reasoning_tokens_reported": 114,
+          "completion_tokens_median": 204.0,
+          "latency_median_s": 3.2988754794787383,
+          "latency_p90_s": 13.030953542009229,
+          "cost_usd": 0.2919
+        }
+      },
+      "cost_usd": 0.3343,
+      "started": "2026-09-11T14:19:02.989425+02:00",
+      "config_verified": true
+    },
+    "pro-high-1024 \u00b7 run 2": {
+      "label": "pro-high-1024 \u00b7 run 2",
+      "config": "pro-high-1024",
+      "run": 2,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "evals": 2,
+      "draws": 136,
+      "cases_passed": 16,
+      "cases_total": 17,
+      "judgement_loss_cases": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        "planning_card::test_break_it_without_the_day_clause_a_non_press_becomes_a_press"
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "latency_median_s": 1.1631492919987068,
+      "latency_p90_s": 1.675618541019503,
+      "latency_max_s": 4.8368040840141475,
+      "reasoning_tokens_median": 0.0,
+      "completion_tokens_median": 21.0,
+      "completion_tokens_max": 465,
+      "longest_case": "day_frame::test_the_2026_09_02_correction_is_a_frame_fact",
+      "by_provider": {
+        "Together": {
+          "draws": 134,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0.0,
+          "reasoning_tokens_reported": 134,
+          "completion_tokens_median": 21.0,
+          "latency_median_s": 1.1580978330021026,
+          "latency_p90_s": 1.6488322090008296,
+          "cost_usd": 0.0227
+        },
+        "CoreWeave": {
+          "draws": 2,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 216.0,
+          "reasoning_tokens_reported": 2,
+          "completion_tokens_median": 269.5,
+          "latency_median_s": 3.0623315420089057,
+          "latency_p90_s": 4.8368040840141475,
+          "cost_usd": 0.005
+        }
+      },
+      "cost_usd": 0.0277,
+      "started": "2026-09-11T14:27:25.027734+02:00",
+      "config_verified": true
+    },
+    "pro-low-1024 \u00b7 run 1": {
+      "label": "pro-low-1024 \u00b7 run 1",
+      "config": "pro-low-1024",
+      "run": 1,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "evals": 3,
+      "draws": 296,
+      "cases_passed": 35,
+      "cases_total": 36,
+      "judgement_loss_cases": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        "planning_card::test_break_it_without_the_day_clause_a_non_press_becomes_a_press"
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
+      "cap_bites": 11,
+      "runaway_draws": 0,
+      "length_draws": 11,
+      "length_draw_cases": [
+        "timebox_question::test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "latency_median_s": 1.3347652079974068,
+      "latency_p90_s": 5.443666333012516,
+      "latency_max_s": 19.92529166699387,
+      "reasoning_tokens_median": 0,
+      "completion_tokens_median": 47,
+      "completion_tokens_max": 983,
+      "longest_case": "timebox_question::test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+      "by_provider": {
+        "Together": {
+          "draws": 149,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0,
+          "reasoning_tokens_reported": 149,
+          "completion_tokens_median": 21,
+          "latency_median_s": 1.0188262500159908,
+          "latency_p90_s": 1.3364660410152283,
+          "cost_usd": 0.0267
+        },
+        "CoreWeave": {
+          "draws": 147,
+          "truncated": 11,
+          "other_errors": {},
+          "reasoning_tokens_median": 123.5,
+          "reasoning_tokens_reported": 136,
+          "completion_tokens_median": 154.5,
+          "latency_median_s": 2.3487769999774173,
+          "latency_p90_s": 9.297354791022372,
+          "cost_usd": 0.2447
+        }
+      },
+      "cost_usd": 0.2714,
+      "started": "2026-09-11T14:23:48.748630+02:00",
+      "config_verified": true
+    },
+    "pro-low-1024 \u00b7 run 2": {
+      "label": "pro-low-1024 \u00b7 run 2",
+      "config": "pro-low-1024",
+      "run": 2,
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "evals": 2,
+      "draws": 136,
+      "cases_passed": 16,
+      "cases_total": 17,
+      "judgement_loss_cases": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        "planning_card::test_break_it_without_the_day_clause_a_non_press_becomes_a_press"
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "latency_median_s": 1.2080746250139782,
+      "latency_p90_s": 1.6291231669893023,
+      "latency_max_s": 4.1436322089866735,
+      "reasoning_tokens_median": 0.0,
+      "completion_tokens_median": 21.0,
+      "completion_tokens_max": 145,
+      "longest_case": "planning_card::test_the_proposals_own_day_with_a_time_updates_and_adds",
+      "by_provider": {
+        "Together": {
+          "draws": 135,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0,
+          "reasoning_tokens_reported": 135,
+          "completion_tokens_median": 21,
+          "latency_median_s": 1.2072862920176703,
+          "latency_p90_s": 1.6291231669893023,
+          "cost_usd": 0.0227
+        },
+        "CoreWeave": {
+          "draws": 1,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 109,
+          "reasoning_tokens_reported": 1,
+          "completion_tokens_median": 145,
+          "latency_median_s": 1.601160374993924,
+          "latency_p90_s": 1.601160374993924,
+          "cost_usd": 0.0015
+        }
+      },
+      "cost_usd": 0.0243,
+      "started": "2026-09-11T14:28:29.675769+02:00",
+      "config_verified": true
+    }
+  },
+  "pooled_by_config": {
+    "pro-high-1024": {
+      "runs": [
+        1,
+        2
+      ],
+      "draws": 437,
+      "truncated": 23,
+      "other_errors": {},
+      "reasoning_tokens_median": 0.0,
+      "reasoning_tokens_reported": 414,
+      "completion_tokens_median": 26.0,
+      "latency_median_s": 1.3396883330133278,
+      "latency_p90_s": 5.363086458994076,
+      "cost_usd": 0.362,
+      "by_provider": {
+        "Together": {
+          "draws": 299,
+          "truncated": 1,
+          "other_errors": {},
+          "reasoning_tokens_median": 0.0,
+          "reasoning_tokens_reported": 298,
+          "completion_tokens_median": 21.0,
+          "latency_median_s": 1.150626040995121,
+          "latency_p90_s": 1.8589221659931354,
+          "cost_usd": 0.0651
+        },
+        "CoreWeave": {
+          "draws": 138,
+          "truncated": 22,
+          "other_errors": {},
+          "reasoning_tokens_median": 175.0,
+          "reasoning_tokens_reported": 116,
+          "completion_tokens_median": 204.0,
+          "latency_median_s": 3.2988754794787383,
+          "latency_p90_s": 12.81077800001367,
+          "cost_usd": 0.2969
+        }
+      },
+      "by_eval": {
+        "planning_card": {
+          "draws": 224,
+          "truncated": 1,
+          "other_errors": {},
+          "reasoning_tokens_median": 0,
+          "reasoning_tokens_reported": 223,
+          "completion_tokens_median": 21,
+          "latency_median_s": 1.1302797709940933,
+          "latency_p90_s": 1.4718615000019781,
+          "cost_usd": 0.0447,
+          "by_provider": {
+            "Together": {
+              "draws": 223,
+              "truncated": 1,
+              "other_errors": {},
+              "reasoning_tokens_median": 0.0,
+              "reasoning_tokens_reported": 222,
+              "completion_tokens_median": 21.0,
+              "latency_median_s": 1.1287791669892613,
+              "latency_p90_s": 1.4718615000019781,
+              "cost_usd": 0.0434
+            },
+            "CoreWeave": {
+              "draws": 1,
+              "truncated": 0,
+              "other_errors": {},
+              "reasoning_tokens_median": 65,
+              "reasoning_tokens_reported": 1,
+              "completion_tokens_median": 74,
+              "latency_median_s": 1.2878590000036638,
+              "latency_p90_s": 1.2878590000036638,
+              "cost_usd": 0.0013
+            }
+          }
+        },
+        "day_frame": {
+          "draws": 48,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0.0,
+          "reasoning_tokens_reported": 48,
+          "completion_tokens_median": 33.0,
+          "latency_median_s": 1.3537497704965062,
+          "latency_p90_s": 1.9265237499785144,
+          "cost_usd": 0.0162,
+          "by_provider": {
+            "Together": {
+              "draws": 47,
+              "truncated": 0,
+              "other_errors": {},
+              "reasoning_tokens_median": 0,
+              "reasoning_tokens_reported": 47,
+              "completion_tokens_median": 33,
+              "latency_median_s": 1.3396883330133278,
+              "latency_p90_s": 1.9250702499994077,
+              "cost_usd": 0.0125
+            },
+            "CoreWeave": {
+              "draws": 1,
+              "truncated": 0,
+              "other_errors": {},
+              "reasoning_tokens_median": 367,
+              "reasoning_tokens_reported": 1,
+              "completion_tokens_median": 465,
+              "latency_median_s": 4.8368040840141475,
+              "latency_p90_s": 4.8368040840141475,
+              "cost_usd": 0.0036
+            }
+          }
+        },
+        "timebox_question": {
+          "draws": 165,
+          "truncated": 22,
+          "other_errors": {},
+          "reasoning_tokens_median": 117,
+          "reasoning_tokens_reported": 143,
+          "completion_tokens_median": 153,
+          "latency_median_s": 2.7044342909939587,
+          "latency_p90_s": 12.0571688330092,
+          "cost_usd": 0.3011,
+          "by_provider": {
+            "CoreWeave": {
+              "draws": 136,
+              "truncated": 22,
+              "other_errors": {},
+              "reasoning_tokens_median": 175.0,
+              "reasoning_tokens_reported": 114,
+              "completion_tokens_median": 204.0,
+              "latency_median_s": 3.2988754794787383,
+              "latency_p90_s": 13.030953542009229,
+              "cost_usd": 0.2919
+            },
+            "Together": {
+              "draws": 29,
+              "truncated": 0,
+              "other_errors": {},
+              "reasoning_tokens_median": 0,
+              "reasoning_tokens_reported": 29,
+              "completion_tokens_median": 45,
+              "latency_median_s": 1.3263755000079982,
+              "latency_p90_s": 2.126409499993315,
+              "cost_usd": 0.0092
+            }
+          }
+        }
+      }
+    },
+    "pro-low-1024": {
+      "runs": [
+        1,
+        2
+      ],
+      "draws": 432,
+      "truncated": 11,
+      "other_errors": {},
+      "reasoning_tokens_median": 0,
+      "reasoning_tokens_reported": 421,
+      "completion_tokens_median": 30,
+      "latency_median_s": 1.2699338124948554,
+      "latency_p90_s": 3.7784124999889173,
+      "cost_usd": 0.2956,
+      "by_provider": {
+        "Together": {
+          "draws": 284,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0.0,
+          "reasoning_tokens_reported": 284,
+          "completion_tokens_median": 21.0,
+          "latency_median_s": 1.1083423544914695,
+          "latency_p90_s": 1.5104887500056066,
+          "cost_usd": 0.0494
+        },
+        "CoreWeave": {
+          "draws": 148,
+          "truncated": 11,
+          "other_errors": {},
+          "reasoning_tokens_median": 121,
+          "reasoning_tokens_reported": 137,
+          "completion_tokens_median": 154,
+          "latency_median_s": 2.3262258539907634,
+          "latency_p90_s": 9.297354791022372,
+          "cost_usd": 0.2462
+        }
+      },
+      "by_eval": {
+        "planning_card": {
+          "draws": 224,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0.0,
+          "reasoning_tokens_reported": 224,
+          "completion_tokens_median": 21.0,
+          "latency_median_s": 1.089919228994404,
+          "latency_p90_s": 1.5003817089891527,
+          "cost_usd": 0.0366,
+          "by_provider": {
+            "Together": {
+              "draws": 221,
+              "truncated": 0,
+              "other_errors": {},
+              "reasoning_tokens_median": 0,
+              "reasoning_tokens_reported": 221,
+              "completion_tokens_median": 21,
+              "latency_median_s": 1.0748488750250544,
+              "latency_p90_s": 1.469700958026806,
+              "cost_usd": 0.0326
+            },
+            "CoreWeave": {
+              "draws": 3,
+              "truncated": 0,
+              "other_errors": {},
+              "reasoning_tokens_median": 104,
+              "reasoning_tokens_reported": 3,
+              "completion_tokens_median": 118,
+              "latency_median_s": 1.601160374993924,
+              "latency_p90_s": 3.456825082976138,
+              "cost_usd": 0.004
+            }
+          }
+        },
+        "day_frame": {
+          "draws": 48,
+          "truncated": 0,
+          "other_errors": {},
+          "reasoning_tokens_median": 0.0,
+          "reasoning_tokens_reported": 48,
+          "completion_tokens_median": 33.0,
+          "latency_median_s": 1.3679142290056916,
+          "latency_p90_s": 3.751287457998842,
+          "cost_usd": 0.0153,
+          "by_provider": {
+            "Together": {
+              "draws": 47,
+              "truncated": 0,
+              "other_errors": {},
+              "reasoning_tokens_median": 0,
+              "reasoning_tokens_reported": 47,
+              "completion_tokens_median": 33,
+              "latency_median_s": 1.3643748330068775,
+              "latency_p90_s": 3.751287457998842,
+              "cost_usd": 0.0125
+            },
+            "CoreWeave": {
+              "draws": 1,
+              "truncated": 0,
+              "other_errors": {},
+              "reasoning_tokens_median": 192,
+              "reasoning_tokens_reported": 1,
+              "completion_tokens_median": 262,
+              "latency_median_s": 2.835843583015958,
+              "latency_p90_s": 2.835843583015958,
+              "cost_usd": 0.0027
+            }
+          }
+        },
+        "timebox_question": {
+          "draws": 160,
+          "truncated": 11,
+          "other_errors": {},
+          "reasoning_tokens_median": 110,
+          "reasoning_tokens_reported": 149,
+          "completion_tokens_median": 143,
+          "latency_median_s": 2.079378167007235,
+          "latency_p90_s": 9.044875665975269,
+          "cost_usd": 0.2437,
+          "by_provider": {
+            "CoreWeave": {
+              "draws": 144,
+              "truncated": 11,
+              "other_errors": {},
+              "reasoning_tokens_median": 126,
+              "reasoning_tokens_reported": 133,
+              "completion_tokens_median": 155,
+              "latency_median_s": 2.3262258539907634,
+              "latency_p90_s": 9.917218500020681,
+              "cost_usd": 0.2394
+            },
+            "Together": {
+              "draws": 16,
+              "truncated": 0,
+              "other_errors": {},
+              "reasoning_tokens_median": 0.0,
+              "reasoning_tokens_reported": 16,
+              "completion_tokens_median": 45.0,
+              "latency_median_s": 1.169397250007023,
+              "latency_p90_s": 1.3915362499828916,
+              "cost_usd": 0.0043
+            }
+          }
+        }
+      }
+    }
+  },
+  "config_comparison": {
+    "configs": [
+      "pro-high-1024",
+      "pro-low-1024"
+    ],
+    "pairs": {
+      "pro-high-1024 vs pro-low-1024": {
+        "judgement_lost_on_first_held_on_second": [],
+        "length_lost_on_first_held_on_second": []
+      },
+      "pro-low-1024 vs pro-high-1024": {
+        "judgement_lost_on_first_held_on_second": [],
+        "length_lost_on_first_held_on_second": []
+      }
+    }
+  },
+  "cap_measurement": {
+    "missing_configs": [
+      "flash-minimal",
+      "flash-minimal-1024",
+      "flash-minimal-2048",
+      "pro-high",
+      "pro-high-2048"
+    ],
+    "by_cap": {
+      "1024": {
+        "configs": [
+          "pro-high-1024 \u00b7 run 1",
+          "pro-high-1024 \u00b7 run 2",
+          "pro-low-1024 \u00b7 run 1",
+          "pro-low-1024 \u00b7 run 2"
+        ],
+        "truncated_draws": 34,
+        "draws": 869,
+        "cases": [
+          "planning_card::test_a_time_without_consent_only_updates",
+          "timebox_question::test_a_fact_after_commit_is_still_a_fact[I sleep 00:30\\u201308:30]",
+          "timebox_question::test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]"
+        ]
+      }
+    }
+  },
+  "pin_comparison": {
+    "failures_after_create_pro": {
+      "ValidationError": 1
+    },
+    "failures_after_create_flash": {},
+    "judgement_lost_on_flash": [],
+    "judgement_lost_on_pro": [],
+    "lost_on_flash_only": [],
+    "lost_on_pro_only": [],
+    "transport_losses_flash": {},
+    "transport_losses_pro": {},
+    "length_draws_flash": 0,
+    "length_draws_pro": 34
+  },
+  "pricing_per_token": {
+    "deepseek/deepseek-v4-pro-0813": [
+      6.6e-07,
+      1.98e-06
+    ],
+    "openai/gpt-oss-120b": [
+      3.7e-08,
+      1.7e-07
+    ]
+  },
+  "control_cost_usd": 0.0175,
+  "total_cost_usd": 0.6752
+}
