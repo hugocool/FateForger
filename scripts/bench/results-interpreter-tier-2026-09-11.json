@@ -3076,6 +3076,11 @@
         1,
         2
       ],
+      "runs_by_eval": {
+        "planning_card": 2,
+        "day_frame": 2,
+        "timebox_question": 1
+      },
       "draws": 437,
       "truncated": 23,
       "other_errors": {},
@@ -3222,6 +3227,11 @@
         1,
         2
       ],
+      "runs_by_eval": {
+        "planning_card": 2,
+        "day_frame": 2,
+        "timebox_question": 1
+      },
       "draws": 432,
       "truncated": 11,
       "other_errors": {},

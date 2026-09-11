@@ -2,9 +2,15 @@
 every table above is rebuildable from the draws, and none of the prose below is. Rebuild the
 tables with `--summarise-only`; edit the ruling here.*
 
-### Ruling: pending Hugo.
+### Ruling — Hugo, 2026-09-11: **the pro pin at `low`, cap 1024**
 
-This file records what was measured. It does not recommend an effort default.
+The `intent_interpreter` row's effort default moves from `high` to `low`; the pin and the cap stay.
+`low` lost no judgement `high` holds in any run, truncated 0 of 384 production draws (every case but
+the break-it prompts) against `high`'s 3 of 386, and cost about 18% less, so under the standing rule
+of the cheapest configuration wherever it works these numbers do not justify `high`. **The ruling
+does not rest on the draw-level p-values in §2**, which cannot carry that weight (see the caveat
+there), and it needed no re-measurement: this bench built pro/`low`/1024 through the same factory row
+and read it back off the client.
 
 ### What ran
 
@@ -27,7 +33,8 @@ This file records what was measured. It does not recommend an effort default.
 ### 1. Does pro/`low` hold every judgement pro/`high` holds?
 
 **Yes, on every case measured.** Neither configuration lost a judgement in any run, and the "lost on
-A, held on B" list is empty in both directions.
+A, held on B" list is empty in both directions. For `timebox_question`, "no length loss" is partly the
+eval's own doing: it redraws a truncated draw, so a case there cannot fail on length.
 
 - `planning_card`: 13/14 in all four runs. In each run the only failure is
   `test_break_it_without_the_day_clause_a_non_press_becomes_a_press`, bucketed as break-it
@@ -56,6 +63,17 @@ A, held on B" list is empty in both directions.
 
 Fisher's exact test, two-sided, `low` against `high`: CoreWeave p = 0.027, all hosts p = 0.053.
 
+**What these p-values cannot show.** Fisher's test treats every draw as independent, and these draws
+are not:
+
+- 20 of CoreWeave's 22 truncations at `high` come from break-it prompts, clustered in three cases.
+- The router chose the host, not the bench, and the host is confounded with the eval (see below).
+- `timebox_question` redraws a truncated draw, so its draw count depends on the outcome being counted.
+- Several tests are reported in this section with no correction for multiplicity.
+
+On production prompts on CoreWeave the difference is 2/103 against 0/116 (p = 0.22). CoreWeave
+p = 0.027 is not evidence about production prompts, and the ruling does not rest on any p-value here.
+
 Split by case family, since the break-it cases send a deliberately degraded prompt:
 
 | configuration | production cases | break-it cases |
@@ -63,7 +81,8 @@ Split by case family, since the break-it cases send a deliberately degraded prom
 | `pro-high-1024` | **3/386** (Together 1/283, CoreWeave 2/103) | 20/51 (CoreWeave 20/35, Together 0/16) |
 | `pro-low-1024` | **0/384** (Together 0/268, CoreWeave 0/116) | 11/48 (CoreWeave 11/32, Together 0/16) |
 
-For production cases p = 0.25. For break-it cases on CoreWeave p = 0.087.
+For production cases p = 0.25. For break-it cases on CoreWeave p = 0.087. The caveat above applies to
+both.
 
 The three production truncations, all at `high`:
 - `planning_card::test_a_time_without_consent_only_updates` on Together: 5.4s, 0 reasoning tokens,

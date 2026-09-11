@@ -2,7 +2,7 @@
 
 The surface interpreters' client row, `intent_interpreter` (#336, #325).
 
-Configurations in this record: `pro-high-1024` (pro pin, `high`, cap 1024, 2 runs); `pro-low-1024` (pro pin, `low`, cap 1024, 2 runs). The three interpreter evals,
+Configurations in this record: `pro-high-1024` (pro pin, `high`, cap 1024, runs per eval: `planning_card` 2, `day_frame` 2, `timebox_question` 1); `pro-low-1024` (pro pin, `low`, cap 1024, runs per eval: `planning_card` 2, `day_frame` 2, `timebox_question` 1). The three interpreter evals,
 n=8 per case, no temperature pin. Every draw records its latency, tokens (reasoning included),
 finish reason and error class, the model/cap/effort the client was actually built with, the
 factory row that built it, and the host that served it; `config verified` is that read-back
@@ -95,14 +95,17 @@ only; latency is over every draw, truncated ones included. Cost is OpenRouter's 
 
 ### By configuration, runs pooled
 
+Pooled over every run of the configuration. Where the evals did not all run the same number
+of times, the configuration cell says how many runs each eval contributed.
+
 | configuration | provider | draws | truncated | rate | other errors | med reasoning tok | med compl. tok | lat med | lat p90 | cost |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `pro-high-1024` | `Together` | 299 | 1 | 0.3% | — | 0 | 21 | 1.15s | 1.86s | $0.0651 |
-| `pro-high-1024` | `CoreWeave` | 138 | 22 | 15.9% | — | 175 | 204 | 3.30s | 12.81s | $0.2969 |
-| `pro-high-1024` | `all hosts` | 437 | 23 | 5.3% | — | 0 | 26 | 1.34s | 5.36s | $0.3620 |
-| `pro-low-1024` | `Together` | 284 | 0 | 0.0% | — | 0 | 21 | 1.11s | 1.51s | $0.0494 |
-| `pro-low-1024` | `CoreWeave` | 148 | 11 | 7.4% | — | 121 | 154 | 2.33s | 9.30s | $0.2462 |
-| `pro-low-1024` | `all hosts` | 432 | 11 | 2.5% | — | 0 | 30 | 1.27s | 3.78s | $0.2956 |
+| `pro-high-1024` (runs per eval: `planning_card` 2, `day_frame` 2, `timebox_question` 1) | `Together` | 299 | 1 | 0.3% | — | 0 | 21 | 1.15s | 1.86s | $0.0651 |
+| `pro-high-1024` (runs per eval: `planning_card` 2, `day_frame` 2, `timebox_question` 1) | `CoreWeave` | 138 | 22 | 15.9% | — | 175 | 204 | 3.30s | 12.81s | $0.2969 |
+| `pro-high-1024` (runs per eval: `planning_card` 2, `day_frame` 2, `timebox_question` 1) | `all hosts` | 437 | 23 | 5.3% | — | 0 | 26 | 1.34s | 5.36s | $0.3620 |
+| `pro-low-1024` (runs per eval: `planning_card` 2, `day_frame` 2, `timebox_question` 1) | `Together` | 284 | 0 | 0.0% | — | 0 | 21 | 1.11s | 1.51s | $0.0494 |
+| `pro-low-1024` (runs per eval: `planning_card` 2, `day_frame` 2, `timebox_question` 1) | `CoreWeave` | 148 | 11 | 7.4% | — | 121 | 154 | 2.33s | 9.30s | $0.2462 |
+| `pro-low-1024` (runs per eval: `planning_card` 2, `day_frame` 2, `timebox_question` 1) | `all hosts` | 432 | 11 | 2.5% | — | 0 | 30 | 1.27s | 3.78s | $0.2956 |
 
 ### By configuration and run
 
@@ -154,24 +157,24 @@ only; latency is over every draw, truncated ones included. Cost is OpenRouter's 
 
 | configuration | eval | provider | draws | truncated | rate | other errors | med reasoning tok | med compl. tok | lat med | lat p90 | cost |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `pro-high-1024` | `planning_card` | `Together` | 223 | 1 | 0.4% | — | 0 | 21 | 1.13s | 1.47s | $0.0434 |
-| `pro-high-1024` | `planning_card` | `CoreWeave` | 1 | 0 | 0.0% | — | 65 | 74 | 1.29s | 1.29s | $0.0013 |
-| `pro-high-1024` | `planning_card` | `all hosts` | 224 | 1 | 0.4% | — | 0 | 21 | 1.13s | 1.47s | $0.0447 |
-| `pro-high-1024` | `day_frame` | `Together` | 47 | 0 | 0.0% | — | 0 | 33 | 1.34s | 1.93s | $0.0125 |
-| `pro-high-1024` | `day_frame` | `CoreWeave` | 1 | 0 | 0.0% | — | 367 | 465 | 4.84s | 4.84s | $0.0036 |
-| `pro-high-1024` | `day_frame` | `all hosts` | 48 | 0 | 0.0% | — | 0 | 33 | 1.35s | 1.93s | $0.0162 |
-| `pro-high-1024` | `timebox_question` | `CoreWeave` | 136 | 22 | 16.2% | — | 175 | 204 | 3.30s | 13.03s | $0.2919 |
-| `pro-high-1024` | `timebox_question` | `Together` | 29 | 0 | 0.0% | — | 0 | 45 | 1.33s | 2.13s | $0.0092 |
-| `pro-high-1024` | `timebox_question` | `all hosts` | 165 | 22 | 13.3% | — | 117 | 153 | 2.70s | 12.06s | $0.3011 |
-| `pro-low-1024` | `planning_card` | `Together` | 221 | 0 | 0.0% | — | 0 | 21 | 1.07s | 1.47s | $0.0326 |
-| `pro-low-1024` | `planning_card` | `CoreWeave` | 3 | 0 | 0.0% | — | 104 | 118 | 1.60s | 3.46s | $0.0040 |
-| `pro-low-1024` | `planning_card` | `all hosts` | 224 | 0 | 0.0% | — | 0 | 21 | 1.09s | 1.50s | $0.0366 |
-| `pro-low-1024` | `day_frame` | `Together` | 47 | 0 | 0.0% | — | 0 | 33 | 1.36s | 3.75s | $0.0125 |
-| `pro-low-1024` | `day_frame` | `CoreWeave` | 1 | 0 | 0.0% | — | 192 | 262 | 2.84s | 2.84s | $0.0027 |
-| `pro-low-1024` | `day_frame` | `all hosts` | 48 | 0 | 0.0% | — | 0 | 33 | 1.37s | 3.75s | $0.0153 |
-| `pro-low-1024` | `timebox_question` | `CoreWeave` | 144 | 11 | 7.6% | — | 126 | 155 | 2.33s | 9.92s | $0.2394 |
-| `pro-low-1024` | `timebox_question` | `Together` | 16 | 0 | 0.0% | — | 0 | 45 | 1.17s | 1.39s | $0.0043 |
-| `pro-low-1024` | `timebox_question` | `all hosts` | 160 | 11 | 6.9% | — | 110 | 143 | 2.08s | 9.04s | $0.2437 |
+| `pro-high-1024` | `planning_card` (2 runs) | `Together` | 223 | 1 | 0.4% | — | 0 | 21 | 1.13s | 1.47s | $0.0434 |
+| `pro-high-1024` | `planning_card` (2 runs) | `CoreWeave` | 1 | 0 | 0.0% | — | 65 | 74 | 1.29s | 1.29s | $0.0013 |
+| `pro-high-1024` | `planning_card` (2 runs) | `all hosts` | 224 | 1 | 0.4% | — | 0 | 21 | 1.13s | 1.47s | $0.0447 |
+| `pro-high-1024` | `day_frame` (2 runs) | `Together` | 47 | 0 | 0.0% | — | 0 | 33 | 1.34s | 1.93s | $0.0125 |
+| `pro-high-1024` | `day_frame` (2 runs) | `CoreWeave` | 1 | 0 | 0.0% | — | 367 | 465 | 4.84s | 4.84s | $0.0036 |
+| `pro-high-1024` | `day_frame` (2 runs) | `all hosts` | 48 | 0 | 0.0% | — | 0 | 33 | 1.35s | 1.93s | $0.0162 |
+| `pro-high-1024` | `timebox_question` (1 run) | `CoreWeave` | 136 | 22 | 16.2% | — | 175 | 204 | 3.30s | 13.03s | $0.2919 |
+| `pro-high-1024` | `timebox_question` (1 run) | `Together` | 29 | 0 | 0.0% | — | 0 | 45 | 1.33s | 2.13s | $0.0092 |
+| `pro-high-1024` | `timebox_question` (1 run) | `all hosts` | 165 | 22 | 13.3% | — | 117 | 153 | 2.70s | 12.06s | $0.3011 |
+| `pro-low-1024` | `planning_card` (2 runs) | `Together` | 221 | 0 | 0.0% | — | 0 | 21 | 1.07s | 1.47s | $0.0326 |
+| `pro-low-1024` | `planning_card` (2 runs) | `CoreWeave` | 3 | 0 | 0.0% | — | 104 | 118 | 1.60s | 3.46s | $0.0040 |
+| `pro-low-1024` | `planning_card` (2 runs) | `all hosts` | 224 | 0 | 0.0% | — | 0 | 21 | 1.09s | 1.50s | $0.0366 |
+| `pro-low-1024` | `day_frame` (2 runs) | `Together` | 47 | 0 | 0.0% | — | 0 | 33 | 1.36s | 3.75s | $0.0125 |
+| `pro-low-1024` | `day_frame` (2 runs) | `CoreWeave` | 1 | 0 | 0.0% | — | 192 | 262 | 2.84s | 2.84s | $0.0027 |
+| `pro-low-1024` | `day_frame` (2 runs) | `all hosts` | 48 | 0 | 0.0% | — | 0 | 33 | 1.37s | 3.75s | $0.0153 |
+| `pro-low-1024` | `timebox_question` (1 run) | `CoreWeave` | 144 | 11 | 7.6% | — | 126 | 155 | 2.33s | 9.92s | $0.2394 |
+| `pro-low-1024` | `timebox_question` (1 run) | `Together` | 16 | 0 | 0.0% | — | 0 | 45 | 1.17s | 1.39s | $0.0043 |
+| `pro-low-1024` | `timebox_question` (1 run) | `all hosts` | 160 | 11 | 6.9% | — | 110 | 143 | 2.08s | 9.04s | $0.2437 |
 
 ## Control — cases on a row no configuration moves
 
@@ -294,9 +297,15 @@ the SDK attaches to the exception; a dash is a draw taken before the plugin read
 every table above is rebuildable from the draws, and none of the prose below is. Rebuild the
 tables with `--summarise-only`; edit the ruling here.*
 
-### Ruling: pending Hugo.
+### Ruling — Hugo, 2026-09-11: **the pro pin at `low`, cap 1024**
 
-This file records what was measured. It does not recommend an effort default.
+The `intent_interpreter` row's effort default moves from `high` to `low`; the pin and the cap stay.
+`low` lost no judgement `high` holds in any run, truncated 0 of 384 production draws (every case but
+the break-it prompts) against `high`'s 3 of 386, and cost about 18% less, so under the standing rule
+of the cheapest configuration wherever it works these numbers do not justify `high`. **The ruling
+does not rest on the draw-level p-values in §2**, which cannot carry that weight (see the caveat
+there), and it needed no re-measurement: this bench built pro/`low`/1024 through the same factory row
+and read it back off the client.
 
 ### What ran
 
@@ -319,7 +328,8 @@ This file records what was measured. It does not recommend an effort default.
 ### 1. Does pro/`low` hold every judgement pro/`high` holds?
 
 **Yes, on every case measured.** Neither configuration lost a judgement in any run, and the "lost on
-A, held on B" list is empty in both directions.
+A, held on B" list is empty in both directions. For `timebox_question`, "no length loss" is partly the
+eval's own doing: it redraws a truncated draw, so a case there cannot fail on length.
 
 - `planning_card`: 13/14 in all four runs. In each run the only failure is
   `test_break_it_without_the_day_clause_a_non_press_becomes_a_press`, bucketed as break-it
@@ -348,6 +358,17 @@ A, held on B" list is empty in both directions.
 
 Fisher's exact test, two-sided, `low` against `high`: CoreWeave p = 0.027, all hosts p = 0.053.
 
+**What these p-values cannot show.** Fisher's test treats every draw as independent, and these draws
+are not:
+
+- 20 of CoreWeave's 22 truncations at `high` come from break-it prompts, clustered in three cases.
+- The router chose the host, not the bench, and the host is confounded with the eval (see below).
+- `timebox_question` redraws a truncated draw, so its draw count depends on the outcome being counted.
+- Several tests are reported in this section with no correction for multiplicity.
+
+On production prompts on CoreWeave the difference is 2/103 against 0/116 (p = 0.22). CoreWeave
+p = 0.027 is not evidence about production prompts, and the ruling does not rest on any p-value here.
+
 Split by case family, since the break-it cases send a deliberately degraded prompt:
 
 | configuration | production cases | break-it cases |
@@ -355,7 +376,8 @@ Split by case family, since the break-it cases send a deliberately degraded prom
 | `pro-high-1024` | **3/386** (Together 1/283, CoreWeave 2/103) | 20/51 (CoreWeave 20/35, Together 0/16) |
 | `pro-low-1024` | **0/384** (Together 0/268, CoreWeave 0/116) | 11/48 (CoreWeave 11/32, Together 0/16) |
 
-For production cases p = 0.25. For break-it cases on CoreWeave p = 0.087.
+For production cases p = 0.25. For break-it cases on CoreWeave p = 0.087. The caveat above applies to
+both.
 
 The three production truncations, all at `high`:
 - `planning_card::test_a_time_without_consent_only_updates` on Together: 5.4s, 0 reasoning tokens,
