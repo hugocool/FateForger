@@ -46,7 +46,9 @@ the switch and the cap cost in judgement.
   are 27/34 against 32/34; they include the break-it families, which assert a flip and are
   never judgement losses, so they are not the pin comparison.) Hugo's ruling landed
   the row on the **pro pin at `high`** instead, holding the flash pin as the destination once
-  #406 fits the prompts with a discriminator. `.env` is untouched either way — see
+  #406 fits the prompts with a discriminator. (The effort was superseded again on 2026-09-11:
+  `low`, on Hugo's ruling over `scripts/bench/results-interpreter-tier-2026-09-11.md`. The pin
+  stands.) `.env` is untouched either way — see
   `docs/reference/setup/llm.md`'s "Surface interpreter model" section and
   `scripts/bench/results-interpreter-tier-2026-09-06.md` for the numbers.
 - **The code default is not a pin change.** The flash pin is CLAUDE.md's recorded role for routing;
@@ -83,7 +85,8 @@ bench's pick; `0` in the env means uncapped, as today's `llm_max_tokens` convent
 
 **Superseded by the 2026-09-06 bench, same ruling as §S1 above.** The two defaults written in
 this paragraph are the plan going in; what landed is `openrouter_pro` and `"high"`, with
-`_INTENT_INTERPRETER_MAX_TOKENS = 1024`. `-1` in the env, not `0`, is "use the code default"
+`_INTENT_INTERPRETER_MAX_TOKENS = 1024`. (`"high"` became `"low"` on 2026-09-11, on Hugo's
+ruling over `scripts/bench/results-interpreter-tier-2026-09-11.md`.) `-1` in the env, not `0`, is "use the code default"
 (`0` stayed "uncapped"). `docs/reference/setup/llm.md` carries the landed row.
  Settings fields
 `llm_model_intent_interpreter`, `llm_reasoning_effort_intent_interpreter`,

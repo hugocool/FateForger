@@ -55,24 +55,30 @@ def test_the_landed_cap_is_the_bench_ruling():
     assert factory._INTENT_INTERPRETER_MAX_TOKENS == 1024
 
 
-def test_the_default_row_is_the_pro_pin_at_high_and_capped(openrouter, monkeypatch):
-    """The measured pair, not the intended one.
+def test_the_default_row_is_the_pro_pin_at_low_and_capped(openrouter, monkeypatch):
+    """The measured configuration, not the intended one.
 
-    The flash pin at `minimal` is CLAUDE.md's recorded role for routing and is
-    where this row is going. The 2026-09-06 bench says the prompts as written
-    lose there -- 4 judgement losses against the pro pin's 0, with
-    revision-after-commit at 1/8 against 8/8. (The raw case counts, 27/34
-    against 32/34, are not that comparison: they include the break-it families,
-    which assert a flip and are never judgement losses.) So the default follows
-    the measurement until the prompts are fitted
-    to flash. Model and effort are asserted together because pro/high is the
-    pair that was measured; half of a measured pair is not a measurement.
+    The pin: the flash pin at `minimal` is CLAUDE.md's recorded role for
+    routing and is where this row is going. The 2026-09-06 bench says the
+    prompts as written lose there -- 4 judgement losses against the pro pin's
+    0, with revision-after-commit at 1/8 against 8/8. (The raw case counts,
+    27/34 against 32/34, are not that comparison: they include the break-it
+    families, which assert a flip and are never judgement losses.) So the
+    default follows the measurement until the prompts are fitted to flash.
+
+    The effort: `low`, on Hugo's ruling over the 2026-09-11 bench
+    (scripts/bench/results-interpreter-tier-2026-09-11.md and its
+    `.reading.md`). pro/`low` at 1024 lost no judgement pro/`high` held, and
+    truncated 0 of 384 production draws against `high`'s 3 of 386 at about 18%
+    less cost -- so the cheaper effort stands and `high` is not justified.
+    Model, effort and cap are asserted together because pro/`low`/1024 is the
+    configuration that bench built and read back.
     """
 
     captured = _kwargs(monkeypatch)
     factory.build_intent_interpreter_client()
     assert captured["model"] == "pro/pin:nitro"
-    assert captured["extra_body"] == {"reasoning": {"effort": "high"}}
+    assert captured["extra_body"] == {"reasoning": {"effort": "low"}}
     assert captured["max_tokens"] == factory._INTENT_INTERPRETER_MAX_TOKENS
     assert factory._INTENT_INTERPRETER_MAX_TOKENS > 0
     # No sampling pin: CLAUDE.md retired temperature=0 on measurement, and this

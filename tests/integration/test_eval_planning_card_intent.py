@@ -221,8 +221,9 @@ async def test_break_it_without_the_day_clause_a_non_press_becomes_a_press(monke
     on flash with the date available and the base fragment, 8/8 with it.
 
     It runs on every pin, and on the pro pin it fails: with `now` present and
-    the clause stripped, pro still answered `none` 7/8, so the paragraph is
-    not load-bearing there. That is the flip not happening, not a quality
+    the clause stripped, pro still answers `none` at the bar, at `low` and at
+    `high` alike (the 2026-09-11 record), so the paragraph is not load-bearing
+    there. That is the flip not happening, not a quality
     loss, and the bench already tells the two apart -- `interpreter_tier.py`
     matches this function's `test_break_it_` name and buckets the outcome as
     `unbroken` in its own column. Skipping instead would hide the case from
@@ -231,13 +232,16 @@ async def test_break_it_without_the_day_clause_a_non_press_becomes_a_press(monke
     So off the flash pin it is an expected failure, except under the bench:
     a plain `pytest -m slow` on the default pin reports xfail instead of red,
     and the bench, which sets `INTERPRETER_TIER_CONFIG`, still sees the raw
-    failure. Not strict -- pro's 7/8 is a rate, and the eighth draw can land.
+    failure. Not strict -- pro's count is a rate, and a draw can still land.
     """
 
     if _expected_unbroken_here():
         request.applymarker(
             pytest.mark.xfail(
-                reason="off the flash pin the stripped prompt still answers none (pro: 7/8)",
+                reason=(
+                    "off the flash pin the stripped clause is not load-bearing: on the pro pin it "
+                    "stayed unbroken at both low and high (results-interpreter-tier-2026-09-11)"
+                ),
                 strict=False,
             )
         )

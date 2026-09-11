@@ -169,7 +169,10 @@ def _model_for_agent(agent_type: str) -> str:
     if agent_type == INTENT_INTERPRETER:
         # Every surface interpreter, on one row of its own so it stops
         # inheriting whatever its host agent runs on -- which is how the
-        # routing seam ended up on the pro pin at high and ran away (#325).
+        # routing seam ended up on the pro pin at high, uncapped, and ran away
+        # (#325). The row's effort is `low` since Hugo's ruling on the
+        # 2026-09-11 bench (see `_reasoning_effort_for_agent`); the pin below
+        # is still the 2026-09-06 ruling.
         #
         # The row resolves to the *pro* pin, not the flash one, on Hugo's
         # ruling over the 2026-09-06 bench
@@ -237,10 +240,17 @@ def _reasoning_effort_for_agent(agent_type: str) -> ReasoningEffort | None:
     if agent_type == "timeboxing_judge":
         return normalize(settings.llm_reasoning_effort_timeboxing_judge) or "minimal"
     if agent_type == INTENT_INTERPRETER:
-        # `high`, with the model, on the 2026-09-06 bench: the measured pair is
-        # pro/high, and half of a measured pair is not a measurement. `minimal`
-        # returns with the flash pin once the prompts are fitted to it (#406).
-        return normalize(settings.llm_reasoning_effort_intent_interpreter) or "high"
+        # `low`, on Hugo's ruling over the 2026-09-11 bench
+        # (scripts/bench/results-interpreter-tier-2026-09-11.md, its reading in
+        # the `.reading.md` sidecar): pro/`low` against pro/`high`, both capped
+        # at 1024. `low` lost no judgement `high` held in any run, truncated 0
+        # of 384 production draws against `high`'s 3 of 386, and cost about 18%
+        # less -- so `high` is not justified. The bench built pro/`low`/1024
+        # through this row and read it back off the client, so this default is
+        # the measured configuration. (The ruling does not rest on the
+        # draw-level p-values in that record.) `minimal` returns with the flash
+        # pin once the prompts are fitted to it (#406).
+        return normalize(settings.llm_reasoning_effort_intent_interpreter) or "low"
     if agent_type == "revisor_agent":
         return normalize(settings.llm_reasoning_effort_revisor) or "medium"
     if agent_type == "tasks_agent":

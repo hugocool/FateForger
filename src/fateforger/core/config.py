@@ -95,7 +95,7 @@ class Settings(BaseSettings):
         default=""
     )
     #: Every surface interpreter (planning card, timeboxing stage cards).
-    #: Defaults to the pro pin at `high` on the 2026-09-06 bench, not the flash
+    #: Defaults to the pro pin on the 2026-09-06 bench, not the flash
     #: pin CLAUDE.md names for routing: the prompts as written lose there --
     #: 4 judgement losses against the pro pin's 0, revision-after-commit 1/8
     #: against 8/8. (Not "27/34 against 32/34": those raw case counts fold in
@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     llm_reasoning_effort_timebox_patcher: str = Field(
         default=""
     )
+    #: Empty: the code default, `low` on Hugo's ruling over the 2026-09-11
+    #: bench (scripts/bench/results-interpreter-tier-2026-09-11.md): pro/`low`
+    #: at 1024 lost no judgement pro/`high` held and cost less.
     llm_reasoning_effort_intent_interpreter: str = Field(default="")
     llm_max_tokens: int = Field(default=0)
     llm_max_tokens_timebox_patcher: int = Field(

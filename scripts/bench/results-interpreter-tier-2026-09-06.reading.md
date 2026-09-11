@@ -37,6 +37,11 @@ question of what the seam does when it fires.
 
 ### The pin — Hugo's ruling: **the pro pin at `high`, now; flash after prompt work**
 
+**Superseded 2026-09-11, for the effort only.** The row's effort default is now `low`, on Hugo's
+ruling over `results-interpreter-tier-2026-09-11.md` and its `.reading.md` (pro/`low` against
+pro/`high`, both capped at 1024). The pin and the cap stand. So the planning card no longer moves up
+to `high`, and the timeboxing stage cards move down to `low`. The ruling below is left as it was made.
+
 The `intent_interpreter` row's code defaults are `openrouter_pro` and `"high"`, not the flash pin at
 `minimal`. The bench is the reason: the prompts **as written** lose on flash — **4 judgement losses
 against the pro pin's 0**, and revision-after-commit at 1/8 against 8/8. The raw case counts, 27/34
