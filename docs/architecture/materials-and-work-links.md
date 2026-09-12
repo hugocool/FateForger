@@ -10,8 +10,10 @@ how a link travels from a planning session onto a real Google Calendar event
 and back, and the host-side lookup that decides which ticket a message meant.
 
 Code: `src/tmbx/materials.py`, `src/tmbx/core/models.py`, `src/tmbx/service.py`,
-`src/tmbx/calendar/gcal.py`, `src/fateforger/agents/timeboxing/work_lookup.py`,
+`src/tmbx/calendar/gcal.py`, `src/fateforger/agents/tasks/task_source.py`,
+`src/fateforger/agents/timeboxing/work_lookup.py`,
 `src/fateforger/agents/timeboxing/work_refs.py`,
+`src/fateforger/agents/timeboxing/adaptive_timeboxing.py`,
 `src/fateforger/slack_bot/timeboxing_host.py`,
 `src/fateforger/slack_bot/stage_context.py`,
 `src/fateforger/slack_bot/timeboxing_cards.py`.
@@ -157,6 +159,73 @@ distinct handle, immediately before undo writes them. A handle whose row is
 gone by then degrades to carrying no URL rather than refusing the undo,
 since undo has no fallback state to leave the day in instead.
 
+## The `TaskSource` port
+
+A card that fetched its own copy of the board and a judgement that fetched a
+separate one could disagree — a row shown to the reader that the judgement
+never saw, or the reverse — and nothing would detect it. So the day's
+candidate tickets are read exactly once per turn, through one port,
+`TaskSource` (`src/fateforger/agents/tasks/task_source.py`), and the same
+`TaskCandidates` listing is handed to both the work-lookup judgement and the
+planning context panel's board section. That single object is what makes
+"the list you were shown is the list it judged over" true by construction,
+rather than by coincidence.
+
+`TaskSource` is a `Protocol`; `BoardTaskSource` is the one implementation,
+over `TaskBoard`. The `source` field on a `TaskCandidate` already admits
+`"ticktick"`, so a second backend has somewhere to land without a second
+call site, but nothing implements it yet, and neither does a memory-backed
+adapter carrying a `next_action` — both are later increments.
+
+### The state mapping
+
+Each row's `state` is decided by comparing Notion's own enum values, never
+by judging anything the person wrote — the identifier case CLAUDE.md holds
+outside the no-matching rule. In order: `Status` `Done` or `Archived`
+becomes `done`; else `Ticket Status` `Blocked` becomes `waiting_for`; else
+`Paused` or `Zombie` becomes `someday`; else `Ready` or `Refined` becomes
+`next`; anything else — an `Unrefined` row, or a ticket status this table
+does not name — becomes `someday`, because it has no next action yet and
+cannot go in a block. `overdue` is arithmetic: `due is not None and due <
+day`, so a ticket due on the day itself is not late.
+
+### `candidates=None` is not an empty board
+
+`WorkRefs.candidates`, `PlanningContext.candidates` and
+`PlanningSessionSnapshot.candidates` all carry a `TaskCandidates | None`.
+**`None` means the board was never read this turn** — either nobody asked
+for any work, so there was nothing to look up, or the read itself raised
+`TaskSourceUnavailable` — and it never stands in for an empty result. A
+board that was read and had nothing to offer is a `TaskCandidates` with an
+empty `rows` list. Losing that distinction would make a misconfigured board
+indistinguishable from a sprint that is genuinely empty.
+
+The **card** no longer draws either case — since the ruling below, neither
+an unread board nor an empty one renders anything — but the distinction is
+not the card's to keep or drop. It is what the judgement was handed, it is
+what `shown_with_of` compares the panel by (a first read that comes back
+empty has to move the redraw key), and it is what a log line about a
+misconfigured board can be read against later.
+
+A turn whose read succeeded but whose judgement then failed keeps its
+candidates on `WorkRefs`: that is the one turn whose rows the person is
+shown. Only `work_board_unavailable` — the read itself failing — carries no
+candidates at all.
+
+### The deferred `Refined` widening
+
+The scope decided on #279 names the candidate set as the current sprint's
+`Ready` **or** `Refined` rows. This port ships `Ready` only
+(`DEFAULT_SCOPE = "current_sprint_ready"`). The work-lookup judgement was
+measured over the twelve current-sprint `Ready` rows the board returned on
+2026-09-08 (`tests/integration/test_eval_work_lookup.py`), and CLAUDE.md's
+own rule on evals holds that a judgement whose input changed has not been
+validated by the run that measured the old input. Widening the list this
+port reads, without re-running that eval at several draws per case, would
+move a measured judgement without anyone having checked whether it still
+holds. The widening and its eval re-run are their own follow-up, tracked on
+ticket #401.
+
 ## The host-side work lookup
 
 Turning a message like *"finish the next finance ticket"* into a ticket id
@@ -169,12 +238,14 @@ membership over identifiers the system minted.
 `work_refs_for_turn` (`src/fateforger/slack_bot/timeboxing_host.py`) runs
 four steps, in order, whenever the session has asked for any work at all:
 
-1. Read the current sprint's Ready rows from the task board
-   (`TaskBoard.list_tasks("current_sprint_ready", ...)`). **The scope is
-   fixed by the host, never chosen by the model** — an earlier spike watched
-   a subagent read a wider scope and pass over an overdue in-sprint tax
-   filing for something outside the sprint, which is what "the next one"
-   must not do.
+1. Read the day's candidate tickets once, through the `TaskSource` port
+   described above (`BoardTaskSource`, scoped to `current_sprint_ready` and
+   capped at `WORK_ROW_LIMIT` rows). **The scope is fixed by the host, never
+   chosen by the model** — an earlier spike watched a subagent read a wider
+   scope and pass over an overdue in-sprint tax filing for something outside
+   the sprint, which is what "the next one" must not do. This one listing is
+   what step 2 judges over and what `WorkRefs.candidates` carries forward for
+   the panel.
 2. Ask `resolve_work` (`src/fateforger/agents/timeboxing/work_lookup.py`)
    which of those rows the message names. The rows are given to the model as
    ids to point at, not as a category to classify into, so "none of these"
@@ -231,6 +302,64 @@ shows no ticket at all and the card names the way back instead: *"I could
 not work out which ticket you meant — say which one and I'll attach it."*
 The two lines are never shown together, so a ticket resolved on an earlier
 turn is never named beside a sentence disowning the current one.
+
+### The board section: shown only when the lookup could not decide
+
+**The board is never shown unprompted.** Hugo's ruling, 2026-09-11. A sprint
+listing is not a constraint, and this panel is headed *"1/5 · Constraints —
+what I know about a working Friday"*; a dozen raw rows posted there before
+the person has said anything about the day claim a standing they have not
+got. The listing is also unrefined — it is whatever the board holds at that
+moment, closed rows included. What would make a shown board mean something
+is a task-marshalling session in front of it, deciding what is actually
+live; that is work-family increment 2, and until it exists the rows have no
+business on a context panel as context. Mapping *what the user said* to a
+ticket is a different thing and is unaffected.
+
+So `timeboxing_cards.py`'s `_board_section` renders in **exactly one state**:
+the work lookup could not work out which ticket was meant
+(`work_refs_unresolved`) **and** the board was read and offered rows. On that
+turn the work line above has just printed *"I could not work out which ticket
+you meant — say which one and I'll attach it"*, and these rows are the list it
+was choosing from — so they are what lets the person answer. It draws
+`ContextPanel.board` (capped at `BOARD_ROW_CAP`) under
+`ContextPanel.board_sprint`, each row with its number, label, state, due date
+and whether it is overdue:
+
+```text
+I could not work out which ticket you meant — say which one and I'll attach it.
+From your board — Sprint 8 - product:
+• #427 Verify VPB 2024 aangifte · due 2026-09-10
+• #431 Move the DNS records
+• #444 Retire the legacy agent · waiting for · due 2026-09-03 · overdue
+```
+
+Every other state draws nothing at all: no work was named; the lookup
+succeeded, and the *"Planning around"* line already names the ticket; the
+board was read and offered nothing; the board could not be read, which the
+unresolved sentence has already said in the one vocabulary that fact gets; or
+the turn read no board, so there is nothing this turn to describe.
+
+There is no tick. A mark for "the day's work came from this row" was removed
+with the always-on section rather than left as dead code: the only state that
+draws rows is the one where nothing was resolved, so the flag would be false
+on every row a reader could ever see. `BoardCandidateItem` carries no
+`chosen`, and nothing joins refs to rows.
+
+The panel is only edited when `shown_with_of` moves, so the set it returns
+carries each candidate's **position** alongside its external id
+(`board:{position}:{external_id}`). The cap is not what makes that safe. It
+bounds what is *shown*, not what is read: the planning host asks the port for
+`WORK_ROW_LIMIT` (100) rows against a cap of twelve. A Priority edit on Notion
+that promotes a row into the shown window changes the list the reader sees
+without changing what is in the listing, so a term over bare ids would leave
+the panel showing the old top-N in the old order while the judgement had
+already judged over the new one — the one thing this section exists to
+prevent, leaking on the ordering axis instead of the membership one. The cost
+is a panel edit on a turn where only the order moved — and, now that the
+section renders in one state, a panel edit on turns whose text is unchanged.
+That is the cheap failure; the expensive one is a person answering *"say which
+one"* about rows that are no longer on offer.
 
 ## Operator notes
 

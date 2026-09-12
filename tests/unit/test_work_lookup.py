@@ -5,6 +5,14 @@ they assert is the *plumbing* — that the rows reached the prompt as ids to
 point at, and that what came back was verified against those rows before it
 was acted on. Quality of the judgement is an eval's job (CLAUDE.md); nothing
 here asserts a model's words.
+
+The rows are ``TaskCandidate`` rather than ``TaskRow`` since #401: the day's
+board is read once, through the ``TaskSource`` port, and the card and this
+judgement are handed that same listing. The four fields the prompt renders —
+the external id, the number, the label and the summary — are the same four
+facts under new names, and the rendered line is unchanged; the eval's measured
+rates are asserted against that line, so a change to it is a change to a
+measured judgement.
 """
 
 from __future__ import annotations
@@ -14,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from fateforger.agents.tasks.board import TaskRow
+from fateforger.agents.tasks.task_source import TaskCandidate
 from fateforger.agents.timeboxing.work_lookup import (
     SUMMARY_LIMIT,
     UnknownWorkId,
@@ -46,21 +54,22 @@ def row(
     number: int | None = 427,
     name: str = "Verify VPB 2024 aangifte",
     summary: str = "Check the corporate tax return before the accountant files it.",
-) -> TaskRow:
-    return TaskRow(
-        page_id=page_id,
+) -> TaskCandidate:
+    return TaskCandidate(
+        source="notion",
+        external_id=page_id,
         number=number,
-        name=name,
-        status="Not started",
-        ticket_status="Ready",
+        label=name,
         summary=summary,
-        dod="Filed and confirmed.",
+        state="next",
+        due=None,
+        overdue=False,
+        blocked_by=[],
         url=f"https://www.notion.so/{page_id}",
-        last_edited="2026-09-05T09:14:00.000Z",
     )
 
 
-def debt_row() -> TaskRow:
+def debt_row() -> TaskCandidate:
     return row(
         page_id=DEBT_PAGE_ID,
         number=413,
@@ -78,8 +87,8 @@ async def test_the_prompt_carries_every_row_id_name_and_number() -> None:
     assert len(ask.prompts) == 1
     prompt = ask.prompts[0]
     for candidate in rows:
-        assert candidate.page_id in prompt
-        assert candidate.name in prompt
+        assert candidate.external_id in prompt
+        assert candidate.label in prompt
         assert f"#{candidate.number}" in prompt
     assert "the next finance ticket" in prompt
 
@@ -90,7 +99,7 @@ async def test_a_returned_id_maps_to_its_row() -> None:
 
     resolved = await resolve_work("the next finance ticket", rows, ask=ask)
 
-    assert [r.page_id for r in resolved] == [TAX_PAGE_ID]
+    assert [r.external_id for r in resolved] == [TAX_PAGE_ID]
     assert resolved[0] is rows[0]
 
 
@@ -100,7 +109,7 @@ async def test_several_returned_ids_map_in_the_order_given() -> None:
 
     resolved = await resolve_work("both finance tickets", rows, ask=ask)
 
-    assert [r.page_id for r in resolved] == [DEBT_PAGE_ID, TAX_PAGE_ID]
+    assert [r.external_id for r in resolved] == [DEBT_PAGE_ID, TAX_PAGE_ID]
 
 
 async def test_an_id_that_is_not_among_the_rows_raises_naming_it() -> None:
@@ -140,7 +149,7 @@ async def test_the_same_id_twice_resolves_to_one_row() -> None:
 
     resolved = await resolve_work("the tax one", [row()], ask=ask)
 
-    assert [r.page_id for r in resolved] == [TAX_PAGE_ID]
+    assert [r.external_id for r in resolved] == [TAX_PAGE_ID]
 
 
 async def test_json_wrapped_in_prose_is_still_read() -> None:
@@ -151,7 +160,7 @@ async def test_json_wrapped_in_prose_is_still_read() -> None:
 
     resolved = await resolve_work("the tax one", [row()], ask=ask)
 
-    assert [r.page_id for r in resolved] == [TAX_PAGE_ID]
+    assert [r.external_id for r in resolved] == [TAX_PAGE_ID]
 
 
 async def test_an_answer_with_no_json_raises_saying_so() -> None:
@@ -194,8 +203,26 @@ def test_the_rows_are_a_list_to_point_at_not_a_vocabulary() -> None:
     prompt = build_prompt("the next finance ticket", rows)
 
     for candidate in rows:
-        assert candidate.page_id in prompt
+        assert candidate.external_id in prompt
     assert '"page_ids"' in prompt
+
+
+def test_a_candidate_renders_as_the_line_the_eval_measured() -> None:
+    """The rendered line is the question, and it is measured.
+
+    `tests/integration/test_eval_work_lookup.py` took its rates over exactly
+    this rendering: the external id, two spaces, `#number`, two spaces, the
+    label, then an em dash and the summary. #401 changed the type a row
+    arrives as and nothing else. If this line moves — a field dropped, an
+    order swapped, a separator changed — the rates measured over the old one
+    stop describing the prompt and have to be taken again rather than cited.
+    """
+    prompt = build_prompt("the tax one", [row()])
+
+    assert (
+        f"{TAX_PAGE_ID}  #427  Verify VPB 2024 aangifte"
+        " — Check the corporate tax return before the accountant files it."
+    ) in prompt
 
 
 def test_the_prompt_shows_the_none_answer_shape() -> None:

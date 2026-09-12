@@ -13,6 +13,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
+from fateforger.agents.tasks.task_source import TaskCandidates
+
 from .elicitation import stage1_gate
 from .readiness import (
     ReadinessGap,
@@ -111,6 +113,20 @@ class PlanningContext(BaseModel):
     #: the turn: a planner told the work could not be resolved plans the day
     #: and leaves the blocks unlinked.
     work_refs_unresolved: bool = False
+    #: What the day's board offered this resolve, from the single read the
+    #: work lookup made (#401). It travels beside the flag above rather than
+    #: through it: the flag says whether the work could be *resolved*, this
+    #: says what was on *offer*, and a turn can have one without the other --
+    #: a judgement that failed over a list that was read perfectly well.
+    #:
+    #: `None` means no board was read, which is never the same as a board that
+    #: answered with nothing. A read that succeeded and offered nothing is a
+    #: `TaskCandidates` whose `rows` is empty, and the surface says a different
+    #: sentence for each. It reaches the snapshot and stops there: the planner
+    #: is handed the refs that were resolved and has no use for the list they
+    #: came from, so putting a sprint's rows on every brief would be tokens
+    #: spent on nothing.
+    candidates: TaskCandidates | None = None
 
 
 class ProgressSink(Protocol):
@@ -692,8 +708,16 @@ class AdaptiveTimeboxing:
         # run the lookup therefore clears it -- the flag describes the last
         # resolve, never the session, and a warning left standing after a later
         # turn resolved the work would be the wrong error to make.
+        #
+        # The candidates ride in the same update and for the same reason: they
+        # describe the last resolve, not the session, so a turn that ran no
+        # lookup clears them rather than leaving a board listing on the card
+        # that this turn never read.
         snapshot = snapshot.model_copy(
-            update={"work_refs_unresolved": resolved.work_refs_unresolved}
+            update={
+                "work_refs_unresolved": resolved.work_refs_unresolved,
+                "candidates": resolved.candidates,
+            }
         )
         readiness = self._requirements.evaluate(target, snapshot)
         blocker = readiness.first_hard_user_blocker()

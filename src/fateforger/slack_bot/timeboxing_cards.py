@@ -48,7 +48,7 @@ from .stage_cards import (
     map_outcome,
 )
 from .mrkdwn import to_mrkdwn
-from .stage_context import ContextFold, ContextPanel, FoldRow
+from .stage_context import BoardCandidateItem, ContextFold, ContextPanel, FoldRow
 from .timebox_candidate import PendingTimeboxCandidates
 from .timeboxing_commit import build_timebox_date_card
 from .timeboxing_intents import ArtifactActionMeta
@@ -424,6 +424,114 @@ def _work_line(panel: ContextPanel) -> str:
     return f"\nPlanning around {named}" + (f" _+{rest} more_" if rest > 0 else "")
 
 
+#: The board's own GTD buckets, as words. A mapping over enum values the
+#: source minted, the way `_APPLIES_LABEL` maps the store's -- nothing here
+#: reads a ticket's prose. `next` maps to nothing on purpose: the measured
+#: scope returns Ready rows only, so tagging every row "next" would spend a
+#: column on the case that carries no information and push the due date, which
+#: does, off the readable part of the line. The buckets that are exceptions
+#: are the ones a reader has to see before planning around a row.
+_CANDIDATE_STATE_LABEL: dict[str, str] = {
+    "next": "",
+    "waiting_for": "waiting for",
+    "someday": "someday",
+    "done": "done",
+}
+
+
+#: Candidates named before the tail becomes a count. Its own constant, and
+#: four times the work line's three, because the two lines answer different
+#: questions. The work line is a glance to catch a wrong resolution. This
+#: section has to let a reader answer "say which one" -- the only turn it is
+#: drawn at all -- and showing them three of twelve defeats the one job it has.
+#:
+#: Twelve is the current sprint's size on the day this was measured, and the
+#: port's own `DEFAULT_CANDIDATE_LIMIT` -- but it is not what production asks
+#: for. `timeboxing_host.WORK_ROW_LIMIT` is 100, so the port returns up to a
+#: hundred rows and this section shows twelve of them. **The cap bounds what
+#: is shown and never what the judgement saw.**
+#:
+#: Twelve rows at roughly 60 characters is about 720, against
+#: `SLACK_MAX_BLOCK_TEXT_CHARS` of 1600; measured against the real twelve-row
+#: board the section is 918 characters and the whole panel 1087, so the
+#: panel's other lines fit in the headroom. **Past that character budget the
+#: "+N more" line does not survive to say so**: `render_context_panel` cuts
+#: the head at `SLACK_MAX_BLOCK_TEXT_CHARS`, and the cut takes the tail rows
+#: and the count line with them, silently. The count line reports only the
+#: rows this cap dropped, never the ones the character budget did.
+#:
+#: **The cap is not load-bearing for `shown_with_of`.** It was once claimed to
+#: be -- a cap at or above the sprint size was said to make an unordered board
+#: term safe -- and that was wrong, because the cap does not bound the read.
+#: The term there carries each row's position and stands on its own.
+BOARD_ROW_CAP = 12
+
+
+def _board_row(item: BoardCandidateItem) -> str:
+    """One candidate: a bullet, the number and the name, then its tags.
+
+    A bullet and nothing else. There was a tick here for the row the day's
+    work was taken from, and it can no longer occur: the only state that draws
+    these rows is the one where the lookup could not decide which ticket was
+    meant, so no row is taken. A glyph that is always the same glyph is not a
+    column a reader learns to read.
+
+    The date is ISO. A month name would come from the process locale unless
+    this file carried its own table (`elicitation._WEEKDAYS` exists for exactly
+    that reason), and a due date read as the wrong month is worse than one read
+    as a plain number.
+    """
+
+    named = f"#{item.number} {item.label}" if item.number is not None else item.label
+    tags = [_CANDIDATE_STATE_LABEL.get(item.state, item.state)]
+    if item.due is not None:
+        tags.append(f"due {item.due.isoformat()}")
+    if item.overdue:
+        tags.append("overdue")
+    trailing = "".join(f" · {tag}" for tag in tags if tag)
+    return f"• {named}{trailing}"
+
+
+def _board_section(panel: ContextPanel) -> str:
+    """The rows the lookup was choosing between, when it could not choose.
+
+    **One state draws this section, and it is the one where the reader has
+    been asked a question they need the list to answer**: the work lookup
+    could not work out which ticket was meant, and the board it was reading
+    offered rows. `_work_line` above has just printed "I could not work out
+    which ticket you meant -- say which one and I'll attach it", and these are
+    the rows it was choosing from. Nothing is marked as taken, because on this
+    turn nothing was.
+
+    **Every other state draws nothing at all.** No work was named; the lookup
+    succeeded, and the "Planning around" line above already names the ticket;
+    the board was read and offered nothing; the board could not be read, which
+    the unresolved sentence has already said in the one vocabulary that fact
+    gets; or the turn read no board, so there is nothing this turn to describe.
+
+    Hugo's ruling, 2026-09-11, and it is about what a sprint listing *is*
+    rather than about clutter. **The board is never shown unprompted.** These
+    rows are not constraints, and this panel is headed "what I know about a
+    working Friday"; a raw sprint posted there before the person has said
+    anything about the day claims a standing it has not got. The listing is
+    also unrefined -- it is whatever the board holds right now, closed rows
+    included. What would make a shown board mean something is a task-marshalling
+    session in front of it, deciding what is actually live. That is a later
+    increment (work-family increment 2), and until it exists the rows earn
+    their place only as the answer set to a question already on screen.
+    """
+
+    if not panel.work_refs_unresolved or not panel.board:
+        return ""
+    head = "From your board"
+    if panel.board_sprint:
+        head += f" — {panel.board_sprint}"
+    shown = panel.board[:BOARD_ROW_CAP]
+    rows = "".join(f"\n{_board_row(item)}" for item in shown)
+    rest = len(panel.board) - len(shown)
+    return f"\n{head}:{rows}" + (f"\n_+{rest} more_" if rest > 0 else "")
+
+
 def _off_today_line(count: int, reason: str) -> str:
     if count == 0:
         return ""
@@ -453,6 +561,7 @@ def render_context_panel(panel: ContextPanel, done: str | None = None) -> SlackB
         f"{panel.rule_count - panel.must_count} should)"
         f"{_off_today_line(panel.off_today_count, panel.off_today_reason)}\n{summary}"
         f"{_work_line(panel)}"
+        f"{_board_section(panel)}"
     )
     section: dict = {
         "type": "section",

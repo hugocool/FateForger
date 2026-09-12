@@ -7,17 +7,20 @@ model, no store -- and both order rows the same way, through `rank_rows`,
 so the panel's summary and the fold never disagree.
 
 Every comparison here is over identifiers this system minted: constraint
-uids, anchor uids, fact ids, enum values. Anchor names are displayed and
-never compared (CLAUDE.md).
+uids, anchor uids, fact ids, enum values, and -- for the board section -- the
+integer number and the row id the board itself minted. Anchor names, ticket
+names and sprint names are displayed and never compared (CLAUDE.md).
 """
 
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from fateforger.agents.tasks.task_source import CandidateState
 from fateforger.agents.timeboxing.elicitation import ALL_CELLS, coverage_matrix, day_label
 from fateforger.agents.timeboxing.session_contracts import (
     FactKind,
@@ -195,6 +198,29 @@ class WorkItem(_Frozen):
     label: str
 
 
+class BoardCandidateItem(_Frozen):
+    """One row the day's board offered, as a person reads it.
+
+    The board's own facts. No `external_id` and no url: a page id says nothing
+    to somebody deciding whether the day is about the right ticket, for the
+    same reason `WorkItem` drops the material handle.
+
+    There is no "this is the one the day took" flag. The only turn that draws
+    these rows is the one whose lookup could not decide, and on that turn
+    nothing was taken by definition -- so a flag would be False on every item
+    the reader can ever see, and dead the rest of the time.
+    """
+
+    #: `TaskCandidate.number` is optional; a ticket nobody numbered is still
+    #: on the board.
+    number: int | None
+    label: str
+    state: CandidateState
+    due: date | None
+    #: Derived by the port from `due` and the day, never re-derived here.
+    overdue: bool
+
+
 class ContextPanel(_Frozen):
     session_key: str
     expected_revision: int
@@ -213,6 +239,18 @@ class ContextPanel(_Frozen):
     work: list[WorkItem] = Field(default_factory=list)
     #: The last resolve that looked could not work out which ticket was meant.
     work_refs_unresolved: bool = False
+    #: What the board offered on the last resolve that read one, in the order
+    #: the board returned them -- capped by the renderer, not here, so the
+    #: count the panel names is a count of what was on offer. Empty whenever
+    #: no board was read, and empty whenever the board was read and offered
+    #: nothing: the renderer draws neither case, so the two need not be told
+    #: apart here. They still are on the snapshot (`candidates is None` versus
+    #: an empty `rows`), which is where the distinction earns its keep.
+    board: list[BoardCandidateItem] = Field(default_factory=list)
+    #: The sprint's name, for the section's head. `None` when the scope
+    #: resolved no sprint *and* when the sprint page carries no title, which
+    #: are the same fact for a reader: there is no name to print.
+    board_sprint: str | None = None
     suspended: list[SuspendedRow]
     #: Row uids and suspension fact ids the panel was drawn from. A snapshot
     #: whose set differs needs the panel edited; equal means nothing to do.
@@ -225,6 +263,11 @@ class ContextPanel(_Frozen):
 #: `shown_with_of`. Minted here, and shaped so it cannot collide with a
 #: constraint uid, a suspension fact id or a material handle.
 _WORK_UNRESOLVED_MARK = "work-refs:unresolved"
+
+#: The mark that stands for "a board was read this turn". Without it a board
+#: that answered with nothing would compare equal to no board at all, and the
+#: turn that first read an empty sprint would never redraw the panel to say so.
+_BOARD_READ_MARK = "board:read"
 
 
 def shown_with_of(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
@@ -247,7 +290,47 @@ def shown_with_of(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
         if isinstance(ref.get("link"), str)
     }
     marks = {_WORK_UNRESOLVED_MARK} if snapshot.work_refs_unresolved else set()
-    return frozenset(uids | facts | work | marks)
+    # And the board, for the same reason: the section is drawn from the day's
+    # candidates, so a turn that changed what the board offered and left the
+    # rules alone has to move this set or the section is written and never
+    # seen. By external id -- the board's own handle for the row -- following
+    # the work above: a ticket renamed or re-dated on the board keeps its id
+    # and does not redraw the panel, which is one turn of a stale label and
+    # never a row that is not there.
+    #
+    # **Each row's position is part of its term, so the same rows re-read in a
+    # new order redraw.** A Priority edit on Notion reorders the listing
+    # without changing what is in it, and the section shows only the first
+    # `timeboxing_cards.BOARD_ROW_CAP` rows -- so a row promoted into that
+    # window would be judged over and never drawn, while the panel went on
+    # showing the old top-N in the old order.
+    #
+    # The cap does not make an unordered term safe, which is what this comment
+    # used to claim. The cap bounds what is *shown*; it does not bound what is
+    # read. The only production caller asks the port for
+    # `timeboxing_host.WORK_ROW_LIMIT` rows -- a hundred, not twelve -- so a
+    # twenty-row sprint whose thirteenth row is promoted is the ordinary case,
+    # not the exotic one, and under a set of bare ids nothing moves.
+    #
+    # The cost is a panel edit on a turn where only the order changed. The
+    # cost of the other choice was the reader looking at a different list from
+    # the one the judgement judged over, which is the invariant this section
+    # exists to hold.
+    #
+    # Since 2026-09-11 the section renders in one state only -- the lookup
+    # could not decide -- so on most turns this term moves a key whose panel
+    # text is unchanged, and the registry edits a panel that reads the same.
+    # That is the cheap failure. The expensive one is the other direction: the
+    # state that does render is the turn the reader is being asked "say which
+    # one", and a stale list there is a person answering about rows that are
+    # no longer on offer.
+    board: set[str] = set()
+    if snapshot.candidates is not None:
+        board = {_BOARD_READ_MARK} | {
+            f"board:{position}:{row.external_id}"
+            for position, row in enumerate(snapshot.candidates.rows)
+        }
+    return frozenset(uids | facts | work | marks | board)
 
 
 def _row_uids(snapshot: PlanningSessionSnapshot) -> frozenset[str]:
@@ -287,6 +370,48 @@ def _work(snapshot: PlanningSessionSnapshot) -> list[WorkItem]:
     ]
 
 
+def _board(snapshot: PlanningSessionSnapshot) -> list[BoardCandidateItem]:
+    """What the board offered, in the order it offered it.
+
+    No board read is an empty list, and so is a board that offered nothing.
+    The renderer draws the rows in one state only -- the lookup could not
+    decide -- and both of those are the absence of rows, so nothing downstream
+    needs to tell them apart. `shown_with_of` still does, on the snapshot,
+    because a first read that comes back empty has to move the redraw key.
+    """
+
+    if snapshot.candidates is None:
+        return []
+    return [
+        BoardCandidateItem(
+            number=row.number,
+            label=row.label,
+            state=row.state,
+            due=row.due,
+            overdue=row.overdue,
+        )
+        for row in snapshot.candidates.rows
+    ]
+
+
+def _board_sprint(snapshot: PlanningSessionSnapshot) -> str | None:
+    """The sprint's name, or `None` when there is not one to print.
+
+    A sprint page with no title gives back an empty string, and one titled with
+    a space gives back a space -- which printed a head of `From your board —  :`
+    and is the same fact for a reader: there is no name here. Emptiness, not
+    meaning: nothing here compares the title to anything, and the whitespace is
+    tested for rather than stripped off a name that has one.
+    """
+
+    if snapshot.candidates is None:
+        return None
+    sprint = snapshot.candidates.sprint
+    if sprint is None or not sprint.strip():
+        return None
+    return sprint
+
+
 def context_panel(
     snapshot: PlanningSessionSnapshot, first_shown_with: frozenset[str] | None
 ) -> ContextPanel:
@@ -306,6 +431,8 @@ def context_panel(
         groups=group_rows(rows),
         work=_work(snapshot),
         work_refs_unresolved=snapshot.work_refs_unresolved,
+        board=_board(snapshot),
+        board_sprint=_board_sprint(snapshot),
         suspended=[
             SuspendedRow(uid=r.uid, name=r.name, reason=r.suspended_reason)
             for r in rows
@@ -450,6 +577,7 @@ def context_fold(
 
 __all__ = [
     "AnchorGroup",
+    "BoardCandidateItem",
     "ContextFold",
     "ContextPanel",
     "FoldGroup",

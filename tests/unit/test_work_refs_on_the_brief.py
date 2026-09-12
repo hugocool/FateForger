@@ -31,6 +31,7 @@ from datetime import UTC, date, datetime
 import pytest
 
 from fateforger.agents.tasks.board import TaskBoardUnavailable, TaskListing, TaskRow
+from fateforger.agents.tasks.task_source import BoardTaskSource, TaskSourceUnavailable
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
     AdaptiveTimeboxing,
     InMemoryPlanningSessionRepository,
@@ -112,16 +113,21 @@ DNS = _row(page_id="page-457", number=457, name="Move the DNS", url=DNS_URL)
 
 
 class FakeBoard:
-    """The board as `TaskBoard` answers, plus a record of how it was asked."""
+    """The board as `TaskBoard` answers, plus a record of how it was asked.
+
+    Read through a real `BoardTaskSource` rather than stubbed at the port, so
+    the scope and the row limit the host chose are observable here: `calls`
+    holds what actually reached `list_tasks`.
+    """
 
     def __init__(self, rows: list[TaskRow]) -> None:
         self._rows = rows
-        self.calls: list[str] = []
+        self.calls: list[tuple[str, int]] = []
 
     async def list_tasks(
         self, scope: str, *, limit: int = 25, cursor: str | None = None
     ) -> TaskListing:
-        self.calls.append(scope)
+        self.calls.append((scope, limit))
         return TaskListing(scope=scope, tasks=list(self._rows))
 
 
@@ -129,13 +135,23 @@ class RefusingBoard:
     """A board that cannot answer, which is the case that must not block."""
 
     def __init__(self) -> None:
-        self.calls: list[str] = []
+        self.calls: list[tuple[str, int]] = []
 
     async def list_tasks(
         self, scope: str, *, limit: int = 25, cursor: str | None = None
     ) -> TaskListing:
-        self.calls.append(scope)
+        self.calls.append((scope, limit))
         raise TaskBoardUnavailable("no Notion token is configured")
+
+
+def source_over(board) -> BoardTaskSource:
+    """The board behind the port the host now takes.
+
+    Wrapping the real adapter rather than faking a `TaskSource` keeps these
+    tests measuring what the host asks the board for -- the scope and the row
+    limit -- which is where the one trap on this seam lives.
+    """
+    return BoardTaskSource(board)
 
 
 class RecordingStore:
@@ -204,7 +220,7 @@ async def _resolved(page_ids: list[str], rows: list[TaskRow] | None = None):
     refs = await work_refs_for_turn(
         day=DAY,
         message="finish the next finance ticket in the first shallow work block",
-        board=board,
+        source=source_over(board),
         ask=ask,
         put_material=store,
     )
@@ -257,7 +273,24 @@ async def test_the_scope_is_the_hosts_decision() -> None:
     """The current sprint's Ready rows are what fixes the meaning of "next"."""
     _refs, board, _store, _prompts = await _resolved(["page-427"])
 
-    assert board.calls == ["current_sprint_ready"]
+    assert [scope for scope, _limit in board.calls] == ["current_sprint_ready"]
+
+
+async def test_the_hosts_own_row_limit_reaches_the_board() -> None:
+    """The default on the port is a page to read; the host needs the sprint.
+
+    `TaskSource.candidates` defaults to twelve rows, sized to be shown to a
+    person. `WORK_ROW_LIMIT` is a hundred, which is Notion's cap and the whole
+    of a sprint. A caller here taking the port's default would hand the
+    judgement twelve of a hundred ready rows -- and it would still answer,
+    plausibly and in the right shape, over a list quietly missing the ticket
+    the person meant. There is no error to notice that by, which is why it is
+    asserted rather than left to the call site reading correctly.
+    """
+    _refs, board, _store, _prompts = await _resolved(["page-427"])
+
+    assert board.calls == [("current_sprint_ready", timeboxing_host.WORK_ROW_LIMIT)]
+    assert timeboxing_host.WORK_ROW_LIMIT == 100
 
 
 async def test_the_rows_reach_the_lookup_in_the_boards_own_order() -> None:
@@ -270,6 +303,160 @@ async def test_the_rows_reach_the_lookup_in_the_boards_own_order() -> None:
 
     assert len(prompts) == 1
     assert prompts[0].index("page-457") < prompts[0].index("page-427")
+
+
+# --- one read, and the two halves it feeds ----------------------------------
+#
+# Decided on #401: the day's board is read once, through the `TaskSource` port,
+# and both the judgement that decides which rows the message named and the
+# surface that shows the person what was on offer are handed that same listing.
+# Two reads could disagree -- a row shown that was never judged over, or the
+# reverse -- and nothing downstream would detect it.
+
+
+async def test_the_board_is_read_once_and_the_judgement_sees_that_listing() -> None:
+    """One read per turn, and the rows the judgement is shown are its rows.
+
+    Asserted as an equality over the whole prompt rather than a membership
+    test: a second read whose result went to the judgement while the first
+    went to the card is exactly the failure the port exists to make
+    impossible, and it would pass any check that only asked whether the ids
+    were *present*.
+    """
+    refs, board, _store, prompts = await _resolved(["page-427"])
+
+    assert len(board.calls) == 1
+    assert len(prompts) == 1
+    assert refs.candidates is not None
+    shown = [candidate.external_id for candidate in refs.candidates.rows]
+    assert shown == ["page-427", "page-457"]
+    for external_id in shown:
+        assert external_id in prompts[0]
+
+
+async def test_the_rows_reach_the_judgement_in_the_order_the_source_gave_them(
+) -> None:
+    """The order is the person's board ranking, and the prompt says so."""
+    refs, _board, _store, prompts = await _resolved(["page-457"], rows=[DNS, FINANCE])
+
+    assert refs.candidates is not None
+    assert [row.number for row in refs.candidates.rows] == [457, 427]
+    assert prompts[0].index("page-457") < prompts[0].index("page-427")
+
+
+async def test_a_board_that_could_not_be_read_offers_no_candidates() -> None:
+    """`None` is "nobody looked", and the flag says why."""
+    refs = await _lookup(board=RefusingBoard())
+
+    assert refs.unresolved is True
+    assert refs.candidates is None
+
+
+async def test_a_board_that_offered_nothing_is_not_a_board_that_was_not_read(
+) -> None:
+    """The distinction the whole field exists to keep.
+
+    An empty sprint and an unreachable Notion produce the same absence of
+    refs, and a surface has a different sentence for each -- "your sprint has
+    no ready tickets" against "your board could not be read". Collapsing the
+    first to `None` would make them the same fact, which is the silent
+    wrong-answer shape `work_refs_unresolved` was added to stop.
+    """
+    ask, prompts = _answering([])
+    refs = await _lookup(board=FakeBoard([]), ask=ask)
+
+    assert refs.unresolved is False
+    assert refs.candidates is not None
+    assert refs.candidates.rows == []
+    # No rows to point at, so `resolve_work` never asked anything.
+    assert prompts == []
+
+
+async def test_a_judgement_that_failed_keeps_the_list_that_was_on_offer() -> None:
+    """The read succeeded; only the judgement over it did not.
+
+    The person may still be shown what their board held, with nothing marked
+    as taken from it -- so the listing survives every failure downstream of
+    the read. `unresolved` is what says nothing was taken.
+    """
+
+    async def _refusing_ask(prompt: str) -> str:
+        raise RuntimeError("openrouter said no")
+
+    refs = await _lookup(ask=_refusing_ask)
+
+    assert refs.unresolved is True
+    assert refs.candidates is not None
+    assert [row.number for row in refs.candidates.rows] == [427, 457]
+
+
+async def test_a_store_that_refuses_still_keeps_the_list_that_was_on_offer(
+) -> None:
+    """Same reasoning, one step later: the board was read, so it is shown."""
+
+    async def _refusing_store(**_kwargs) -> str:
+        raise RuntimeError("tmbx is not up")
+
+    refs = await _lookup(put_material=_refusing_store)
+
+    assert refs.unresolved is True
+    assert refs.candidates is not None
+    assert [row.number for row in refs.candidates.rows] == [427, 457]
+
+
+async def test_a_turn_that_asked_for_no_work_reads_no_board() -> None:
+    """Nobody asked, so there is nothing to look up and nothing to show.
+
+    Not merely an optimisation: a card drawing a sprint's rows onto a session
+    that never mentioned work would be inventing a question the person did not
+    ask, on every turn.
+    """
+
+    class _ForbiddenBoard:
+        async def list_tasks(self, scope, *, limit=25, cursor=None):
+            raise AssertionError("nobody asked for work, so nothing may be read")
+
+    async def _forbidden_ask(prompt: str) -> str:
+        raise AssertionError("nothing to ask about")
+
+    refs = await work_refs_for_turn(
+        day=DAY,
+        message="   ",
+        source=source_over(_ForbiddenBoard()),
+        ask=_forbidden_ask,
+        put_material=RecordingStore(),
+    )
+
+    assert refs.facts == []
+    assert refs.unresolved is False
+    assert refs.candidates is None
+
+
+async def test_a_day_that_will_not_parse_takes_the_named_non_blocking_path(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The port asks for a `date`; the host holds the day as a string.
+
+    That conversion sits inside the guard so a day nobody can read takes the
+    same named, non-blocking path as an unreachable board. Outside it, the
+    turn would die on a bare `ValueError` past every caller that handles only
+    the board's own failures.
+    """
+    board = FakeBoard([FINANCE, DNS])
+
+    with caplog.at_level(logging.ERROR):
+        refs = await work_refs_for_turn(
+            day="not-a-day",
+            message="finish the next finance ticket",
+            source=source_over(board),
+            ask=_answering(["page-427"])[0],
+            put_material=RecordingStore(),
+        )
+
+    assert refs.unresolved is True
+    assert refs.candidates is None
+    assert board.calls == []
+    assert "work_board_unavailable" in caplog.text
 
 
 # --- the brief --------------------------------------------------------------
@@ -379,7 +566,7 @@ async def test_a_turn_that_resolves_nothing_is_silent() -> None:
     refs = await work_refs_for_turn(
         day=DAY,
         message="serious c2f work in the morning",
-        board=board,
+        source=source_over(board),
         ask=ask,
         put_material=store,
     )
@@ -409,7 +596,7 @@ async def test_an_unreachable_board_clears_the_days_refs_and_does_not_block(
         refs = await work_refs_for_turn(
             day=DAY,
             message="finish the next finance ticket",
-            board=board,
+            source=source_over(board),
             ask=ask,
             put_material=store,
         )
@@ -462,7 +649,7 @@ async def _lookup(
     return await work_refs_for_turn(
         day=DAY,
         message=message,
-        board=board if board is not None else FakeBoard([FINANCE, DNS]),
+        source=source_over(board if board is not None else FakeBoard([FINANCE, DNS])),
         ask=ask,
         put_material=put_material if put_material is not None else RecordingStore(),
     )
@@ -619,9 +806,40 @@ async def test_a_failure_carries_its_traceback_and_its_event_name(
 
     record = caplog.records[-1]
     assert record.exc_info is not None
-    assert record.exc_info[0] is TypeError
     assert record.event == "work_board_unavailable"
+    # Since #401 the board is read through `TaskSource`, which turns every way
+    # a board can fail into one named exception -- so the exception on the
+    # record is that wrapper, and what actually broke is the cause it carries.
+    # Both have to survive: a wrapper that dropped its cause would leave
+    # nothing naming the fault.
+    raised = record.exc_info[1]
+    assert isinstance(raised, TaskSourceUnavailable)
+    assert type(raised.__cause__) is TypeError
+    # The structured type is the cause, not the wrapper. Reading the wrapper
+    # filed a Notion outage, a missing token and a malformed page under one
+    # label -- and the sibling catch on `TaskBoard.from_settings` logs the real
+    # type, so one event name would have carried two type vocabularies.
     assert record.error_type == "TypeError"
+    # The traceback is what a person reads, and it still names the real fault.
+    assert "TypeError" in caplog.text
+    assert "'NoneType' object is not subscriptable" in caplog.text
+
+
+async def test_a_failure_with_no_cause_is_logged_under_its_own_type(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The sibling path: `TaskBoard.from_settings` raises before any request
+    and there is no wrapper around it, so the exception *is* the fault. One
+    event name, one type vocabulary, whichever of the two paths filed it."""
+
+    with caplog.at_level(logging.ERROR):
+        timeboxing_host.work_board_unavailable(
+            "2026-09-08", TaskBoardUnavailable("no notion token")
+        )
+
+    record = caplog.records[-1]
+    assert record.event == "work_board_unavailable"
+    assert record.error_type == "TaskBoardUnavailable"
 
 
 async def test_the_rows_are_stored_concurrently() -> None:
@@ -950,9 +1168,16 @@ def _candidate_session(prior_refs: list[dict] | None = None) -> PlanningSessionS
     )
 
 
-async def _brief_from_a_candidate_turn(
+async def _candidate_turn(
     monkeypatch, board, page_ids, prior_refs: list[dict] | None = None
-) -> PlanningBrief:
+):
+    """One real kernel turn over one board, and both sides of what it left.
+
+    Returns the planner (which kept the brief it was handed) and the
+    repository (which kept the snapshot the kernel saved), because the
+    candidates and the refs part company between those two: one reaches the
+    snapshot and stops, the other goes on to the planner.
+    """
     monkeypatch.setattr(
         "fateforger.agents.tasks.board.TaskBoard.from_settings",
         staticmethod(lambda: board),
@@ -960,10 +1185,9 @@ async def _brief_from_a_candidate_turn(
     monkeypatch.setattr("fateforger.slack_bot.tmbx_client.TmbxClient", _FakeTmbx)
 
     planner = _RecordingPlanner()
+    repository = InMemoryPlanningSessionRepository([_candidate_session(prior_refs)])
     kernel = AdaptiveTimeboxing(
-        repository=InMemoryPlanningSessionRepository(
-            [_candidate_session(prior_refs)]
-        ),
+        repository=repository,
         requirements=TimeboxRequirements(),
         planner=planner,
         context=HostPlanningContext(
@@ -982,6 +1206,15 @@ async def _brief_from_a_candidate_turn(
             intent=Advance(),
         ),
         progress=_Progress(),
+    )
+    return planner, repository
+
+
+async def _brief_from_a_candidate_turn(
+    monkeypatch, board, page_ids, prior_refs: list[dict] | None = None
+) -> PlanningBrief:
+    planner, _repository = await _candidate_turn(
+        monkeypatch, board, page_ids, prior_refs
     )
     assert planner.briefs, "the turn never reached the planner"
     return planner.briefs[-1]
@@ -1127,3 +1360,56 @@ async def test_a_failed_lookup_does_not_leave_last_turns_handles_on_the_brief(
     text = _planning_obligation(brief)
     assert "m-page-427" not in text
     assert "could not be resolved" in text
+
+
+# --- where the listing stops -----------------------------------------------
+#
+# The refs and the candidates part company after the host: the refs go on to
+# the planner's brief, the candidates reach the snapshot the cards read and
+# stop there. Both legs are driven through a real kernel turn, because the
+# mirror in `AdaptiveTimeboxing` and the absence in `_build_brief` belong to
+# neither the host nor the card and could both be wrong with everything above
+# still green.
+
+
+async def test_the_candidates_reach_the_snapshot_the_cards_read(monkeypatch) -> None:
+    _planner, repository = await _candidate_turn(
+        monkeypatch, FakeBoard([FINANCE, DNS]), ["page-427"]
+    )
+    snapshot = await repository.load_or_create("C1:1.0", owner_user_id="U1")
+
+    assert snapshot.candidates is not None
+    assert [row.external_id for row in snapshot.candidates.rows] == [
+        "page-427",
+        "page-457",
+    ]
+    assert [row.label for row in snapshot.candidates.rows] == [
+        "Verify VPB 2024 aangifte",
+        "Move the DNS",
+    ]
+    # The day the board was read for, so a listing cannot outlive its day
+    # unnoticed.
+    assert snapshot.candidates.day == date(2026, 9, 8)
+
+
+async def test_the_candidates_do_not_reach_the_planners_brief(monkeypatch) -> None:
+    """The planner is handed what was resolved, not what was on offer.
+
+    It has no use for the list -- it cannot attach a ticket nobody named -- so
+    twelve rows of somebody's sprint on every brief is context spent on
+    nothing, and context is the resource the planner is shortest of. Asserted
+    over the serialised brief rather than one rendering of it: the facts reach
+    the planner as JSON, so a leak anywhere on the model shows up there.
+    """
+    brief = await _brief_from_a_candidate_turn(
+        monkeypatch, FakeBoard([FINANCE, DNS]), ["page-427"]
+    )
+    rendered = brief.model_dump_json()
+
+    # The resolved ticket is on the brief by handle, which is the feature.
+    assert "m-page-427" in rendered
+    # The one that was offered and not named is on no part of it.
+    assert "Move the DNS" not in rendered
+    assert "page-457" not in rendered
+    # And `PlanningBrief` grew no field to carry them on.
+    assert "candidates" not in brief.model_dump()

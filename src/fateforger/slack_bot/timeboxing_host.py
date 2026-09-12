@@ -22,6 +22,13 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from fateforger.agents.tasks.board import TaskBoard
+from fateforger.agents.tasks.task_source import (
+    BoardTaskSource,
+    TaskCandidate,
+    TaskCandidates,
+    TaskSource,
+)
 from fateforger.agents.timeboxing.adaptive_timeboxing import (
     PlanningContext,
     TurnRequest,
@@ -316,6 +323,7 @@ class HostPlanningContext:
             applicable_constraints=constraints,
             calendar_snapshot=calendar_snapshot,
             work_refs_unresolved=work.unresolved,
+            candidates=work.candidates,
         )
 
     async def _work_refs(
@@ -338,8 +346,6 @@ class HostPlanningContext:
         if not message.strip():
             return WorkRefs(facts=[], unresolved=False)
 
-        from fateforger.agents.tasks.board import TaskBoard
-
         try:
             board = TaskBoard.from_settings()
         except Exception as exc:  # noqa: BLE001 - no board is one outcome
@@ -347,6 +353,12 @@ class HostPlanningContext:
             # and before a judge is asked for, since there would be nothing to
             # ask about.
             return work_board_unavailable(day, exc)
+
+        # The scope is `BoardTaskSource`'s measured default -- the current
+        # sprint's Ready rows, which is the list the work-lookup eval's rates
+        # were taken over. Widening it is its own ticket with its own eval run
+        # (#401), not a keyword changed here.
+        source = BoardTaskSource(board)
 
         model_client = getattr(self._runtime, "timeboxing_judge_model_client", None)
         if model_client is None:
@@ -357,7 +369,7 @@ class HostPlanningContext:
         return await work_refs_for_turn(
             day=day,
             message=message,
-            board=board,
+            source=source,
             ask=judge_ask(model_client),
             put_material=TmbxClient().material_put,
         )
@@ -558,12 +570,6 @@ def planning_facts(
     return facts
 
 
-#: The system a work ref points into. It is the material store's key alongside
-#: the page id, and both are identifiers somebody minted -- comparing them is
-#: the documented exception to CLAUDE.md's matching ban, not an opinion about
-#: what a ticket says.
-WORK_SOURCE = "notion"
-
 #: One page of the current sprint's Ready list. Notion caps a query at 100, and
 #: a sprint holding more Ready tickets than that is a different problem from
 #: this one: paging would widen a scope that is deliberately narrow, and the
@@ -595,17 +601,42 @@ MATERIAL_TIMEOUT_S = 20.0
 class WorkRefs:
     """What one turn's work lookup produced, and whether it got an answer.
 
-    The two fields are not redundant, and neither is implied by the other. An
-    empty fact says "this turn resolved no handles"; the flag says why -- the
-    lookup could not be completed, rather than a message that named no ticket
-    -- and only the second changes how the planner should read the brief.
+    The first two fields are not redundant, and neither is implied by the
+    other. An empty fact says "this turn resolved no handles"; the flag says
+    why -- the lookup could not be completed, rather than a message that named
+    no ticket -- and only the second changes how the planner should read the
+    brief.
+
+    `candidates` is the third thing neither of those says: what the board
+    *offered* before any of it was judged. It travels here so the card and the
+    judgement cannot disagree about the day's list -- one read, handed to both
+    (#401).
+
+    **`None` is "no board was read", and it never stands in for an empty
+    board.** Two turns produce it: one where nobody asked for any work, so
+    there was nothing to look up, and one where the read itself failed --
+    which `unresolved` already tells apart. A board that answered and offered
+    nothing is a `TaskCandidates` with an empty `rows`, and a surface must be
+    able to say "your sprint has no ready tickets" without saying "the board
+    could not be read".
+
+    A turn whose read succeeded and whose *judgement* then failed keeps its
+    candidates: the list was on offer and the person may still be shown it,
+    with nothing marked as taken from it.
     """
 
     facts: list[PlanningFact]
     unresolved: bool
+    candidates: TaskCandidates | None = None
 
 
-def work_lookup_failed(day: str, event: str, exc: BaseException) -> WorkRefs:
+def work_lookup_failed(
+    day: str,
+    event: str,
+    exc: BaseException,
+    *,
+    candidates: TaskCandidates | None = None,
+) -> WorkRefs:
     """A step of the lookup did not complete: say so at error, and go on.
 
     **The fact is filed, with an empty value.** `_merge_facts` merges by
@@ -636,11 +667,25 @@ def work_lookup_failed(day: str, event: str, exc: BaseException) -> WorkRefs:
     `work_board_unavailable`, `work_lookup_hallucinated_id`,
     `work_lookup_failed`, `work_material_unstorable` -- because they have four
     different remedies even though the planner's next move is identical.
+
+    `candidates` is whatever the board did offer before the step that failed.
+    Three of the four events happen *after* a successful read and keep it, so
+    the surface can still show the day's list with nothing marked taken from
+    it; only `work_board_unavailable` has nothing to carry, and passes None.
     """
+    # The type that actually broke, not the wrapper around it.
+    # `BoardTaskSource` turns every board failure into one
+    # `TaskSourceUnavailable` carrying the original as `__cause__`, so reading
+    # the wrapper here would file a Notion 503, a missing token and a malformed
+    # page under one label -- while the sibling catch in `_work_refs` logs the
+    # real type, and `work_board_unavailable` would then carry two type
+    # vocabularies under one event name. Whoever greps for one of these greps
+    # for the failure, not for the layer that renamed it.
+    error_type = type(exc.__cause__ if exc.__cause__ is not None else exc).__name__
     logger.error(
         "%s: %s: %s",
         event,
-        type(exc).__name__,
+        error_type,
         exc,
         # The traceback, because the catch is broad. A bare
         # "work_lookup_failed: TypeError: 'NoneType' object is not
@@ -648,7 +693,7 @@ def work_lookup_failed(day: str, event: str, exc: BaseException) -> WorkRefs:
         # and the thing that raised may be `resolve_work`, the MCP client or a
         # row mapper. Loudness that survives the widening.
         exc_info=True,
-        extra={"event": event, "error_type": type(exc).__name__},
+        extra={"event": event, "error_type": error_type},
     )
     from fateforger.agents.timeboxing.work_refs import work_refs_fact_id
 
@@ -662,11 +707,16 @@ def work_lookup_failed(day: str, event: str, exc: BaseException) -> WorkRefs:
             )
         ],
         unresolved=True,
+        candidates=candidates,
     )
 
 
 def work_board_unavailable(day: str, exc: BaseException) -> WorkRefs:
-    """The board could not be built or read, under its own event name."""
+    """The board could not be built or read, under its own event name.
+
+    The one failure with no candidates to carry: nothing was offered, which is
+    a different sentence for the reader than a board that offered nothing.
+    """
     return work_lookup_failed(day, "work_board_unavailable", exc)
 
 
@@ -718,7 +768,9 @@ def judge_ask(model_client: Any) -> Ask:
     return ask
 
 
-async def _store_materials(rows: list[Any], put_material: PutMaterial) -> list[str]:
+async def _store_materials(
+    rows: list[TaskCandidate], put_material: PutMaterial
+) -> list[str]:
     """The handle for each row, all written at once and all waited for.
 
     Concurrent because the writes are independent and this sits inside the
@@ -741,11 +793,16 @@ async def _store_materials(rows: list[Any], put_material: PutMaterial) -> list[s
     settled = await asyncio.wait_for(
         asyncio.gather(
             *(
+                # The candidate's own `source`, not a constant: the port
+                # exists so a second backend can land behind it, and a handle
+                # minted under the wrong system's name points at nothing. It
+                # is `"notion"` for every row the board adapter produces, so
+                # nothing about today's behaviour changes.
                 put_material(
-                    source=WORK_SOURCE,
-                    external_id=row.page_id,
+                    source=row.source,
+                    external_id=row.external_id,
                     url=row.url,
-                    label=row.name,
+                    label=row.label,
                 )
                 for row in rows
             ),
@@ -765,35 +822,53 @@ async def work_refs_for_turn(
     *,
     day: str,
     message: str,
-    board: Any,
+    source: TaskSource,
     ask: Ask,
     put_material: PutMaterial,
 ) -> WorkRefs:
     """Turn what the user asked for into handles the planner can attach.
 
-    Four steps, in this order and host-side: read the current sprint's Ready
-    rows, ask which of them the message names, record each answer in the
-    material store, and file one fact carrying the handles.
+    Four steps, in this order and host-side: read the day's candidate tickets
+    through the `TaskSource` port, ask which of them the message names, record
+    each answer in the material store, and file one fact carrying the handles.
 
-    **The scope is decided here and never by the model.** `current_sprint_ready`
-    is what fixes the meaning of "the next one" -- the spike that produced this
-    plan watched a subagent choose its own scope and pass over an overdue
-    in-sprint tax filing. The rows go to `resolve_work` in the board's own
-    order, unsorted and unfiltered, because the prompt tells the model that
-    order is the person's ranking (see `build_prompt`).
+    **The board is read exactly once, and that one listing goes two places.**
+    The judgement below is handed it, and it is returned on `WorkRefs` for the
+    surface that shows the person what was on offer. A card fetching its own
+    list could differ from the one the judgement saw -- a row shown that was
+    never judged over, or the reverse -- and nothing would notice; one read is
+    what makes "the list you were shown is the list it judged over" true by
+    construction rather than by coincidence (#401).
+
+    **The scope is decided by the source, never by the model.**
+    `current_sprint_ready` is what fixes the meaning of "the next one" -- the
+    spike that produced this plan watched a subagent choose its own scope and
+    pass over an overdue in-sprint tax filing. The rows go to `resolve_work`
+    in the order the port returned them, unsorted and unfiltered, because the
+    prompt tells the model that order is the person's ranking (see
+    `build_prompt`).
+
+    **`WORK_ROW_LIMIT` is passed explicitly**, and the reason is a trap rather
+    than a preference: `TaskSource.candidates` defaults to a readable page of
+    twelve. A caller here taking that default would show the judgement twelve
+    of a hundred ready rows and get a plausible answer back over a silently
+    narrowed list -- "the next finance ticket" resolving to the next one *of
+    the first twelve*, with nothing to notice it by.
 
     **No failure here blocks the turn.** Each step is caught broadly and logged
     under its own event name (see `work_lookup_failed`), and the caller puts
     one sentence on the brief. Broadly, because the failures that matter are
-    not the typed ones: `TaskBoard` wraps an error envelope and a malformed
-    page, but a Notion outage arrives as an httpx or anyio error from inside
-    the MCP client, which is the single likeliest way this fails. Both waits
-    are bounded, because a planning turn that hangs is worse than one planned
-    unlinked.
+    not the typed ones: the port raises `TaskSourceUnavailable` for everything
+    the board can do wrong, but a wait that times out here raises
+    `TimeoutError` instead, and that is not a `TaskSourceUnavailable`. Both
+    waits are bounded, because a planning turn that hangs is worse than one
+    planned unlinked.
     """
     if not message.strip():
         # Nobody asked for anything, so there is nothing to point at: no board
-        # read, no model call, and nothing on the brief either way.
+        # read, no model call, and nothing on the brief either way. No
+        # candidates either -- the board was never asked, which is not the
+        # same answer as a board that had nothing.
         return WorkRefs(facts=[], unresolved=False)
 
     from fateforger.agents.timeboxing.work_lookup import UnknownWorkId, resolve_work
@@ -801,7 +876,12 @@ async def work_refs_for_turn(
 
     try:
         listing = await asyncio.wait_for(
-            board.list_tasks("current_sprint_ready", limit=WORK_ROW_LIMIT),
+            # `date.fromisoformat` on a day string this system minted and
+            # writes into its own fact ids -- an identifier, not anybody's
+            # prose. Inside the guard so a malformed one takes the same named,
+            # non-blocking path as an unreachable board rather than killing
+            # the turn as a bare ValueError.
+            source.candidates(date.fromisoformat(day), limit=WORK_ROW_LIMIT),
             timeout=BOARD_TIMEOUT_S,
         )
     except Exception as exc:  # noqa: BLE001 - every board failure is one outcome
@@ -809,16 +889,18 @@ async def work_refs_for_turn(
 
     try:
         rows = await asyncio.wait_for(
-            resolve_work(message, list(listing.tasks), ask=ask),
+            resolve_work(message, list(listing.rows), ask=ask),
             timeout=LOOKUP_TIMEOUT_S,
         )
     except UnknownWorkId as exc:
         # Its own name: an id nobody showed the model is a prompt or a model
         # problem, not an outage, and it is the one failure here that says
         # something about the judgement rather than about the plumbing.
-        return work_lookup_failed(day, "work_lookup_hallucinated_id", exc)
+        return work_lookup_failed(
+            day, "work_lookup_hallucinated_id", exc, candidates=listing
+        )
     except Exception as exc:  # noqa: BLE001 - transport, timeout, unparseable
-        return work_lookup_failed(day, "work_lookup_failed", exc)
+        return work_lookup_failed(day, "work_lookup_failed", exc, candidates=listing)
 
     if not rows:
         # The ordinary case, and it stays silent: a message naming a topic
@@ -828,15 +910,17 @@ async def work_refs_for_turn(
         # the model named on an earlier draw and passes over on this one is a
         # disagreement between two samples, not a retraction. Clearing on it
         # would let sampling noise drop a ticket the user did ask for.
-        return WorkRefs(facts=[], unresolved=False)
+        return WorkRefs(facts=[], unresolved=False, candidates=listing)
 
     try:
         handles = await _store_materials(rows, put_material)
     except Exception as exc:  # noqa: BLE001 - a handle nothing stored is no handle
-        return work_lookup_failed(day, "work_material_unstorable", exc)
+        return work_lookup_failed(
+            day, "work_material_unstorable", exc, candidates=listing
+        )
 
     refs = [
-        {"link": handle, "label": row.name, "task": row.number}
+        {"link": handle, "label": row.label, "task": row.number}
         for handle, row in zip(handles, rows)
     ]
     return WorkRefs(
@@ -849,6 +933,7 @@ async def work_refs_for_turn(
             )
         ],
         unresolved=False,
+        candidates=listing,
     )
 
 

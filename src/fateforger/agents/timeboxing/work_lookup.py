@@ -45,7 +45,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from fateforger.agents.tasks.board import TaskRow
+from fateforger.agents.tasks.task_source import TaskCandidate
 
 # How much of a row's summary reaches the prompt. Cutting by length is
 # arithmetic over a stored field — it decides nothing about what the text
@@ -124,25 +124,35 @@ class WorkJudgement(BaseModel):
     page_ids: list[str]
 
 
-def _render_row(row: TaskRow) -> str:
-    """One ticket as one line: the id first, so the id is what gets copied."""
+def _render_row(row: TaskCandidate) -> str:
+    """One ticket as one line: the id first, so the id is what gets copied.
+
+    **This line is measured.** `tests/integration/test_eval_work_lookup.py`
+    took its rates over exactly this rendering, so a field dropped or a
+    separator changed is a change to the judgement, not to its formatting, and
+    the rates have to be taken again rather than cited. #401 changed the type
+    a row arrives as — a `TaskCandidate` from the `TaskSource` port rather
+    than a `TaskRow` straight off the board — and the four facts rendered are
+    the same four under the port's names.
+    """
     number = f"#{row.number}" if row.number is not None else "#--"
     summary = row.summary[:SUMMARY_LIMIT].strip()
-    line = f"{row.page_id}  {number}  {row.name}"
+    line = f"{row.external_id}  {number}  {row.label}"
     return f"{line} — {summary}" if summary else line
 
 
-def build_prompt(message: str, rows: list[TaskRow]) -> str:
+def build_prompt(message: str, rows: list[TaskCandidate]) -> str:
     """The whole question, options included, as one string for the transport.
 
     **The order of `rows` is part of the question.** They are listed to the
     model in the order given, and the prompt tells the model that this order
     is the person's own board ranking — which is what makes "the next finance
     ticket" answerable as "the first finance ticket in the list". Pass the
-    rows as the board returned them (`TaskBoard.list_tasks` sorts by Priority
-    descending). A caller that re-sorts, reverses, or interleaves two listings
-    tells the model a falsehood, and the failure is silent: a well-formed
-    answer naming a real row that is the wrong ticket.
+    rows as the port returned them (`TaskCandidates.rows`, which keeps the
+    board's own order; `TaskBoard.list_tasks` sorts by Priority descending). A
+    caller that re-sorts, reverses, or interleaves two listings tells the model
+    a falsehood, and the failure is silent: a well-formed answer naming a real
+    row that is the wrong ticket.
     """
     listing = "\n".join(_render_row(row) for row in rows)
     return (
@@ -177,8 +187,8 @@ def _first_json_object(content: str) -> dict[str, Any] | None:
 
 
 async def resolve_work(
-    message: str, rows: list[TaskRow], *, ask: Ask
-) -> list[TaskRow]:
+    message: str, rows: list[TaskCandidate], *, ask: Ask
+) -> list[TaskCandidate]:
     """The rows the message names, in the order the model pointed at them.
 
     `rows` is the caller's scope decision and is never widened here. An empty
@@ -219,8 +229,8 @@ async def resolve_work(
             f"could not parse work lookup answer into WorkJudgement: {payload!r}"
         ) from exc
 
-    shown = {row.page_id: row for row in rows}
-    resolved: list[TaskRow] = []
+    shown = {row.external_id: row for row in rows}
+    resolved: list[TaskCandidate] = []
     taken: set[str] = set()
     for page_id in judgement.page_ids:
         row = shown.get(page_id)
