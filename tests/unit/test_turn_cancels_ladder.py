@@ -49,6 +49,25 @@ class _HauntingService:
         return 0
 
 
+class _ActivityRecorder:
+    """Stands in for the `timeboxing_activity` singleton.
+
+    Shape copied from `test_asked_is_answered_in_the_turn.py`. Patching it is
+    not only for the assertion: without it the turn marks the real
+    process-wide recorder, which every other test in the run then sees.
+    """
+
+    def __init__(self) -> None:
+        self.active: list[str] = []
+        self.inactive: list[str] = []
+
+    def mark_active(self, *, user_id, channel_id, thread_ts):
+        self.active.append(user_id)
+
+    def mark_inactive(self, *, user_id):
+        self.inactive.append(user_id)
+
+
 async def test_a_turn_records_activity_on_the_session_topic(monkeypatch) -> None:
     haunting = _HauntingService()
 
@@ -86,6 +105,7 @@ async def test_a_turn_records_activity_on_the_session_topic(monkeypatch) -> None
 
 async def test_a_turn_that_ends_the_session_cancels_the_ladder(monkeypatch) -> None:
     haunting = _HauntingService()
+    activity = _ActivityRecorder()
 
     class Kernel:
         async def turn(self, request, progress):
@@ -106,6 +126,7 @@ async def test_a_turn_that_ends_the_session_cancels_the_ladder(monkeypatch) -> N
     monkeypatch.setattr(handlers, "derive_timebox_intent", _noop_intent)
     monkeypatch.setattr(handlers, "HarnessProgressCard", _StubCard)
     monkeypatch.setattr(handlers, "present_outcome", lambda *a, **k: ("rendered", None))
+    monkeypatch.setattr(handlers, "timeboxing_activity", activity)
 
     await handlers._run_adaptive_timebox_turn(
         runtime=Runtime(), client=object(), logger=logging.getLogger(__name__),
@@ -118,3 +139,7 @@ async def test_a_turn_that_ends_the_session_cancels_the_ladder(monkeypatch) -> N
     assert haunting.activity == [
         {"topic_id": "C1:2.0", "task_id": None, "user_id": "U2"}
     ]
+    # The ladder cancel and the idle timer are two halves of one teardown, and
+    # only the ladder half was ever asserted here: `mark_inactive` could stop
+    # firing and this file would stay green.
+    assert activity.inactive == ["U2"]
