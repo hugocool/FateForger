@@ -140,14 +140,20 @@ class SqlAlchemyEventDraftStore:
             await session.refresh(row)
             return _to_payload(row)
 
-    async def update_time(
-        self, *, channel_id: str, message_ts: str, start_at_utc: str | None = None, duration_min: int | None = None
+    async def update_time_by_draft_id(
+        self, *, draft_id: str, start_at_utc: str | None = None, duration_min: int | None = None
     ) -> Optional[EventDraftPayload]:
+        """Move a draft by its own id, wherever its card was clicked.
+
+        The only time write there is. The same card is posted to the DM and to
+        the admonishments log, and only the DM copy's coordinates are on the
+        row, so a write keyed to (channel_id, message_ts) silently did nothing
+        on the log copy. Identity comes from the card, not from where the
+        click landed.
+        """
         async with self._sessionmaker() as session:
             result = await session.execute(
-                select(EventDraft).where(
-                    EventDraft.channel_id == channel_id, EventDraft.message_ts == message_ts
-                )
+                select(EventDraft).where(EventDraft.draft_id == draft_id)
             )
             row = result.scalar_one_or_none()
             if not row:

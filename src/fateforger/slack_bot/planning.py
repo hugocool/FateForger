@@ -817,19 +817,66 @@ class PlanningCoordinator:
 
         return None
 
+    async def _resolve_card_draft(
+        self,
+        *,
+        draft_id: str | None,
+        channel_id: str,
+        message_ts: str,
+    ) -> EventDraftPayload | None:
+        """The draft a card control acts on: by the id the card names, first.
+
+        Every planning card is posted twice — to the DM and to the
+        admonishments log — with identical blocks and one shared draft_id,
+        while the row remembers only the DM's coordinates. Resolving by
+        coordinates found nothing on the log copy and the control returned
+        silently, so a pick there was discarded and Add booked the untouched
+        proposal (live, 2026-09-11). Coordinates stay as a fallback for a card
+        that carries no draft id.
+        """
+
+        if not self._draft_store:
+            return None
+        if draft_id:
+            draft = await self._draft_store.get_by_draft_id(draft_id=draft_id)
+            if draft:
+                return draft
+        if channel_id and message_ts:
+            draft = await self._draft_store.get_by_message(
+                channel_id=channel_id, message_ts=message_ts
+            )
+            if draft:
+                return draft
+        # A control that finds no draft must say so. The silence here is what
+        # kept the 2026-09-11 incident invisible for days: the pick returned
+        # None with no error, no log line and no write, so a discarded pick
+        # and a card nobody touched looked identical from the outside.
+        logger.warning(
+            "planning card control found no draft: draft_id=%s channel=%s message_ts=%s",
+            draft_id,
+            channel_id,
+            message_ts,
+        )
+        return None
+
     async def handle_start_at_changed(
         self,
         *,
         channel_id: str,
         message_ts: str,
         selected_date_time: int,
+        draft_id: str | None = None,
     ) -> EventDraftPayload | None:
         if not self._draft_store:
             return None
+        draft = await self._resolve_card_draft(
+            draft_id=draft_id, channel_id=channel_id, message_ts=message_ts
+        )
+        if not draft:
+            return None
         start = datetime.fromtimestamp(int(selected_date_time), tz=UTC)
-        return await self._draft_store.update_time(
-            channel_id=channel_id,
-            message_ts=message_ts,
+        return await self._draft_store.update_time_by_draft_id(
+            draft_id=draft.draft_id,
             start_at_utc=start.isoformat(),
         )
 
@@ -839,11 +886,12 @@ class PlanningCoordinator:
         channel_id: str,
         message_ts: str,
         selected_date: str,
+        draft_id: str | None = None,
     ) -> EventDraftPayload | None:
         if not self._draft_store:
             return None
-        draft = await self._draft_store.get_by_message(
-            channel_id=channel_id, message_ts=message_ts
+        draft = await self._resolve_card_draft(
+            draft_id=draft_id, channel_id=channel_id, message_ts=message_ts
         )
         if not draft:
             return None
@@ -865,9 +913,8 @@ class PlanningCoordinator:
             start_local.minute,
             tzinfo=tz,
         )
-        return await self._draft_store.update_time(
-            channel_id=channel_id,
-            message_ts=message_ts,
+        return await self._draft_store.update_time_by_draft_id(
+            draft_id=draft.draft_id,
             start_at_utc=new_local.astimezone(UTC).isoformat(),
         )
 
@@ -877,11 +924,12 @@ class PlanningCoordinator:
         channel_id: str,
         message_ts: str,
         selected_time: str,
+        draft_id: str | None = None,
     ) -> EventDraftPayload | None:
         if not self._draft_store:
             return None
-        draft = await self._draft_store.get_by_message(
-            channel_id=channel_id, message_ts=message_ts
+        draft = await self._resolve_card_draft(
+            draft_id=draft_id, channel_id=channel_id, message_ts=message_ts
         )
         if not draft:
             return None
@@ -899,9 +947,8 @@ class PlanningCoordinator:
         new_local = start_local.replace(
             hour=hour, minute=minute, second=0, microsecond=0
         )
-        return await self._draft_store.update_time(
-            channel_id=channel_id,
-            message_ts=message_ts,
+        return await self._draft_store.update_time_by_draft_id(
+            draft_id=draft.draft_id,
             start_at_utc=new_local.astimezone(UTC).isoformat(),
         )
 
@@ -911,13 +958,18 @@ class PlanningCoordinator:
         channel_id: str,
         message_ts: str,
         duration_min: int,
+        draft_id: str | None = None,
     ) -> EventDraftPayload | None:
-        """Persist a duration change for the event draft identified by channel+ts."""
+        """Persist a duration change for the draft the card names."""
         if not self._draft_store:
             return None
-        return await self._draft_store.update_time(
-            channel_id=channel_id,
-            message_ts=message_ts,
+        draft = await self._resolve_card_draft(
+            draft_id=draft_id, channel_id=channel_id, message_ts=message_ts
+        )
+        if not draft:
+            return None
+        return await self._draft_store.update_time_by_draft_id(
+            draft_id=draft.draft_id,
             duration_min=duration_min,
         )
 
@@ -963,11 +1015,13 @@ class PlanningCoordinator:
             return
         if date_str:
             await self.handle_start_date_changed(
+                draft_id=draft.draft_id,
                 channel_id=draft.channel_id,
                 message_ts=draft.message_ts,
                 selected_date=date_str,
             )
         await self.handle_duration_changed(
+            draft_id=draft.draft_id,
             channel_id=draft.channel_id,
             message_ts=draft.message_ts,
             duration_min=duration_min,
@@ -988,6 +1042,7 @@ class PlanningCoordinator:
         draft_id: str,
         respond,
         notify=None,
+        selected_time: str | None = None,
     ) -> None:
         # `respond` edits the card, which is the source of truth. `notify`, when
         # given, is the thread the request came from: an add started by a reply
@@ -1013,6 +1068,26 @@ class PlanningCoordinator:
                 draft.user_id,
             )
             return
+
+        # What the card shows is what gets booked. The pick and the press
+        # arrive about a second apart, so a press can carry a time the store
+        # has not been told about yet — and before this, a pick that never
+        # landed was silently replaced by the proposal (live, 2026-09-11).
+        if selected_time:
+            applied = await self.handle_start_time_changed(
+                draft_id=draft.draft_id,
+                channel_id=draft.channel_id,
+                message_ts=draft.message_ts or "",
+                selected_time=selected_time,
+            )
+            if applied:
+                draft = applied
+            else:
+                logger.warning(
+                    "start_add_to_calendar: could not apply the card's time (draft_id=%s selected_time=%r); booking the stored draft",
+                    draft.draft_id,
+                    selected_time,
+                )
 
         logger.info(
             "start_add_to_calendar: queueing add request (draft_id=%s user_id=%s calendar_id=%s event_id=%s start=%s duration_min=%s)",
@@ -1089,12 +1164,13 @@ class PlanningCoordinator:
             await self._client.chat_update(**payload)
 
         if press.selected_time:
-            draft_message_ts = (draft.message_ts or "").strip()
-            if not draft_message_ts:
-                raise ValueError("a time press needs the card's message_ts to update it")
+            # The draft's own id is enough to move it, and the redraw goes to
+            # thread_ts, so a card whose message_ts was never recorded is no
+            # longer a reason to refuse the press.
             await self.handle_start_time_changed(
+                draft_id=draft.draft_id,
                 channel_id=draft.channel_id,
-                message_ts=draft_message_ts,
+                message_ts=(draft.message_ts or "").strip(),
                 selected_time=press.selected_time,
             )
             updated = await self._draft_store.get_by_draft_id(draft_id=draft.draft_id)
@@ -1388,12 +1464,13 @@ class PlanningCoordinator:
             logger.warning("thread follow-up failed after add; card is authoritative")
 
     async def refresh_card_for_message(
-        self, *, channel_id: str, message_ts: str, respond
+        self, *, channel_id: str, message_ts: str, respond, draft_id: str | None = None
     ) -> None:
+        """Redraw the card that was clicked, whichever copy of it that is."""
         if not self._draft_store:
             return
-        draft = await self._draft_store.get_by_message(
-            channel_id=channel_id, message_ts=message_ts
+        draft = await self._resolve_card_draft(
+            draft_id=draft_id, channel_id=channel_id, message_ts=message_ts
         )
         if not draft:
             return
@@ -1689,6 +1766,147 @@ def parse_draft_id_from_value(value: str) -> str | None:
     return None
 
 
+def extract_draft_id_from_blocks(blocks: Any) -> str | None:
+    """Read the draft id a planning card carries on its own buttons.
+
+    Add, Retry and Edit all put `{"draft_id": …}` in their button value, so any
+    copy of the card names the draft it belongs to. That is the identity the
+    controls must use: the card is posted twice (DM and admonishments log) and
+    only one copy's coordinates are on the row.
+
+    This reads an identifier this system minted out of JSON this system wrote.
+    """
+
+    if not isinstance(blocks, list):
+        return None
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        elements = list(block.get("elements") or [])
+        accessory = block.get("accessory")
+        if isinstance(accessory, dict):
+            elements.append(accessory)
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
+            draft_id = parse_draft_id_from_value(str(element.get("value") or ""))
+            if draft_id:
+                return draft_id
+    return None
+
+
+def extract_draft_id_from_action_body(body: Any) -> str | None:
+    """The draft id for a card click: the clicked control first, then the card.
+
+    A picker carries no value of its own, so the card's buttons answer for it.
+    """
+
+    if not isinstance(body, dict):
+        return None
+    actions = body.get("actions") or []
+    if isinstance(actions, list) and actions and isinstance(actions[0], dict):
+        draft_id = parse_draft_id_from_value(str(actions[0].get("value") or ""))
+        if draft_id:
+            return draft_id
+    message = body.get("message")
+    blocks = message.get("blocks") if isinstance(message, dict) else None
+    return extract_draft_id_from_blocks(blocks)
+
+
+def extract_selected_time_from_state(state: Any) -> str | None:
+    """The time the card is showing right now, out of the click payload.
+
+    Slack sends every interactive element's current value under
+    `state.values[block_id][action_id]`. A pick and a press arrive about a
+    second apart, and a pick that never landed is exactly the incident this
+    guards: the press then carries the value the user can see. Absent or
+    unrecognised state is not an error — the caller falls back to the stored
+    draft.
+    """
+
+    if not isinstance(state, dict):
+        return None
+    values = state.get("values")
+    if not isinstance(values, dict):
+        return None
+    block = values.get(FF_EVENT_BLOCK_PICK_TIME)
+    if not isinstance(block, dict):
+        return None
+    element = block.get(FF_EVENT_START_TIME_ACTION_ID)
+    if not isinstance(element, dict):
+        return None
+    selected = element.get("selected_time")
+    return str(selected) if selected else None
+
+
+def extract_rendered_time_from_blocks(blocks: Any) -> str | None:
+    """The time the clicked copy of the card was drawn with.
+
+    `initial_time` is what this system wrote into the block when it last
+    rendered this message; it is what the picker reads back when nobody has
+    touched it.
+    """
+
+    if not isinstance(blocks, list):
+        return None
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("block_id") != FF_EVENT_BLOCK_PICK_TIME:
+            continue
+        accessory = block.get("accessory")
+        if not isinstance(accessory, dict):
+            continue
+        if accessory.get("action_id") != FF_EVENT_START_TIME_ACTION_ID:
+            continue
+        initial = accessory.get("initial_time")
+        if initial:
+            return str(initial)
+    return None
+
+
+def _as_hour_minute(value: str | None) -> tuple[int, int] | None:
+    """A Slack `HH:MM` field as numbers, or None if it is not one."""
+
+    if not value:
+        return None
+    try:
+        hour_str, minute_str = value.split(":", 1)
+        return int(hour_str), int(minute_str)
+    except Exception:
+        return None
+
+
+def extract_unlanded_time_pick(body: Any) -> str | None:
+    """A pick made on *this* copy of the card that may not have been stored.
+
+    Only a pick that differs from the `initial_time` this copy was rendered
+    with counts. Equal means nobody touched this picker, and the store is
+    authoritative — which matters because only the clicked copy is redrawn, so
+    the other copy goes on showing a stale time. Applying that stale time
+    unconditionally would revert a good pick made on the other copy, booking
+    the wrong slot from the opposite direction.
+
+    An unreadable rendered time is treated as "apply": that is the original
+    incident's shape, where a pick may never have reached the store.
+    """
+
+    if not isinstance(body, dict):
+        return None
+    picked = extract_selected_time_from_state(body.get("state"))
+    if not picked:
+        return None
+    message = body.get("message")
+    rendered = extract_rendered_time_from_blocks(
+        message.get("blocks") if isinstance(message, dict) else None
+    )
+    picked_hm = _as_hour_minute(picked)
+    rendered_hm = _as_hour_minute(rendered)
+    if picked_hm is not None and picked_hm == rendered_hm:
+        return None
+    return picked
+
+
 __all__ = [
     "FF_EVENT_ADD_ACTION_ID",
     "FF_EVENT_ADD_DISABLED_ACTION_ID",
@@ -1700,5 +1918,10 @@ __all__ = [
     "FF_EVENT_START_DATE_ACTION_ID",
     "FF_EVENT_START_TIME_ACTION_ID",
     "PlanningCoordinator",
+    "extract_draft_id_from_action_body",
+    "extract_draft_id_from_blocks",
+    "extract_rendered_time_from_blocks",
+    "extract_selected_time_from_state",
+    "extract_unlanded_time_pick",
     "parse_draft_id_from_value",
 ]
