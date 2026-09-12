@@ -47,6 +47,86 @@ so this rule is what keeps the rule above affordable.
 
 Only chain calls when a later prompt genuinely needs an earlier answer. Say which, and why.
 
+## Every route is a judgement
+
+This is the handoff seam's clause of one grammar for the seams between agents and their sessions —
+session, memory, handoff, user interaction — each a typed, composable contract, personalised per
+agent, capability and session (map: *One grammar for the seams*, #333). It is written first because
+it is the clause today's evidence proves.
+
+Where a message goes, which agent answers, whether a channel's default applies, what a command
+means, which controls a state offers — these are decisions about what the user meant, and the
+rule above covers them. In practice they have been the exception, because they look like
+plumbing. They are not. A route that cannot be questioned is a keyword list with a longer name.
+
+**The evidence (2026-09-05, one incident, six tickets, PR #328).** *"Is it planned?"* typed under a
+planning card opened a five-stage timeboxing session. The interpreter read it correctly — a
+question, `decision: none`. Four hardcoded routes then turned it into a session anyway:
+
+- `agent_type != "timeboxing_agent"` decided a planning card's thread belonged to timeboxing,
+  because sticky focus said so (#310);
+- `return StartSession()` before a day was locked, with the docstring *"there is nothing to decide
+  about"* — no model asked (#318);
+- a committed session offered only `provide_facts` and `revise`, so a question was coerced into a
+  revision (#316, #287);
+- `if "?" in message.content` chose the follow-up delay (#321).
+
+Every one was a deterministic branch answering "what did they mean". Every one had to be found by
+a human reading a screenshot, because a wrong route does not raise; it answers confidently and
+moves on. The receptionist already knew to refer *"is a session planned?"* to `planner_agent`. The
+mechanism existed. The routes never let the message reach it.
+
+### The rule
+
+- **A default is an offered option, never a verdict.** A channel's default agent, a command's
+  meaning, a card's buttons, a state's allowed decisions: each is presented to the interpreter as
+  one option among the others, with an `effect` sentence, and the model picks — or says `none`.
+  The shape exists: `SurfaceIntentInterpreter` with `allowed_decisions` and `BlockerOption`
+  (`option_id`, `label`, `effect`). Nothing new is invented; what changes is that no route may
+  bypass it.
+- **`none` escalates to a capable agent, never to a hardcoded fallback.** The fast pass says
+  "none of my options fit"; the answer is the receptionist with its handoffs today, and the
+  thread's live harness session once #302 lands. Sticky focus, channel ownership, the last agent
+  that answered: all of it is *context handed to the classifier*, none of it routes.
+- **Two tiers, and tier one is cheap on purpose.** Choosing among six listed options is term
+  typing, not deliberation: the flash pin at `reasoning: minimal`, one round trip, concurrent
+  with any other judgement the turn needs. The pro pin and reasoning effort belong to tier two,
+  where something is actually being planned. #325 is what running tier one on tier two's model
+  costs: a runaway on one routing call in twenty-five.
+- **Adding a route is adding a row.** An agent, a skill, a command, a routine registers itself as
+  an option with a description. No branch is written; the classifier reads the table. If adding
+  the second thing costs as much as the first, the shape is wrong — that is map #157's test.
+- **A query over state the system minted is not a judgement, even when its answer changes what
+  the user sees.** `standing_for` answering *"this day is already committed"* is a guarantee: one
+  indexed query over session rows and dates, and it belongs in code with a test beside it. The
+  judgement next to it is narrower and real — *which* day a bare command means when several are
+  plausible, and whether a message about a committed day opens a session or revises the standing
+  one. Split them, or you will replace a correct query with a classifier and call it progress.
+  (Named by admonish-1-56 on 2026-09-06, against a live case where the guard was right all day and
+  the door never asked it.)
+- **What stays code: guarantees about state.** "A session row is created only by an intent that
+  starts one." "A cancel on a committed day is refused." "The revision the next load sees is the
+  one this turn loaded." A prompt cannot hold those, and they are the only reason ~30 findings
+  were catchable in map A. The test is the same one as above, applied one level up: *does this
+  decide what the user meant* (→ a model, with options) *or what the system may do* (→ code, with
+  a test)?
+
+### These are the excuses. All of them are wrong
+
+| "But it's only…" | No |
+|---|---|
+| "…the default for this channel" | A default the user cannot overrule is a verdict about their message they never saw. Offer it; let the model pick it. |
+| "…the button already said what they meant" | Buttons are options. Words are the user disagreeing with the options. Both go to the interpreter. |
+| "…a route to the agent that owns this thread" | Ownership is context. Whether *this* message is that agent's is the judgement. #310 was exactly this. |
+| "…a classifier on every message costs latency" | One flash call at `minimal`, concurrent with the rest. The five-stage session that opened by mistake cost more. |
+| "…the fallback when the model says `none`" | `none` is the model asking for help. Handing it to a hardcoded router is answering the question it just declined to answer. |
+| "…state where there is nothing to decide" | That sentence was in a docstring on 2026-09-05. There was something to decide. |
+| "…so the precondition check becomes a model call too" | No. A query over minted state stays a query. Only the ambiguous half — which day, which standing thing — becomes an option. |
+
+Map: *One grammar for the seams* (#333, `wayfinder:map`); the grammar decision is its first ticket. Contract:
+`docs/architecture/proposal_object_contract.md` §7. Spec that first applied it:
+`docs/superpowers/specs/2026-09-05-asked-not-started-design.md`.
+
 ## Testing against a real model
 
 `.env` has OpenRouter configured — `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, and model pins.
