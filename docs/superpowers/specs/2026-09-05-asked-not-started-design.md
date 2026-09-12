@@ -61,7 +61,12 @@ wear the same "The Schedular" persona (`planner_agent` and `timeboxing_agent`,
 
 ## Section 1 — the rule, in the contract
 
-Two sentences added to `docs/architecture/proposal_object_contract.md` §7:
+Landed as the last two bullets of item 7 under `docs/architecture/proposal_object_contract.md`'s
+`## Contract` section (`proposal_object_contract.md:60-71`) — there is no separate "§7" heading;
+7 is that section's seventh numbered entry, "A reply on a proposal thread has three outcomes,
+never two." Both bullets have since grown past the two sentences drafted below: the first now
+names the shipped F1 case (#310, #320) and what still waits on #302 (`:60-68`); the second links
+back to this spec (`:69-71`). What was two sentences when this was written:
 
 > A thread whose root a surface posted belongs to that surface. User focus — the DM-wide
 > memory of who last answered — never outranks that ownership; a new surface registers its

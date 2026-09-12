@@ -141,6 +141,15 @@ every site where it was:
 - **The timeboxing stage cards** (`core/runtime._build_timeboxing_intent_interpreter`) inherited
   `timeboxing_agent` — the pro pin at `high`, uncapped, under this repo's `.env`, which is the
   seam #325 is about. They now run pro/`low` capped at 1024: effort down, and a bound added.
+  `tests/integration/test_eval_timebox_question.py` measures this same row now — it used to build
+  its own client on `timeboxing_agent`, the pin production had already moved this interpreter off
+  of when #336 landed, so it was reporting a model nothing runs on. Re-baselined 2026-09-12 on the
+  row's default (pro/`low`/1024): all 16 positive cases 8/8. On flash at `minimal` the loss is the
+  revision case — 0/8 to `ReviseArtifact`, every draw answering `ProvidePlanningFacts` instead —
+  which is #406's starting point for this eval; the fact cases still hold there (8/8, 8/8, 7/8).
+  Its break-it convention is `planning_card`'s: assert the *flip* (the wrong decision
+  outnumbering the right one), never the absence of the right one, since an absence-based bar is
+  cleared by two lost calls with the discriminating clause doing nothing at all.
 - **The planning card** (`slack_bot/planning.PlanningCoordinator._ensure_intent_interpreter`)
   inherited `planner_agent` — the pro pin under `.env` at reasoning `low` (no planner branch
   exists in `_reasoning_effort_for_agent` and the table's floor is `low`), uncapped. It now runs
