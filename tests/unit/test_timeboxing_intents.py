@@ -933,7 +933,11 @@ async def test_a_committed_session_does_not_offer_to_cancel_or_approve() -> None
         )
 
     offered = get_args(client.calls[0][1].model_fields["decision"].annotation)
-    assert offered == ("provide_facts", "revise")
+    # `question` rides along in every open state, committed included: the
+    # calendar is written but the thread is still live (#316). It is neither
+    # of the two this test is named for, which stay absent.
+    assert offered == ("provide_facts", "revise", "question")
+    assert "cancel" not in offered and "approve" not in offered
 
 
 @pytest.mark.asyncio
