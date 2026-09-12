@@ -86,7 +86,8 @@ from fateforger.slack_bot.planning import (
     FF_EVENT_START_TIME_ACTION_ID,
     PlanningCoordinator,
     ThreadReplyOutcome,
-    parse_draft_id_from_value,
+    extract_draft_id_from_action_body,
+    extract_selected_time_from_state,
 )
 from fateforger.slack_bot.surface_intents import SurfaceIntentError
 from fateforger.slack_bot.progress import HarnessProgressCard
@@ -4161,21 +4162,34 @@ def register_handlers(
     async def on_event_add_disabled_action(ack, body, logger):
         await ack()
 
+    # Every planning card is posted twice with identical blocks: to the DM and,
+    # as a copy, to #admonishments. Only the DM's coordinates are on the draft
+    # row, so a control that resolves its draft by (channel_id, message_ts)
+    # finds nothing on the log copy and returns silently — a pick there was
+    # discarded and Add booked the untouched proposal (live, 2026-09-11). The
+    # draft_id the card carries on its own buttons is the identity that holds
+    # for both copies; coordinates stay as the fallback.
+
     @app.action(FF_EVENT_START_AT_ACTION_ID)
     async def on_event_start_at_action(ack, body, respond, logger):
         await ack()
         action = (body.get("actions") or [{}])[0]
         channel_id = (body.get("channel") or {}).get("id") or ""
         message_ts = (body.get("message") or {}).get("ts") or ""
+        draft_id = extract_draft_id_from_action_body(body)
         selected = action.get("selected_date_time")
-        if channel_id and message_ts and selected is not None:
+        if selected is not None and (draft_id or (channel_id and message_ts)):
             await planning.handle_start_at_changed(
+                draft_id=draft_id,
                 channel_id=channel_id,
                 message_ts=message_ts,
                 selected_date_time=int(selected),
             )
             await planning.refresh_card_for_message(
-                channel_id=channel_id, message_ts=message_ts, respond=respond
+                draft_id=draft_id,
+                channel_id=channel_id,
+                message_ts=message_ts,
+                respond=respond,
             )
 
     @app.action(FF_EVENT_START_DATE_ACTION_ID)
@@ -4184,15 +4198,20 @@ def register_handlers(
         action = (body.get("actions") or [{}])[0]
         channel_id = (body.get("channel") or {}).get("id") or ""
         message_ts = (body.get("message") or {}).get("ts") or ""
+        draft_id = extract_draft_id_from_action_body(body)
         selected = action.get("selected_date")
-        if channel_id and message_ts and selected:
+        if selected and (draft_id or (channel_id and message_ts)):
             await planning.handle_start_date_changed(
+                draft_id=draft_id,
                 channel_id=channel_id,
                 message_ts=message_ts,
                 selected_date=str(selected),
             )
             await planning.refresh_card_for_message(
-                channel_id=channel_id, message_ts=message_ts, respond=respond
+                draft_id=draft_id,
+                channel_id=channel_id,
+                message_ts=message_ts,
+                respond=respond,
             )
 
     @app.action(FF_EVENT_START_TIME_ACTION_ID)
@@ -4201,15 +4220,20 @@ def register_handlers(
         action = (body.get("actions") or [{}])[0]
         channel_id = (body.get("channel") or {}).get("id") or ""
         message_ts = (body.get("message") or {}).get("ts") or ""
+        draft_id = extract_draft_id_from_action_body(body)
         selected = action.get("selected_time")
-        if channel_id and message_ts and selected:
+        if selected and (draft_id or (channel_id and message_ts)):
             await planning.handle_start_time_changed(
+                draft_id=draft_id,
                 channel_id=channel_id,
                 message_ts=message_ts,
                 selected_time=str(selected),
             )
             await planning.refresh_card_for_message(
-                channel_id=channel_id, message_ts=message_ts, respond=respond
+                draft_id=draft_id,
+                channel_id=channel_id,
+                message_ts=message_ts,
+                respond=respond,
             )
 
     @app.action(FF_EVENT_DURATION_ACTION_ID)
@@ -4218,31 +4242,42 @@ def register_handlers(
         action = (body.get("actions") or [{}])[0]
         channel_id = (body.get("channel") or {}).get("id") or ""
         message_ts = (body.get("message") or {}).get("ts") or ""
+        draft_id = extract_draft_id_from_action_body(body)
         selected = (
             (action.get("selected_option") or {}) if isinstance(action, dict) else {}
         ) or {}
         value = selected.get("value")
-        if channel_id and message_ts and value:
+        if value and (draft_id or (channel_id and message_ts)):
             try:
                 duration_min = int(value)
             except ValueError:
                 return
             await planning.handle_duration_changed(
+                draft_id=draft_id,
                 channel_id=channel_id,
                 message_ts=message_ts,
                 duration_min=duration_min,
             )
             await planning.refresh_card_for_message(
-                channel_id=channel_id, message_ts=message_ts, respond=respond
+                draft_id=draft_id,
+                channel_id=channel_id,
+                message_ts=message_ts,
+                respond=respond,
             )
 
     @app.action(FF_EVENT_ADD_ACTION_ID)
     async def on_event_add_action(ack, body, respond, logger):
         await ack()
         action = (body.get("actions") or [{}])[0]
-        draft_id = parse_draft_id_from_value(action.get("value") or "")
+        draft_id = extract_draft_id_from_action_body(body)
         if draft_id:
-            await planning.start_add_to_calendar(draft_id=draft_id, respond=respond)
+            # The press carries the card's current time: a pick made a second
+            # earlier may not have reached the store yet.
+            await planning.start_add_to_calendar(
+                draft_id=draft_id,
+                respond=respond,
+                selected_time=extract_selected_time_from_state(body.get("state")),
+            )
             return
         logger.warning(
             "on_event_add_action missing draft_id: channel=%s message_ts=%s action_value=%r",
@@ -4255,9 +4290,13 @@ def register_handlers(
     async def on_event_retry_action(ack, body, respond, logger):
         await ack()
         action = (body.get("actions") or [{}])[0]
-        draft_id = parse_draft_id_from_value(action.get("value") or "")
+        draft_id = extract_draft_id_from_action_body(body)
         if draft_id:
-            await planning.start_add_to_calendar(draft_id=draft_id, respond=respond)
+            await planning.start_add_to_calendar(
+                draft_id=draft_id,
+                respond=respond,
+                selected_time=extract_selected_time_from_state(body.get("state")),
+            )
             return
         logger.warning(
             "on_event_retry_action missing draft_id: channel=%s message_ts=%s action_value=%r",
@@ -4272,7 +4311,7 @@ def register_handlers(
         await ack()
         trigger_id = body.get("trigger_id") or ""
         action = (body.get("actions") or [{}])[0]
-        draft_id = parse_draft_id_from_value(action.get("value") or "")
+        draft_id = extract_draft_id_from_action_body(body)
         if not (draft_id and trigger_id):
             logger.warning(
                 "on_event_edit_action: missing draft_id or trigger_id (draft_id=%r trigger_id=%r)",
