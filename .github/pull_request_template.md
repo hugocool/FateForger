@@ -9,21 +9,11 @@
 - [ ] Criterion 2:
 - [ ] Criterion 3:
 
-## Notebook -> artifact mapping (required for notebook-driven work)
-
-- Primary notebook path:
-- Notebook lifecycle status (`WIP` / `Extraction complete` / `DONE` / `Reference` / `Archived`):
-- Extracted implementation files (`src/...`):
-- Extracted test files (`tests/...`):
-- Extracted docs (`README.md` / `docs/...`):
-- Intentionally retained notebook-only content (and why):
-
 ## Verification performed
 
 - [ ] Start-of-work cleanliness check recorded (`git status --porcelain`)
 - [ ] Pre-PR-close cleanliness check recorded (`git status --porcelain`)
 - [ ] Relevant automated tests passed
-- [ ] Notebook checkpoint passed (clean-kernel rerun or CI notebook check)
 
 Commands run:
 

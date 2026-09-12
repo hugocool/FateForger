@@ -1,6 +1,10 @@
-# Slack bot — transport over typed domain objects
+---
+paths:
+  - "src/fateforger/slack_bot/*.py"
+  - "src/fateforger/slack_bot/**/*.py"
+---
 
-**Scope:** `src/fateforger/slack_bot/`. Same text as `.claude/rules/slack_bot.md` — change both or neither.
+# Slack bot — transport over typed domain objects
 
 File index, interaction model and action registry: `src/fateforger/slack_bot/README.md`.
 
