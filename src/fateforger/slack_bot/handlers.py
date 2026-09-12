@@ -3274,27 +3274,44 @@ async def route_slack_event(
                 except Exception:
                     pass
 
-            if channel != target_channel and payload.get("blocks"):
-                try:
-                    permalink = await _permalink(target_channel, root_ts)
-                except Exception:
-                    permalink = None
+            # The echo fires whenever the turn produced something to show, not
+            # only a card. `_answer_question` is the one result that carries
+            # no blocks -- its answer is plain text on purpose, because a
+            # section block clips at 1600 characters while `text` keeps 3900 --
+            # so gating on blocks alone answered the question in the session
+            # thread and left the DM that asked it on a spinner forever.
+            if channel != target_channel and (
+                payload.get("blocks") or payload.get("text")
+            ):
                 try:
                     dm_channel = channel if is_dm else ""
                     if not dm_channel:
                         dm = await client.conversations_open(users=[user])
                         dm_channel = (dm.get("channel") or {}).get("id") or ""
                     if dm_channel:
-                        dm_blocks = list(payload["blocks"])
-                        if permalink:
-                            dm_blocks.extend(
-                                open_link_blocks(
-                                    text="Progress is tracked in the session thread:",
-                                    url=permalink,
-                                    button_text="Go to Session Thread",
-                                    action_id="ff_open_thread",
+                        dm_blocks = None
+                        if payload.get("blocks"):
+                            # Only a card gets the link block. With any block
+                            # present Slack hides `text`, so wrapping an
+                            # answer to carry the link would deliver it cut at
+                            # 1600 -- and a thread permalink is not what
+                            # someone who asked a question came for.
+                            try:
+                                permalink = await _permalink(
+                                    target_channel, root_ts
                                 )
-                            )
+                            except Exception:
+                                permalink = None
+                            dm_blocks = list(payload["blocks"])
+                            if permalink:
+                                dm_blocks.extend(
+                                    open_link_blocks(
+                                        text="Progress is tracked in the session thread:",
+                                        url=permalink,
+                                        button_text="Go to Session Thread",
+                                        action_id="ff_open_thread",
+                                    )
+                                )
                         if is_dm:
                             # DM origin: the DM's own "thinking..." message
                             # becomes the card, so the DM stays the control
@@ -3303,16 +3320,17 @@ async def route_slack_event(
                                 text=update["text"], blocks=dm_blocks
                             )
                         else:
-                            dm_payload = {
+                            dm_payload: dict[str, object] = {
                                 "channel": dm_channel,
                                 "text": update["text"],
-                                "blocks": dm_blocks,
                             }
+                            if dm_blocks:
+                                dm_payload["blocks"] = dm_blocks
                             dm_payload.update(_persona_payload(persona))
                             await client.chat_postMessage(**dm_payload)
                 except Exception:
                     logger.debug(
-                        "Failed to DM timeboxing commit prompt", exc_info=True
+                        "Failed to echo the timeboxing turn to the DM", exc_info=True
                     )
 
             await _maybe_update_timeboxing_thread_header(
