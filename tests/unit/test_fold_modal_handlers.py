@@ -71,16 +71,23 @@ def _press_body(value: str, *, in_view: bool = False) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_show_rules_opens_the_fold_from_the_snapshot() -> None:
+async def test_show_rules_opens_the_fold_from_the_snapshot(caplog) -> None:
     client = _Client()
     value = artifact_action_value(session_key="C1:1.0", expected_revision=5, decision="advance", artifact=None)
     body = {"trigger_id": "T1", "user": {"id": "U1"}, "channel": {"id": "C1"}, "message": {"ts": "1.0"},
             "actions": [{"action_id": "ff_timebox_show_rules", "value": value}]}
-    await handlers._handle_show_rules(_runtime(_snapshot()), client, logging.getLogger(__name__), body=body)
+    with caplog.at_level(logging.INFO):
+        await handlers._handle_show_rules(_runtime(_snapshot()), client, logging.getLogger(__name__), body=body)
     (opened,) = client.opened
     assert opened["trigger_id"] == "T1"
     assert opened["view"]["type"] == "modal"
     assert any(b.get("accessory", {}).get("type") == "overflow" for b in opened["view"]["blocks"])
+    # Every open is a scan, and #391 counts scans from the log: the line must
+    # exist at info and name the session, or the metric is silently zero.
+    assert any(
+        r.levelno == logging.INFO and "rules panel opened" in r.getMessage() and "C1:1.0" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 @pytest.mark.asyncio

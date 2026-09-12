@@ -490,7 +490,10 @@ def _session_with_an_approved_skeleton(session_key: str) -> PlanningSessionSnaps
     skeleton = PlanningArtifact.create(
         kind=ArtifactKind.SKELETON,
         revision=1,
-        payload={"markdown": "## Saturday"},
+        payload={
+            "day_label": "Saturday",
+            "groups": [{"name": "Day", "items": [{"text": "memo", "source": "user"}]}],
+        },
         dependency_revisions={"planning_day": 1},
     )
     return PlanningSessionSnapshot(

@@ -452,6 +452,55 @@ def test_summary_and_dod_are_truncated_in_rows_but_full_in_page() -> None:
     assert full.row.summary == row.summary
 
 
+class CountingPage(dict):
+    """A page that records how often anything asks it for its properties."""
+
+    def __init__(self, page: dict[str, Any]) -> None:
+        super().__init__(page)
+        self.property_reads = 0
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key == "properties":
+            self.property_reads += 1
+        return super().get(key, default)
+
+
+def test_the_full_page_is_validated_once() -> None:
+    """`page_from_page` used to check the page, then check it again.
+
+    It built the row -- which validates -- and then validated the same page a
+    second time for the two untruncated fields. Harmless while both checks
+    agree, and it is the shape that stops agreeing the moment validation grows
+    a cost or a side effect, so the page is parsed once and the properties are
+    handed on.
+
+    Counting reads of the input rather than calls on a mock: what is asserted
+    is the work `page_from_page` does to the page it was given.
+    """
+    page = CountingPage(task_page())
+
+    result = page_from_page(page)
+
+    assert result.row.page_id == TASK_PAGE_ID
+    assert page.property_reads == 1
+
+
+def test_a_sprint_scope_with_no_sprint_raises_a_board_error() -> None:
+    """The guard here was an `assert`, which `python -O` deletes.
+
+    Unreachable today -- `_sprint_for` resolves a sprint or raises -- but an
+    unreachable guard that vanishes under an optimisation flag is not a guard;
+    what follows it would build a filter around `None.page_id`. A board error
+    names the cause on every interpreter.
+    """
+    subject = board(FakeCallTool(listing()))
+
+    with pytest.raises(TaskBoardError) as excinfo:
+        subject._filter_for("current_sprint", None)
+
+    assert "current_sprint" in str(excinfo.value)
+
+
 @pytest.mark.parametrize(
     "page",
     [
@@ -511,10 +560,16 @@ def test_placeholder_token_in_env_raises_unavailable(
 ) -> None:
     """`.env.template` ships the placeholder, so it arrives by environment too.
 
-    Settings are untouched here: the environment wins, and forwarding
-    "change_me..." to Notion buys a 401 that reads like an outage rather than
-    like a host nobody configured.
+    Forwarding "change_me..." to Notion buys a 401 that reads like an outage
+    rather than like a host nobody configured, so the check has to happen after
+    the token is resolved rather than on the settings default alone.
+
+    Settings carry a token that WOULD have worked, which is the half this test
+    was missing: with both sides at the placeholder it passed whichever value
+    `_auth_headers` consulted, and the precedence -- environment first, settings
+    as the fallback -- is the thing it exists to pin.
     """
+    monkeypatch.setattr(settings, "mcp_http_auth_token", "a-real-looking-secret")
     monkeypatch.setenv("MCP_HTTP_AUTH_TOKEN", PLACEHOLDER_TOKEN)
 
     with pytest.raises(TaskBoardUnavailable) as excinfo:

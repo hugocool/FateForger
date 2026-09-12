@@ -61,7 +61,13 @@ def test_a_candidate_with_a_captured_patch_is_accepted(turn) -> None:
 def test_a_skeleton_needs_no_patch(turn) -> None:
     """Only a candidate is committed, so only a candidate needs one."""
 
-    _submit(target_artifact="skeleton", artifact={"markdown": "# Day"})
+    _submit(
+        target_artifact="skeleton",
+        artifact={
+            "day_label": "Day",
+            "groups": [{"name": "Day", "items": [{"text": "memo", "source": "user"}]}],
+        },
+    )
 
 
 def test_a_blocker_needs_no_patch(turn) -> None:

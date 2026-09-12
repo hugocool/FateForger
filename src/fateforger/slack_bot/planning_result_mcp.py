@@ -19,7 +19,7 @@ from typing import Any, Literal
 from collections.abc import Iterable, Mapping
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 from pydantic import ValidationError
 
@@ -30,6 +30,8 @@ from fateforger.agents.timeboxing.session_contracts import (
     BlockerOption,
     PlannerAssumptionDraft,
     PlanningResult,
+    SkeletonGroup,
+    SkeletonItem,
     SkeletonPayload,
     UserBlockerDraft,
 )
@@ -86,9 +88,16 @@ class AssumptionInput(BaseModel):
     recover the field names, at 110-119s per candidate turn. A tool argument
     whose shape the caller cannot see is one it will get wrong.
 
-    Loose on purpose: the strict contract still validates in `_validated`. This
-    exists to be *described*, not to be the gate.
+    Loose on purpose: the strict contract still validates in `_validated`,
+    so the *types* here don't have to be the gate -- `value` stays `Any`
+    rather than a union of everything a placement could be. Looseness stops
+    at the field names, though: `extra="forbid"` closes the gap that let
+    `BlockerInput.blocking` be sent and silently dropped before this class
+    existed to declare it (#259). An internal contract between one planner
+    and one tool gains nothing from tolerating a name it does not know.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     requirement_id: str = PydanticField(
         description="The exact requirement id from the brief's readiness gaps."
@@ -104,14 +113,39 @@ class AssumptionInput(BaseModel):
 class BlockerInput(BaseModel):
     """One decision that is genuinely the user's to make."""
 
+    model_config = ConfigDict(extra="forbid")
+
     requirement_id: str = PydanticField(
         description="The exact requirement id from the brief's readiness gaps."
     )
     why_needed: str = PydanticField(description="One line: why the user must decide.")
+    #: Mirrors `UserBlockerDraft.blocking`. Declared here, not just there: a
+    #: field only on the internal contract is a field the wire never
+    #: carries. It once was: this class had no `blocking` field while the
+    #: kernel already had one, and because FastMCP's generated arg model
+    #: (built from these annotations) did not forbid extras, a `blocking:
+    #: true` the planner actually sent was silently dropped before
+    #: `submit_planning_result`'s body -- and therefore before `_validated`
+    #: -- ever ran. `model_config` above closes that class of hazard for
+    #: every field on this model, not just this one: an unknown field is now
+    #: refused at the wire, loudly, instead of disappearing. Do not loosen it
+    #: back to tolerate an unrecognised key "for compatibility" -- this is an
+    #: internal contract between one planner and one tool, not a versioned
+    #: external API, so there is no forward-compatibility case for it.
+    blocking: bool = PydanticField(
+        default=False,
+        description=(
+            "True only when proceeding would produce a plan you believe is "
+            "wrong. Leave it false to have the question ride with the "
+            "submitted artifact instead of replacing it."
+        ),
+    )
 
 
 class BlockerOptionInput(BaseModel):
     """One concrete alternative offered against a blocker."""
+
+    model_config = ConfigDict(extra="forbid")
 
     label: str = PydanticField(description="What the user reads on the button.")
     effect: str = PydanticField(description="One line: what choosing it does.")
@@ -156,10 +190,14 @@ def submit_planning_result(
     approved by them, and then found to be uncommittable, so this call is
     refused rather than allowed to reach them.
 
-    ``blockers`` is only for a decision that is genuinely the user's, and it
-    replaces the artifact rather than accompanying it: an artifact asks to be
-    approved and a blocker asks a question, and one turn shows the user one of
-    those. Submitting neither ends the turn with nothing to review.
+    ``blockers`` is only for a decision that is genuinely the user's, and at
+    most one per turn. The default, ``blocking: false``, rides *with* the
+    artifact you submit: the artifact is still shown for approval, the
+    question appears beside it, and the user may proceed with it unanswered.
+    Set ``blocking: true`` only when proceeding would produce a plan you
+    believe is wrong -- that one replaces the artifact instead, so submit it
+    alone, with no ``artifact``. Submitting neither an artifact nor a blocker
+    ends the turn with nothing to review.
 
     ``continuation`` is for when you cannot finish this turn but have not
     failed: ``{"reason": "..."}``, saying what is left and what you already
@@ -373,6 +411,49 @@ def _destination() -> Path:
     return Path(configured)
 
 
+def _refuse_riding_question_mismatch(
+    *, artifact: dict[str, Any] | None, blockers: list[dict[str, Any]]
+) -> None:
+    """An artifact plus blockers is refused, except exactly one riding question.
+
+    Two different failures hide behind the same combination, so they are
+    named separately rather than folded into one message.
+
+    A second blocker beside an artifact is `[too_many_questions]`, deliberately
+    duplicated from the kernel here, the same way `required_block_missing`
+    above duplicates its own kernel check: the kernel's refusal fires only
+    once `_apply_planning_result` reaches the blocker branch, and by then this
+    call has already returned `_RECORDED` -- the planner has already ended
+    its turn believing it succeeded.
+
+    A single *blocking* blocker beside an artifact gets its own name because
+    nothing downstream catches it at all. `_apply_planning_result` checks
+    `pending_question[1].blocking` before it ever looks at
+    `result.artifact_updates`, so submitting both would not fail the turn --
+    it would silently discard the artifact and ask the question instead,
+    which is the exact silent-drop shape #259 exists to rule out. Only a
+    single non-blocking blocker (`blocking: false`, the default) may ride
+    with an artifact; that is the one case below that raises nothing.
+    """
+    if artifact is None or not blockers:
+        return
+    if len(blockers) > 1:
+        raise PlanningResultRefused(
+            "[too_many_questions] at most one blocker may ride with an "
+            "artifact. A second blocker in the same turn is refused "
+            "regardless of what `blocking` is set to on either one -- hold "
+            "the second question for the next draft."
+        )
+    if blockers[0].get("blocking", False):
+        raise PlanningResultRefused(
+            "[blocking_blocker_with_artifact] this blocker sets `blocking` "
+            "true, so it replaces the artifact rather than riding with it, "
+            "and submitting both would have the artifact silently discarded "
+            "downstream instead of shown. Submit the artifact alone, or this "
+            "blocker alone with `blocking` true -- not both."
+        )
+
+
 def _validated(
     *,
     target_artifact: str,
@@ -387,11 +468,7 @@ def _validated(
             "options belong to one question, and this submission does not have "
             "exactly one. Submit the blocker they answer, with its options."
         )
-    if artifact is not None and blockers:
-        raise PlanningResultRefused(
-            "an artifact and a blocker cannot both be this turn's result. "
-            "Submit the artifact, or the blocker that stopped you making it."
-        )
+    _refuse_riding_question_mismatch(artifact=artifact, blockers=blockers)
     if artifact is None and not blockers and continuation is None:
         raise PlanningResultRefused(
             "this submission carries neither an artifact, a blocker, nor a "
@@ -400,16 +477,21 @@ def _validated(
         )
     if artifact is not None and target_artifact == ArtifactKind.SKELETON.value:
         # The one payload whose shape the card depends on. A skeleton that
-        # arrives without `markdown` is stored, approved, and drawn as an empty
-        # day (#267); refusing it here costs the planner one retry in the same
-        # turn, with the field names in hand.
+        # arrives without `day_label` and `groups` is stored, approved, and
+        # drawn as an empty day (#267); refusing it here costs the planner one
+        # retry in the same turn, with the field names in hand. (`markdown`
+        # was the shape this replaced -- flat prose cannot carry provenance
+        # the host can verify, #344.)
         try:
             SkeletonPayload.model_validate(artifact)
         except ValidationError as exc:
             raise PlanningResultRefused(
-                "a skeleton payload is {\"markdown\": <the day as loose "
-                "markdown>, \"reasoning\": <why it is shaped that way>} and "
-                f"nothing else; this one does not match ({_shape_codes(exc)})."
+                "a skeleton payload is {\"day_label\": <e.g. \"Sunday 6 "
+                "September\">, \"groups\": [{\"name\": ..., \"items\": "
+                "[{\"text\": ..., \"source\": \"user\"|\"rule\"|\"assumed\""
+                "|\"calendar\", \"rule_uid\": <only when source is rule>}]}], "
+                "\"reasoning\": <why it is shaped that way>} and nothing "
+                f"else; this one does not match ({_shape_codes(exc)})."
             ) from exc
 
     updates = (
@@ -503,6 +585,8 @@ def _known_field_names() -> frozenset[str]:
         ArtifactDraft,
         PlannerAssumptionDraft,
         SkeletonPayload,
+        SkeletonGroup,
+        SkeletonItem,
         UserBlockerDraft,
         BlockerOption,
     )

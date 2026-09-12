@@ -82,7 +82,12 @@ def test_an_empty_requirement_list_refuses_nothing(turn) -> None:
 def test_a_skeleton_is_never_checked_for_required_kinds(turn) -> None:
     _require(turn, ["planning"])
     submit_planning_result(
-        target_artifact="skeleton", artifact={"markdown": "# Day", "reasoning": "r"},
+        target_artifact="skeleton",
+        artifact={
+            "day_label": "Day",
+            "groups": [{"name": "Day", "items": [{"text": "memo", "source": "user"}]}],
+            "reasoning": "r",
+        },
         assumptions=[], blockers=[],
     )
 

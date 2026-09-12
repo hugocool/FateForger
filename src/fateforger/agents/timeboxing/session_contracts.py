@@ -573,6 +573,22 @@ class ProbeDraft(_StrictModel):
     options: list[BlockerOption] = Field(default_factory=list, max_length=4)
 
 
+class Asking(_StrictModel):
+    """One open question, independent of whether it stops the turn.
+
+    `AwaitingUser` carries the same four fields plus `gate` because it *is*
+    the turn's outcome. `AwaitingApproval.question` needed a value shape for
+    a question that rides beside an artifact instead of replacing it, so this
+    is that shape kept separate rather than folded into `AwaitingUser` --
+    there is no gate to carry once the artifact is already on screen.
+    """
+
+    requirement_id: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    why_needed: str = Field(min_length=1)
+    options: list[BlockerOption] = Field(default_factory=list, max_length=4)
+
+
 class AwaitingUser(_StrictModel):
     kind: Literal["awaiting_user"] = "awaiting_user"
     requirement_id: str = Field(min_length=1)
@@ -605,6 +621,9 @@ class ArtifactReady(_StrictModel):
 class AwaitingApproval(_StrictModel):
     kind: Literal["awaiting_approval"] = "awaiting_approval"
     artifact: PlanningArtifact
+    #: The planner's one open question, when it did not block. Presented
+    #: below the artifact rather than instead of it.
+    question: Asking | None = None
 
 
 class Committed(_StrictModel):
@@ -647,6 +666,14 @@ class NeedsAnotherTurn(_StrictModel):
 
     kind: Literal["needs_another_turn"] = "needs_another_turn"
     reason: str = Field(min_length=1)
+    #: A non-blocking question the same turn also raised, when the artifact
+    #: it would ride with is not being offered for approval yet. Nothing
+    #: renders this today -- the "still working on that one" message carries
+    #: no card -- but it must still be on the outcome: `blocking=False` never
+    #: had a guarantee the planner would raise the same question again next
+    #: turn, and a field nothing reads is a smaller failure than a value that
+    #: silently never reached the type at all (#259).
+    question: Asking | None = None
 
 
 class TurnFailed(_StrictModel):
@@ -720,16 +747,49 @@ class ArtifactDraft(_StrictModel):
     dependency_revisions: dict[str, int] = Field(default_factory=dict)
 
 
+class SkeletonItem(_StrictModel):
+    """One line of the day, and where it came from.
+
+    `source` is what the card marks. Nothing is marked when it came from the
+    user, so the only markers a person sees are things they did not say --
+    which is exactly the set worth arguing with (#267).
+    """
+
+    text: str = Field(min_length=1)
+    source: Literal["user", "rule", "assumed", "calendar"]
+    #: The constraint that placed this, iff `source` is "rule". Verified
+    #: against the day's applicable constraints by the kernel before it is
+    #: stored: a uid the model invented would name a rule that does not
+    #: exist, and #330 is a judge mistyping one by a single character.
+    rule_uid: str | None = None
+
+    @model_validator(mode="after")
+    def rule_uid_iff_rule(self) -> "SkeletonItem":
+        if self.source == "rule" and self.rule_uid is None:
+            raise ValueError('source "rule" requires rule_uid')
+        if self.source != "rule" and self.rule_uid is not None:
+            raise ValueError(f'source "{self.source}" must not carry rule_uid')
+        return self
+
+
+class SkeletonGroup(_StrictModel):
+    """A named stretch of the day -- Morning, Hockey, Evening."""
+
+    name: str = Field(min_length=1)
+    items: list[SkeletonItem] = Field(min_length=1)
+
+
 class SkeletonPayload(_StrictModel):
     """What a `skeleton` artifact's payload has to carry to be drawn.
 
-    Loose markdown -- `# anchor` headings and `-` bullets -- plus the reasoning
-    that put things where they are. `blocks`, `events` and any other shape a
-    planner invents are refused here by name rather than rendered as an empty
-    card (#267). Strictness is inherited: no coercion, no extra keys.
+    Typed groups, not markdown. Flat markdown cannot carry provenance the
+    system can verify, and an unverified rule name on the card is the
+    model-supplied-identifier failure this project has already had once.
+    Reverses the shape chosen in #267; see the spec's decisions table.
     """
 
-    markdown: str = Field(min_length=1)
+    day_label: str = Field(min_length=1)
+    groups: list[SkeletonGroup] = Field(min_length=1)
     reasoning: str = ""
 
 
@@ -752,6 +812,13 @@ class UserBlockerDraft(_StrictModel):
     #: guesses at an open question would hide the fifth answer the user had,
     #: which is exactly the failure buttons are supposed to prevent.
     options: list[BlockerOption] = Field(default_factory=list, max_length=4)
+    #: True only when proceeding would produce a plan the planner believes is
+    #: wrong. The ordinary case is False: the question rides with the artifact
+    #: and Proceed stays live, because the user ends the stage. A question
+    #: that always blocks lets the planner stall a session over something the
+    #: user does not care about; one that never blocks is half a channel, and
+    #: #259 is what a question with no channel costs.
+    blocking: bool = False
 
     @model_validator(mode="after")
     def option_ids_are_unique(self) -> UserBlockerDraft:
@@ -780,6 +847,7 @@ __all__ = [
     "ArtifactKind",
     "ArtifactReady",
     "ArtifactSnapshot",
+    "Asking",
     "AwaitingApproval",
     "AwaitingUser",
     "BlockerOption",
@@ -804,6 +872,8 @@ __all__ = [
     "PlanningSessionSnapshot",
     "ProvidePlanningFacts",
     "ReviseArtifact",
+    "SkeletonGroup",
+    "SkeletonItem",
     "SkeletonPayload",
     "StartSession",
     "TimeboxIntent",

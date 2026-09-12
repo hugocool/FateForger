@@ -89,12 +89,20 @@ def _planning_day_artifact() -> PlanningArtifact:
     )
 
 
+def _skeleton_payload() -> dict:
+    return {
+        "day_label": "Morning",
+        "groups": [{"name": "Tasks", "items": [{"text": "memo", "source": "user"}]}],
+        "reasoning": "memo first",
+    }
+
+
 def _skeleton(payload: dict | None = None) -> PlanningArtifact:
     return PlanningArtifact.create(
         artifact_id="skeleton-1",
         kind=ArtifactKind.SKELETON,
         revision=1,
-        payload=payload or {"markdown": "# Morning\n- memo", "reasoning": "memo first"},
+        payload=payload or _skeleton_payload(),
         dependency_revisions={"planning_day": 1},
     )
 
@@ -225,11 +233,25 @@ def test_the_skeleton_is_stage_three_with_approve_back_cancel() -> None:
     approve = card.controls[0]
     assert approve.artifact_id == "skeleton-1"
     assert approve.artifact_digest == _skeleton().digest
-    assert card.body == "# Morning\n- memo"
-    assert [item.ref for item in card.decided if item.kind == "assumption"] == ["a-1"]
+    assert card.artifact_day == "Morning"
+    assert card.artifact_groups[0].name == "Tasks"
+    assert card.artifact_groups[0].lines == ["• memo"]
+    # Decided's assumption suppression on this card is covered by
+    # test_the_skeleton_suppresses_assumptions_from_decided below.
 
 
-def test_a_skeleton_without_markdown_fails_loudly() -> None:
+def test_the_skeleton_suppresses_assumptions_from_decided() -> None:
+    """The only card with an inline marker suppresses the duplicate; this is
+    scoped to the skeleton alone -- see the other decided-assumption tests
+    for every other stage, where no such marker exists and the assumption
+    must still surface, with its DenyControl, to stay retractable."""
+    card = _map(AwaitingApproval(artifact=_skeleton()), _snapshot())
+    assert card is not None
+    assert all(item.kind == "fact" for item in card.decided)
+    assert "a-1" not in {item.ref for item in card.decided}
+
+
+def test_a_skeleton_without_groups_fails_loudly() -> None:
     with pytest.raises(ValidationError):
         _map(AwaitingApproval(artifact=_skeleton({"blocks": []})), _snapshot())
 
@@ -246,6 +268,23 @@ def test_the_candidate_is_stage_four_and_arms_the_commit_gate() -> None:
     assert pending.peek("C1:1.0") is not None
     assert pending.peek("C1:1.0").candidate_id == commit.candidate_id
     assert "09:00 memo" in card.body
+
+
+def test_the_candidate_card_still_carries_a_deny_control_for_a_planner_assumption() -> None:
+    """Stage 4 is the last human gate before the calendar is written, and the
+    rendered schedule (`candidate_display_text`/`render_schedule`) carries no
+    provenance field at all -- so a planner assumption behind this candidate
+    has to surface in Decided, with its DenyControl, or it cannot be
+    retracted at all. Unlike the skeleton, there is no inline marker here to
+    compensate (regression caught in #267's review)."""
+    from fateforger.slack_bot.stage_cards import DenyControl
+
+    card = _map(AwaitingApproval(artifact=_candidate()), _snapshot(), PendingTimeboxCandidates())
+    assert card is not None
+    assert card.stage.index == 4
+    [item] = [d for d in card.decided if d.ref == "a-1"]
+    assert item.kind == "assumption"
+    assert item.controls == [DenyControl(assumption_id="a-1")]
 
 
 def test_a_commit_is_stage_five_with_undo_only() -> None:
@@ -456,7 +495,9 @@ def test_an_elicited_statement_is_a_decided_fact() -> None:
 def test_a_user_filed_assumption_is_marked_on_the_decided_item() -> None:
     """The #266 session's deny control renders differently for a user-filed
     assumption, so the renderer needs the field -- never the label text --
-    to tell the two apart."""
+    to tell the two apart. A non-skeleton outcome: the skeleton is the one
+    card that marks an assumption inline instead of listing it in Decided
+    (#267) -- see test_the_skeleton_suppresses_assumptions_from_decided."""
     snapshot = _snapshot(
         assumptions=[
             PlannerAssumption(
@@ -469,7 +510,10 @@ def test_a_user_filed_assumption_is_marked_on_the_decided_item() -> None:
             )
         ]
     )
-    card = _map(AwaitingApproval(artifact=_skeleton()), snapshot)
+    card = _map(
+        AwaitingUser(requirement_id="skeleton.requested_activity", question="q", why_needed="w"),
+        snapshot,
+    )
     assert card is not None
     [item] = [d for d in card.decided if d.ref == "a-2"]
     assert item.filed_by == "user"

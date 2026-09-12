@@ -1,5 +1,12 @@
 version: "3.9"
 
+# Pin the project name. Compose otherwise derives it from the directory the
+# file happens to sit in, so the same service run from two places gets two
+# sets of volumes. That is exactly how the calendar server ended up with an
+# empty `tokens.json` while the real credentials sat in a volume nothing
+# mounted (2026-09-09).
+name: admonish-1
+
 volumes:
   ticktick_data:
     driver: local

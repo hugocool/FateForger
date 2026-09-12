@@ -89,7 +89,12 @@ def _skeleton(*, revision: int = 1) -> PlanningArtifact:
         artifact_id="skeleton-1",
         kind=ArtifactKind.SKELETON,
         revision=revision,
-        payload={"markdown": "## Saturday\n- 17:00 Gym"},
+        payload={
+            "day_label": "Saturday",
+            "groups": [
+                {"name": "Evening", "items": [{"text": "17:00 Gym", "source": "user"}]}
+            ],
+        },
         dependency_revisions={"planning_day": 1},
     )
 
@@ -121,7 +126,12 @@ def _skeleton_result() -> PlanningResult:
         artifact_updates=[
             ArtifactDraft(
                 kind=ArtifactKind.SKELETON,
-                payload={"markdown": "## Saturday\n- 17:00 Gym"},
+                payload={
+                    "day_label": "Saturday",
+                    "groups": [
+                        {"name": "Evening", "items": [{"text": "17:00 Gym", "source": "user"}]}
+                    ],
+                },
                 dependency_revisions={"planning_day": 1},
             )
         ],
@@ -1587,7 +1597,12 @@ async def test_a_misfiled_assumption_does_not_cost_the_whole_turn(caplog) -> Non
             artifact_updates=[
                 ArtifactDraft(
                     kind=ArtifactKind.SKELETON,
-                    payload={"markdown": "## Saturday\n- 17:00 Gym"},
+                    payload={
+                        "day_label": "Saturday",
+                        "groups": [
+                            {"name": "Evening", "items": [{"text": "17:00 Gym", "source": "user"}]}
+                        ],
+                    },
                     dependency_revisions={"planning_day": 1},
                 )
             ],
