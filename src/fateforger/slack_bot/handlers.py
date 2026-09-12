@@ -1789,9 +1789,17 @@ async def _run_adaptive_timebox_turn(
                         type(exc).__name__,
                         len(new_feedback),
                     )
-        if current.status != "open":
+        if current.status != "open" and not isinstance(intent, AskQuestion):
             # Committed or cancelled: the session is over, so the idle timer
             # has nothing left to watch.
+            #
+            # A question is exempt for the same reason it is exempt on the way
+            # in, and for a sharper one: `mark_inactive` is keyed by *user*,
+            # not by session, and `cancel_followups` drops the whole topic's
+            # ladder. A question typed into an already-committed thread ends
+            # nothing -- it did not move this session, and tearing down the
+            # user's idle timer here would drop the one watching whatever open
+            # session they have running elsewhere.
             timeboxing_activity.mark_inactive(user_id=actor_user_id)
             if haunting_service is not None:
                 try:

@@ -194,6 +194,27 @@ async def test_a_question_leaves_no_session_row_and_no_activity(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_question_in_a_committed_thread_ends_no_session(monkeypatch):
+    """The other half of the same exemption, on the way out of the turn.
+
+    `mark_inactive` is keyed by *user*, not by session, and `cancel_followups`
+    drops the whole topic's ladder. A question typed into a thread whose
+    session is already committed reaches that branch -- `current.status` is
+    `committed`, so the turn concludes "the session is over" -- and tears down
+    the idle timer of whatever open session the same user has running
+    elsewhere. Asking what was decided yesterday must not end today's planning.
+    """
+
+    runtime, _ = _fixture(
+        monkeypatch, reply="Lunch stayed at 12:30.", existing=_committed_snapshot()
+    )
+    await _turn(runtime)
+
+    assert runtime.activity.inactive == []
+    assert runtime.haunting_service.cancelled == []
+
+
+@pytest.mark.asyncio
 async def test_a_turn_that_is_not_a_question_still_records_activity(monkeypatch):
     """The other side of the same seam: only a question is exempt."""
 
