@@ -15,10 +15,16 @@ pytest.importorskip("autogen_agentchat")
 from fateforger.slack_bot import handlers
 from fateforger.slack_bot.focus import FocusManager
 from fateforger.slack_bot.handlers import route_slack_event
+from fateforger.slack_bot.messages import SlackBlockMessage
 from fateforger.slack_bot.timeboxing_commit import (
     FF_TIMEBOX_COMMIT_START_ACTION_ID,
     build_timebox_date_card,
 )
+
+#: The link block the cross-channel echo appends so the DM can reach the
+#: session thread. Minted by this system, so asserting on it is an identity
+#: check, not a reading of prose.
+FF_OPEN_THREAD_ACTION_ID = "ff_open_thread"
 
 
 class _FakeRuntime:
@@ -115,6 +121,31 @@ def stub_turn(monkeypatch):
             planned_date="2026-09-02",
             tz_name="Europe/Amsterdam",
         )
+
+    monkeypatch.setattr(handlers, "_run_adaptive_timebox_turn", fake_turn)
+    return calls
+
+
+#: What a planner answer reads like. A fixture-minted constant: the test
+#: asserts the delivery of this exact string, never anything about its words.
+ANSWER_TEXT = "The 09:00 block is the one that moved; nothing else changed."
+
+
+@pytest.fixture
+def stub_answer_turn(monkeypatch):
+    """Replace the kernel turn with the one result that carries no blocks.
+
+    `_answer_question` returns the planner's answer as plain text with an
+    empty block list -- deliberately, since a section block clips at 1600
+    characters while `text` keeps 3900. Every other result the turn can
+    produce (cards, the failure message) synthesises blocks, so this is the
+    single shape the DM echo has to deliver without them.
+    """
+    calls: list[dict] = []
+
+    async def fake_turn(**kwargs):
+        calls.append(kwargs)
+        return SlackBlockMessage(text=ANSWER_TEXT, blocks=[])
 
     monkeypatch.setattr(handlers, "_run_adaptive_timebox_turn", fake_turn)
     return calls
@@ -304,11 +335,63 @@ async def test_a_dm_origin_handoff_still_delivers_the_card_to_the_dm(
         FF_TIMEBOX_COMMIT_START_ACTION_ID in _action_ids(w.get("blocks"))
         for w in dm_writes
     ), "the card never reached the DM origin message"
+    assert FF_OPEN_THREAD_ACTION_ID in _action_ids(dm_writes[-1].get("blocks")), (
+        "a card echoed into the DM still carries the link to the session thread"
+    )
 
     in_session_channel = [p for p in client.posted if p["channel"] == "C-timebox"]
     assert len(in_session_channel) == 2, "root and threaded card in the session channel"
 
     # No separate DM post: the DM's own ack is the delivery, not a new message.
+    assert not [p for p in client.posted if p["channel"] == "D1"][1:]
+
+
+async def test_a_dm_origin_answer_without_blocks_still_resolves_the_dm_ack(
+    focus, stub_answer_turn, monkeypatch
+):
+    """A blockless answer must leave the DM ack resolved, not spinning.
+
+    The turn runs in the session channel, so the DM's "thinking..." message is
+    only ever resolved by the echo at the end of the surface. That echo used
+    to fire on `payload["blocks"]` alone, which is exactly what an answer does
+    not have: the question was answered in the channel thread while the DM
+    that asked it sat on the spinner forever. The answer is text, so the echo
+    is text -- and no link block, because any block at all makes Slack hide
+    `text` and a section block would reintroduce the 1600-char clip the
+    answer exists outside of.
+    """
+    monkeypatch.setattr(handlers, "_channel_for_agent", lambda _agent: "C-timebox")
+    client = _CrossChannelClient()
+
+    await route_slack_event(
+        runtime=_HandoffRuntime(),
+        focus=focus,
+        default_agent="receptionist_agent",
+        event={
+            "channel": "D1",
+            "channel_type": "im",
+            "user": "U1",
+            "text": "what time does my day start?",
+            "ts": "555",
+        },
+        bot_user_id=None,
+        say=_noop_say,
+        client=client,
+    )
+
+    assert stub_answer_turn, "the kernel turn ran"
+
+    dm_origin_ts = client.posted[0]["ts"]
+    dm_writes = _writes_to(client, dm_origin_ts)
+    final = dm_writes[-1]
+    assert final["text"] == ANSWER_TEXT, (
+        "the DM ack was never resolved into the answer"
+    )
+    assert "blocks" not in final, (
+        "a text-only answer must reach Slack as text; any block hides it"
+    )
+
+    # Still no second DM message: the ack is the delivery.
     assert not [p for p in client.posted if p["channel"] == "D1"][1:]
 
 

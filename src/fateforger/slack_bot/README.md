@@ -215,8 +215,29 @@ very session a Thursday card is already proposing. A day-naming clause added on 
 whenever a surface's replies are time-relative ("later", "tonight", "saturday"): supply the fact
 first and measure, then add prose only against a gap the fact alone doesn't close.
 
+Second implementation: the timeboxing surface (`timeboxing_intents.py`, `timeboxing_host.py`).
+`_display_context(snapshot)` is the one place its states and their offered decisions are
+declared -- `no_session`, `planning_day`, `skeleton`, `review_commit`, `capture`, `refine`,
+`committed`, and `cancelled` (an empty tuple: a cancelled thread is closed for good). The typed
+decision is `InterpretedTimeboxTurn`; `_intent_from_interpreted` binds it to a `TimeboxIntent`
+(`session_contracts.py`) from host-trusted state -- the artifact identity, the pending question,
+the day the host proposed -- never from anything the model itself asserts.
+
+`question` is offered in every open state. It binds to `AskQuestion`, whose kernel outcome is
+`Asked`: the session moves nothing, and `handlers._answer_question` sends `planner_agent` the
+described session plus the user's words verbatim, never a paraphrase. Before this, `no_session`
+did not exist: any text before a day was locked returned `StartSession()` unconditionally with
+no model asked, so a question such as "is it planned?" started a five-stage session (the
+2026-09-05 03:43 incident). `no_session` now offers `("start", "question", "cancel")` instead,
+and only an empty opening turn -- nothing typed, the auto-start and a bare command -- still
+starts without asking (`derive_timebox_intent` in `timeboxing_host.py`).
+
+Eval: `tests/integration/test_eval_timebox_question.py`, alongside the planning card's own eval
+and the day-frame eval, all three listed in `scripts/bench/interpreter_tier.py`'s `EVALS`.
+
 Reference spec:
 - `docs/architecture/proposal_object_contract.md`
+- `docs/superpowers/specs/2026-09-05-asked-not-started-design.md`
 
 ### Narrowing a surface's schema to what its state can express
 

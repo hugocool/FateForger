@@ -93,7 +93,7 @@ def _wire(
 
     # `_timeboxing_kernel(...)` is called once per turn (a fresh instance
     # each time), so the outcome advances on that call, not on `Kernel.turn`
-    # -- the same "once per turn" shape as `Repo.load_or_create` below.
+    # -- the same "once per turn" shape as `Repo.load` below.
     kernel_calls = {"n": 0}
 
     def make_kernel(*_a, **_k):
@@ -112,7 +112,7 @@ def _wire(
         def __init__(self) -> None:
             self._loads = 0
 
-        async def load_or_create(self, key, owner_user_id):
+        async def load(self, key):
             turn_index = min(self._loads // 2, len(snapshots) - 1)
             self._loads += 1
             return snapshots[turn_index]

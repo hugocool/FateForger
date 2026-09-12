@@ -82,15 +82,20 @@ PYTHON = str(WORKTREE.parents[1] / ".venv" / "bin" / "python")
 
 #: eval name -> (worktree it lives in, path relative to it, which knobs it takes).
 #: ``timebox_question`` is #328's, unmerged; the bench runs it from that
-#: worktree read-only, under the timeboxing agent's env overrides, because that
-#: is the client it builds until #328 merges and its one line changes.
-#: ``day_frame`` takes the interpreter's knobs: since #336 its interpreter
-#: cases build on the interpreter row, and its judge cases stay on the judge
-#: row at production default as a control (``CONTROL_ROWS``).
+#: worktree read-only. It takes the interpreter's knobs like the other two:
+#: since 353ce9d it builds ``build_intent_interpreter_client()``, so the
+#: timeboxing agent's overrides reached nothing it built -- every configuration
+#: would have run on the `intent_interpreter` row's own `.env` default and been
+#: labelled as the configuration, and with ``INTERPRETER_TIER_CONFIG`` set the
+#: break-it xfails are off, so those misfiled outcomes land in the ``unbroken``
+#: column.
+#: ``day_frame`` takes the interpreter's knobs for the same row: since #336 its
+#: interpreter cases build on the interpreter row, and its judge cases stay on
+#: the judge row at production default as a control (``CONTROL_ROWS``).
 EVALS = {
     "planning_card": (WORKTREE, "tests/integration/test_eval_planning_card_intent.py", "interpreter"),
     "day_frame": (WORKTREE, "tests/integration/test_eval_day_frame.py", "interpreter"),
-    "timebox_question": (PEER_WORKTREE, "tests/integration/test_eval_timebox_question.py", "timeboxing"),
+    "timebox_question": (PEER_WORKTREE, "tests/integration/test_eval_timebox_question.py", "interpreter"),
 }
 
 #: configuration -> (which .env pin, reasoning effort, max_tokens or None for uncapped)
@@ -178,7 +183,7 @@ def _env_for(config: str, kind: str, base: dict) -> dict:
         env["LLM_MODEL_TIMEBOXING_JUDGE"] = model
         env["LLM_REASONING_EFFORT_TIMEBOXING_JUDGE"] = effort
         env["LLM_MAX_TOKENS"] = str(cap if cap else 0)
-    else:  # the #328 eval, on its own worktree, takes the timeboxing agent's knobs
+    else:  # the timeboxing host agent's own row; no eval in EVALS builds on it today
         env["LLM_MODEL_TIMEBOXING"] = model
         env["LLM_REASONING_EFFORT_TIMEBOXING"] = effort
         env["LLM_MAX_TOKENS"] = str(cap if cap else 0)

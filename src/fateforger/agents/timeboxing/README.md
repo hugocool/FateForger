@@ -90,6 +90,24 @@ Stage-gated timeboxing workflow that builds daily schedules via conversational r
 | `state.py` | Session persistence helpers. |
 | `flow.py` | Legacy flow logic (being replaced by GraphFlow). |
 
+### Session Kernel
+
+| File | Responsibility |
+|------|---------------|
+| `session_contracts.py` | The typed `TimeboxIntent` / `TurnOutcome` unions and the `PlanningSessionSnapshot` the kernel persists. `AskQuestion` -> `Asked` is the one intent/outcome pair that changes nothing: no artifact, no fact, no assumption, no invalidation, and the outcome carries the question back exactly as the host received it -- never a model's paraphrase. |
+| `adaptive_timeboxing.py` | `AdaptiveTimeboxing.turn`: one typed intent in, one replayable `TurnOutcome` out, over a snapshot a `PlanningSessionRepository` persists. Row creation is intent-gated, not text-gated -- see below. |
+
+`Asked` is returned before the run loop applies or resolves anything (`adaptive_timeboxing.py:602-607`),
+so a `load` right after sees the same revision as before the question. Getting there does not
+require a session to exist: `_turn_guarded`'s first branch is "no session, and the intent is
+`AskQuestion`" -- answered over an unsaved in-memory snapshot, never a written row
+(`adaptive_timeboxing.py:531-543`). The sibling branch is why a row is not created by default:
+`CancelSession` against no row refuses as `TurnFailed(code="nothing_to_cancel")`
+(`adaptive_timeboxing.py:544-548`), and only every other intent may `load_or_create` one
+(`:549-552`). The rule matters because a written row is a session as far as the host is
+concerned -- the nudge suppressor reads the session store -- so the first word typed into a DM
+must not silence it by existing.
+
 ### Stage 1 Elicitation
 
 | File | Responsibility |
