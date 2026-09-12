@@ -1647,12 +1647,15 @@ async def _answer_question(
         return timebox_failure_message(snapshot=snapshot)
     payload = _compact_slack_payload(**_slack_payload_from_result(result))
     text = payload.get("text", "") or ""
-    return SlackBlockMessage(
-        text=text,
-        blocks=payload.get("blocks") or [
-            {"type": "section", "text": {"type": "mrkdwn", "text": text}}
-        ],
-    )
+    # No synthesised section block for a blockless answer. Every caller runs
+    # this message back through `_compact_slack_payload`, which clips block
+    # text at `SLACK_MAX_BLOCK_TEXT_CHARS` (1600) while plain `text` keeps
+    # `SLACK_MAX_TEXT_CHARS` (3900) -- and Slack renders `blocks` whenever they
+    # are there. Wrapping the answer in a block therefore delivered it cut at
+    # 1600 characters with the rest sitting unread in the fallback text. An
+    # empty list is dropped by `_compact_slack_payload`, so the answer takes
+    # the same text-only path every other agent reply takes.
+    return SlackBlockMessage(text=text, blocks=payload.get("blocks") or [])
 
 
 async def _load_or_new(

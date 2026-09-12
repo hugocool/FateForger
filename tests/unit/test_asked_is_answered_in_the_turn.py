@@ -171,12 +171,35 @@ async def test_a_question_is_answered_by_planner_agent_with_the_session_describe
     assert "Is it planned?" in msg.content
     assert "timeboxing session" in msg.content       # the description came along
     assert message.text == "No — nothing on the calendar today."
-    assert message.blocks == [
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "No — nothing on the calendar today."},
-        }
-    ]
+    # A blockless answer stays blockless: see
+    # `test_a_long_answer_reaches_the_caller_whole` for what a synthesised
+    # section block costs.
+    assert message.blocks == []
+
+
+@pytest.mark.asyncio
+async def test_a_long_answer_reaches_the_caller_whole(monkeypatch):
+    """The answer travels as text, so the block cap never touches it.
+
+    Every caller runs the returned message back through
+    `_compact_slack_payload`, which clips block text at
+    `SLACK_MAX_BLOCK_TEXT_CHARS` (1600) while plain `text` keeps
+    `SLACK_MAX_TEXT_CHARS` (3900) -- and Slack renders `blocks` whenever they
+    are present. An answer wrapped in a synthesised section block was therefore
+    delivered clipped at 1600 characters while the whole of it sat unused in
+    the fallback text.
+    """
+
+    long_reply = "Lunch is still at 12:30, and here is why. " * 60
+    assert len(long_reply) > handlers.SLACK_MAX_BLOCK_TEXT_CHARS
+    assert len(long_reply) < handlers.SLACK_MAX_TEXT_CHARS
+
+    runtime, _ = _fixture(monkeypatch, reply=long_reply)
+    message = await _turn(runtime)
+
+    payload = handlers._compact_slack_payload(text=message.text, blocks=message.blocks)
+    assert "blocks" not in payload
+    assert payload["text"] == long_reply
 
 
 @pytest.mark.asyncio
