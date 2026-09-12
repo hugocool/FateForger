@@ -32,6 +32,32 @@ and not the absence of the right one. An absence-based bar is cleared by two
 lost calls, which is how the first version of this check "passed" while the
 paragraph was doing nothing at all.
 
+Whether the flip can be *read* is a property of the pin, and both families
+were re-measured on 2026-09-12 at n=8 per case. Where it cannot be read the
+case is an expected failure off the bench rather than a skip, so the bench --
+which sets `INTERPRETER_TIER_CONFIG` and buckets a `test_break_it_` failure
+into its own `unbroken` column -- still sees the raw outcome:
+
+* on the flash pin at `minimal` nothing flips. The fresh question answers
+  `question` 7/8 with the paragraph stripped and `start` once; the mixed
+  texts keep the fact 8/8 and 8/8 on one run and 7/8 and 8/8 on the next,
+  which is the bar they clear *with* the paragraph. The paragraph is not
+  load-bearing there, and `_expected_unbroken_here` xfails both families;
+* on the pro pin at `low` the fresh question flips cleanly -- 0 asked against
+  7 and 8 started on two runs -- and so does "is deep work still at 9? also I
+  get up at 07:00", kept 0, 1, 1, 0 across four runs against asked 7, 6, 4,
+  6. Those stay strict. "did you move lunch? I sleep 00:30-08:30" does not:
+  the stripped prompt runs past the `intent_interpreter` row's 1024-token cap
+  -- a cap that arrived with the row in #336, the old `timeboxing_agent`
+  client having had none -- and two to five of its eight draws die on
+  `LengthFinishReasonError`, their retries with them. That leaves three to
+  six decisions to read a flip off, and the four runs went kept 2 / asked 1,
+  kept 2 / asked 3, kept 3 / asked 2, kept 1 / asked 5: the flip read twice.
+  What is stable there is the truncation, not the judgement, so
+  `_cap_eats_the_sample_here` xfails that one parametrisation on that pin and
+  nothing else. Non-strict, so the runs that do flip report `xpass` rather
+  than turning a working break-it into a red one.
+
 A draw whose exception carries a transport cause reached no decision and is
 retried once; the retry count is reported, never asserted (#325). A draw that
 reached a *wrong* decision is never retried -- see `_is_transport`.
@@ -257,8 +283,13 @@ QUESTIONS_COMMITTED = [
 # interrogatives never exercise, and the one the paragraph actually carries.
 # These two are the positive half of the break-it check below; the same texts
 # appear there with the paragraph stripped.
+#: Named because the break-it xfail below points at this one parametrisation
+#: rather than the family, and has to do it by identity: pytest hands the
+#: parametrised test the very object listed here, so `text is LUNCH_AND_SLEEP`
+#: asks which case is running. Nothing reads the words.
+LUNCH_AND_SLEEP = "did you move lunch? I sleep 00:30-08:30"
 MIXED_COMMITTED = [
-    "did you move lunch? I sleep 00:30-08:30",
+    LUNCH_AND_SLEEP,
     "is deep work still at 9? also I get up at 07:00",
 ]
 FACTS_COMMITTED = ["I sleep 00:30–08:30", *MIXED_COMMITTED]
@@ -316,9 +347,61 @@ async def test_a_revision_after_commit_is_still_a_revision(text):
     assert _count(results, ReviseArtifact, text, retries) >= THRESHOLD, _report(results, retries)
 
 
+def _interpreter_model() -> str:
+    """The model the `intent_interpreter` row resolves to, at test time.
+
+    Resolved on call and never at import: a module-level production import
+    would load settings before the key-less skip above could decide anything.
+    """
+
+    from fateforger.llm.factory import INTENT_INTERPRETER, _model_for_agent
+
+    return _model_for_agent(INTENT_INTERPRETER)
+
+
+def _expected_unbroken_here() -> bool:
+    """Whether this is a plain run on the pin where the paragraph does nothing.
+
+    The mirror of the planning card's helper of the same name: there the
+    stripped clause is load-bearing on flash and inert on pro, here it is the
+    other way round. Both sides of the comparison are model ids this project
+    pinned, not user text.
+    """
+
+    if os.environ.get("INTERPRETER_TIER_CONFIG"):
+        # The bench reads the raw outcome and buckets a failure as `unbroken`
+        # itself; an xfail here would move the case out of that column.
+        return False
+    from fateforger.core.config import settings
+
+    return _interpreter_model() == settings.openrouter_default_model_flash
+
+
+def _cap_eats_the_sample_here(text: str) -> bool:
+    """Whether the row's 1024-token cap leaves this case too few decisions.
+
+    One text, one pin. On the pro pin at `low` the stripped prompt runs long
+    enough that two to five of the eight draws for `LUNCH_AND_SLEEP` are
+    truncated into `LengthFinishReasonError` -- retries included -- so the
+    flip is read off three to six decisions and landed twice in four runs
+    (2026-09-12). That is the cap eating the sample, not the paragraph proving
+    inert, and the other mixed text flips cleanly on the same pin in the same
+    runs, so this narrows to the one parametrisation by identity.
+    """
+
+    if os.environ.get("INTERPRETER_TIER_CONFIG"):
+        return False
+    from fateforger.core.config import settings
+
+    return (
+        text is LUNCH_AND_SLEEP
+        and _interpreter_model() == settings.openrouter_default_model_pro
+    )
+
+
 @pytest.mark.parametrize("text", BREAK_IT_FRESH)
 async def test_break_it_without_the_question_paragraph_a_question_starts_a_session(
-    text, monkeypatch
+    text, monkeypatch, request
 ):
     """Strip the paragraph and a question about the day *starts* the day.
 
@@ -336,7 +419,24 @@ async def test_break_it_without_the_question_paragraph_a_question_starts_a_sessi
     is cleared by two lost calls with the paragraph doing nothing. Only the
     two together say the decision moved: a transport failure subtracts from
     both counts and can never manufacture `started > asked`.
+
+    It flips on the pro pin the row resolves to -- 0 asked against 8 and 7
+    started on two runs of 2026-09-12 -- and not on flash at `minimal`, where
+    the same stripped prompt answers `question` 7/8 and `start` once. So on
+    flash it is an expected failure off the bench, and strict nowhere: these
+    are rates, and a draw can still land on either side.
     """
+    if _expected_unbroken_here():
+        request.applymarker(
+            pytest.mark.xfail(
+                reason=(
+                    "on the flash pin the stripped paragraph is not load-bearing: "
+                    "asked 7/8 and started 1/8 with it gone (2026-09-12, n=8)"
+                ),
+                strict=False,
+            )
+        )
+
     import fateforger.slack_bot.timeboxing_intents as intents
     from fateforger.agents.timeboxing.session_contracts import (
         AskQuestion,
@@ -355,7 +455,7 @@ async def test_break_it_without_the_question_paragraph_a_question_starts_a_sessi
 
 @pytest.mark.parametrize("text", MIXED_COMMITTED)
 async def test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question(
-    text, monkeypatch
+    text, monkeypatch, request
 ):
     """Strip the paragraph and a question carrying a fact stops being the fact.
 
@@ -378,7 +478,39 @@ async def test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_q
     The flip, not the absence, for the reason given on the fresh-session check:
     `ProvidePlanningFacts < THRESHOLD` on its own is satisfied by two lost
     draws. `asked > kept` is not.
+
+    Two pins, two reasons for an expected failure, and they are different
+    findings. On flash at `minimal` both texts keep the fact 8/8 with the
+    paragraph stripped -- the same 8/8 they score with it -- so the paragraph
+    is inert there. On pro at `low` only `LUNCH_AND_SLEEP` is unreadable, and
+    not because the judgement held: the row's 1024-token cap truncates three
+    to five of its eight draws, so the flip is read off a handful of
+    decisions and lands about one run in three. Neither xfail is strict.
     """
+    if _expected_unbroken_here():
+        request.applymarker(
+            pytest.mark.xfail(
+                reason=(
+                    "on the flash pin the stripped paragraph is not load-bearing: the "
+                    "mixed texts keep the fact 7-8/8 with it gone, across two runs of "
+                    "each (2026-09-12, n=8)"
+                ),
+                strict=False,
+            )
+        )
+    elif _cap_eats_the_sample_here(text):
+        request.applymarker(
+            pytest.mark.xfail(
+                reason=(
+                    "on the pro pin the stripped prompt runs past the row's 1024-token "
+                    "cap: 2-5 of 8 draws die on LengthFinishReasonError, and the four "
+                    "runs of 2026-09-12 went kept 2 / asked 1, kept 2 / asked 3, kept 3 "
+                    "/ asked 2, kept 1 / asked 5 -- too few decisions to read the flip off"
+                ),
+                strict=False,
+            )
+        )
+
     import fateforger.slack_bot.timeboxing_intents as intents
     from fateforger.agents.timeboxing.session_contracts import (
         AskQuestion,
