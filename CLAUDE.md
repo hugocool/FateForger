@@ -157,6 +157,23 @@ quietly returns the wrong answer forever.
 Design spec stating the same rule as invariant I1:
 `docs/superpowers/specs/2026-08-16-kg-memory-server-design.md`
 
+## A review page belongs in the pull request
+
+Review kits, change quizzes, walkthroughs, live renders, decision logs — the writing that exists
+so Hugo can judge a change before merging it — go **in the PR**: the body carries the report, and
+the quiz goes as a comment so answers thread under the questions. Not a Claude artifact, not a
+link to a page hosted somewhere else.
+
+The PR is where the review actually happens and the only place the reasoning survives next to the
+diff it is about: `gh pr view` prints it, the merge commit keeps it, and a maintainer six months
+out reads it without an account or a live link. An artifact is a second location that has to be
+found, cannot be quoted in a review thread, and rots on its own schedule.
+
+So: no artifact, no separate hosted page. Prose, tables, fenced Slack renders and `<details>` folds
+all render on GitHub, which is enough for anything that belongs in front of a reviewer. Something
+that outlives the review — a spec, an architecture note — goes under `docs/` on the branch and the
+PR links to it there.
+
 ## The memory server (`src/memory/`)
 
 Standalone and agent-agnostic. It imports nothing from `fateforger.*` and must stay that way —
