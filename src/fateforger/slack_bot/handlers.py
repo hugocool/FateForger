@@ -87,7 +87,7 @@ from fateforger.slack_bot.planning import (
     PlanningCoordinator,
     ThreadReplyOutcome,
     extract_draft_id_from_action_body,
-    extract_selected_time_from_state,
+    extract_unlanded_time_pick,
 )
 from fateforger.slack_bot.surface_intents import SurfaceIntentError
 from fateforger.slack_bot.progress import HarnessProgressCard
@@ -4271,12 +4271,15 @@ def register_handlers(
         action = (body.get("actions") or [{}])[0]
         draft_id = extract_draft_id_from_action_body(body)
         if draft_id:
-            # The press carries the card's current time: a pick made a second
-            # earlier may not have reached the store yet.
+            # The press carries a pick made on this copy that may not have
+            # reached the store yet. A picker still showing the time this copy
+            # was rendered with was never touched, and is not applied: only the
+            # clicked copy is redrawn, so the other one shows a stale time that
+            # would otherwise revert a good pick.
             await planning.start_add_to_calendar(
                 draft_id=draft_id,
                 respond=respond,
-                selected_time=extract_selected_time_from_state(body.get("state")),
+                selected_time=extract_unlanded_time_pick(body),
             )
             return
         logger.warning(
@@ -4295,7 +4298,7 @@ def register_handlers(
             await planning.start_add_to_calendar(
                 draft_id=draft_id,
                 respond=respond,
-                selected_time=extract_selected_time_from_state(body.get("state")),
+                selected_time=extract_unlanded_time_pick(body),
             )
             return
         logger.warning(
@@ -4310,7 +4313,6 @@ def register_handlers(
         """Open the Edit modal (duration etc.) for a planning card."""
         await ack()
         trigger_id = body.get("trigger_id") or ""
-        action = (body.get("actions") or [{}])[0]
         draft_id = extract_draft_id_from_action_body(body)
         if not (draft_id and trigger_id):
             logger.warning(

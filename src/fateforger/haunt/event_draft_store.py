@@ -140,36 +140,16 @@ class SqlAlchemyEventDraftStore:
             await session.refresh(row)
             return _to_payload(row)
 
-    async def update_time(
-        self, *, channel_id: str, message_ts: str, start_at_utc: str | None = None, duration_min: int | None = None
-    ) -> Optional[EventDraftPayload]:
-        """Move a draft found by where its card was posted.
-
-        A row is keyed to one message, so this only ever finds the copy of a
-        card that the row remembers. Prefer `update_time_by_draft_id` when the
-        caller holds the id the card carries.
-        """
-        async with self._sessionmaker() as session:
-            result = await session.execute(
-                select(EventDraft).where(
-                    EventDraft.channel_id == channel_id, EventDraft.message_ts == message_ts
-                )
-            )
-            row = result.scalar_one_or_none()
-            if not row:
-                return None
-            return await self._apply_time(
-                session, row, start_at_utc=start_at_utc, duration_min=duration_min
-            )
-
     async def update_time_by_draft_id(
         self, *, draft_id: str, start_at_utc: str | None = None, duration_min: int | None = None
     ) -> Optional[EventDraftPayload]:
         """Move a draft by its own id, wherever its card was clicked.
 
-        The same card is posted to the DM and to the admonishments log, and
-        only the DM copy's coordinates are on the row. Identity has to come
-        from the card, not from where the click landed.
+        The only time write there is. The same card is posted to the DM and to
+        the admonishments log, and only the DM copy's coordinates are on the
+        row, so a write keyed to (channel_id, message_ts) silently did nothing
+        on the log copy. Identity comes from the card, not from where the
+        click landed.
         """
         async with self._sessionmaker() as session:
             result = await session.execute(
@@ -178,26 +158,14 @@ class SqlAlchemyEventDraftStore:
             row = result.scalar_one_or_none()
             if not row:
                 return None
-            return await self._apply_time(
-                session, row, start_at_utc=start_at_utc, duration_min=duration_min
-            )
-
-    async def _apply_time(
-        self,
-        session: AsyncSession,
-        row: EventDraft,
-        *,
-        start_at_utc: str | None,
-        duration_min: int | None,
-    ) -> EventDraftPayload:
-        if start_at_utc is not None:
-            row.start_at_utc = start_at_utc
-        if duration_min is not None:
-            row.duration_min = duration_min
-        row.updated_at = datetime.utcnow()
-        await session.commit()
-        await session.refresh(row)
-        return _to_payload(row)
+            if start_at_utc is not None:
+                row.start_at_utc = start_at_utc
+            if duration_min is not None:
+                row.duration_min = duration_min
+            row.updated_at = datetime.utcnow()
+            await session.commit()
+            await session.refresh(row)
+            return _to_payload(row)
 
     async def update_status(
         self,

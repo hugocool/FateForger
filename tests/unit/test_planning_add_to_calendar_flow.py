@@ -48,18 +48,6 @@ class _FakeDraftStore:
             return None
         return self._draft
 
-    async def update_time(
-        self,
-        *,
-        channel_id: str,
-        message_ts: str,
-        start_at_utc: str | None = None,
-        duration_min: int | None = None,
-    ):
-        if channel_id != self._draft.channel_id or message_ts != self._draft.message_ts:
-            return None
-        return self._apply_time(start_at_utc, duration_min)
-
     async def update_time_by_draft_id(
         self,
         *,

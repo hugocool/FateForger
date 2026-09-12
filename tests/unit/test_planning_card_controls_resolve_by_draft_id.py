@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import types
 from datetime import datetime, timezone
 
@@ -41,8 +42,11 @@ from fateforger.slack_bot.planning import (
     FF_EVENT_ADD_ACTION_ID,
     FF_EVENT_BLOCK_PICK_TIME,
     FF_EVENT_START_TIME_ACTION_ID,
+    PlanningCoordinator,
+    ThreadReplyOutcome,
     _card_payload,
 )
+from fateforger.slack_bot.surface_intents import SurfaceIntentInterpreter
 
 VALID_EVENT_URL = (
     "https://www.google.com/calendar/event?eid="
@@ -108,20 +112,6 @@ class _FakeDraftStore:
         self._draft = self._draft.__class__(**updates)
         return self._draft
 
-    async def update_time(
-        self,
-        *,
-        channel_id: str,
-        message_ts: str,
-        start_at_utc: str | None = None,
-        duration_min: int | None = None,
-    ):
-        if self._draft is None:
-            return None
-        if channel_id != self._draft.channel_id or message_ts != self._draft.message_ts:
-            return None
-        return self._apply(start_at_utc, duration_min)
-
     async def update_time_by_draft_id(
         self,
         *,
@@ -172,6 +162,8 @@ class _FakeRuntime:
 class _FakeClient:
     def __init__(self) -> None:
         self.updated: list[dict] = []
+        #: What the thread root renders, when a test drives the reply path.
+        self.thread_root_blocks: list[dict] | None = None
 
     async def chat_update(self, **payload):
         self.updated.append(payload)
@@ -179,6 +171,23 @@ class _FakeClient:
 
     async def chat_postMessage(self, **payload):
         return {"ok": True}
+
+    async def conversations_replies(self, **_kwargs):
+        if self.thread_root_blocks is None:
+            return {"messages": []}
+        return {"messages": [{"blocks": self.thread_root_blocks}]}
+
+
+class _SchemaOutputClient:
+    """A stubbed model: the schema decision, without a round-trip."""
+
+    def __init__(self, *responses):
+        self._responses = list(responses)
+        self.calls: list[tuple] = []
+
+    async def create(self, messages, *, json_output):  # noqa: ANN001
+        self.calls.append((messages, json_output))
+        return types.SimpleNamespace(content=json.dumps(self._responses.pop(0)))
 
 
 class _FakeApp:
@@ -378,8 +387,8 @@ async def test_add_books_the_time_the_card_shows_not_the_stored_proposal(monkeyp
     assert upserts[-1].end == "2026-09-11T18:30:00"
 
 
-async def test_a_pick_on_a_card_without_a_draft_id_button_changes_nothing(monkeypatch):
-    """A card that names no draft must fail loudly in the log, not corrupt a row."""
+async def test_a_pick_that_finds_no_draft_says_so_and_changes_nothing(caplog):
+    """The silence that hid this bug for days: a miss must reach the log."""
     store = _FakeDraftStore(_draft())
     stripped = [
         b
@@ -389,19 +398,85 @@ async def test_a_pick_on_a_card_without_a_draft_id_button_changes_nothing(monkey
     app, _runtime = _register(store)
     respond, _calls = _responder()
 
+    with caplog.at_level(logging.WARNING, logger="fateforger.slack_bot.planning"):
+        await app.actions[FF_EVENT_START_TIME_ACTION_ID](
+            ack=_ack,
+            body=_pick_body(
+                channel_id=LOG_CHANNEL,
+                message_ts=LOG_TS,
+                selected_time="18:00",
+                blocks=stripped,
+            ),
+            respond=respond,
+            logger=_LOGGER,
+        )
+
+    assert _local_hhmm(store._draft) == "17:29"
+    assert [
+        record
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+        and record.name == "fateforger.slack_bot.planning"
+    ], "a control that found no draft logged nothing"
+
+
+async def test_add_on_the_stale_copy_does_not_revert_a_pick_made_on_the_other(
+    monkeypatch,
+):
+    """Only the clicked copy is redrawn, so the other one keeps a stale time.
+
+    Pick 18:00 in the DM, then press Add on the #admonishments copy, which is
+    still rendered at 17:29 and therefore reports 17:29 in `state`. Applying
+    that unconditionally writes the proposal back over the pick — the same
+    wrong-time booking from the other direction. A picker still showing the
+    time its copy was rendered with was not touched, so the store wins.
+    """
+    store = _FakeDraftStore(_draft())
+    stale_blocks = _card_payload(store._draft)["blocks"]  # rendered at 17:29
+    app, runtime = _register(store)
+    respond, _calls = _responder()
+
     await app.actions[FF_EVENT_START_TIME_ACTION_ID](
         ack=_ack,
         body=_pick_body(
-            channel_id=LOG_CHANNEL,
-            message_ts=LOG_TS,
+            channel_id=DM_CHANNEL,
+            message_ts=DM_TS,
             selected_time="18:00",
-            blocks=stripped,
+            blocks=stale_blocks,
         ),
         respond=respond,
         logger=_LOGGER,
     )
+    assert _local_hhmm(store._draft) == "18:00"
 
-    assert _local_hhmm(store._draft) == "17:29"
+    scheduled: list[asyncio.Task] = []
+    original_create_task = asyncio.create_task
+
+    def _capture(coro):
+        task = original_create_task(coro)
+        scheduled.append(task)
+        return task
+
+    monkeypatch.setattr("fateforger.slack_bot.planning.asyncio.create_task", _capture)
+
+    await app.actions[FF_EVENT_ADD_ACTION_ID](
+        ack=_ack,
+        body=_add_body(
+            channel_id=LOG_CHANNEL,
+            message_ts=LOG_TS,
+            blocks=stale_blocks,
+            state=_state_with_time("17:29"),
+        ),
+        respond=respond,
+        logger=_LOGGER,
+    )
+    await asyncio.gather(*scheduled)
+
+    upserts = [m for m, _r in runtime.calls if isinstance(m, UpsertCalendarEvent)]
+    assert upserts, "nothing was booked"
+    assert upserts[-1].start == "2026-09-11T18:00:00"
+    # And the pick survives in the store, so the auto-start fires at 18:00 too.
+    assert _local_hhmm(store._draft) == "18:00"
 
 
 async def test_a_card_without_a_draft_id_button_falls_back_to_coordinates():
@@ -427,6 +502,34 @@ async def test_a_card_without_a_draft_id_button_falls_back_to_coordinates():
         logger=_LOGGER,
     )
 
+    assert _local_hhmm(store._draft) == "18:00"
+
+
+async def test_a_thread_time_press_works_on_a_card_with_no_recorded_message_ts():
+    """The draft's id is enough to move it; the redraw goes to the thread."""
+    store = _FakeDraftStore(_draft(message_ts=None))
+    client = _FakeClient()
+    coordinator = PlanningCoordinator(
+        runtime=_FakeRuntime(store), focus=object(), client=client
+    )
+    coordinator._guardian = None  # type: ignore[attr-defined]
+    coordinator._intent_interpreter = SurfaceIntentInterpreter(  # type: ignore[attr-defined]
+        _SchemaOutputClient({"decision": "update_time", "selected_time": "18:00"})
+    )
+    # The thread root is the card itself: that is where the draft id comes from.
+    client.thread_root_blocks = _card_payload(store._draft)["blocks"]
+
+    async def _thread_respond(*, text: str, blocks=None):
+        return None
+
+    reply = await coordinator.maybe_handle_thread_reply(
+        channel_id=DM_CHANNEL,
+        thread_ts=DM_TS,
+        text="make it 18:00",
+        thread_respond=_thread_respond,
+    )
+
+    assert reply.outcome is ThreadReplyOutcome.HANDLED
     assert _local_hhmm(store._draft) == "18:00"
 
 

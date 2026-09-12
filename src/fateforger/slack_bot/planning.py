@@ -841,16 +841,22 @@ class PlanningCoordinator:
             draft = await self._draft_store.get_by_draft_id(draft_id=draft_id)
             if draft:
                 return draft
-            logger.warning(
-                "planning card names an unknown draft: draft_id=%s channel=%s message_ts=%s",
-                draft_id,
-                channel_id,
-                message_ts,
-            )
         if channel_id and message_ts:
-            return await self._draft_store.get_by_message(
+            draft = await self._draft_store.get_by_message(
                 channel_id=channel_id, message_ts=message_ts
             )
+            if draft:
+                return draft
+        # A control that finds no draft must say so. The silence here is what
+        # kept the 2026-09-11 incident invisible for days: the pick returned
+        # None with no error, no log line and no write, so a discarded pick
+        # and a card nobody touched looked identical from the outside.
+        logger.warning(
+            "planning card control found no draft: draft_id=%s channel=%s message_ts=%s",
+            draft_id,
+            channel_id,
+            message_ts,
+        )
         return None
 
     async def handle_start_at_changed(
@@ -1158,13 +1164,13 @@ class PlanningCoordinator:
             await self._client.chat_update(**payload)
 
         if press.selected_time:
-            draft_message_ts = (draft.message_ts or "").strip()
-            if not draft_message_ts:
-                raise ValueError("a time press needs the card's message_ts to update it")
+            # The draft's own id is enough to move it, and the redraw goes to
+            # thread_ts, so a card whose message_ts was never recorded is no
+            # longer a reason to refuse the press.
             await self.handle_start_time_changed(
                 draft_id=draft.draft_id,
                 channel_id=draft.channel_id,
-                message_ts=draft_message_ts,
+                message_ts=(draft.message_ts or "").strip(),
                 selected_time=press.selected_time,
             )
             updated = await self._draft_store.get_by_draft_id(draft_id=draft.draft_id)
@@ -1833,6 +1839,74 @@ def extract_selected_time_from_state(state: Any) -> str | None:
     return str(selected) if selected else None
 
 
+def extract_rendered_time_from_blocks(blocks: Any) -> str | None:
+    """The time the clicked copy of the card was drawn with.
+
+    `initial_time` is what this system wrote into the block when it last
+    rendered this message; it is what the picker reads back when nobody has
+    touched it.
+    """
+
+    if not isinstance(blocks, list):
+        return None
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("block_id") != FF_EVENT_BLOCK_PICK_TIME:
+            continue
+        accessory = block.get("accessory")
+        if not isinstance(accessory, dict):
+            continue
+        if accessory.get("action_id") != FF_EVENT_START_TIME_ACTION_ID:
+            continue
+        initial = accessory.get("initial_time")
+        if initial:
+            return str(initial)
+    return None
+
+
+def _as_hour_minute(value: str | None) -> tuple[int, int] | None:
+    """A Slack `HH:MM` field as numbers, or None if it is not one."""
+
+    if not value:
+        return None
+    try:
+        hour_str, minute_str = value.split(":", 1)
+        return int(hour_str), int(minute_str)
+    except Exception:
+        return None
+
+
+def extract_unlanded_time_pick(body: Any) -> str | None:
+    """A pick made on *this* copy of the card that may not have been stored.
+
+    Only a pick that differs from the `initial_time` this copy was rendered
+    with counts. Equal means nobody touched this picker, and the store is
+    authoritative — which matters because only the clicked copy is redrawn, so
+    the other copy goes on showing a stale time. Applying that stale time
+    unconditionally would revert a good pick made on the other copy, booking
+    the wrong slot from the opposite direction.
+
+    An unreadable rendered time is treated as "apply": that is the original
+    incident's shape, where a pick may never have reached the store.
+    """
+
+    if not isinstance(body, dict):
+        return None
+    picked = extract_selected_time_from_state(body.get("state"))
+    if not picked:
+        return None
+    message = body.get("message")
+    rendered = extract_rendered_time_from_blocks(
+        message.get("blocks") if isinstance(message, dict) else None
+    )
+    picked_hm = _as_hour_minute(picked)
+    rendered_hm = _as_hour_minute(rendered)
+    if picked_hm is not None and picked_hm == rendered_hm:
+        return None
+    return picked
+
+
 __all__ = [
     "FF_EVENT_ADD_ACTION_ID",
     "FF_EVENT_ADD_DISABLED_ACTION_ID",
@@ -1846,6 +1920,8 @@ __all__ = [
     "PlanningCoordinator",
     "extract_draft_id_from_action_body",
     "extract_draft_id_from_blocks",
+    "extract_rendered_time_from_blocks",
     "extract_selected_time_from_state",
+    "extract_unlanded_time_pick",
     "parse_draft_id_from_value",
 ]
