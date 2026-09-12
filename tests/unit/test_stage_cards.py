@@ -533,8 +533,85 @@ def test_a_probe_card_names_what_is_still_needed_and_offers_no_next() -> None:
     outcome = AwaitingUser(requirement_id="elicit.body.unclear", question="q", why_needed="body", gate=gate)
     card = _map(outcome, _snapshot(pending_blocker=pending))
     assert card.stage.index == 1
-    assert card.gate == "Still need: body, clarity."
+    assert card.gate == "Still need: body (clarity)."
     assert not any(isinstance(c, NextControl) for c in card.controls)
+
+
+def test_the_gate_line_groups_open_cells_by_row() -> None:
+    """Four rows open on 'assumptions' used to render as 'assumptions' four
+    times in a flat list, as though it were four separate needs (#413)."""
+    from fateforger.slack_bot.stage_cards import _gate_line
+
+    gate = Gate(
+        open_cells=[
+            CellRef(row="movement", criterion="alternatives"),
+            CellRef(row="fixed", criterion="tacit_assumptions"),
+            CellRef(row="movement", criterion="tacit_assumptions"),
+            CellRef(row="body", criterion="unclear"),
+        ],
+        day_label="working Tuesday",
+    )
+    line = _gate_line(gate)
+    assert line == (
+        "Still need: what is fixed (assumptions) · "
+        "movement and transitions (assumptions, alternatives) · "
+        "body (clarity)."
+    )
+
+
+def test_the_gate_line_raises_on_a_row_outside_the_catalog() -> None:
+    """The grouping loop filters by membership in ROWS; a key outside it must
+    raise, not silently vanish from the line (reviewer finding, task-3 fix 1)."""
+    from fateforger.slack_bot.stage_cards import _gate_line
+
+    gate = Gate(open_cells=[CellRef(row="not_a_row", criterion="unclear")], day_label="working Tuesday")
+    with pytest.raises(ValueError, match="elicit.not_a_row.unclear"):
+        _gate_line(gate)
+
+
+def test_the_gate_line_raises_on_a_criterion_outside_the_catalog() -> None:
+    from fateforger.slack_bot.stage_cards import _gate_line
+
+    gate = Gate(open_cells=[CellRef(row="body", criterion="not_a_criterion")], day_label="working Tuesday")
+    with pytest.raises(ValueError, match="elicit.body.not_a_criterion"):
+        _gate_line(gate)
+
+
+def test_the_gate_line_raises_even_when_a_valid_cell_shares_the_row() -> None:
+    """A bogus cell must not render the valid cell on its row alone -- the
+    line would then claim less is open than the gate actually says."""
+    from fateforger.slack_bot.stage_cards import _gate_line
+
+    gate = Gate(
+        open_cells=[
+            CellRef(row="body", criterion="unclear"),
+            CellRef(row="body", criterion="not_a_criterion"),
+        ],
+        day_label="working Tuesday",
+    )
+    with pytest.raises(ValueError, match="elicit.body.not_a_criterion"):
+        _gate_line(gate)
+
+
+def test_the_gate_line_for_every_cell_names_each_row_once_and_fits_a_section() -> None:
+    """Turn one is when the most cells are open. All 45 grouped come to a few
+    hundred characters; nothing is capped or sliced on the way out."""
+    from fateforger.agents.timeboxing.elicitation import ALL_CELLS, ROWS
+    from fateforger.slack_bot.messages import SLACK_MAX_BLOCK_TEXT_CHARS
+    from fateforger.slack_bot.stage_cards import _gate_line
+    from fateforger.slack_bot.timeboxing_cards import render_stage_card
+
+    gate = Gate(open_cells=list(ALL_CELLS), day_label="working Tuesday")
+    line = _gate_line(gate)
+    for row in ROWS.values():
+        assert line.count(f"{row.label} (") == 1
+    assert "more_" not in line
+    assert len(line) < SLACK_MAX_BLOCK_TEXT_CHARS
+
+    card = _map(GateMet(gate=gate), _snapshot())
+    assert card.gate == line
+    sections = [b["text"]["text"] for b in render_stage_card(card).blocks if b.get("type") == "section"]
+    assert line in sections
 
 
 def test_the_stage_of_a_question_comes_from_the_catalog() -> None:
@@ -576,30 +653,3 @@ def test_map_outcome_reads_the_stage_from_the_requirements_it_is_given() -> None
         session_key="C1:1.0", channel_id="C1", thread_ts="1.0", requirements=requirements,
     )
     assert card is not None and card.stage.index == 4
-
-
-def test_the_gate_line_caps_the_open_cells_and_names_the_overflow() -> None:
-    """Turn one is when the most cells are open, and the section builder
-    slices at 1600 characters rather than raising. All 45 rendered unbounded
-    came to 1589 -- eleven from silent mid-word truncation."""
-    from fateforger.agents.timeboxing.elicitation import ALL_CELLS
-    from fateforger.slack_bot.messages import SLACK_MAX_BLOCK_TEXT_CHARS
-    from fateforger.slack_bot.stage_cards import GATE_LINE_CAP, _gate_line
-    from fateforger.slack_bot.timeboxing_cards import render_stage_card
-
-    gate = Gate(open_cells=list(ALL_CELLS), day_label="working Tuesday")
-    line = _gate_line(gate)
-    dropped = len(ALL_CELLS) - GATE_LINE_CAP
-    assert line.endswith(f"_+{dropped} more_")
-    assert len(line) < SLACK_MAX_BLOCK_TEXT_CHARS
-
-    outcome = GateMet(gate=gate)
-    card = _map(outcome, _snapshot())
-    assert card.gate == line
-    sections = [
-        block["text"]["text"]
-        for block in render_stage_card(card).blocks
-        if block.get("type") == "section"
-    ]
-    # The section carries the line whole: nothing was sliced on the way out.
-    assert line in sections

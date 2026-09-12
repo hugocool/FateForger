@@ -23,7 +23,13 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from fateforger.agents.timeboxing.elicitation import criterion_label, row_label
+from fateforger.agents.timeboxing.elicitation import (
+    CRITERIA,
+    CRITERION_BY_KEY,
+    ROWS,
+    criterion_label,
+    row_label,
+)
 from fateforger.agents.timeboxing.readiness import TimeboxRequirements
 from fateforger.agents.timeboxing.session_contracts import (
     ArtifactKind,
@@ -397,31 +403,44 @@ def _nav(*, back: bool) -> list[Control]:
     return controls
 
 
-#: How many open cells the gate line names before it says "and N more".
-#: Cut by count, not by characters, so the last pair shown is a whole pair --
-#: the same shape `_bullets` uses in `timeboxing_cards`. Eight is chosen
-#: against the longest labels in the catalog: eight of the longest row and
-#: criterion pairs render in 374 characters, well inside Slack's 1600 per
-#: section. Uncapped, turn one -- when all 45 cells are open -- rendered 1589
-#: characters and was eleven from being silently truncated mid-word by the
-#: section builder, which slices rather than raises.
-GATE_LINE_CAP = 8
-
-
 def _gate_line(gate: Gate) -> str:
+    """What Stage 1 still needs, one clause per open row.
+
+    Grouped by row rather than listed per cell: four rows open on the same
+    criterion used to read as that criterion named four times, as if it were
+    four separate needs (#413). Row and criterion keys are identifiers this
+    system minted, so grouping and ordering them is arithmetic. Nine rows is
+    the whole floor, so nothing is capped.
+
+    Grouping by membership in `ROWS`/`CRITERIA` would silently drop a cell
+    keyed outside either catalog instead of raising -- a gate line that
+    claims less is open than actually is is the exact failure shape #342
+    exists to prevent one layer up, so every key is checked before anything
+    is composed.
+    """
     if not gate.open_cells:
         return (
             f"That's what I know to ask about a {gate.day_label}. "
             "Anything else, or shall I plan?"
         )
-    shown = gate.open_cells[:GATE_LINE_CAP]
-    needs = ", ".join(
-        f"{row_label(cell.row)}, {criterion_label(cell.criterion)}" for cell in shown
-    )
-    rest = len(gate.open_cells) - len(shown)
-    if rest > 0:
-        return f"Still need: {needs}. _+{rest} more_"
-    return f"Still need: {needs}."
+    bad = [
+        cell.id
+        for cell in gate.open_cells
+        if cell.row not in ROWS or cell.criterion not in CRITERION_BY_KEY
+    ]
+    if bad:
+        raise ValueError(f"gate.open_cells names cells outside the catalog: {', '.join(bad)}")
+    open_by_row: dict[str, set[str]] = {}
+    for cell in gate.open_cells:
+        open_by_row.setdefault(cell.row, set()).add(cell.criterion)
+    clauses = [
+        f"{row_label(row)} ("
+        + ", ".join(criterion_label(c.key) for c in CRITERIA if c.key in open_by_row[row])
+        + ")"
+        for row in ROWS
+        if row in open_by_row
+    ]
+    return "Still need: " + " · ".join(clauses) + "."
 
 
 def _rule_names(snapshot: PlanningSessionSnapshot) -> dict[str, str]:

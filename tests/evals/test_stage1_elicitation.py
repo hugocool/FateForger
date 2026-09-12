@@ -63,8 +63,10 @@ import os
 import shutil
 import statistics
 from dataclasses import dataclass, field
+from datetime import datetime, time
 from pathlib import Path
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 import pytest
 from autogen_core.models import SystemMessage, UserMessage
@@ -98,6 +100,15 @@ N = 5
 #: how long finishing takes.
 GATE_MET_FLOOR = 1
 CAP = 12
+
+
+def _stage1_now(day: FixtureDay) -> datetime:
+    """A tz-aware clock for the loop to reason from. 08:00 on the planning
+    day, in the fixture's own zone: none of these traces are about the clock
+    itself, so a fixed early-morning moment on the day being planned is a
+    stand-in, not a case (`tests/evals/test_stage1_clock.py` measures the
+    clock's effect on the probe text directly)."""
+    return datetime.combine(day.date, time(8, 0), tzinfo=ZoneInfo("Europe/Amsterdam"))
 
 
 def _load_env() -> None:
@@ -383,7 +394,7 @@ async def run_stage1(
     said: list[str] = []
     for _ in range(cap):
         before = len(trace.calls)
-        result = await elicit(snapshot, rows, counted, session_key=snapshot.session_key)
+        result = await elicit(snapshot, rows, counted, session_key=snapshot.session_key, now=_stage1_now(day))
         snapshot = _merge(snapshot, result.matrix_fact)
         if trace.first_matrix is None:
             trace.first_matrix = CoverageMatrix.model_validate(result.matrix_fact.value)
@@ -719,7 +730,9 @@ def test_removing_every_dinner_rule_makes_the_dinner_row_not_applicable(store_co
     _refuse_shared_lineage(contender)
 
     async def one():
-        result = await elicit(snapshot, rows, build_judges(contender), session_key=snapshot.session_key)
+        result = await elicit(
+            snapshot, rows, build_judges(contender), session_key=snapshot.session_key, now=_stage1_now(day)
+        )
         return CoverageMatrix.model_validate(result.matrix_fact.value)
 
     async def all_draws():

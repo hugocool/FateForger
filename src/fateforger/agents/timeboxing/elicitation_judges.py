@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, Literal
 
 from autogen_core.models import ChatCompletionClient, SystemMessage, UserMessage
@@ -254,8 +255,24 @@ names a problem and a verdict of "would_not_ask" contradict each other.
 Do not raise a concern the person never raised. For the "alternatives"
 criterion, answer "would_ask" only where a rule in this row is genuinely at
 risk given what they said today; a contingency nobody needs is not worth their
-time. Return only the requested schema.
+time.
+
+You are told the current time and the day being planned. When the planning
+day is today, an arrival or start the person named that is already behind the
+clock is not an open question; when it is a later day, the clock only tells
+you how far off it is. Return only the requested schema.
 """
+
+
+def _clock(now: datetime, planning_day: date) -> dict[str, Any]:
+    """What the judges are told about time. Weekday and zone are spelled out
+    because a model reads "Tuesday 10:09 Europe/Amsterdam" more reliably than
+    an ISO string; the day count is date arithmetic, not a judgement."""
+    return {
+        "now": f"{now:%A %Y-%m-%d %H:%M} {now.tzinfo}",
+        "planning_day": f"{planning_day:%A %Y-%m-%d}",
+        "days_until_planning_day": (planning_day - now.date()).days,
+    }
 
 
 def _rule_for_classify(row: dict[str, Any], *, with_text: bool) -> dict[str, str]:
@@ -282,6 +299,8 @@ class CoverageJudge:
         stated: list[str],
         request: str | None,
         session_key: str,
+        now: datetime,
+        planning_day: date,
     ) -> tuple[CellState, str]:
         row: Concern = ROWS[cell.row]
         criterion = CRITERION_BY_KEY[cell.criterion]
@@ -297,6 +316,7 @@ class CoverageJudge:
                 ],
                 "stated": stated,
                 "request": request,
+                "clock": _clock(now, planning_day),
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -343,6 +363,11 @@ answerable. Give "why_needed" as a few words on what the answer lets the
 planner place. Offer "options" only when the sensible answers form a closed
 set of at most four; otherwise leave it empty.
 
+You are told the current time and the day being planned. Anything the person
+said relative to now -- "in 2 hours", "after lunch", "before I leave" --
+resolves against that clock. Never ask about a moment that has already passed
+on the planning day, and name times as clock times the person can check.
+
 If nothing the user has said grounds a question about this cell, set grounded
 to false and leave the rest null: a no-op is a perfectly good outcome; do not
 invent a question to justify the run. Return only the requested schema.
@@ -361,6 +386,8 @@ class ProbeJudge:
         conversation: list[str],
         request: str | None,
         session_key: str,
+        now: datetime,
+        planning_day: date,
     ) -> ProbeDraft | None:
         row: Concern = ROWS[cell.row]
         criterion = CRITERION_BY_KEY[cell.criterion]
@@ -374,6 +401,7 @@ class ProbeJudge:
                 ],
                 "conversation": conversation,
                 "request": request,
+                "clock": _clock(now, planning_day),
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -544,6 +572,7 @@ async def elicit(
     judges: Judges,
     *,
     session_key: str,
+    now: datetime,
     concurrency: int = 16,
     generate_for: int = 3,
 ) -> ElicitationResult:
@@ -555,8 +584,26 @@ async def elicit(
     `uncovered`: the gate is "nothing uncovered", and `unaskable` only sorts
     a cell last.
     """
+    if now.tzinfo is None or now.utcoffset() is None:
+        # A naive clock cannot be placed against a planning day in a named
+        # zone; a probe about the wrong hour is worse than no probe (#412).
+        raise ValueError("elicit needs a tz-aware `now` in the planning timezone")
     if snapshot.planning_day is None:
         raise ValueError("elicit needs a locked planning day")
+    # The message above promises "in the planning timezone", not merely
+    # tz-aware: a `now` in UTC (or any other zone) passes the check above
+    # and then has its wall-clock hour rendered straight into both judges'
+    # prompts by `_clock`, so "in 2 hours" resolves from the wrong hour
+    # silently -- the exact #412 regression, just not caught at the door.
+    # `now_zone`/`planning_day.timezone` are identifiers this system minted
+    # (an IANA key from `zoneinfo.ZoneInfo`, and the string the host locked
+    # the day with), so comparing them is arithmetic, not a judgement.
+    now_zone = getattr(now.tzinfo, "key", None)
+    if now_zone != snapshot.planning_day.timezone:
+        raise ValueError(
+            "elicit needs `now` in the planning day's timezone "
+            f"({snapshot.planning_day.timezone!r}), got {now_zone!r}"
+        )
     day = snapshot.planning_day.date
     suspended = _suspended_uids(snapshot)
     live_rows = [row for row in rows if str(row.get("uid")) not in suspended]
@@ -598,6 +645,8 @@ async def elicit(
                 stated=stated_lines,
                 request=request,
                 session_key=session_key,
+                now=now,
+                planning_day=day,
             )
             return cell.id, state
 
@@ -626,7 +675,13 @@ async def elicit(
     drafts = await asyncio.gather(
         *(
             judges.probe.generate(
-                cell=cell, rules_full=by_row[cell.row], conversation=conversation, request=request, session_key=session_key
+                cell=cell,
+                rules_full=by_row[cell.row],
+                conversation=conversation,
+                request=request,
+                session_key=session_key,
+                now=now,
+                planning_day=day,
             )
             for cell in targets
         )

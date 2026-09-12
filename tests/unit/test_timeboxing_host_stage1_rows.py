@@ -91,8 +91,28 @@ def test_a_frame_the_judge_states_is_in_the_snapshot_elicit_sees(stub_elicit, mo
     context = asyncio.run(host.resolve(_snapshot(), target=ArtifactKind.SKELETON, progress=_Sink()))
 
     assert [f.kind for f in context.facts] == [FactKind.DAY_FRAME, FactKind.COVERAGE_MATRIX]
-    seen_snapshot, _ = stub_elicit.calls[0]
+    seen_snapshot, _, _ = stub_elicit.calls[0]
     assert any(f.kind is FactKind.DAY_FRAME for f in seen_snapshot.facts)
+
+
+def test_the_host_hands_elicit_the_clock_in_the_planning_timezone(stub_elicit) -> None:
+    """The bot's clock is UTC; the day is planned in Europe/Amsterdam. 08:09Z
+    is 10:09 there, and that is the hour the judges must reason from."""
+    runtime = SimpleNamespace(
+        timeboxing_constraint_store=_Store(),
+        timeboxing_intent_model_client=object(),
+        timeboxing_judge_model_client=object(),
+    )
+    utc_now = datetime(2026, 9, 8, 8, 9, tzinfo=timezone.utc)
+    host = HostPlanningContext(runtime, now=lambda: utc_now)
+    frame = PlanningFact(fact_id="frame-1", kind=FactKind.DAY_FRAME, value={"wake": "07:00", "sleep": "23:00"}, source="user")
+
+    asyncio.run(host.resolve(_snapshot(frame), target=ArtifactKind.SKELETON, progress=_Sink()))
+
+    [(_, _, now)] = stub_elicit.calls
+    assert now.tzinfo is not None and str(now.tzinfo) == "Europe/Amsterdam"
+    assert (now.hour, now.minute) == (10, 9)
+    assert now == utc_now
 
 
 def test_no_model_client_is_a_dependency_failure_even_with_a_frame_stated() -> None:
