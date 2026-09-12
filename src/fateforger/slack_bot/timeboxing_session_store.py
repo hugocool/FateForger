@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -26,6 +28,7 @@ from fateforger.agents.timeboxing.session_contracts import (
     PlanningSessionSnapshot,
     TurnOutcome,
 )
+from tmbx.core.render import COLUMNS
 
 
 class _Base(DeclarativeBase):
@@ -55,6 +58,24 @@ class _StoredSessionEnvelope(BaseModel):
     envelope_version: Literal[1] = 1
     snapshot: PlanningSessionSnapshot
     outcomes: dict[str, TurnOutcome]
+
+
+class StandingSessionRow(BaseModel):
+    """One session that stands, from the indexed columns plus its plan's gist.
+
+    `gist` is the only part that reads `snapshot_json`, and it is read to be
+    *shown to a judge*, never compared. The row set is single digits, so the
+    cost of loading those snapshots is bounded.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    session_key: str
+    status: str
+    planning_date: date | None
+    updated_at: datetime
+    revision: int
+    gist: tuple[str, ...] = ()
 
 
 class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
@@ -246,6 +267,64 @@ class SqlAlchemyTimeboxingSessionRepository(PlanningSessionRepository):
             open_session_key=open_key, committed_session_key=committed_key
         )
 
+    async def standing_rows(
+        self,
+        *,
+        owner_user_id: str,
+        as_of: datetime,
+        open_within: timedelta,
+        horizon: timedelta,
+    ) -> list[StandingSessionRow]:
+        """Which sessions stand for this owner AT `as_of`.
+
+        Same predicate family as `standing_for`, which answers this for the
+        nudger and returns keys. This returns rows a catalog can describe.
+
+        `created_at < as_of` keeps a row the current message minted out of its
+        own catalog. `updated_at` is written naive UTC by `save`, so both bounds
+        are compared in that basis.
+        """
+        moment = as_of.astimezone(UTC).replace(tzinfo=None)
+        since = moment - open_within
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(
+                    _TimeboxingSessionState.session_key,
+                    _TimeboxingSessionState.status,
+                    _TimeboxingSessionState.planning_date,
+                    _TimeboxingSessionState.updated_at,
+                    _TimeboxingSessionState.revision,
+                    _TimeboxingSessionState.snapshot_json,
+                )
+                .where(
+                    _TimeboxingSessionState.owner_user_id == owner_user_id,
+                    _TimeboxingSessionState.created_at < moment,
+                    or_(
+                        (_TimeboxingSessionState.status == "open")
+                        & (_TimeboxingSessionState.updated_at >= since),
+                        (_TimeboxingSessionState.status == "committed")
+                        & (_TimeboxingSessionState.planning_date >= moment.date())
+                        & (
+                            _TimeboxingSessionState.planning_date
+                            <= (moment + horizon).date()
+                        ),
+                    ),
+                )
+                .order_by(_TimeboxingSessionState.updated_at.desc())
+            )
+            rows = result.all()
+        return [
+            StandingSessionRow(
+                session_key=key,
+                status=status,
+                planning_date=planning_date,
+                updated_at=updated_at,
+                revision=revision,
+                gist=_plan_gist(snapshot_json),
+            )
+            for key, status, planning_date, updated_at, revision, snapshot_json in rows
+        ]
+
     async def open_sessions(self, *, owner_user_id: str) -> list[OpenSessionRow]:
         """Every open session this user holds, newest save first.
 
@@ -369,4 +448,98 @@ def _day_frame(snapshot: PlanningSessionSnapshot) -> dict | None:
     return None
 
 
-__all__ = ["SqlAlchemyTimeboxingSessionRepository"]
+def _plan_gist(snapshot_json: str) -> tuple[str, ...]:
+    """A few of the plan's own block titles, with their times.
+
+    **From the rows, never from the table when the rows are there.** That
+    ruling is already this repo's (`schedule_render.py`): *"A comma in a
+    summary, a block crossing midnight, a column renamed on the server -- each
+    is a way a parser here would go quietly wrong, and the rows already carry
+    every field the table does."* `candidate_display_text` follows it and so
+    does `required_blocks.slugs_on_candidate` (*"the authoritative record when
+    the capture has them"*). The rows sit in the same `validated_candidate`
+    payload as the rendered table, carrying `summary`, `start` and `end` as
+    fields (`validated_timebox_draft.py`), so this reads those.
+
+    The table is the fallback and nothing else: an artifact captured before
+    `plan_apply` returned rows beside the table carries only `rendered`, and a
+    table is still better than no gist at all. It is a format this system
+    generated, so taking three fields out of it is arithmetic over our own
+    columns and not a reading of anything the user wrote -- but the columns are
+    located by name in `tmbx.core.render.COLUMNS` rather than by hardcoded
+    position, because a column inserted before `summary` would otherwise shift
+    every field silently. Parsed with `csv.reader`, not `line.split(",")`:
+    `render_plan`'s `_escape` CSV-quotes a summary containing the table's own
+    delimiter (its docstring's own example is `"Sprint, planning"`), and a naive
+    split breaks a quoted field into two, shifting every column after it.
+    Anything unparseable yields no gist rather than a guess.
+    """
+    try:
+        envelope = json.loads(snapshot_json)
+        artifacts = envelope["snapshot"]["artifacts"]
+    except (ValueError, KeyError, TypeError):
+        return ()
+    payload = next(
+        (
+            artifact.get("payload")
+            for artifact in reversed(artifacts)
+            if isinstance(artifact, dict)
+            and artifact.get("kind") == "validated_candidate"
+        ),
+        None,
+    )
+    if not isinstance(payload, dict):
+        return ()
+    rows = payload.get("rows")
+    if isinstance(rows, list) and rows:
+        return _gist_from_rows(rows)
+    return _gist_from_rendered(payload.get("rendered"))
+
+
+def _gist_from_rows(rows: list) -> tuple[str, ...]:
+    """The resolved rows as the model reads them, in the plan's own order."""
+    entries: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        summary, start, end = (
+            row.get("summary"),
+            row.get("start"),
+            row.get("end"),
+        )
+        if not (
+            isinstance(summary, str)
+            and isinstance(start, str)
+            and isinstance(end, str)
+        ):
+            continue
+        entries.append(f"{summary} {start}-{end}")
+    return tuple(entries)
+
+
+def _gist_from_rendered(rendered: object) -> tuple[str, ...]:
+    """The pre-rows fallback: the handle table, read by column name."""
+    if not isinstance(rendered, str):
+        return ()
+    try:
+        summary_at = COLUMNS.index("summary")
+        start_at = COLUMNS.index("ST")
+        end_at = COLUMNS.index("ET")
+    except ValueError:  # pragma: no cover - the render module renamed a column
+        return ()
+    width = max(summary_at, start_at, end_at) + 1
+    try:
+        data_rows = list(csv.reader(rendered.splitlines()[1:]))
+    except csv.Error:
+        return ()
+    entries: list[str] = []
+    for fields in data_rows:  # first line was already dropped: column header
+        if len(fields) < width:
+            continue
+        entries.append(
+            f"{fields[summary_at]} {fields[start_at]}-{fields[end_at]}"
+        )
+    return tuple(entries)
+
+
+__all__ = ["SqlAlchemyTimeboxingSessionRepository", "StandingSessionRow"]

@@ -1858,7 +1858,7 @@ async def test_a_closed_question_arrives_as_buttons_carrying_what_they_answer(
     planner = ShapePlanner()
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = TimeboxingIntentInterpreter(
-        ScriptedModel({"decision": "confirm_planning_day", "facts": []})
+        ScriptedModel({"decision": "confirm_planning_day"})
     )
     client = Client()
 
@@ -1907,7 +1907,7 @@ async def test_an_option_question_keeps_its_buttons_when_a_press_is_refused(
     planner = ShapePlanner()
     runtime = Runtime(repository=repository, planner=planner)
     runtime.timeboxing_intent_interpreter = TimeboxingIntentInterpreter(
-        ScriptedModel({"decision": "confirm_planning_day", "facts": []})
+        ScriptedModel({"decision": "confirm_planning_day"})
     )
     client = Client()
 
@@ -2068,7 +2068,7 @@ async def test_a_whole_session_can_be_driven_by_chat_and_by_button_alike(
     typed_runtime, typed_planner, typed_model = _shape_runtime(
         repository,
         responses=[
-            {"decision": "confirm_planning_day", "day_type": "vacation", "facts": []},
+            {"decision": "confirm_planning_day", "day_type": "vacation"},
             facts_reply,
             {"decision": "advance", "facts": []},
             {"decision": "choose_option", "option_id": "option-2"},

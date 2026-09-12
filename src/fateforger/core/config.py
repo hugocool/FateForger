@@ -94,6 +94,14 @@ class Settings(BaseSettings):
     llm_model_calendar_submitter: str = Field(
         default=""
     )
+    #: Every surface interpreter (planning card, timeboxing stage cards).
+    #: Defaults to the pro pin on the 2026-09-06 bench, not the flash
+    #: pin CLAUDE.md names for routing: the prompts as written lose there --
+    #: 4 judgement losses against the pro pin's 0, revision-after-commit 1/8
+    #: against 8/8. (Not "27/34 against 32/34": those raw case counts fold in
+    #: the break-it families, which assert a flip and are never judgement
+    #: losses.) The flash pin is the destination, after the prompt work in #406.
+    llm_model_intent_interpreter: str = Field(default="")
 
     # Per-agent temperature
     llm_temperature_admonisher: float = Field(
@@ -119,10 +127,27 @@ class Settings(BaseSettings):
     llm_reasoning_effort_timebox_patcher: str = Field(
         default=""
     )
+    #: Empty: the code default, `low` on Hugo's ruling over the 2026-09-11
+    #: bench (scripts/bench/results-interpreter-tier-2026-09-11.md): pro/`low`
+    #: at 1024 lost no judgement pro/`high` held and cost less.
+    llm_reasoning_effort_intent_interpreter: str = Field(default="")
     llm_max_tokens: int = Field(default=0)
     llm_max_tokens_timebox_patcher: int = Field(
         default=0
     )
+    #: -1: the code default (see llm/factory._INTENT_INTERPRETER_MAX_TOKENS,
+    #: 1024 on Hugo's ruling over the 2026-09-06 bench). 0: uncapped. >0: the
+    #: cap. The interpreter answers a small fixed schema -- a 45-token median
+    #: on the pro pin, 78 on the flash pin, and 405 tokens was the largest
+    #: legitimate answer *the pro pin* gave with nothing stopping it. That
+    #: figure is the pro pin's, not the whole bench's: the flash pin returned a
+    #: completed 4,839-token draw in a case it still scored 8/8, so the cap has
+    #: yet to be shown free on the pin #406 flips to. Uncapped, #325's runaway
+    #: holds the user's turn open while the SDK waits 600s and retries twice;
+    #: the bench measured 3 truncated draws in the 545 taken at 1024, all of
+    #: them slow ones, and no case failing on length.
+    #: scripts/bench/results-interpreter-tier-2026-09-06.md has the numbers.
+    llm_max_tokens_intent_interpreter: int = Field(default=-1)
 
     # MCP Server Configuration
     mcp_version: str = Field(default="v1.4.8")
@@ -296,6 +321,18 @@ class Settings(BaseSettings):
         if value >= 0:
             return value
         raise ValueError("LLM max token limits must be >= 0")
+
+    @field_validator("llm_max_tokens_intent_interpreter")
+    @classmethod
+    def _validate_interpreter_tokens(cls, value: int) -> int:
+        # Its own validator: -1 is legal here and means "the code default",
+        # which the bench needs to tell apart from 0 ("uncapped").
+        if value >= -1:
+            return value
+        raise ValueError(
+            "LLM_MAX_TOKENS_INTENT_INTERPRETER must be >= -1 "
+            "(-1: the code default, 0: uncapped, >0: the cap)"
+        )
 
     @field_validator("timeboxing_memory_backend")
     @classmethod

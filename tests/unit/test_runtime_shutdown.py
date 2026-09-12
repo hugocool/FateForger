@@ -123,27 +123,33 @@ async def test_shutdown_runtime_is_noop_when_uninitialized() -> None:
         runtime_module._runtime = original_runtime
 
 
-def test_runtime_builds_one_intent_client_without_a_sampling_pin(monkeypatch) -> None:
-    """Catches per-turn model-client construction or a reintroduced sampling pin.
+def test_runtime_builds_one_intent_client_from_the_interpreter_site(monkeypatch) -> None:
+    """Catches per-turn model-client construction, and the wrong construction site.
 
-    No temperature pin (CLAUDE.md): the client is built with no sampling
-    parameter at all, not with temperature pinned to zero.
+    One client, built once, from the interpreter's own row -- and the object
+    the interpreter holds is the one the runtime owns and closes.
+
+    It no longer sees the client's kwargs: build_intent_interpreter_client()
+    takes none, so the no-temperature-pin rule (CLAUDE.md) is asserted where
+    those kwargs exist -- tests/unit/test_intent_interpreter_client.py,
+    test_the_default_row_is_the_pro_pin_at_high_and_capped.
     """
 
-    created: list[tuple[str, dict[str, object]]] = []
+    created: list[dict[str, object]] = []
     client = _FakeIntentModelClient()
 
-    def _build(name: str, **kwargs: object) -> _FakeIntentModelClient:
-        created.append((name, kwargs))
+    def _build(**kwargs: object) -> _FakeIntentModelClient:
+        created.append(kwargs)
         return client
 
-    monkeypatch.setattr(runtime_module, "build_autogen_chat_client", _build)
+    # The interpreter's own row, not its host agent's client (#336).
+    monkeypatch.setattr(runtime_module, "build_intent_interpreter_client", _build)
 
     interpreter, owned_client = (
         runtime_module._build_timeboxing_intent_interpreter()
     )
 
-    assert created == [("timeboxing_agent", {})]
+    assert created == [{}]
     assert owned_client is client
     assert interpreter.model_client is client
 
@@ -156,8 +162,8 @@ async def test_runtime_interpreter_reuses_owned_client_across_turns(
     client = _FakeIntentModelClient()
     monkeypatch.setattr(
         runtime_module,
-        "build_autogen_chat_client",
-        lambda _name, **_kwargs: client,
+        "build_intent_interpreter_client",
+        lambda **_kwargs: client,
     )
     interpreter, owned_client = (
         runtime_module._build_timeboxing_intent_interpreter()

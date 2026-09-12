@@ -1,0 +1,1764 @@
+{
+  "date": "2026-09-06",
+  "runs": [
+    {
+      "config": "pro-high",
+      "eval": "planning_card",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high--planning_card.log"
+    },
+    {
+      "config": "pro-high",
+      "eval": "day_frame",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high--day_frame.log"
+    },
+    {
+      "config": "pro-high",
+      "eval": "timebox_question",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high--timebox_question.log"
+    },
+    {
+      "config": "pro-high-1024",
+      "eval": "planning_card",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--planning_card.log"
+    },
+    {
+      "config": "pro-high-1024",
+      "eval": "day_frame",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--day_frame.log"
+    },
+    {
+      "config": "pro-high-1024",
+      "eval": "timebox_question",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high-1024--timebox_question.log"
+    },
+    {
+      "config": "pro-high-2048",
+      "eval": "planning_card",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--planning_card.log"
+    },
+    {
+      "config": "pro-high-2048",
+      "eval": "day_frame",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--day_frame.log"
+    },
+    {
+      "config": "pro-high-2048",
+      "eval": "timebox_question",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/pro-high-2048--timebox_question.log"
+    },
+    {
+      "config": "flash-minimal",
+      "eval": "planning_card",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--planning_card.log"
+    },
+    {
+      "config": "flash-minimal",
+      "eval": "day_frame",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--day_frame.log"
+    },
+    {
+      "config": "flash-minimal",
+      "eval": "timebox_question",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal--timebox_question.log"
+    },
+    {
+      "config": "flash-minimal-1024",
+      "eval": "planning_card",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--planning_card.log"
+    },
+    {
+      "config": "flash-minimal-1024",
+      "eval": "day_frame",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--day_frame.log"
+    },
+    {
+      "config": "flash-minimal-1024",
+      "eval": "timebox_question",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-1024--timebox_question.log"
+    },
+    {
+      "config": "flash-minimal-2048",
+      "eval": "planning_card",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--planning_card.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--planning_card.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--planning_card.log"
+    },
+    {
+      "config": "flash-minimal-2048",
+      "eval": "day_frame",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--day_frame.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--day_frame.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--day_frame.log"
+    },
+    {
+      "config": "flash-minimal-2048",
+      "eval": "timebox_question",
+      "draws": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--timebox_question.jsonl",
+      "junit": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--timebox_question.xml",
+      "log": "scripts/bench/interpreter-tier-2026-09-06/flash-minimal-2048--timebox_question.log"
+    }
+  ],
+  "summary": {
+    "pro-high::planning_card": {
+      "config": "pro-high",
+      "eval": "planning_card",
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "None"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 80,
+      "cases_passed": 10,
+      "cases_total": 10,
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 80
+      },
+      "latency_median_s": 1.7277640209995297,
+      "latency_p90_s": 3.5484990830009338,
+      "latency_max_s": 4.330661416001021,
+      "completion_tokens_median": 21.0,
+      "completion_tokens_p90": 143.0,
+      "completion_tokens_max": 258,
+      "completion_tokens_max_case": "test_a_time_with_consent_updates_and_adds[no, let's do 13:45]",
+      "prompt_tokens_total": 31489,
+      "completion_tokens_total": 4319,
+      "cost_usd": 0.0466,
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-high::day_frame": {
+      "config": "pro-high",
+      "eval": "day_frame",
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "None"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 40,
+      "cases_passed": 5,
+      "cases_total": 5,
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 40
+      },
+      "latency_median_s": 1.9988309165000828,
+      "latency_p90_s": 2.3207532500000525,
+      "latency_max_s": 2.436046583999996,
+      "completion_tokens_median": 63.0,
+      "completion_tokens_p90": 107.0,
+      "completion_tokens_max": 111,
+      "completion_tokens_max_case": "test_the_2026_09_02_opening_message_states_no_frame",
+      "prompt_tokens_total": 19024,
+      "completion_tokens_total": 2318,
+      "cost_usd": 0.0273,
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-high::timebox_question": {
+      "config": "pro-high",
+      "eval": "timebox_question",
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "None"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 152,
+      "cases_passed": 17,
+      "cases_total": 19,
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        {
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "E     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='fc64510b-b6e5-4d2a-8fd3-00c6934d6b36', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='99e7bb71-7d9b-4bb0-9280-42874fc154d1', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='c91637b2-6919-4617-9f6b-cb0a270f749c', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='2b577324-b603-4f3e-97fd-9392bae11532', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='8b866bbb-e96d-4cea-9623-757201e066c7', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='5094f0b7-2496-4021-8e3c-48724a21689d', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE   assert 8 < 7"
+        },
+        {
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "ame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None), PlanningFact(fact_id='99914665-f2da-4991-a414-77db670a6a23', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='deep work at 9', source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='b21829d6-1b5a-428f-8628-cbf1a1157055', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='2d9d239e-234f-4ae5-b756-841744ffc58d', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='5e6f1b75-eba2-415f-ae70-8116969699df', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='fe6d58ff-812f-4bc8-90e0-190633d8d0f4', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='39879204-f78c-4b1d-9c5c-ee903847092c', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE   assert 7 < 7"
+        }
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 152
+      },
+      "latency_median_s": 1.9021694790008041,
+      "latency_p90_s": 4.169063790999644,
+      "latency_max_s": 9.621560749999844,
+      "completion_tokens_median": 45.0,
+      "completion_tokens_p90": 68.0,
+      "completion_tokens_max": 405,
+      "completion_tokens_max_case": "test_a_fact_after_commit_is_still_a_fact[I sleep 00:30\\u201308:30]",
+      "prompt_tokens_total": 107679,
+      "completion_tokens_total": 8503,
+      "cost_usd": 0.1398,
+      "decision_breakdown": [
+        "[eval] AskQuestion 8/8 <- 'has it been scheduled?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'did you put the gym in?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'is there a planning session today?' :: {'AskQuestion': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'plan my day tomorrow' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"let's timebox saturday\" :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'kick it off' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"right, let's begin\" :: {'StartSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'cancel this' :: {'CancelSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'never mind, not today' :: {'CancelSession': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'what did we decide about lunch?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"when's the deep-work block?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'I sleep 00:30\u201308:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ReviseArtifact 8/8 <- 'move the work two hours later' :: {'ReviseArtifact': 8} retries=0",
+        "[eval] AskQuestion 2/8 <- \"what's on my calendar tomorrow?\" :: {'StartSession': 6, 'AskQuestion': 2} retries=0",
+        "[eval] StartSession 6/8 <- \"what's on my calendar tomorrow?\" :: {'StartSession': 6, 'AskQuestion': 2} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] AskQuestion 0/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 7/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 7, 'AskQuestion': 1} retries=0",
+        "[eval] AskQuestion 1/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 7, 'AskQuestion': 1} retries=0"
+      ],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": true
+    },
+    "pro-high-1024::planning_card": {
+      "config": "pro-high-1024",
+      "eval": "planning_card",
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 80,
+      "cases_passed": 10,
+      "cases_total": 10,
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 1,
+      "length_draw_cases": [
+        "test_a_time_with_consent_updates_and_adds[no, let's do 13:45]"
+      ],
+      "truncated_draws": [
+        {
+          "config": "pro-high-1024",
+          "eval": "planning_card",
+          "case": "test_a_time_with_consent_updates_and_adds[no, let's do 13:45]",
+          "latency_s": 15.859234957999433,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
+      "cap_bites": 1,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 79
+      },
+      "latency_median_s": 2.477233792000334,
+      "latency_p90_s": 4.0538127919990075,
+      "latency_max_s": 15.859234957999433,
+      "completion_tokens_median": 23,
+      "completion_tokens_p90": 172.0,
+      "completion_tokens_max": 375,
+      "completion_tokens_max_case": "test_a_time_with_consent_updates_and_adds[no, let's do 13:45]",
+      "prompt_tokens_total": 31193,
+      "completion_tokens_total": 5091,
+      "cost_usd": 0.0488,
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-high-1024::day_frame": {
+      "config": "pro-high-1024",
+      "eval": "day_frame",
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 40,
+      "cases_passed": 5,
+      "cases_total": 5,
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 40
+      },
+      "latency_median_s": 2.0087470204989586,
+      "latency_p90_s": 4.727097458000571,
+      "latency_max_s": 4.761775124999986,
+      "completion_tokens_median": 63.0,
+      "completion_tokens_p90": 107.0,
+      "completion_tokens_max": 367,
+      "completion_tokens_max_case": "test_the_2026_09_02_opening_message_states_no_frame",
+      "prompt_tokens_total": 19103,
+      "completion_tokens_total": 2647,
+      "cost_usd": 0.0284,
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-high-1024::timebox_question": {
+      "config": "pro-high-1024",
+      "eval": "timebox_question",
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 152,
+      "cases_passed": 17,
+      "cases_total": 19,
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        {
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "E     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='2c610e77-9d8e-4588-8fa0-f68a794abee2', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='4d96b8fb-329c-497f-8715-014210743d8c', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='d6f5a4f0-d4b3-4848-8e40-f12b31c7ad6b', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='a5068f45-8681-4e6a-a5ef-787cbaee17ac', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='46b9135e-eb4a-4fc6-8496-2fcdcc7dc24a', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='c09ad733-dd35-4a99-b279-1022eb059999', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE   assert 8 < 7"
+        },
+        {
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "action_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='98383526-cc46-4b2d-b6b9-7f372506f5bc', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='ed23bc9d-9bf8-4256-a678-9c86303e2e6a', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='a8df3d91-9b0d-4660-9eb3-323d9af102bd', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='eea63a2d-15ca-43c7-888e-d079f0942699', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='56e8857e-7652-49a6-9dba-04d80e3863a0', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='abdc162e-159e-41f9-916b-aa80c7f1e199', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE   assert 8 < 7"
+        }
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 152
+      },
+      "latency_median_s": 1.785332854000444,
+      "latency_p90_s": 4.345513958000083,
+      "latency_max_s": 4.744063208001535,
+      "completion_tokens_median": 45.0,
+      "completion_tokens_p90": 64.0,
+      "completion_tokens_max": 108,
+      "completion_tokens_max_case": "test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+      "prompt_tokens_total": 107600,
+      "completion_tokens_total": 8094,
+      "cost_usd": 0.1384,
+      "decision_breakdown": [
+        "[eval] AskQuestion 8/8 <- 'has it been scheduled?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'did you put the gym in?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'is there a planning session today?' :: {'AskQuestion': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'plan my day tomorrow' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"let's timebox saturday\" :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'kick it off' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"right, let's begin\" :: {'StartSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'cancel this' :: {'CancelSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'never mind, not today' :: {'CancelSession': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'what did we decide about lunch?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"when's the deep-work block?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'I sleep 00:30\u201308:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ReviseArtifact 8/8 <- 'move the work two hours later' :: {'ReviseArtifact': 8} retries=0",
+        "[eval] AskQuestion 2/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 2, 'StartSession': 6} retries=0",
+        "[eval] StartSession 6/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 2, 'StartSession': 6} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] AskQuestion 0/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] AskQuestion 0/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0"
+      ],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": true
+    },
+    "pro-high-2048::planning_card": {
+      "config": "pro-high-2048",
+      "eval": "planning_card",
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "2048"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 80,
+      "cases_passed": 10,
+      "cases_total": 10,
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {
+        "ValidationError": 1
+      },
+      "transport_loss_draws": 1,
+      "length_draws": 1,
+      "length_draw_cases": [
+        "test_a_time_without_consent_only_updates"
+      ],
+      "truncated_draws": [
+        {
+          "config": "pro-high-2048",
+          "eval": "planning_card",
+          "case": "test_a_time_without_consent_only_updates",
+          "latency_s": 55.6511918340002,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
+      "cap_bites": 1,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 78
+      },
+      "latency_median_s": 1.9943667494999318,
+      "latency_p90_s": 4.438018500000908,
+      "latency_max_s": 55.6511918340002,
+      "completion_tokens_median": 26.0,
+      "completion_tokens_p90": 181.0,
+      "completion_tokens_max": 294,
+      "completion_tokens_max_case": "test_a_time_with_consent_updates_and_adds[no, let's do 13:45]",
+      "prompt_tokens_total": 31132,
+      "completion_tokens_total": 5254,
+      "cost_usd": 0.0492,
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-high-2048::day_frame": {
+      "config": "pro-high-2048",
+      "eval": "day_frame",
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "2048"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 40,
+      "cases_passed": 5,
+      "cases_total": 5,
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 40
+      },
+      "latency_median_s": 1.853566583000429,
+      "latency_p90_s": 7.5496408750004775,
+      "latency_max_s": 7.783271333000812,
+      "completion_tokens_median": 63.0,
+      "completion_tokens_p90": 107.0,
+      "completion_tokens_max": 118,
+      "completion_tokens_max_case": "test_the_2026_09_02_opening_message_states_no_frame",
+      "prompt_tokens_total": 19024,
+      "completion_tokens_total": 2314,
+      "cost_usd": 0.0272,
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "pro-high-2048::timebox_question": {
+      "config": "pro-high-2048",
+      "eval": "timebox_question",
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "models_seen": [
+        "deepseek/deepseek-v4-pro-0813:nitro"
+      ],
+      "expected_model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "cap_built_with": [
+        "2048"
+      ],
+      "effort_built_with": [
+        "high"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 153,
+      "cases_passed": 17,
+      "cases_total": 19,
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        {
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "E     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='b8c084b3-1c91-44b6-8af6-cd2cce18af17', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='bf2b5d97-25c3-4f53-a28a-8f89211c70d9', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='d6ce3231-9a55-4717-aadf-c01095202bee', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='60bcd043-3992-4b17-89ee-14c444aa49fc', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='52633612-20be-4904-8342-b30d3d32f79a', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='dcb9e0e0-cafc-4045-a244-73d4e96bcc5d', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE   assert 8 < 7"
+        },
+        {
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "action_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='0e186d8c-a224-4c33-996e-c9544e6ebad7', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='c7e15fce-e792-4482-a5ca-591178005d44', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='d95a2182-28e8-4e0f-8df6-f29edd34e217', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='0bf16f73-fa2a-4cae-9228-8783285e041c', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='044d2495-1d1e-4c4b-b65f-0b88d1218740', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='af23b503-6377-4686-b16b-51cc7e033e60', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE   assert 8 < 7"
+        }
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 1,
+      "length_draw_cases": [
+        "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]"
+      ],
+      "truncated_draws": [
+        {
+          "config": "pro-high-2048",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "latency_s": 38.06912429100339,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
+      "cap_bites": 1,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 152
+      },
+      "latency_median_s": 3.603230333999818,
+      "latency_p90_s": 5.488571624999167,
+      "latency_max_s": 38.06912429100339,
+      "completion_tokens_median": 45.0,
+      "completion_tokens_p90": 68.0,
+      "completion_tokens_max": 108,
+      "completion_tokens_max_case": "test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+      "prompt_tokens_total": 107600,
+      "completion_tokens_total": 8094,
+      "cost_usd": 0.1384,
+      "decision_breakdown": [
+        "[eval] AskQuestion 8/8 <- 'has it been scheduled?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'did you put the gym in?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'is there a planning session today?' :: {'AskQuestion': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'plan my day tomorrow' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"let's timebox saturday\" :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'kick it off' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"right, let's begin\" :: {'StartSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'cancel this' :: {'CancelSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'never mind, not today' :: {'CancelSession': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'what did we decide about lunch?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"when's the deep-work block?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'I sleep 00:30\u201308:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ReviseArtifact 8/8 <- 'move the work two hours later' :: {'ReviseArtifact': 8} retries=0",
+        "[eval] AskQuestion 1/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 1, 'StartSession': 7} retries=1",
+        "[eval] StartSession 7/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 1, 'StartSession': 7} retries=1",
+        "[eval] ProvidePlanningFacts 8/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] AskQuestion 0/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] AskQuestion 0/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0"
+      ],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": true
+    },
+    "flash-minimal::planning_card": {
+      "config": "flash-minimal",
+      "eval": "planning_card",
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "None"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 80,
+      "cases_passed": 8,
+      "cases_total": 10,
+      "judgement_losses": [
+        {
+          "case": "test_a_non_press_is_none[plan tomorrow for me]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "ration/test_eval_planning_card_intent.py:125: in test_a_non_press_is_none\n    assert _count(results, kind=None) >= THRESHOLD, _report(results)\nE   AssertionError: PlanningPress(kind='add', selected_time=None)\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     Traceback (most recent call last):\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/tests/integration/test_eval_planning_card_intent.py\", line 84, in one\nE         return bind(turn)\nE                ^^^^^^^^^^\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/src/fateforger/slack_bot/planning_surface.py\", line 174, in bind\nE         raise ValueError(f\"{decision} without a time\")\nE     ValueError: update_time_and_add without a time\nE     ---\nE     None\nE     ---\nE     PlanningPress(kind='add', selected_time=None)\nE     ---\nE     Traceback (most recent call last):\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/tests/integration/test_eval_planning_card_intent.py\", line 84, in one\nE         return bind(turn)\nE                ^^^^^^^^^^\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/src/fateforger/slack_bot/planning_surface.py\", line 174, in bind\nE         raise ValueError(f\"{decision} without a time\")\nE     ValueError: update_time_and_add without a time\nE   assert 4 >= 7\nE    +  where 4 = _count([PlanningPress(kind='add', selected_time=None), None, None, None, ValueError('update_time_and_add without a time'), None, ...], kind=None)"
+        },
+        {
+          "case": "test_a_non_press_is_none[later]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "tests/integration/test_eval_planning_card_intent.py:125: in test_a_non_press_is_none\n    assert _count(results, kind=None) >= THRESHOLD, _report(results)\nE   AssertionError: None\nE     ---\nE     None\nE     ---\nE     Traceback (most recent call last):\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/tests/integration/test_eval_planning_card_intent.py\", line 84, in one\nE         return bind(turn)\nE                ^^^^^^^^^^\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/src/fateforger/slack_bot/planning_surface.py\", line 174, in bind\nE         raise ValueError(f\"{decision} without a time\")\nE     ValueError: update_time without a time\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     Traceback (most recent call last):\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/tests/integration/test_eval_planning_card_intent.py\", line 84, in one\nE         return bind(turn)\nE                ^^^^^^^^^^\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/src/fateforger/slack_bot/planning_surface.py\", line 174, in bind\nE         raise ValueError(f\"{decision} without a time\")\nE     ValueError: update_time without a time\nE   assert 6 >= 7\nE    +  where 6 = _count([None, None, ValueError('update_time without a time'), None, None, None, ...], kind=None)"
+        }
+      ],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 79,
+        "unknown": 1
+      },
+      "latency_median_s": 0.4885542499996518,
+      "latency_p90_s": 1.04675325000062,
+      "latency_max_s": 3.1810314579997794,
+      "completion_tokens_median": 60.5,
+      "completion_tokens_p90": 86.0,
+      "completion_tokens_max": 193,
+      "completion_tokens_max_case": "test_a_non_press_is_none[plan tomorrow for me]",
+      "prompt_tokens_total": 53599,
+      "completion_tokens_total": 5372,
+      "cost_usd": 0.0029,
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "flash-minimal::day_frame": {
+      "config": "flash-minimal",
+      "eval": "day_frame",
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "None"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 40,
+      "cases_passed": 5,
+      "cases_total": 5,
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 40
+      },
+      "latency_median_s": 1.3334236039991083,
+      "latency_p90_s": 1.780917166001018,
+      "latency_max_s": 2.7466791669994564,
+      "completion_tokens_median": 143.0,
+      "completion_tokens_p90": 183.0,
+      "completion_tokens_max": 219,
+      "completion_tokens_max_case": "test_the_2026_09_02_correction_is_a_frame_fact",
+      "prompt_tokens_total": 25128,
+      "completion_tokens_total": 5445,
+      "cost_usd": 0.0019,
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "flash-minimal::timebox_question": {
+      "config": "flash-minimal",
+      "eval": "timebox_question",
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "None"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 152,
+      "cases_passed": 14,
+      "cases_total": 19,
+      "judgement_losses": [
+        {
+          "case": "test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "move lunch? I sleep 00:30-08:30')\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='16bd3211-ea86-42c8-9b52-3275d253ce86', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='a4223f0c-8c0f-442b-aef1-906f8597f538', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     AskQuestion(kind='ask_question', question='did you move lunch? I sleep 00:30-08:30')\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='17d3e7a7-0bdf-4e71-bd60-7ad1de58764c', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='f5def005-ed44-4b8a-8495-9584b309a81a', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE   assert 6 >= 7\nE    +  where 6 = _count([ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='6ca3a48d-6716-4bf0-ae19-32a6a097180d...urce_interaction_id=None)]), AskQuestion(kind='ask_question', question='did you move lunch? I sleep 00:30-08:30'), ...], <class 'fateforger.agents.timeboxing.session_contracts.ProvidePlanningFacts'>, 'did you move lunch? I sleep 00:30-08:30', 0)"
+        },
+        {
+          "case": "test_a_revision_after_commit_is_still_a_revision[move the work two hours later]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "ed_activity'>, value='move the work two hours later', source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='48f3f85a-3eac-467f-bb07-5da8ecab9d36', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='move the work two hours later', source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='c7aadaf8-5d9d-4f10-a5f0-15565347f74a', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='move the work two hours later', source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='fcd21af7-77dd-49aa-833f-88a4c86bf719', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='move work two hours later', source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='82c51042-6ae4-432b-8fe1-2956f7eccaea', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='move the work two hours later', source='user', source_interaction_id=None)])\nE   assert 1 >= 7\nE    +  where 1 = _count([ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='3597f159-dbdd-4ad1-918e-042f3805543f...IVITY: 'requested_activity'>, value='move the work two hours later', source='user', source_interaction_id=None)]), ...], <class 'fateforger.agents.timeboxing.session_contracts.ReviseArtifact'>, 'move the work two hours later', 0)"
+        }
+      ],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        {
+          "case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "tests/integration/test_eval_timebox_question.py:352: in test_break_it_without_the_question_paragraph_a_question_starts_a_session\n    assert started > asked, _report(results, retries)\nE   AssertionError: 0 draw(s) retried after reaching no decision\nE     ---\nE     StartSession(kind='start_session')\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     StartSession(kind='start_session')\nE   assert 2 > 6"
+        },
+        {
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "E     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='749acf31-984f-48d2-a4d4-b158d3c1127b', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='f7ea76a7-46b2-445c-9093-2f86a61e0dd3', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='76316758-dd33-410e-a902-913800289ee1', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='b9723a9c-0013-4479-8e89-d30face0855a', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='91634689-5950-4cb1-91ad-53d8add9155d', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='17230dd9-d275-4125-9d54-fc6804f2b647', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE   assert 8 < 7"
+        },
+        {
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "get up at 07:00')\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='9b3e0480-5b0d-44df-af6f-ad991b31dab3', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='5bfb0784-58f6-404e-83fe-0fce542771b1', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='2f94be14-133a-4435-bc53-51978ed7690b', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='a47e45f2-1f3a-4f07-9b1f-e0082585b4d1', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='c5049b1a-6e2d-4caf-959b-d3888e641518', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='c0b87cbd-f012-48e7-8546-79881f2feba2', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE   assert 7 < 7"
+        }
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 151,
+        "unknown": 1
+      },
+      "latency_median_s": 1.197509749999881,
+      "latency_p90_s": 1.6324955410000257,
+      "latency_max_s": 32.11086754200005,
+      "completion_tokens_median": 76.5,
+      "completion_tokens_p90": 169.0,
+      "completion_tokens_max": 4839,
+      "completion_tokens_max_case": "test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]",
+      "prompt_tokens_total": 115331,
+      "completion_tokens_total": 21654,
+      "cost_usd": 0.0079,
+      "decision_breakdown": [
+        "[eval] AskQuestion 8/8 <- 'has it been scheduled?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'did you put the gym in?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'is there a planning session today?' :: {'AskQuestion': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'plan my day tomorrow' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"let's timebox saturday\" :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'kick it off' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"right, let's begin\" :: {'StartSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'cancel this' :: {'CancelSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'never mind, not today' :: {'CancelSession': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'what did we decide about lunch?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"when's the deep-work block?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'I sleep 00:30\u201308:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 6/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 6, 'AskQuestion': 2} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ReviseArtifact 1/8 <- 'move the work two hours later' :: {'ProvidePlanningFacts': 6, 'ValidationError': 1, 'ReviseArtifact': 1} retries=0",
+        "[eval] AskQuestion 6/8 <- \"what's on my calendar tomorrow?\" :: {'StartSession': 2, 'AskQuestion': 6} retries=0",
+        "[eval] StartSession 2/8 <- \"what's on my calendar tomorrow?\" :: {'StartSession': 2, 'AskQuestion': 6} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] AskQuestion 0/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 7/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 7, 'AskQuestion': 1} retries=0",
+        "[eval] AskQuestion 1/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 7, 'AskQuestion': 1} retries=0"
+      ],
+      "eval_reported_failures": {
+        "ValidationError": 1
+      },
+      "failures_after_create": {
+        "ValidationError": 1
+      },
+      "failures_after_create_by_case": {
+        "move the work two hours later": {
+          "ValidationError": 1
+        }
+      },
+      "prints_breakdown": true
+    },
+    "flash-minimal-1024::planning_card": {
+      "config": "flash-minimal-1024",
+      "eval": "planning_card",
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 80,
+      "cases_passed": 8,
+      "cases_total": 10,
+      "judgement_losses": [
+        {
+          "case": "test_a_non_press_is_none[plan tomorrow for me]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "          ^^^^^^^^^^\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/src/fateforger/slack_bot/planning_surface.py\", line 174, in bind\nE         raise ValueError(f\"{decision} without a time\")\nE     ValueError: update_time without a time\nE     ---\nE     Traceback (most recent call last):\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/tests/integration/test_eval_planning_card_intent.py\", line 84, in one\nE         return bind(turn)\nE                ^^^^^^^^^^\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/src/fateforger/slack_bot/planning_surface.py\", line 174, in bind\nE         raise ValueError(f\"{decision} without a time\")\nE     ValueError: update_time without a time\nE     ---\nE     Traceback (most recent call last):\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/tests/integration/test_eval_planning_card_intent.py\", line 84, in one\nE         return bind(turn)\nE                ^^^^^^^^^^\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/src/fateforger/slack_bot/planning_surface.py\", line 174, in bind\nE         raise ValueError(f\"{decision} without a time\")\nE     ValueError: update_time_and_add without a time\nE     ---\nE     PlanningPress(kind='add', selected_time=None)\nE   assert 3 >= 7\nE    +  where 3 = _count([ValueError('update_time without a time'), None, None, None, ValueError('update_time without a time'), ValueError('update_time without a time'), ...], kind=None)"
+        },
+        {
+          "case": "test_a_non_press_is_none[later]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/src/fateforger/slack_bot/planning_surface.py\", line 174, in bind\nE         raise ValueError(f\"{decision} without a time\")\nE     ValueError: update_time without a time\nE     ---\nE     Traceback (most recent call last):\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/tests/integration/test_eval_planning_card_intent.py\", line 84, in one\nE         return bind(turn)\nE                ^^^^^^^^^^\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/src/fateforger/slack_bot/planning_surface.py\", line 174, in bind\nE         raise ValueError(f\"{decision} without a time\")\nE     ValueError: update_time without a time\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     Traceback (most recent call last):\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/tests/integration/test_eval_planning_card_intent.py\", line 84, in one\nE         return bind(turn)\nE                ^^^^^^^^^^\nE       File \"/Users/hugoevers/VScode-projects/admonish-1/.worktrees/interpreter-tier-one/src/fateforger/slack_bot/planning_surface.py\", line 174, in bind\nE         raise ValueError(f\"{decision} without a time\")\nE     ValueError: update_time without a time\nE     ---\nE     None\nE   assert 3 >= 7\nE    +  where 3 = _count([ValueError('update_time without a time'), ValueError('update_time without a time'), ValueError('update_time without a time'), ValueError('update_time without a time'), None, None, ...], kind=None)"
+        }
+      ],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 80
+      },
+      "latency_median_s": 0.3988982914997905,
+      "latency_p90_s": 0.8068429579998337,
+      "latency_max_s": 1.3511523750003107,
+      "completion_tokens_median": 62.0,
+      "completion_tokens_p90": 86.0,
+      "completion_tokens_max": 142,
+      "completion_tokens_max_case": "test_a_non_press_is_none[plan tomorrow for me]",
+      "prompt_tokens_total": 53896,
+      "completion_tokens_total": 5345,
+      "cost_usd": 0.0029,
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "flash-minimal-1024::day_frame": {
+      "config": "flash-minimal-1024",
+      "eval": "day_frame",
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 40,
+      "cases_passed": 5,
+      "cases_total": 5,
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 1,
+      "length_draw_cases": [
+        "test_bare_times_answer_the_open_frame_question"
+      ],
+      "truncated_draws": [
+        {
+          "config": "flash-minimal-1024",
+          "eval": "day_frame",
+          "case": "test_bare_times_answer_the_open_frame_question",
+          "latency_s": 6.428963665999618,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
+      "cap_bites": 1,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 39
+      },
+      "latency_median_s": 1.0696291250005743,
+      "latency_p90_s": 1.3333775419996527,
+      "latency_max_s": 6.428963665999618,
+      "completion_tokens_median": 138,
+      "completion_tokens_p90": 180.0,
+      "completion_tokens_max": 195,
+      "completion_tokens_max_case": "test_the_2026_09_02_opening_message_states_no_frame",
+      "prompt_tokens_total": 24482,
+      "completion_tokens_total": 5234,
+      "cost_usd": 0.0018,
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "flash-minimal-1024::timebox_question": {
+      "config": "flash-minimal-1024",
+      "eval": "timebox_question",
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "1024"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 153,
+      "cases_passed": 14,
+      "cases_total": 19,
+      "judgement_losses": [
+        {
+          "case": "test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "r', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='f5d710e7-86b0-4d8d-8fee-2cb588e16db2', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='80540f70-ab48-4233-b692-0b53312ae91f', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     AskQuestion(kind='ask_question', question='did you move lunch? I sleep 00:30-08:30')\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='78fca3f5-1a26-4b31-90c6-326d9194c07d', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='03416cd8-80a2-41db-a1ad-e9ea24b681cb', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE   assert 6 >= 7\nE    +  where 6 = _count([AskQuestion(kind='ask_question', question='did you move lunch? I sleep 00:30-08:30'), ProvidePlanningFacts(kind='prov...urce_interaction_id=None)]), AskQuestion(kind='ask_question', question='did you move lunch? I sleep 00:30-08:30'), ...], <class 'fateforger.agents.timeboxing.session_contracts.ProvidePlanningFacts'>, 'did you move lunch? I sleep 00:30-08:30', 0)"
+        },
+        {
+          "case": "test_a_revision_after_commit_is_still_a_revision[move the work two hours later]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "fb330a1113fecf6af25353cc7d10cf322936c939403723b90b54', instruction='move the work two hours later', facts=[])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='834ae9e9-1711-4f1e-927a-5d4326ba5293', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='move work two hours later', source='user', source_interaction_id=None)])\nE     ---\nE     ReviseArtifact(kind='revise_artifact', artifact_id='9bf92bf3-fd3e-4a00-9fd9-69da814a9d5d', artifact_revision=1, artifact_digest='d0842d7908abfb330a1113fecf6af25353cc7d10cf322936c939403723b90b54', instruction='move the work two hours later', facts=[])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='29061119-7f7f-4e95-a5a8-f3770b3cd0bc', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='move the work two hours later', source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='9d06d2f2-b25a-4106-be52-58883083f2e8', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='move the work two hours later', source='user', source_interaction_id=None)])\nE   assert 2 >= 7\nE    +  where 2 = _count([ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='b869e738-4710-485a-b6bd-ea4a2d8455d3...08abfb330a1113fecf6af25353cc7d10cf322936c939403723b90b54', instruction='move the work two hours later', facts=[]), ...], <class 'fateforger.agents.timeboxing.session_contracts.ReviseArtifact'>, 'move the work two hours later', 0)"
+        }
+      ],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        {
+          "case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "tests/integration/test_eval_timebox_question.py:351: in test_break_it_without_the_question_paragraph_a_question_starts_a_session\n    assert asked < THRESHOLD, _report(results, retries)\nE   AssertionError: 0 draw(s) retried after reaching no decision\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     StartSession(kind='start_session')\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE   assert 7 < 7"
+        },
+        {
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "draws": 9,
+          "draws_raised": 1,
+          "errors": {
+            "LengthFinishReasonError": 1
+          },
+          "length_draws": 1,
+          "detail": "E     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='a37decbf-7c27-44c0-ba7b-01feeec8b90e', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='69bc5ed0-3e18-4e4d-87a0-961f4d20541b', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='47abf771-cbae-4d75-af77-67630cec6b2d', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='015efc78-9c06-41a8-8d12-7fc88201d1a4', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='c84f8182-542b-4bbc-88d2-744f9a741c41', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='f505e76c-f83d-4e7c-a3b0-da57c9813d6d', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE   assert 8 < 7"
+        },
+        {
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "action_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='412a2f38-2a36-4d2e-ae53-201624a87b56', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='83427f09-d0f5-4b37-a020-562ba4383a8f', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='1b6131a0-f7fd-4123-94d7-45d7e520ec16', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='0f33777e-ee70-4482-a1b0-3f7604e35270', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='a252e20d-4e66-4e15-a7ea-02273ab1b8bb', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='cb8ad748-a2c4-4bcd-9fef-463cc37f1467', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE   assert 8 < 7"
+        }
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 1,
+      "length_draw_cases": [
+        "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]"
+      ],
+      "truncated_draws": [
+        {
+          "config": "flash-minimal-1024",
+          "eval": "timebox_question",
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "latency_s": 7.9785312919993885,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
+      "cap_bites": 1,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 152
+      },
+      "latency_median_s": 1.1621648750005988,
+      "latency_p90_s": 1.6158725420009432,
+      "latency_max_s": 7.9785312919993885,
+      "completion_tokens_median": 78.5,
+      "completion_tokens_p90": 179.0,
+      "completion_tokens_max": 294,
+      "completion_tokens_max_case": "test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+      "prompt_tokens_total": 115336,
+      "completion_tokens_total": 15401,
+      "cost_usd": 0.0069,
+      "decision_breakdown": [
+        "[eval] AskQuestion 8/8 <- 'has it been scheduled?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'did you put the gym in?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'is there a planning session today?' :: {'AskQuestion': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'plan my day tomorrow' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"let's timebox saturday\" :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'kick it off' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"right, let's begin\" :: {'StartSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'cancel this' :: {'CancelSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'never mind, not today' :: {'CancelSession': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'what did we decide about lunch?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"when's the deep-work block?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'I sleep 00:30\u201308:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 6/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'AskQuestion': 2, 'ProvidePlanningFacts': 6} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ReviseArtifact 2/8 <- 'move the work two hours later' :: {'ProvidePlanningFacts': 6, 'ReviseArtifact': 2} retries=0",
+        "[eval] AskQuestion 7/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 7, 'StartSession': 1} retries=0",
+        "[eval] StartSession 1/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 7, 'StartSession': 1} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=1",
+        "[eval] AskQuestion 0/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=1",
+        "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] AskQuestion 0/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0"
+      ],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": true
+    },
+    "flash-minimal-2048::planning_card": {
+      "config": "flash-minimal-2048",
+      "eval": "planning_card",
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "2048"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 80,
+      "cases_passed": 9,
+      "cases_total": 10,
+      "judgement_losses": [
+        {
+          "case": "test_a_non_press_is_none[plan tomorrow for me]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "tests/integration/test_eval_planning_card_intent.py:125: in test_a_non_press_is_none\n    assert _count(results, kind=None) >= THRESHOLD, _report(results)\nE   AssertionError: PlanningPress(kind='add', selected_time=None)\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     None\nE     ---\nE     PlanningPress(kind='add', selected_time=None)\nE     ---\nE     None\nE     ---\nE     PlanningPress(kind='add', selected_time=None)\nE     ---\nE     None\nE   assert 5 >= 7\nE    +  where 5 = _count([PlanningPress(kind='add', selected_time=None), None, None, None, PlanningPress(kind='add', selected_time=None), None, ...], kind=None)"
+        }
+      ],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 80
+      },
+      "latency_median_s": 0.500805020498774,
+      "latency_p90_s": 0.7733197079996899,
+      "latency_max_s": 1.717096042000776,
+      "completion_tokens_median": 60.5,
+      "completion_tokens_p90": 85.0,
+      "completion_tokens_max": 155,
+      "completion_tokens_max_case": "test_a_non_press_is_none[plan tomorrow for me]",
+      "prompt_tokens_total": 53896,
+      "completion_tokens_total": 5227,
+      "cost_usd": 0.0029,
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "flash-minimal-2048::day_frame": {
+      "config": "flash-minimal-2048",
+      "eval": "day_frame",
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "2048"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 40,
+      "cases_passed": 5,
+      "cases_total": 5,
+      "judgement_losses": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "truncated_draws": [],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 39,
+        "unknown": 1
+      },
+      "latency_median_s": 1.4089453130000038,
+      "latency_p90_s": 1.6335895829997753,
+      "latency_max_s": 2.1116621250002936,
+      "completion_tokens_median": 142.5,
+      "completion_tokens_p90": 192.0,
+      "completion_tokens_max": 213,
+      "completion_tokens_max_case": "test_the_2026_09_02_correction_is_a_frame_fact",
+      "prompt_tokens_total": 25123,
+      "completion_tokens_total": 5456,
+      "cost_usd": 0.0019,
+      "decision_breakdown": [],
+      "eval_reported_failures": {},
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": false
+    },
+    "flash-minimal-2048::timebox_question": {
+      "config": "flash-minimal-2048",
+      "eval": "timebox_question",
+      "model": "openai/gpt-oss-120b:nitro",
+      "models_seen": [
+        "openai/gpt-oss-120b:nitro"
+      ],
+      "expected_model": "openai/gpt-oss-120b:nitro",
+      "cap_built_with": [
+        "2048"
+      ],
+      "effort_built_with": [
+        "minimal"
+      ],
+      "config_verified": true,
+      "priced": true,
+      "draws": 153,
+      "cases_passed": 15,
+      "cases_total": 19,
+      "judgement_losses": [
+        {
+          "case": "test_a_revision_after_commit_is_still_a_revision[move the work two hours later]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "'requested_activity'>, value='work (moved two hours later)', source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='3c269351-a8a3-4b6c-8f47-effa6aa895e6', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='move the work two hours later', source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='5fb43688-21d3-4bfa-907d-21ea64a538c4', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='move the work two hours later', source='user', source_interaction_id=None)])\nE     ---\nE     ReviseArtifact(kind='revise_artifact', artifact_id='1f4b9206-f7de-4cba-abe0-4181c8ff82a0', artifact_revision=1, artifact_digest='d0842d7908abfb330a1113fecf6af25353cc7d10cf322936c939403723b90b54', instruction='move the work two hours later', facts=[])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='a6d522fb-d8ee-4039-8ad1-bf6f8006f8c5', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='move the work two hours later', source='user', source_interaction_id=None)])\nE   assert 2 >= 7\nE    +  where 2 = _count([ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='10abbd9b-a25f-4baa-aabb-4ceed2edf2b0...IVITY: 'requested_activity'>, value='move the work two hours later', source='user', source_interaction_id=None)]), ...], <class 'fateforger.agents.timeboxing.session_contracts.ReviseArtifact'>, 'move the work two hours later', 0)"
+        }
+      ],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        {
+          "case": "test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "tests/integration/test_eval_timebox_question.py:352: in test_break_it_without_the_question_paragraph_a_question_starts_a_session\n    assert started > asked, _report(results, retries)\nE   AssertionError: 0 draw(s) retried after reaching no decision\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     StartSession(kind='start_session')\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE     ---\nE     StartSession(kind='start_session')\nE     ---\nE     AskQuestion(kind='ask_question', question=\"what's on my calendar tomorrow?\")\nE   assert 2 > 6"
+        },
+        {
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "E     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='b3ad29ab-dd22-465e-82b0-c91b1306cb85', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='bb7c24ad-c4da-4567-99b5-c141f1ef865d', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='efa8ea55-6988-4c7e-b36e-72d36c14346c', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='1d2a9f83-6ccb-4474-a77c-0e78d5f673e4', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='17e3a174-1038-48c2-ba3b-c402d60f1b39', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='d9923694-9d9a-4dc5-a9bb-500b67a2dc65', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '08:30', 'sleep': '00:30'}, source='user', source_interaction_id=None)])\nE   assert 8 < 7"
+        },
+        {
+          "case": "test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]",
+          "draws": 8,
+          "draws_raised": 0,
+          "errors": {},
+          "length_draws": 0,
+          "detail": "='eec4dd88-8535-44e8-a712-af6f864817cc', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='d6f74af0-de25-431d-a3d6-2ce5c0db80c4', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='deep work at 9', source='user', source_interaction_id=None), PlanningFact(fact_id='eab73322-ef8a-4cc4-9c83-2ac060c350fd', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='706f7389-b7a8-46c9-93d4-5e4af94beb43', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='17994573-7514-4740-9f66-cc6a920ceaea', kind=<FactKind.REQUESTED_ACTIVITY: 'requested_activity'>, value='deep work at 9', source='user', source_interaction_id=None), PlanningFact(fact_id='39593609-32a0-4c4c-a89c-234038d110a5', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE     ---\nE     ProvidePlanningFacts(kind='provide_planning_facts', facts=[PlanningFact(fact_id='80fab95a-5a6d-465e-99eb-702b8c277b2f', kind=<FactKind.DAY_FRAME: 'day_frame'>, value={'wake': '07:00', 'sleep': None}, source='user', source_interaction_id=None)])\nE   assert 8 < 7"
+        }
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "length_draws": 2,
+      "length_draw_cases": [
+        "test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "truncated_draws": [
+        {
+          "config": "flash-minimal-2048",
+          "eval": "timebox_question",
+          "case": "test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]",
+          "latency_s": 11.009812750000492,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        },
+        {
+          "config": "flash-minimal-2048",
+          "eval": "timebox_question",
+          "case": "test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]",
+          "latency_s": 9.669717500000843,
+          "prompt_tokens": null,
+          "completion_tokens": null,
+          "error": "LengthFinishReasonError",
+          "finish_reason": null
+        }
+      ],
+      "cap_bites": 2,
+      "runaway_draws": 0,
+      "finish_reasons": {
+        "stop": 151
+      },
+      "latency_median_s": 1.3159200410009362,
+      "latency_p90_s": 1.9334194999992178,
+      "latency_max_s": 11.009812750000492,
+      "completion_tokens_median": 78,
+      "completion_tokens_p90": 161.0,
+      "completion_tokens_max": 692,
+      "completion_tokens_max_case": "test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+      "prompt_tokens_total": 114542,
+      "completion_tokens_total": 15393,
+      "cost_usd": 0.0069,
+      "decision_breakdown": [
+        "[eval] AskQuestion 8/8 <- 'has it been scheduled?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'did you put the gym in?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'is there a planning session today?' :: {'AskQuestion': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'plan my day tomorrow' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"let's timebox saturday\" :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- 'kick it off' :: {'StartSession': 8} retries=0",
+        "[eval] StartSession 8/8 <- \"right, let's begin\" :: {'StartSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'cancel this' :: {'CancelSession': 8} retries=0",
+        "[eval] CancelSession 8/8 <- 'never mind, not today' :: {'CancelSession': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- 'what did we decide about lunch?' :: {'AskQuestion': 8} retries=0",
+        "[eval] AskQuestion 8/8 <- \"when's the deep-work block?\" :: {'AskQuestion': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'I sleep 00:30\u201308:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 7/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 7, 'LengthFinishReasonError': 1} retries=1",
+        "[eval] ReviseArtifact 2/8 <- 'move the work two hours later' :: {'ProvidePlanningFacts': 6, 'ReviseArtifact': 2} retries=0",
+        "[eval] AskQuestion 6/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 6, 'StartSession': 2} retries=0",
+        "[eval] StartSession 2/8 <- \"what's on my calendar tomorrow?\" :: {'AskQuestion': 6, 'StartSession': 2} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] AskQuestion 0/8 <- 'did you move lunch? I sleep 00:30-08:30' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] ProvidePlanningFacts 8/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0",
+        "[eval] AskQuestion 0/8 <- 'is deep work still at 9? also I get up at 07:00' :: {'ProvidePlanningFacts': 8} retries=0"
+      ],
+      "eval_reported_failures": {
+        "LengthFinishReasonError": 1
+      },
+      "failures_after_create": {},
+      "failures_after_create_by_case": {},
+      "prints_breakdown": true
+    }
+  },
+  "config_totals": {
+    "pro-high": {
+      "config": "pro-high",
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "evals": 3,
+      "draws": 272,
+      "cases_passed": 32,
+      "cases_total": 34,
+      "judgement_loss_cases": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "latency_median_s": 1.9021694790008041,
+      "latency_max_s": 9.621560749999844,
+      "completion_tokens_max": 405,
+      "longest_case": "timebox_question::test_a_fact_after_commit_is_still_a_fact[I sleep 00:30\\u201308:30]",
+      "cost_usd": 0.2137,
+      "config_verified": true
+    },
+    "pro-high-1024": {
+      "config": "pro-high-1024",
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "evals": 3,
+      "draws": 272,
+      "cases_passed": 32,
+      "cases_total": 34,
+      "judgement_loss_cases": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
+      "cap_bites": 1,
+      "runaway_draws": 0,
+      "length_draws": 1,
+      "length_draw_cases": [
+        "planning_card::test_a_time_with_consent_updates_and_adds[no, let's do 13:45]"
+      ],
+      "latency_median_s": 2.0087470204989586,
+      "latency_max_s": 15.859234957999433,
+      "completion_tokens_max": 375,
+      "longest_case": "planning_card::test_a_time_with_consent_updates_and_adds[no, let's do 13:45]",
+      "cost_usd": 0.2156,
+      "config_verified": true
+    },
+    "pro-high-2048": {
+      "config": "pro-high-2048",
+      "model": "deepseek/deepseek-v4-pro-0813:nitro",
+      "evals": 3,
+      "draws": 273,
+      "cases_passed": 32,
+      "cases_total": 34,
+      "judgement_loss_cases": [],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "transport_losses": {
+        "ValidationError": 1
+      },
+      "transport_loss_draws": 1,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
+      "cap_bites": 2,
+      "runaway_draws": 0,
+      "length_draws": 2,
+      "length_draw_cases": [
+        "planning_card::test_a_time_without_consent_only_updates",
+        "timebox_question::test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]"
+      ],
+      "latency_median_s": 1.9943667494999318,
+      "latency_max_s": 55.6511918340002,
+      "completion_tokens_max": 294,
+      "longest_case": "planning_card::test_a_time_with_consent_updates_and_adds[no, let's do 13:45]",
+      "cost_usd": 0.2148,
+      "config_verified": true
+    },
+    "flash-minimal": {
+      "config": "flash-minimal",
+      "model": "openai/gpt-oss-120b:nitro",
+      "evals": 3,
+      "draws": 272,
+      "cases_passed": 27,
+      "cases_total": 34,
+      "judgement_loss_cases": [
+        "planning_card::test_a_non_press_is_none[plan tomorrow for me]",
+        "planning_card::test_a_non_press_is_none[later]",
+        "timebox_question::test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+        "timebox_question::test_a_revision_after_commit_is_still_a_revision[move the work two hours later]"
+      ],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        "timebox_question::test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "failures_after_create": {
+        "ValidationError": 1
+      },
+      "failures_after_create_by_case": [
+        "timebox_question::move the work two hours later"
+      ],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
+      "cap_bites": 0,
+      "runaway_draws": 0,
+      "length_draws": 0,
+      "length_draw_cases": [],
+      "latency_median_s": 1.197509749999881,
+      "latency_max_s": 32.11086754200005,
+      "completion_tokens_max": 4839,
+      "longest_case": "timebox_question::test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]",
+      "cost_usd": 0.0127,
+      "config_verified": true
+    },
+    "flash-minimal-1024": {
+      "config": "flash-minimal-1024",
+      "model": "openai/gpt-oss-120b:nitro",
+      "evals": 3,
+      "draws": 273,
+      "cases_passed": 27,
+      "cases_total": 34,
+      "judgement_loss_cases": [
+        "planning_card::test_a_non_press_is_none[plan tomorrow for me]",
+        "planning_card::test_a_non_press_is_none[later]",
+        "timebox_question::test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+        "timebox_question::test_a_revision_after_commit_is_still_a_revision[move the work two hours later]"
+      ],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        "timebox_question::test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
+      "cap_bites": 2,
+      "runaway_draws": 0,
+      "length_draws": 2,
+      "length_draw_cases": [
+        "day_frame::test_bare_times_answer_the_open_frame_question",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]"
+      ],
+      "latency_median_s": 1.0696291250005743,
+      "latency_max_s": 7.9785312919993885,
+      "completion_tokens_max": 294,
+      "longest_case": "timebox_question::test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+      "cost_usd": 0.0116,
+      "config_verified": true
+    },
+    "flash-minimal-2048": {
+      "config": "flash-minimal-2048",
+      "model": "openai/gpt-oss-120b:nitro",
+      "evals": 3,
+      "draws": 273,
+      "cases_passed": 29,
+      "cases_total": 34,
+      "judgement_loss_cases": [
+        "planning_card::test_a_non_press_is_none[plan tomorrow for me]",
+        "timebox_question::test_a_revision_after_commit_is_still_a_revision[move the work two hours later]"
+      ],
+      "transport_suspect_cases": [],
+      "length_loss_cases": [],
+      "break_it_did_not_break": [
+        "timebox_question::test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]",
+        "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "transport_losses": {},
+      "transport_loss_draws": 0,
+      "failures_after_create": {},
+      "failures_after_create_by_case": [],
+      "evals_printing_a_breakdown": [
+        "timebox_question"
+      ],
+      "cap_bites": 2,
+      "runaway_draws": 0,
+      "length_draws": 2,
+      "length_draw_cases": [
+        "timebox_question::test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]"
+      ],
+      "latency_median_s": 1.3159200410009362,
+      "latency_max_s": 11.009812750000492,
+      "completion_tokens_max": 692,
+      "longest_case": "timebox_question::test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+      "cost_usd": 0.0117,
+      "config_verified": true
+    }
+  },
+  "cap_measurement": {
+    "missing_configs": [],
+    "by_cap": {
+      "1024": {
+        "configs": [
+          "pro-high-1024",
+          "flash-minimal-1024"
+        ],
+        "truncated_draws": 3,
+        "draws": 545,
+        "cases": [
+          "day_frame::test_bare_times_answer_the_open_frame_question",
+          "planning_card::test_a_time_with_consent_updates_and_adds[no, let's do 13:45]",
+          "timebox_question::test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_question[did you move lunch? I sleep 00:30-08:30]"
+        ]
+      },
+      "2048": {
+        "configs": [
+          "pro-high-2048",
+          "flash-minimal-2048"
+        ],
+        "truncated_draws": 4,
+        "draws": 546,
+        "cases": [
+          "planning_card::test_a_time_without_consent_only_updates",
+          "timebox_question::test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]",
+          "timebox_question::test_break_it_without_the_question_paragraph_a_question_starts_a_session[what's on my calendar tomorrow?]"
+        ]
+      }
+    }
+  },
+  "pin_comparison": {
+    "failures_after_create_pro": {},
+    "failures_after_create_flash": {
+      "ValidationError": 1
+    },
+    "judgement_lost_on_flash": [
+      "planning_card::test_a_non_press_is_none[later]",
+      "planning_card::test_a_non_press_is_none[plan tomorrow for me]",
+      "timebox_question::test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+      "timebox_question::test_a_revision_after_commit_is_still_a_revision[move the work two hours later]"
+    ],
+    "judgement_lost_on_pro": [],
+    "lost_on_flash_only": [
+      "planning_card::test_a_non_press_is_none[later]",
+      "planning_card::test_a_non_press_is_none[plan tomorrow for me]",
+      "timebox_question::test_a_fact_after_commit_is_still_a_fact[did you move lunch? I sleep 00:30-08:30]",
+      "timebox_question::test_a_revision_after_commit_is_still_a_revision[move the work two hours later]"
+    ],
+    "lost_on_pro_only": [],
+    "transport_losses_flash": {},
+    "transport_losses_pro": {
+      "ValidationError": 1
+    },
+    "length_draws_flash": 4,
+    "length_draws_pro": 3
+  },
+  "pricing_per_token": {
+    "deepseek/deepseek-v4-pro-0813": [
+      1.0494e-06,
+      3.1482e-06
+    ],
+    "openai/gpt-oss-120b": [
+      3.7e-08,
+      1.7e-07
+    ]
+  },
+  "total_cost_usd": 0.6801
+}

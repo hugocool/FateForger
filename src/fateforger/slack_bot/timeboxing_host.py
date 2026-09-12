@@ -292,9 +292,18 @@ class HostPlanningContext:
             self._work_refs(snapshot, day),
             return_exceptions=True,
         )
-        for settled in (constraints, work):
-            if isinstance(settled, BaseException):
-                raise settled
+        # Narrowed one name at a time, rather than by looping over the pair:
+        # a loop narrows only its own variable, so `constraints` and `work`
+        # stayed `T | BaseException` for the reader and for a type checker,
+        # and `work.facts` below is an attribute access on that union. Runtime
+        # was always correct -- the loop does raise -- but nothing gates this
+        # path today, so the union was load-bearing on no one noticing.
+        # Constraints first keeps the order a caller saw when these ran in
+        # sequence, which is what the comment above promises.
+        if isinstance(constraints, BaseException):
+            raise constraints
+        if isinstance(work, BaseException):
+            raise work
         return PlanningContext(
             facts=[
                 *planning_facts(

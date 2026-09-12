@@ -34,6 +34,7 @@ from fateforger.agents.timeboxing.durable_constraint_store import (
 )
 from fateforger.agents.timeboxing.kg_constraint_client import KGConstraintMemoryClient
 from fateforger.core.config import settings
+from fateforger.referents import ReferentResolver
 from fateforger.haunt.agents import HauntingAgent, UserChannelAgent
 from fateforger.haunt.delivery import deliver_user_facing
 from fateforger.haunt.event_draft_store import (
@@ -66,7 +67,10 @@ from fateforger.haunt.settings_store import (
     ensure_admonishment_settings_schema,
 )
 from fateforger.haunt.tools import build_haunting_tools
-from fateforger.llm import build_autogen_chat_client
+from fateforger.llm import (
+    build_autogen_chat_client,
+    build_intent_interpreter_client,
+)
 from fateforger.slack_bot.deepseek_timebox_planner import (
     ConstraintReader,
     DeepSeekTimeboxPlanner,
@@ -509,7 +513,7 @@ def _build_timeboxing_intent_interpreter() -> tuple[
     disagreeing less at 0 and whole-record disagreement higher; a pin that
     looks like a guarantee invites skipping the resample (CLAUDE.md).
     """
-    model_client = build_autogen_chat_client("timeboxing_agent")
+    model_client = build_intent_interpreter_client()
     return TimeboxingIntentInterpreter(model_client), model_client
 
 
@@ -881,6 +885,15 @@ async def _create_runtime() -> SingleThreadedAgentRuntime:
     setattr(runtime, "planning_session_store", planning_session_store)
     setattr(runtime, "event_draft_store", event_draft_store)
     setattr(runtime, "timeboxing_session_store", timeboxing_session_store)
+    # The referent rung's judge (#345). It rides the same flash pin as the
+    # other Stage 1 judgements; the route reads this attribute and, finding
+    # nothing, simply does not ask -- which is what keeps a host that never
+    # wired it on exactly today's behaviour.
+    setattr(
+        runtime,
+        "referent_resolver",
+        ReferentResolver(timeboxing_judge_model_client),
+    )
     setattr(runtime, "timeboxing_constraint_store", timeboxing_constraint_store)
     # The dispatcher revalidates every required-block rung against this rule
     # before posting it (R3); without it here, those reminders are dropped.

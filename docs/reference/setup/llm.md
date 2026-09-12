@@ -27,6 +27,7 @@ Set per-agent models with these env vars (provider-specific model IDs):
 - `LLM_MODEL_PLANNER`
 - `LLM_MODEL_REVISOR`
 - `LLM_MODEL_TASKS`
+- `LLM_MODEL_INTENT_INTERPRETER` (optional; every surface interpreter — see "Surface interpreter model" below)
 
 ## Timeboxing “cheap vs pro” split
 
@@ -71,6 +72,99 @@ arithmetic gate the judges write into — it never calls a model itself).
 Design: [Stage 1 elicitation, increment B: the loop that fills the matrix](../../superpowers/specs/2026-09-05-stage1-elicitation-loop-design.md).
 Measurements: [Stage 1 elicitation loop: four passes of measurement on the frozen fixture](../../superpowers/research/2026-09-06-stage1-loop-evals.md).
 
+## Surface interpreter model (`intent_interpreter`)
+
+Every surface interpreter — the planning card's and the timeboxing stage cards' — is built by
+one function, `build_intent_interpreter_client()`, on its own row of the per-agent table,
+instead of inheriting whatever client its host agent happened to build. That inheritance —
+not a decision anyone made — is how the routing seam ended up on the pro pin at `high`
+reasoning, uncapped, and ran away (#325).
+
+The row's default is the pro pin at `low`, capped at 1024. It shares a pin with #325, but it is
+not the same fact: what #325 names is an unchosen, uncapped configuration nobody could see, and
+what the row holds is a measured one with a cap on it. The bug was the inheritance and the
+missing bound, not the coordinates.
+
+- `LLM_MODEL_INTENT_INTERPRETER` — model id; empty (default) resolves to
+  `OPENROUTER_DEFAULT_MODEL_PRO`, not the flash pin CLAUDE.md names for routing. The
+  2026-09-06 bench (`scripts/bench/results-interpreter-tier-2026-09-06.md`) measured the
+  prompts *as written* losing on the flash pin at `minimal`: **4 judgement losses against the
+  pro pin's 0**, with `test_a_revision_after_commit_is_still_a_revision` at 1/8 against 8/8 —
+  the flash pin reading a revision after commit as a fact. (The raw case counts are 27/34
+  against 32/34, but those include the break-it families, which assert a *flip* and are never
+  judgement losses: 3 of flash's 7 failures and both of pro's 2 are break-it. The judgement
+  comparison is the one the bench file draws, and the one #406 should quote.) The flash pin is
+  still the destination;
+  the flip waits on #406 fitting the prompts with a discriminator, the way the
+  project-versus-permanent judgement got one.
+- `LLM_REASONING_EFFORT_INTENT_INTERPRETER` — one of `minimal`/`low`/`medium`/`high`; empty
+  (default) resolves to `low`. That is Hugo's ruling of 2026-09-11 over
+  `scripts/bench/results-interpreter-tier-2026-09-11.md` and its `.reading.md` sidecar, which
+  measured the pro pin at `low` against `high`, both capped at 1024. `low` lost no judgement
+  `high` holds in any run. On production cases (everything but the break-it prompts) it
+  truncated 0 of 384 draws against `high`'s 3 of 386, and it cost about 18% less. The rule is
+  the cheapest configuration wherever it works, and these numbers do not justify `high`. **The
+  ruling does not rest on that record's draw-level p-values.** The bench built pro/`low`/1024
+  through this row and read it back off the client, so the default is the measured
+  configuration. The default was `high` from the 2026-09-06 ruling until then; that bench never
+  measured pro/`low`.
+- `LLM_MAX_TOKENS_INTENT_INTERPRETER` — **`-1` (default) uses the code default
+  (`_INTENT_INTERPRETER_MAX_TOKENS` in `llm/factory.py`, currently `1024`); `0` means
+  uncapped; any positive value is that cap.** This differs from every other `LLM_MAX_TOKENS*`
+  field in this project, where `0` is the only "unset" value: here `0` is an explicit choice
+  to uncap, and `-1` means "no opinion, use the code default." The cap exists because of
+  #325's runaway: uncapped, one draw ran to 4,839 completion tokens and a separate one held a
+  user's turn open for over eleven minutes while the SDK waited its 600s timeout and retried
+  twice. 1024 turns that runaway into a fast, loud failure instead of a held-open turn.
+  **405 completion tokens — the largest *legitimate* uncapped answer — is the pro pin's
+  number, not the whole bench's** (its median was 45; the flash pin's was 78). On the flash
+  pin the same reading does not hold: `flash-minimal`'s
+  `test_a_fact_after_commit_is_still_a_fact[is deep work still at 9? also I get up at 07:00]`
+  scored 8/8 correct while one of those eight draws completed at 4,839 tokens — a *right*
+  answer this cap would have cut. The cap is comfortable on the pin the row runs on today and
+  is not yet shown to be comfortable on the pin #406 flips to; re-read it there.
+
+The row exists at all because interpreters used to inherit whatever client their host agent
+built — the runtime's `timeboxing_agent` client, the planning coordinator's `planner_agent`
+client — and that inheritance is what let the routing seam run on the pro pin at `high` and run
+away. The 2026-09-06 bench ran six configurations — the client of that day (pro pin, `high`) and
+the flash pin at `minimal`, each uncapped and capped at 1024 and 2048 — across the three
+interpreter evals at n=8 per case. The 2026-09-11 bench then ran the pro pin at `high` against
+`low`, both capped at 1024, over the same evals. **The `.env` pin line is Hugo's decision, not
+this row's**: the pin and the cap above are his rulings over the 2026-09-06 bench and the effort
+is his ruling over the 2026-09-11 one (each recorded in its bench file's `.reading.md` sidecar).
+The code defaults carry those results until #406 lands and the flip is made.
+
+**What actually moved, per site.** One row replacing three inherited clients does not leave
+every site where it was:
+
+- **The timeboxing stage cards** (`core/runtime._build_timeboxing_intent_interpreter`) inherited
+  `timeboxing_agent` — the pro pin at `high`, uncapped, under this repo's `.env`, which is the
+  seam #325 is about. They now run pro/`low` capped at 1024: effort down, and a bound added.
+- **The planning card** (`slack_bot/planning.PlanningCoordinator._ensure_intent_interpreter`)
+  inherited `planner_agent` — the pro pin under `.env` at reasoning `low` (no planner branch
+  exists in `_reasoning_effort_for_agent` and the table's floor is `low`), uncapped. It now runs
+  pro/`low` **capped at 1024**: the effort it already had, with a bound added. Between the
+  2026-09-06 ruling and the 2026-09-11 one the row defaulted to `high`, which moved it up; it
+  no longer does. `planning_card` held 13/14 at pro/`low`/1024 in both 2026-09-11 runs, its one
+  failure being the break-it case, which failed the same way at `high`.
+- **The day-frame eval** (`tests/integration/test_eval_day_frame.py`) was pointed at
+  `timeboxing_agent` and now builds `timeboxing_judge` — the flash pin at `minimal`, which is
+  the client production actually runs that judge on. It is not an interpreter site; it moved so
+  the eval measures what ships.
+
+Until #406, the cap is what bounds a runaway: an interpreter that starts a reasoning or
+self-repair loop is stopped at 1024 tokens rather than holding a user's turn open. `low` does not
+retire the cap: on 2026-09-11 pro/`low` still truncated 11 of 432 draws, every one on a break-it
+prompt served by CoreWeave.
+
+Code: `src/fateforger/llm/factory.py` (`INTENT_INTERPRETER`, `_INTENT_INTERPRETER_MAX_TOKENS`,
+the `INTENT_INTERPRETER` branches in `_model_for_agent` / `_reasoning_effort_for_agent` /
+`_max_tokens_for_agent`, `build_intent_interpreter_client()`).
+Bench: `scripts/bench/results-interpreter-tier-2026-09-06.md` (pin, cap) and
+`scripts/bench/results-interpreter-tier-2026-09-11.md` (effort), each with its `.reading.md` sidecar.
+Design: [Tier one on tier one's pin](../../superpowers/specs/2026-09-06-interpreter-tier-one-design.md).
+
 ## Gemini policy (OpenRouter)
 
 When using Gemini models via OpenRouter, this project requires **Gemini 3.0+** (never below 3.0).
@@ -95,6 +189,7 @@ Configure per-agent effort with:
 - `LLM_REASONING_EFFORT_TIMEBOX_PATCHER`
 - `LLM_REASONING_EFFORT_REVISOR`
 - `LLM_REASONING_EFFORT_TASKS`
+- `LLM_REASONING_EFFORT_INTENT_INTERPRETER` (optional; see "Surface interpreter model" below)
 
 Some model/providers may require a **header-based** reasoning control. If so, enable:
 
