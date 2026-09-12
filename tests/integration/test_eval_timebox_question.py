@@ -483,9 +483,9 @@ async def test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_q
     findings. On flash at `minimal` both texts keep the fact 8/8 with the
     paragraph stripped -- the same 8/8 they score with it -- so the paragraph
     is inert there. On pro at `low` only `LUNCH_AND_SLEEP` is unreadable, and
-    not because the judgement held: the row's 1024-token cap truncates three
-    to five of its eight draws, so the flip is read off a handful of
-    decisions and lands about one run in three. Neither xfail is strict.
+    not because the judgement held: the row's 1024-token cap truncates two to
+    five of its eight draws, so the flip is read off three to six decisions
+    and landed twice across four runs. Neither xfail is strict.
     """
     if _expected_unbroken_here():
         request.applymarker(
