@@ -283,14 +283,20 @@ QUESTIONS_COMMITTED = [
 # interrogatives never exercise, and the one the paragraph actually carries.
 # These two are the positive half of the break-it check below; the same texts
 # appear there with the paragraph stripped.
-#: Named because the break-it xfail below points at this one parametrisation
-#: rather than the family, and has to do it by identity: pytest hands the
-#: parametrised test the very object listed here, so `text is LUNCH_AND_SLEEP`
-#: asks which case is running. Nothing reads the words.
+#: The parametrisation id the break-it xfail below points at. The xfail covers
+#: one case of that family and not the other, so it has to name the case --
+#: and it names it by an id minted here, never by reading the words. An
+#: identity check against a module constant (`text is LUNCH_AND_SLEEP`) did the
+#: same job but fails open: inline the literal into the list and the comparison
+#: quietly stops matching, taking the xfail with it and turning a known cap
+#: artefact into a red run nobody asked for. A missing id fails loudly instead
+#: -- `callspec.id` is what pytest collected, and it is in the node name the
+#: bench files the case under.
+CAP_BITES = "cap_bites"
 LUNCH_AND_SLEEP = "did you move lunch? I sleep 00:30-08:30"
 MIXED_COMMITTED = [
-    LUNCH_AND_SLEEP,
-    "is deep work still at 9? also I get up at 07:00",
+    pytest.param(LUNCH_AND_SLEEP, id=CAP_BITES),
+    pytest.param("is deep work still at 9? also I get up at 07:00", id="flips_clean"),
 ]
 FACTS_COMMITTED = ["I sleep 00:30–08:30", *MIXED_COMMITTED]
 REVISIONS_COMMITTED = ["move the work two hours later"]
@@ -377,16 +383,21 @@ def _expected_unbroken_here() -> bool:
     return _interpreter_model() == settings.openrouter_default_model_flash
 
 
-def _cap_eats_the_sample_here(text: str) -> bool:
+def _cap_eats_the_sample_here(request) -> bool:
     """Whether the row's 1024-token cap leaves this case too few decisions.
 
-    One text, one pin. On the pro pin at `low` the stripped prompt runs long
-    enough that two to five of the eight draws for `LUNCH_AND_SLEEP` are
-    truncated into `LengthFinishReasonError` -- retries included -- so the
-    flip is read off three to six decisions and landed twice in four runs
-    (2026-09-12). That is the cap eating the sample, not the paragraph proving
-    inert, and the other mixed text flips cleanly on the same pin in the same
-    runs, so this narrows to the one parametrisation by identity.
+    One case, one pin. On the pro pin at `low` the stripped prompt runs long
+    enough that two to five of the eight draws for the `cap_bites`
+    parametrisation are truncated into `LengthFinishReasonError` -- retries
+    included -- so the flip is read off three to six decisions and landed twice
+    in four runs (2026-09-12). That is the cap eating the sample, not the
+    paragraph proving inert, and the other mixed text flips cleanly on the same
+    pin in the same runs, so this narrows to the one parametrisation.
+
+    It narrows by the parametrisation id this file minted, read off the node
+    pytest collected. Both sides of every comparison here are identifiers --
+    an id and a model id -- and the pin is resolved at test time, never at
+    import.
     """
 
     if os.environ.get("INTERPRETER_TIER_CONFIG"):
@@ -394,7 +405,7 @@ def _cap_eats_the_sample_here(text: str) -> bool:
     from fateforger.core.config import settings
 
     return (
-        text is LUNCH_AND_SLEEP
+        request.node.callspec.id == CAP_BITES
         and _interpreter_model() == settings.openrouter_default_model_pro
     )
 
@@ -498,7 +509,7 @@ async def test_break_it_without_the_question_paragraph_the_fact_is_lost_to_the_q
                 strict=False,
             )
         )
-    elif _cap_eats_the_sample_here(text):
+    elif _cap_eats_the_sample_here(request):
         request.applymarker(
             pytest.mark.xfail(
                 reason=(
