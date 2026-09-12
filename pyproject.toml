@@ -7,6 +7,11 @@ authors = [
 ]
 license = {text = "MIT"}
 readme = "README.md"
+# Interpreter gotcha, relocated from AGENTS.md by #364: this project runs on Python
+# 3.11.9 in the local virtualenv at .venv/. If the debugger raises
+# `AttributeError: module 'asyncio.base_futures' has no attribute '_future_repr'`, it is
+# running on the wrong interpreter -- point VS Code at .venv/bin/python (Command Palette ->
+# "Python: Select Interpreter"), do not chase it as a dependency problem.
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "slack-bolt (>=1.23.0,<2.0.0)",

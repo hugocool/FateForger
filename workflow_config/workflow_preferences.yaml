@@ -26,35 +26,12 @@ instruction_change_control:
   require_explicit_user_confirmation: true
   protected_files:
     - AGENTS.md
-    - notebooks/AGENTS.md
-    - notebooks/WIP/AGENTS.md
-    - notebooks/DONE/AGENTS.md
     - workflow_config/workflow_preferences.yaml
 
 repo_cleanliness_gates:
   start_of_work_git_status_required: true
   pre_pr_close_git_status_required: true
   allow_dirty_start_if_baseline_recorded: true
-
-git_hygiene_baseline:
-  output_stripping: nbstripout_required
-  notebook_diff_merge: nbdime_required
-  jupytext_pairing: optional_per_issue
-  enforcement_mode: policy_plus_ci
-
-notebook_directories:
-  active_work: notebooks/WIP
-  completed_work: notebooks/DONE
-
-notebook_header_required_fields:
-  - status
-  - owner
-  - github_issue
-  - issue_branch
-  - github_pr
-  - acceptance_criteria_ref
-  - last_clean_run
-  - repo_cleanliness_snapshot
 
 workflow_change_process:
   channel: github_issue_prefix_workflow

@@ -1,6 +1,10 @@
-# Agents — cross-cutting
+---
+paths:
+  - "src/fateforger/agents/*.py"
+  - "src/fateforger/agents/**/*.py"
+---
 
-**Scope:** `src/fateforger/agents/ (cross-cutting)`. Same text as `.claude/rules/agents.md` — change both or neither.
+# Agents — cross-cutting
 
 - Intent classification is the receptionist's, via LLM handoff tools. **Never** add regex/keyword-based intent routing; use LLM classification or explicit slash commands.
 - Each specialist agent declares a clear `description` string for the receptionist's handoff tool.

@@ -214,3 +214,39 @@ Use these to recover full payload context when a metric spike points to a suspec
   - widen query window
   - check app restart boundaries and process IDs
   - verify you're on the correct environment/branch instance
+
+## Debug Logging Protocol
+
+*Consolidated here from root `AGENTS.md` §"Debug logging protocol" (rows 7–10 of the cut list,
+#364). The root rulebook now names this file once instead of restating it.*
+
+- During manual user testing via Slack/Run+Debug, keep deterministic file logs enabled:
+  - session flow: `TIMEBOX_SESSION_DEBUG_LOG=1` (or debugger-attached auto-enable), directory `TIMEBOX_SESSION_LOG_DIR` (default `logs/`)
+  - patcher: `TIMEBOX_PATCHER_DEBUG_LOG=1`, directory `TIMEBOX_PATCHER_LOG_DIR` (default `logs/`)
+- Per-session logs are the primary source for reproducing runtime behavior; terminal stdout is secondary and may be truncated.
+- When the user reports a failure, identify the specific session/timestamp, read the matching `logs/` file(s), and cite concrete log evidence.
+- Log scope is goal-driven and adjustable per investigation:
+  - `baseline`: stage transitions, input/output summaries, external call counts and status, deterministic action events.
+  - `integration-debug`: sanitized request/response shape metadata (keys/types/counts) for MCP and API boundaries.
+  - `deep-debug`: targeted payload excerpts for one component under investigation; reduce back to baseline once the root cause is found.
+- Exception logging is concise by default: `error_type`, short `error`, `stage`, `session_key`, operation name. Do not dump full tracebacks in high-volume session logs; enable them only for unresolved failures, scoped to the failing component.
+- Every log event carries `session_key`/`thread_ts` plus stage and operation name, as structured JSON lines.
+- Prioritise signal over volume, and keep debug-log changes scoped to the active ticket.
+
+## Surface Declaration (reality check)
+
+- Prometheus is a metrics system, not a log store: it cannot retrieve raw session text, LLM request/response payloads, or traceback bodies.
+- During an audit, declare which surfaces are actually available — metrics, structured logs, traces — and treat a missing one as an explicit gap rather than working around it silently.
+
+## Slack Audit Triage
+
+*Consolidated here from root `AGENTS.md` §"Slack capability audit loop" (row 9). Only the triage
+rules moved; the ceremony around them was deleted.*
+
+- Restart the local bot runtime before an audit replay so results reflect current code, and verify `calendar-mcp` is reachable and the Prometheus scrape is healthy first.
+- Thread identity: if a bot-created root thread differs from the seed thread, the **bot-created** `thread_ts` is canonical for log queries.
+- Repeated `:hourglass_flowing_sand:` messages indicate in-flight work only — never completion or failure.
+- `Routing timed out before I could finish this reply` is triaged against the session log for the same thread and stage:
+  - a `graph_turn_end` shortly after the timeout ⇒ **delivery timeout** (the response was computed and missed the dispatch window).
+  - no matching `graph_turn_end` ⇒ **stage failure or hang**; debug stage internals.
+- Correlate `slack_route_dispatch_timeout` stage duration and `fateforger_errors_total{component="slack_routing",error_type="route_timeout"}` with `graph_turn_slow` and the patcher logs *before* changing code.

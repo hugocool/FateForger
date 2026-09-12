@@ -1,6 +1,10 @@
-# Tasks agent
+---
+paths:
+  - "src/fateforger/agents/tasks/*.py"
+  - "src/fateforger/agents/tasks/**/*.py"
+---
 
-**Scope:** `src/fateforger/agents/tasks/`. Same text as `.claude/rules/tasks.md` — change both or neither.
+# Tasks agent
 
 - Keep TickTick MCP IO in `list_tools.py` and sprint MCP IO in `notion_sprint_tools.py`; do not spread MCP call choreography into Slack handlers.
 - If list or item resolution is ambiguous, return structured ambiguity and ask a focused follow-up. Never perform destructive operations while ambiguity exists.

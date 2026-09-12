@@ -1,6 +1,10 @@
-# Haunt — reminders and planning sessions
+---
+paths:
+  - "src/fateforger/haunt/*.py"
+  - "src/fateforger/haunt/**/*.py"
+---
 
-**Scope:** `src/fateforger/haunt/`. Same text as `.claude/rules/haunt.md` — change both or neither.
+# Haunt — reminders and planning sessions
 
 - Prefer deterministic ID and persisted store lookups before summary-based fallback scans; fallback scans must be conservative.
 - **Never suppress reminders on weak/ambiguous title matches; ambiguous fallback candidates stay unresolved and nudges stay active** unless a deterministic event ID or stored session confirms ownership. A suppressed reminder is a missed planning session with no error anywhere (incident I13).

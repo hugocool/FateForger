@@ -1,6 +1,9 @@
-# TRMNL dashboard — the 5-minute truth contract
+---
+paths:
+  - "src/trmnl_frontend/**/*"
+---
 
-**Scope:** `src/trmnl_frontend/`. Same text as `.claude/rules/trmnl_frontend.md` — change both or neither.
+# TRMNL dashboard — the 5-minute truth contract
 
 The display is an 800x480 e-ink panel, 1-bit, non-interactive, refreshed every 5 minutes. The data
 contract, the Framework v2 class list and the view layouts are in `src/trmnl_frontend/README.md`.

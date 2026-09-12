@@ -758,6 +758,17 @@ class PlanningSessionRule:
 
 
 class PlanningReconciler:
+    """Schedules the missing-planning nudges.
+
+    Two situations live here rather than in the rulebook, because they die in the same
+    diff that makes them false (#364, #366):
+
+    - Stale anchor events outside the horizon window must be ignored when deciding
+      whether a planning session exists.
+    - Planning nudges are suppressed while a timeboxing session is active; an idle
+      session flips to ``unfinished`` after 10 minutes and re-triggers reconciliation.
+    """
+
     def __init__(
         self,
         scheduler: AsyncIOScheduler,
