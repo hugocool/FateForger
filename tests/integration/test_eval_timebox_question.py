@@ -155,16 +155,17 @@ async def _intents(text: str, snapshot) -> tuple[list, int]:
     one outcome the break-it families are trying to observe.
     """
 
-    from fateforger.llm.factory import build_autogen_chat_client
+    from fateforger.llm.factory import build_intent_interpreter_client
     from fateforger.slack_bot.timeboxing_intents import TimeboxingIntentInterpreter
 
-    # The client production builds for this interpreter, agent type and all:
-    # `core.runtime._build_timeboxing_intent_interpreter` asks for exactly this
-    # one. Naming a model here instead would measure a model nothing runs on --
-    # the `.env` pins decide, and this eval reports whichever they name.
-    interpreter = TimeboxingIntentInterpreter(
-        build_autogen_chat_client("timeboxing_agent")
-    )
+    # The client production builds for this interpreter:
+    # `core.runtime._build_timeboxing_intent_interpreter` calls exactly this
+    # function, which is the `intent_interpreter` row -- the row this
+    # interpreter moved to when #336 landed, off the `timeboxing_agent` host
+    # agent's client. Naming a model here instead would measure a model nothing
+    # runs on -- the `.env` pins decide, and this eval reports whichever they
+    # name.
+    interpreter = TimeboxingIntentInterpreter(build_intent_interpreter_client())
     retries = 0
 
     async def one():
